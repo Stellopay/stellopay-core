@@ -130,7 +130,34 @@ impl PayrollContract {
     /// For security, you'd still require that the employer's account
     /// or an automated bot is used to actually sign transactions
     /// or have an on-chain logic that automatically triggers disburse.
-    pub fn employee_withdraw(env: Env, employee: Address) {
-        // return -> Result<(), PayrollError>;
+    pub fn employee_withdraw(env: Env, employee: Address) -> Result<(), PayrollError> {
+        employee.require_auth();
+        let key = PayrollKey(employee.clone());
+        let storage = env.storage().persistent();
+
+        if let Some(existing_payroll) = storage.get::<PayrollKey, Payroll>(&key) {
+            // Check if the interval has passed since the last payment time
+            let current_time = env.ledger().timestamp();
+            let last_payment_time = existing_payroll.last_payment_time;
+            if current_time - last_payment_time >= existing_payroll.interval {
+                // Process the disbursement of payment
+                PayrollContract::disburse_salary(env, existing_payroll.employer.clone(), employee);
+
+                // Update last_payment_time of the payroll
+                let updated_payroll = Payroll {
+                    last_payment_time: current_time,
+                    ..existing_payroll
+                };
+                storage.set(&key, &updated_payroll);
+
+                Ok(())
+            } else {
+                // Interval has not completed since the last payment time
+                return Err(PayrollError::IntervalNotReached);
+            }
+        } else {
+            // No existing payroll record found for the employee
+            return Err(PayrollError::InvalidData);
+        }
     }
 }
