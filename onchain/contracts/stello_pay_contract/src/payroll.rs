@@ -1,11 +1,4 @@
-use soroban_sdk::{
-    contract,
-    contractimpl,
-    contracterror,
-    contracttype,
-    Address, 
-    Env,
-};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
 //-----------------------------------------------------------------------------
 // Errors
 //-----------------------------------------------------------------------------
@@ -29,7 +22,7 @@ pub enum PayrollError {
 
 /// Key used to store payroll info in contract storage.
 #[contracttype]
-pub struct PayrollKey(Address);
+pub struct PayrollKey(pub Address);
 
 /// Stores basic payroll information.
 #[contracttype]
@@ -72,9 +65,45 @@ impl PayrollContract {
         employee: Address,
         amount: i64,
         interval: u64,
-    )  {
+    ) -> Result<Payroll, PayrollError> {
+        employer.require_auth();
+        if interval == 0 {
+            return Err(PayrollError::InvalidData);
+        }
 
-        // return -> Result<Payroll, PayrollError>
+        let key = PayrollKey(employee.clone());
+
+        let storage = env.storage().persistent();
+
+        if let Some(existing_payroll) = storage.get::<PayrollKey, Payroll>(&key) {
+            if existing_payroll.employer != employer {
+                return Err(PayrollError::Unauthorized);
+            }
+
+            let updated_payroll = Payroll {
+                employer: existing_payroll.employer,
+                employee: existing_payroll.employee,
+                amount,
+                interval,
+                last_payment_time: existing_payroll.last_payment_time,
+            };
+
+            storage.set(&key, &updated_payroll);
+            return Ok(updated_payroll);
+        }
+
+        let current_time = env.ledger().timestamp();
+
+        let new_payroll = Payroll {
+            employer,
+            employee,
+            amount,
+            interval,
+            last_payment_time: current_time,
+        };
+
+        storage.set(&key, &new_payroll);
+        Ok(new_payroll)
     }
 
     /// Disburses salary if enough time has elapsed since the last payment.
@@ -83,13 +112,13 @@ impl PayrollContract {
     /// - Verifying that the caller is the employer or an automated process with the right credentials.
     /// - Updating the `last_payment_time` on success.
     pub fn disburse_salary(env: Env, caller: Address, employee: Address) {
-        
+
         // return -> Result<(), PayrollError>;
     }
 
     /// Gets the payroll details for a given employee.
     /// This can be used by UIs or dashboards to display status.
-    pub fn get_payroll(env: Env, employee: Address){
+    pub fn get_payroll(env: Env, employee: Address) {
 
         // return -> Option<Payroll>;
     }
@@ -101,10 +130,7 @@ impl PayrollContract {
     /// For security, you'd still require that the employer's account
     /// or an automated bot is used to actually sign transactions
     /// or have an on-chain logic that automatically triggers disburse.
-    pub fn employee_withdraw(
-        env: Env,
-        employee: Address,
-    ) {
+    pub fn employee_withdraw(env: Env, employee: Address) {
         // return -> Result<(), PayrollError>;
     }
 }
