@@ -1,4 +1,6 @@
+// use soroban_sdk::token::{TokenClient, TokenIdentifier};
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
+// use soroban_sdk::token::{TokenClient, TokenIdentifier};
 //-----------------------------------------------------------------------------
 // Errors
 //-----------------------------------------------------------------------------
@@ -14,6 +16,10 @@ pub enum PayrollError {
     IntervalNotReached = 2,
     /// Raised when attempting to initialize or disburse with invalid data.
     InvalidData = 3,
+    // Payroll Not Found
+    PayrollNotFound = 4,
+    // Tranfer Fail
+    TransferFailed = 5,
 }
 
 //-----------------------------------------------------------------------------
@@ -111,9 +117,42 @@ impl PayrollContract {
     /// - Checking the token contract for transferring funds.
     /// - Verifying that the caller is the employer or an automated process with the right credentials.
     /// - Updating the `last_payment_time` on success.
-    pub fn disburse_salary(env: Env, caller: Address, employee: Address) {
+    pub fn disburse_salary(
+        env: Env,
+        caller: Address,
+        employee: Address,
+    ) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        let key = PayrollKey(employee.clone());
+        let payroll = storage.get::<PayrollKey, Payroll>(&key);
+        let payroll_data = payroll.unwrap();
 
-        // return -> Result<(), PayrollError>;
+        if caller != payroll_data.employer {
+            return Err(PayrollError::Unauthorized);
+        }
+        let current_time = env.ledger().timestamp();
+
+        if current_time < payroll_data.last_payment_time + payroll_data.interval {
+            return Err(PayrollError::IntervalNotReached);
+        }
+
+        // dispatch transfer
+        // let xlm_token_id = TokenIdentifier::native();
+        // let xlm_client = TokenClient::new(&e, &xlm_token_id);
+        //  xlm_client.transfer(&payroll_data.employer, &employee, &payroll_data.amount)
+
+        // Update the last payment time
+        let updated_payroll = Payroll {
+            employer: payroll_data.employer,
+            employee: payroll_data.employee,
+            amount: payroll_data.amount,
+            interval: payroll_data.interval,
+            last_payment_time: current_time,
+        };
+
+        let storage = env.storage().persistent();
+        storage.set(&key, &updated_payroll);
+        return Ok(());
     }
 
     /// Gets the payroll details for a given employee.
