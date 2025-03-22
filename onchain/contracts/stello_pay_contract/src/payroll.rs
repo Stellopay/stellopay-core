@@ -1,4 +1,4 @@
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, storage, Address, Env};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
 //-----------------------------------------------------------------------------
 // Errors
 //-----------------------------------------------------------------------------
