@@ -1,4 +1,4 @@
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, storage, Address, Env};
 //-----------------------------------------------------------------------------
 // Errors
 //-----------------------------------------------------------------------------
@@ -118,9 +118,12 @@ impl PayrollContract {
 
     /// Gets the payroll details for a given employee.
     /// This can be used by UIs or dashboards to display status.
-    pub fn get_payroll(env: Env, employee: Address) {
+    pub fn get_payroll(env: Env, employee: Address) -> Option<Payroll> {
+        employee.require_auth();
+        let key = PayrollKey(employee.clone());
+        let storage = env.storage().persistent();
 
-        // return -> Option<Payroll>;
+        storage.get::<PayrollKey, Payroll>(&key)
     }
 
     /// Example function to allow employees to pull payment themselves.
