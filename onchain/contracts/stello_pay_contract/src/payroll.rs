@@ -1,6 +1,4 @@
-// use soroban_sdk::token::{TokenClient, TokenIdentifier};
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
-// use soroban_sdk::token::{TokenClient, TokenIdentifier};
 //-----------------------------------------------------------------------------
 // Errors
 //-----------------------------------------------------------------------------
@@ -136,10 +134,8 @@ impl PayrollContract {
             return Err(PayrollError::IntervalNotReached);
         }
 
-        // dispatch transfer
-        // let xlm_token_id = TokenIdentifier::native();
-        // let xlm_client = TokenClient::new(&e, &xlm_token_id);
-        //  xlm_client.transfer(&payroll_data.employer, &employee, &payroll_data.amount)
+        // Handle dispatch transfer
+       
 
         // Update the last payment time
         let updated_payroll = Payroll {
