@@ -8,7 +8,6 @@ This repository contains the smart contracts for the decentralized payroll syste
 
 The Payroll Escrow Contract allows employers to deposit salaries into an escrow account. The funds are released to employees at predefined intervals (weekly, monthly, etc.).
 
-
 ## Getting Started
 
 To get started with the Payroll Smart Contract, follow the instructions below:
@@ -30,13 +29,38 @@ To get started with the Payroll Smart Contract, follow the instructions below:
    cargo build
    ```
 
+   or
+
+   ```bash 
+   stellar contract build
+   ```
+
 4. **Run tests:**
 
+   The project includes comprehensive tests for all contract functionality. To run the tests:
+
    ```bash
+   # Run all tests
    cargo test
+
+   # Run a specific test file
+   cargo test test_payroll
+   cargo test test_create_or_update_escrow
+
+   # Run a specific test
+   cargo test test_get_payroll_success
    ```
+
+   The tests cover various scenarios including:
+   - Creating and updating payroll escrows
+   - Disbursing salaries
+   - Employee withdrawals
+   - Error cases and edge conditions
+   - Multiple payment cycles
+   - Boundary value testing
+
+   Test snapshots are automatically generated in the `test_snapshots` directory when running tests. These snapshots help ensure contract behavior remains consistent across changes.
 
 ## License
 
 This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
-```` ▋
