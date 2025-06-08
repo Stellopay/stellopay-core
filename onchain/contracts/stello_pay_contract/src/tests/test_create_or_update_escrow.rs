@@ -11,13 +11,14 @@ fn test_create_new_escrow() {
 
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
+    let token = Address::generate(&env);
 
-    let amount = 1000;
-    let interval = 86400;
+    let amount = 1000i128;
+    let interval = 86400u64;
 
     env.mock_all_auths();
 
-    client.create_or_update_escrow(&employer, &employee, &amount, &interval);
+    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
     let stored_payroll: Payroll = env.as_contract(&contract_id, || {
         env.storage()
@@ -28,6 +29,7 @@ fn test_create_new_escrow() {
 
     assert_eq!(stored_payroll.employer, employer);
     assert_eq!(stored_payroll.employee, employee);
+    assert_eq!(stored_payroll.token, token);
     assert_eq!(stored_payroll.amount, amount);
     assert_eq!(stored_payroll.interval, interval);
     assert_eq!(stored_payroll.last_payment_time, env.ledger().timestamp());
@@ -41,16 +43,17 @@ fn test_update_existing_escrow_valid_employer() {
 
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
+    let token = Address::generate(&env);
 
-    let initial_amount = 1000;
-    let interval = 86400;
+    let initial_amount = 1000i128;
+    let interval = 86400u64;
 
     env.mock_all_auths();
 
-    client.create_or_update_escrow(&employer, &employee, &initial_amount, &interval);
+    client.create_or_update_escrow(&employer, &employee, &token, &initial_amount, &interval);
 
-    let updated_amount = 2000;
-    client.create_or_update_escrow(&employer, &employee, &updated_amount, &interval);
+    let updated_amount = 2000i128;
+    client.create_or_update_escrow(&employer, &employee, &token, &updated_amount, &interval);
 
     let stored_payroll: Payroll = env.as_contract(&contract_id, || {
         env.storage()
@@ -73,15 +76,16 @@ fn test_update_existing_escrow_invalid_employer() {
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
     let invalid_employer = Address::generate(&env);
+    let token = Address::generate(&env);
 
-    let amount = 1000;
-    let interval = 86400;
+    let amount = 1000i128;
+    let interval = 86400u64;
 
     env.mock_all_auths();
 
-    client.create_or_update_escrow(&employer, &employee, &amount, &interval);
+    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
-    client.create_or_update_escrow(&invalid_employer, &employee, &2000, &interval);
+    client.create_or_update_escrow(&invalid_employer, &employee, &token, &2000i128, &interval);
 }
 
 #[test]
@@ -93,10 +97,47 @@ fn test_create_escrow_invalid_interval() {
 
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
+    let token = Address::generate(&env);
 
-    let amount = 1000;
-    let invalid_interval = 0;
+    let amount = 1000i128;
+    let invalid_interval = 0u64;
 
     env.mock_all_auths();
-    client.create_or_update_escrow(&employer, &employee, &amount, &invalid_interval);
+    client.create_or_update_escrow(&employer, &employee, &token, &amount, &invalid_interval);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_create_escrow_invalid_amount() {
+    let env = Env::default();
+    let contract_id = env.register(PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let invalid_amount = 0i128;
+    let interval = 86400u64;
+
+    env.mock_all_auths();
+    client.create_or_update_escrow(&employer, &employee, &token, &invalid_amount, &interval);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_create_escrow_negative_amount() {
+    let env = Env::default();
+    let contract_id = env.register(PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let invalid_amount = -1000i128;
+    let interval = 86400u64;
+
+    env.mock_all_auths();
+    client.create_or_update_escrow(&employer, &employee, &token, &invalid_amount, &interval);
 }
