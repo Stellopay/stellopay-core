@@ -21,8 +21,6 @@ pub enum PayrollError {
     TransferFailed = 5,
     /// Contract is paused
     ContractPaused = 6,
-    /// Insufficient Balance
-    InsufficientBalance = 7,
 }
 
 //-----------------------------------------------------------------------------
@@ -32,13 +30,6 @@ pub enum PayrollError {
 /// Key used to store payroll info in contract storage.
 #[contracttype]
 pub struct PayrollKey(pub Address);
-
-/// Key used to store employer token balances
-#[contracttype]
-pub struct EmployerBalanceKey {
-    pub employer: Address,
-    pub token: Address,
-}
 
 /// Storage keys using symbols instead of unit structs
 const PAUSE_KEY: Symbol = symbol_short!("PAUSED");
@@ -77,12 +68,6 @@ pub const PAUSED_EVENT: Symbol = symbol_short!("paused");
 
 /// Event emitted when contract is unpaused
 pub const UNPAUSED_EVENT: Symbol = symbol_short!("unpaused");
-
-/// Event emitted when tokens are deposited
-pub const DEPOSIT_EVENT: Symbol = symbol_short!("deposit");
-
-/// Event emitted when salary is disbursed
-pub const DISBURSE_EVENT: Symbol = symbol_short!("disburse");
 
 //-----------------------------------------------------------------------------
 // Contract Implementation
@@ -341,35 +326,20 @@ impl PayrollContract {
                 return Err(PayrollError::IntervalNotReached);
             }
 
-            // Check and deduct from employer's balance
-            Self::deduct_from_balance(
-                &env,
-                &payroll_data.employer,
-                &payroll_data.token,
-                payroll_data.amount,
-            )?;
-
-            // TODO: In production, transfer tokens to employee
-            // token_client.transfer(&env.current_contract_address(), &employee, &payroll_data.amount);
+            // Handle dispatch transfer
+            // TODO: Implement actual token transfer logic here
 
             // Update the last payment time
             let updated_payroll = Payroll {
-                employer: payroll_data.employer.clone(),
-                employee: payroll_data.employee.clone(),
-                token: payroll_data.token.clone(),
+                employer: payroll_data.employer,
+                employee: payroll_data.employee,
                 amount: payroll_data.amount,
                 interval: payroll_data.interval,
                 last_payment_time: current_time,
             };
 
+            let storage = env.storage().persistent();
             storage.set(&key, &updated_payroll);
-
-            // Emit disbursement event
-            env.events().publish(
-                (DISBURSE_EVENT, payroll_data.employer, payroll_data.employee),
-                (payroll_data.token, payroll_data.amount, current_time)
-            );
-
             Ok(())
         } else {
             Err(PayrollError::PayrollNotFound)
@@ -407,16 +377,8 @@ impl PayrollContract {
             let current_time = env.ledger().timestamp();
             let last_payment_time = existing_payroll.last_payment_time;
             if current_time - last_payment_time >= existing_payroll.interval {
-                // Check and deduct from employer's balance
-                Self::deduct_from_balance(
-                    &env,
-                    &existing_payroll.employer,
-                    &existing_payroll.token,
-                    existing_payroll.amount,
-                )?;
-
-                // TODO: In production, transfer tokens to employee
-                // token_client.transfer(&env.current_contract_address(), &employee, &existing_payroll.amount);
+                // Process the disbursement of payment
+                Self::disburse_salary(env.clone(), existing_payroll.employer.clone(), employee.clone())?;
 
                 // Update last_payment_time of the payroll
                 let updated_payroll = Payroll {
