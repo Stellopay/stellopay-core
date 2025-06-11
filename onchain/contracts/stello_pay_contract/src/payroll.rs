@@ -344,7 +344,27 @@ impl PayrollContract {
             }
 
             // Handle dispatch transfer
-            // TODO: Implement actual token transfer logic here
+            let token_client = TokenClient::new(&env, &payroll_data.token);
+            let initial_employee_balance = token_client.balance(&payroll_data.employee);
+
+            // Ensure the employer has enough balance
+            if token_client.balance(&payroll_data.employer) < payroll_data.amount {
+                return Err(PayrollError::InsufficientBalance);
+            }
+
+            // Transfer the amount to the employee
+            // If transfer panics, the contract will abort as expected in Soroban
+            token_client.transfer(
+                &payroll_data.employer,
+                &payroll_data.employee,
+                &payroll_data.amount,
+            );
+
+            // Handle transfer failure
+            let employee_balance = token_client.balance(&payroll_data.employee);
+            if employee_balance != initial_employee_balance + payroll_data.amount {
+                return Err(PayrollError::TransferFailed);
+            }
 
             // Update the last payment time
             payroll_data.last_payment_time = current_time;
