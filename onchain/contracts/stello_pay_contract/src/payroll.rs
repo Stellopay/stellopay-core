@@ -1,4 +1,7 @@
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Symbol, symbol_short};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short,
+    token::Client as TokenClient, Address, Env, Symbol,
+};
 
 //-----------------------------------------------------------------------------
 // Errors
@@ -19,8 +22,10 @@ pub enum PayrollError {
     PayrollNotFound = 4,
     /// Transfer Failed
     TransferFailed = 5,
+    /// Insufficient Balance
+    InsufficientBalance = 6,
     /// Contract is paused
-    ContractPaused = 6,
+    ContractPaused = 7,
 }
 
 //-----------------------------------------------------------------------------
@@ -59,6 +64,14 @@ pub struct Payroll {
 #[contract]
 pub struct PayrollContract;
 
+/// Key used to store employer's token balance in contract storage.
+#[contracttype]
+#[derive(Clone)]
+pub struct EmployerBalanceKey {
+    pub employer: Address,
+    pub token: Address,
+}
+
 //-----------------------------------------------------------------------------
 // Events
 //-----------------------------------------------------------------------------
@@ -68,6 +81,12 @@ pub const PAUSED_EVENT: Symbol = symbol_short!("paused");
 
 /// Event emitted when contract is unpaused
 pub const UNPAUSED_EVENT: Symbol = symbol_short!("unpaused");
+
+/// Event emitted when salary is disbursed
+pub const DISBURSE_EVENT: Symbol = symbol_short!("disburse");
+
+/// Event emitted when tokens are deposited to employer's salary pool
+pub const DEPOSIT_EVENT: Symbol = symbol_short!("deposit");
 
 //-----------------------------------------------------------------------------
 // Contract Implementation
@@ -79,14 +98,14 @@ impl PayrollContract {
     /// This should be called once when deploying the contract
     pub fn initialize(env: Env, owner: Address) {
         owner.require_auth();
-        
+
         let storage = env.storage().persistent();
-        
+
         // Only allow initialization if no owner is set
         if storage.has(&OWNER_KEY) {
             panic!("Contract already initialized");
         }
-        
+
         storage.set(&OWNER_KEY, &owner);
         // Contract starts unpaused by default
         storage.set(&PAUSE_KEY, &false);
@@ -95,9 +114,9 @@ impl PayrollContract {
     /// Pause the contract - only callable by owner
     pub fn pause(env: Env, caller: Address) -> Result<(), PayrollError> {
         caller.require_auth();
-        
+
         let storage = env.storage().persistent();
-        
+
         // Check if caller is the owner
         if let Some(owner) = storage.get::<Symbol, Address>(&OWNER_KEY) {
             if caller != owner {
@@ -106,22 +125,22 @@ impl PayrollContract {
         } else {
             return Err(PayrollError::Unauthorized);
         }
-        
+
         // Set paused state to true
         storage.set(&PAUSE_KEY, &true);
-        
+
         // Emit paused event
         env.events().publish((PAUSED_EVENT,), caller);
-        
+
         Ok(())
     }
 
     /// Unpause the contract - only callable by owner
     pub fn unpause(env: Env, caller: Address) -> Result<(), PayrollError> {
         caller.require_auth();
-        
+
         let storage = env.storage().persistent();
-        
+
         // Check if caller is the owner
         if let Some(owner) = storage.get::<Symbol, Address>(&OWNER_KEY) {
             if caller != owner {
@@ -130,13 +149,13 @@ impl PayrollContract {
         } else {
             return Err(PayrollError::Unauthorized);
         }
-        
+
         // Set paused state to false
         storage.set(&PAUSE_KEY, &false);
-        
+
         // Emit unpaused event
         env.events().publish((UNPAUSED_EVENT,), caller);
-        
+
         Ok(())
     }
 
@@ -150,11 +169,11 @@ impl PayrollContract {
     fn require_not_paused(env: &Env) -> Result<(), PayrollError> {
         let storage = env.storage().persistent();
         let is_paused = storage.get(&PAUSE_KEY).unwrap_or(false);
-        
+
         if is_paused {
             return Err(PayrollError::ContractPaused);
         }
-        
+
         Ok(())
     }
 
@@ -175,7 +194,7 @@ impl PayrollContract {
     ) -> Result<Payroll, PayrollError> {
         // Check if contract is paused
         Self::require_not_paused(&env)?;
-        
+
         employer.require_auth();
         if interval == 0 || amount <= 0 {
             return Err(PayrollError::InvalidData);
@@ -218,7 +237,7 @@ impl PayrollContract {
     }
 
     /// Deposit tokens to employer's salary pool
-    /// 
+    ///
     /// Requirements:
     /// - Contract must not be paused
     /// - Only the employer can deposit to their own pool
@@ -231,9 +250,9 @@ impl PayrollContract {
     ) -> Result<(), PayrollError> {
         // Check if contract is paused
         Self::require_not_paused(&env)?;
-        
+
         employer.require_auth();
-        
+
         if amount <= 0 {
             return Err(PayrollError::InvalidData);
         }
@@ -257,18 +276,14 @@ impl PayrollContract {
         // Emit deposit event
         env.events().publish(
             (DEPOSIT_EVENT, employer.clone(), token.clone()),
-            (amount, new_balance)
+            (amount, new_balance),
         );
 
         Ok(())
     }
 
     /// Get employer's token balance in the contract
-    pub fn get_employer_balance(
-        env: Env,
-        employer: Address,
-        token: Address,
-    ) -> i128 {
+    pub fn get_employer_balance(env: Env, employer: Address, token: Address) -> i128 {
         let storage = env.storage().persistent();
         let balance_key = EmployerBalanceKey { employer, token };
         storage.get(&balance_key).unwrap_or(0)
@@ -288,7 +303,7 @@ impl PayrollContract {
         };
 
         let current_balance: i128 = storage.get(&balance_key).unwrap_or(0);
-        
+
         if current_balance < amount {
             return Err(PayrollError::InsufficientBalance);
         }
@@ -311,15 +326,17 @@ impl PayrollContract {
     ) -> Result<(), PayrollError> {
         // Check if contract is paused
         Self::require_not_paused(&env)?;
-        
+
+        caller.require_auth();
+
         let storage = env.storage().persistent();
         let key = PayrollKey(employee.clone());
-        
-        if let Some(payroll_data) = storage.get::<PayrollKey, Payroll>(&key) {
+
+        if let Some(mut payroll_data) = storage.get::<PayrollKey, Payroll>(&key) {
             if caller != payroll_data.employer {
                 return Err(PayrollError::Unauthorized);
             }
-            
+
             let current_time = env.ledger().timestamp();
 
             if current_time < payroll_data.last_payment_time + payroll_data.interval {
@@ -330,16 +347,10 @@ impl PayrollContract {
             // TODO: Implement actual token transfer logic here
 
             // Update the last payment time
-            let updated_payroll = Payroll {
-                employer: payroll_data.employer,
-                employee: payroll_data.employee,
-                amount: payroll_data.amount,
-                interval: payroll_data.interval,
-                last_payment_time: current_time,
-            };
+            payroll_data.last_payment_time = current_time;
 
             let storage = env.storage().persistent();
-            storage.set(&key, &updated_payroll);
+            storage.set(&key, &payroll_data);
             Ok(())
         } else {
             Err(PayrollError::PayrollNotFound)
@@ -367,34 +378,39 @@ impl PayrollContract {
     pub fn employee_withdraw(env: Env, employee: Address) -> Result<(), PayrollError> {
         // Check if contract is paused
         Self::require_not_paused(&env)?;
-        
+
         employee.require_auth();
         let key = PayrollKey(employee.clone());
         let storage = env.storage().persistent();
 
-        if let Some(existing_payroll) = storage.get::<PayrollKey, Payroll>(&key) {
+        if let Some(mut existing_payroll) = storage.get::<PayrollKey, Payroll>(&key) {
             // Check if the interval has passed since the last payment time
             let current_time = env.ledger().timestamp();
             let last_payment_time = existing_payroll.last_payment_time;
             if current_time - last_payment_time >= existing_payroll.interval {
                 // Process the disbursement of payment
-                Self::disburse_salary(env.clone(), existing_payroll.employer.clone(), employee.clone())?;
+                Self::disburse_salary(
+                    env.clone(),
+                    existing_payroll.employer.clone(),
+                    employee.clone(),
+                )?;
 
                 // Update last_payment_time of the payroll
-                let updated_payroll = Payroll {
-                    employer: existing_payroll.employer.clone(),
-                    employee: existing_payroll.employee.clone(),
-                    token: existing_payroll.token.clone(),
-                    amount: existing_payroll.amount,
-                    interval: existing_payroll.interval,
-                    last_payment_time: current_time,
-                };
-                storage.set(&key, &updated_payroll);
+                existing_payroll.last_payment_time = current_time;
+                storage.set(&key, &existing_payroll);
 
                 // Emit disbursement event
                 env.events().publish(
-                    (DISBURSE_EVENT, existing_payroll.employer, existing_payroll.employee),
-                    (existing_payroll.token, existing_payroll.amount, current_time)
+                    (
+                        DISBURSE_EVENT,
+                        existing_payroll.employer,
+                        existing_payroll.employee,
+                    ),
+                    (
+                        existing_payroll.token,
+                        existing_payroll.amount,
+                        current_time,
+                    ),
                 );
 
                 Ok(())
@@ -415,12 +431,16 @@ impl PayrollContract {
     }
 
     /// Transfer ownership to a new address - only callable by current owner
-    pub fn transfer_ownership(env: Env, caller: Address, new_owner: Address) -> Result<(), PayrollError> {
+    pub fn transfer_ownership(
+        env: Env,
+        caller: Address,
+        new_owner: Address,
+    ) -> Result<(), PayrollError> {
         caller.require_auth();
         new_owner.require_auth();
-        
+
         let storage = env.storage().persistent();
-        
+
         // Check if caller is the current owner
         if let Some(current_owner) = storage.get::<Symbol, Address>(&OWNER_KEY) {
             if caller != current_owner {
@@ -429,10 +449,10 @@ impl PayrollContract {
         } else {
             return Err(PayrollError::Unauthorized);
         }
-        
+
         // Set new owner
         storage.set(&OWNER_KEY, &new_owner);
-        
+
         Ok(())
     }
 }
