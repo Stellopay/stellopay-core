@@ -2,6 +2,35 @@
 
 This repository contains the smart contracts for the decentralized payroll system built on the Stellar blockchain using Soroban. The smart contracts manage payroll escrows, disburse salaries, and handle multi-currency swaps.
 
+## CI/CD for Soroban Rust Smart Contracts
+
+This repository uses GitHub Actions to automatically build and test Soroban Rust smart contracts on every push and pull request to the main branches.
+
+### CI/CD Status
+
+![CI](https://github.com/Stellopay/stellopay-core/actions/workflows/ci.yml/badge.svg)
+
+### How it works
+- On every push or pull request to `main` or `master`, the workflow:
+  1. Checks out the code
+  2. Sets up Rust
+  3. Installs the Soroban CLI
+  4. Builds the smart contracts in `onchain/contracts/stello_pay_contract`
+  5. Runs all tests
+- Build and test results are reported directly in pull requests.
+
+### Requirements
+- No manual setup is needed for CI/CD. All dependencies are handled in the workflow.
+- To run tests locally, ensure you have Rust and the Soroban CLI installed:
+  ```sh
+  rustup install stable
+  cargo install --locked --version 20.0.0-rc.1 soroban-cli
+  ```
+
+### References
+- [GitHub Actions Documentation](https://docs.github.com/en/actions)
+- [Stellar Soroban Rust Docs](https://soroban.stellar.org/docs)
+
 ## Contracts
 
 ### Payroll Escrow Contract
