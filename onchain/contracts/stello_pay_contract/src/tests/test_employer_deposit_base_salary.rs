@@ -1,11 +1,12 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
     use soroban_sdk::{testutils::Address as _, Env, Address};
+    use crate::payroll::{PayrollContract, PayrollContractClient};
+    use soroban_sdk::testutils::Ledger;
 
     fn create_test_contract() -> (Env, Address, PayrollContractClient<'static>) {
         let env = Env::default();
-        let contract_id = env.register_contract(None, PayrollContract);
+        let contract_id = env.register(PayrollContract, ());
         let client = PayrollContractClient::new(&env, &contract_id);
         (env, contract_id, client)
     }
@@ -21,6 +22,7 @@ mod tests {
 
         env.mock_all_auths();
 
+        client.initialize(&employer);
         client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
         let payroll_data = client.get_payroll(&employee).unwrap();
@@ -43,8 +45,7 @@ mod tests {
         env.mock_all_auths();
 
         // Initialize contract and deposit tokens
-        let owner = Address::generate(&env);
-        client.initialize(&owner);
+        client.initialize(&employer);
         client.deposit_tokens(&employer, &token, &5000i128);
 
         client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
@@ -70,8 +71,7 @@ mod tests {
         env.mock_all_auths();
 
         // Initialize contract and deposit tokens
-        let owner = Address::generate(&env);
-        client.initialize(&owner);
+        client.initialize(&employer);
         client.deposit_tokens(&employer, &token, &5000i128);
 
         client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
@@ -100,8 +100,7 @@ mod tests {
         env.mock_all_auths();
 
         // Initialize contract and deposit tokens
-        let owner = Address::generate(&env);
-        client.initialize(&owner);
+        client.initialize(&employer);
         client.deposit_tokens(&employer, &token, &5000i128);
 
         client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
@@ -132,8 +131,7 @@ mod tests {
         env.mock_all_auths();
 
         // Initialize contract and deposit tokens
-        let owner = Address::generate(&env);
-        client.initialize(&owner);
+        client.initialize(&employer);
         client.deposit_tokens(&employer, &token, &5000i128);
 
         client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
@@ -159,8 +157,7 @@ mod tests {
         env.mock_all_auths();
 
         // Initialize contract and deposit tokens
-        let owner = Address::generate(&env);
-        client.initialize(&owner);
+        client.initialize(&employer);
         client.deposit_tokens(&employer, &token, &5000i128);
 
         client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
@@ -196,8 +193,7 @@ mod tests {
         env.mock_all_auths();
 
         // Initialize contract and deposit tokens (enough for 2 payments)
-        let owner = Address::generate(&env);
-        client.initialize(&owner);
+        client.initialize(&employer);
         client.deposit_tokens(&employer, &token, &5000i128);
 
         client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
@@ -231,6 +227,7 @@ mod tests {
 
         env.mock_all_auths();
 
+        client.initialize(&employer);
         client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
         let payroll_data = client.get_payroll(&employee).unwrap();
@@ -251,8 +248,7 @@ mod tests {
         env.mock_all_auths();
 
         // Initialize contract but don't deposit enough tokens
-        let owner = Address::generate(&env);
-        client.initialize(&owner);
+        client.initialize(&employer);
         client.deposit_tokens(&employer, &token, &500i128); // Less than needed
 
         client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
@@ -279,8 +275,7 @@ mod tests {
         env.mock_all_auths();
 
         // Initialize contract but don't deposit enough tokens
-        let owner = Address::generate(&env);
-        client.initialize(&owner);
+        client.initialize(&employer);
         client.deposit_tokens(&employer, &token, &500i128); // Less than needed
 
         client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);

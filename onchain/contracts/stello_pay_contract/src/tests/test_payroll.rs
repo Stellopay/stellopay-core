@@ -1,7 +1,7 @@
 #[cfg(test)]
 use soroban_sdk::{testutils::Address as _, Address, Env, testutils::Ledger, testutils::LedgerInfo};
 
-use crate::payroll::{Payroll, PayrollContract, PayrollContractClient, PayrollKey, PayrollError};
+use crate::payroll::{PayrollContract, PayrollContractClient};
 
 #[test]
 fn test_get_payroll_success() {
@@ -58,7 +58,6 @@ fn test_disburse_salary_success() {
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
     let token = Address::generate(&env);
-    let owner = Address::generate(&env);
 
     let amount = 1000i128;
     let interval = 86400u64; // 1 day in seconds
@@ -145,7 +144,6 @@ fn test_disburse_salary_interval_not_reached() {
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
     let token = Address::generate(&env);
-    let owner = Address::generate(&env);
 
     let amount = 1000i128;
     let interval = 86400u64;
@@ -172,7 +170,6 @@ fn test_employee_withdraw_success() {
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
     let token = Address::generate(&env);
-    let owner = Address::generate(&env);
 
     let amount = 1000i128;
     let interval = 86400u64; // 1 day in seconds
@@ -217,7 +214,6 @@ fn test_employee_withdraw_interval_not_reached() {
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
     let token = Address::generate(&env);
-    let owner = Address::generate(&env);
 
     let amount = 1000i128;
     let interval = 86400u64;
@@ -301,7 +297,6 @@ fn test_multiple_disbursements() {
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
     let token = Address::generate(&env);
-    let owner = Address::generate(&env);
 
     let amount = 1000i128;
     let interval = 86400u64; // 1 day in seconds
