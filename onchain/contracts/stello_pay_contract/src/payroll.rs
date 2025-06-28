@@ -350,14 +350,22 @@ impl PayrollContract {
 
             // Check if enough time has passed since the last payment
             let current_time = env.ledger().timestamp();
-
             if current_time < payroll_data.last_payment_time + payroll_data.interval {
                 return Err(PayrollError::IntervalNotReached);
             }
 
-            // Handle dispatch transfer
+            // Deduct from employer's salary pool
+            Self::deduct_from_balance(
+                &env,
+                &payroll_data.employer,
+                &payroll_data.token,
+                payroll_data.amount,
+            )?;
+
+            // Handle dispatch transfer from contract to employee
             let token_client = TokenClient::new(&env, &payroll_data.token);
-            let initial_employee_balance = token_client.balance(&payroll_data.employee);
+            let contract_address = env.current_contract_address();
+            let initial_balance = token_client.balance(&payroll_data.employee);
 
             // Ensure the employer has enough balance
             if token_client.balance(&payroll_data.employer) < payroll_data.amount {
@@ -365,24 +373,37 @@ impl PayrollContract {
             }
 
             // Transfer the amount to the employee
-            // If transfer panics, the contract will abort as expected in Soroban
             token_client.transfer(
-                &payroll_data.employer,
+                &contract_address,
                 &payroll_data.employee,
                 &payroll_data.amount,
             );
 
             // Handle transfer failure
             let employee_balance = token_client.balance(&payroll_data.employee);
-            if employee_balance != initial_employee_balance + payroll_data.amount {
+            if employee_balance != initial_balance + payroll_data.amount {
                 return Err(PayrollError::TransferFailed);
             }
 
             // Update the last payment time
             payroll_data.last_payment_time = current_time;
 
-            let storage = env.storage().persistent();
             storage.set(&key, &payroll_data);
+
+            // Emit disbursement event
+            env.events().publish(
+                (
+                    DISBURSE_EVENT,        // topics
+                    caller,
+                    payroll_data.employee,
+                ),
+                (
+                    payroll_data.token,             // data
+                    payroll_data.amount,
+                    current_time,
+                ),
+            );
+
             Ok(())
         } else {
             Err(PayrollError::PayrollNotFound)
@@ -430,20 +451,6 @@ impl PayrollContract {
                 // Update last_payment_time of the payroll
                 existing_payroll.last_payment_time = current_time;
                 storage.set(&key, &existing_payroll);
-
-                // Emit disbursement event
-                env.events().publish(
-                    (
-                        DISBURSE_EVENT,
-                        existing_payroll.employer,
-                        existing_payroll.employee,
-                    ),
-                    (
-                        existing_payroll.token,
-                        existing_payroll.amount,
-                        current_time,
-                    ),
-                );
 
                 Ok(())
             } else {
