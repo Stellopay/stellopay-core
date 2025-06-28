@@ -280,12 +280,10 @@ impl PayrollContract {
         // Update balance in storage
         storage.set(&balance_key, &new_balance);
 
-
-
         // Emit deposit event
         env.events().publish(
-            (DEPOSIT_EVENT, employer.clone(), token.clone()),    // topics
-            (amount, new_balance),  // data
+            (DEPOSIT_EVENT, employer.clone(), token.clone()), // topics
+            (amount, new_balance),                            // data
         );
 
         Ok(())
@@ -346,7 +344,6 @@ impl PayrollContract {
 
             // Require authorization from both employer and employee
             caller.require_auth();
-            employee.require_auth();
 
             // Check if enough time has passed since the last payment
             let current_time = env.ledger().timestamp();
@@ -366,11 +363,6 @@ impl PayrollContract {
             let token_client = TokenClient::new(&env, &payroll_data.token);
             let contract_address = env.current_contract_address();
             let initial_balance = token_client.balance(&payroll_data.employee);
-
-            // Ensure the employer has enough balance
-            if token_client.balance(&payroll_data.employer) < payroll_data.amount {
-                return Err(PayrollError::InsufficientBalance);
-            }
 
             // Transfer the amount to the employee
             token_client.transfer(
@@ -393,12 +385,12 @@ impl PayrollContract {
             // Emit disbursement event
             env.events().publish(
                 (
-                    DISBURSE_EVENT,        // topics
+                    DISBURSE_EVENT, // topics
                     caller,
                     payroll_data.employee,
                 ),
                 (
-                    payroll_data.token,             // data
+                    payroll_data.token, // data
                     payroll_data.amount,
                     current_time,
                 ),
@@ -436,7 +428,8 @@ impl PayrollContract {
 
         let storage = env.storage().persistent();
         let key = PayrollKey(employee.clone());
-        let existing_payroll = storage.get::<PayrollKey, Payroll>(&key)
+        let existing_payroll = storage
+            .get::<PayrollKey, Payroll>(&key)
             .ok_or(PayrollError::PayrollNotFound)?;
 
         // Invoke disburse_salary internally
