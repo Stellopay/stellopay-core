@@ -36,9 +36,18 @@ pub enum PayrollError {
 #[contracttype]
 pub struct PayrollKey(pub Address);
 
+/// Key used to store employer balance in contract storage.
+#[contracttype]
+pub struct EmployerBalanceKey {
+    pub employer: Address,
+    pub token: Address,
+}
+
 /// Storage keys using symbols instead of unit structs
 const PAUSE_KEY: Symbol = symbol_short!("PAUSED");
 const OWNER_KEY: Symbol = symbol_short!("OWNER");
+const DEPOSIT_EVENT: Symbol = symbol_short!("deposit");
+const DISBURSE_EVENT: Symbol = symbol_short!("disburse");
 
 /// Stores basic payroll information.
 #[contracttype]
@@ -196,12 +205,25 @@ impl PayrollContract {
         Self::require_not_paused(&env)?;
 
         employer.require_auth();
-        if interval == 0 || amount <= 0 {
-            return Err(PayrollError::InvalidData);
-        }
 
         let key = PayrollKey(employee.clone());
         let storage = env.storage().persistent();
+        // let owner = storage.get::<Symbol, Address>(&OWNER_KEY).ok_or(PayrollError::Unauthorized)?;
+        let owner = storage.get::<Symbol, Address>(&OWNER_KEY).unwrap();
+        
+        if let Some(existing_payroll) = storage.get::<PayrollKey, Payroll>(&key) {
+            // For updates, only the contract owner or the existing payroll's employer can call
+            if employer != owner && employer != existing_payroll.employer {
+                return Err(PayrollError::Unauthorized);
+            }
+        } else if employer != owner {
+            // For creation, only the contract owner can call
+            return Err(PayrollError::Unauthorized);
+        }
+
+        if interval == 0 || amount <= 0 {
+            return Err(PayrollError::InvalidData);
+        }
 
         if let Some(existing_payroll) = storage.get::<PayrollKey, Payroll>(&key) {
             if existing_payroll.employer != employer {
@@ -329,6 +351,7 @@ impl PayrollContract {
 
         caller.require_auth();
 
+
         let storage = env.storage().persistent();
         let key = PayrollKey(employee.clone());
 
@@ -342,6 +365,8 @@ impl PayrollContract {
             if current_time < payroll_data.last_payment_time + payroll_data.interval {
                 return Err(PayrollError::IntervalNotReached);
             }
+
+            Self::deduct_from_balance(&env, &payroll_data.employer, &payroll_data.token, payroll_data.amount)?;
 
             // Handle dispatch transfer
             let token_client = TokenClient::new(&env, &payroll_data.token);
@@ -368,6 +393,7 @@ impl PayrollContract {
 
             // Update the last payment time
             payroll_data.last_payment_time = current_time;
+
 
             let storage = env.storage().persistent();
             storage.set(&key, &payroll_data);
