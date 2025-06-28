@@ -30,7 +30,8 @@ fn test_get_payroll_success() {
     let interval = 86400u64; // 1 day in seconds
 
     env.mock_all_auths();
-
+    
+    client.initialize(&employer);
     // Create escrow first
     client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
@@ -56,7 +57,6 @@ fn test_get_nonexistent_payroll() {
     let employee = Address::generate(&env);
 
     env.mock_all_auths();
-
     // Try to get payroll for non-existent employee
     let payroll = client.get_payroll(&employee);
     assert!(payroll.is_none());
@@ -333,6 +333,7 @@ fn test_boundary_values() {
     let interval = 1u64; // Minimum possible interval (1 second)
 
     env.mock_all_auths();
+    client.initialize(&employer);
 
     // Create escrow with minimum interval
     client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
