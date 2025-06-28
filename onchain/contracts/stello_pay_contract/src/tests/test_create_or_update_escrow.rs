@@ -1,11 +1,11 @@
-#[cfg(test)]
 use soroban_sdk::{testutils::Address as _, Address, Env};
-use crate::payroll::{Payroll, PayrollContract, PayrollContractClient, PayrollKey};
+
+use crate::payroll::PayrollContractClient;
 
 #[test]
 fn test_create_new_escrow() {
     let env = Env::default();
-    let contract_id = env.register(PayrollContract, ());
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -18,17 +18,13 @@ fn test_create_new_escrow() {
 
     client.initialize(&employer);
 
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
+    let created_payroll =
+        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
-    let stored_payroll: Payroll = env.as_contract(&contract_id, || {
-        env.storage()
-            .persistent()
-            .get(&PayrollKey(employee.clone()))
-            .unwrap()
-    });
+    let stored_payroll = client.get_payroll(&employee).unwrap();
 
+    assert_eq!(created_payroll, stored_payroll);
     assert_eq!(stored_payroll.employer, employer);
-    assert_eq!(stored_payroll.employee, employee);
     assert_eq!(stored_payroll.token, token);
     assert_eq!(stored_payroll.amount, amount);
     assert_eq!(stored_payroll.interval, interval);
@@ -37,9 +33,9 @@ fn test_create_new_escrow() {
 
 #[test]
 #[should_panic(expected = "Error(Contract, #1)")]
-fn test_create_new_escrow_panic() {
+fn test_create_new_escrow_unauthorized() {
     let env = Env::default();
-    let contract_id = env.register(PayrollContract, ());
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -49,10 +45,9 @@ fn test_create_new_escrow_panic() {
 
     let amount = 1000i128;
     let interval = 86400u64;
-    
+
     env.mock_all_auths();
 
-    // Initialize contract
     client.initialize(&owner);
 
     client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
@@ -61,7 +56,7 @@ fn test_create_new_escrow_panic() {
 #[test]
 fn test_update_existing_escrow_valid_employer() {
     let env = Env::default();
-    let contract_id = env.register(PayrollContract, ());
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -72,29 +67,26 @@ fn test_update_existing_escrow_valid_employer() {
     let interval = 86400u64;
 
     env.mock_all_auths();
-    
+
     client.initialize(&employer);
     client.create_or_update_escrow(&employer, &employee, &token, &initial_amount, &interval);
+
+    let initial_payment_time = client.get_payroll(&employee).unwrap().last_payment_time;
 
     let updated_amount = 2000i128;
     client.create_or_update_escrow(&employer, &employee, &token, &updated_amount, &interval);
 
-    let stored_payroll: Payroll = env.as_contract(&contract_id, || {
-        env.storage()
-            .persistent()
-            .get(&PayrollKey(employee.clone()))
-            .unwrap()
-    });
+    let stored_payroll = client.get_payroll(&employee).unwrap();
 
     assert_eq!(stored_payroll.amount, updated_amount);
-    assert_eq!(stored_payroll.last_payment_time, env.ledger().timestamp()); // Should remain unchanged
+    assert_eq!(stored_payroll.last_payment_time, initial_payment_time);
 }
 
 #[test]
 #[should_panic(expected = "Error(Contract, #1)")]
 fn test_update_existing_escrow_invalid_employer() {
     let env = Env::default();
-    let contract_id = env.register(PayrollContract, ());
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -118,7 +110,7 @@ fn test_update_existing_escrow_invalid_employer() {
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_create_escrow_invalid_interval() {
     let env = Env::default();
-    let contract_id = env.register(PayrollContract, ());
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -137,7 +129,7 @@ fn test_create_escrow_invalid_interval() {
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_create_escrow_invalid_amount() {
     let env = Env::default();
-    let contract_id = env.register(PayrollContract, ());
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -156,7 +148,7 @@ fn test_create_escrow_invalid_amount() {
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_create_escrow_negative_amount() {
     let env = Env::default();
-    let contract_id = env.register(PayrollContract, ());
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);

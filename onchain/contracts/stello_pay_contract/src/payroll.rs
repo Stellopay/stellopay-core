@@ -4,6 +4,9 @@ use soroban_sdk::{
 };
 use soroban_sdk::events;
 
+use crate::storage::{DataKey, Payroll};
+
+
 //-----------------------------------------------------------------------------
 // Errors
 //-----------------------------------------------------------------------------
@@ -41,23 +44,6 @@ pub struct PayrollKey(pub Address);
 const PAUSE_KEY: Symbol = symbol_short!("PAUSED");
 const OWNER_KEY: Symbol = symbol_short!("OWNER");
 
-/// Stores basic payroll information.
-#[contracttype]
-#[derive(Clone)]
-pub struct Payroll {
-    // Address of the employer (who pays).
-    pub employer: Address,
-    // Address of the employee (who receives salary).
-    pub employee: Address,
-    // Token contract address for payments
-    pub token: Address,
-    // Amount to be paid per interval
-    pub amount: i128,
-    // Payment interval in seconds (e.g., weekly, monthly).
-    pub interval: u64,
-    // Last payment timestamp.
-    pub last_payment_time: u64,
-}
 
 #[contracttype]
 pub struct SalaryDisbursed {
@@ -112,13 +98,14 @@ impl PayrollContract {
         let storage = env.storage().persistent();
 
         // Only allow initialization if no owner is set
-        if storage.has(&OWNER_KEY) {
+        if storage.has(&DataKey::Owner) {
             panic!("Contract already initialized");
         }
+        
+        storage.set(&DataKey::Owner, &owner);
 
-        storage.set(&OWNER_KEY, &owner);
         // Contract starts unpaused by default
-        storage.set(&PAUSE_KEY, &false);
+        storage.set(&DataKey::Paused, &false);
     }
 
     /// Pause the contract - only callable by owner
@@ -128,7 +115,7 @@ impl PayrollContract {
         let storage = env.storage().persistent();
 
         // Check if caller is the owner
-        if let Some(owner) = storage.get::<Symbol, Address>(&OWNER_KEY) {
+        if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
             if caller != owner {
                 return Err(PayrollError::Unauthorized);
             }
@@ -152,7 +139,7 @@ impl PayrollContract {
         let storage = env.storage().persistent();
 
         // Check if caller is the owner
-        if let Some(owner) = storage.get::<Symbol, Address>(&OWNER_KEY) {
+        if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
             if caller != owner {
                 return Err(PayrollError::Unauthorized);
             }
@@ -172,7 +159,7 @@ impl PayrollContract {
     /// Check if the contract is paused
     pub fn is_paused(env: Env) -> bool {
         let storage = env.storage().persistent();
-        storage.get(&PAUSE_KEY).unwrap_or(false)
+        storage.get(&DataKey::Paused).unwrap_or(false)
     }
 
     /// Internal function to check pause state and panic if paused
@@ -207,14 +194,14 @@ impl PayrollContract {
 
         employer.require_auth();
 
-        let key = PayrollKey(employee.clone());
         let storage = env.storage().persistent();
-        // let owner = storage.get::<Symbol, Address>(&OWNER_KEY).ok_or(PayrollError::Unauthorized)?;
-        let owner = storage.get::<Symbol, Address>(&OWNER_KEY).unwrap();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
         
-        if let Some(existing_payroll) = storage.get::<PayrollKey, Payroll>(&key) {
+        let existing_payroll = Self::_get_payroll(&env, &employee);
+
+        if let Some(ref existing) = existing_payroll {
             // For updates, only the contract owner or the existing payroll's employer can call
-            if employer != owner && employer != existing_payroll.employer {
+            if employer != owner && employer != existing.employer {
                 return Err(PayrollError::Unauthorized);
             }
         } else if employer != owner {
@@ -226,37 +213,27 @@ impl PayrollContract {
             return Err(PayrollError::InvalidData);
         }
 
-        if let Some(existing_payroll) = storage.get::<PayrollKey, Payroll>(&key) {
-            if existing_payroll.employer != employer {
-                return Err(PayrollError::Unauthorized);
-            }
+        let last_payment_time = if let Some(ref existing) = existing_payroll {
+             // If updating, preserve last payment time
+            existing.last_payment_time
+        } else {
+            // If creating, set to current time
+            env.ledger().timestamp()
+        };
 
-            let updated_payroll = Payroll {
-                employer: existing_payroll.employer,
-                employee: existing_payroll.employee,
-                token,
-                amount,
-                interval,
-                last_payment_time: existing_payroll.last_payment_time,
-            };
+        storage.set(&DataKey::PayrollEmployer(employee.clone()), &employer);
+        storage.set(&DataKey::PayrollToken(employee.clone()), &token);
+        storage.set(&DataKey::PayrollAmount(employee.clone()), &amount);
+        storage.set(&DataKey::PayrollInterval(employee.clone()), &interval);
+        storage.set(&DataKey::PayrollLastPayment(employee.clone()), &last_payment_time);
 
-            storage.set(&key, &updated_payroll);
-            return Ok(updated_payroll);
-        }
-
-        let current_time = env.ledger().timestamp();
-
-        let new_payroll = Payroll {
+        Ok(Payroll {
             employer,
-            employee,
             token,
             amount,
             interval,
-            last_payment_time: current_time,
-        };
-
-        storage.set(&key, &new_payroll);
-        Ok(new_payroll)
+            last_payment_time,
+        })
     }
 
     /// Deposit tokens to employer's salary pool
@@ -271,7 +248,6 @@ impl PayrollContract {
         token: Address,
         amount: i128,
     ) -> Result<(), PayrollError> {
-        // Check if contract is paused
         Self::require_not_paused(&env)?;
 
         employer.require_auth();
@@ -314,12 +290,12 @@ impl PayrollContract {
 
     /// Get employer's token balance in the contract
     pub fn get_employer_balance(env: Env, employer: Address, token: Address) -> i128 {
+
         let storage = env.storage().persistent();
-        let balance_key = EmployerBalanceKey { employer, token };
-        storage.get(&balance_key).unwrap_or(0)
+        storage.get(&DataKey::Balance(employer, token)).unwrap_or(0)
     }
 
-    /// Internal function to deduct from employer balance
+    /// Internal function to deduct from employer's balance
     fn deduct_from_balance(
         env: &Env,
         employer: &Address,
@@ -338,17 +314,19 @@ impl PayrollContract {
             return Err(PayrollError::InsufficientBalance);
         }
 
-        let new_balance = current_balance - amount;
+        let new_balance = balance - amount;
         storage.set(&balance_key, &new_balance);
-
+      
         Ok(())
     }
 
-    /// Disburses salary if enough time has elapsed since the last payment.
-    /// In a production-level contract, this would involve:
-    /// - Checking the token contract for transferring funds.
-    /// - Verifying that the caller is the employer or an automated process with the right credentials.
-    /// - Updating the `last_payment_time` on success.
+    /// Disburse salary to an employee.
+    ///
+    /// Requirements:
+    /// - Contract must not be paused
+    /// - Can be called by anyone
+    /// - Payroll must exist for the employee
+    /// - Time since last payment must be >= interval
     pub fn disburse_salary(
         env: Env,
         caller: Address,
@@ -423,24 +401,13 @@ impl PayrollContract {
         }
     }
 
-    /// Gets the payroll details for a given employee.
-    /// This can be used by UIs or dashboards to display status.
-    /// Note: This function is not blocked when paused as it's read-only
+    /// Get payroll information for an employee.
     pub fn get_payroll(env: Env, employee: Address) -> Option<Payroll> {
-        employee.require_auth();
-        let key = PayrollKey(employee.clone());
-        let storage = env.storage().persistent();
-
-        storage.get::<PayrollKey, Payroll>(&key)
+        Self::_get_payroll(&env, &employee)
     }
 
-    /// Example function to allow employees to pull payment themselves.
-    /// In some real-world setups, employees might want to call the contract
-    /// to initiate the disbursement if they are due for a payout.
-    ///
-    /// For security, you'd still require that the employer's account
-    /// or an automated bot is used to actually sign transactions
-    /// or have an on-chain logic that automatically triggers disburse.
+    /// Allows an employee to withdraw their salary.
+    /// This is an alternative to `disburse_salary` where the employee initiates the transaction.
     pub fn employee_withdraw(env: Env, employee: Address) -> Result<(), PayrollError> {
         // Check if contract is paused
         Self::require_not_paused(&env)?;
@@ -461,10 +428,9 @@ impl PayrollContract {
         )
     }
 
-    /// Get the contract owner address
+    /// Get the owner of the contract
     pub fn get_owner(env: Env) -> Option<Address> {
-        let storage = env.storage().persistent();
-        storage.get(&OWNER_KEY)
+        env.storage().persistent().get(&DataKey::Owner)
     }
 
     /// Transfer ownership to a new address - only callable by current owner
@@ -484,6 +450,7 @@ impl PayrollContract {
                 return Err(PayrollError::Unauthorized);
             }
         } else {
+            // Should not happen if initialized
             return Err(PayrollError::Unauthorized);
         }
 
@@ -491,5 +458,22 @@ impl PayrollContract {
         storage.set(&OWNER_KEY, &new_owner);
 
         Ok(())
+    }
+
+    fn _get_payroll(env: &Env, employee: &Address) -> Option<Payroll> {
+        let storage = env.storage().persistent();
+        let employer_key = DataKey::PayrollEmployer(employee.clone());
+
+        if !storage.has(&employer_key) {
+            return None;
+        }
+
+        Some(Payroll {
+            employer: storage.get(&employer_key).unwrap(),
+            token: storage.get(&DataKey::PayrollToken(employee.clone())).unwrap(),
+            amount: storage.get(&DataKey::PayrollAmount(employee.clone())).unwrap(),
+            interval: storage.get(&DataKey::PayrollInterval(employee.clone())).unwrap(),
+            last_payment_time: storage.get(&DataKey::PayrollLastPayment(employee.clone())).unwrap(),
+        })
     }
 }
