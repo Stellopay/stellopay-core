@@ -4,12 +4,12 @@ use soroban_sdk::{
     Address, Env, IntoVal,
 };
 
-use crate::payroll::{PayrollContractClient, PayrollError};
+use crate::payroll::PayrollContractClient;
 
 #[test]
 fn test_get_payroll_success() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -38,7 +38,7 @@ fn test_get_payroll_success() {
 #[test]
 fn test_get_nonexistent_payroll() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employee = Address::generate(&env);
@@ -52,7 +52,7 @@ fn test_get_nonexistent_payroll() {
 #[test]
 fn test_disburse_salary_success() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -90,7 +90,7 @@ fn test_disburse_salary_success() {
 #[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
 fn test_disburse_salary_unauthorized() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -157,7 +157,7 @@ fn test_disburse_salary_unauthorized() {
 #[should_panic(expected = "Error(Contract, #2)")]
 fn test_disburse_salary_interval_not_reached() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -179,7 +179,7 @@ fn test_disburse_salary_interval_not_reached() {
 #[test]
 fn test_employee_withdraw_success() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -217,7 +217,7 @@ fn test_employee_withdraw_success() {
 #[should_panic(expected = "Error(Contract, #2)")]
 fn test_employee_withdraw_interval_not_reached() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -240,7 +240,7 @@ fn test_employee_withdraw_interval_not_reached() {
 #[should_panic(expected = "Error(Contract, #4)")]
 fn test_employee_withdraw_nonexistent_payroll() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employee = Address::generate(&env);
@@ -253,7 +253,7 @@ fn test_employee_withdraw_nonexistent_payroll() {
 #[test]
 fn test_boundary_values() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -276,7 +276,7 @@ fn test_boundary_values() {
 #[test]
 fn test_multiple_disbursements() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);

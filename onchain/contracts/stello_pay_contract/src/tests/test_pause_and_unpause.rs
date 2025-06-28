@@ -1,10 +1,10 @@
-use crate::payroll::{PayrollContractClient, PayrollError};
+use crate::payroll::PayrollContractClient;
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
 #[test]
 fn test_initialize_contract() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
 
@@ -20,7 +20,7 @@ fn test_initialize_contract() {
 #[should_panic(expected = "HostError: Error(WasmVm, InvalidAction)")]
 fn test_initialize_twice_should_panic() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
 
@@ -33,7 +33,7 @@ fn test_initialize_twice_should_panic() {
 #[test]
 fn test_pause_unpause_by_owner() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
 
@@ -53,7 +53,7 @@ fn test_pause_unpause_by_owner() {
 #[should_panic(expected = "HostError: Error(Contract, #1)")]
 fn test_pause_by_non_owner_fails() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let non_owner = Address::generate(&env);
@@ -68,7 +68,7 @@ fn test_pause_by_non_owner_fails() {
 #[should_panic(expected = "HostError: Error(Contract, #1)")]
 fn test_unpause_by_non_owner_fails() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let non_owner = Address::generate(&env);
@@ -86,7 +86,7 @@ fn test_unpause_by_non_owner_fails() {
 #[should_panic(expected = "HostError: Error(Contract, #6)")]
 fn test_create_escrow_when_paused_fails() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let employer = Address::generate(&env);
@@ -104,10 +104,10 @@ fn test_create_escrow_when_paused_fails() {
 #[test]
 fn test_get_payroll_works_when_paused() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
-    let employer = Address::generate(&env);
+    let _employer = Address::generate(&env);
     let employee = Address::generate(&env);
     let token = Address::generate(&env);
     let amount = 1000;
@@ -125,7 +125,7 @@ fn test_get_payroll_works_when_paused() {
 #[test]
 fn test_transfer_ownership() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let new_owner = Address::generate(&env);
@@ -143,7 +143,7 @@ fn test_transfer_ownership() {
 #[should_panic(expected = "HostError: Error(Contract, #1)")]
 fn test_transfer_ownership_by_non_owner_fails() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
     let non_owner = Address::generate(&env);
@@ -158,7 +158,7 @@ fn test_transfer_ownership_by_non_owner_fails() {
 #[test]
 fn test_try_initialize() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
     let owner = Address::generate(&env);
 

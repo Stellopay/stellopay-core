@@ -1,9 +1,8 @@
 #![cfg(test)]
 
-use crate::payroll::{PayrollContract, PayrollContractClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    Address, Env,
+    testutils::Ledger,
+    Env,
 };
 
 #[test]

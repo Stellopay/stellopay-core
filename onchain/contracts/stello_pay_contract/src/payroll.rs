@@ -1,7 +1,6 @@
 use soroban_sdk::{
     contract, contracterror, contractimpl,
-    token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, panic_with_error, Symbol, symbol_short,
+    Address, Env, Symbol, symbol_short,
 };
 use crate::storage::{DataKey, Payroll};
 
@@ -38,7 +37,7 @@ pub enum PayrollError {
 const DEPOSIT_EVENT: Symbol = symbol_short!("deposit");
 const DISBURSE_EVENT: Symbol = symbol_short!("disburse");
 
-pub const WASM: &[u8] = include_bytes!("../../../target/wasm32-unknown-unknown/release/stello_pay_contract.wasm");
+
 
 //-----------------------------------------------------------------------------
 // Contract Struct

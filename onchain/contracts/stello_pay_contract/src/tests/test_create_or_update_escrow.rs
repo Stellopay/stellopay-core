@@ -5,7 +5,7 @@ use crate::payroll::PayrollContractClient;
 #[test]
 fn test_create_new_escrow() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -35,7 +35,7 @@ fn test_create_new_escrow() {
 #[should_panic(expected = "Error(Contract, #1)")]
 fn test_create_new_escrow_unauthorized() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -56,7 +56,7 @@ fn test_create_new_escrow_unauthorized() {
 #[test]
 fn test_update_existing_escrow_valid_employer() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -86,7 +86,7 @@ fn test_update_existing_escrow_valid_employer() {
 #[should_panic(expected = "Error(Contract, #1)")]
 fn test_update_existing_escrow_invalid_employer() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -110,7 +110,7 @@ fn test_update_existing_escrow_invalid_employer() {
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_create_escrow_invalid_interval() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -129,7 +129,7 @@ fn test_create_escrow_invalid_interval() {
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_create_escrow_invalid_amount() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -148,7 +148,7 @@ fn test_create_escrow_invalid_amount() {
 #[should_panic(expected = "Error(Contract, #3)")]
 fn test_create_escrow_negative_amount() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);

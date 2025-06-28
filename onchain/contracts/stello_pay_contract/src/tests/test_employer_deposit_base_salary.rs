@@ -7,7 +7,7 @@ use soroban_sdk::{
 #[test]
 fn test_deposit_tokens_success() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -26,7 +26,7 @@ fn test_deposit_tokens_success() {
 #[test]
 fn test_deposit_multiple_times() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -48,7 +48,7 @@ fn test_deposit_multiple_times() {
 #[should_panic(expected = "HostError: Error(Contract, #3)")]
 fn test_deposit_zero_amount() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -64,7 +64,7 @@ fn test_deposit_zero_amount() {
 #[should_panic(expected = "HostError: Error(Contract, #3)")]
 fn test_deposit_negative_amount() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -79,7 +79,7 @@ fn test_deposit_negative_amount() {
 #[test]
 fn test_get_employer_balance_initial() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -92,7 +92,7 @@ fn test_get_employer_balance_initial() {
 #[test]
 fn test_disburse_salary_deducts_balance() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -130,7 +130,7 @@ fn test_disburse_salary_deducts_balance() {
 #[should_panic(expected = "Error(Contract, #7)")]
 fn test_disburse_salary_insufficient_balance() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -164,7 +164,7 @@ fn test_disburse_salary_insufficient_balance() {
 #[test]
 fn test_employee_withdraw_deducts_balance() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -202,7 +202,7 @@ fn test_employee_withdraw_deducts_balance() {
 #[should_panic(expected = "Error(Contract, #7)")]
 fn test_employee_withdraw_insufficient_balance() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -236,7 +236,7 @@ fn test_employee_withdraw_insufficient_balance() {
 #[test]
 fn test_disburse_salary_deducts_balance_with_setup() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -273,7 +273,7 @@ fn test_disburse_salary_deducts_balance_with_setup() {
 #[test]
 fn test_disburse_salary_deducts_balance_with_setup_and_deposit() {
     let env = Env::default();
-    let contract_id = env.register_contract_wasm(None, crate::payroll::WASM);
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
