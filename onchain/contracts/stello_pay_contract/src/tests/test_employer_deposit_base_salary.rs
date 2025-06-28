@@ -27,7 +27,6 @@ mod tests {
 
         let payroll_data = client.get_payroll(&employee).unwrap();
         assert_eq!(payroll_data.employer, employer);
-        assert_eq!(payroll_data.employee, employee);
         assert_eq!(payroll_data.token, token);
         assert_eq!(payroll_data.amount, amount);
         assert_eq!(payroll_data.interval, interval);
