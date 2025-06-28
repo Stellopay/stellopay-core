@@ -257,6 +257,16 @@ impl PayrollContract {
             return Err(PayrollError::InvalidData);
         }
 
+        // Transfer tokens from employer to contract
+        let token_client = TokenClient::new(&env, &token);
+        let initial_balance = token_client.balance(&env.current_contract_address());
+        token_client.transfer(&employer, &env.current_contract_address(), &amount);
+
+        // Handle transfer failure
+        if token_client.balance(&env.current_contract_address()) < initial_balance + amount {
+            return Err(PayrollError::TransferFailed);
+        }
+
         let storage = env.storage().persistent();
         let balance_key = EmployerBalanceKey {
             employer: employer.clone(),
@@ -270,13 +280,12 @@ impl PayrollContract {
         // Update balance in storage
         storage.set(&balance_key, &new_balance);
 
-        // TODO: In production, transfer tokens from employer to contract
-        // token_client.transfer(&employer, &env.current_contract_address(), &amount);
+
 
         // Emit deposit event
         env.events().publish(
-            (DEPOSIT_EVENT, employer.clone(), token.clone()),
-            (amount, new_balance),
+            (DEPOSIT_EVENT, employer.clone(), token.clone()),    // topics
+            (amount, new_balance),  // data
         );
 
         Ok(())
@@ -327,8 +336,6 @@ impl PayrollContract {
         // Check if contract is paused
         Self::require_not_paused(&env)?;
 
-        caller.require_auth();
-
         let storage = env.storage().persistent();
         let key = PayrollKey(employee.clone());
 
@@ -337,6 +344,11 @@ impl PayrollContract {
                 return Err(PayrollError::Unauthorized);
             }
 
+            // Require authorization from both employer and employee
+            caller.require_auth();
+            employee.require_auth();
+
+            // Check if enough time has passed since the last payment
             let current_time = env.ledger().timestamp();
 
             if current_time < payroll_data.last_payment_time + payroll_data.interval {
