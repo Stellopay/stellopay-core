@@ -41,7 +41,11 @@
           "contract_data": {
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
             "key": {
-              "symbol": "OWNER"
+              "vec": [
+                {
+                  "symbol": "Owner"
+                }
+              ]
             },
             "durability": "persistent"
           }
@@ -54,7 +58,11 @@
                 "ext": "v0",
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
                 "key": {
-                  "symbol": "OWNER"
+                  "vec": [
+                    {
+                      "symbol": "Owner"
+                    }
+                  ]
                 },
                 "durability": "persistent",
                 "val": {
@@ -72,7 +80,11 @@
           "contract_data": {
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
             "key": {
-              "symbol": "PAUSED"
+              "vec": [
+                {
+                  "symbol": "Paused"
+                }
+              ]
             },
             "durability": "persistent"
           }
@@ -85,7 +97,11 @@
                 "ext": "v0",
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
                 "key": {
-                  "symbol": "PAUSED"
+                  "vec": [
+                    {
+                      "symbol": "Paused"
+                    }
+                  ]
                 },
                 "durability": "persistent",
                 "val": {
