@@ -433,34 +433,18 @@ impl PayrollContract {
         Self::require_not_paused(&env)?;
 
         employee.require_auth();
-        let key = PayrollKey(employee.clone());
+
         let storage = env.storage().persistent();
+        let key = PayrollKey(employee.clone());
+        let existing_payroll = storage.get::<PayrollKey, Payroll>(&key)
+            .ok_or(PayrollError::PayrollNotFound)?;
 
-        if let Some(mut existing_payroll) = storage.get::<PayrollKey, Payroll>(&key) {
-            // Check if the interval has passed since the last payment time
-            let current_time = env.ledger().timestamp();
-            let last_payment_time = existing_payroll.last_payment_time;
-            if current_time - last_payment_time >= existing_payroll.interval {
-                // Process the disbursement of payment
-                Self::disburse_salary(
-                    env.clone(),
-                    existing_payroll.employer.clone(),
-                    employee.clone(),
-                )?;
-
-                // Update last_payment_time of the payroll
-                existing_payroll.last_payment_time = current_time;
-                storage.set(&key, &existing_payroll);
-
-                Ok(())
-            } else {
-                // Interval has not completed since the last payment time
-                Err(PayrollError::IntervalNotReached)
-            }
-        } else {
-            // No existing payroll record found for the employee
-            Err(PayrollError::PayrollNotFound)
-        }
+        // Invoke disburse_salary internally
+        Self::disburse_salary(
+            env.clone(),
+            existing_payroll.employer.clone(),
+            employee.clone(),
+        )
     }
 
     /// Get the contract owner address
