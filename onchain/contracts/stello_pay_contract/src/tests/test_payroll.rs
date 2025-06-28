@@ -71,7 +71,6 @@ fn test_disburse_salary_success() {
 
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
-    let owner = Address::generate(&env);
 
     let amount = 1000i128;
     let interval = 86400u64; // 1 day in seconds
@@ -87,7 +86,7 @@ fn test_disburse_salary_success() {
     assert_eq!(employer_balance, 10000);
 
     // Initialize contract and deposit tokens
-    client.initialize(&owner);
+    client.initialize(&employer);
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Verify deposit
@@ -133,7 +132,6 @@ fn test_disburse_salary_unauthorized() {
     let employer = Address::generate(&env);
     let invalid_caller = Address::generate(&env);
     let employee = Address::generate(&env);
-    let owner = Address::generate(&env);
 
     let amount = 1000i128;
     let interval = 86400u64;
@@ -149,7 +147,7 @@ fn test_disburse_salary_unauthorized() {
     assert_eq!(employer_balance, 10000);
 
     // Initialize contract and deposit tokens
-    client.initialize(&owner);
+    client.initialize(&employer);
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow first
@@ -182,7 +180,6 @@ fn test_disburse_salary_interval_not_reached() {
 
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
-    let owner = Address::generate(&env);
 
     let amount = 1000i128;
     let interval = 86400u64;
@@ -198,7 +195,7 @@ fn test_disburse_salary_interval_not_reached() {
     assert_eq!(employer_balance, 10000);
 
     // Initialize contract and deposit tokens
-    client.initialize(&owner);
+    client.initialize(&employer);
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow first
@@ -217,7 +214,6 @@ fn test_employee_withdraw_success() {
 
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
-    let owner = Address::generate(&env);
 
     let amount = 1000i128;
     let interval = 86400u64; // 1 day in seconds
@@ -233,7 +229,7 @@ fn test_employee_withdraw_success() {
     assert_eq!(employer_balance, 10000);
 
     // Initialize contract and deposit tokens
-    client.initialize(&owner);
+    client.initialize(&employer);
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow first
@@ -274,7 +270,6 @@ fn test_employee_withdraw_interval_not_reached() {
 
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
-    let owner = Address::generate(&env);
 
     let amount = 1000i128;
     let interval = 86400u64;
@@ -290,7 +285,7 @@ fn test_employee_withdraw_interval_not_reached() {
     assert_eq!(employer_balance, 10000);
 
     // Initialize contract and deposit tokens
-    client.initialize(&owner);
+    client.initialize(&employer);
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow first
@@ -366,7 +361,6 @@ fn test_multiple_disbursements() {
 
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
-    let owner = Address::generate(&env);
 
     let amount = 1000i128;
     let interval = 86400u64; // 1 day in seconds
@@ -382,7 +376,7 @@ fn test_multiple_disbursements() {
     assert_eq!(employer_balance, 10000);
 
     // Initialize contract and deposit enough tokens for multiple payments
-    client.initialize(&owner);
+    client.initialize(&employer);
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow
@@ -442,7 +436,6 @@ fn test_payment_insufficient_employer_pool() {
 
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
-    let owner = Address::generate(&env);
 
     let amount = 1000i128;
     let interval = 86400u64; // 1 day in seconds
@@ -458,7 +451,7 @@ fn test_payment_insufficient_employer_pool() {
     assert_eq!(employer_balance, 10000);
 
     // Initialize contract and deposit tokens
-    client.initialize(&owner);
+    client.initialize(&employer);
     client.deposit_tokens(&employer, &token_address, &500i128); // Insufficient for one `amount` payment
 
     // Create escrow first

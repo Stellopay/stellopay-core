@@ -36,18 +36,9 @@ pub enum PayrollError {
 #[contracttype]
 pub struct PayrollKey(pub Address);
 
-/// Key used to store employer balance in contract storage.
-#[contracttype]
-pub struct EmployerBalanceKey {
-    pub employer: Address,
-    pub token: Address,
-}
-
 /// Storage keys using symbols instead of unit structs
 const PAUSE_KEY: Symbol = symbol_short!("PAUSED");
 const OWNER_KEY: Symbol = symbol_short!("OWNER");
-const DEPOSIT_EVENT: Symbol = symbol_short!("deposit");
-const DISBURSE_EVENT: Symbol = symbol_short!("disburse");
 
 /// Stores basic payroll information.
 #[contracttype]
