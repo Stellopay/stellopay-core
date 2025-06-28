@@ -4,7 +4,7 @@ use soroban_sdk::{
     Address, Env, IntoVal,
 };
 
-use crate::payroll::PayrollContractClient;
+use crate::payroll::{PayrollContractClient};
 
 #[test]
 fn test_get_payroll_success() {
