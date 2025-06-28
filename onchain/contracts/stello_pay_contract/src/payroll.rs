@@ -2,6 +2,7 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short,
     token::Client as TokenClient, Address, Env, Symbol,
 };
+use soroban_sdk::events;
 
 //-----------------------------------------------------------------------------
 // Errors
@@ -56,6 +57,15 @@ pub struct Payroll {
     pub interval: u64,
     // Last payment timestamp.
     pub last_payment_time: u64,
+}
+
+#[contracttype]
+pub struct SalaryDisbursed {
+    pub employer: Address,
+    pub employee: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub timestamp: u64,
 }
 
 //-----------------------------------------------------------------------------
@@ -397,16 +407,14 @@ impl PayrollContract {
 
             // Emit disbursement event
             env.events().publish(
-                (
-                    DISBURSE_EVENT, // topics
-                    caller,
-                    payroll_data.employee,
-                ),
-                (
-                    payroll_data.token, // data
-                    payroll_data.amount,
-                    current_time,
-                ),
+                ("salary_disbursed",), // topic
+                SalaryDisbursed {
+                    employer: payroll_data.employer,
+                    employee: employee.clone(),
+                    token: payroll_data.token,
+                    amount: payroll_data.amount,
+                    timestamp: current_time,
+                },
             );
 
             Ok(())
