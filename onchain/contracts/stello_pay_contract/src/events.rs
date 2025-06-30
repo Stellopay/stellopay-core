@@ -41,14 +41,15 @@ pub fn emit_disburse(
         timestamp: u64,
     ) {
         let topics = (Symbol::new(&e, "SalaryDisbursed"),);
+        let event_data = SalaryDisbursed {
+            employer,
+            employee,
+            token,
+            amount,
+            timestamp,
+        };
         e.events().publish(topics, 
-            (
-                employer,
-                employee,
-                token,
-                amount,
-                timestamp,
-            )
+            event_data.clone()
         );
     }
 

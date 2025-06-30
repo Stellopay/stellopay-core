@@ -54,12 +54,6 @@ pub struct PayrollContract;
 
 
 
-/// Event emitted when salary is disbursed
-pub const DISBURSE_EVENT: Symbol = symbol_short!("disburse");
-
-/// Event emitted when tokens are deposited to employer's salary pool
-pub const DEPOSIT_EVENT: Symbol = symbol_short!("deposit");
-
 /// Event emitted when recurring disbursements are processed
 pub const RECUR_EVENT: Symbol = symbol_short!("recur");
 
@@ -542,10 +536,18 @@ impl PayrollContract {
                         processed_employees.push_back(employee.clone());
 
                         // Emit individual disbursement event
-                        env.events().publish(
-                            (DISBURSE_EVENT,),
-                            (payroll.employer, employee, payroll.token, payroll.amount),
+                        emit_disburse(
+                            env.clone(),
+                            payroll.employer.clone(),
+                            employee.clone(),
+                            payroll.token.clone(),
+                            payroll.amount,
+                            current_time,
                         );
+                        // env.events().publish(
+                        //     (DISBURSE_EVENT,),
+                        //     (payroll.employer, employee, payroll.token, payroll.amount),
+                        // );
                     }
                 }
             }
