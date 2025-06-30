@@ -32,14 +32,17 @@ jobs:
     - name: Build Cargo project
       run: |
         source $HOME/.cargo/env
+        cd onchain/contracts/stello_pay_contract
         cargo build --verbose
 
     - name: Build Soroban contract
       run: |
         source $HOME/.cargo/env
+        cd onchain/contracts/stello_pay_contract
         stellar contract build --verbose
 
     - name: Run Cargo tests
       run: |
         source $HOME/.cargo/env
+        cd onchain/contracts/stello_pay_contract
         cargo test --verbose
