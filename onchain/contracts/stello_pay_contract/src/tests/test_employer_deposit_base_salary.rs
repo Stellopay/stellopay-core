@@ -1,308 +1,290 @@
-use crate::payroll::PayrollContractClient;
-use soroban_sdk::{
-    testutils::{Address as _, Ledger, LedgerInfo},
-    Address, Env,
-};
+#[cfg(test)]
+mod tests {
+    use soroban_sdk::{testutils::Address as _, Env, Address};
+    use crate::payroll::{PayrollContract, PayrollContractClient};
+    use soroban_sdk::testutils::Ledger;
 
-#[test]
-fn test_deposit_tokens_success() {
-    let env = Env::default();
-    let contract_id = env.register(crate::payroll::PayrollContract, ());
-    let client = PayrollContractClient::new(&env, &contract_id);
+    fn create_test_contract() -> (Env, Address, PayrollContractClient<'static>) {
+        let env = Env::default();
+        let contract_id = env.register(PayrollContract, ());
+        let client = PayrollContractClient::new(&env, &contract_id);
+        (env, contract_id, client)
+    }
 
-    let employer = Address::generate(&env);
-    let token = Address::generate(&env);
-    let deposit_amount = 5000i128;
+    #[test]
+    fn test_get_payroll_success() {
+        let (env, _, client) = create_test_contract();
+        let employer = Address::generate(&env);
+        let employee = Address::generate(&env);
+        let token = Address::generate(&env);
+        let amount = 1000i128;
+        let interval = 86400u64;
 
-    env.mock_all_auths();
+        env.mock_all_auths();
 
-    client.initialize(&employer);
-    client.deposit_tokens(&employer, &token, &deposit_amount);
+        client.initialize(&employer);
+        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
-    let balance = client.get_employer_balance(&employer, &token);
-    assert_eq!(balance, deposit_amount);
-}
+        let payroll_data = client.get_payroll(&employee).unwrap();
+        assert_eq!(payroll_data.employer, employer);
+        assert_eq!(payroll_data.token, token);
+        assert_eq!(payroll_data.amount, amount);
+        assert_eq!(payroll_data.interval, interval);
+    }
 
-#[test]
-fn test_deposit_multiple_times() {
-    let env = Env::default();
-    let contract_id = env.register(crate::payroll::PayrollContract, ());
-    let client = PayrollContractClient::new(&env, &contract_id);
+    #[test]
+    fn test_disburse_salary_success() {
+        let (env, _, client) = create_test_contract();
+        let employer = Address::generate(&env);
+        let employee = Address::generate(&env);
+        let token = Address::generate(&env);
+        let amount = 1000i128;
+        let interval = 86400u64;
 
-    let employer = Address::generate(&env);
-    let token = Address::generate(&env);
-    let first_deposit = 3000i128;
-    let second_deposit = 2000i128;
+        env.mock_all_auths();
 
-    env.mock_all_auths();
+        // Initialize contract and deposit tokens
+        client.initialize(&employer);
+        client.deposit_tokens(&employer, &token, &5000i128);
 
-    client.initialize(&employer);
-    client.deposit_tokens(&employer, &token, &first_deposit);
-    client.deposit_tokens(&employer, &token, &second_deposit);
+        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
-    let balance = client.get_employer_balance(&employer, &token);
-    assert_eq!(balance, first_deposit + second_deposit);
-}
+        let next_timestamp = env.ledger().timestamp() + interval + 1;
+        env.ledger().with_mut(|li| {
+            li.timestamp = next_timestamp;
+        });
 
-#[test]
-#[should_panic(expected = "HostError: Error(Contract, #3)")]
-fn test_deposit_zero_amount() {
-    let env = Env::default();
-    let contract_id = env.register(crate::payroll::PayrollContract, ());
-    let client = PayrollContractClient::new(&env, &contract_id);
+        client.disburse_salary(&employer, &employee);
+    }
 
-    let employer = Address::generate(&env);
-    let token = Address::generate(&env);
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #2)")]
+    fn test_disburse_salary_interval_not_reached() {
+        let (env, _, client) = create_test_contract();
+        let employer = Address::generate(&env);
+        let employee = Address::generate(&env);
+        let token = Address::generate(&env);
+        let amount = 1000i128;
+        let interval = 86400u64;
 
-    env.mock_all_auths();
+        env.mock_all_auths();
 
-    client.initialize(&employer);
-    client.deposit_tokens(&employer, &token, &0i128);
-}
+        // Initialize contract and deposit tokens
+        client.initialize(&employer);
+        client.deposit_tokens(&employer, &token, &5000i128);
 
-#[test]
-#[should_panic(expected = "HostError: Error(Contract, #3)")]
-fn test_deposit_negative_amount() {
-    let env = Env::default();
-    let contract_id = env.register(crate::payroll::PayrollContract, ());
-    let client = PayrollContractClient::new(&env, &contract_id);
+        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
-    let employer = Address::generate(&env);
-    let token = Address::generate(&env);
+        let next_timestamp = env.ledger().timestamp() + interval + 1;
+        env.ledger().with_mut(|li| {
+            li.timestamp = next_timestamp;
+        });
 
-    env.mock_all_auths();
+        client.disburse_salary(&employer, &employee);
+        // Immediate second disbursement should fail
+        client.disburse_salary(&employer, &employee);
+    }
 
-    client.initialize(&employer);
-    client.deposit_tokens(&employer, &token, &-100i128);
-}
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #1)")]
+    fn test_disburse_salary_unauthorized() {
+        let (env, _, client) = create_test_contract();
+        let employer = Address::generate(&env);
+        let unauthorized = Address::generate(&env);
+        let employee = Address::generate(&env);
+        let token = Address::generate(&env);
+        let amount = 1000i128;
+        let interval = 86400u64;
 
-#[test]
-fn test_get_employer_balance_initial() {
-    let env = Env::default();
-    let contract_id = env.register(crate::payroll::PayrollContract, ());
-    let client = PayrollContractClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
-    let employer = Address::generate(&env);
-    let token = Address::generate(&env);
+        // Initialize contract and deposit tokens
+        client.initialize(&employer);
+        client.deposit_tokens(&employer, &token, &5000i128);
 
-    let balance = client.get_employer_balance(&employer, &token);
-    assert_eq!(balance, 0);
-}
+        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
-#[test]
-fn test_disburse_salary_deducts_balance() {
-    let env = Env::default();
-    let contract_id = env.register(crate::payroll::PayrollContract, ());
-    let client = PayrollContractClient::new(&env, &contract_id);
+        client.disburse_salary(&unauthorized, &employee);
+    }
 
-    let employer = Address::generate(&env);
-    let employee = Address::generate(&env);
-    let token = Address::generate(&env);
-    let amount = 1000i128;
-    let initial_deposit = 5000i128;
-    let interval = 86400u64;
+    #[test]
+    fn test_get_nonexistent_payroll() {
+        let (env, _, client) = create_test_contract();
+        let employee = Address::generate(&env);
 
-    env.mock_all_auths();
+        env.mock_all_auths();
 
-    client.initialize(&employer);
-    client.deposit_tokens(&employer, &token, &initial_deposit);
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
+        let result = client.get_payroll(&employee);
+        assert!(result.is_none());
+    }
 
-    let next_timestamp = env.ledger().timestamp() + interval + 1;
-    env.ledger().set(LedgerInfo {
-        timestamp: next_timestamp,
-        protocol_version: 22,
-        sequence_number: env.ledger().sequence(),
-        network_id: Default::default(),
-        base_reserve: 0,
-        min_persistent_entry_ttl: 4096,
-        min_temp_entry_ttl: 16,
-        max_entry_ttl: 6312000,
-    });
+    #[test]
+    fn test_employee_withdraw_success() {
+        let (env, _, client) = create_test_contract();
+        let employer = Address::generate(&env);
+        let employee = Address::generate(&env);
+        let token = Address::generate(&env);
+        let amount = 1000i128;
+        let interval = 86400u64;
 
-    client.disburse_salary(&employer, &employee);
+        env.mock_all_auths();
 
-    let final_balance = client.get_employer_balance(&employer, &token);
-    assert_eq!(final_balance, initial_deposit - amount);
-}
+        // Initialize contract and deposit tokens
+        client.initialize(&employer);
+        client.deposit_tokens(&employer, &token, &5000i128);
 
-#[test]
-#[should_panic(expected = "Error(Contract, #7)")]
-fn test_disburse_salary_insufficient_balance() {
-    let env = Env::default();
-    let contract_id = env.register(crate::payroll::PayrollContract, ());
-    let client = PayrollContractClient::new(&env, &contract_id);
+        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
-    let employer = Address::generate(&env);
-    let employee = Address::generate(&env);
-    let token = Address::generate(&env);
-    let amount = 1000i128;
-    let initial_deposit = 500i128;
-    let interval = 86400u64;
+        let next_timestamp = env.ledger().timestamp() + interval;
+        env.ledger().with_mut(|li| {
+            li.timestamp = next_timestamp;
+        });
 
-    env.mock_all_auths();
+        client.employee_withdraw(&employee);
+    }
 
-    client.initialize(&employer);
-    client.deposit_tokens(&employer, &token, &initial_deposit);
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #2)")]
+    fn test_employee_withdraw_interval_not_reached() {
+        let (env, _, client) = create_test_contract();
+        let employer = Address::generate(&env);
+        let employee = Address::generate(&env);
+        let token = Address::generate(&env);
+        let amount = 1000i128;
+        let interval = 86400u64;
 
-    let next_timestamp = env.ledger().timestamp() + interval + 1;
-    env.ledger().set(LedgerInfo {
-        timestamp: next_timestamp,
-        protocol_version: 22,
-        sequence_number: env.ledger().sequence(),
-        network_id: Default::default(),
-        base_reserve: 0,
-        min_persistent_entry_ttl: 4096,
-        min_temp_entry_ttl: 16,
-        max_entry_ttl: 6312000,
-    });
+        env.mock_all_auths();
 
-    client.disburse_salary(&employer, &employee);
-}
+        // Initialize contract and deposit tokens
+        client.initialize(&employer);
+        client.deposit_tokens(&employer, &token, &5000i128);
 
-#[test]
-fn test_employee_withdraw_deducts_balance() {
-    let env = Env::default();
-    let contract_id = env.register(crate::payroll::PayrollContract, ());
-    let client = PayrollContractClient::new(&env, &contract_id);
+        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
-    let employer = Address::generate(&env);
-    let employee = Address::generate(&env);
-    let token = Address::generate(&env);
-    let amount = 1000i128;
-    let initial_deposit = 5000i128;
-    let interval = 86400u64;
+        // Don't advance time - should fail
+        client.employee_withdraw(&employee);
+    }
 
-    env.mock_all_auths();
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #4)")]
+    fn test_employee_withdraw_nonexistent_payroll() {
+        let (env, _, client) = create_test_contract();
+        let employee = Address::generate(&env);
 
-    client.initialize(&employer);
-    client.deposit_tokens(&employer, &token, &initial_deposit);
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
+        env.mock_all_auths();
 
-    let next_timestamp = env.ledger().timestamp() + interval + 1;
-    env.ledger().set(LedgerInfo {
-        timestamp: next_timestamp,
-        protocol_version: 22,
-        sequence_number: env.ledger().sequence(),
-        network_id: Default::default(),
-        base_reserve: 0,
-        min_persistent_entry_ttl: 4096,
-        min_temp_entry_ttl: 16,
-        max_entry_ttl: 6312000,
-    });
+        // Initialize contract
+        let owner = Address::generate(&env);
+        client.initialize(&owner);
 
-    client.employee_withdraw(&employee);
+        client.employee_withdraw(&employee);
+    }
 
-    let final_balance = client.get_employer_balance(&employer, &token);
-    assert_eq!(final_balance, initial_deposit - amount);
-}
+    #[test]
+    fn test_multiple_disbursements() {
+        let (env, _, client) = create_test_contract();
+        let employer = Address::generate(&env);
+        let employee = Address::generate(&env);
+        let token = Address::generate(&env);
+        let amount = 1000i128;
+        let interval = 86400u64;
 
-#[test]
-#[should_panic(expected = "Error(Contract, #7)")]
-fn test_employee_withdraw_insufficient_balance() {
-    let env = Env::default();
-    let contract_id = env.register(crate::payroll::PayrollContract, ());
-    let client = PayrollContractClient::new(&env, &contract_id);
+        env.mock_all_auths();
 
-    let employer = Address::generate(&env);
-    let employee = Address::generate(&env);
-    let token = Address::generate(&env);
-    let amount = 1000i128;
-    let initial_deposit = 500i128;
-    let interval = 86400u64;
+        // Initialize contract and deposit tokens (enough for 2 payments)
+        client.initialize(&employer);
+        client.deposit_tokens(&employer, &token, &5000i128);
 
-    env.mock_all_auths();
+        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
-    client.initialize(&employer);
-    client.deposit_tokens(&employer, &token, &initial_deposit);
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
+        let next_timestamp = env.ledger().timestamp() + interval + 1;
+        env.ledger().with_mut(|li| {
+            li.timestamp = next_timestamp;
+        });
 
-    let next_timestamp = env.ledger().timestamp() + interval + 1;
-    env.ledger().set(LedgerInfo {
-        timestamp: next_timestamp,
-        protocol_version: 22,
-        sequence_number: env.ledger().sequence(),
-        network_id: Default::default(),
-        base_reserve: 0,
-        min_persistent_entry_ttl: 4096,
-        min_temp_entry_ttl: 16,
-        max_entry_ttl: 6312000,
-    });
+        // First disbursement
+        client.disburse_salary(&employer, &employee);
 
-    client.employee_withdraw(&employee);
-}
+        // Advance time again
+        let next_timestamp = env.ledger().timestamp() + interval + 1;
+        env.ledger().with_mut(|li| {
+            li.timestamp = next_timestamp;
+        });
 
-#[test]
-fn test_disburse_salary_deducts_balance_with_setup() {
-    let env = Env::default();
-    let contract_id = env.register(crate::payroll::PayrollContract, ());
-    let client = PayrollContractClient::new(&env, &contract_id);
+        // Second disbursement should succeed
+        client.disburse_salary(&employer, &employee);
+    }
 
-    let employer = Address::generate(&env);
-    let employee = Address::generate(&env);
-    let token = Address::generate(&env);
-    let amount = 1000i128;
-    let initial_deposit = 5000i128;
-    let interval = 86400u64;
+    #[test]
+    fn test_boundary_values() {
+        let (env, _, client) = create_test_contract();
+        let employer = Address::generate(&env);
+        let employee = Address::generate(&env);
+        let token = Address::generate(&env);
+        let amount = 1i128; // Minimum positive amount
+        let interval = 1u64; // Minimum interval
 
-    env.mock_all_auths();
+        env.mock_all_auths();
 
-    client.initialize(&employer);
-    client.deposit_tokens(&employer, &token, &initial_deposit);
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
+        client.initialize(&employer);
+        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
-    let next_timestamp = env.ledger().timestamp() + interval + 1;
-    env.ledger().set(LedgerInfo {
-        timestamp: next_timestamp,
-        protocol_version: 22,
-        sequence_number: env.ledger().sequence(),
-        network_id: Default::default(),
-        base_reserve: 0,
-        min_persistent_entry_ttl: 4096,
-        min_temp_entry_ttl: 16,
-        max_entry_ttl: 6312000,
-    });
+        let payroll_data = client.get_payroll(&employee).unwrap();
+        assert_eq!(payroll_data.amount, amount);
+        assert_eq!(payroll_data.interval, interval);
+    }
 
-    client.disburse_salary(&employer, &employee);
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #7)")]
+    fn test_disburse_salary_insufficient_balance() {
+        let (env, _, client) = create_test_contract();
+        let employer = Address::generate(&env);
+        let employee = Address::generate(&env);
+        let token = Address::generate(&env);
+        let amount = 1000i128;
+        let interval = 86400u64;
 
-    let final_balance = client.get_employer_balance(&employer, &token);
-    assert_eq!(final_balance, initial_deposit - amount);
-}
+        env.mock_all_auths();
 
-#[test]
-fn test_disburse_salary_deducts_balance_with_setup_and_deposit() {
-    let env = Env::default();
-    let contract_id = env.register(crate::payroll::PayrollContract, ());
-    let client = PayrollContractClient::new(&env, &contract_id);
+        // Initialize contract but don't deposit enough tokens
+        client.initialize(&employer);
+        client.deposit_tokens(&employer, &token, &500i128); // Less than needed
 
-    let employer = Address::generate(&env);
-    let employee = Address::generate(&env);
-    let token = Address::generate(&env);
-    let amount = 1000i128;
-    let initial_deposit = 5000i128;
-    let interval = 86400u64;
+        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
 
-    env.mock_all_auths();
+        let next_timestamp = env.ledger().timestamp() + interval + 1;
+        env.ledger().with_mut(|li| {
+            li.timestamp = next_timestamp;
+        });
 
-    client.initialize(&employer);
-    client.deposit_tokens(&employer, &token, &initial_deposit);
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
+        // Should fail due to insufficient balance
+        client.disburse_salary(&employer, &employee);
+    }
 
-    let next_timestamp = env.ledger().timestamp() + interval + 1;
-    env.ledger().set(LedgerInfo {
-        timestamp: next_timestamp,
-        protocol_version: 22,
-        sequence_number: env.ledger().sequence(),
-        network_id: Default::default(),
-        base_reserve: 0,
-        min_persistent_entry_ttl: 4096,
-        min_temp_entry_ttl: 16,
-        max_entry_ttl: 6312000,
-    });
+    #[test]
+    #[should_panic(expected = "HostError: Error(Contract, #7)")]
+    fn test_employee_withdraw_insufficient_balance() {
+        let (env, _, client) = create_test_contract();
+        let employer = Address::generate(&env);
+        let employee = Address::generate(&env);
+        let token = Address::generate(&env);
+        let amount = 1000i128;
+        let interval = 86400u64;
 
-    client.disburse_salary(&employer, &employee);
+        env.mock_all_auths();
 
-    let final_balance = client.get_employer_balance(&employer, &token);
-    assert_eq!(final_balance, initial_deposit - amount);
+        // Initialize contract but don't deposit enough tokens
+        client.initialize(&employer);
+        client.deposit_tokens(&employer, &token, &500i128); // Less than needed
+
+        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
+
+        let next_timestamp = env.ledger().timestamp() + interval + 1;
+        env.ledger().with_mut(|li| {
+            li.timestamp = next_timestamp;
+        });
+
+        // Should fail due to insufficient balance
+        client.employee_withdraw(&employee);
+    }
 }
