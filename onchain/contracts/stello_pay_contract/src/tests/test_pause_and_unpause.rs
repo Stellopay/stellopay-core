@@ -116,7 +116,8 @@ fn test_get_payroll_works_when_paused() {
     env.mock_all_auths();
 
     client.initialize(&owner);
-    let created_payroll = client.create_or_update_escrow(&owner, &employee, &token, &amount, &interval);
+    let created_payroll =
+        client.create_or_update_escrow(&owner, &employee, &token, &amount, &interval);
     client.pause(&owner);
     let stored_payroll = client.get_payroll(&employee).unwrap();
     assert_eq!(created_payroll, stored_payroll);

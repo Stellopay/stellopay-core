@@ -1,9 +1,6 @@
 #![cfg(test)]
 
-use soroban_sdk::{
-    testutils::Ledger,
-    Env,
-};
+use soroban_sdk::{testutils::Ledger, Env};
 
 #[test]
 fn test() {
