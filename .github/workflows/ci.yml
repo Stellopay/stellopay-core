@@ -1,33 +1,45 @@
-name: Soroban Rust Smart Contracts CI
+name: Soroban Smart Contracts CI
 
 on:
   push:
-    branches: [main, master]
+    branches: [ "main" ]
   pull_request:
-    branches: [main, master]
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: macos-latest
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - name: Set up Rust
-        uses: actions/setup-rust@v1
-        with:
-          rust-version: stable
+    - name: Install Rust
+      run: |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        source $HOME/.cargo/env
+    - name: Install Rust target for Soroban
+      run: |
+        source $HOME/.cargo/env
+        rustup target add wasm32v1-none
+    - name: Install Stellar CLI with Homebrew
+      run: |
+        brew update
+        brew install stellar-cli
+        stellar --version
+    - name: Build Cargo project
+      run: |
+        source $HOME/.cargo/env
+        cargo build --verbose
 
-      - name: Install Soroban CLI
-        run: |
-          cargo install --locked --version 20.0.0-rc.1 soroban-cli || echo 'Soroban CLI already installed'
+    - name: Build Soroban contract
+      run: |
+        source $HOME/.cargo/env
+        stellar contract build --verbose
 
-      - name: Build contracts
-        run: |
-          cd onchain/contracts/stello_pay_contract
-          cargo build --verbose
-
-      - name: Run tests
-        run: |
-          cd onchain/contracts/stello_pay_contract
-          cargo test --verbose
+    - name: Run Cargo tests
+      run: |
+        source $HOME/.cargo/env
+        cargo test --verbose
