@@ -83,7 +83,7 @@ fn test_unpause_by_non_owner_fails() {
 }
 
 #[test]
-#[should_panic(expected = "HostError: Error(Contract, #6)")]
+#[should_panic(expected = "HostError: Error(Contract, #7)")]
 fn test_create_escrow_when_paused_fails() {
     let env = Env::default();
     let contract_id = env.register(crate::payroll::PayrollContract, ());
@@ -116,7 +116,8 @@ fn test_get_payroll_works_when_paused() {
     env.mock_all_auths();
 
     client.initialize(&owner);
-    let created_payroll = client.create_or_update_escrow(&owner, &employee, &token, &amount, &interval);
+    let created_payroll =
+        client.create_or_update_escrow(&owner, &employee, &token, &amount, &interval);
     client.pause(&owner);
     let stored_payroll = client.get_payroll(&employee).unwrap();
     assert_eq!(created_payroll, stored_payroll);
