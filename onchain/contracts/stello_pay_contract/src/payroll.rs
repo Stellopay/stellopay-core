@@ -1,8 +1,11 @@
 use soroban_sdk::{
     contract, contracterror, contractimpl,
-    Address, Env, Symbol, symbol_short,
+    Address, Env,
 };
 use crate::storage::{DataKey, Payroll};
+use crate::events::{
+    PAUSED_EVENT, UNPAUSED_EVENT, DEPOSIT_EVENT, emit_disburse,
+};
 
 //-----------------------------------------------------------------------------
 // Errors
@@ -34,8 +37,7 @@ pub enum PayrollError {
 //-----------------------------------------------------------------------------
 
 /// Storage keys using symbols instead of unit structs
-const DEPOSIT_EVENT: Symbol = symbol_short!("deposit");
-const DISBURSE_EVENT: Symbol = symbol_short!("disburse");
+
 
 
 
@@ -45,15 +47,7 @@ const DISBURSE_EVENT: Symbol = symbol_short!("disburse");
 #[contract]
 pub struct PayrollContract;
 
-//-----------------------------------------------------------------------------
-// Events
-//-----------------------------------------------------------------------------
 
-/// Event emitted when contract is paused
-pub const PAUSED_EVENT: Symbol = symbol_short!("paused");
-
-/// Event emitted when contract is unpaused
-pub const UNPAUSED_EVENT: Symbol = symbol_short!("unpaused");
 
 //-----------------------------------------------------------------------------
 // Contract Implementation
@@ -296,7 +290,8 @@ impl PayrollContract {
         }
 
         // Check if payment interval has elapsed
-        if env.ledger().timestamp() < payroll.last_payment_time + payroll.interval {
+        let current_time = env.ledger().timestamp();
+        if current_time < payroll.last_payment_time + payroll.interval {
             return Err(PayrollError::IntervalNotReached);
         }
 
@@ -311,9 +306,13 @@ impl PayrollContract {
         );
 
         // Emit disburse event
-        env.events().publish(
-            (DISBURSE_EVENT,),
-            (payroll.employer, employee, payroll.token, payroll.amount),
+        emit_disburse(
+            env,
+            payroll.employer,
+            employee,
+            payroll.token,
+            payroll.amount,
+            current_time,
         );
 
         Ok(())
