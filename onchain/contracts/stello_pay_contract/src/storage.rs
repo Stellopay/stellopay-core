@@ -14,7 +14,6 @@ pub struct Payroll {
     pub last_payment_time: u64,
 }
 
-
 //-----------------------------------------------------------------------------
 // Storage Keys
 //-----------------------------------------------------------------------------
@@ -27,11 +26,11 @@ pub enum DataKey {
     PayrollAmount(Address),
     PayrollInterval(Address),
     PayrollLastPayment(Address),
-    
+
     // Employer balance, keyed by (employer, token)
     Balance(Address, Address),
 
     // Admin
     Owner,
     Paused,
-} 
+}
