@@ -12,8 +12,9 @@ pub struct Payroll {
     pub amount: i128,
     pub interval: u64,
     pub last_payment_time: u64,
+    pub recurrence_frequency: u64, // Frequency in seconds (e.g., 2592000 for 30 days)
+    pub next_payout_timestamp: u64, // Next scheduled payout timestamp
 }
-
 
 //-----------------------------------------------------------------------------
 // Storage Keys
@@ -27,11 +28,13 @@ pub enum DataKey {
     PayrollAmount(Address),
     PayrollInterval(Address),
     PayrollLastPayment(Address),
-    
+    PayrollRecurrenceFrequency(Address),
+    PayrollNextPayoutTimestamp(Address),
+
     // Employer balance, keyed by (employer, token)
     Balance(Address, Address),
 
     // Admin
     Owner,
     Paused,
-} 
+}
