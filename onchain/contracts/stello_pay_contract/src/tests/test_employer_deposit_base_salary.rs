@@ -29,17 +29,19 @@ mod tests {
         let token = Address::generate(&env);
         let amount = 1000i128;
         let interval = 86400u64;
+        let recurrence_frequency = 2592000u64; // 30 days in seconds
 
         env.mock_all_auths();
 
         client.initialize(&employer);
-        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
+        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &recurrence_frequency);
 
         let payroll_data = client.get_payroll(&employee).unwrap();
         assert_eq!(payroll_data.employer, employer);
         assert_eq!(payroll_data.token, token);
         assert_eq!(payroll_data.amount, amount);
         assert_eq!(payroll_data.interval, interval);
+        assert_eq!(payroll_data.recurrence_frequency, recurrence_frequency);
     }
 
     #[test]
@@ -50,6 +52,7 @@ mod tests {
         let employee = Address::generate(&env);
         let amount = 1000i128;
         let interval = 86400u64;
+        let recurrence_frequency = 2592000u64; // 30 days in seconds
 
         env.mock_all_auths();
 
@@ -69,9 +72,9 @@ mod tests {
         let payroll_contract_balance = token_client.balance(&contract_id);
         assert_eq!(payroll_contract_balance, 5000);
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
-        let next_timestamp = env.ledger().timestamp() + interval + 1;
+        let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
         env.ledger().set(LedgerInfo {
             timestamp: next_timestamp,
             protocol_version: 22,
@@ -91,7 +94,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "HostError: Error(Contract, #2)")]
+    #[should_panic(expected = "HostError: Error(Contract, #9)")]
     fn test_disburse_salary_interval_not_reached() {
         let (env, _, client) = create_test_contract();
         let (token_address, token_admin) = setup_token(&env);
@@ -99,6 +102,7 @@ mod tests {
         let employee = Address::generate(&env);
         let amount = 1000i128;
         let interval = 86400u64;
+        let recurrence_frequency = 2592000u64; // 30 days in seconds
 
         env.mock_all_auths();
 
@@ -109,7 +113,7 @@ mod tests {
         client.initialize(&employer);
         client.deposit_tokens(&employer, &token_address, &5000i128);
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
         // Try to disburse immediately (without advancing time)
         client.disburse_salary(&employer, &employee);
@@ -125,6 +129,7 @@ mod tests {
         let employee = Address::generate(&env);
         let amount = 1000i128;
         let interval = 86400u64;
+        let recurrence_frequency = 2592000u64; // 30 days in seconds
 
         // Set up the contract with proper authorization for setup operations
         env.mock_auths(&[
@@ -151,7 +156,7 @@ mod tests {
                 invoke: &MockAuthInvoke {
                     contract: &contract_id,
                     fn_name: "create_or_update_escrow",
-                    args: (&employer, &employee, &token_address, &amount, &interval).into_val(&env),
+                    args: (&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency).into_val(&env),
                     sub_invokes: &[],
                 },
             },
@@ -164,7 +169,7 @@ mod tests {
         client.initialize(&employer);
         client.deposit_tokens(&employer, &token_address, &5000i128);
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
         // Try to disburse with unauthorized user - NO mock auth for this call
         // This should panic because unauthorized.require_auth() will fail
@@ -190,6 +195,7 @@ mod tests {
         let employee = Address::generate(&env);
         let amount = 1000i128;
         let interval = 86400u64;
+        let recurrence_frequency = 2592000u64; // 30 days in seconds
 
         env.mock_all_auths();
 
@@ -200,9 +206,9 @@ mod tests {
         client.initialize(&employer);
         client.deposit_tokens(&employer, &token_address, &5000i128);
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
-        let next_timestamp = env.ledger().timestamp() + interval + 1;
+        let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
         env.ledger().set(LedgerInfo {
             timestamp: next_timestamp,
             protocol_version: 22,
@@ -223,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "HostError: Error(Contract, #2)")]
+    #[should_panic(expected = "HostError: Error(Contract, #9)")]
     fn test_employee_withdraw_interval_not_reached() {
         let (env, _, client) = create_test_contract();
         let (token_address, token_admin) = setup_token(&env);
@@ -231,6 +237,7 @@ mod tests {
         let employee = Address::generate(&env);
         let amount = 1000i128;
         let interval = 86400u64;
+        let recurrence_frequency = 2592000u64; // 30 days in seconds
 
         env.mock_all_auths();
 
@@ -241,7 +248,7 @@ mod tests {
         client.initialize(&employer);
         client.deposit_tokens(&employer, &token_address, &5000i128);
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
         // Don't advance time - should fail
         client.employee_withdraw(&employee);
@@ -270,6 +277,7 @@ mod tests {
         let employee = Address::generate(&env);
         let amount = 1000i128;
         let interval = 86400u64;
+        let recurrence_frequency = 2592000u64; // 30 days in seconds
 
         env.mock_all_auths();
 
@@ -280,9 +288,9 @@ mod tests {
         client.initialize(&employer);
         client.deposit_tokens(&employer, &token_address, &5000i128);
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
-        let next_timestamp = env.ledger().timestamp() + interval + 1;
+        let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
         env.ledger().set(LedgerInfo {
             timestamp: next_timestamp,
             protocol_version: 22,
@@ -298,7 +306,7 @@ mod tests {
         client.disburse_salary(&employer, &employee);
 
         // Advance time again
-        let next_timestamp = env.ledger().timestamp() + interval + 1;
+        let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
         env.ledger().set(LedgerInfo {
             timestamp: next_timestamp,
             protocol_version: 22,
@@ -327,15 +335,17 @@ mod tests {
         let token = Address::generate(&env);
         let amount = 1i128; // Minimum positive amount
         let interval = 1u64; // Minimum interval
+        let recurrence_frequency = 2592000u64; // 30 days in seconds
 
         env.mock_all_auths();
 
         client.initialize(&employer);
-        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
+        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &recurrence_frequency);
 
         let payroll_data = client.get_payroll(&employee).unwrap();
         assert_eq!(payroll_data.amount, amount);
         assert_eq!(payroll_data.interval, interval);
+        assert_eq!(payroll_data.recurrence_frequency, recurrence_frequency);
     }
 
     #[test]
@@ -347,6 +357,7 @@ mod tests {
         let employee = Address::generate(&env);
         let amount = 1000i128;
         let interval = 86400u64;
+        let recurrence_frequency = 2592000u64; // 30 days in seconds
 
         env.mock_all_auths();
 
@@ -357,9 +368,9 @@ mod tests {
         client.initialize(&employer);
         client.deposit_tokens(&employer, &token_address, &500i128); // Less than needed
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
-        let next_timestamp = env.ledger().timestamp() + interval + 1;
+        let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
         env.ledger().set(LedgerInfo {
             timestamp: next_timestamp,
             protocol_version: 22,
@@ -384,6 +395,7 @@ mod tests {
         let employee = Address::generate(&env);
         let amount = 1000i128;
         let interval = 86400u64;
+        let recurrence_frequency = 2592000u64; // 30 days in seconds
 
         env.mock_all_auths();
 
@@ -394,9 +406,9 @@ mod tests {
         client.initialize(&employer);
         client.deposit_tokens(&employer, &token_address, &500i128); // Less than needed
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
-        let next_timestamp = env.ledger().timestamp() + interval + 1;
+        let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
         env.ledger().set(LedgerInfo {
             timestamp: next_timestamp,
             protocol_version: 22,
