@@ -282,6 +282,16 @@ impl PayrollContract {
             &next_payout_timestamp,
         );
 
+        // Automatically add token as supported if it's not already
+        if !Self::is_token_supported(env.clone(), token.clone()) {
+            let key = DataKey::SupportedToken(token.clone());
+            storage.set(&key, &true);
+
+            // Set default decimals (7 for Stellar assets)
+            let metadata_key = DataKey::TokenMetadata(token.clone());
+            storage.set(&metadata_key, &7u32);
+        }
+
         let payroll = Payroll {
             employer,
             token,
