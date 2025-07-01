@@ -98,7 +98,11 @@ fn test_create_escrow_when_paused_fails() {
     client.initialize(&owner);
     client.pause(&owner);
 
-    client.create_or_update_escrow(&employer, &employee, &token, &1000, &86400);
+    let amount = 1000i128;
+    let interval = 86400u64;
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
+
+    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &recurrence_frequency);
 }
 
 #[test]
@@ -112,12 +116,13 @@ fn test_get_payroll_works_when_paused() {
     let token = Address::generate(&env);
     let amount = 1000;
     let interval = 86400;
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
 
     env.mock_all_auths();
 
     client.initialize(&owner);
     let created_payroll =
-        client.create_or_update_escrow(&owner, &employee, &token, &amount, &interval);
+        client.create_or_update_escrow(&owner, &employee, &token, &amount, &interval, &recurrence_frequency);
     client.pause(&owner);
     let stored_payroll = client.get_payroll(&employee).unwrap();
     assert_eq!(created_payroll, stored_payroll);
