@@ -37,4 +37,7 @@ pub enum DataKey {
     // Admin
     Owner,
     Paused,
+
+    SupportedToken(Address),
+    TokenMetadata(Address),
 }

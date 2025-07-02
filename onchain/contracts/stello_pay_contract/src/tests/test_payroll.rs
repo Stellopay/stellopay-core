@@ -28,11 +28,12 @@ fn test_get_payroll_success() {
 
     let amount = 1000i128;
     let interval = 86400u64; // 1 day in seconds
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
 
     env.mock_all_auths();
 
     client.initialize(&employer);
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval);
+    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &recurrence_frequency);
 
     let payroll = client.get_payroll(&employee);
     assert!(payroll.is_some());
@@ -42,7 +43,9 @@ fn test_get_payroll_success() {
     assert_eq!(payroll_data.token, token);
     assert_eq!(payroll_data.amount, amount);
     assert_eq!(payroll_data.interval, interval);
+    assert_eq!(payroll_data.recurrence_frequency, recurrence_frequency);
     assert_eq!(payroll_data.last_payment_time, env.ledger().timestamp());
+    assert_eq!(payroll_data.next_payout_timestamp, env.ledger().timestamp() + recurrence_frequency);
 }
 
 #[test]
@@ -71,6 +74,7 @@ fn test_disburse_salary_success() {
 
     let amount = 1000i128;
     let interval = 86400u64; // 1 day in seconds
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
 
     env.mock_all_auths();
 
@@ -91,10 +95,10 @@ fn test_disburse_salary_success() {
     assert_eq!(payroll_contract_balance, 5000);
 
     // Create escrow first
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
-    // Advance time beyond interval
-    let next_timestamp = env.ledger().timestamp() + interval + 1;
+    // Advance time beyond next payout timestamp
+    let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
     env.ledger().set(LedgerInfo {
         timestamp: next_timestamp,
         protocol_version: 22,
@@ -132,6 +136,7 @@ fn test_disburse_salary_unauthorized() {
 
     let amount = 1000i128;
     let interval = 86400u64;
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
 
     // Set up the contract with proper authorization for setup operations
     env.mock_auths(&[
@@ -158,7 +163,7 @@ fn test_disburse_salary_unauthorized() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "create_or_update_escrow",
-                args: (&employer, &employee, &token_address, &amount, &interval).into_val(&env),
+                args: (&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency).into_val(&env),
                 sub_invokes: &[],
             },
         },
@@ -177,10 +182,10 @@ fn test_disburse_salary_unauthorized() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow first
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
-    // Advance time beyond interval
-    let next_timestamp = env.ledger().timestamp() + interval + 1;
+    // Advance time beyond next payout timestamp
+    let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
     env.ledger().set(LedgerInfo {
         timestamp: next_timestamp,
         protocol_version: 22,
@@ -198,7 +203,7 @@ fn test_disburse_salary_unauthorized() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")]
+#[should_panic(expected = "Error(Contract, #9)")]
 fn test_disburse_salary_interval_not_reached() {
     let env = Env::default();
     let contract_id = env.register(crate::payroll::PayrollContract, ());
@@ -210,6 +215,7 @@ fn test_disburse_salary_interval_not_reached() {
 
     let amount = 1000i128;
     let interval = 86400u64;
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
 
     env.mock_all_auths();
 
@@ -226,7 +232,7 @@ fn test_disburse_salary_interval_not_reached() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow first
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
     // Try to disburse immediately (without advancing time)
     client.disburse_salary(&employer, &employee);
@@ -244,6 +250,7 @@ fn test_employee_withdraw_success() {
 
     let amount = 1000i128;
     let interval = 86400u64;
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
 
     env.mock_all_auths();
 
@@ -260,10 +267,10 @@ fn test_employee_withdraw_success() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow first
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
-    // Advance time beyond interval
-    let next_timestamp = env.ledger().timestamp() + interval + 1;
+    // Advance time beyond next payout timestamp
+    let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
     env.ledger().set(LedgerInfo {
         timestamp: next_timestamp,
         protocol_version: 22,
@@ -287,7 +294,7 @@ fn test_employee_withdraw_success() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #2)")]
+#[should_panic(expected = "Error(Contract, #9)")]
 fn test_employee_withdraw_interval_not_reached() {
     let env = Env::default();
     let contract_id = env.register(crate::payroll::PayrollContract, ());
@@ -299,6 +306,7 @@ fn test_employee_withdraw_interval_not_reached() {
 
     let amount = 1000i128;
     let interval = 86400u64;
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
 
     env.mock_all_auths();
 
@@ -315,7 +323,7 @@ fn test_employee_withdraw_interval_not_reached() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow first
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
     // Try to withdraw immediately (without advancing time)
     client.employee_withdraw(&employee);
@@ -347,16 +355,18 @@ fn test_boundary_values() {
 
     let min_amount = 1i128;
     let min_interval = 1u64;
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
 
     env.mock_all_auths();
 
     // Create escrow with minimum interval
     client.initialize(&employer);
-    client.create_or_update_escrow(&employer, &employee, &token, &min_amount, &min_interval);
+    client.create_or_update_escrow(&employer, &employee, &token, &min_amount, &min_interval, &recurrence_frequency);
 
     let payroll = client.get_payroll(&employee).unwrap();
     assert_eq!(payroll.amount, min_amount);
     assert_eq!(payroll.interval, min_interval);
+    assert_eq!(payroll.recurrence_frequency, recurrence_frequency);
 }
 
 #[test]
@@ -371,6 +381,7 @@ fn test_multiple_disbursements() {
 
     let amount = 1000i128;
     let interval = 86400u64;
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
 
     env.mock_all_auths();
 
@@ -387,10 +398,10 @@ fn test_multiple_disbursements() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
     // First payment cycle
-    let first_disbursement_time = env.ledger().timestamp() + interval + 1;
+    let first_disbursement_time = env.ledger().timestamp() + recurrence_frequency + 1;
     env.ledger().set(LedgerInfo {
         timestamp: first_disbursement_time,
         protocol_version: 22,
@@ -413,7 +424,7 @@ fn test_multiple_disbursements() {
     let payroll = client.get_payroll(&employee).unwrap();
     assert_eq!(payroll.last_payment_time, first_disbursement_time);
 
-    let second_disbursement_time = first_disbursement_time + interval + 1;
+    let second_disbursement_time = first_disbursement_time + recurrence_frequency + 1;
     env.ledger().set(LedgerInfo {
         timestamp: second_disbursement_time,
         protocol_version: 22,
@@ -449,6 +460,7 @@ fn test_payment_insufficient_employer_pool() {
 
     let amount = 1000i128;
     let interval = 86400u64; // 1 day in seconds
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
 
     env.mock_all_auths();
 
@@ -465,10 +477,10 @@ fn test_payment_insufficient_employer_pool() {
     client.deposit_tokens(&employer, &token_address, &500i128); // Insufficient for one `amount` payment
 
     // Create escrow first
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
     // Advance time to make disbursement eligible
-    let next_timestamp = env.ledger().timestamp() + interval + 1;
+    let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
     env.ledger().set(LedgerInfo {
         timestamp: next_timestamp,
         protocol_version: env.ledger().protocol_version(),
@@ -502,6 +514,7 @@ fn test_employee_withdraw_unauthorized() {
 
     let amount = 1000i128;
     let interval = 86400u64;
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
 
     // Set up the contract with proper authorization for setup operations
     env.mock_auths(&[
@@ -528,7 +541,7 @@ fn test_employee_withdraw_unauthorized() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "create_or_update_escrow",
-                args: (&employer, &employee, &token_address, &amount, &interval).into_val(&env),
+                args: (&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency).into_val(&env),
                 sub_invokes: &[],
             },
         },
@@ -547,10 +560,10 @@ fn test_employee_withdraw_unauthorized() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow first
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval);
+    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
 
-    // Advance time beyond interval
-    let next_timestamp = env.ledger().timestamp() + interval + 1;
+    // Advance time beyond next payout timestamp
+    let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
     env.ledger().set(LedgerInfo {
         timestamp: next_timestamp,
         protocol_version: 22,

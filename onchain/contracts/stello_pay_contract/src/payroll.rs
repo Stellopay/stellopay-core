@@ -150,6 +150,52 @@ impl PayrollContract {
         Ok(())
     }
 
+    pub fn add_supported_token(env: Env, token: Address) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+        owner.require_auth();
+
+        let key = DataKey::SupportedToken(token.clone());
+        storage.set(&key, &true);
+
+        let token_client = TokenClient::new(&env, &token);
+        let decimals = token_client.decimals();
+        let metadata_key = DataKey::TokenMetadata(token.clone());
+        storage.set(&metadata_key, &decimals);
+
+        Ok(())
+    }
+
+    /// Remove a supported token - only callable by owner
+    pub fn remove_supported_token(env: Env, token: Address) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+        owner.require_auth();
+
+        let key = DataKey::SupportedToken(token.clone());
+        storage.set(&key, &false);
+
+        let metadata_key = DataKey::TokenMetadata(token.clone());
+        storage.remove(&metadata_key);
+
+        Ok(())
+    }
+
+    /// Check if a token is supported
+    pub fn is_token_supported(env: Env, token: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::SupportedToken(token))
+            .unwrap_or(false)
+    }
+
+    /// Get token metadata like decimals
+    pub fn get_token_metadata(env: Env, token: Address) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::TokenMetadata(token))
+    }
+
     /// Creates or updates a payroll escrow for production scenarios.
     ///
     /// Requirements:
@@ -226,6 +272,16 @@ impl PayrollContract {
             &next_payout_timestamp,
         );
 
+        // Automatically add token as supported if it's not already
+        if !Self::is_token_supported(env.clone(), token.clone()) {
+            let key = DataKey::SupportedToken(token.clone());
+            storage.set(&key, &true);
+
+            // Set default decimals (7 for Stellar assets)
+            let metadata_key = DataKey::TokenMetadata(token.clone());
+            storage.set(&metadata_key, &7u32);
+        }
+
         let payroll = Payroll {
             employer,
             token,
@@ -239,7 +295,11 @@ impl PayrollContract {
         // Emit payroll updated event
         env.events().publish(
             (UPDATED_EVENT,),
-            (payroll.employer.clone(), employee.clone(), payroll.recurrence_frequency),
+            (
+                payroll.employer.clone(),
+                employee.clone(),
+                payroll.recurrence_frequency,
+            ),
         );
 
         Ok(payroll)
@@ -343,6 +403,11 @@ impl PayrollContract {
         // Only the employer can disburse salary
         if caller != payroll.employer {
             return Err(PayrollError::Unauthorized);
+        }
+
+        // Ensure the token is supported
+        if !Self::is_token_supported(env.clone(), payroll.token.clone()) {
+            return Err(PayrollError::InvalidData);
         }
 
         // Check if next payout time has been reached
@@ -510,7 +575,8 @@ impl PayrollContract {
                 // Check if employee is eligible for disbursement
                 if current_time >= payroll.next_payout_timestamp {
                     // Check if employer has sufficient balance
-                    let balance_key = DataKey::Balance(payroll.employer.clone(), payroll.token.clone());
+                    let balance_key =
+                        DataKey::Balance(payroll.employer.clone(), payroll.token.clone());
                     let current_balance: i128 = storage.get(&balance_key).unwrap_or(0);
 
                     if current_balance >= payroll.amount {
@@ -554,10 +620,8 @@ impl PayrollContract {
         }
 
         // Emit recurring disbursement event
-        env.events().publish(
-            (RECUR_EVENT,),
-            (caller, processed_employees.len() as u32),
-        );
+        env.events()
+            .publish((RECUR_EVENT,), (caller, processed_employees.len() as u32));
 
         processed_employees
     }
