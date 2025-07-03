@@ -2,7 +2,7 @@
 // Events
 //-----------------------------------------------------------------------------
 
-use soroban_sdk::{symbol_short, Address, Env, Symbol, contracttype};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Symbol};
 
 /// Event emitted when contract is paused
 pub const PAUSED_EVENT: Symbol = symbol_short!("paused");
@@ -31,25 +31,38 @@ pub struct EmployerWithdrawn {
     pub timestamp: u64,
 }
 
-
 pub fn emit_disburse(
-        e: Env,
-        employer: Address,
-        employee: Address,
-        token: Address,
-        amount: i128,
-        timestamp: u64,
-    ) {
-        let topics = (Symbol::new(&e, "SalaryDisbursed"),);
-        let event_data = SalaryDisbursed {
-            employer,
-            employee,
-            token,
-            amount,
-            timestamp,
-        };
-        e.events().publish(topics, 
-            event_data.clone()
-        );
-    }
+    e: Env,
+    employer: Address,
+    employee: Address,
+    token: Address,
+    amount: i128,
+    timestamp: u64,
+) {
+    let topics = (Symbol::new(&e, "SalaryDisbursed"),);
+    let event_data = SalaryDisbursed {
+        employer,
+        employee,
+        token,
+        amount,
+        timestamp,
+    };
+    e.events().publish(topics, event_data.clone());
+}
 
+pub fn emit_employer_withdrawn(
+    e: Env,
+    employer: Address,
+    token: Address,
+    amount: i128,
+    timestamp: u64,
+) {
+    let topics = (Symbol::new(&e, "EmployerWithdrawn"),);
+    let event_data = EmployerWithdrawn {
+        employer,
+        token,
+        amount,
+        timestamp,
+    };
+    e.events().publish(topics, event_data.clone());
+}

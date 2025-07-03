@@ -1,8 +1,8 @@
 #![no_std]
 
+mod events;
 mod payroll;
 mod storage;
-mod events;
 
 #[cfg(test)]
 mod test;

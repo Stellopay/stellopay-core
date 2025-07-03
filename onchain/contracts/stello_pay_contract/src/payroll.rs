@@ -3,10 +3,8 @@ use soroban_sdk::{
     Env, Symbol, Vec,
 };
 
+use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT};
 use crate::storage::{DataKey, Payroll};
-use crate::events::{
-    PAUSED_EVENT, UNPAUSED_EVENT, DEPOSIT_EVENT, emit_disburse,
-};
 
 //-----------------------------------------------------------------------------
 // Errors
@@ -45,14 +43,11 @@ pub enum PayrollError {
 
 /// Storage keys using symbols instead of unit structs
 
-
 //-----------------------------------------------------------------------------
 // Contract Struct
 //-----------------------------------------------------------------------------
 #[contract]
 pub struct PayrollContract;
-
-
 
 /// Event emitted when recurring disbursements are processed
 pub const RECUR_EVENT: Symbol = symbol_short!("recur");
