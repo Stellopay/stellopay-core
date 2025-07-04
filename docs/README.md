@@ -46,6 +46,24 @@ contract.disburse_salary(&env, &employer_address, &employee_address)?;
 - **Bulk Operations**: Process multiple payments in a single transaction
 - **Comprehensive Events**: Full event logging for monitoring and analytics
 
+## 🛠️ Developer Tools
+
+StellopayCore provides comprehensive developer tools to help developers:
+
+### CLI Tools
+- **Contract Management** - Deploy, initialize, and manage contracts
+- **Payroll Operations** - Create, update, and delete payroll entries
+- **Payment Processing** - Process individual and bulk payments
+- **Monitoring & Analytics** - Track contract performance and metrics
+
+### Getting Started
+```bash
+# Install CLI tool
+cargo install stellopay-cli
+```
+
+See the [Developer Tools](/docs/dev-tools/README.md) and [Integration Guide](/docs/integration/README.md) for detailed instructions.
+
 ## Getting Help
 
 - Check the [API Documentation](./api/README.md) for detailed function references
