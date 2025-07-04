@@ -2,9 +2,10 @@
 
 use crate::payroll::{PayrollContract, PayrollContractClient};
 use soroban_sdk::token::{StellarAssetClient as TokenAdmin, TokenClient};
+use soroban_sdk::TryFromVal;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger, LedgerInfo, MockAuth, MockAuthInvoke},
-    Address, Env, IntoVal,
+    testutils::{Address as _, Events, Ledger, LedgerInfo, MockAuth, MockAuthInvoke},
+    vec, Address, Env, IntoVal, Symbol,
 };
 
 fn setup_token(env: &Env) -> (Address, TokenAdmin) {
@@ -33,7 +34,14 @@ fn test_get_payroll_success() {
     env.mock_all_auths();
 
     client.initialize(&employer);
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     let payroll = client.get_payroll(&employee);
     assert!(payroll.is_some());
@@ -45,7 +53,10 @@ fn test_get_payroll_success() {
     assert_eq!(payroll_data.interval, interval);
     assert_eq!(payroll_data.recurrence_frequency, recurrence_frequency);
     assert_eq!(payroll_data.last_payment_time, env.ledger().timestamp());
-    assert_eq!(payroll_data.next_payout_timestamp, env.ledger().timestamp() + recurrence_frequency);
+    assert_eq!(
+        payroll_data.next_payout_timestamp,
+        env.ledger().timestamp() + recurrence_frequency
+    );
 }
 
 #[test]
@@ -95,7 +106,14 @@ fn test_disburse_salary_success() {
     assert_eq!(payroll_contract_balance, 5000);
 
     // Create escrow first
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Advance time beyond next payout timestamp
     let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
@@ -163,7 +181,15 @@ fn test_disburse_salary_unauthorized() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "create_or_update_escrow",
-                args: (&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency).into_val(&env),
+                args: (
+                    &employer,
+                    &employee,
+                    &token_address,
+                    &amount,
+                    &interval,
+                    &recurrence_frequency,
+                )
+                    .into_val(&env),
                 sub_invokes: &[],
             },
         },
@@ -182,7 +208,14 @@ fn test_disburse_salary_unauthorized() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow first
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Advance time beyond next payout timestamp
     let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
@@ -232,7 +265,14 @@ fn test_disburse_salary_interval_not_reached() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow first
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Try to disburse immediately (without advancing time)
     client.disburse_salary(&employer, &employee);
@@ -267,7 +307,14 @@ fn test_employee_withdraw_success() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow first
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Advance time beyond next payout timestamp
     let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
@@ -323,7 +370,14 @@ fn test_employee_withdraw_interval_not_reached() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow first
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Try to withdraw immediately (without advancing time)
     client.employee_withdraw(&employee);
@@ -361,7 +415,14 @@ fn test_boundary_values() {
 
     // Create escrow with minimum interval
     client.initialize(&employer);
-    client.create_or_update_escrow(&employer, &employee, &token, &min_amount, &min_interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token,
+        &min_amount,
+        &min_interval,
+        &recurrence_frequency,
+    );
 
     let payroll = client.get_payroll(&employee).unwrap();
     assert_eq!(payroll.amount, min_amount);
@@ -398,7 +459,14 @@ fn test_multiple_disbursements() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // First payment cycle
     let first_disbursement_time = env.ledger().timestamp() + recurrence_frequency + 1;
@@ -477,7 +545,14 @@ fn test_payment_insufficient_employer_pool() {
     client.deposit_tokens(&employer, &token_address, &500i128); // Insufficient for one `amount` payment
 
     // Create escrow first
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Advance time to make disbursement eligible
     let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
@@ -541,7 +616,15 @@ fn test_employee_withdraw_unauthorized() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "create_or_update_escrow",
-                args: (&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency).into_val(&env),
+                args: (
+                    &employer,
+                    &employee,
+                    &token_address,
+                    &amount,
+                    &interval,
+                    &recurrence_frequency,
+                )
+                    .into_val(&env),
                 sub_invokes: &[],
             },
         },
@@ -560,7 +643,14 @@ fn test_employee_withdraw_unauthorized() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow first
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Advance time beyond next payout timestamp
     let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
@@ -578,4 +668,111 @@ fn test_employee_withdraw_unauthorized() {
     // Now try to disburse salary with unauthorized user - NO mock auth for this call
     // This should panic because unauthorized.require_auth() will fail
     client.employee_withdraw(&employee);
+}
+
+#[test]
+fn test_disburse_salary_emit_event() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let (token_address, token_admin) = setup_token(&env);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    let amount = 1000i128;
+    let interval = 86400u64; // 1 day in seconds
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
+
+    env.mock_all_auths();
+
+    // Fund the employer with tokens
+    token_admin.mint(&employer, &10000);
+
+    // Verify minting
+    let token_client = TokenClient::new(&env, &token_address);
+    let employer_balance = token_client.balance(&employer);
+    assert_eq!(employer_balance, 10000);
+
+    // Initialize contract and deposit tokens
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &5000i128);
+
+    // Create escrow first
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
+
+    // Advance time beyond next payout timestamp
+    let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
+    env.ledger().set(LedgerInfo {
+        timestamp: next_timestamp,
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6312000,
+    });
+
+    client.disburse_salary(&employer, &employee);
+
+    // Verify event was emitted
+    let events = env.events().all();
+
+    // Token `transfer` and `SalaryDisbursed` events are expected
+    assert_eq!(events.len(), 2);
+
+    // Get the emitted `SalaryDisbursed` event data
+    let data = events.get(1).unwrap();
+
+    assert_eq!(data.0, contract_id);
+
+    let salary_topic = data.1;
+    assert_eq!(
+        salary_topic,
+        vec![&env, Symbol::new(&env, "SalaryDisbursed")].into_val(&env)
+    );
+
+    let salary_data = data.2;
+
+    let expected_data: soroban_sdk::Map<soroban_sdk::Symbol, soroban_sdk::Val> =
+        soroban_sdk::Map::from_array(
+            &env,
+            [
+                (
+                    Symbol::new(&env, "employer"),
+                    employer.clone().into_val(&env),
+                ),
+                (
+                    Symbol::new(&env, "employee"),
+                    employee.clone().into_val(&env),
+                ),
+                (
+                    Symbol::new(&env, "token"),
+                    token_address.clone().into_val(&env),
+                ),
+                (Symbol::new(&env, "amount"), amount.into_val(&env)),
+                (
+                    Symbol::new(&env, "timestamp"),
+                    env.ledger().timestamp().into_val(&env),
+                ),
+            ],
+        );
+
+    let salary_data_map: soroban_sdk::Map<soroban_sdk::Symbol, soroban_sdk::Val> =
+        soroban_sdk::Map::try_from_val(&env, &salary_data).unwrap();
+
+    assert!(
+        salary_data_map == expected_data,
+        "Expected: {:?}, Actual: {:?}",
+        expected_data,
+        salary_data_map
+    );
 }

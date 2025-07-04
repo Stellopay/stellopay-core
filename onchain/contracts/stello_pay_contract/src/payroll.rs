@@ -3,6 +3,7 @@ use soroban_sdk::{
     Env, Symbol, Vec,
 };
 
+use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT};
 use crate::storage::{DataKey, Payroll};
 
 //-----------------------------------------------------------------------------
@@ -47,22 +48,6 @@ pub enum PayrollError {
 //-----------------------------------------------------------------------------
 #[contract]
 pub struct PayrollContract;
-
-//-----------------------------------------------------------------------------
-// Events
-//-----------------------------------------------------------------------------
-
-/// Event emitted when contract is paused
-pub const PAUSED_EVENT: Symbol = symbol_short!("paused");
-
-/// Event emitted when contract is unpaused
-pub const UNPAUSED_EVENT: Symbol = symbol_short!("unpaused");
-
-/// Event emitted when salary is disbursed
-pub const DISBURSE_EVENT: Symbol = symbol_short!("disburse");
-
-/// Event emitted when tokens are deposited to employer's salary pool
-pub const DEPOSIT_EVENT: Symbol = symbol_short!("deposit");
 
 /// Event emitted when recurring disbursements are processed
 pub const RECUR_EVENT: Symbol = symbol_short!("recur");
@@ -453,10 +438,14 @@ impl PayrollContract {
             &(current_time + payroll.recurrence_frequency),
         );
 
-        // Emit disbursement event
-        env.events().publish(
-            (DISBURSE_EVENT,),
-            (payroll.employer, employee, payroll.token, payroll.amount),
+        // Emit disburse event
+        emit_disburse(
+            env,
+            payroll.employer,
+            employee,
+            payroll.token,
+            payroll.amount,
+            current_time,
         );
 
         Ok(())
@@ -608,10 +597,18 @@ impl PayrollContract {
                         processed_employees.push_back(employee.clone());
 
                         // Emit individual disbursement event
-                        env.events().publish(
-                            (DISBURSE_EVENT,),
-                            (payroll.employer, employee, payroll.token, payroll.amount),
+                        emit_disburse(
+                            env.clone(),
+                            payroll.employer.clone(),
+                            employee.clone(),
+                            payroll.token.clone(),
+                            payroll.amount,
+                            current_time,
                         );
+                        // env.events().publish(
+                        //     (DISBURSE_EVENT,),
+                        //     (payroll.employer, employee, payroll.token, payroll.amount),
+                        // );
                     }
                 }
             }
