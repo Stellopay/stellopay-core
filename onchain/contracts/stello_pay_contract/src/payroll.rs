@@ -393,22 +393,19 @@ impl PayrollContract {
         caller: Address,
         employee: Address,
     ) -> Result<(), PayrollError> {
-        // Check if contract is paused
-        Self::require_not_paused(&env)?;
-
         caller.require_auth();
 
-        let storage = env.storage().persistent();
+        // Get cached contract state
+        let cache = Self::get_contract_cache(&env);
+        if let Some(true) = cache.is_paused {
+            return Err(PayrollError::ContractPaused);
+        }
+
         let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
 
         // Only the employer can disburse salary
         if caller != payroll.employer {
             return Err(PayrollError::Unauthorized);
-        }
-
-        // Ensure the token is supported
-        if !Self::is_token_supported(env.clone(), payroll.token.clone()) {
-            return Err(PayrollError::InvalidData);
         }
 
         // Check if next payout time has been reached
@@ -417,31 +414,15 @@ impl PayrollContract {
             return Err(PayrollError::NextPayoutTimeNotReached);
         }
 
-        // Deduct from employer's salary pool
-        Self::deduct_from_balance(&env, &payroll.employer, &payroll.token, payroll.amount)?;
+        // Optimized balance check and update
+        Self::check_and_update_balance(&env, &payroll.employer, &payroll.token, payroll.amount)?;
 
-        // Handle dispatch transfer from contract to employee
-        let token_client = TokenClient::new(&env, &payroll.token);
+        // Optimized token transfer
         let contract_address = env.current_contract_address();
-        let initial_balance = token_client.balance(&employee);
+        Self::transfer_tokens_safe(&env, &payroll.token, &contract_address, &employee, payroll.amount)?;
 
-        // Transfer the amount to the employee
-        token_client.transfer(&contract_address, &employee, &payroll.amount);
-
-        // Handle transfer failure
-        let employee_balance = token_client.balance(&employee);
-        if employee_balance != initial_balance + payroll.amount {
-            return Err(PayrollError::TransferFailed);
-        }
-
-        // Update payroll with new timestamps
-        let mut updated_payroll = payroll.clone();
-        updated_payroll.last_payment_time = current_time;
-        updated_payroll.next_payout_timestamp = current_time + payroll.recurrence_frequency;
-
-        // Store updated payroll
-        let compact_payroll = Self::to_compact_payroll(&updated_payroll);
-        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+        // Optimized payroll update with minimal storage operations
+        Self::update_payroll_timestamps(&env, &employee, &payroll, current_time);
 
         // Emit disburse event
         emit_disburse(
