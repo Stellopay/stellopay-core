@@ -714,42 +714,41 @@ impl PayrollContract {
         employer: Address,
         payroll_inputs: Vec<PayrollInput>,
     ) -> Result<Vec<Payroll>, PayrollError> {
-        // Check if contract is paused
-        Self::require_not_paused(&env)?;
-
         employer.require_auth();
 
+        // Create optimized batch context
+        let batch_ctx = Self::create_batch_context(&env);
         let storage = env.storage().persistent();
-        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+        let is_owner = batch_ctx.cache.owner.as_ref().map_or(false, |owner| &employer == owner);
 
         let mut created_payrolls = Vec::new(&env);
-        let current_time = env.ledger().timestamp();
 
         for payroll_input in payroll_inputs.iter() {
-            // Validate input
-            if payroll_input.interval == 0 || payroll_input.amount <= 0 || payroll_input.recurrence_frequency == 0 {
-                return Err(PayrollError::InvalidData);
-            }
+            // Optimized validation with early returns
+            Self::validate_payroll_input(
+                payroll_input.amount,
+                payroll_input.interval,
+                payroll_input.recurrence_frequency,
+            )?;
 
             let existing_payroll = Self::_get_payroll(&env, &payroll_input.employee);
 
             if let Some(ref existing) = existing_payroll {
                 // For updates, only the contract owner or the existing payroll's employer can call
-                if employer != owner && employer != existing.employer {
+                if !is_owner && &employer != &existing.employer {
                     return Err(PayrollError::Unauthorized);
                 }
-            } else if employer != owner {
+            } else if !is_owner {
                 // For creation, only the contract owner can call
                 return Err(PayrollError::Unauthorized);
             }
 
-            let last_payment_time = if let Some(ref existing) = existing_payroll {
-                existing.last_payment_time
-            } else {
-                current_time
-            };
+            let last_payment_time = existing_payroll
+                .as_ref()
+                .map(|p| p.last_payment_time)
+                .unwrap_or(batch_ctx.current_time);
 
-            let next_payout_timestamp = current_time + payroll_input.recurrence_frequency;
+            let next_payout_timestamp = batch_ctx.current_time + payroll_input.recurrence_frequency;
 
             let payroll = Payroll {
                 employer: employer.clone(),
@@ -765,9 +764,14 @@ impl PayrollContract {
             let compact_payroll = Self::to_compact_payroll(&payroll);
             storage.set(&DataKey::Payroll(payroll_input.employee.clone()), &compact_payroll);
 
-            // Update indexing
-            Self::add_to_employer_index(&env, &employer, &payroll_input.employee);
-            Self::add_to_token_index(&env, &payroll_input.token, &payroll_input.employee);
+            // Update indexing efficiently
+            Self::update_indexes_efficiently(
+                &env,
+                &employer,
+                &payroll_input.token,
+                &payroll_input.employee,
+                IndexOperation::Add,
+            );
 
             // Automatically add token as supported if it's not already
             if !Self::is_token_supported(env.clone(), payroll_input.token.clone()) {
