@@ -574,15 +574,14 @@ impl PayrollContract {
                         let contract_address = env.current_contract_address();
                         token_client.transfer(&contract_address, &employee, &payroll.amount);
 
-                        // Update timestamps
-                        storage.set(
-                            &DataKey::PayrollLastPayment(employee.clone()),
-                            &current_time,
-                        );
-                        storage.set(
-                            &DataKey::PayrollNextPayoutTimestamp(employee.clone()),
-                            &(current_time + payroll.recurrence_frequency),
-                        );
+                                // Update payroll with new timestamps
+        let mut updated_payroll = payroll.clone();
+        updated_payroll.last_payment_time = current_time;
+        updated_payroll.next_payout_timestamp = current_time + payroll.recurrence_frequency;
+
+        // Store updated payroll
+        let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
 
                         // Add to processed list
                         processed_employees.push_back(employee.clone());
