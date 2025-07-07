@@ -4,7 +4,7 @@ use soroban_sdk::{
 };
 
 use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT};
-use crate::storage::{DataKey, Payroll};
+use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll};
 
 //-----------------------------------------------------------------------------
 // Errors
@@ -54,6 +54,9 @@ pub const RECUR_EVENT: Symbol = symbol_short!("recur");
 
 /// Event emitted when payroll is created or updated with recurrence
 pub const UPDATED_EVENT: Symbol = symbol_short!("updated");
+
+/// Event emitted when batch operations are performed
+pub const BATCH_EVENT: Symbol = symbol_short!("batch");
 
 //-----------------------------------------------------------------------------
 // Contract Implementation
@@ -242,30 +245,25 @@ impl PayrollContract {
             current_time
         };
 
-        let next_payout_timestamp = if let Some(ref existing) = existing_payroll {
-            // If updating, always recalculate next payout time based on new recurrence frequency
-            current_time + recurrence_frequency
-        } else {
-            // If creating, set to current time + recurrence frequency
-            current_time + recurrence_frequency
+        let next_payout_timestamp = current_time + recurrence_frequency;
+
+        let payroll = Payroll {
+            employer: employer.clone(),
+            token: token.clone(),
+            amount,
+            interval,
+            last_payment_time,
+            recurrence_frequency,
+            next_payout_timestamp,
         };
 
-        storage.set(&DataKey::PayrollEmployer(employee.clone()), &employer);
-        storage.set(&DataKey::PayrollToken(employee.clone()), &token);
-        storage.set(&DataKey::PayrollAmount(employee.clone()), &amount);
-        storage.set(&DataKey::PayrollInterval(employee.clone()), &interval);
-        storage.set(
-            &DataKey::PayrollLastPayment(employee.clone()),
-            &last_payment_time,
-        );
-        storage.set(
-            &DataKey::PayrollRecurrenceFrequency(employee.clone()),
-            &recurrence_frequency,
-        );
-        storage.set(
-            &DataKey::PayrollNextPayoutTimestamp(employee.clone()),
-            &next_payout_timestamp,
-        );
+        // Store the payroll using compact format for gas efficiency
+        let compact_payroll = Self::to_compact_payroll(&payroll);
+        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+
+        // Update indexing
+        Self::add_to_employer_index(&env, &employer, &employee);
+        Self::add_to_token_index(&env, &token, &employee);
 
         // Automatically add token as supported if it's not already
         if !Self::is_token_supported(env.clone(), token.clone()) {
@@ -428,22 +426,21 @@ impl PayrollContract {
             return Err(PayrollError::TransferFailed);
         }
 
-        // Update the last payment time and next payout timestamp
-        storage.set(
-            &DataKey::PayrollLastPayment(employee.clone()),
-            &current_time,
-        );
-        storage.set(
-            &DataKey::PayrollNextPayoutTimestamp(employee.clone()),
-            &(current_time + payroll.recurrence_frequency),
-        );
+        // Update payroll with new timestamps
+        let mut updated_payroll = payroll.clone();
+        updated_payroll.last_payment_time = current_time;
+        updated_payroll.next_payout_timestamp = current_time + payroll.recurrence_frequency;
+
+        // Store updated payroll
+        let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
 
         // Emit disburse event
         emit_disburse(
             env,
-            payroll.employer,
+            payroll.employer.clone(),
             employee,
-            payroll.token,
+            payroll.token.clone(),
             payroll.amount,
             current_time,
         );
@@ -503,33 +500,20 @@ impl PayrollContract {
 
     fn _get_payroll(env: &Env, employee: &Address) -> Option<Payroll> {
         let storage = env.storage().persistent();
-        let employer_key = DataKey::PayrollEmployer(employee.clone());
+        let payroll_key = DataKey::Payroll(employee.clone());
 
-        if !storage.has(&employer_key) {
+        if !storage.has(&payroll_key) {
             return None;
         }
 
-        Some(Payroll {
-            employer: storage.get(&employer_key).unwrap(),
-            token: storage
-                .get(&DataKey::PayrollToken(employee.clone()))
-                .unwrap(),
-            amount: storage
-                .get(&DataKey::PayrollAmount(employee.clone()))
-                .unwrap(),
-            interval: storage
-                .get(&DataKey::PayrollInterval(employee.clone()))
-                .unwrap(),
-            last_payment_time: storage
-                .get(&DataKey::PayrollLastPayment(employee.clone()))
-                .unwrap(),
-            recurrence_frequency: storage
-                .get(&DataKey::PayrollRecurrenceFrequency(employee.clone()))
-                .unwrap(),
-            next_payout_timestamp: storage
-                .get(&DataKey::PayrollNextPayoutTimestamp(employee.clone()))
-                .unwrap(),
-        })
+        // Try to get compact payroll first, fallback to regular payroll
+        if let Some(compact_payroll) = storage.get::<DataKey, CompactPayroll>(&payroll_key) {
+            Some(Self::from_compact_payroll(&compact_payroll))
+        } else if let Some(payroll) = storage.get::<DataKey, Payroll>(&payroll_key) {
+            Some(payroll)
+        } else {
+            None
+        }
     }
 
     /// Check if an employee is eligible for recurring disbursement
@@ -583,15 +567,14 @@ impl PayrollContract {
                         let contract_address = env.current_contract_address();
                         token_client.transfer(&contract_address, &employee, &payroll.amount);
 
-                        // Update timestamps
-                        storage.set(
-                            &DataKey::PayrollLastPayment(employee.clone()),
-                            &current_time,
-                        );
-                        storage.set(
-                            &DataKey::PayrollNextPayoutTimestamp(employee.clone()),
-                            &(current_time + payroll.recurrence_frequency),
-                        );
+                        // Update payroll with new timestamps
+                        let mut updated_payroll = payroll.clone();
+                        updated_payroll.last_payment_time = current_time;
+                        updated_payroll.next_payout_timestamp = current_time + payroll.recurrence_frequency;
+
+                        // Store updated payroll
+                        let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+                        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
 
                         // Add to processed list
                         processed_employees.push_back(employee.clone());
@@ -605,10 +588,6 @@ impl PayrollContract {
                             payroll.amount,
                             current_time,
                         );
-                        // env.events().publish(
-                        //     (DISBURSE_EVENT,),
-                        //     (payroll.employer, employee, payroll.token, payroll.amount),
-                        // );
                     }
                 }
             }
@@ -629,5 +608,313 @@ impl PayrollContract {
     /// Get recurrence frequency for an employee
     pub fn get_recurrence_frequency(env: Env, employee: Address) -> Option<u64> {
         Self::_get_payroll(&env, &employee).map(|payroll| payroll.recurrence_frequency)
+    }
+
+    /// Convert Payroll to CompactPayroll for storage optimization
+    fn to_compact_payroll(payroll: &Payroll) -> CompactPayroll {
+        CompactPayroll {
+            employer: payroll.employer.clone(),
+            token: payroll.token.clone(),
+            amount: payroll.amount,
+            interval: payroll.interval as u32,
+            last_payment_time: payroll.last_payment_time,
+            recurrence_frequency: payroll.recurrence_frequency as u32,
+            next_payout_timestamp: payroll.next_payout_timestamp,
+        }
+    }
+
+    /// Convert CompactPayroll back to Payroll
+    fn from_compact_payroll(compact: &CompactPayroll) -> Payroll {
+        Payroll {
+            employer: compact.employer.clone(),
+            token: compact.token.clone(),
+            amount: compact.amount,
+            interval: compact.interval as u64,
+            last_payment_time: compact.last_payment_time,
+            recurrence_frequency: compact.recurrence_frequency as u64,
+            next_payout_timestamp: compact.next_payout_timestamp,
+        }
+    }
+
+    /// Add employee to employer index
+    fn add_to_employer_index(env: &Env, employer: &Address, employee: &Address) {
+        let storage = env.storage().persistent();
+        let key = DataKey::EmployerEmployees(employer.clone());
+        let mut employees: Vec<Address> = storage.get(&key).unwrap_or(Vec::new(env));
+        
+        // Check if employee already exists to avoid duplicates
+        let mut exists = false;
+        for existing_employee in employees.iter() {
+            if &existing_employee == employee {
+                exists = true;
+                break;
+            }
+        }
+        
+        if !exists {
+            employees.push_back(employee.clone());
+            storage.set(&key, &employees);
+        }
+    }
+
+    /// Remove employee from employer index
+    fn remove_from_employer_index(env: &Env, employer: &Address, employee: &Address) {
+        let storage = env.storage().persistent();
+        let key = DataKey::EmployerEmployees(employer.clone());
+        let mut employees: Vec<Address> = storage.get(&key).unwrap_or(Vec::new(env));
+        
+        let mut new_employees = Vec::new(env);
+        for existing_employee in employees.iter() {
+            if &existing_employee != employee {
+                new_employees.push_back(existing_employee);
+            }
+        }
+        
+        if new_employees.len() > 0 {
+            storage.set(&key, &new_employees);
+        } else {
+            storage.remove(&key);
+        }
+    }
+
+    /// Add employee to token index
+    fn add_to_token_index(env: &Env, token: &Address, employee: &Address) {
+        let storage = env.storage().persistent();
+        let key = DataKey::TokenEmployees(token.clone());
+        let mut employees: Vec<Address> = storage.get(&key).unwrap_or(Vec::new(env));
+        
+        // Check if employee already exists to avoid duplicates
+        let mut exists = false;
+        for existing_employee in employees.iter() {
+            if &existing_employee == employee {
+                exists = true;
+                break;
+            }
+        }
+        
+        if !exists {
+            employees.push_back(employee.clone());
+            storage.set(&key, &employees);
+        }
+    }
+
+    /// Remove employee from token index
+    fn remove_from_token_index(env: &Env, token: &Address, employee: &Address) {
+        let storage = env.storage().persistent();
+        let key = DataKey::TokenEmployees(token.clone());
+        let mut employees: Vec<Address> = storage.get(&key).unwrap_or(Vec::new(env));
+        
+        let mut new_employees = Vec::new(env);
+        for existing_employee in employees.iter() {
+            if &existing_employee != employee {
+                new_employees.push_back(existing_employee);
+            }
+        }
+        
+        if new_employees.len() > 0 {
+            storage.set(&key, &new_employees);
+        } else {
+            storage.remove(&key);
+        }
+    }
+
+    /// Batch create or update escrows for multiple employees
+    /// This is more gas efficient than calling create_or_update_escrow multiple times
+    pub fn batch_create_escrows(
+        env: Env,
+        employer: Address,
+        payroll_inputs: Vec<PayrollInput>,
+    ) -> Result<Vec<Payroll>, PayrollError> {
+        // Check if contract is paused
+        Self::require_not_paused(&env)?;
+
+        employer.require_auth();
+
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+
+        let mut created_payrolls = Vec::new(&env);
+        let current_time = env.ledger().timestamp();
+
+        for payroll_input in payroll_inputs.iter() {
+            // Validate input
+            if payroll_input.interval == 0 || payroll_input.amount <= 0 || payroll_input.recurrence_frequency == 0 {
+                return Err(PayrollError::InvalidData);
+            }
+
+            let existing_payroll = Self::_get_payroll(&env, &payroll_input.employee);
+
+            if let Some(ref existing) = existing_payroll {
+                // For updates, only the contract owner or the existing payroll's employer can call
+                if employer != owner && employer != existing.employer {
+                    return Err(PayrollError::Unauthorized);
+                }
+            } else if employer != owner {
+                // For creation, only the contract owner can call
+                return Err(PayrollError::Unauthorized);
+            }
+
+            let last_payment_time = if let Some(ref existing) = existing_payroll {
+                existing.last_payment_time
+            } else {
+                current_time
+            };
+
+            let next_payout_timestamp = current_time + payroll_input.recurrence_frequency;
+
+            let payroll = Payroll {
+                employer: employer.clone(),
+                token: payroll_input.token.clone(),
+                amount: payroll_input.amount,
+                interval: payroll_input.interval,
+                last_payment_time,
+                recurrence_frequency: payroll_input.recurrence_frequency,
+                next_payout_timestamp,
+            };
+
+            // Store the payroll using compact format for gas efficiency
+            let compact_payroll = Self::to_compact_payroll(&payroll);
+            storage.set(&DataKey::Payroll(payroll_input.employee.clone()), &compact_payroll);
+
+            // Update indexing
+            Self::add_to_employer_index(&env, &employer, &payroll_input.employee);
+            Self::add_to_token_index(&env, &payroll_input.token, &payroll_input.employee);
+
+            // Automatically add token as supported if it's not already
+            if !Self::is_token_supported(env.clone(), payroll_input.token.clone()) {
+                let key = DataKey::SupportedToken(payroll_input.token.clone());
+                storage.set(&key, &true);
+
+                // Set default decimals (7 for Stellar assets)
+                let metadata_key = DataKey::TokenMetadata(payroll_input.token.clone());
+                storage.set(&metadata_key, &7u32);
+            }
+
+            created_payrolls.push_back(payroll);
+        }
+
+        // Emit batch event
+        env.events().publish(
+            (BATCH_EVENT,),
+            (employer, created_payrolls.len() as u32),
+        );
+
+        Ok(created_payrolls)
+    }
+
+    /// Batch disburse salaries to multiple employees
+    /// This is more gas efficient than calling disburse_salary multiple times
+    pub fn batch_disburse_salaries(
+        env: Env,
+        caller: Address,
+        employees: Vec<Address>,
+    ) -> Result<Vec<Address>, PayrollError> {
+        // Check if contract is paused
+        Self::require_not_paused(&env)?;
+
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let mut processed_employees = Vec::new(&env);
+        let current_time = env.ledger().timestamp();
+
+        for employee in employees.iter() {
+            let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+
+            // Only the employer can disburse salary
+            if caller != payroll.employer {
+                return Err(PayrollError::Unauthorized);
+            }
+
+            // Check if next payout time has been reached
+            if current_time < payroll.next_payout_timestamp {
+                return Err(PayrollError::NextPayoutTimeNotReached);
+            }
+
+            // Check if employer has sufficient balance
+            let balance_key = DataKey::Balance(payroll.employer.clone(), payroll.token.clone());
+            let current_balance: i128 = storage.get(&balance_key).unwrap_or(0);
+
+            if current_balance < payroll.amount {
+                return Err(PayrollError::InsufficientBalance);
+            }
+
+            // Deduct from employer's balance
+            storage.set(&balance_key, &(current_balance - payroll.amount));
+
+            // Transfer tokens to employee
+            let token_client = TokenClient::new(&env, &payroll.token);
+            let contract_address = env.current_contract_address();
+            token_client.transfer(&contract_address, &employee, &payroll.amount);
+
+            // Update payroll with new timestamps
+            let mut updated_payroll = payroll.clone();
+            updated_payroll.last_payment_time = current_time;
+            updated_payroll.next_payout_timestamp = current_time + payroll.recurrence_frequency;
+
+            // Store updated payroll
+            let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+            storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+
+            // Add to processed list
+            processed_employees.push_back(employee.clone());
+
+            // Emit individual disbursement event
+            emit_disburse(
+                env.clone(),
+                payroll.employer.clone(),
+                employee.clone(),
+                payroll.token.clone(),
+                payroll.amount,
+                current_time,
+            );
+        }
+
+        // Emit batch disbursement event
+        env.events().publish(
+            (BATCH_EVENT,),
+            (caller, processed_employees.len() as u32),
+        );
+
+        Ok(processed_employees)
+    }
+
+    /// Get all employees for a specific employer
+    pub fn get_employer_employees(env: Env, employer: Address) -> Vec<Address> {
+        let storage = env.storage().persistent();
+        storage.get(&DataKey::EmployerEmployees(employer)).unwrap_or(Vec::new(&env))
+    }
+
+    /// Get all employees for a specific token
+    pub fn get_token_employees(env: Env, token: Address) -> Vec<Address> {
+        let storage = env.storage().persistent();
+        storage.get(&DataKey::TokenEmployees(token)).unwrap_or(Vec::new(&env))
+    }
+
+    /// Remove a payroll and clean up indexes
+    pub fn remove_payroll(env: Env, caller: Address, employee: Address) -> Result<(), PayrollError> {
+        // Check if contract is paused
+        Self::require_not_paused(&env)?;
+
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+
+        // Only the contract owner or the payroll's employer can remove it
+        if caller != owner && caller != payroll.employer {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Remove from indexes
+        Self::remove_from_employer_index(&env, &payroll.employer, &employee);
+        Self::remove_from_token_index(&env, &payroll.token, &employee);
+
+        // Remove payroll data
+        storage.remove(&DataKey::Payroll(employee));
+
+        Ok(())
     }
 }
