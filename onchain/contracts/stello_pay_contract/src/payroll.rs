@@ -285,9 +285,8 @@ impl PayrollContract {
         let compact_payroll = Self::to_compact_payroll(&payroll);
         storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
 
-        // Update indexing
-        Self::add_to_employer_index(&env, &employer, &employee);
-        Self::add_to_token_index(&env, &token, &employee);
+        // Update indexing efficiently
+        Self::update_indexes_efficiently(&env, &employer, &token, &employee, IndexOperation::Add);
 
         // Automatically add token as supported if it's not already
         if !Self::is_token_supported(env.clone(), token.clone()) {
@@ -298,16 +297,6 @@ impl PayrollContract {
             let metadata_key = DataKey::TokenMetadata(token.clone());
             storage.set(&metadata_key, &7u32);
         }
-
-        let payroll = Payroll {
-            employer,
-            token,
-            amount,
-            interval,
-            last_payment_time,
-            recurrence_frequency,
-            next_payout_timestamp,
-        };
 
         // Emit payroll updated event
         env.events().publish(
