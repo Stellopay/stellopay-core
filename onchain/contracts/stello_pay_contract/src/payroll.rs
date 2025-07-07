@@ -253,22 +253,23 @@ impl PayrollContract {
             current_time + recurrence_frequency
         };
 
-        storage.set(&DataKey::PayrollEmployer(employee.clone()), &employer);
-        storage.set(&DataKey::PayrollToken(employee.clone()), &token);
-        storage.set(&DataKey::PayrollAmount(employee.clone()), &amount);
-        storage.set(&DataKey::PayrollInterval(employee.clone()), &interval);
-        storage.set(
-            &DataKey::PayrollLastPayment(employee.clone()),
-            &last_payment_time,
-        );
-        storage.set(
-            &DataKey::PayrollRecurrenceFrequency(employee.clone()),
-            &recurrence_frequency,
-        );
-        storage.set(
-            &DataKey::PayrollNextPayoutTimestamp(employee.clone()),
-            &next_payout_timestamp,
-        );
+        let payroll = Payroll {
+            employer: employer.clone(),
+            token: token.clone(),
+            amount,
+            interval,
+            last_payment_time,
+            recurrence_frequency,
+            next_payout_timestamp,
+        };
+
+        // Store the payroll using compact format for gas efficiency
+        let compact_payroll = Self::to_compact_payroll(&payroll);
+        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+
+        // Update indexing
+        Self::add_to_employer_index(&env, &employer, &employee);
+        Self::add_to_token_index(&env, &token, &employee);
 
         // Automatically add token as supported if it's not already
         if !Self::is_token_supported(env.clone(), token.clone()) {
