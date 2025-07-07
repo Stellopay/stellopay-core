@@ -55,6 +55,9 @@ pub const RECUR_EVENT: Symbol = symbol_short!("recur");
 /// Event emitted when payroll is created or updated with recurrence
 pub const UPDATED_EVENT: Symbol = symbol_short!("updated");
 
+/// Event emitted when batch operations are performed
+pub const BATCH_EVENT: Symbol = symbol_short!("batch");
+
 //-----------------------------------------------------------------------------
 // Contract Implementation
 //-----------------------------------------------------------------------------
@@ -441,9 +444,9 @@ impl PayrollContract {
         // Emit disburse event
         emit_disburse(
             env,
-            payroll.employer,
+            payroll.employer.clone(),
             employee,
-            payroll.token,
+            payroll.token.clone(),
             payroll.amount,
             current_time,
         );
@@ -629,5 +632,113 @@ impl PayrollContract {
     /// Get recurrence frequency for an employee
     pub fn get_recurrence_frequency(env: Env, employee: Address) -> Option<u64> {
         Self::_get_payroll(&env, &employee).map(|payroll| payroll.recurrence_frequency)
+    }
+
+    /// Convert Payroll to CompactPayroll for storage optimization
+    fn to_compact_payroll(payroll: &Payroll) -> CompactPayroll {
+        CompactPayroll {
+            employer: payroll.employer.clone(),
+            token: payroll.token.clone(),
+            amount: payroll.amount,
+            interval: payroll.interval as u32,
+            last_payment_time: payroll.last_payment_time,
+            recurrence_frequency: payroll.recurrence_frequency as u32,
+            next_payout_timestamp: payroll.next_payout_timestamp,
+        }
+    }
+
+    /// Convert CompactPayroll back to Payroll
+    fn from_compact_payroll(compact: &CompactPayroll) -> Payroll {
+        Payroll {
+            employer: compact.employer.clone(),
+            token: compact.token.clone(),
+            amount: compact.amount,
+            interval: compact.interval as u64,
+            last_payment_time: compact.last_payment_time,
+            recurrence_frequency: compact.recurrence_frequency as u64,
+            next_payout_timestamp: compact.next_payout_timestamp,
+        }
+    }
+
+    /// Add employee to employer index
+    fn add_to_employer_index(env: &Env, employer: &Address, employee: &Address) {
+        let storage = env.storage().persistent();
+        let key = DataKey::EmployerEmployees(employer.clone());
+        let mut employees: Vec<Address> = storage.get(&key).unwrap_or(Vec::new(env));
+        
+        // Check if employee already exists to avoid duplicates
+        let mut exists = false;
+        for existing_employee in employees.iter() {
+            if &existing_employee == employee {
+                exists = true;
+                break;
+            }
+        }
+        
+        if !exists {
+            employees.push_back(employee.clone());
+            storage.set(&key, &employees);
+        }
+    }
+
+    /// Remove employee from employer index
+    fn remove_from_employer_index(env: &Env, employer: &Address, employee: &Address) {
+        let storage = env.storage().persistent();
+        let key = DataKey::EmployerEmployees(employer.clone());
+        let mut employees: Vec<Address> = storage.get(&key).unwrap_or(Vec::new(env));
+        
+        let mut new_employees = Vec::new(env);
+        for existing_employee in employees.iter() {
+            if &existing_employee != employee {
+                new_employees.push_back(existing_employee);
+            }
+        }
+        
+        if new_employees.len() > 0 {
+            storage.set(&key, &new_employees);
+        } else {
+            storage.remove(&key);
+        }
+    }
+
+    /// Add employee to token index
+    fn add_to_token_index(env: &Env, token: &Address, employee: &Address) {
+        let storage = env.storage().persistent();
+        let key = DataKey::TokenEmployees(token.clone());
+        let mut employees: Vec<Address> = storage.get(&key).unwrap_or(Vec::new(env));
+        
+        // Check if employee already exists to avoid duplicates
+        let mut exists = false;
+        for existing_employee in employees.iter() {
+            if &existing_employee == employee {
+                exists = true;
+                break;
+            }
+        }
+        
+        if !exists {
+            employees.push_back(employee.clone());
+            storage.set(&key, &employees);
+        }
+    }
+
+    /// Remove employee from token index
+    fn remove_from_token_index(env: &Env, token: &Address, employee: &Address) {
+        let storage = env.storage().persistent();
+        let key = DataKey::TokenEmployees(token.clone());
+        let mut employees: Vec<Address> = storage.get(&key).unwrap_or(Vec::new(env));
+        
+        let mut new_employees = Vec::new(env);
+        for existing_employee in employees.iter() {
+            if &existing_employee != employee {
+                new_employees.push_back(existing_employee);
+            }
+        }
+        
+        if new_employees.len() > 0 {
+            storage.set(&key, &new_employees);
+        } else {
+            storage.remove(&key);
+        }
     }
 }
