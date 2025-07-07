@@ -245,13 +245,7 @@ impl PayrollContract {
             current_time
         };
 
-        let next_payout_timestamp = if let Some(ref existing) = existing_payroll {
-            // If updating, always recalculate next payout time based on new recurrence frequency
-            current_time + recurrence_frequency
-        } else {
-            // If creating, set to current time + recurrence frequency
-            current_time + recurrence_frequency
-        };
+        let next_payout_timestamp = current_time + recurrence_frequency;
 
         let payroll = Payroll {
             employer: employer.clone(),
