@@ -522,61 +522,47 @@ impl PayrollContract {
         caller: Address,
         employees: Vec<Address>,
     ) -> Vec<Address> {
-        // Check if contract is paused
-        Self::require_not_paused(&env).unwrap();
-
         caller.require_auth();
 
-        let storage = env.storage().persistent();
-        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+        // Create optimized batch context
+        let batch_ctx = Self::create_batch_context(&env);
 
         // Only owner can process recurring disbursements
-        if caller != owner {
+        if let Some(owner) = &batch_ctx.cache.owner {
+            if caller != *owner {
+                panic!("Unauthorized");
+            }
+        } else {
             panic!("Unauthorized");
         }
 
         let mut processed_employees = Vec::new(&env);
-        let current_time = env.ledger().timestamp();
 
         for employee in employees.iter() {
             if let Some(payroll) = Self::_get_payroll(&env, &employee) {
                 // Check if employee is eligible for disbursement
-                if current_time >= payroll.next_payout_timestamp {
-                    // Check if employer has sufficient balance
-                    let balance_key =
-                        DataKey::Balance(payroll.employer.clone(), payroll.token.clone());
-                    let current_balance: i128 = storage.get(&balance_key).unwrap_or(0);
-
-                    if current_balance >= payroll.amount {
-                        // Deduct from employer's balance
-                        storage.set(&balance_key, &(current_balance - payroll.amount));
-
-                        // Transfer tokens to employee
-                        let token_client = TokenClient::new(&env, &payroll.token);
+                if batch_ctx.current_time >= payroll.next_payout_timestamp {
+                    // Optimized balance check and update
+                    if let Ok(()) = Self::check_and_update_balance(&env, &payroll.employer, &payroll.token, payroll.amount) {
+                        // Optimized token transfer
                         let contract_address = env.current_contract_address();
-                        token_client.transfer(&contract_address, &employee, &payroll.amount);
+                        if let Ok(()) = Self::transfer_tokens_safe(&env, &payroll.token, &contract_address, &employee, payroll.amount) {
+                            // Optimized payroll update with minimal storage operations
+                            Self::update_payroll_timestamps(&env, &employee, &payroll, batch_ctx.current_time);
 
-                        // Update payroll with new timestamps
-                        let mut updated_payroll = payroll.clone();
-                        updated_payroll.last_payment_time = current_time;
-                        updated_payroll.next_payout_timestamp = current_time + payroll.recurrence_frequency;
+                            // Add to processed list
+                            processed_employees.push_back(employee.clone());
 
-                        // Store updated payroll
-                        let compact_payroll = Self::to_compact_payroll(&updated_payroll);
-                        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
-
-                        // Add to processed list
-                        processed_employees.push_back(employee.clone());
-
-                        // Emit individual disbursement event
-                        emit_disburse(
-                            env.clone(),
-                            payroll.employer.clone(),
-                            employee.clone(),
-                            payroll.token.clone(),
-                            payroll.amount,
-                            current_time,
-                        );
+                            // Emit individual disbursement event
+                            emit_disburse(
+                                env.clone(),
+                                payroll.employer.clone(),
+                                employee.clone(),
+                                payroll.token.clone(),
+                                payroll.amount,
+                                batch_ctx.current_time,
+                            );
+                        }
                     }
                 }
             }
@@ -802,14 +788,12 @@ impl PayrollContract {
         caller: Address,
         employees: Vec<Address>,
     ) -> Result<Vec<Address>, PayrollError> {
-        // Check if contract is paused
-        Self::require_not_paused(&env)?;
-
         caller.require_auth();
 
+        // Create optimized batch context
+        let batch_ctx = Self::create_batch_context(&env);
         let storage = env.storage().persistent();
         let mut processed_employees = Vec::new(&env);
-        let current_time = env.ledger().timestamp();
 
         for employee in employees.iter() {
             let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
@@ -820,34 +804,19 @@ impl PayrollContract {
             }
 
             // Check if next payout time has been reached
-            if current_time < payroll.next_payout_timestamp {
+            if batch_ctx.current_time < payroll.next_payout_timestamp {
                 return Err(PayrollError::NextPayoutTimeNotReached);
             }
 
-            // Check if employer has sufficient balance
-            let balance_key = DataKey::Balance(payroll.employer.clone(), payroll.token.clone());
-            let current_balance: i128 = storage.get(&balance_key).unwrap_or(0);
+            // Optimized balance check and update
+            Self::check_and_update_balance(&env, &payroll.employer, &payroll.token, payroll.amount)?;
 
-            if current_balance < payroll.amount {
-                return Err(PayrollError::InsufficientBalance);
-            }
-
-            // Deduct from employer's balance
-            storage.set(&balance_key, &(current_balance - payroll.amount));
-
-            // Transfer tokens to employee
-            let token_client = TokenClient::new(&env, &payroll.token);
+            // Optimized token transfer
             let contract_address = env.current_contract_address();
-            token_client.transfer(&contract_address, &employee, &payroll.amount);
+            Self::transfer_tokens_safe(&env, &payroll.token, &contract_address, &employee, payroll.amount)?;
 
-            // Update payroll with new timestamps
-            let mut updated_payroll = payroll.clone();
-            updated_payroll.last_payment_time = current_time;
-            updated_payroll.next_payout_timestamp = current_time + payroll.recurrence_frequency;
-
-            // Store updated payroll
-            let compact_payroll = Self::to_compact_payroll(&updated_payroll);
-            storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+            // Optimized payroll update with minimal storage operations
+            Self::update_payroll_timestamps(&env, &employee, &payroll, batch_ctx.current_time);
 
             // Add to processed list
             processed_employees.push_back(employee.clone());
@@ -859,7 +828,7 @@ impl PayrollContract {
                 employee.clone(),
                 payroll.token.clone(),
                 payroll.amount,
-                current_time,
+                batch_ctx.current_time,
             );
         }
 
