@@ -506,33 +506,20 @@ impl PayrollContract {
 
     fn _get_payroll(env: &Env, employee: &Address) -> Option<Payroll> {
         let storage = env.storage().persistent();
-        let employer_key = DataKey::PayrollEmployer(employee.clone());
+        let payroll_key = DataKey::Payroll(employee.clone());
 
-        if !storage.has(&employer_key) {
+        if !storage.has(&payroll_key) {
             return None;
         }
 
-        Some(Payroll {
-            employer: storage.get(&employer_key).unwrap(),
-            token: storage
-                .get(&DataKey::PayrollToken(employee.clone()))
-                .unwrap(),
-            amount: storage
-                .get(&DataKey::PayrollAmount(employee.clone()))
-                .unwrap(),
-            interval: storage
-                .get(&DataKey::PayrollInterval(employee.clone()))
-                .unwrap(),
-            last_payment_time: storage
-                .get(&DataKey::PayrollLastPayment(employee.clone()))
-                .unwrap(),
-            recurrence_frequency: storage
-                .get(&DataKey::PayrollRecurrenceFrequency(employee.clone()))
-                .unwrap(),
-            next_payout_timestamp: storage
-                .get(&DataKey::PayrollNextPayoutTimestamp(employee.clone()))
-                .unwrap(),
-        })
+        // Try to get compact payroll first, fallback to regular payroll
+        if let Some(compact_payroll) = storage.get::<DataKey, CompactPayroll>(&payroll_key) {
+            Some(Self::from_compact_payroll(&compact_payroll))
+        } else if let Some(payroll) = storage.get::<DataKey, Payroll>(&payroll_key) {
+            Some(payroll)
+        } else {
+            None
+        }
     }
 
     /// Check if an employee is eligible for recurring disbursement
