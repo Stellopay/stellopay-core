@@ -237,28 +237,27 @@ impl PayrollContract {
         interval: u64,
         recurrence_frequency: u64,
     ) -> Result<Payroll, PayrollError> {
-        // Check if contract is paused
-        Self::require_not_paused(&env)?;
+        // Optimized validation with early returns
+        Self::validate_payroll_input(amount, interval, recurrence_frequency)?;
 
         employer.require_auth();
 
+        // Get cached contract state to reduce storage reads
+        let cache = Self::get_contract_cache(&env);
         let storage = env.storage().persistent();
-        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
 
+        // Check authorization with cached data
         let existing_payroll = Self::_get_payroll(&env, &employee);
+        let is_owner = cache.owner.as_ref().map_or(false, |owner| &employer == owner);
 
         if let Some(ref existing) = existing_payroll {
             // For updates, only the contract owner or the existing payroll's employer can call
-            if employer != owner && employer != existing.employer {
+            if !is_owner && &employer != &existing.employer {
                 return Err(PayrollError::Unauthorized);
             }
-        } else if employer != owner {
+        } else if !is_owner {
             // For creation, only the contract owner can call
             return Err(PayrollError::Unauthorized);
-        }
-
-        if interval == 0 || amount <= 0 || recurrence_frequency == 0 {
-            return Err(PayrollError::InvalidData);
         }
 
         let current_time = env.ledger().timestamp();
