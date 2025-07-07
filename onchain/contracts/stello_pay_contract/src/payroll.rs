@@ -4,7 +4,7 @@ use soroban_sdk::{
 };
 
 use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT};
-use crate::storage::{DataKey, Payroll};
+use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll};
 
 //-----------------------------------------------------------------------------
 // Errors
