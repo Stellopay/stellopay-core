@@ -7,6 +7,31 @@ use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT};
 use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll};
 
 //-----------------------------------------------------------------------------
+// Gas Optimization Structures
+//-----------------------------------------------------------------------------
+
+/// Cached contract state to reduce storage reads
+#[derive(Clone, Debug)]
+struct ContractCache {
+    owner: Option<Address>,
+    is_paused: Option<bool>,
+}
+
+/// Batch operation context for efficient processing
+#[derive(Clone, Debug)]
+struct BatchContext {
+    current_time: u64,
+    cache: ContractCache,
+}
+
+/// Index operation type for efficient index management
+#[derive(Clone, Debug)]
+enum IndexOperation {
+    Add,
+    Remove,
+}
+
+//-----------------------------------------------------------------------------
 // Errors
 //-----------------------------------------------------------------------------
 
@@ -917,4 +942,151 @@ impl PayrollContract {
 
         Ok(())
     }
+
+    //-----------------------------------------------------------------------------
+    // Gas Optimization Helper Functions
+    //-----------------------------------------------------------------------------
+
+    /// Get cached contract state to reduce storage reads
+    fn get_contract_cache(env: &Env) -> ContractCache {
+        let storage = env.storage().persistent();
+        ContractCache {
+            owner: storage.get(&DataKey::Owner),
+            is_paused: storage.get(&DataKey::Paused),
+        }
+    }
+
+    /// Optimized validation that combines multiple checks
+    fn validate_payroll_input(
+        amount: i128,
+        interval: u64,
+        recurrence_frequency: u64,
+    ) -> Result<(), PayrollError> {
+        // Early return for invalid data to avoid unnecessary processing
+        if amount <= 0 {
+            return Err(PayrollError::InvalidData);
+        }
+        if interval == 0 {
+            return Err(PayrollError::InvalidData);
+        }
+        if recurrence_frequency == 0 {
+            return Err(PayrollError::InvalidRecurrenceFrequency);
+        }
+        Ok(())
+    }
+
+    /// Optimized authorization check with caching
+    fn check_authorization(
+        env: &Env,
+        caller: &Address,
+        cache: &ContractCache,
+        required_owner: bool,
+    ) -> Result<(), PayrollError> {
+        // Early return if contract is paused
+        if let Some(true) = cache.is_paused {
+            return Err(PayrollError::ContractPaused);
+        }
+
+        if required_owner {
+            if let Some(owner) = &cache.owner {
+                if caller != owner {
+                    return Err(PayrollError::Unauthorized);
+                }
+            } else {
+                return Err(PayrollError::Unauthorized);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Optimized balance check and update
+    fn check_and_update_balance(
+        env: &Env,
+        employer: &Address,
+        token: &Address,
+        amount: i128,
+    ) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        let balance_key = DataKey::Balance(employer.clone(), token.clone());
+        let current_balance: i128 = storage.get(&balance_key).unwrap_or(0);
+
+        if current_balance < amount {
+            return Err(PayrollError::InsufficientBalance);
+        }
+
+        // Update balance in single operation
+        storage.set(&balance_key, &(current_balance - amount));
+        Ok(())
+    }
+
+    /// Optimized token transfer with balance verification
+    fn transfer_tokens_safe(
+        env: &Env,
+        token: &Address,
+        from: &Address,
+        to: &Address,
+        amount: i128,
+    ) -> Result<(), PayrollError> {
+        let token_client = TokenClient::new(env, token);
+        let initial_balance = token_client.balance(to);
+        
+        token_client.transfer(from, to, &amount);
+        
+        // Verify transfer success
+        if token_client.balance(to) != initial_balance + amount {
+            return Err(PayrollError::TransferFailed);
+        }
+        
+        Ok(())
+    }
+
+    /// Optimized payroll update with minimal storage operations
+    fn update_payroll_timestamps(
+        env: &Env,
+        employee: &Address,
+        payroll: &Payroll,
+        current_time: u64,
+    ) {
+        let storage = env.storage().persistent();
+        let mut updated_payroll = payroll.clone();
+        updated_payroll.last_payment_time = current_time;
+        updated_payroll.next_payout_timestamp = current_time + payroll.recurrence_frequency;
+
+        // Single storage operation for the entire update
+        let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+    }
+
+    /// Optimized index management with duplicate prevention
+    fn update_indexes_efficiently(
+        env: &Env,
+        employer: &Address,
+        token: &Address,
+        employee: &Address,
+        operation: IndexOperation,
+    ) {
+        match operation {
+            IndexOperation::Add => {
+                Self::add_to_employer_index(env, employer, employee);
+                Self::add_to_token_index(env, token, employee);
+            }
+            IndexOperation::Remove => {
+                Self::remove_from_employer_index(env, employer, employee);
+                Self::remove_from_token_index(env, token, employee);
+            }
+        }
+    }
+
+    /// Optimized batch context creation
+    fn create_batch_context(env: &Env) -> BatchContext {
+        BatchContext {
+            current_time: env.ledger().timestamp(),
+            cache: Self::get_contract_cache(env),
+        }
+    }
+
+    //-----------------------------------------------------------------------------
+    // Main Contract Functions (Optimized)
+    //-----------------------------------------------------------------------------
 }
