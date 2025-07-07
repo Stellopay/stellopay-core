@@ -432,15 +432,14 @@ impl PayrollContract {
             return Err(PayrollError::TransferFailed);
         }
 
-        // Update the last payment time and next payout timestamp
-        storage.set(
-            &DataKey::PayrollLastPayment(employee.clone()),
-            &current_time,
-        );
-        storage.set(
-            &DataKey::PayrollNextPayoutTimestamp(employee.clone()),
-            &(current_time + payroll.recurrence_frequency),
-        );
+        // Update payroll with new timestamps
+        let mut updated_payroll = payroll.clone();
+        updated_payroll.last_payment_time = current_time;
+        updated_payroll.next_payout_timestamp = current_time + payroll.recurrence_frequency;
+
+        // Store updated payroll
+        let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
 
         // Emit disburse event
         emit_disburse(
