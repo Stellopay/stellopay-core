@@ -323,32 +323,27 @@ impl PayrollContract {
         token: Address,
         amount: i128,
     ) -> Result<(), PayrollError> {
-        Self::require_not_paused(&env)?;
-        employer.require_auth();
-
+        // Early validation
         if amount <= 0 {
             return Err(PayrollError::InvalidData);
         }
 
-        // Transfer tokens from employer to contract
-        let token_client = TokenClient::new(&env, &token);
-        let initial_balance = token_client.balance(&env.current_contract_address());
-        token_client.transfer(&employer, &env.current_contract_address(), &amount);
+        employer.require_auth();
 
-        // Handle transfer failure
-        if token_client.balance(&env.current_contract_address()) < initial_balance + amount {
-            return Err(PayrollError::TransferFailed);
+        // Get cached contract state
+        let cache = Self::get_contract_cache(&env);
+        if let Some(true) = cache.is_paused {
+            return Err(PayrollError::ContractPaused);
         }
 
+        // Optimized token transfer with balance verification
+        Self::transfer_tokens_safe(&env, &token, &employer, &env.current_contract_address(), amount)?;
+
+        // Update balance in single operation
         let storage = env.storage().persistent();
         let balance_key = DataKey::Balance(employer.clone(), token.clone());
-
-        // Get current balance or default to 0
         let current_balance: i128 = storage.get(&balance_key).unwrap_or(0);
-        let new_balance = current_balance + amount;
-
-        // Update balance in storage
-        storage.set(&balance_key, &new_balance);
+        storage.set(&balance_key, &(current_balance + amount));
 
         env.events().publish(
             (DEPOSIT_EVENT, employer, token), // topics
