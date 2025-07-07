@@ -1,0 +1,60 @@
+[package]
+name = "stellopay-cli"
+version = "0.1.0"
+edition = "2021"
+description = "CLI tool for StellopayCore contract management"
+authors = ["StellopayCore Team"]
+license = "MIT"
+repository = "https://github.com/stellopay/stellopay-core"
+
+[[bin]]
+name = "stellopay-cli"
+path = "src/main.rs"
+
+[dependencies]
+# CLI framework
+clap = { version = "4.0", features = ["derive"] }
+
+# Async runtime
+tokio = { version = "1.0", features = ["full"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Logging
+log = "0.4"
+env_logger = "0.10"
+
+# Utilities
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5.0"
+uuid = { version = "1.0", features = ["v4"] }
+
+# Stellar/Soroban - removed due to dependency conflicts
+# Will implement basic HTTP API calls instead
+# soroban-cli = "20.0"  
+# soroban-sdk = "20.0"
+
+# Network and HTTP - simplified without TLS
+reqwest = { version = "0.11", features = ["json"], default-features = false }
+# Removed tokio-tungstenite for now
+
+# Progress bars and UI
+indicatif = "0.17"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.0"
+tempfile = "3.0"
+console = "0.15"
+dialoguer = "0.11"
+
+[features]
+default = []
