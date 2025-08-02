@@ -2,6 +2,13 @@ use anyhow::Result;
 use log::{info, warn, error};
 use std::path::PathBuf;
 use stellopay_cli::Config;
+// use crate::Config;
+use stellopay_cli::{require_admin,require_not_paused,TokenClient,Error};
+// use crate::token;
+//use soroban_sdk::contractclient::Client as SorobanHttpClient;
+//use anyhow::{Result,anyhow};
+//use soroban_client::rpc::Client as SorobonClient;
+use crate::utils::SorobanHttpClient;
 
 pub async fn deploy_command(
     network: String,
@@ -169,5 +176,60 @@ pub async fn status_command(config: &Config) -> Result<()> {
     println!();
     println!("Ready to use StellopayCore CLI!");
     
+    Ok(())
+}
+
+pub async fn emergency_withdraw(
+    config:&Config,
+    dummy_context:&str,
+    contract_id: &str,
+    token: &str,
+    recipient: &str,
+    amount: i128,
+    verbose: bool,
+) -> Result<(), Error>{
+    //verbose output
+    if verbose{
+        println!("Withdrawing {} of token {} to {}",amount,token,recipient);
+    }
+   
+    //get secret key from config
+    let signer=config.auth.secret_key
+    .clone()
+    .ok_or_else( || anyhow::anyhow!("Missing secret key"))?;
+    //ensuring caller is admin
+    require_admin(&dummy_context)?;
+
+    //Ensuring contract is not paused
+    require_not_paused(&dummy_context)?;
+
+    //validating amount is non-zero
+    if amount<=0{
+        return Err(Error::ZeroAmount)
+    }
+     //preparing soroban contract call
+    let contract_client=SorobanHttpClient::new(&config.network.rpc_url);
+    //performing token transfer
+    let token_client=TokenClient::new(&config.network.rpc_url,token);
+    token_client.transfer(
+        &recipient,
+        amount,
+    );
+    //emitting event for transparency
+    // env.events().publish(
+    //     (symbol_short!("emergency_withdraw"),recipient.clone()),
+    //     amount,
+    // );
+    //calling the contract function
+    contract_client.invoke(
+        contract_id,
+        "emergency_withdraw",
+        vec![
+            ("token",token),
+            ("recipient",recipient),
+            ("amount",&amount.to_string()),
+        ],
+        &signer,
+    ).await?;
     Ok(())
 }
