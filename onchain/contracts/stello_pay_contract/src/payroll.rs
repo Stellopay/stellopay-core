@@ -3,7 +3,7 @@ use soroban_sdk::{
     Env, Symbol, Vec,
 };
 
-use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT};
+use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT};
 use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll};
 
 //-----------------------------------------------------------------------------
@@ -279,6 +279,7 @@ impl PayrollContract {
             last_payment_time,
             recurrence_frequency,
             next_payout_timestamp,
+            is_paused: false
         };
 
         // Store the payroll using compact format for gas efficiency
@@ -595,6 +596,7 @@ impl PayrollContract {
             last_payment_time: payroll.last_payment_time,
             recurrence_frequency: payroll.recurrence_frequency as u32,
             next_payout_timestamp: payroll.next_payout_timestamp,
+            is_paused: payroll.is_paused
         }
     }
 
@@ -608,6 +610,7 @@ impl PayrollContract {
             last_payment_time: compact.last_payment_time,
             recurrence_frequency: compact.recurrence_frequency as u64,
             next_payout_timestamp: compact.next_payout_timestamp,
+            is_paused: compact.is_paused
         }
     }
 
@@ -744,6 +747,7 @@ impl PayrollContract {
                 last_payment_time,
                 recurrence_frequency: payroll_input.recurrence_frequency,
                 next_payout_timestamp,
+                is_paused: false
             };
 
             // Store the payroll using compact format for gas efficiency
@@ -876,6 +880,64 @@ impl PayrollContract {
 
         // Remove payroll data
         storage.remove(&DataKey::Payroll(employee));
+
+        Ok(())
+    }
+
+    pub fn pause_employee_payroll(env: Env, caller: Address, employee: Address) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let cache = Self::get_contract_cache(&env);
+
+        // Check if caller is authorized (owner or employer)
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+        let is_owner = cache.owner.as_ref().map_or(false, |owner| &caller == owner);
+        if !is_owner && caller != payroll.employer {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Update payroll pause state
+        let mut updated_payroll = payroll.clone();
+        updated_payroll.is_paused = true;
+        
+        // Store updated payroll
+        let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+
+        // Emit pause event
+        env.events().publish((EMPLOYEE_PAUSED_EVENT,), (caller, employee.clone()));
+
+        Ok(())
+    }
+
+    pub fn resume_employee_payroll(
+        env: Env,
+        caller: Address,
+        employee: Address,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let cache = Self::get_contract_cache(&env);
+
+        // Check if caller is authorized (owner or employer)
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+        let is_owner = cache.owner.as_ref().map_or(false, |owner| &caller == owner);
+        if !is_owner && caller != payroll.employer {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Update payroll pause state
+        let mut updated_payroll = payroll.clone();
+        updated_payroll.is_paused = false;
+        
+        // Store updated payroll
+        let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+
+        // Emit resume event
+        env.events().publish((EMPLOYEE_RESUMED_EVENT,), (caller, employee.clone()));
 
         Ok(())
     }
@@ -1027,3 +1089,7 @@ impl PayrollContract {
     // Main Contract Functions (Optimized)
     //-----------------------------------------------------------------------------
 }
+
+
+// tests::test_create_or_update_escrow::test_create_escrow_invalid_recurrence_frequency
+    // tests::test_pause_and_unpause::test_create_escrow_when_paused_fails

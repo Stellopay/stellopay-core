@@ -3,3 +3,4 @@ mod test_employer_deposit_base_salary;
 mod test_pause_and_unpause;
 mod test_payroll;
 mod test_recurring_payments;
+mod test_pause_and_resume_employee;

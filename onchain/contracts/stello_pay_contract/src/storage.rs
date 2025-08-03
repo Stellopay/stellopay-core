@@ -14,6 +14,7 @@ pub struct Payroll {
     pub last_payment_time: u64,
     pub recurrence_frequency: u64, // Frequency in seconds (e.g., 2592000 for 30 days)
     pub next_payout_timestamp: u64, // Next scheduled payout timestamp
+    pub is_paused: bool,
 }
 
 /// Input structure for batch payroll creation
@@ -38,6 +39,7 @@ pub struct CompactPayroll {
     pub last_payment_time: u64,
     pub recurrence_frequency: u32, // Reduced from u64 to u32 for most use cases
     pub next_payout_timestamp: u64,
+    pub is_paused: bool,
 }
 
 //-----------------------------------------------------------------------------

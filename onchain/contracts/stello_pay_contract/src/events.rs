@@ -12,6 +12,12 @@ pub const UNPAUSED_EVENT: Symbol = symbol_short!("unpaused");
 
 pub const DEPOSIT_EVENT: Symbol = symbol_short!("deposit");
 
+/// Event emitted when an individual employee's payroll is paused
+pub const EMPLOYEE_PAUSED_EVENT: Symbol = symbol_short!("emppaused");
+
+/// Event emitted when an individual employee's payroll is resumed
+pub const EMPLOYEE_RESUMED_EVENT: Symbol = symbol_short!("empresume");
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SalaryDisbursed {
