@@ -404,6 +404,11 @@ impl PayrollContract {
 
         let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
 
+        // Check if payroll is paused for this employee
+        if payroll.is_paused {
+            return Err(PayrollError::ContractPaused);
+        }
+
         // Only the employer can disburse salary
         if caller != payroll.employer {
             return Err(PayrollError::Unauthorized);
@@ -541,8 +546,8 @@ impl PayrollContract {
 
         for employee in employees.iter() {
             if let Some(payroll) = Self::_get_payroll(&env, &employee) {
-                // Check if employee is eligible for disbursement
-                if batch_ctx.current_time >= payroll.next_payout_timestamp {
+                // Check if employee is eligible for disbursement and not paused
+                if batch_ctx.current_time >= payroll.next_payout_timestamp && !payroll.is_paused {
                     // Optimized balance check and update
                     if let Ok(()) = Self::check_and_update_balance(&env, &payroll.employer, &payroll.token, payroll.amount) {
                         // Optimized token transfer
@@ -805,6 +810,11 @@ impl PayrollContract {
             // Only the employer can disburse salary
             if caller != payroll.employer {
                 return Err(PayrollError::Unauthorized);
+            }
+
+            // Check if payroll is paused for this employee
+            if payroll.is_paused {
+                return Err(PayrollError::ContractPaused);
             }
 
             // Check if next payout time has been reached
@@ -1089,7 +1099,3 @@ impl PayrollContract {
     // Main Contract Functions (Optimized)
     //-----------------------------------------------------------------------------
 }
-
-
-// tests::test_create_or_update_escrow::test_create_escrow_invalid_recurrence_frequency
-    // tests::test_pause_and_unpause::test_create_escrow_when_paused_fails
