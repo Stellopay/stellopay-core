@@ -1,10 +1,7 @@
-use soroban_sdk::{testutils::Address as _, Address, Env};
-use crate::payroll::{PayrollContractClient, PayrollError};
+use soroban_sdk::{testutils::{Address as _, Ledger, LedgerInfo}, Address, Env, Vec};
 use soroban_sdk::token::{StellarAssetClient as TokenAdmin, TokenClient};
-use soroban_sdk::{
-    testutils::{Address as _, Ledger, LedgerInfo, MockAuth, MockAuthInvoke},
-     IntoVal, Vec,
-};
+
+use crate::payroll::{PayrollContractClient};
 
 fn setup_token(env: &Env) -> (Address, TokenAdmin) {
     let token_admin = Address::generate(env);
