@@ -62,4 +62,16 @@ pub enum DataKey {
 
     SupportedToken(Address),
     TokenMetadata(Address),
+
+    // Insurance-related storage keys
+    InsurancePolicy(Address),            // employee -> InsurancePolicy
+    InsuranceClaim(u64),                 // claim_id -> InsuranceClaim
+    NextClaimId,                         // Next available claim ID
+    InsurancePool(Address),              // token -> InsurancePool
+    GuaranteeFund(Address),              // token -> GuaranteeFund
+    Guarantee(u64),                      // guarantee_id -> Guarantee
+    NextGuaranteeId,                     // Next available guarantee ID
+    EmployerGuarantees(Address),         // employer -> Vec<u64> (guarantee IDs)
+    RiskAssessment(Address),             // employee -> u32 (risk score)
+    InsuranceSettings,                   // Global insurance settings
 }
