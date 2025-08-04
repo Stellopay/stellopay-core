@@ -894,6 +894,8 @@ impl PayrollContract {
         Ok(())
     }
 
+    /// Pauses payroll for a specific employee, preventing disbursements.
+    /// Only callable by contract owner or employee's employer.
     pub fn pause_employee_payroll(env: Env, caller: Address, employee: Address) -> Result<(), PayrollError> {
         caller.require_auth();
 
@@ -921,6 +923,8 @@ impl PayrollContract {
         Ok(())
     }
 
+    /// Resumes payroll for a specific employee, allowing disbursements.
+    /// Only callable by contract owner or employee's employer.
     pub fn resume_employee_payroll(
         env: Env,
         caller: Address,
