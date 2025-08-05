@@ -24,6 +24,16 @@ pub struct SalaryDisbursed {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModificationEvent {
+    pub id: u64,
+    pub employee: Address,
+    pub employer: Address,
+    pub action:Symbol, //"request","approve","reject"
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmployerWithdrawn {
     pub employer: Address,
     pub token: Address,
@@ -31,6 +41,17 @@ pub struct EmployerWithdrawn {
     pub timestamp: u64,
 }
 
+pub fn modification_event(env:Env,symbol:&str,ev:ModificationEvent){
+    let topic=(Symbol::new(&env,symbol),);
+    env.events().publish(topic,ev);
+}
+
+pub fn emit_modification_event(env:&Env,event:ModificationEvent){
+    env.events().publish(
+        (Symbol::short("modification"),),
+        event,
+    );
+}
 pub fn emit_disburse(
     e: Env,
     employer: Address,

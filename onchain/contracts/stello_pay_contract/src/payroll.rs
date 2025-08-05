@@ -3,8 +3,8 @@ use soroban_sdk::{
     Env, Symbol, Vec,
 };
 
-use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT};
-use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll};
+use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT,ModificationEvent,emit_modification_event};
+use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll,PayrollModification};
 
 //-----------------------------------------------------------------------------
 // Gas Optimization Structures
@@ -30,6 +30,7 @@ enum IndexOperation {
     Add,
     Remove,
 }
+
 
 //-----------------------------------------------------------------------------
 // Errors
@@ -1022,7 +1023,158 @@ impl PayrollContract {
             cache: Self::get_contract_cache(env),
         }
     }
+    pub fn request_payroll_modification(
+        env:Env,
+        employee:Address,
+        employer:Address,
+        new_payroll:Payroll,
+    ) -> Result<(), PayrollError>{
+        Self::require_not_paused(&env)?;
+        employee.require_auth();
+        let storage=env.storage().persistent();
+        let nonce:u64=storage.get(&DataKey::ModificationNonce).unwrap_or(0);
+        let timestamp=env.ledger().timestamp();
 
+        let modification=PayrollModification{
+            modification_id:nonce,
+            employee: employee.clone(),
+            employer: employer.clone(),
+	        new_data:new_payroll,
+	        employee_approved:false,
+	        employer_approved:false,
+	        requested_at:timestamp,
+        };
+        storage.set(&DataKey::PendingModifications(nonce),&modification);
+        storage.set(&DataKey::ModificationNonce,&(nonce+1));
+
+        emit_modification_event(
+            &env,
+            ModificationEvent{
+                id:nonce,
+                employee,
+                employer,
+                timestamp,
+                action:symbol_short!("modreqstd"),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn approve_payroll_modification(
+        env:Env,
+        approver:Address,
+        modification_id:u64,
+    ) -> Result<(),PayrollError> {
+        Self::require_not_paused(&env)?;
+        approver.require_auth();
+        let storage=env.storage().persistent();
+        let mut modif: PayrollModification=storage
+            .get(&DataKey::PendingModifications(modification_id))
+            .ok_or(PayrollError::InvalidData)?;
+
+        if approver==modif.employee{
+            modif.employee_approved=true;
+        } else if approver==modif.employer{
+            modif.employer_approved=true;
+        } else{
+            return Err(PayrollError::Unauthorized);
+        }
+        if modif.employee_approved && modif.employer_approved{
+            //store new payroll
+            let compact =CompactPayroll{
+                employer:modif.new_data.employer.clone(),
+                token: modif.new_data.token.clone(),
+                amount:modif.new_data.amount,
+                interval:modif.new_data.interval as u32,
+                last_payment_time:modif.new_data.last_payment_time,
+                recurrence_frequency:modif.new_data.recurrence_frequency as u32,
+                next_payout_timestamp:modif.new_data.next_payout_timestamp,
+            };
+            storage.set(&DataKey::Payroll(modif.employee.clone()),&compact);
+            storage.remove(&DataKey::PendingModifications(modification_id));
+            emit_modification_event(
+                &env,
+                ModificationEvent{
+                    id:modification_id,
+                    employee:modif.employee,
+                    employer:modif.employer,
+                    timestamp:env.ledger().timestamp(),
+                    action:symbol_short!("modapp"),
+                },
+            );
+        }else{
+            //update partial approval
+            storage.set(&DataKey::PendingModifications(modification_id),&modif);
+        }
+        Ok(())
+    }
+
+    pub fn reject_payroll_modification(
+        env:Env,
+        approver:Address,
+        modification_id:u64,
+    )-> Result<(),PayrollError>{
+        Self::require_not_paused(&env)?;
+        approver.require_auth();
+        let storage=env.storage().persistent();
+        let modif:PayrollModification=storage
+            .get(&DataKey::PendingModifications(modification_id))
+            .ok_or(PayrollError::InvalidData)?;
+
+        if approver!=modif.employee && approver!=modif.employer{
+            return Err(PayrollError::Unauthorized);
+        }
+        // Remove the pending modification after rejection
+        storage.remove(&DataKey::PendingModifications(modification_id));
+        emit_modification_event(
+            &env,
+            ModificationEvent{
+                id: modification_id,
+                employee: modif.employee,
+                employer: modif.employer,
+                timestamp:env.ledger().timestamp(),
+                action:symbol_short!("modrej"),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn cleanup_timed_out_modification(env:Env,caller:Address){
+        // Optionally add require_auth for owner/admin here
+        caller.require_auth();
+        let storage=env.storage().persistent();
+        let owner=storage.get::<DataKey,Address>(&DataKey::Owner).unwrap();
+        if caller!=owner{
+            panic!("Unauthorized");
+        }
+        let now=env.ledger().timestamp();
+        let timeout: u64=storage.get(&DataKey::TimeoutPeriod).unwrap_or(86400);
+        let mut i:u64=0;
+        let mut found=true;
+        while found{
+            match storage.get::<DataKey,PayrollModification>(&DataKey::PendingModifications(i)){
+                Some(modif)=>{
+                    if now>modif.requested_at+timeout{
+                        storage.remove(&DataKey::PendingModifications(i));
+                        emit_modification_event(
+                            &env,
+                            ModificationEvent{
+                                id:i,
+                                employee:modif.employee,
+                                employer:modif.employer,
+                                timestamp:now,
+                                action:symbol_short!("modtout"),
+                            },
+                        );
+                    }
+                    i+=1;
+                }
+                None=>{
+                    found=false;
+                }
+            }
+        }
+    }
     //-----------------------------------------------------------------------------
     // Main Contract Functions (Optimized)
     //-----------------------------------------------------------------------------
