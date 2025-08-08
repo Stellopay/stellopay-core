@@ -3,7 +3,7 @@ use soroban_sdk::{
     Env, Symbol, Vec, String,
 };
 
-use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT};
+use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT};
 use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll};
 use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
 
@@ -280,6 +280,7 @@ impl PayrollContract {
             last_payment_time,
             recurrence_frequency,
             next_payout_timestamp,
+            is_paused: false
         };
 
         // Store the payroll using compact format for gas efficiency
@@ -403,6 +404,11 @@ impl PayrollContract {
         }
 
         let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+
+        // Check if payroll is paused for this employee
+        if payroll.is_paused {
+            return Err(PayrollError::ContractPaused);
+        }
 
         // Only the employer can disburse salary
         if caller != payroll.employer {
@@ -541,8 +547,8 @@ impl PayrollContract {
 
         for employee in employees.iter() {
             if let Some(payroll) = Self::_get_payroll(&env, &employee) {
-                // Check if employee is eligible for disbursement
-                if batch_ctx.current_time >= payroll.next_payout_timestamp {
+                // Check if employee is eligible for disbursement and not paused
+                if batch_ctx.current_time >= payroll.next_payout_timestamp && !payroll.is_paused {
                     // Optimized balance check and update
                     if let Ok(()) = Self::check_and_update_balance(&env, &payroll.employer, &payroll.token, payroll.amount) {
                         // Optimized token transfer
@@ -596,6 +602,7 @@ impl PayrollContract {
             last_payment_time: payroll.last_payment_time,
             recurrence_frequency: payroll.recurrence_frequency as u32,
             next_payout_timestamp: payroll.next_payout_timestamp,
+            is_paused: payroll.is_paused
         }
     }
 
@@ -609,6 +616,7 @@ impl PayrollContract {
             last_payment_time: compact.last_payment_time,
             recurrence_frequency: compact.recurrence_frequency as u64,
             next_payout_timestamp: compact.next_payout_timestamp,
+            is_paused: compact.is_paused
         }
     }
 
@@ -745,6 +753,7 @@ impl PayrollContract {
                 last_payment_time,
                 recurrence_frequency: payroll_input.recurrence_frequency,
                 next_payout_timestamp,
+                is_paused: false
             };
 
             // Store the payroll using compact format for gas efficiency
@@ -802,6 +811,11 @@ impl PayrollContract {
             // Only the employer can disburse salary
             if caller != payroll.employer {
                 return Err(PayrollError::Unauthorized);
+            }
+
+            // Check if payroll is paused for this employee
+            if payroll.is_paused {
+                return Err(PayrollError::ContractPaused);
             }
 
             // Check if next payout time has been reached
@@ -877,6 +891,68 @@ impl PayrollContract {
 
         // Remove payroll data
         storage.remove(&DataKey::Payroll(employee));
+
+        Ok(())
+    }
+
+    /// Pauses payroll for a specific employee, preventing disbursements.
+    /// Only callable by contract owner or employee's employer.
+    pub fn pause_employee_payroll(env: Env, caller: Address, employee: Address) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let cache = Self::get_contract_cache(&env);
+
+        // Check if caller is authorized (owner or employer)
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+        let is_owner = cache.owner.as_ref().map_or(false, |owner| &caller == owner);
+        if !is_owner && caller != payroll.employer {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Update payroll pause state
+        let mut updated_payroll = payroll.clone();
+        updated_payroll.is_paused = true;
+        
+        // Store updated payroll
+        let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+
+        // Emit pause event
+        env.events().publish((EMPLOYEE_PAUSED_EVENT,), (caller, employee.clone()));
+
+        Ok(())
+    }
+
+    /// Resumes payroll for a specific employee, allowing disbursements.
+    /// Only callable by contract owner or employee's employer.
+    pub fn resume_employee_payroll(
+        env: Env,
+        caller: Address,
+        employee: Address,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let cache = Self::get_contract_cache(&env);
+
+        // Check if caller is authorized (owner or employer)
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+        let is_owner = cache.owner.as_ref().map_or(false, |owner| &caller == owner);
+        if !is_owner && caller != payroll.employer {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Update payroll pause state
+        let mut updated_payroll = payroll.clone();
+        updated_payroll.is_paused = false;
+        
+        // Store updated payroll
+        let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+
+        // Emit resume event
+        env.events().publish((EMPLOYEE_RESUMED_EVENT,), (caller, employee.clone()));
 
         Ok(())
     }

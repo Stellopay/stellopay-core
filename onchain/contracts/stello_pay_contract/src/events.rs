@@ -12,6 +12,12 @@ pub const UNPAUSED_EVENT: Symbol = symbol_short!("unpaused");
 
 pub const DEPOSIT_EVENT: Symbol = symbol_short!("deposit");
 
+/// Event emitted when an individual employee's payroll is paused
+pub const EMPLOYEE_PAUSED_EVENT: Symbol = symbol_short!("emppaused");
+
+/// Event emitted when an individual employee's payroll is resumed
+pub const EMPLOYEE_RESUMED_EVENT: Symbol = symbol_short!("empresume");
+
 // Insurance-related events
 pub const INS_POLICY_CREATED: Symbol = symbol_short!("ins_pol_c");
 pub const INS_POLICY_UPDATED: Symbol = symbol_short!("ins_pol_u");

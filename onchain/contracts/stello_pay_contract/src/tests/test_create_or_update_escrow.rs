@@ -175,7 +175,7 @@ fn test_create_escrow_negative_amount() {
 }
 
 #[test]
-#[should_panic(expected = "Error(Contract, #3)")]
+#[should_panic(expected = "Error(Contract, #8)")]
 fn test_create_escrow_invalid_recurrence_frequency() {
     let env = Env::default();
     let contract_id = env.register(crate::payroll::PayrollContract, ());
