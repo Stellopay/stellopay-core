@@ -18,6 +18,17 @@ pub const EMPLOYEE_PAUSED_EVENT: Symbol = symbol_short!("emppaused");
 /// Event emitted when an individual employee's payroll is resumed
 pub const EMPLOYEE_RESUMED_EVENT: Symbol = symbol_short!("empresume");
 
+// Insurance-related events
+pub const INS_POLICY_CREATED: Symbol = symbol_short!("ins_pol_c");
+pub const INS_POLICY_UPDATED: Symbol = symbol_short!("ins_pol_u");
+pub const INS_CLAIM_FILED: Symbol = symbol_short!("ins_clm_f");
+pub const INS_CLAIM_APPROVED: Symbol = symbol_short!("ins_clm_a");
+pub const INS_CLAIM_PAID: Symbol = symbol_short!("ins_clm_p");
+pub const PREMIUM_PAID: Symbol = symbol_short!("prem_pai");
+pub const GUAR_ISSUED: Symbol = symbol_short!("guar_iss");
+pub const GUAR_REPAID: Symbol = symbol_short!("guar_rep");
+pub const POOL_FUNDED: Symbol = symbol_short!("pool_fun");
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SalaryDisbursed {
@@ -34,6 +45,44 @@ pub struct EmployerWithdrawn {
     pub employer: Address,
     pub token: Address,
     pub amount: i128,
+    pub timestamp: u64,
+}
+
+// Insurance event structures
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsurancePolicyCreated {
+    pub employer: Address,
+    pub employee: Address,
+    pub coverage_amount: i128,
+    pub premium_amount: i128,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceClaimFiled {
+    pub employee: Address,
+    pub claim_id: u64,
+    pub claim_amount: i128,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InsuranceClaimPaid {
+    pub claim_id: u64,
+    pub employee: Address,
+    pub amount: i128,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuaranteeIssued {
+    pub employer: Address,
+    pub guarantee_id: u64,
+    pub guarantee_amount: i128,
     pub timestamp: u64,
 }
 
@@ -68,6 +117,77 @@ pub fn emit_employer_withdrawn(
         employer,
         token,
         amount,
+        timestamp,
+    };
+    e.events().publish(topics, event_data.clone());
+}
+
+// Insurance event emission functions
+pub fn emit_insurance_policy_created(
+    e: Env,
+    employer: Address,
+    employee: Address,
+    coverage_amount: i128,
+    premium_amount: i128,
+    timestamp: u64,
+) {
+    let topics = (INS_POLICY_CREATED,);
+    let event_data = InsurancePolicyCreated {
+        employer,
+        employee,
+        coverage_amount,
+        premium_amount,
+        timestamp,
+    };
+    e.events().publish(topics, event_data.clone());
+}
+
+pub fn emit_insurance_claim_filed(
+    e: Env,
+    employee: Address,
+    claim_id: u64,
+    claim_amount: i128,
+    timestamp: u64,
+) {
+    let topics = (INS_CLAIM_FILED,);
+    let event_data = InsuranceClaimFiled {
+        employee,
+        claim_id,
+        claim_amount,
+        timestamp,
+    };
+    e.events().publish(topics, event_data.clone());
+}
+
+pub fn emit_insurance_claim_paid(
+    e: Env,
+    claim_id: u64,
+    employee: Address,
+    amount: i128,
+    timestamp: u64,
+) {
+    let topics = (INS_CLAIM_PAID,);
+    let event_data = InsuranceClaimPaid {
+        claim_id,
+        employee,
+        amount,
+        timestamp,
+    };
+    e.events().publish(topics, event_data.clone());
+}
+
+pub fn emit_guarantee_issued(
+    e: Env,
+    employer: Address,
+    guarantee_id: u64,
+    guarantee_amount: i128,
+    timestamp: u64,
+) {
+    let topics = (GUAR_ISSUED,);
+    let event_data = GuaranteeIssued {
+        employer,
+        guarantee_id,
+        guarantee_amount,
         timestamp,
     };
     e.events().publish(topics, event_data.clone());
