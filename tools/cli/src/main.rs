@@ -8,9 +8,10 @@ mod utils;
 use commands::*;
 use config::*;
 use stellopay_cli::{Cli, Commands};
+use anyhow::anyhow;
 
 #[tokio::main]
-async fn main() {
+async fn main() ->anyhow::Result<()> {
     let cli = Cli::parse();
     
     // Set up logging
@@ -40,6 +41,32 @@ async fn main() {
         Commands::Status => {
             status_command(&config).await
         }
+        Commands::EmergencyWithdraw{
+            contract_id,
+            token,
+            recipient,
+            amount,
+        }=>{
+            // //Loading config
+            let dummy_env="cli-context";
+            // let config=load_config(&cli.config)?;
+            // //resolving contract ID from arg or config
+            let contract_id_str=contract_id
+            .as_deref()
+            .ok_or_else(|| anyhow!("Missing contract ID"))?;
+
+            //calling logic function
+            emergency_withdraw(
+                &config,
+                &dummy_env,
+                contract_id_str,
+                &token,
+                &recipient,
+                amount,
+                cli.verbose,
+            ).await?;
+            Ok(())
+        }
     };
     
     match result {
@@ -49,6 +76,7 @@ async fn main() {
             process::exit(1);
         }
     }
+    Ok(())
 }
 
 pub struct DeployArgs {

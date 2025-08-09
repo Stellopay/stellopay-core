@@ -2,6 +2,8 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use reqwest::Client;
+use serde_json::json;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Employee {
@@ -312,5 +314,47 @@ mod tests {
         let addr = "GCKFBEIYTKP6RCZEKMGL2QAPLGKUBGE5UAHRQJRXGCQHKPQM6CHCM4K4";
         assert_eq!(truncate_address(addr, 4), "GCKF...M4K4");
         assert_eq!(truncate_address("SHORT", 4), "SHORT");
+    }
+}
+pub struct SorobanHttpClient{
+    base_url:String,
+    client:reqwest::Client,
+}
+impl SorobanHttpClient{
+    pub fn new(base_url: &str)->Self{
+        Self{
+            base_url:base_url.to_string(),
+            client:reqwest::Client::new(),
+        }
+    }
+    pub async fn get_ledger_info(&self)->Result<String>{
+        let url=format!("{}/ledger",self.base_url);
+        let res=self.client.get(&url).send().await?;
+        let body =res.text().await?;
+        Ok(body)
+    }
+    pub async fn invoke(
+        &self,
+        contract_id:&str,
+        method:&str,
+        args:Vec<(&str,&str)>,
+        signer:&str,
+    ) -> Result<String> {
+        let url=format!("{}/invoke",self.base_url.trim_end_matches('/'));
+        println!("Invoking Soroban at: {}",url);
+        let payload=json!({
+            "contract_id":contract_id,
+            "method":method,
+            "args":args.iter().map(|(k,v)| json!({(*k):v})).collect::<Vec<_>>(),
+            "signer":signer,
+        });
+        let response=self
+            .client
+            .post(&url)
+            .json(&payload)
+            .send()
+            .await?;
+        let body=response.text().await?;
+        Ok(body)
     }
 }
