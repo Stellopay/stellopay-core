@@ -513,14 +513,6 @@
                     },
                     {
                       "key": {
-                        "symbol": "is_paused"
-                      },
-                      "val": {
-                        "bool": false
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "last_payment_time"
                       },
                       "val": {
