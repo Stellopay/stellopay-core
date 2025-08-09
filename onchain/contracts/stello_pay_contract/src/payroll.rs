@@ -1,10 +1,11 @@
 use soroban_sdk::{
     contract, contracterror, contractimpl, symbol_short, token::Client as TokenClient, Address,
-    Env, Symbol, Vec,
+    Env, Symbol, Vec, String,
 };
 
-use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT};
+use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT};
 use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll};
+use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
 
 //-----------------------------------------------------------------------------
 // Gas Optimization Structures
@@ -279,6 +280,7 @@ impl PayrollContract {
             last_payment_time,
             recurrence_frequency,
             next_payout_timestamp,
+            is_paused: false
         };
 
         // Store the payroll using compact format for gas efficiency
@@ -402,6 +404,11 @@ impl PayrollContract {
         }
 
         let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+
+        // Check if payroll is paused for this employee
+        if payroll.is_paused {
+            return Err(PayrollError::ContractPaused);
+        }
 
         // Only the employer can disburse salary
         if caller != payroll.employer {
@@ -540,8 +547,8 @@ impl PayrollContract {
 
         for employee in employees.iter() {
             if let Some(payroll) = Self::_get_payroll(&env, &employee) {
-                // Check if employee is eligible for disbursement
-                if batch_ctx.current_time >= payroll.next_payout_timestamp {
+                // Check if employee is eligible for disbursement and not paused
+                if batch_ctx.current_time >= payroll.next_payout_timestamp && !payroll.is_paused {
                     // Optimized balance check and update
                     if let Ok(()) = Self::check_and_update_balance(&env, &payroll.employer, &payroll.token, payroll.amount) {
                         // Optimized token transfer
@@ -595,6 +602,7 @@ impl PayrollContract {
             last_payment_time: payroll.last_payment_time,
             recurrence_frequency: payroll.recurrence_frequency as u32,
             next_payout_timestamp: payroll.next_payout_timestamp,
+            is_paused: payroll.is_paused
         }
     }
 
@@ -608,6 +616,7 @@ impl PayrollContract {
             last_payment_time: compact.last_payment_time,
             recurrence_frequency: compact.recurrence_frequency as u64,
             next_payout_timestamp: compact.next_payout_timestamp,
+            is_paused: compact.is_paused
         }
     }
 
@@ -744,6 +753,7 @@ impl PayrollContract {
                 last_payment_time,
                 recurrence_frequency: payroll_input.recurrence_frequency,
                 next_payout_timestamp,
+                is_paused: false
             };
 
             // Store the payroll using compact format for gas efficiency
@@ -801,6 +811,11 @@ impl PayrollContract {
             // Only the employer can disburse salary
             if caller != payroll.employer {
                 return Err(PayrollError::Unauthorized);
+            }
+
+            // Check if payroll is paused for this employee
+            if payroll.is_paused {
+                return Err(PayrollError::ContractPaused);
             }
 
             // Check if next payout time has been reached
@@ -876,6 +891,68 @@ impl PayrollContract {
 
         // Remove payroll data
         storage.remove(&DataKey::Payroll(employee));
+
+        Ok(())
+    }
+
+    /// Pauses payroll for a specific employee, preventing disbursements.
+    /// Only callable by contract owner or employee's employer.
+    pub fn pause_employee_payroll(env: Env, caller: Address, employee: Address) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let cache = Self::get_contract_cache(&env);
+
+        // Check if caller is authorized (owner or employer)
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+        let is_owner = cache.owner.as_ref().map_or(false, |owner| &caller == owner);
+        if !is_owner && caller != payroll.employer {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Update payroll pause state
+        let mut updated_payroll = payroll.clone();
+        updated_payroll.is_paused = true;
+        
+        // Store updated payroll
+        let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+
+        // Emit pause event
+        env.events().publish((EMPLOYEE_PAUSED_EVENT,), (caller, employee.clone()));
+
+        Ok(())
+    }
+
+    /// Resumes payroll for a specific employee, allowing disbursements.
+    /// Only callable by contract owner or employee's employer.
+    pub fn resume_employee_payroll(
+        env: Env,
+        caller: Address,
+        employee: Address,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let cache = Self::get_contract_cache(&env);
+
+        // Check if caller is authorized (owner or employer)
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+        let is_owner = cache.owner.as_ref().map_or(false, |owner| &caller == owner);
+        if !is_owner && caller != payroll.employer {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Update payroll pause state
+        let mut updated_payroll = payroll.clone();
+        updated_payroll.is_paused = false;
+        
+        // Store updated payroll
+        let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+        storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+
+        // Emit resume event
+        env.events().publish((EMPLOYEE_RESUMED_EVENT,), (caller, employee.clone()));
 
         Ok(())
     }
@@ -1026,4 +1103,197 @@ impl PayrollContract {
     //-----------------------------------------------------------------------------
     // Main Contract Functions (Optimized)
     //-----------------------------------------------------------------------------
+
+    //-----------------------------------------------------------------------------
+    // Insurance Functions
+    //-----------------------------------------------------------------------------
+
+    /// Create or update an insurance policy for an employee
+    pub fn create_insurance_policy(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        token: Address,
+        coverage_amount: i128,
+        premium_frequency: u64,
+    ) -> Result<InsurancePolicy, InsuranceError> {
+        employer.require_auth();
+        Self::require_not_paused(&env)?;
+        
+        InsuranceSystem::create_or_update_insurance_policy(
+            &env,
+            &employer,
+            &employee,
+            &token,
+            coverage_amount,
+            premium_frequency,
+        )
+    }
+
+    /// Pay insurance premium
+    pub fn pay_insurance_premium(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        amount: i128,
+    ) -> Result<(), InsuranceError> {
+        employer.require_auth();
+        Self::require_not_paused(&env)?;
+        
+        InsuranceSystem::pay_premium(&env, &employer, &employee, amount)
+    }
+
+    /// File an insurance claim
+    pub fn file_insurance_claim(
+        env: Env,
+        employee: Address,
+        claim_amount: i128,
+        claim_reason: String,
+        evidence_hash: Option<String>,
+    ) -> Result<u64, InsuranceError> {
+        employee.require_auth();
+        Self::require_not_paused(&env)?;
+        
+        InsuranceSystem::file_claim(&env, &employee, claim_amount, claim_reason, evidence_hash)
+    }
+
+    /// Approve an insurance claim (admin function)
+    pub fn approve_insurance_claim(
+        env: Env,
+        approver: Address,
+        claim_id: u64,
+        approved_amount: i128,
+    ) -> Result<(), InsuranceError> {
+        approver.require_auth();
+        Self::require_not_paused(&env)?;
+        
+        // Check if approver is owner
+        let storage = env.storage().persistent();
+        if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
+            if approver != owner {
+                return Err(InsuranceError::ClaimNotEligible);
+            }
+        } else {
+            return Err(InsuranceError::ClaimNotEligible);
+        }
+        
+        InsuranceSystem::approve_claim(&env, &approver, claim_id, approved_amount)
+    }
+
+    /// Pay out an approved claim
+    pub fn pay_insurance_claim(
+        env: Env,
+        caller: Address,
+        claim_id: u64,
+    ) -> Result<(), InsuranceError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+        
+        // Check if caller is owner
+        let storage = env.storage().persistent();
+        if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
+            if caller != owner {
+                return Err(InsuranceError::ClaimNotEligible);
+            }
+        } else {
+            return Err(InsuranceError::ClaimNotEligible);
+        }
+        
+        InsuranceSystem::pay_claim(&env, claim_id)
+    }
+
+    /// Issue a guarantee for an employer
+    pub fn issue_guarantee(
+        env: Env,
+        employer: Address,
+        token: Address,
+        guarantee_amount: i128,
+        collateral_amount: i128,
+        expiry_duration: u64,
+    ) -> Result<u64, InsuranceError> {
+        employer.require_auth();
+        Self::require_not_paused(&env)?;
+        
+        InsuranceSystem::issue_guarantee(
+            &env,
+            &employer,
+            &token,
+            guarantee_amount,
+            collateral_amount,
+            expiry_duration,
+        )
+    }
+
+    /// Repay a guarantee
+    pub fn repay_guarantee(
+        env: Env,
+        employer: Address,
+        guarantee_id: u64,
+        repayment_amount: i128,
+    ) -> Result<(), InsuranceError> {
+        employer.require_auth();
+        Self::require_not_paused(&env)?;
+        
+        InsuranceSystem::repay_guarantee(&env, &employer, guarantee_id, repayment_amount)
+    }
+
+    /// Fund the insurance pool
+    pub fn fund_insurance_pool(
+        env: Env,
+        funder: Address,
+        token: Address,
+        amount: i128,
+    ) -> Result<(), InsuranceError> {
+        funder.require_auth();
+        Self::require_not_paused(&env)?;
+        
+        InsuranceSystem::fund_insurance_pool(&env, &funder, &token, amount)
+    }
+
+    /// Get insurance policy for an employee
+    pub fn get_insurance_policy(env: Env, employee: Address) -> Option<InsurancePolicy> {
+        InsuranceSystem::get_insurance_policy(&env, &employee)
+    }
+
+    /// Get insurance claim by ID
+    pub fn get_insurance_claim(env: Env, claim_id: u64) -> Option<InsuranceClaim> {
+        InsuranceSystem::get_insurance_claim(&env, claim_id)
+    }
+
+    /// Get guarantee by ID
+    pub fn get_guarantee(env: Env, guarantee_id: u64) -> Option<Guarantee> {
+        InsuranceSystem::get_guarantee(&env, guarantee_id)
+    }
+
+    /// Get employer guarantees
+    pub fn get_employer_guarantees(env: Env, employer: Address) -> Vec<u64> {
+        InsuranceSystem::get_employer_guarantees(&env, &employer)
+    }
+
+    /// Get insurance settings
+    pub fn get_insurance_settings(env: Env) -> InsuranceSettings {
+        InsuranceSystem::get_insurance_settings(&env)
+    }
+
+    /// Set insurance settings (admin function)
+    pub fn set_insurance_settings(
+        env: Env,
+        caller: Address,
+        settings: InsuranceSettings,
+    ) -> Result<(), InsuranceError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+        
+        // Check if caller is owner
+        let storage = env.storage().persistent();
+        if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
+            if caller != owner {
+                return Err(InsuranceError::ClaimNotEligible);
+            }
+        } else {
+            return Err(InsuranceError::ClaimNotEligible);
+        }
+        
+        InsuranceSystem::set_insurance_settings(&env, settings)
+    }
 }

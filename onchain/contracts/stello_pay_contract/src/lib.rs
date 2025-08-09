@@ -3,6 +3,7 @@
 mod events;
 mod payroll;
 mod storage;
+mod insurance;
 
 #[cfg(test)]
 mod test;

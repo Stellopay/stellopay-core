@@ -1,10 +1,10 @@
 #![cfg(test)]
 
-use crate::payroll::{PayrollContract, PayrollContractClient};
+use crate::payroll::{PayrollContractClient};
 use soroban_sdk::token::{StellarAssetClient as TokenAdmin, TokenClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger, LedgerInfo, MockAuth, MockAuthInvoke},
-    Address, Env, IntoVal, Vec,
+    testutils::{Address as _, Ledger, LedgerInfo},
+    Address, Env, Vec,
 };
 
 fn setup_token(env: &Env) -> (Address, TokenAdmin) {
