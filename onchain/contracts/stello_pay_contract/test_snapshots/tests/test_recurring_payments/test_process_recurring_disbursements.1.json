@@ -547,14 +547,6 @@
                     },
                     {
                       "key": {
-                        "symbol": "is_paused"
-                      },
-                      "val": {
-                        "bool": false
-                      }
-                    },
-                    {
-                      "key": {
                         "symbol": "last_payment_time"
                       },
                       "val": {
@@ -656,14 +648,6 @@
                       },
                       "val": {
                         "u32": 86400
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "is_paused"
-                      },
-                      "val": {
-                        "bool": false
                       }
                     },
                     {
