@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, Symbol};
 
 //-----------------------------------------------------------------------------
 // Data Structures
@@ -42,6 +42,38 @@ pub struct CompactPayroll {
     pub is_paused: bool,
 }
 
+/// Structure to store payroll history entries
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollHistoryEntry {
+    pub employee: Address,
+    pub employer: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub interval: u64,
+    pub recurrence_frequency: u64,
+    pub timestamp: u64,
+    pub action: Symbol, // e.g., "created", "updated", "paused", "resumed", "disbursed"
+}
+
+/// Structure for compact history storage
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompactPayrollHistoryEntry {
+    pub employee: Address,
+    pub employer: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub interval: u32,
+    pub recurrence_frequency: u32,
+    pub timestamp: u64,
+    pub last_payment_time: u64,
+    pub next_payout_timestamp: u64,
+    pub action: Symbol,
+    pub id: u64,
+}
+
+
 //-----------------------------------------------------------------------------
 // Storage Keys
 //-----------------------------------------------------------------------------
@@ -76,4 +108,10 @@ pub enum DataKey {
     EmployerGuarantees(Address),         // employer -> Vec<u64> (guarantee IDs)
     RiskAssessment(Address),             // employee -> u32 (risk score)
     InsuranceSettings,                   // Global insurance settings
+
+    // PayrollHistory
+    PayrollHistoryEntry(Address),        // (employee) -> history_entry
+    PayrollHistoryIdCounter(Address),    // (employee) -> history_entry
+    AuditTrail(Address),                 // (employee) -> audit_entry
+    AuditTrailIdCounter(Address),
 }
