@@ -1,10 +1,6 @@
 use soroban_sdk::{testutils::Address as _, Address, Env, log, symbol_short};
-// use crate::payroll::PayrollContractClient;
-// use soroban_sdk::testutils::Ledger;
-
-// use soroban_sdk::{testutils::Address as _, Env, Address, IntoVal};
 use soroban_sdk::token::{StellarAssetClient as TokenAdmin, TokenClient};
-use soroban_sdk::testutils::{Ledger, LedgerInfo, MockAuth, MockAuthInvoke};
+use soroban_sdk::testutils::{Ledger, LedgerInfo};
 use crate::payroll::{PayrollContract, PayrollContractClient};
 
 fn create_test_contract() -> (Env, Address, PayrollContractClient<'static>) {
@@ -38,7 +34,14 @@ fn test_record_new_escrow() {
     client.initialize(&employer);
 
     let _created_payroll =
-        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &recurrence_frequency);
+        client.create_or_update_escrow(
+        &employer, 
+        &employee,
+        &token, 
+        &amount, 
+        &interval, 
+        &recurrence_frequency
+    );
 
     let entries = client.get_payroll_history(&employee, &None, &None, &Some(5));
     assert_eq!(entries.len(), 1); 
@@ -63,7 +66,14 @@ fn test_payroll_history_query() {
 
     // Set different ledger timestamps to create history entries
     env.ledger().with_mut(|l| l.timestamp = 1000);
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer, 
+        &employee,
+        &token, 
+        &amount, 
+        &interval, 
+        &recurrence_frequency
+    );
 
     env.ledger().with_mut(|l| l.timestamp = 2000);
     client.pause_employee_payroll(&employer, &employee);
@@ -77,7 +87,7 @@ fn test_payroll_history_query() {
     // Test 1: Query all entries (no timestamp filters, default limit)
     let entries = client.get_payroll_history(&employee, &None, &None, &Some(5));
     log!(&env, "All history entries: {:?}", entries);
-    assert_eq!(entries.len(), 4); 
+    assert_eq!(entries.len(), 4);
     assert_eq!(entries.get(0).unwrap().action, symbol_short!("created"));
     assert_eq!(entries.get(1).unwrap().action, symbol_short!("paused"));
     assert_eq!(entries.get(2).unwrap().action, symbol_short!("resumed"));
@@ -86,7 +96,7 @@ fn test_payroll_history_query() {
     // Test 2: Query with start_timestamp (only entries after timestamp 1500)
     let entries = client.get_payroll_history(&employee, &Some(1500), &None, &Some(5));
     log!(&env, "History entries after 1500: {:?}", entries);
-    assert_eq!(entries.len(), 3); 
+    assert_eq!(entries.len(), 3);
     assert_eq!(entries.get(0).unwrap().timestamp, 2000);
     assert_eq!(entries.get(1).unwrap().timestamp, 3000);
     assert_eq!(entries.get(2).unwrap().timestamp, 4000);
@@ -94,14 +104,14 @@ fn test_payroll_history_query() {
     // Test 3: Query with end_timestamp (only entries before timestamp 2500)
     let entries = client.get_payroll_history(&employee, &None, &Some(2500), &Some(5));
     log!(&env, "History entries before 2500: {:?}", entries);
-    assert_eq!(entries.len(), 2); 
+    assert_eq!(entries.len(), 2);
     assert_eq!(entries.get(0).unwrap().timestamp, 1000);
     assert_eq!(entries.get(1).unwrap().timestamp, 2000);
 
     // Test 4: Query with both start_timestamp and end_timestamp (between 1500 and 3500)
     let entries = client.get_payroll_history(&employee, &Some(1500), &Some(3500), &Some(5));
     log!(&env, "History entries between 1500 and 3500: {:?}", entries);
-    assert_eq!(entries.len(), 2); 
+    assert_eq!(entries.len(), 2);
     assert_eq!(entries.get(0).unwrap().timestamp, 2000);
     assert_eq!(entries.get(1).unwrap().timestamp, 3000);
 
@@ -130,7 +140,14 @@ fn test_payroll_history_edge_cases() {
 
     // Create some history entries
     env.ledger().with_mut(|l| l.timestamp = 1000);
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer, 
+        &employee, 
+        &token, 
+        &amount, 
+        &interval, 
+        &recurrence_frequency
+    );
 
     env.ledger().with_mut(|l| l.timestamp = 2000);
     client.pause_employee_payroll(&employer, &employee);
@@ -138,23 +155,19 @@ fn test_payroll_history_edge_cases() {
     // Test 1: Query for non-existent employee
     let non_existent_employee = Address::generate(&env);
     let entries = client.get_payroll_history(&non_existent_employee, &None, &None, &Some(5));
-    log!(&env, "History for non-existent employee: {:?}", entries);
     assert_eq!(entries.len(), 0); 
 
     // Test 2: Invalid timestamp range (start > end)
     let entries = client.get_payroll_history(&employee, &Some(3000), &Some(1000), &Some(5));
-    log!(&env, "History with invalid timestamp range: {:?}", entries);
     assert_eq!(entries.len(), 0);
 
     // Test 3: Timestamps outside history range
     let entries = client.get_payroll_history(&employee, &Some(5000), &Some(6000), &Some(5));
-    log!(&env, "History outside timestamp range: {:?}", entries);
-    assert_eq!(entries.len(), 0); 
+    assert_eq!(entries.len(), 0);
 
     // Test 4: Zero limit
     let entries = client.get_payroll_history(&employee, &None, &None, &Some(0));
-    log!(&env, "History with zero limit: {:?}", entries);
-    assert_eq!(entries.len(), 0); 
+    assert_eq!(entries.len(), 0);
 }
 
 
@@ -187,7 +200,14 @@ fn test_audit_trail_disburse_success() {
     assert_eq!(payroll_contract_balance, 5000);
 
     // Create escrow
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer, 
+        &employee,
+        &token_address,
+        &amount, 
+        &interval, 
+        &recurrence_frequency
+    );
 
     // Advance timestamp to allow disbursement
     let disbursement_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
@@ -221,6 +241,9 @@ fn test_audit_trail_disburse_success() {
     assert_eq!(entry.amount, amount);
     assert_eq!(entry.timestamp, disbursement_timestamp);
     assert_eq!(entry.last_payment_time, disbursement_timestamp);
-    assert_eq!(entry.next_payout_timestamp, disbursement_timestamp + recurrence_frequency);
+    assert_eq!(
+        entry.next_payout_timestamp, 
+        disbursement_timestamp + recurrence_frequency
+    );
     assert_eq!(entry.id, 1); // First audit entry
 }

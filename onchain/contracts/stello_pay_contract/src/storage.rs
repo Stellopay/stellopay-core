@@ -42,20 +42,6 @@ pub struct CompactPayroll {
     pub is_paused: bool,
 }
 
-/// Structure to store payroll history entries
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct PayrollHistoryEntry {
-    pub employee: Address,
-    pub employer: Address,
-    pub token: Address,
-    pub amount: i128,
-    pub interval: u64,
-    pub recurrence_frequency: u64,
-    pub timestamp: u64,
-    pub action: Symbol, // e.g., "created", "updated", "paused", "resumed", "disbursed"
-}
-
 /// Structure for compact history storage
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -72,7 +58,6 @@ pub struct CompactPayrollHistoryEntry {
     pub action: Symbol,
     pub id: u64,
 }
-
 
 //-----------------------------------------------------------------------------
 // Storage Keys

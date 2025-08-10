@@ -4,7 +4,7 @@ use soroban_sdk::{
 };
 
 use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT};
-use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, PayrollHistoryEntry, CompactPayrollHistoryEntry};
+use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, CompactPayrollHistoryEntry};
 use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
 
 //-----------------------------------------------------------------------------
@@ -461,8 +461,6 @@ impl PayrollContract {
             payroll.amount,
             current_time,
         );
-
-
 
         Ok(())
     }
@@ -1368,7 +1366,6 @@ impl PayrollContract {
         let id_key = DataKey::PayrollHistoryIdCounter(employee.clone());
         let mut id_counter: u64 = storage.get(&id_key).unwrap_or(0);
 
-        // Increment ID
         id_counter += 1;
         
         let history_entry = CompactPayrollHistoryEntry {
@@ -1390,24 +1387,6 @@ impl PayrollContract {
         storage.set(&history_key, &history);
         storage.set(&id_key, &id_counter);
 
-        // // Store history entry with a composite key for efficient retrieval
-        // let history_key = DataKey::PayrollHistory(employee.clone(), timestamp);
-        // storage.set(&history_key, &history_entry);
-
-        //  // Fetch current count (default 0)
-        // let count_key = DataKey::PayrollHistoryCount(employee.clone());
-        // let mut count: u64 = storage.get(&count_key).unwrap_or(0u64);
-
-        // // Use current count as next sequence index
-        // let seq = count;
-        // let history_key = DataKey::PayrollHistoryEntry(employee.clone(), seq);
-
-        // storage.set(&history_key, &history_entry);
-        // // increment and store back
-        // count = count + 1;
-        // storage.set(&count_key, &count);
-
-        // Emit history update event
         env.events().publish(
             (HISTORY_UPDATED_EVENT,),
             (employee.clone(), employer.clone(), action, timestamp),
@@ -1415,7 +1394,7 @@ impl PayrollContract {
        
     }
 
-        /// Query payroll history for an employee with optional timestamp range
+    /// Query payroll history for an employee with optional timestamp range
     pub fn get_payroll_history(
         env: Env,
         employee: Address,
@@ -1428,9 +1407,7 @@ impl PayrollContract {
         }
         let storage = env.storage().persistent();
         let mut history = Vec::new(&env);
-        let max_entries = limit.unwrap_or(100); // Default limit to prevent gas exhaustion
-
-        // Get the history vector
+        let max_entries = limit.unwrap_or(100);
         let history_key = DataKey::PayrollHistoryEntry(employee.clone());
         let history_entries: Vec<CompactPayrollHistoryEntry> = storage.get(&history_key).unwrap_or(Vec::new(&env));
 
@@ -1468,16 +1445,13 @@ impl PayrollContract {
     ) {
         let storage = env.storage().persistent();
         
-        // Get or initialize the audit vector and ID counter
         let audit_key = DataKey::AuditTrail(employee.clone());
         let mut audit: Vec<CompactPayrollHistoryEntry> = storage.get(&audit_key).unwrap_or(Vec::new(env));
         let id_key = DataKey::AuditTrailIdCounter(employee.clone());
         let mut id_counter: u64 = storage.get(&id_key).unwrap_or(0);
 
-        // Increment ID
         id_counter += 1;
 
-        // Get payroll to retrieve last_payment_time and next_payout_timestamp
         let payroll = Self::_get_payroll(env, employee).unwrap_or(Payroll {
             employer: employer.clone(),
             token: token.clone(),
@@ -1504,19 +1478,17 @@ impl PayrollContract {
             id: id_counter
         };
 
-        // Append to audit vector
         audit.push_back(history_entry);
         storage.set(&audit_key, &audit);
         storage.set(&id_key, &id_counter);
 
-        // Emit audit event
         env.events().publish(
             (AUDIT_EVENT,),
             (employee.clone(), employer.clone(), amount, timestamp, id_counter),
         );
     }
 
-        /// Query audit trail for an employee with optional timestamp range
+    /// Query audit trail for an employee with optional timestamp range
     pub fn get_audit_trail(
         env: Env,
         employee: Address,
@@ -1526,9 +1498,8 @@ impl PayrollContract {
     ) -> Vec<CompactPayrollHistoryEntry> {
         let storage = env.storage().persistent();
         let mut audit_trail = Vec::new(&env);
-        let max_entries = limit.unwrap_or(100); // Default limit to prevent gas exhaustion
+        let max_entries = limit.unwrap_or(100);
 
-        // Get the audit vector
         let audit_key = DataKey::AuditTrail(employee.clone());
         let audit_entries: Vec<CompactPayrollHistoryEntry> = storage.get(&audit_key).unwrap_or(Vec::new(&env));
 
