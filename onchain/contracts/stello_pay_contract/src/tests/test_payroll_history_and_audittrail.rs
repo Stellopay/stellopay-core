@@ -1,4 +1,7 @@
-use soroban_sdk::{testutils::Address as _, Address, Env, log, symbol_short};
+use core::ops::Add;
+
+use soroban_sdk::vec;
+use soroban_sdk::{testutils::Address as _, Address, Env, log, symbol_short, Vec};
 use soroban_sdk::token::{StellarAssetClient as TokenAdmin, TokenClient};
 use soroban_sdk::testutils::{Ledger, LedgerInfo};
 use crate::payroll::{PayrollContract, PayrollContractClient};
@@ -86,7 +89,6 @@ fn test_payroll_history_query() {
 
     // Test 1: Query all entries (no timestamp filters, default limit)
     let entries = client.get_payroll_history(&employee, &None, &None, &Some(5));
-    log!(&env, "All history entries: {:?}", entries);
     assert_eq!(entries.len(), 4);
     assert_eq!(entries.get(0).unwrap().action, symbol_short!("created"));
     assert_eq!(entries.get(1).unwrap().action, symbol_short!("paused"));
@@ -95,7 +97,6 @@ fn test_payroll_history_query() {
 
     // Test 2: Query with start_timestamp (only entries after timestamp 1500)
     let entries = client.get_payroll_history(&employee, &Some(1500), &None, &Some(5));
-    log!(&env, "History entries after 1500: {:?}", entries);
     assert_eq!(entries.len(), 3);
     assert_eq!(entries.get(0).unwrap().timestamp, 2000);
     assert_eq!(entries.get(1).unwrap().timestamp, 3000);
@@ -103,21 +104,18 @@ fn test_payroll_history_query() {
 
     // Test 3: Query with end_timestamp (only entries before timestamp 2500)
     let entries = client.get_payroll_history(&employee, &None, &Some(2500), &Some(5));
-    log!(&env, "History entries before 2500: {:?}", entries);
     assert_eq!(entries.len(), 2);
     assert_eq!(entries.get(0).unwrap().timestamp, 1000);
     assert_eq!(entries.get(1).unwrap().timestamp, 2000);
 
     // Test 4: Query with both start_timestamp and end_timestamp (between 1500 and 3500)
     let entries = client.get_payroll_history(&employee, &Some(1500), &Some(3500), &Some(5));
-    log!(&env, "History entries between 1500 and 3500: {:?}", entries);
     assert_eq!(entries.len(), 2);
     assert_eq!(entries.get(0).unwrap().timestamp, 2000);
     assert_eq!(entries.get(1).unwrap().timestamp, 3000);
 
     // Test 5: Query with limit (only first 2 entries)
     let entries = client.get_payroll_history(&employee, &None, &None, &Some(2));
-    log!(&env, "History entries with limit 2: {:?}", entries);
     assert_eq!(entries.len(), 2);
     assert_eq!(entries.get(0).unwrap().timestamp, 1000);
     assert_eq!(entries.get(1).unwrap().timestamp, 2000);
@@ -231,7 +229,6 @@ fn test_audit_trail_disburse_success() {
 
     // Query audit trail
     let entries = client.get_audit_trail(&employee, &None, &None, &Some(5));
-    log!(&env, "Audit trail entries: {:?}", entries);
     assert_eq!(entries.len(), 1); // Expect 1 disbursement entry
     let entry = entries.get(0).unwrap();
     assert_eq!(entry.action, symbol_short!("disbursed"));
@@ -246,4 +243,156 @@ fn test_audit_trail_disburse_success() {
         disbursement_timestamp + recurrence_frequency
     );
     assert_eq!(entry.id, 1); // First audit entry
+}
+
+#[test]
+fn test_audit_trail_disburse_multiple() {
+    let (env, contract_id, client) = create_test_contract();
+    let (token_address, token_admin) = setup_token(&env);
+    let employer = Address::generate(&env);
+    let mut employees: Vec<Address> = Vec::new(&env);
+    for x in (0..12) {
+        employees.push_front(Address::generate(&env));
+    }
+    let amount = 1000i128;
+    let interval = 86400u64;
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
+
+    env.mock_all_auths();
+
+    // Fund the employer with tokens
+    token_admin.mint(&employer, &100000);
+
+    // Verify minting
+    let token_client = TokenClient::new(&env, &token_address);
+    let employer_balance = token_client.balance(&employer);
+    assert_eq!(employer_balance, 100000);
+
+    // Initialize contract and deposit tokens
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &50000i128);
+
+    // Verify deposit
+    let payroll_contract_balance = token_client.balance(&contract_id);
+    assert_eq!(payroll_contract_balance, 50000);
+
+    // Create escrow for each employee
+    for (i, employee) in employees.iter().enumerate() {
+        client.create_or_update_escrow(&employer, &employee, &token_address, &(amount), &interval, &recurrence_frequency);
+    }
+
+    // Perform disbursements for each employee
+    let disbursement_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
+    env.ledger().set(LedgerInfo {
+        timestamp: disbursement_timestamp,
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6312000,
+    });
+
+    for employee in employees.iter() {
+        client.disburse_salary(&employer, &employee);
+
+        // Verify employee received tokens
+        let employee_balance = token_client.balance(&employee);
+        assert_eq!(employee_balance, amount);
+    }
+
+    // Verify audit trail for each employee
+    for (i, employee) in employees.iter().enumerate() {
+        let entries = client.get_audit_trail(&employee, &None, &None, &Some(5));
+
+        assert_eq!(entries.len(), 1); // Expect 1 disbursement entry per employee
+        let entry = entries.get(0).unwrap();
+        assert_eq!(entry.action, symbol_short!("disbursed"));
+        assert_eq!(entry.employee, employee);
+        assert_eq!(entry.employer, employer);
+        assert_eq!(entry.token, token_address);
+        assert_eq!(entry.amount, amount);
+        assert_eq!(entry.timestamp, disbursement_timestamp);
+        assert_eq!(entry.last_payment_time, disbursement_timestamp);
+        assert_eq!(entry.next_payout_timestamp, disbursement_timestamp + recurrence_frequency);
+        assert_eq!(entry.id, 1);
+    }
+
+    // Test with start_timestamp (after disbursement)
+    for employee in employees.iter() {
+        let entries = client.get_audit_trail(&employee, &Some(disbursement_timestamp + 1), &None, &Some(5));
+        assert_eq!(entries.len(), 0);
+    }
+
+    // Test with end_timestamp (before disbursement)
+    for employee in employees.iter() {
+        let entries = client.get_audit_trail(&employee, &None, &Some(disbursement_timestamp - 1), &Some(5));
+        assert_eq!(entries.len(), 0);
+    }
+
+}
+
+#[test]
+fn test_audit_trail_disburse_same_multiple() {
+    let (env, contract_id, client) = create_test_contract();
+    let (token_address, token_admin) = setup_token(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let mut employees: Vec<Address> = Vec::new(&env);
+    for x in (0..12) {
+        employees.push_front(Address::generate(&env));
+    }
+    let amount = 1000i128;
+    let interval = 86400u64;
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
+
+    env.mock_all_auths();
+
+    // Fund the employer with tokens
+    token_admin.mint(&employer, &100000);
+
+    // Verify minting
+    let token_client = TokenClient::new(&env, &token_address);
+    let employer_balance = token_client.balance(&employer);
+    assert_eq!(employer_balance, 100000);
+
+    // Initialize contract and deposit tokens
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &50000i128);
+
+    // Verify deposit
+    let payroll_contract_balance = token_client.balance(&contract_id);
+    assert_eq!(payroll_contract_balance, 50000);
+
+    client.create_or_update_escrow(&employer, &employee, &token_address, &(amount), &interval, &recurrence_frequency);
+
+    // Perform disbursements for each employee
+    let disbursement_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
+
+    for i in (1..12) {
+        env.ledger().set(LedgerInfo {
+            timestamp: disbursement_timestamp * i,
+            protocol_version: 22,
+            sequence_number: env.ledger().sequence(),
+            network_id: Default::default(),
+            base_reserve: 0,
+            min_persistent_entry_ttl: 4096,
+            min_temp_entry_ttl: 16,
+            max_entry_ttl: 6312000,
+        });
+
+        client.disburse_salary(&employer, &employee);
+        let employee_balance = token_client.balance(&employee);
+        assert_eq!(employee_balance, amount * i as i128);
+    }
+
+    let entries = client.get_audit_trail(&employee, &None, &Some(disbursement_timestamp * 10), &Some(5));
+    assert_eq!(entries.len(), 5);
+
+    let entries = client.get_audit_trail(&employee, &Some(disbursement_timestamp *3), &None, &Some(5));
+    assert_eq!(entries.len(), 5);
+
+    let entries = client.get_audit_trail(&employee, &Some(disbursement_timestamp *2), &Some(disbursement_timestamp * 10), &None);
+    assert_eq!(entries.len(), 9);
 }
