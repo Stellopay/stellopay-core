@@ -2,11 +2,11 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, symbol_short, token::Client as TokenClient, Address,
     Env, Symbol, Vec, String,
 };
-
-use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT};
+//use crate::storage::PayrollModification;
+use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT,emit_modification_event,ModificationEvent};
 use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll};
 use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
-
+use crate::storage::PayrollModification;
 //-----------------------------------------------------------------------------
 // Gas Optimization Structures
 //-----------------------------------------------------------------------------
@@ -163,6 +163,7 @@ impl PayrollContract {
     }
 
     /// Internal function to check pause state and panic if paused
+    
     fn require_not_paused(env: &Env) -> Result<(), PayrollError> {
         let storage = env.storage().persistent();
         let is_paused = storage.get(&DataKey::Paused).unwrap_or(false);
@@ -173,6 +174,159 @@ impl PayrollContract {
 
         Ok(())
     }
+    pub fn request_payroll_modification(
+    env:Env,
+    employee:Address,
+    employer:Address,
+    new_payroll:Payroll,
+)->Result<(),PayrollError>{
+    Self::require_not_paused(&env)?;
+    employee.require_auth();
+    let storage=env.storage().persistent();
+    let mut nonce:u64=storage.get(&DataKey::ModificationNonce).unwrap_or(0);
+    let timestamp=env.ledger().timestamp();
+    let modification=PayrollModification{
+        modification_id:nonce,
+        employee:employee.clone(),
+        employer:employer.clone(),
+        new_payroll,
+        employee_approval:false,
+        employer_approval:false,
+        requested_at:timestamp,
+    };
+    storage.set(&DataKey::PayrollModification(nonce),&modification);
+    storage.set(&DataKey::ModificationNonce,&(nonce+1));
+
+    emit_modification_event(
+        env.clone(),
+        "ModificationRequested",
+        ModificationEvent{
+            id:nonce,
+            employee,
+            employer,
+            timestamp,
+        },
+    );
+    Ok(())
+}
+// impl PayrollContract{
+//     fn require_not_paused(env:&Env)->Result<(),PayrollError>{
+//         let storage=env.storage().persistent();
+//         let paused:bool=storage.get(&DataKey::Paused).unwrap_or(false);
+//         if paused{
+//             return Err(PayrollError::ContractPaused);
+//         }
+//         Ok(())
+//     }
+// }
+pub fn approve_payroll_modification(
+    env:Env,
+    approver:Address,
+    modification_id:u64,
+)->Result<(),PayrollError>{
+    Self::require_not_paused(&env)?;
+    approver.require_auth();
+    let storage=env.storage().persistent();
+    let mut modif:PayrollModification=storage
+    .get(&DataKey::PayrollModification(modification_id))
+    .ok_or(PayrollError::InvalidData)?;
+    if approver==modif.employee{
+        modif.employee_approval=true;
+    } else if approver==modif.employer{
+        modif.employer_approval=true;
+    } else{
+        return Err(PayrollError::Unauthorized);
+    }
+    if modif.employee_approval && modif.employer_approval{
+        //store the new payroll
+        let compact=CompactPayroll{
+            employer:modif.new_payroll.employer.clone(),
+            token:modif.new_payroll.token.clone(),
+            amount:modif.new_payroll.amount,
+            interval:modif.new_payroll.interval as u32,
+            last_payment_time:modif.new_payroll.last_payment_time,
+            recurrence_frequency:modif.new_payroll.recurrence_frequency as u32,
+            next_payout_timestamp:modif.new_payroll.next_payout_timestamp,
+            is_paused:false,
+        };
+        storage.set(&DataKey::Payroll(modif.employee.clone()),&compact);
+        storage.remove(&DataKey::PayrollModification(modification_id));
+        emit_modification_event(
+            env.clone(),
+            "ModificationApproved",
+            ModificationEvent{
+            id:modification_id,
+            employee:modif.employee,
+            employer:modif.employer,
+            timestamp:env.ledger().timestamp(),
+            },
+        );
+    } else{
+        //update partial approval
+        storage.set(&DataKey::PayrollModification(modification_id),&modif);
+    }
+    Ok(())
+}
+//reject payroll modification
+pub fn reject_payroll_modification(
+    env:Env,
+    approver:Address,
+    modification_id:u64,
+)->Result<(),PayrollError>{
+    Self::require_not_paused(&env)?;
+    approver.require_auth();
+    let storage=env.storage().persistent();
+    let modif:PayrollModification=storage
+    .get(&DataKey::PayrollModification(modification_id))
+    .ok_or(PayrollError::InvalidData)?;
+    if approver!=modif.employee && approver!=modif.employer{
+        return Err(PayrollError::Unauthorized);
+    }
+    storage.remove(&DataKey::PayrollModification(modification_id));
+    let ts=env.ledger().timestamp();
+    emit_modification_event(
+        env,
+        "ModificationRejected",
+        ModificationEvent{
+            id:modification_id,
+            employee:modif.employee,
+            employer:modif.employer,
+            timestamp:ts,
+        },
+    );
+    Ok(())
+}
+pub fn cleanup_timed_out_modification(env:Env){
+    let storage=env.storage().persistent();
+    let now=env.ledger().timestamp();
+    let timeout:u64=storage.get(&DataKey::TimeoutPeriod).unwrap_or(86400);
+    let mut i:u64=0;
+    let mut found=true;
+    while found{
+        match storage.get::<DataKey,PayrollModification>(&DataKey::PayrollModification(i)){
+            Some(modif)=>{
+                if now>modif.requested_at+timeout{
+                    storage.remove(&DataKey::PayrollModification(i));
+                    emit_modification_event(
+                        env.clone(),
+                        "ModificationTimeOut",
+                        ModificationEvent{
+                            id:i,
+                            employee:modif.employee,
+                            employer:modif.employer,
+                            timestamp:now,
+                        },
+                    );
+                }
+                i+=1;
+            }
+            None=>{
+                found=false;
+            }
+        }
+    }
+}
+
 
     pub fn add_supported_token(env: Env, token: Address) -> Result<(), PayrollError> {
         let storage = env.storage().persistent();

@@ -192,3 +192,15 @@ pub fn emit_guarantee_issued(
     };
     e.events().publish(topics, event_data.clone());
 }
+#[contracttype]
+#[derive(Clone,Debug,Eq,PartialEq)]
+pub struct ModificationEvent{
+    pub id:u64,
+    pub employee:Address,
+    pub employer:Address,
+    pub timestamp: u64,
+}
+pub fn emit_modification_event(env:Env,symbol:&str,ev:ModificationEvent){
+    let topic=(Symbol::new(&env,symbol),);
+    env.events().publish(topic,ev);
+}

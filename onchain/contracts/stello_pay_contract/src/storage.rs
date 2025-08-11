@@ -5,7 +5,7 @@ use soroban_sdk::{contracttype, Address};
 //-----------------------------------------------------------------------------
 
 #[contracttype]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq,Eq)]
 pub struct Payroll {
     pub employer: Address,
     pub token: Address,
@@ -28,6 +28,17 @@ pub struct PayrollInput {
     pub recurrence_frequency: u64,
 }
 
+#[contracttype]
+#[derive(Clone,Debug,Eq,PartialEq)]
+pub struct PayrollModification{
+    pub modification_id: u64,
+    pub employee:Address,
+    pub employer: Address,
+    pub new_payroll:Payroll,
+    pub employee_approval:bool,
+    pub employer_approval:bool,
+    pub requested_at:u64,
+}
 /// Compact payroll data for storage optimization
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -50,7 +61,9 @@ pub struct CompactPayroll {
 pub enum DataKey {
     // Consolidated payroll storage - single key per employee
     Payroll(Address), // employee -> Payroll struct
-
+    PayrollModification(u64),
+    ModificationNonce,
+    TimeoutPeriod,
     // Indexing for efficient queries
     EmployerEmployees(Address), // employer -> Vec<Employee>
     TokenEmployees(Address),    // token -> Vec<Employee>
