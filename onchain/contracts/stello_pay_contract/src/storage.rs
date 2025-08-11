@@ -76,4 +76,12 @@ pub enum DataKey {
     EmployerGuarantees(Address),         // employer -> Vec<u64> (guarantee IDs)
     RiskAssessment(Address),             // employee -> u32 (risk score)
     InsuranceSettings,                   // Global insurance settings
+
+    // Compliance-related storage keys
+    JurisdictionConfig(Address),         // jurisdiction_hash -> JurisdictionConfig
+    ComplianceMetrics(Address),          // jurisdiction_hash -> ComplianceMetrics
+    RegulatoryReport(Address),           // report_id_hash -> RegulatoryReport
+    AuditEntry(Address),                 // entry_id_hash -> AuditEntry
+    AuditIndex(Address),                 // address -> Vec<Address> (audit entry ID hashes)
+    ComplianceSettings,                  // Global compliance settings
 }
