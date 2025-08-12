@@ -99,4 +99,12 @@ pub enum DataKey {
     PayrollHistoryIdCounter(Address),    // (employee) -> history_entry
     AuditTrail(Address),                 // (employee) -> audit_entry
     AuditTrailIdCounter(Address),
+
+  // Compliance-related storage keys
+    JurisdictionConfig(Address),         // jurisdiction_hash -> JurisdictionConfig
+    ComplianceMetrics(Address),          // jurisdiction_hash -> ComplianceMetrics
+    RegulatoryReport(Address),           // report_id_hash -> RegulatoryReport
+    AuditEntry(Address),                 // entry_id_hash -> AuditEntry
+    AuditIndex(Address),                 // address -> Vec<Address> (audit entry ID hashes)
+    ComplianceSettings,                  // Global compliance settings
 }
