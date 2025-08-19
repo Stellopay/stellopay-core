@@ -2,6 +2,8 @@ use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+//use soroban_sdk::Env;
+//use thiserror::Error;
 
 #[derive(Parser)]
 #[command(name = "stellopay-cli")]
@@ -43,9 +45,19 @@ pub enum Commands {
         #[arg(long)]
         contract_id: Option<String>,
     },
-
     /// Show CLI status
     Status,
+    /// Emergency Command
+    EmergencyWithdraw{
+        #[arg(long)]
+        contract_id:Option<String>,
+        #[arg(long)]
+        token:String,
+        #[arg(long)]
+        recipient:String,
+        #[arg(long)]
+        amount:i128,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -139,7 +151,16 @@ pub struct GasMetrics {
     pub p99: u64,
     pub total: u64,
 }
-
+//error enum
+#[derive(Debug,thiserror::Error)]
+pub enum Error{
+    #[error("Zero amount is not allowed")]
+    ZeroAmount,
+    #[error("Missing secret key")]
+    MissingSecretKey,
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
 // Helper functions for frequency conversion
 pub fn frequency_to_seconds(frequency: &str) -> Result<u64, String> {
     match frequency.to_lowercase().as_str() {
@@ -180,4 +201,25 @@ impl Default for Config {
             },
         }
     }
+}
+//admin and pause checks
+pub fn require_admin(_context:&str)->Result<(),Error>{
+    //dummy implementation
+    Ok(())
+}
+pub fn require_not_paused(_context:&str)->Result<(),Error>{
+    //dummy implementation
+    Ok(())
+}
+//token client
+pub struct TokenClient;
+impl TokenClient{
+    pub fn new(_rpc_url:&str,_token_address:&str)->Self{
+        TokenClient
+    }
+    pub fn transfer(&self,_to:&str,_amount:i128)->Result<(),Error>{
+        //dummy implementation
+        Ok(())
+    }
+
 }
