@@ -4,7 +4,7 @@ use soroban_sdk::{
 };
 
 use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT};
-use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll};
+use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, CompactPayrollHistoryEntry};
 use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
 
 //-----------------------------------------------------------------------------
@@ -83,6 +83,12 @@ pub const UPDATED_EVENT: Symbol = symbol_short!("updated");
 
 /// Event emitted when batch operations are performed
 pub const BATCH_EVENT: Symbol = symbol_short!("batch");
+
+/// Event emitted when payroll history is updated
+pub const HISTORY_UPDATED_EVENT: Symbol = symbol_short!("hist_upd");
+
+/// Event emitted for audit trail entries
+pub const AUDIT_EVENT: Symbol = symbol_short!("audit");
 
 //-----------------------------------------------------------------------------
 // Contract Implementation
@@ -290,6 +296,18 @@ impl PayrollContract {
         // Update indexing efficiently
         Self::update_indexes_efficiently(&env, &employer, &token, &employee, IndexOperation::Add);
 
+        // Record history entry
+        Self::record_history(
+            &env, 
+            &employee, 
+            &compact_payroll,
+            if existing_payroll.is_some() {
+                symbol_short!("updated")
+            } else {
+                symbol_short!("created")
+            },
+        );
+
         // Automatically add token as supported if it's not already
         if !Self::is_token_supported(env.clone(), token.clone()) {
             let key = DataKey::SupportedToken(token.clone());
@@ -428,13 +446,16 @@ impl PayrollContract {
         let contract_address = env.current_contract_address();
         Self::transfer_tokens_safe(&env, &payroll.token, &contract_address, &employee, payroll.amount)?;
 
+
         // Optimized payroll update with minimal storage operations
         Self::update_payroll_timestamps(&env, &employee, &payroll, current_time);
+
+        Self::record_audit(&env, &employee, &payroll.employer, &payroll.token, payroll.amount, current_time);
 
         // Emit disburse event
         emit_disburse(
             env,
-            payroll.employer.clone(),
+            payroll.employer,
             employee,
             payroll.token.clone(),
             payroll.amount,
@@ -769,6 +790,18 @@ impl PayrollContract {
                 IndexOperation::Add,
             );
 
+            // Record history entry
+            Self::record_history(
+                &env, 
+                &payroll_input.employee, 
+                &compact_payroll,
+                if existing_payroll.is_some() {
+                    symbol_short!("updated")
+                } else {
+                    symbol_short!("created")
+                },
+            );
+
             // Automatically add token as supported if it's not already
             if !Self::is_token_supported(env.clone(), payroll_input.token.clone()) {
                 let key = DataKey::SupportedToken(payroll_input.token.clone());
@@ -835,6 +868,8 @@ impl PayrollContract {
 
             // Add to processed list
             processed_employees.push_back(employee.clone());
+
+            Self::record_audit(&env, &employee, &payroll.employer, &payroll.token, payroll.amount, batch_ctx.current_time);
 
             // Emit individual disbursement event
             emit_disburse(
@@ -918,6 +953,13 @@ impl PayrollContract {
         let compact_payroll = Self::to_compact_payroll(&updated_payroll);
         storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
 
+        Self::record_history(
+            &env, 
+            &employee, 
+            &compact_payroll,
+            symbol_short!("paused")
+        );
+
         // Emit pause event
         env.events().publish((EMPLOYEE_PAUSED_EVENT,), (caller, employee.clone()));
 
@@ -950,6 +992,13 @@ impl PayrollContract {
         // Store updated payroll
         let compact_payroll = Self::to_compact_payroll(&updated_payroll);
         storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+
+        Self::record_history(
+            &env, 
+            &employee, 
+            &compact_payroll,
+            symbol_short!("resumed")
+        );
 
         // Emit resume event
         env.events().publish((EMPLOYEE_RESUMED_EVENT,), (caller, employee.clone()));
@@ -1295,5 +1344,198 @@ impl PayrollContract {
         }
         
         InsuranceSystem::set_insurance_settings(&env, settings)
+    }
+
+    //-----------------------------------------------------------------------------
+    // Payroll History and Audit Trail
+    //-----------------------------------------------------------------------------
+    /// Record a payroll history entry
+    fn record_history(
+        env: &Env,
+        employee: &Address,
+        payroll: &CompactPayroll,
+        action: Symbol,
+    ) {
+        let storage = env.storage().persistent();
+        let timestamp = env.ledger().timestamp();
+        let employer = &payroll.employer;
+
+        // Get or initialize the history vector and ID counter
+        let history_key = DataKey::PayrollHistoryEntry(employee.clone());
+        let mut history: Vec<CompactPayrollHistoryEntry> = storage.get(&history_key).unwrap_or(Vec::new(env));
+        let id_key = DataKey::PayrollHistoryIdCounter(employee.clone());
+        let mut id_counter: u64 = storage.get(&id_key).unwrap_or(0);
+
+        id_counter += 1;
+        
+        let history_entry = CompactPayrollHistoryEntry {
+            employee: employee.clone(),
+            employer: employer.clone(),
+            token: payroll.token.clone(),
+            amount: payroll.amount,
+            interval: payroll.interval.into(),
+            recurrence_frequency: payroll.recurrence_frequency,
+            timestamp,
+            last_payment_time: payroll.last_payment_time,
+            next_payout_timestamp: payroll.next_payout_timestamp,
+            action: action.clone(),
+            id: id_counter
+        };
+
+         // Append to history vector
+        history.push_back(history_entry);
+        storage.set(&history_key, &history);
+        storage.set(&id_key, &id_counter);
+
+        env.events().publish(
+            (HISTORY_UPDATED_EVENT,),
+            (employee.clone(), employer.clone(), action, timestamp),
+        );
+       
+    }
+
+    /// Query payroll history for an employee with optional timestamp range
+    pub fn get_payroll_history(
+        env: Env,
+        employee: Address,
+        start_timestamp: Option<u64>,
+        end_timestamp: Option<u64>,
+        limit: Option<u32>,
+    ) -> Vec<CompactPayrollHistoryEntry> {
+        if limit == Some(0) {
+            return Vec::new(&env);
+        }
+        let storage = env.storage().persistent();
+        let mut history = Vec::new(&env);
+        let max_entries = limit.unwrap_or(100);
+        let history_key = DataKey::PayrollHistoryEntry(employee.clone());
+        let history_entries: Vec<CompactPayrollHistoryEntry> = storage.get(&history_key).unwrap_or(Vec::new(&env));
+
+        let mut count = 0;
+        for entry in history_entries.iter() {
+            if let Some(start) = start_timestamp {
+                if entry.timestamp < start {
+                    continue;
+                }
+            }
+            if let Some(end) = end_timestamp {
+                if entry.timestamp > end {
+                    continue;
+                }
+            }
+
+            history.push_back(entry);
+            count += 1;
+            if count >= max_entries {
+                break;
+            }
+        }
+
+        history
+    }
+
+    /// Record an audit trail entry for disbursements with sequential ID
+    fn record_audit(
+        env: &Env,
+        employee: &Address,
+        employer: &Address,
+        token: &Address,
+        amount: i128,
+        timestamp: u64,
+    ) {
+        let storage = env.storage().persistent();
+        
+        let audit_key = DataKey::AuditTrail(employee.clone());
+        let mut audit: Vec<CompactPayrollHistoryEntry> = storage.get(&audit_key).unwrap_or(Vec::new(env));
+        let id_key = DataKey::AuditTrailIdCounter(employee.clone());
+        let mut id_counter: u64 = storage.get(&id_key).unwrap_or(0);
+
+        id_counter += 1;
+
+        let payroll = Self::_get_payroll(env, employee).unwrap_or(Payroll {
+            employer: employer.clone(),
+            token: token.clone(),
+            amount,
+            interval: 0,
+            recurrence_frequency: 0,
+            last_payment_time: timestamp,
+            next_payout_timestamp: timestamp,
+            is_paused: false,
+        });
+
+
+        let history_entry = CompactPayrollHistoryEntry {
+            employee: employee.clone(),
+            employer: employer.clone(),
+            token: token.clone(),
+            amount: amount,
+            interval: payroll.interval as u32,
+            recurrence_frequency: payroll.recurrence_frequency as u32,
+            timestamp,
+            last_payment_time: payroll.last_payment_time,
+            next_payout_timestamp: payroll.next_payout_timestamp,
+            action: symbol_short!("disbursed"),
+            id: id_counter
+        };
+
+        audit.push_back(history_entry);
+        storage.set(&audit_key, &audit);
+        storage.set(&id_key, &id_counter);
+
+        env.events().publish(
+            (AUDIT_EVENT,),
+            (employee.clone(), employer.clone(), amount, timestamp, id_counter),
+        );
+    }
+
+    /// Query audit trail for an employee with optional timestamp range
+    pub fn get_audit_trail(
+        env: Env,
+        employee: Address,
+        start_timestamp: Option<u64>,
+        end_timestamp: Option<u64>,
+        limit: Option<u32>,
+    ) -> Vec<CompactPayrollHistoryEntry> {
+        let storage = env.storage().persistent();
+        let mut audit_trail = Vec::new(&env);
+        let max_entries = limit.unwrap_or(100);
+
+        let audit_key = DataKey::AuditTrail(employee.clone());
+        let audit_entries: Vec<CompactPayrollHistoryEntry> = storage.get(&audit_key).unwrap_or(Vec::new(&env));
+
+        let mut count = 0;
+        for entry in audit_entries.iter() {
+            if let Some(start) = start_timestamp {
+                if entry.timestamp < start {
+                    continue;
+                }
+            }
+            if let Some(end) = end_timestamp {
+                if entry.timestamp > end {
+                    continue;
+                }
+            }
+
+            audit_trail.push_back(CompactPayrollHistoryEntry {
+                employee: entry.employee.clone(),
+                employer: entry.employer.clone(),
+                token: entry.token.clone(),
+                amount: entry.amount,
+                interval: entry.interval,
+                recurrence_frequency: entry.recurrence_frequency,
+                timestamp: entry.timestamp,
+                last_payment_time: entry.last_payment_time,
+                next_payout_timestamp: entry.next_payout_timestamp,
+                action: entry.action,
+                id: entry.id,
+            });
+
+            count += 1;
+            if count >= max_entries {
+                break;
+            }
+        }
+
+        audit_trail
     }
 }

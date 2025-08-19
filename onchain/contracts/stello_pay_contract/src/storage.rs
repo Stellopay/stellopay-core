@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address};
+use soroban_sdk::{contracttype, Address, Symbol};
 
 //-----------------------------------------------------------------------------
 // Data Structures
@@ -42,6 +42,23 @@ pub struct CompactPayroll {
     pub is_paused: bool,
 }
 
+/// Structure for compact history storage
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompactPayrollHistoryEntry {
+    pub employee: Address,
+    pub employer: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub interval: u32,
+    pub recurrence_frequency: u32,
+    pub timestamp: u64,
+    pub last_payment_time: u64,
+    pub next_payout_timestamp: u64,
+    pub action: Symbol,
+    pub id: u64,
+}
+
 //-----------------------------------------------------------------------------
 // Storage Keys
 //-----------------------------------------------------------------------------
@@ -77,7 +94,13 @@ pub enum DataKey {
     RiskAssessment(Address),             // employee -> u32 (risk score)
     InsuranceSettings,                   // Global insurance settings
 
-    // Compliance-related storage keys
+    // PayrollHistory
+    PayrollHistoryEntry(Address),        // (employee) -> history_entry
+    PayrollHistoryIdCounter(Address),    // (employee) -> history_entry
+    AuditTrail(Address),                 // (employee) -> audit_entry
+    AuditTrailIdCounter(Address),
+
+  // Compliance-related storage keys
     JurisdictionConfig(Address),         // jurisdiction_hash -> JurisdictionConfig
     ComplianceMetrics(Address),          // jurisdiction_hash -> ComplianceMetrics
     RegulatoryReport(Address),           // report_id_hash -> RegulatoryReport
