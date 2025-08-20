@@ -5,7 +5,7 @@ use soroban_sdk::{
 
 //use crate::storage::PayrollModification;
 use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT,emit_modification_event,ModificationEvent};
-use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll};
+use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll,CompactPayrollHistoryEntry};
 
 use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
 use crate::storage::PayrollModification;

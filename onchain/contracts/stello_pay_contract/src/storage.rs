@@ -107,7 +107,7 @@ pub enum DataKey {
     RiskAssessment(Address),             // employee -> u32 (risk score)
     InsuranceSettings,                   // Global insurance settings
 
-    // PayrollHistory
+
     PayrollHistoryEntry(Address),        // (employee) -> history_entry
     PayrollHistoryIdCounter(Address),    // (employee) -> history_entry
     AuditTrail(Address),                 // (employee) -> audit_entry
