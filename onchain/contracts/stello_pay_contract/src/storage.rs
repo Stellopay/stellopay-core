@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Symbol};
+use soroban_sdk::{contracttype, Address, Symbol, BytesN};
 
 //-----------------------------------------------------------------------------
 // Data Structures
@@ -98,6 +98,16 @@ pub enum DataKey {
     PayrollHistoryEntry(Address),        // (employee) -> history_entry
     PayrollHistoryIdCounter(Address),    // (employee) -> history_entry
     AuditTrail(Address),                 // (employee) -> audit_entry
+
+    // Webhook system keys
+    Webhook(u64),                        // webhook_id -> Webhook
+    OwnerWebhooks(Address),              // owner -> Vec<u64> (webhook IDs)
+    WebhookStats(u64),                   // webhook_id -> WebhookStats
+    NextWebhookId,                       // counter for webhook IDs
+    EventWebhooks(Symbol),               // event_type -> Vec<u64> (webhook IDs)
+    WebhookRateLimit(Address, u64),      // (owner, timestamp_bucket) -> u32
+    WebhookValidationCache(u64, BytesN<32>), // (webhook_id, event_hash) -> bool
+    WebhookFailedQueue,                  // Vec<u64> (failed webhook IDs)
     AuditTrailIdCounter(Address),
 
   // Compliance-related storage keys

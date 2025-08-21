@@ -1538,4 +1538,47 @@ impl PayrollContract {
 
         audit_trail
     }
+
+    //-----------------------------------------------------------------------------
+    // Webhook Integration Functions
+    //-----------------------------------------------------------------------------
+
+    /// Register a webhook for external service integration
+    pub fn register_webhook(
+        env: Env,
+        owner: Address,
+        url: String,
+        events: Vec<crate::webhooks_simple::EventType>,
+        secret: String,
+    ) -> Result<u64, crate::webhooks_simple::WebhookError> {
+        crate::webhooks_simple::WebhookSystem::register_webhook(&env, owner, url, events, secret)
+    }
+
+    /// Get webhook information
+    pub fn get_webhook(env: Env, webhook_id: u64) -> Result<crate::webhooks_simple::Webhook, crate::webhooks_simple::WebhookError> {
+        crate::webhooks_simple::WebhookSystem::get_webhook(&env, webhook_id)
+    }
+
+    /// Delete a webhook
+    pub fn delete_webhook(
+        env: Env,
+        owner: Address,
+        webhook_id: u64,
+    ) -> Result<(), crate::webhooks_simple::WebhookError> {
+        crate::webhooks_simple::WebhookSystem::delete_webhook(&env, owner, webhook_id)
+    }
+
+    /// Trigger webhook notification for salary disbursement
+    pub fn notify_salary_disbursed(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        amount: i128,
+    ) {
+        // Create event data and publish for webhook processing
+        env.events().publish(
+            (symbol_short!("wh_salary"),), 
+            (employer, employee, amount)
+        );
+    }
 }
