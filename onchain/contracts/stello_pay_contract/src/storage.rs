@@ -1,4 +1,7 @@
-use soroban_sdk::{contracttype, Address, Symbol, String};
+use soroban_sdk::{contracttype, Address, Symbol, String, Vec};
+
+// Import insurance types for backup functionality
+use crate::insurance::InsurancePolicy;
 
 //-----------------------------------------------------------------------------
 // Data Structures
@@ -93,6 +96,122 @@ pub struct TemplatePreset {
     pub created_at: u64,
 }
 
+/// Payroll backup structure for data recovery
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollBackup {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    pub employer: Address,
+    pub created_at: u64,
+    pub backup_type: BackupType,
+    pub status: BackupStatus,
+    pub checksum: String,
+    pub data_hash: String,
+    pub size_bytes: u64,
+    pub version: u32,
+}
+
+/// Backup type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum BackupType {
+    Full,           // Complete system backup
+    Employer,       // Employer-specific backup
+    Employee,       // Employee-specific backup
+    Template,       // Template backup
+    Insurance,      // Insurance data backup
+    Compliance,     // Compliance data backup
+}
+
+/// Backup status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum BackupStatus {
+    Creating,       // Backup is being created
+    Completed,      // Backup completed successfully
+    Failed,         // Backup failed
+    Verifying,      // Backup is being verified
+    Verified,       // Backup verified successfully
+    Restoring,      // Backup is being restored
+    Restored,       // Backup restored successfully
+}
+
+/// Backup data structure for storing actual backup content
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BackupData {
+    pub backup_id: u64,
+    pub payroll_data: Vec<Payroll>,
+    pub template_data: Vec<PayrollTemplate>,
+    pub preset_data: Vec<TemplatePreset>,
+    pub insurance_data: Vec<InsurancePolicy>,
+    pub compliance_data: String, // Serialized compliance data as string
+    pub metadata: BackupMetadata,
+}
+
+/// Backup metadata for additional information
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BackupMetadata {
+    pub total_employees: u32,
+    pub total_templates: u32,
+    pub total_presets: u32,
+    pub total_insurance_policies: u32,
+    pub backup_timestamp: u64,
+    pub contract_version: String,
+    pub data_integrity_hash: String,
+}
+
+/// Recovery point structure for disaster recovery
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecoveryPoint {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    pub created_at: u64,
+    pub backup_id: u64,
+    pub recovery_type: RecoveryType,
+    pub status: RecoveryStatus,
+    pub checksum: String,
+    pub metadata: RecoveryMetadata,
+}
+
+/// Recovery type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecoveryType {
+    Full,           // Complete system recovery
+    Partial,        // Partial system recovery
+    Emergency,      // Emergency recovery
+    Test,           // Test recovery
+}
+
+/// Recovery status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecoveryStatus {
+    Pending,        // Recovery pending
+    InProgress,     // Recovery in progress
+    Completed,      // Recovery completed
+    Failed,         // Recovery failed
+    RolledBack,     // Recovery rolled back
+}
+
+/// Recovery metadata for additional information
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecoveryMetadata {
+    pub total_operations: u32,
+    pub success_count: u32,
+    pub failure_count: u32,
+    pub recovery_timestamp: u64,
+    pub duration_seconds: u64,
+    pub data_verification_status: String,
+}
+
 //-----------------------------------------------------------------------------
 // Storage Keys
 //-----------------------------------------------------------------------------
@@ -151,4 +270,14 @@ pub enum DataKey {
     NextPresetId,                        // Next available preset ID
     PresetCategory(String),              // category -> Vec<u64> (preset IDs)
     ActivePresets,                       // Vec<u64> (active preset IDs)
+
+    // Backup and Recovery storage keys
+    PayrollBackup(u64),                  // backup_id -> PayrollBackup
+    NextBackupId,                        // Next available backup ID
+    EmployerBackups(Address),            // employer -> Vec<u64> (backup IDs)
+    BackupData(u64),                     // backup_id -> BackupData
+    BackupIndex,                         // Vec<u64> (all backup IDs)
+    RecoveryPoint(u64),                  // recovery_point_id -> RecoveryPoint
+    NextRecoveryPointId,                 // Next available recovery point ID
+    DisasterRecoverySettings,            // Global disaster recovery settings
 }
