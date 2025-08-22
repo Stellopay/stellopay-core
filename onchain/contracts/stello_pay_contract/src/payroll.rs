@@ -187,6 +187,7 @@ pub const RULE_EXECUTED_EVENT: Symbol = symbol_short!("rule_e");
 
 /// Event emitted when automatic disbursement is triggered
 pub const AUTO_DISBURSE_EVENT: Symbol = symbol_short!("auto_d");
+
 //-----------------------------------------------------------------------------
 // Contract Implementation
 //-----------------------------------------------------------------------------
