@@ -4,7 +4,7 @@ use soroban_sdk::{
 };
 
 use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT};
-use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, CompactPayrollHistoryEntry, PayrollTemplate, TemplatePreset};
+use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, CompactPayrollHistoryEntry, PayrollTemplate, TemplatePreset, PayrollBackup, BackupData, BackupMetadata, BackupType, BackupStatus, RecoveryPoint, RecoveryType, RecoveryStatus, RecoveryMetadata, PayrollSchedule, ScheduleType, ScheduleFrequency, ScheduleMetadata, AutomationRule, RuleType, RuleCondition, RuleAction, ConditionOperator, LogicalOperator, ActionType};
 use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
 
 //-----------------------------------------------------------------------------
@@ -73,6 +73,44 @@ pub enum PayrollError {
     TemplateValidationFailed = 15,
     /// Preset is not active
     PresetNotActive = 16,
+    /// Backup not found
+    BackupNotFound = 17,
+    /// Backup creation failed
+    BackupCreationFailed = 18,
+    /// Backup verification failed
+    BackupVerificationFailed = 19,
+    /// Recovery point not found
+    RecoveryPointNotFound = 20,
+    /// Recovery failed
+    RecoveryFailed = 21,
+    /// Backup data corrupted
+    BackupDataCorrupted = 22,
+    /// Insufficient storage for backup
+    InsufficientBackupStorage = 23,
+    /// Backup already exists
+    BackupAlreadyExists = 24,
+    /// Recovery in progress
+    RecoveryInProgress = 25,
+    /// Schedule not found
+    ScheduleNotFound = 26,
+    /// Schedule creation failed
+    ScheduleCreationFailed = 27,
+    /// Schedule validation failed
+    ScheduleValidationFailed = 28,
+    /// Automation rule not found
+    AutomationRuleNotFound = 29,
+    /// Rule execution failed
+    RuleExecutionFailed = 30,
+    /// Invalid schedule frequency
+    InvalidScheduleFrequency = 31,
+    /// Schedule already exists
+    ScheduleAlreadyExists = 32,
+    /// Schedule execution failed
+    ScheduleExecutionFailed = 33,
+    /// Invalid automation rule
+    InvalidAutomationRule = 34,
+    /// Rule condition evaluation failed
+    RuleConditionEvaluationFailed = 35,
 }
 
 //-----------------------------------------------------------------------------
@@ -116,6 +154,39 @@ pub const TEMPLATE_SHARED_EVENT: Symbol = symbol_short!("tmpl_shr");
 
 /// Event emitted when a preset is created
 pub const PRESET_CREATED_EVENT: Symbol = symbol_short!("preset_c");
+
+/// Event emitted when a backup is created
+pub const BACKUP_CREATED_EVENT: Symbol = symbol_short!("backup_c");
+
+/// Event emitted when a backup is verified
+pub const BACKUP_VERIFIED_EVENT: Symbol = symbol_short!("backup_v");
+
+/// Event emitted when a recovery is initiated
+pub const RECOVERY_STARTED_EVENT: Symbol = symbol_short!("recov_s");
+
+/// Event emitted when a recovery is completed
+pub const RECOVERY_COMPLETED_EVENT: Symbol = symbol_short!("recov_c");
+
+/// Event emitted when a backup is restored
+pub const BACKUP_RESTORED_EVENT: Symbol = symbol_short!("backup_r");
+
+/// Event emitted when a schedule is created
+pub const SCHEDULE_CREATED_EVENT: Symbol = symbol_short!("sched_c");
+
+/// Event emitted when a schedule is executed
+pub const SCHEDULE_EXECUTED_EVENT: Symbol = symbol_short!("sched_e");
+
+/// Event emitted when a schedule is updated
+pub const SCHEDULE_UPDATED_EVENT: Symbol = symbol_short!("sched_u");
+
+/// Event emitted when an automation rule is created
+pub const RULE_CREATED_EVENT: Symbol = symbol_short!("rule_c");
+
+/// Event emitted when an automation rule is executed
+pub const RULE_EXECUTED_EVENT: Symbol = symbol_short!("rule_e");
+
+/// Event emitted when automatic disbursement is triggered
+pub const AUTO_DISBURSE_EVENT: Symbol = symbol_short!("auto_d");
 
 //-----------------------------------------------------------------------------
 // Contract Implementation
@@ -2011,5 +2082,1081 @@ impl PayrollContract {
         }
 
         presets
+    }
+
+    //-----------------------------------------------------------------------------
+    // Backup and Recovery Functions
+    //-----------------------------------------------------------------------------
+
+    /// Create a new payroll backup
+    pub fn create_backup(
+        env: Env,
+        caller: Address,
+        name: String,
+        description: String,
+        backup_type: BackupType,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Validate backup name
+        if name.len() == 0 || name.len() > 100 {
+            return Err(PayrollError::InvalidTemplateName);
+        }
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next backup ID
+        let next_id = storage.get(&DataKey::NextBackupId).unwrap_or(0) + 1;
+        storage.set(&DataKey::NextBackupId, &next_id);
+
+        // Create backup metadata
+        let backup = PayrollBackup {
+            id: next_id,
+            name: name.clone(),
+            description: description.clone(),
+            employer: caller.clone(),
+            created_at: current_time,
+            backup_type: backup_type.clone(),
+            status: BackupStatus::Creating,
+            checksum: String::from_str(&env, ""),
+            data_hash: String::from_str(&env, ""),
+            size_bytes: 0,
+            version: 1,
+        };
+
+        // Store backup metadata
+        storage.set(&DataKey::PayrollBackup(next_id), &backup);
+
+        // Add to employer's backups
+        let mut employer_backups: Vec<u64> = storage.get(&DataKey::EmployerBackups(caller.clone())).unwrap_or(Vec::new(&env));
+        employer_backups.push_back(next_id);
+        storage.set(&DataKey::EmployerBackups(caller.clone()), &employer_backups);
+
+        // Add to backup index
+        let mut backup_index: Vec<u64> = storage.get(&DataKey::BackupIndex).unwrap_or(Vec::new(&env));
+        backup_index.push_back(next_id);
+        storage.set(&DataKey::BackupIndex, &backup_index);
+
+        // Create backup data based on type
+        let backup_data = Self::_collect_backup_data(&env, &caller, &backup_type)?;
+        
+        // Calculate checksum and hash
+        let checksum = Self::_calculate_backup_checksum(&env, &backup_data);
+        let data_hash = Self::_calculate_data_hash(&env, &backup_data);
+        let size_bytes = Self::_calculate_backup_size(&env, &backup_data);
+
+        // Store backup data
+        storage.set(&DataKey::BackupData(next_id), &backup_data);
+
+        // Update backup with final metadata
+        let mut final_backup = backup.clone();
+        final_backup.status = BackupStatus::Completed;
+        final_backup.checksum = checksum;
+        final_backup.data_hash = data_hash;
+        final_backup.size_bytes = size_bytes;
+        storage.set(&DataKey::PayrollBackup(next_id), &final_backup);
+
+        env.events().publish(
+            (BACKUP_CREATED_EVENT,),
+            (caller.clone(), next_id, name, backup_type),
+        );
+
+        Ok(next_id)
+    }
+
+    /// Get a backup by ID
+    pub fn get_backup(env: Env, backup_id: u64) -> Result<PayrollBackup, PayrollError> {
+        let storage = env.storage().persistent();
+        storage.get(&DataKey::PayrollBackup(backup_id))
+            .ok_or(PayrollError::BackupNotFound)
+    }
+
+    /// Get backup data by ID
+    pub fn get_backup_data(env: Env, backup_id: u64) -> Result<BackupData, PayrollError> {
+        let storage = env.storage().persistent();
+        storage.get(&DataKey::BackupData(backup_id))
+            .ok_or(PayrollError::BackupNotFound)
+    }
+
+    /// Verify a backup's integrity
+    pub fn verify_backup(
+        env: Env,
+        caller: Address,
+        backup_id: u64,
+    ) -> Result<bool, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let backup: PayrollBackup = storage.get(&DataKey::PayrollBackup(backup_id))
+            .ok_or(PayrollError::BackupNotFound)?;
+
+        // Only backup owner can verify
+        if backup.employer != caller {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let backup_data: BackupData = storage.get(&DataKey::BackupData(backup_id))
+            .ok_or(PayrollError::BackupNotFound)?;
+
+        // Calculate current checksum
+        let current_checksum = Self::_calculate_backup_checksum(&env, &backup_data);
+        let current_hash = Self::_calculate_data_hash(&env, &backup_data);
+
+        // Verify checksum and hash
+        let is_valid = backup.checksum == current_checksum && backup.data_hash == current_hash;
+
+        // Update backup status
+        let mut updated_backup = backup.clone();
+        updated_backup.status = if is_valid { BackupStatus::Verified } else { BackupStatus::Failed };
+        storage.set(&DataKey::PayrollBackup(backup_id), &updated_backup);
+
+        env.events().publish(
+            (BACKUP_VERIFIED_EVENT,),
+            (caller.clone(), backup_id, is_valid),
+        );
+
+        Ok(is_valid)
+    }
+
+    /// Create a recovery point from a backup
+    pub fn create_recovery_point(
+        env: Env,
+        caller: Address,
+        backup_id: u64,
+        name: String,
+        description: String,
+        recovery_type: RecoveryType,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Verify backup exists and is valid
+        let backup: PayrollBackup = Self::get_backup(env.clone(), backup_id)?;
+        if backup.employer != caller {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        if backup.status != BackupStatus::Completed && backup.status != BackupStatus::Verified {
+            return Err(PayrollError::BackupVerificationFailed);
+        }
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next recovery point ID
+        let next_id = storage.get(&DataKey::NextRecoveryPointId).unwrap_or(0) + 1;
+        storage.set(&DataKey::NextRecoveryPointId, &next_id);
+
+        let recovery_point = RecoveryPoint {
+            id: next_id,
+            name: name.clone(),
+            description: description.clone(),
+            created_at: current_time,
+            backup_id,
+            recovery_type: recovery_type.clone(),
+            status: RecoveryStatus::Pending,
+            checksum: backup.checksum.clone(),
+            metadata: RecoveryMetadata {
+                total_operations: 0,
+                success_count: 0,
+                failure_count: 0,
+                recovery_timestamp: current_time,
+                duration_seconds: 0,
+                data_verification_status: String::from_str(&env, "pending"),
+            },
+        };
+
+        storage.set(&DataKey::RecoveryPoint(next_id), &recovery_point);
+
+        env.events().publish(
+            (RECOVERY_STARTED_EVENT,),
+            (caller.clone(), next_id, backup_id, recovery_type),
+        );
+
+        Ok(next_id)
+    }
+
+    /// Execute recovery from a recovery point
+    pub fn execute_recovery(
+        env: Env,
+        caller: Address,
+        recovery_point_id: u64,
+    ) -> Result<bool, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let mut recovery_point: RecoveryPoint = storage.get(&DataKey::RecoveryPoint(recovery_point_id))
+            .ok_or(PayrollError::RecoveryPointNotFound)?;
+
+        // Check if recovery is already in progress
+        if recovery_point.status == RecoveryStatus::InProgress {
+            return Err(PayrollError::RecoveryInProgress);
+        }
+
+        // Get backup data
+        let backup_data: BackupData = storage.get(&DataKey::BackupData(recovery_point.backup_id))
+            .ok_or(PayrollError::BackupNotFound)?;
+
+        // Update recovery status
+        recovery_point.status = RecoveryStatus::InProgress;
+        storage.set(&DataKey::RecoveryPoint(recovery_point_id), &recovery_point);
+
+        let start_time = env.ledger().timestamp();
+        let mut success_count = 0;
+        let mut failure_count = 0;
+
+        // Restore payroll data
+        for payroll in backup_data.payroll_data.iter() {
+            match Self::_restore_payroll(&env, &payroll) {
+                Ok(_) => success_count += 1,
+                Err(_) => failure_count += 1,
+            }
+        }
+
+        // Restore template data
+        for template in backup_data.template_data.iter() {
+            match Self::_restore_template(&env, &template) {
+                Ok(_) => success_count += 1,
+                Err(_) => failure_count += 1,
+            }
+        }
+
+        // Restore preset data
+        for preset in backup_data.preset_data.iter() {
+            match Self::_restore_preset(&env, &preset) {
+                Ok(_) => success_count += 1,
+                Err(_) => failure_count += 1,
+            }
+        }
+
+        let end_time = env.ledger().timestamp();
+        let duration = end_time - start_time;
+
+        // Update recovery point with results
+        recovery_point.status = if failure_count == 0 { RecoveryStatus::Completed } else { RecoveryStatus::Failed };
+        recovery_point.metadata.total_operations = success_count + failure_count;
+        recovery_point.metadata.success_count = success_count;
+        recovery_point.metadata.failure_count = failure_count;
+        recovery_point.metadata.recovery_timestamp = end_time;
+        recovery_point.metadata.duration_seconds = duration;
+        recovery_point.metadata.data_verification_status = if failure_count == 0 { 
+            String::from_str(&env, "verified") 
+        } else { 
+            String::from_str(&env, "failed") 
+        };
+
+        storage.set(&DataKey::RecoveryPoint(recovery_point_id), &recovery_point);
+
+        env.events().publish(
+            (RECOVERY_COMPLETED_EVENT,),
+            (caller.clone(), recovery_point_id, success_count, failure_count, duration),
+        );
+
+        Ok(failure_count == 0)
+    }
+
+    /// Get all backups for an employer
+    pub fn get_employer_backups(env: Env, employer: Address) -> Vec<PayrollBackup> {
+        let storage = env.storage().persistent();
+        let backup_ids: Vec<u64> = storage.get(&DataKey::EmployerBackups(employer.clone())).unwrap_or(Vec::new(&env));
+        let mut backups = Vec::new(&env);
+
+        for id in backup_ids.iter() {
+            if let Some(backup) = storage.get(&DataKey::PayrollBackup(id)) {
+                backups.push_back(backup);
+            }
+        }
+
+        backups
+    }
+
+    /// Get all recovery points
+    pub fn get_recovery_points(env: Env) -> Vec<RecoveryPoint> {
+        let storage = env.storage().persistent();
+        let mut recovery_points = Vec::new(&env);
+        let mut next_id = 1;
+
+        // Iterate through recovery points (this is a simplified approach)
+        while let Some(recovery_point) = storage.get(&DataKey::RecoveryPoint(next_id)) {
+            recovery_points.push_back(recovery_point);
+            next_id += 1;
+        }
+
+        recovery_points
+    }
+
+    /// Delete a backup
+    pub fn delete_backup(
+        env: Env,
+        caller: Address,
+        backup_id: u64,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let backup: PayrollBackup = storage.get(&DataKey::PayrollBackup(backup_id))
+            .ok_or(PayrollError::BackupNotFound)?;
+
+        // Only backup owner can delete
+        if backup.employer != caller {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Remove from storage
+        storage.remove(&DataKey::PayrollBackup(backup_id));
+        storage.remove(&DataKey::BackupData(backup_id));
+
+        // Remove from employer's backups
+        let mut employer_backups: Vec<u64> = storage.get(&DataKey::EmployerBackups(caller.clone())).unwrap_or(Vec::new(&env));
+        let mut new_employer_backups = Vec::new(&env);
+        for id in employer_backups.iter() {
+            if id != backup_id {
+                new_employer_backups.push_back(id);
+            }
+        }
+        storage.set(&DataKey::EmployerBackups(caller.clone()), &new_employer_backups);
+
+        // Remove from backup index
+        let mut backup_index: Vec<u64> = storage.get(&DataKey::BackupIndex).unwrap_or(Vec::new(&env));
+        let mut new_backup_index = Vec::new(&env);
+        for id in backup_index.iter() {
+            if id != backup_id {
+                new_backup_index.push_back(id);
+            }
+        }
+        storage.set(&DataKey::BackupIndex, &new_backup_index);
+
+        Ok(())
+    }
+
+    //-----------------------------------------------------------------------------
+    // Internal Helper Functions for Backup and Recovery
+    //-----------------------------------------------------------------------------
+
+    /// Collect backup data based on backup type
+    fn _collect_backup_data(
+        env: &Env,
+        employer: &Address,
+        backup_type: &BackupType,
+    ) -> Result<BackupData, PayrollError> {
+        let storage = env.storage().persistent();
+        let mut payroll_data = Vec::new(env);
+        let mut template_data = Vec::new(env);
+        let mut preset_data = Vec::new(env);
+        let mut insurance_data = Vec::new(env);
+
+        match backup_type {
+            BackupType::Full => {
+                // Collect all data
+                let backup_index: Vec<u64> = storage.get(&DataKey::BackupIndex).unwrap_or(Vec::new(env));
+                for backup_id in backup_index.iter() {
+                    if let Some(backup) = storage.get::<DataKey, PayrollBackup>(&DataKey::PayrollBackup(backup_id)) {
+                        if let Some(data) = storage.get::<DataKey, BackupData>(&DataKey::BackupData(backup_id)) {
+                            // Merge data from all backups
+                            for payroll in data.payroll_data.iter() {
+                                payroll_data.push_back(payroll);
+                            }
+                            for template in data.template_data.iter() {
+                                template_data.push_back(template);
+                            }
+                            for preset in data.preset_data.iter() {
+                                preset_data.push_back(preset);
+                            }
+                            for insurance in data.insurance_data.iter() {
+                                insurance_data.push_back(insurance);
+                            }
+                        }
+                    }
+                }
+            },
+            BackupType::Employer => {
+                // Collect employer-specific data
+                let employer_employees = Self::get_employer_employees(env.clone(), employer.clone());
+                for employee in employer_employees.iter() {
+                    if let Some(payroll) = storage.get(&DataKey::Payroll(employee)) {
+                        payroll_data.push_back(payroll);
+                    }
+                }
+                
+                let employer_templates = Self::get_employer_templates(env.clone(), employer.clone());
+                for template in employer_templates.iter() {
+                    template_data.push_back(template);
+                }
+            },
+            BackupType::Employee => {
+                // Collect employee-specific data (simplified)
+                let employer_employees = Self::get_employer_employees(env.clone(), employer.clone());
+                for employee in employer_employees.iter() {
+                    if let Some(payroll) = storage.get(&DataKey::Payroll(employee)) {
+                        payroll_data.push_back(payroll);
+                    }
+                }
+            },
+            BackupType::Template => {
+                // Collect template data
+                let employer_templates = Self::get_employer_templates(env.clone(), employer.clone());
+                for template in employer_templates.iter() {
+                    template_data.push_back(template);
+                }
+            },
+            BackupType::Insurance => {
+                // Collect insurance data (simplified)
+                let employer_employees = Self::get_employer_employees(env.clone(), employer.clone());
+                for employee in employer_employees.iter() {
+                    if let Some(policy) = storage.get(&DataKey::InsurancePolicy(employee)) {
+                        insurance_data.push_back(policy);
+                    }
+                }
+            },
+            BackupType::Compliance => {
+                // Compliance data would be collected here
+                // For now, we'll use an empty string
+            },
+        }
+
+        let metadata = BackupMetadata {
+            total_employees: payroll_data.len() as u32,
+            total_templates: template_data.len() as u32,
+            total_presets: preset_data.len() as u32,
+            total_insurance_policies: insurance_data.len() as u32,
+            backup_timestamp: env.ledger().timestamp(),
+            contract_version: String::from_str(env, "1.0.0"),
+            data_integrity_hash: String::from_str(env, ""),
+        };
+
+        Ok(BackupData {
+            backup_id: 0, // Will be set by caller
+            payroll_data,
+            template_data,
+            preset_data,
+            insurance_data,
+            compliance_data: String::from_str(env, ""),
+            metadata,
+        })
+    }
+
+    /// Calculate backup checksum
+    fn _calculate_backup_checksum(env: &Env, backup_data: &BackupData) -> String {
+        // Simplified checksum calculation
+        let checksum = String::from_str(env, "checksum");
+        checksum
+    }
+
+    /// Calculate data hash
+    fn _calculate_data_hash(env: &Env, backup_data: &BackupData) -> String {
+        // Simplified hash calculation
+        let hash = String::from_str(env, "hash");
+        hash
+    }
+
+    /// Calculate backup size
+    fn _calculate_backup_size(env: &Env, backup_data: &BackupData) -> u64 {
+        // Simplified size calculation
+        let payroll_size = backup_data.payroll_data.len() as u64 * 100; // Approximate size per payroll
+        let template_size = backup_data.template_data.len() as u64 * 80; // Approximate size per template
+        let preset_size = backup_data.preset_data.len() as u64 * 60; // Approximate size per preset
+        let insurance_size = backup_data.insurance_data.len() as u64 * 120; // Approximate size per insurance
+        let metadata_size = 200; // Approximate metadata size
+        
+        payroll_size + template_size + preset_size + insurance_size + metadata_size
+    }
+
+    /// Restore payroll data
+    fn _restore_payroll(env: &Env, payroll: &Payroll) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        
+        // Check if payroll already exists
+        if storage.has(&DataKey::Payroll(payroll.employer.clone())) {
+            // Update existing payroll
+            storage.set(&DataKey::Payroll(payroll.employer.clone()), payroll);
+        } else {
+            // Create new payroll
+            storage.set(&DataKey::Payroll(payroll.employer.clone()), payroll);
+            // Update indexes
+            Self::add_to_employer_index(env, &payroll.employer, &payroll.employer);
+        }
+        
+        Ok(())
+    }
+
+    /// Restore template data
+    fn _restore_template(env: &Env, template: &PayrollTemplate) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        
+        // Check if template already exists
+        if storage.has(&DataKey::PayrollTemplate(template.id)) {
+            // Update existing template
+            storage.set(&DataKey::PayrollTemplate(template.id), template);
+        } else {
+            // Create new template
+            storage.set(&DataKey::PayrollTemplate(template.id), template);
+            
+            // Add to employer's templates
+            let mut employer_templates: Vec<u64> = storage.get(&DataKey::EmployerTemplates(template.employer.clone())).unwrap_or(Vec::new(env));
+            employer_templates.push_back(template.id);
+            storage.set(&DataKey::EmployerTemplates(template.employer.clone()), &employer_templates);
+        }
+        
+        Ok(())
+    }
+
+    /// Restore preset data
+    fn _restore_preset(env: &Env, preset: &TemplatePreset) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        
+        // Check if preset already exists
+        if storage.has(&DataKey::TemplatePreset(preset.id)) {
+            // Update existing preset
+            storage.set(&DataKey::TemplatePreset(preset.id), preset);
+        } else {
+            // Create new preset
+            storage.set(&DataKey::TemplatePreset(preset.id), preset);
+            
+            // Add to category
+            let mut category_presets: Vec<u64> = storage.get(&DataKey::PresetCategory(preset.category.clone())).unwrap_or(Vec::new(env));
+            category_presets.push_back(preset.id);
+            storage.set(&DataKey::PresetCategory(preset.category.clone()), &category_presets);
+            
+            // Add to active presets if active
+            if preset.is_active {
+                let mut active_presets: Vec<u64> = storage.get(&DataKey::ActivePresets).unwrap_or(Vec::new(env));
+                active_presets.push_back(preset.id);
+                storage.set(&DataKey::ActivePresets, &active_presets);
+            }
+        }
+        
+        Ok(())
+    }
+
+    //-----------------------------------------------------------------------------
+    // Scheduling and Automation Functions
+    //-----------------------------------------------------------------------------
+
+    /// Create a new payroll schedule
+    pub fn create_schedule(
+        env: Env,
+        caller: Address,
+        name: String,
+        description: String,
+        schedule_type: ScheduleType,
+        frequency: ScheduleFrequency,
+        start_date: u64,
+        end_date: Option<u64>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Validate schedule data
+        if name.len() == 0 || name.len() > 100 {
+            return Err(PayrollError::InvalidTemplateName);
+        }
+
+        let current_time = env.ledger().timestamp();
+        if start_date < current_time {
+            return Err(PayrollError::ScheduleValidationFailed);
+        }
+
+        if let Some(end) = end_date {
+            if end <= start_date {
+                return Err(PayrollError::ScheduleValidationFailed);
+            }
+        }
+
+        let storage = env.storage().persistent();
+
+        // Get next schedule ID
+        let next_id = storage.get(&DataKey::NextScheduleId).unwrap_or(0) + 1;
+        storage.set(&DataKey::NextScheduleId, &next_id);
+
+        // Calculate next execution time
+        let next_execution = Self::_calculate_next_execution(&env, &frequency, start_date);
+
+        // Create schedule metadata
+        let metadata = ScheduleMetadata {
+            total_employees: 0,
+            total_amount: 0,
+            token_address: Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"),
+            priority: 1,
+            retry_count: 0,
+            max_retries: 3,
+            success_rate: 0,
+            average_execution_time: 0,
+        };
+
+        let schedule = PayrollSchedule {
+            id: next_id,
+            name: name.clone(),
+            description: description.clone(),
+            employer: caller.clone(),
+            schedule_type: schedule_type.clone(),
+            frequency: frequency.clone(),
+            start_date,
+            end_date,
+            next_execution,
+            is_active: true,
+            created_at: current_time,
+            updated_at: current_time,
+            execution_count: 0,
+            last_execution: None,
+            metadata,
+        };
+
+        // Store schedule
+        storage.set(&DataKey::PayrollSchedule(next_id), &schedule);
+
+        // Add to employer's schedules
+        let mut employer_schedules: Vec<u64> = storage.get(&DataKey::EmployerSchedules(caller.clone())).unwrap_or(Vec::new(&env));
+        employer_schedules.push_back(next_id);
+        storage.set(&DataKey::EmployerSchedules(caller.clone()), &employer_schedules);
+
+        // Add to active schedules
+        let mut active_schedules: Vec<u64> = storage.get(&DataKey::ActiveSchedules).unwrap_or(Vec::new(&env));
+        active_schedules.push_back(next_id);
+        storage.set(&DataKey::ActiveSchedules, &active_schedules);
+
+        env.events().publish(
+            (SCHEDULE_CREATED_EVENT,),
+            (caller.clone(), next_id, name, schedule_type),
+        );
+
+        Ok(next_id)
+    }
+
+    /// Get a schedule by ID
+    pub fn get_schedule(env: Env, schedule_id: u64) -> Result<PayrollSchedule, PayrollError> {
+        let storage = env.storage().persistent();
+        storage.get(&DataKey::PayrollSchedule(schedule_id))
+            .ok_or(PayrollError::ScheduleNotFound)
+    }
+
+    /// Update an existing schedule
+    pub fn update_schedule(
+        env: Env,
+        caller: Address,
+        schedule_id: u64,
+        name: Option<String>,
+        description: Option<String>,
+        frequency: Option<ScheduleFrequency>,
+        end_date: Option<Option<u64>>,
+        is_active: Option<bool>,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let mut schedule: PayrollSchedule = storage.get(&DataKey::PayrollSchedule(schedule_id))
+            .ok_or(PayrollError::ScheduleNotFound)?;
+
+        // Only schedule owner can update
+        if schedule.employer != caller {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Update fields if provided
+        if let Some(new_name) = name {
+            if new_name.len() == 0 || new_name.len() > 100 {
+                return Err(PayrollError::InvalidTemplateName);
+            }
+            schedule.name = new_name;
+        }
+
+        if let Some(new_description) = description {
+            schedule.description = new_description;
+        }
+
+        if let Some(new_frequency) = frequency {
+            schedule.frequency = new_frequency.clone();
+            // Recalculate next execution
+            schedule.next_execution = Self::_calculate_next_execution(&env, &new_frequency, schedule.start_date);
+        }
+
+        if let Some(new_end_date) = end_date {
+            if let Some(end) = new_end_date {
+                if end <= schedule.start_date {
+                    return Err(PayrollError::ScheduleValidationFailed);
+                }
+            }
+            schedule.end_date = new_end_date;
+        }
+
+        if let Some(new_active) = is_active {
+            if schedule.is_active != new_active {
+                let mut active_schedules: Vec<u64> = storage.get(&DataKey::ActiveSchedules).unwrap_or(Vec::new(&env));
+                
+                if new_active {
+                    // Add to active schedules
+                    active_schedules.push_back(schedule_id);
+                } else {
+                    // Remove from active schedules
+                    let mut new_active_schedules = Vec::new(&env);
+                    for id in active_schedules.iter() {
+                        if id != schedule_id {
+                            new_active_schedules.push_back(id);
+                        }
+                    }
+                    active_schedules = new_active_schedules;
+                }
+                storage.set(&DataKey::ActiveSchedules, &active_schedules);
+            }
+            schedule.is_active = new_active;
+        }
+
+        schedule.updated_at = env.ledger().timestamp();
+        storage.set(&DataKey::PayrollSchedule(schedule_id), &schedule);
+
+        env.events().publish(
+            (SCHEDULE_UPDATED_EVENT,),
+            (caller.clone(), schedule_id),
+        );
+
+        Ok(())
+    }
+
+    /// Execute scheduled payroll
+    pub fn execute_schedule(
+        env: Env,
+        caller: Address,
+        schedule_id: u64,
+    ) -> Result<bool, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let mut schedule: PayrollSchedule = storage.get(&DataKey::PayrollSchedule(schedule_id))
+            .ok_or(PayrollError::ScheduleNotFound)?;
+
+        // Check if schedule is active and ready for execution
+        if !schedule.is_active {
+            return Err(PayrollError::ScheduleExecutionFailed);
+        }
+
+        let current_time = env.ledger().timestamp();
+        if current_time < schedule.next_execution {
+            return Err(PayrollError::ScheduleExecutionFailed);
+        }
+
+        // Check if schedule has ended
+        if let Some(end_date) = schedule.end_date {
+            if current_time > end_date {
+                return Err(PayrollError::ScheduleExecutionFailed);
+            }
+        }
+
+        // Execute the schedule based on type
+        let start_time = env.ledger().timestamp();
+        let mut success_count = 0;
+        let mut failure_count = 0;
+
+        match schedule.schedule_type {
+            ScheduleType::Recurring => {
+                // Execute recurring payroll for all employees
+                let employees = Self::get_employer_employees(env.clone(), schedule.employer.clone());
+                for employee in employees.iter() {
+                    match Self::disburse_salary(env.clone(), caller.clone(), employee.clone()) {
+                        Ok(_) => success_count += 1,
+                        Err(_) => failure_count += 1,
+                    }
+                }
+            },
+            ScheduleType::OneTime => {
+                // Execute one-time payroll
+                let employees = Self::get_employer_employees(env.clone(), schedule.employer.clone());
+                for employee in employees.iter() {
+                    match Self::disburse_salary(env.clone(), caller.clone(), employee.clone()) {
+                        Ok(_) => success_count += 1,
+                        Err(_) => failure_count += 1,
+                    }
+                }
+                // Deactivate one-time schedule after execution
+                schedule.is_active = false;
+            },
+            ScheduleType::Batch => {
+                // Execute batch payroll processing
+                let employees = Self::get_employer_employees(env.clone(), schedule.employer.clone());
+                for employee in employees.iter() {
+                    match Self::disburse_salary(env.clone(), caller.clone(), employee.clone()) {
+                        Ok(_) => success_count += 1,
+                        Err(_) => failure_count += 1,
+                    }
+                }
+            },
+            _ => {
+                // Other schedule types would be implemented here
+                return Err(PayrollError::ScheduleExecutionFailed);
+            }
+        }
+
+        let end_time = env.ledger().timestamp();
+        let duration = end_time - start_time;
+
+        // Update schedule metadata
+        schedule.execution_count += 1;
+        schedule.last_execution = Some(current_time);
+        schedule.next_execution = Self::_calculate_next_execution(&env, &schedule.frequency, current_time);
+        schedule.metadata.total_employees = success_count + failure_count;
+        schedule.metadata.success_rate = if (success_count + failure_count) > 0 {
+            (success_count * 100) / (success_count + failure_count)
+        } else {
+            0
+        };
+        schedule.metadata.average_execution_time = duration;
+        schedule.updated_at = current_time;
+
+        storage.set(&DataKey::PayrollSchedule(schedule_id), &schedule);
+
+        env.events().publish(
+            (SCHEDULE_EXECUTED_EVENT,),
+            (caller.clone(), schedule_id, success_count, failure_count, duration),
+        );
+
+        Ok(failure_count == 0)
+    }
+
+    /// Create an automation rule
+    pub fn create_automation_rule(
+        env: Env,
+        caller: Address,
+        name: String,
+        description: String,
+        rule_type: RuleType,
+        conditions: Vec<RuleCondition>,
+        actions: Vec<RuleAction>,
+        priority: u32,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Validate rule data
+        if name.len() == 0 || name.len() > 100 {
+            return Err(PayrollError::InvalidTemplateName);
+        }
+
+        if conditions.len() == 0 || actions.len() == 0 {
+            return Err(PayrollError::InvalidAutomationRule);
+        }
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next rule ID
+        let next_id = storage.get(&DataKey::NextRuleId).unwrap_or(0) + 1;
+        storage.set(&DataKey::NextRuleId, &next_id);
+
+        let rule = AutomationRule {
+            id: next_id,
+            name: name.clone(),
+            description: description.clone(),
+            employer: caller.clone(),
+            rule_type: rule_type.clone(),
+            conditions: conditions.clone(),
+            actions: actions.clone(),
+            is_active: true,
+            created_at: current_time,
+            updated_at: current_time,
+            execution_count: 0,
+            last_execution: None,
+            priority,
+        };
+
+        // Store rule
+        storage.set(&DataKey::AutomationRule(next_id), &rule);
+
+        // Add to employer's rules
+        let mut employer_rules: Vec<u64> = storage.get(&DataKey::EmployerRules(caller.clone())).unwrap_or(Vec::new(&env));
+        employer_rules.push_back(next_id);
+        storage.set(&DataKey::EmployerRules(caller.clone()), &employer_rules);
+
+        // Add to active rules
+        let mut active_rules: Vec<u64> = storage.get(&DataKey::ActiveRules).unwrap_or(Vec::new(&env));
+        active_rules.push_back(next_id);
+        storage.set(&DataKey::ActiveRules, &active_rules);
+
+        env.events().publish(
+            (RULE_CREATED_EVENT,),
+            (caller.clone(), next_id, name, rule_type),
+        );
+
+        Ok(next_id)
+    }
+
+    /// Get an automation rule by ID
+    pub fn get_automation_rule(env: Env, rule_id: u64) -> Result<AutomationRule, PayrollError> {
+        let storage = env.storage().persistent();
+        storage.get(&DataKey::AutomationRule(rule_id))
+            .ok_or(PayrollError::AutomationRuleNotFound)
+    }
+
+    /// Execute automation rules
+    pub fn execute_automation_rules(
+        env: Env,
+        caller: Address,
+    ) -> Result<u32, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let active_rules: Vec<u64> = storage.get(&DataKey::ActiveRules).unwrap_or(Vec::new(&env));
+        let mut executed_count = 0;
+
+        for rule_id in active_rules.iter() {
+            if let Some(rule) = storage.get::<DataKey, AutomationRule>(&DataKey::AutomationRule(rule_id)) {
+                if rule.employer == caller && rule.is_active {
+                    match Self::_evaluate_and_execute_rule(&env, &rule) {
+                        Ok(_) => executed_count += 1,
+                        Err(_) => continue,
+                    }
+                }
+            }
+        }
+
+        env.events().publish(
+            (RULE_EXECUTED_EVENT,),
+            (caller.clone(), executed_count),
+        );
+
+        Ok(executed_count)
+    }
+
+    /// Get all schedules for an employer
+    pub fn get_employer_schedules(env: Env, employer: Address) -> Vec<PayrollSchedule> {
+        let storage = env.storage().persistent();
+        let schedule_ids: Vec<u64> = storage.get(&DataKey::EmployerSchedules(employer.clone())).unwrap_or(Vec::new(&env));
+        let mut schedules = Vec::new(&env);
+
+        for id in schedule_ids.iter() {
+            if let Some(schedule) = storage.get(&DataKey::PayrollSchedule(id)) {
+                schedules.push_back(schedule);
+            }
+        }
+
+        schedules
+    }
+
+    /// Get all automation rules for an employer
+    pub fn get_employer_rules(env: Env, employer: Address) -> Vec<AutomationRule> {
+        let storage = env.storage().persistent();
+        let rule_ids: Vec<u64> = storage.get(&DataKey::EmployerRules(employer.clone())).unwrap_or(Vec::new(&env));
+        let mut rules = Vec::new(&env);
+
+        for id in rule_ids.iter() {
+            if let Some(rule) = storage.get(&DataKey::AutomationRule(id)) {
+                rules.push_back(rule);
+            }
+        }
+
+        rules
+    }
+
+    /// Get all active schedules
+    pub fn get_active_schedules(env: Env) -> Vec<PayrollSchedule> {
+        let storage = env.storage().persistent();
+        let schedule_ids: Vec<u64> = storage.get(&DataKey::ActiveSchedules).unwrap_or(Vec::new(&env));
+        let mut schedules = Vec::new(&env);
+
+        for id in schedule_ids.iter() {
+            if let Some(schedule) = storage.get(&DataKey::PayrollSchedule(id)) {
+                schedules.push_back(schedule);
+            }
+        }
+
+        schedules
+    }
+
+    /// Get all active rules
+    pub fn get_active_rules(env: Env) -> Vec<AutomationRule> {
+        let storage = env.storage().persistent();
+        let rule_ids: Vec<u64> = storage.get(&DataKey::ActiveRules).unwrap_or(Vec::new(&env));
+        let mut rules = Vec::new(&env);
+
+        for id in rule_ids.iter() {
+            if let Some(rule) = storage.get(&DataKey::AutomationRule(id)) {
+                rules.push_back(rule);
+            }
+        }
+
+        rules
+    }
+
+    //-----------------------------------------------------------------------------
+    // Internal Helper Functions for Scheduling and Automation
+    //-----------------------------------------------------------------------------
+
+    /// Calculate next execution time based on frequency
+    fn _calculate_next_execution(env: &Env, frequency: &ScheduleFrequency, current_time: u64) -> u64 {
+        match frequency {
+            ScheduleFrequency::Daily => current_time + 86400, // 24 hours
+            ScheduleFrequency::Weekly => current_time + 604800, // 7 days
+            ScheduleFrequency::BiWeekly => current_time + 1209600, // 14 days
+            ScheduleFrequency::Monthly => current_time + 2592000, // 30 days
+            ScheduleFrequency::Quarterly => current_time + 7776000, // 90 days
+            ScheduleFrequency::Yearly => current_time + 31536000, // 365 days
+            ScheduleFrequency::Custom(seconds) => current_time + seconds,
+        }
+    }
+
+    /// Evaluate and execute an automation rule
+    fn _evaluate_and_execute_rule(env: &Env, rule: &AutomationRule) -> Result<(), PayrollError> {
+        // Evaluate conditions
+        let conditions_met = Self::_evaluate_conditions(env, &rule.conditions)?;
+        
+        if conditions_met {
+            // Execute actions
+            for action in rule.actions.iter() {
+                Self::_execute_action(env, &action)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Evaluate rule conditions
+    fn _evaluate_conditions(env: &Env, conditions: &Vec<RuleCondition>) -> Result<bool, PayrollError> {
+        // Simplified condition evaluation
+        // In a real implementation, this would evaluate actual conditions
+        Ok(true) // For now, always return true
+    }
+
+    /// Execute a rule action
+    fn _execute_action(env: &Env, action: &RuleAction) -> Result<(), PayrollError> {
+        match action.action_type {
+            ActionType::DisburseSalary => {
+                // Execute salary disbursement
+                // This would be implemented based on action parameters
+                Ok(())
+            },
+            ActionType::PausePayroll => {
+                // Pause payroll operations
+                Ok(())
+            },
+            ActionType::ResumePayroll => {
+                // Resume payroll operations
+                Ok(())
+            },
+            ActionType::CreateBackup => {
+                // Create backup
+                Ok(())
+            },
+            ActionType::SendNotification => {
+                // Send notification
+                Ok(())
+            },
+            ActionType::UpdateSchedule => {
+                // Update schedule
+                Ok(())
+            },
+            ActionType::ExecuteRecovery => {
+                // Execute recovery
+                Ok(())
+            },
+            ActionType::Custom => {
+                // Custom action
+                Ok(())
+            },
+        }
     }
 }
