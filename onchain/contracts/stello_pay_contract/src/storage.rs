@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Symbol, String, Vec};
+use soroban_sdk::{contracttype, Address, Symbol, String, Vec, Map};
 
 // Import insurance types for backup functionality
 use crate::insurance::InsurancePolicy;
@@ -422,6 +422,251 @@ pub struct ExecutionMetadata {
     pub gas_used: u64,
     pub memory_used: u64,
 }
+
+//-----------------------------------------------------------------------------
+// Security & Access Control Data Structures
+//-----------------------------------------------------------------------------
+
+/// User role enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum UserRole {
+    Owner,
+    Admin,
+    Manager,
+    Employee,
+    Auditor,
+    ComplianceOfficer,
+    SecurityOfficer,
+    Custom(String),
+}
+
+/// Permission enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum Permission {
+    CreatePayroll,
+    UpdatePayroll,
+    DeletePayroll,
+    DisburseSalary,
+    PausePayroll,
+    ResumePayroll,
+    CreateTemplate,
+    UpdateTemplate,
+    ShareTemplate,
+    CreateBackup,
+    RestoreBackup,
+    CreateSchedule,
+    UpdateSchedule,
+    ExecuteSchedule,
+    CreateRule,
+    UpdateRule,
+    ExecuteRule,
+    ViewAuditTrail,
+    ManageRoles,
+    ManageSecurity,
+    EmergencyOperations,
+    ComplianceReporting,
+    InsuranceManagement,
+    TokenManagement,
+    BatchOperations,
+    Custom(String),
+}
+
+/// Role-based access control structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Role {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub permissions: Vec<Permission>,
+    pub is_active: bool,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// User role assignment
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserRoleAssignment {
+    pub user: Address,
+    pub role: String,
+    pub assigned_by: Address,
+    pub assigned_at: u64,
+    pub expires_at: Option<u64>,
+    pub is_active: bool,
+}
+
+/// Security policy structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SecurityPolicy {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub policy_type: SecurityPolicyType,
+    pub rules: Vec<SecurityRule>,
+    pub is_active: bool,
+    pub priority: u32,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// Security policy type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum SecurityPolicyType {
+    AccessControl,
+    RateLimiting,
+    AuditLogging,
+    DataProtection,
+    Compliance,
+    Emergency,
+    Custom(String),
+}
+
+/// Security rule structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SecurityRule {
+    pub field: String,
+    pub operator: SecurityRuleOperator,
+    pub value: String,
+    pub action: SecurityRuleAction,
+    pub priority: u32,
+}
+
+/// Security rule operator enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum SecurityRuleOperator {
+    Equals,
+    NotEquals,
+    GreaterThan,
+    LessThan,
+    GreaterThanOrEqual,
+    LessThanOrEqual,
+    Contains,
+    NotContains,
+    In,
+    NotIn,
+    Regex,
+    Custom(String),
+}
+
+/// Security rule action enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum SecurityRuleAction {
+    Allow,
+    Deny,
+    RequireMFA,
+    Log,
+    Alert,
+    Block,
+    RateLimit,
+    Custom(String),
+}
+
+/// Security audit log entry
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SecurityAuditEntry {
+    pub entry_id: String,
+    pub user: Address,
+    pub action: String,
+    pub resource: String,
+    pub result: SecurityAuditResult,
+    pub details: Map<String, String>,
+    pub timestamp: u64,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+    pub session_id: Option<String>,
+}
+
+/// Security audit result enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum SecurityAuditResult {
+    Success,
+    Failure,
+    Denied,
+    Suspicious,
+    Blocked,
+    RateLimited,
+}
+
+/// Rate limiting configuration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RateLimitConfig {
+    pub user: Address,
+    pub operation: String,
+    pub max_requests: u32,
+    pub time_window: u64, // in seconds
+    pub current_count: u32,
+    pub reset_time: u64,
+    pub is_blocked: bool,
+    pub block_until: Option<u64>,
+}
+
+/// Security settings structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SecuritySettings {
+    pub mfa_required: bool,
+    pub session_timeout: u64, // in seconds
+    pub max_login_attempts: u32,
+    pub lockout_duration: u64, // in seconds
+    pub ip_whitelist: Vec<String>,
+    pub ip_blacklist: Vec<String>,
+    pub audit_logging_enabled: bool,
+    pub rate_limiting_enabled: bool,
+    pub security_policies_enabled: bool,
+    pub emergency_mode: bool,
+    pub last_updated: u64,
+}
+
+/// Suspicious activity detection
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SuspiciousActivity {
+    pub id: String,
+    pub user: Address,
+    pub activity_type: SuspiciousActivityType,
+    pub severity: SuspiciousActivitySeverity,
+    pub details: Map<String, String>,
+    pub detected_at: u64,
+    pub is_resolved: bool,
+    pub resolved_at: Option<u64>,
+    pub resolved_by: Option<Address>,
+}
+
+/// Suspicious activity type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum SuspiciousActivityType {
+    UnusualAccess,
+    MultipleFailedLogins,
+    UnauthorizedAccess,
+    DataExfiltration,
+    PrivilegeEscalation,
+    RateLimitViolation,
+    PolicyViolation,
+    Custom(String),
+}
+
+/// Suspicious activity severity enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum SuspiciousActivitySeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
 //-----------------------------------------------------------------------------
 // Storage Keys
 //-----------------------------------------------------------------------------
@@ -490,10 +735,12 @@ pub enum DataKey {
     PayrollSchedule(u64),                // schedule_id -> PayrollSchedule
     NextScheduleId,                      // Next available schedule ID
     EmployerSchedules(Address),          // employer -> Vec<u64> (schedule IDs)
-    ActiveSchedules,                     // Vec<u64> (active schedule IDs)
     AutomationRule(u64),                 // rule_id -> AutomationRule
     NextRuleId,                          // Next available rule ID
     EmployerRules(Address),              // employer -> Vec<u64> (rule IDs)
-    ActiveRules,                         // Vec<u64> (active rule IDs)
-    AutomationSettings,                  // Global automation settings
+
+    // Security & Access Control storage keys
+    Role(String),                        // role_id -> Role
+    UserRoleAssignment(Address),         // user -> UserRoleAssignment
+    SecuritySettings,                    // Global security settings
 }
