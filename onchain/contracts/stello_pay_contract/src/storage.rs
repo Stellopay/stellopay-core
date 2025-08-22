@@ -212,6 +212,217 @@ pub struct RecoveryMetadata {
     pub data_verification_status: String,
 }
 
+/// Payroll schedule structure for automated disbursements
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollSchedule {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    pub employer: Address,
+    pub schedule_type: ScheduleType,
+    pub frequency: ScheduleFrequency,
+    pub start_date: u64,
+    pub end_date: Option<u64>,
+    pub next_execution: u64,
+    pub is_active: bool,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub execution_count: u32,
+    pub last_execution: Option<u64>,
+    pub metadata: ScheduleMetadata,
+}
+
+/// Schedule type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScheduleType {
+    Recurring,      // Regular recurring payroll
+    OneTime,        // One-time scheduled payroll
+    Conditional,    // Conditional payroll based on triggers
+    Batch,          // Batch payroll processing
+    Emergency,      // Emergency payroll processing
+}
+
+/// Schedule frequency enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ScheduleFrequency {
+    Daily,          // Daily execution
+    Weekly,         // Weekly execution
+    BiWeekly,       // Bi-weekly execution
+    Monthly,        // Monthly execution
+    Quarterly,      // Quarterly execution
+    Yearly,         // Yearly execution
+    Custom(u64),    // Custom frequency in seconds
+}
+
+/// Schedule metadata for additional information
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScheduleMetadata {
+    pub total_employees: u32,
+    pub total_amount: i128,
+    pub token_address: Address,
+    pub priority: u32,
+    pub retry_count: u32,
+    pub max_retries: u32,
+    pub success_rate: u32, // Success rate as percentage (0-100)
+    pub average_execution_time: u64,
+}
+
+/// Automation rule structure for conditional triggers
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AutomationRule {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    pub employer: Address,
+    pub rule_type: RuleType,
+    pub conditions: Vec<RuleCondition>,
+    pub actions: Vec<RuleAction>,
+    pub is_active: bool,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub execution_count: u32,
+    pub last_execution: Option<u64>,
+    pub priority: u32,
+}
+
+/// Rule type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum RuleType {
+    Balance,        // Balance-based triggers
+    Time,           // Time-based triggers
+    Employee,       // Employee-based triggers
+    Compliance,     // Compliance-based triggers
+    Custom,         // Custom triggers
+}
+
+/// Rule condition structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuleCondition {
+    pub field: String,
+    pub operator: ConditionOperator,
+    pub value: String,
+    pub logical_operator: LogicalOperator,
+}
+
+/// Condition operator enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConditionOperator {
+    Equals,
+    NotEquals,
+    GreaterThan,
+    LessThan,
+    GreaterThanOrEqual,
+    LessThanOrEqual,
+    Contains,
+    NotContains,
+    IsEmpty,
+    IsNotEmpty,
+}
+
+/// Logical operator enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum LogicalOperator {
+    And,
+    Or,
+    Not,
+}
+
+/// Rule action structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuleAction {
+    pub action_type: ActionType,
+    pub parameters: Vec<String>,
+    pub delay_seconds: u64,
+    pub retry_count: u32,
+}
+
+/// Action type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ActionType {
+    DisburseSalary,
+    PausePayroll,
+    ResumePayroll,
+    CreateBackup,
+    SendNotification,
+    UpdateSchedule,
+    ExecuteRecovery,
+    Custom,
+}
+
+/// Schedule execution record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScheduleExecution {
+    pub id: u64,
+    pub schedule_id: u64,
+    pub execution_time: u64,
+    pub status: ExecutionStatus,
+    pub result: ExecutionResult,
+    pub duration: u64,
+    pub error_message: Option<String>,
+    pub metadata: ExecutionMetadata,
+}
+
+/// Rule execution record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RuleExecution {
+    pub id: u64,
+    pub rule_id: u64,
+    pub execution_time: u64,
+    pub status: ExecutionStatus,
+    pub result: ExecutionResult,
+    pub duration: u64,
+    pub error_message: Option<String>,
+    pub triggered_conditions: Vec<RuleCondition>,
+    pub executed_actions: Vec<RuleAction>,
+}
+
+/// Execution status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExecutionStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+    Cancelled,
+    Retrying,
+}
+
+/// Execution result enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExecutionResult {
+    Success,
+    PartialSuccess,
+    Failure,
+    Skipped,
+    Timeout,
+}
+
+/// Execution metadata
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecutionMetadata {
+    pub total_operations: u32,
+    pub success_count: u32,
+    pub failure_count: u32,
+    pub gas_used: u64,
+    pub memory_used: u64,
+}
+
 //-----------------------------------------------------------------------------
 // Storage Keys
 //-----------------------------------------------------------------------------
@@ -253,12 +464,7 @@ pub enum DataKey {
     AuditTrail(Address),                 // (employee) -> audit_entry
     AuditTrailIdCounter(Address),
 
-  // Compliance-related storage keys
-    JurisdictionConfig(Address),         // jurisdiction_hash -> JurisdictionConfig
-    ComplianceMetrics(Address),          // jurisdiction_hash -> ComplianceMetrics
-    RegulatoryReport(Address),           // report_id_hash -> RegulatoryReport
-    AuditEntry(Address),                 // entry_id_hash -> AuditEntry
-    AuditIndex(Address),                 // address -> Vec<Address> (audit entry ID hashes)
+      // Compliance-related storage keys
     ComplianceSettings,                  // Global compliance settings
 
     // Template and Preset storage keys
@@ -280,4 +486,15 @@ pub enum DataKey {
     RecoveryPoint(u64),                  // recovery_point_id -> RecoveryPoint
     NextRecoveryPointId,                 // Next available recovery point ID
     DisasterRecoverySettings,            // Global disaster recovery settings
+
+    // Scheduling and Automation storage keys
+    PayrollSchedule(u64),                // schedule_id -> PayrollSchedule
+    NextScheduleId,                      // Next available schedule ID
+    EmployerSchedules(Address),          // employer -> Vec<u64> (schedule IDs)
+    ActiveSchedules,                     // Vec<u64> (active schedule IDs)
+    AutomationRule(u64),                 // rule_id -> AutomationRule
+    NextRuleId,                          // Next available rule ID
+    EmployerRules(Address),              // employer -> Vec<u64> (rule IDs)
+    ActiveRules,                         // Vec<u64> (active rule IDs)
+    AutomationSettings,                  // Global automation settings
 }
