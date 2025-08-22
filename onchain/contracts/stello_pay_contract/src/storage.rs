@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Symbol};
+use soroban_sdk::{contracttype, Address, Symbol, String};
 
 //-----------------------------------------------------------------------------
 // Data Structures
@@ -59,6 +59,40 @@ pub struct CompactPayrollHistoryEntry {
     pub id: u64,
 }
 
+/// Payroll template structure for reusable payroll configurations
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollTemplate {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    pub employer: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub interval: u64,
+    pub recurrence_frequency: u64,
+    pub is_public: bool,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub usage_count: u32,
+}
+
+/// Template preset structure for predefined configurations
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TemplatePreset {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    pub token: Address,
+    pub amount: i128,
+    pub interval: u64,
+    pub recurrence_frequency: u64,
+    pub category: String,
+    pub is_active: bool,
+    pub created_at: u64,
+}
+
 //-----------------------------------------------------------------------------
 // Storage Keys
 //-----------------------------------------------------------------------------
@@ -107,4 +141,14 @@ pub enum DataKey {
     AuditEntry(Address),                 // entry_id_hash -> AuditEntry
     AuditIndex(Address),                 // address -> Vec<Address> (audit entry ID hashes)
     ComplianceSettings,                  // Global compliance settings
+
+    // Template and Preset storage keys
+    PayrollTemplate(u64),                // template_id -> PayrollTemplate
+    NextTemplateId,                      // Next available template ID
+    EmployerTemplates(Address),          // employer -> Vec<u64> (template IDs)
+    PublicTemplates,                     // Vec<u64> (public template IDs)
+    TemplatePreset(u64),                 // preset_id -> TemplatePreset
+    NextPresetId,                        // Next available preset ID
+    PresetCategory(String),              // category -> Vec<u64> (preset IDs)
+    ActivePresets,                       // Vec<u64> (active preset IDs)
 }

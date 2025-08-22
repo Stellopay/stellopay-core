@@ -4,7 +4,7 @@ use soroban_sdk::{
 };
 
 use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT};
-use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, CompactPayrollHistoryEntry};
+use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, CompactPayrollHistoryEntry, PayrollTemplate, TemplatePreset};
 use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
 
 //-----------------------------------------------------------------------------
@@ -61,6 +61,18 @@ pub enum PayrollError {
     NextPayoutTimeNotReached = 9,
     /// No eligible employees for recurring disbursement
     NoEligibleEmployees = 10,
+    /// Template not found
+    TemplateNotFound = 11,
+    /// Preset not found
+    PresetNotFound = 12,
+    /// Template name is empty or invalid
+    InvalidTemplateName = 13,
+    /// Template is not public
+    TemplateNotPublic = 14,
+    /// Template validation failed
+    TemplateValidationFailed = 15,
+    /// Preset is not active
+    PresetNotActive = 16,
 }
 
 //-----------------------------------------------------------------------------
@@ -89,6 +101,21 @@ pub const HISTORY_UPDATED_EVENT: Symbol = symbol_short!("hist_upd");
 
 /// Event emitted for audit trail entries
 pub const AUDIT_EVENT: Symbol = symbol_short!("audit");
+
+/// Event emitted when a template is created
+pub const TEMPLATE_CREATED_EVENT: Symbol = symbol_short!("tmpl_crt");
+
+/// Event emitted when a template is updated
+pub const TEMPLATE_UPDATED_EVENT: Symbol = symbol_short!("tmpl_upd");
+
+/// Event emitted when a template is applied
+pub const TEMPLATE_APPLIED_EVENT: Symbol = symbol_short!("tmpl_app");
+
+/// Event emitted when a template is shared
+pub const TEMPLATE_SHARED_EVENT: Symbol = symbol_short!("tmpl_shr");
+
+/// Event emitted when a preset is created
+pub const PRESET_CREATED_EVENT: Symbol = symbol_short!("preset_c");
 
 //-----------------------------------------------------------------------------
 // Contract Implementation
@@ -1537,5 +1564,452 @@ impl PayrollContract {
         }
 
         audit_trail
+    }
+
+    //-----------------------------------------------------------------------------
+    // Template and Preset Functions
+    //-----------------------------------------------------------------------------
+
+    /// Create a new payroll template
+    pub fn create_template(
+        env: Env,
+        caller: Address,
+        name: String,
+        description: String,
+        token: Address,
+        amount: i128,
+        interval: u64,
+        recurrence_frequency: u64,
+        is_public: bool,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Validate template data
+        if name.len() == 0 || name.len() > 100 {
+            return Err(PayrollError::InvalidTemplateName);
+        }
+
+        if amount <= 0 || interval == 0 || recurrence_frequency == 0 {
+            return Err(PayrollError::TemplateValidationFailed);
+        }
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next template ID
+        let next_id = storage.get(&DataKey::NextTemplateId).unwrap_or(0) + 1;
+        storage.set(&DataKey::NextTemplateId, &next_id);
+
+        let template = PayrollTemplate {
+            id: next_id,
+            name: name.clone(),
+            description: description.clone(),
+            employer: caller.clone(),
+            token: token.clone(),
+            amount,
+            interval,
+            recurrence_frequency,
+            is_public,
+            created_at: current_time,
+            updated_at: current_time,
+            usage_count: 0,
+        };
+
+        // Store template
+        storage.set(&DataKey::PayrollTemplate(next_id), &template);
+
+        // Add to employer's templates
+        let mut employer_templates: Vec<u64> = storage.get(&DataKey::EmployerTemplates(caller.clone())).unwrap_or(Vec::new(&env));
+        employer_templates.push_back(next_id);
+        storage.set(&DataKey::EmployerTemplates(caller.clone()), &employer_templates);
+
+        // Add to public templates if public
+        if is_public {
+            let mut public_templates: Vec<u64> = storage.get(&DataKey::PublicTemplates).unwrap_or(Vec::new(&env));
+            public_templates.push_back(next_id);
+            storage.set(&DataKey::PublicTemplates, &public_templates);
+        }
+
+        env.events().publish(
+            (TEMPLATE_CREATED_EVENT,),
+            (caller.clone(), next_id, name, is_public),
+        );
+
+        Ok(next_id)
+    }
+
+    /// Get a template by ID
+    pub fn get_template(env: Env, template_id: u64) -> Result<PayrollTemplate, PayrollError> {
+        let storage = env.storage().persistent();
+        storage.get(&DataKey::PayrollTemplate(template_id))
+            .ok_or(PayrollError::TemplateNotFound)
+    }
+
+    /// Apply a template to create a payroll
+    pub fn apply_template(
+        env: Env,
+        caller: Address,
+        template_id: u64,
+        employee: Address,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let template: PayrollTemplate = storage.get(&DataKey::PayrollTemplate(template_id))
+            .ok_or(PayrollError::TemplateNotFound)?;
+
+        // Check if template is accessible (owner or public)
+        if template.employer != caller && !template.is_public {
+            return Err(PayrollError::TemplateNotPublic);
+        }
+
+        // Create payroll from template
+        let payroll = Payroll {
+            employer: caller.clone(),
+            token: template.token.clone(),
+            amount: template.amount,
+            interval: template.interval,
+            last_payment_time: env.ledger().timestamp(),
+            recurrence_frequency: template.recurrence_frequency,
+            next_payout_timestamp: env.ledger().timestamp() + template.recurrence_frequency,
+            is_paused: false,
+        };
+
+        // Store payroll
+        storage.set(&DataKey::Payroll(employee.clone()), &payroll);
+
+        // Update indexes
+        Self::add_to_employer_index(&env, &caller, &employee);
+
+        // Update template usage count
+        let mut updated_template = template.clone();
+        updated_template.usage_count += 1;
+        updated_template.updated_at = env.ledger().timestamp();
+        storage.set(&DataKey::PayrollTemplate(template_id), &updated_template);
+
+        env.events().publish(
+            (TEMPLATE_APPLIED_EVENT,),
+            (caller.clone(), template_id, employee.clone()),
+        );
+
+        Ok(())
+    }
+
+    /// Update an existing template
+    pub fn update_template(
+        env: Env,
+        caller: Address,
+        template_id: u64,
+        name: Option<String>,
+        description: Option<String>,
+        amount: Option<i128>,
+        interval: Option<u64>,
+        recurrence_frequency: Option<u64>,
+        is_public: Option<bool>,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let mut template: PayrollTemplate = storage.get(&DataKey::PayrollTemplate(template_id))
+            .ok_or(PayrollError::TemplateNotFound)?;
+
+        // Only template owner can update
+        if template.employer != caller {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Update fields if provided
+        if let Some(new_name) = name {
+            if new_name.len() == 0 || new_name.len() > 100 {
+                return Err(PayrollError::InvalidTemplateName);
+            }
+            template.name = new_name;
+        }
+
+        if let Some(new_description) = description {
+            template.description = new_description;
+        }
+
+        if let Some(new_amount) = amount {
+            if new_amount <= 0 {
+                return Err(PayrollError::TemplateValidationFailed);
+            }
+            template.amount = new_amount;
+        }
+
+        if let Some(new_interval) = interval {
+            if new_interval == 0 {
+                return Err(PayrollError::TemplateValidationFailed);
+            }
+            template.interval = new_interval;
+        }
+
+        if let Some(new_frequency) = recurrence_frequency {
+            if new_frequency == 0 {
+                return Err(PayrollError::TemplateValidationFailed);
+            }
+            template.recurrence_frequency = new_frequency;
+        }
+
+        if let Some(new_public) = is_public {
+            // Handle public status change
+            if template.is_public != new_public {
+                let mut public_templates: Vec<u64> = storage.get(&DataKey::PublicTemplates).unwrap_or(Vec::new(&env));
+                
+                if new_public {
+                    // Add to public templates
+                    public_templates.push_back(template_id);
+                } else {
+                    // Remove from public templates
+                    let mut new_public_templates = Vec::new(&env);
+                    for id in public_templates.iter() {
+                        if id != template_id {
+                            new_public_templates.push_back(id);
+                        }
+                    }
+                    public_templates = new_public_templates;
+                }
+                storage.set(&DataKey::PublicTemplates, &public_templates);
+            }
+            template.is_public = new_public;
+        }
+
+        template.updated_at = env.ledger().timestamp();
+        storage.set(&DataKey::PayrollTemplate(template_id), &template);
+
+        env.events().publish(
+            (TEMPLATE_UPDATED_EVENT,),
+            (caller.clone(), template_id),
+        );
+
+        Ok(())
+    }
+
+    /// Share a template with another employer
+    pub fn share_template(
+        env: Env,
+        caller: Address,
+        template_id: u64,
+        target_employer: Address,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let template: PayrollTemplate = storage.get(&DataKey::PayrollTemplate(template_id))
+            .ok_or(PayrollError::TemplateNotFound)?;
+
+        // Only template owner can share
+        if template.employer != caller {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Add to target employer's templates (create a copy)
+        let mut target_templates: Vec<u64> = storage.get(&DataKey::EmployerTemplates(target_employer.clone())).unwrap_or(Vec::new(&env));
+        
+        // Create a new template ID for the shared copy
+        let next_id = storage.get(&DataKey::NextTemplateId).unwrap_or(0) + 1;
+        storage.set(&DataKey::NextTemplateId, &next_id);
+
+        let shared_template = PayrollTemplate {
+            id: next_id,
+            name: template.name.clone(),
+            description: template.description.clone(),
+            employer: target_employer.clone(),
+            token: template.token.clone(),
+            amount: template.amount,
+            interval: template.interval,
+            recurrence_frequency: template.recurrence_frequency,
+            is_public: false, // Shared templates are private by default
+            created_at: env.ledger().timestamp(),
+            updated_at: env.ledger().timestamp(),
+            usage_count: 0,
+        };
+
+        storage.set(&DataKey::PayrollTemplate(next_id), &shared_template);
+        target_templates.push_back(next_id);
+        storage.set(&DataKey::EmployerTemplates(target_employer.clone()), &target_templates);
+
+        env.events().publish(
+            (TEMPLATE_SHARED_EVENT,),
+            (caller.clone(), template_id, target_employer.clone(), next_id),
+        );
+
+        Ok(())
+    }
+
+    /// Get all templates for an employer
+    pub fn get_employer_templates(env: Env, employer: Address) -> Vec<PayrollTemplate> {
+        let storage = env.storage().persistent();
+        let template_ids: Vec<u64> = storage.get(&DataKey::EmployerTemplates(employer.clone())).unwrap_or(Vec::new(&env));
+        let mut templates = Vec::new(&env);
+
+        for id in template_ids.iter() {
+            if let Some(template) = storage.get(&DataKey::PayrollTemplate(id)) {
+                templates.push_back(template);
+            }
+        }
+
+        templates
+    }
+
+    /// Get all public templates
+    pub fn get_public_templates(env: Env) -> Vec<PayrollTemplate> {
+        let storage = env.storage().persistent();
+        let template_ids: Vec<u64> = storage.get(&DataKey::PublicTemplates).unwrap_or(Vec::new(&env));
+        let mut templates = Vec::new(&env);
+
+        for id in template_ids.iter() {
+            if let Some(template) = storage.get(&DataKey::PayrollTemplate(id)) {
+                templates.push_back(template);
+            }
+        }
+
+        templates
+    }
+
+    /// Create a template preset (admin function)
+    pub fn create_preset(
+        env: Env,
+        caller: Address,
+        name: String,
+        description: String,
+        token: Address,
+        amount: i128,
+        interval: u64,
+        recurrence_frequency: u64,
+        category: String,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only owner can create presets
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Validate preset data
+        if name.len() == 0 || name.len() > 100 {
+            return Err(PayrollError::InvalidTemplateName);
+        }
+
+        if amount <= 0 || interval == 0 || recurrence_frequency == 0 {
+            return Err(PayrollError::TemplateValidationFailed);
+        }
+
+        let current_time = env.ledger().timestamp();
+
+        // Get next preset ID
+        let next_id = storage.get(&DataKey::NextPresetId).unwrap_or(0) + 1;
+        storage.set(&DataKey::NextPresetId, &next_id);
+
+        let preset = TemplatePreset {
+            id: next_id,
+            name: name.clone(),
+            description: description.clone(),
+            token: token.clone(),
+            amount,
+            interval,
+            recurrence_frequency,
+            category: category.clone(),
+            is_active: true,
+            created_at: current_time,
+        };
+
+        // Store preset
+        storage.set(&DataKey::TemplatePreset(next_id), &preset);
+
+        // Add to category
+        let mut category_presets: Vec<u64> = storage.get(&DataKey::PresetCategory(category.clone())).unwrap_or(Vec::new(&env));
+        category_presets.push_back(next_id);
+        storage.set(&DataKey::PresetCategory(category.clone()), &category_presets);
+
+        // Add to active presets
+        let mut active_presets: Vec<u64> = storage.get(&DataKey::ActivePresets).unwrap_or(Vec::new(&env));
+        active_presets.push_back(next_id);
+        storage.set(&DataKey::ActivePresets, &active_presets);
+
+        env.events().publish(
+            (PRESET_CREATED_EVENT,),
+            (next_id, name, category),
+        );
+
+        Ok(next_id)
+    }
+
+    /// Get a preset by ID
+    pub fn get_preset(env: Env, preset_id: u64) -> Result<TemplatePreset, PayrollError> {
+        let storage = env.storage().persistent();
+        storage.get(&DataKey::TemplatePreset(preset_id))
+            .ok_or(PayrollError::PresetNotFound)
+    }
+
+    /// Apply a preset to create a template
+    pub fn apply_preset(
+        env: Env,
+        caller: Address,
+        preset_id: u64,
+        name: String,
+        description: String,
+        is_public: bool,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let preset: TemplatePreset = storage.get(&DataKey::TemplatePreset(preset_id))
+            .ok_or(PayrollError::PresetNotFound)?;
+
+        if !preset.is_active {
+            return Err(PayrollError::PresetNotActive);
+        }
+
+        // Create template from preset
+        Self::create_template(
+            env,
+            caller,
+            name,
+            description,
+            preset.token.clone(),
+            preset.amount,
+            preset.interval,
+            preset.recurrence_frequency,
+            is_public,
+        )
+    }
+
+    /// Get presets by category
+    pub fn get_presets_by_category(env: Env, category: String) -> Vec<TemplatePreset> {
+        let storage = env.storage().persistent();
+        let preset_ids: Vec<u64> = storage.get(&DataKey::PresetCategory(category.clone())).unwrap_or(Vec::new(&env));
+        let mut presets = Vec::new(&env);
+
+        for id in preset_ids.iter() {
+            if let Some(preset) = storage.get(&DataKey::TemplatePreset(id)) {
+                presets.push_back(preset);
+            }
+        }
+
+        presets
+    }
+
+    /// Get all active presets
+    pub fn get_active_presets(env: Env) -> Vec<TemplatePreset> {
+        let storage = env.storage().persistent();
+        let preset_ids: Vec<u64> = storage.get(&DataKey::ActivePresets).unwrap_or(Vec::new(&env));
+        let mut presets = Vec::new(&env);
+
+        for id in preset_ids.iter() {
+            if let Some(preset) = storage.get(&DataKey::TemplatePreset(id)) {
+                presets.push_back(preset);
+            }
+        }
+
+        presets
     }
 }
