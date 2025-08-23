@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Symbol, String, Vec, Map};
+use soroban_sdk::{contracttype, Address, Symbol, String, Vec, Map, Env};
 
 //-----------------------------------------------------------------------------
 // Enterprise Features Data Structures
@@ -70,6 +70,17 @@ pub struct Approval {
     pub timestamp: u64,
 }
 
+impl Approval {
+    pub fn default(env: &Env) -> Self {
+        Self {
+            approver: Address::from_str(env, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+            step_number: 0,
+            approved: false,
+            comment: String::from_str(env, ""),
+            timestamp: 0,
+        }
+    }
+}
 /// Approval status enumeration
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -124,6 +135,48 @@ pub struct BackupSchedule {
     pub last_backup: Option<u64>,
 }
 
+/// Payroll modification request structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollModificationRequest {
+    pub id: u64,
+    pub employee: Address,
+    pub employer: Address,
+    pub request_type: PayrollModificationType,
+    pub current_value: String,
+    pub proposed_value: String,
+    pub reason: String,
+    pub requester: Address,
+    pub employer_approval: Approval,
+    pub employee_approval: Approval,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub status: PayrollModificationStatus,
+}
+
+/// Payroll modification type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum PayrollModificationType {
+    Salary,
+    Interval,
+    RecurrenceFrequency,
+    Token,
+    Custom(String),
+}
+
+/// Payroll modification status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum PayrollModificationStatus {
+    Pending,
+    EmployerApproved,
+    EmployeeApproved,
+    BothApproved,
+    Rejected,
+    Expired,
+    Cancelled,
+}
 //-----------------------------------------------------------------------------
 // Enterprise Storage Keys
 //-----------------------------------------------------------------------------
@@ -156,6 +209,13 @@ pub enum EnterpriseDataKey {
     BackupSchedule(u64),                 // schedule_id -> BackupSchedule
     NextBackupScheduleId,                // Next available backup schedule ID
     EmployerBackupSchedules(Address),    // employer -> Vec<u64> (backup schedule IDs)
+    
+    // Payroll Modification Approval System
+    PayrollModificationRequest(u64),     // request_id -> PayrollModificationRequest
+    NextModificationRequestId,           // Next available modification request ID
+    EmployeeModificationRequests(Address), // employee -> Vec<u64> (request IDs)
+    EmployerModificationRequests(Address), // employer -> Vec<u64> (request IDs)
+    PendingModificationRequests,         // Vec<u64> (pending request IDs)
 }
 
 //-----------------------------------------------------------------------------
@@ -177,4 +237,11 @@ pub enum EnterpriseError {
     InvalidWebhookUrl,
     ReportGenerationFailed,
     BackupScheduleConflict,
+    ModificationRequestNotFound,
+    ModificationRequestExpired,
+    ModificationRequestAlreadyApproved,
+    ModificationRequestAlreadyRejected,
+    InvalidModificationType,
+    InvalidModificationValues,
+    ModificationTimeoutInvalid,
 } 
