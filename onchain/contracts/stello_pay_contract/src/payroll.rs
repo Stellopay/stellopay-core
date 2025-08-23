@@ -166,62 +166,8 @@ pub const HISTORY_UPDATED_EVENT: Symbol = symbol_short!("hist_upd");
 /// Event emitted for audit trail entries
 pub const AUDIT_EVENT: Symbol = symbol_short!("audit");
 
-/// Event emitted when a template is created
-pub const TEMPLATE_CREATED_EVENT: Symbol = symbol_short!("tmpl_crt");
-
-/// Event emitted when a template is updated
-pub const TEMPLATE_UPDATED_EVENT: Symbol = symbol_short!("tmpl_upd");
-
-/// Event emitted when a template is applied
-pub const TEMPLATE_APPLIED_EVENT: Symbol = symbol_short!("tmpl_app");
-
-/// Event emitted when a template is shared
-pub const TEMPLATE_SHARED_EVENT: Symbol = symbol_short!("tmpl_shr");
-
-/// Event emitted when a preset is created
-pub const PRESET_CREATED_EVENT: Symbol = symbol_short!("preset_c");
-
-/// Event emitted when a backup is created
-pub const BACKUP_CREATED_EVENT: Symbol = symbol_short!("backup_c");
-
-/// Event emitted when a backup is verified
-pub const BACKUP_VERIFIED_EVENT: Symbol = symbol_short!("backup_v");
-
-/// Event emitted when a recovery is initiated
-pub const RECOVERY_STARTED_EVENT: Symbol = symbol_short!("recov_s");
-
-/// Event emitted when a recovery is completed
-pub const RECOVERY_COMPLETED_EVENT: Symbol = symbol_short!("recov_c");
-
-/// Event emitted when a backup is restored
-pub const BACKUP_RESTORED_EVENT: Symbol = symbol_short!("backup_r");
-
-/// Event emitted when a schedule is created
-pub const SCHEDULE_CREATED_EVENT: Symbol = symbol_short!("sched_c");
-
-/// Event emitted when a schedule is executed
-pub const SCHEDULE_EXECUTED_EVENT: Symbol = symbol_short!("sched_e");
-
-/// Event emitted when a schedule is updated
-pub const SCHEDULE_UPDATED_EVENT: Symbol = symbol_short!("sched_u");
-
-/// Event emitted when an automation rule is created
-pub const RULE_CREATED_EVENT: Symbol = symbol_short!("rule_c");
-
-/// Event emitted when an automation rule is executed
-pub const RULE_EXECUTED_EVENT: Symbol = symbol_short!("rule_e");
-
 /// Event emitted when automatic disbursement is triggered
 pub const AUTO_DISBURSE_EVENT: Symbol = symbol_short!("auto_d");
-
-/// Event emitted when security policy is violated
-pub const SECURITY_POLICY_VIOLATION_EVENT: Symbol = symbol_short!("sec_viol");
-
-/// Event emitted when role is assigned
-pub const ROLE_ASSIGNED_EVENT: Symbol = symbol_short!("role_ass");
-
-/// Event emitted when role is revoked
-pub const ROLE_REVOKED_EVENT: Symbol = symbol_short!("role_rev");
 
 /// Event emitted when access is denied
 pub const ACCESS_DENIED_EVENT: Symbol = symbol_short!("acc_den");
@@ -235,8 +181,8 @@ pub const RATE_LIMIT_EXCEEDED_EVENT: Symbol = symbol_short!("rate_lim");
 /// Event emitted when account is locked
 pub const ACCOUNT_LOCKED_EVENT: Symbol = symbol_short!("acc_lck");
 
-/// Event emitted when security audit is performed
-pub const SECURITY_AUDIT_EVENT: Symbol = symbol_short!("sec_aud");
+/// Event emitted when a backup is restored
+pub const BACKUP_RESTORED_EVENT: Symbol = symbol_short!("backup_r");
 
 //-----------------------------------------------------------------------------
 // Contract Implementation
@@ -1511,7 +1457,7 @@ impl PayrollContract {
         // Get or initialize the history vector and ID counter
         let history_key = DataKey::PayrollHistoryEntry(employee.clone());
         let mut history: Vec<CompactPayrollHistoryEntry> = storage.get(&history_key).unwrap_or(Vec::new(env));
-        let id_key = DataKey::PayrollHistoryIdCounter(employee.clone());
+        let id_key = DataKey::PayrollHistoryCounter(employee.clone());
         let mut id_counter: u64 = storage.get(&id_key).unwrap_or(0);
 
         id_counter += 1;
@@ -1595,7 +1541,7 @@ impl PayrollContract {
         
         let audit_key = DataKey::AuditTrail(employee.clone());
         let mut audit: Vec<CompactPayrollHistoryEntry> = storage.get(&audit_key).unwrap_or(Vec::new(env));
-        let id_key = DataKey::AuditTrailIdCounter(employee.clone());
+        let id_key = DataKey::AuditIdCounter(employee.clone());
         let mut id_counter: u64 = storage.get(&id_key).unwrap_or(0);
 
         id_counter += 1;
@@ -1762,8 +1708,8 @@ impl PayrollContract {
         let current_time = env.ledger().timestamp();
 
         // Get next template ID
-        let next_id = storage.get(&DataKey::NextTemplateId).unwrap_or(0) + 1;
-        storage.set(&DataKey::NextTemplateId, &next_id);
+        let next_id = storage.get(&DataKey::NextTmplId).unwrap_or(0) + 1;
+        storage.set(&DataKey::NextTmplId, &next_id);
 
         let template = PayrollTemplate {
             id: next_id,
@@ -1781,18 +1727,18 @@ impl PayrollContract {
         };
 
         // Store template
-        storage.set(&DataKey::PayrollTemplate(next_id), &template);
+        storage.set(&DataKey::Template(next_id), &template);
 
         // Add to employer's templates
-        let mut employer_templates: Vec<u64> = storage.get(&DataKey::EmployerTemplates(caller.clone())).unwrap_or(Vec::new(&env));
+        let mut employer_templates: Vec<u64> = storage.get(&DataKey::EmpTemplates(caller.clone())).unwrap_or(Vec::new(&env));
         employer_templates.push_back(next_id);
-        storage.set(&DataKey::EmployerTemplates(caller.clone()), &employer_templates);
+        storage.set(&DataKey::EmpTemplates(caller.clone()), &employer_templates);
 
         // Add to public templates if public
         if is_public {
-            let mut public_templates: Vec<u64> = storage.get(&DataKey::PublicTemplates).unwrap_or(Vec::new(&env));
+            let mut public_templates: Vec<u64> = storage.get(&DataKey::PubTemplates).unwrap_or(Vec::new(&env));
             public_templates.push_back(next_id);
-            storage.set(&DataKey::PublicTemplates, &public_templates);
+            storage.set(&DataKey::PubTemplates, &public_templates);
         }
 
         env.events().publish(
@@ -1806,7 +1752,7 @@ impl PayrollContract {
     /// Get a template by ID
     pub fn get_template(env: Env, template_id: u64) -> Result<PayrollTemplate, PayrollError> {
         let storage = env.storage().persistent();
-        storage.get(&DataKey::PayrollTemplate(template_id))
+        storage.get(&DataKey::Template(template_id))
             .ok_or(PayrollError::TemplateNotFound)
     }
 
@@ -1821,7 +1767,7 @@ impl PayrollContract {
         Self::require_not_paused(&env)?;
 
         let storage = env.storage().persistent();
-        let template: PayrollTemplate = storage.get(&DataKey::PayrollTemplate(template_id))
+        let template: PayrollTemplate = storage.get(&DataKey::Template(template_id))
             .ok_or(PayrollError::TemplateNotFound)?;
 
         // Check if template is accessible (owner or public)
@@ -1851,7 +1797,7 @@ impl PayrollContract {
         let mut updated_template = template.clone();
         updated_template.usage_count += 1;
         updated_template.updated_at = env.ledger().timestamp();
-        storage.set(&DataKey::PayrollTemplate(template_id), &updated_template);
+        storage.set(&DataKey::Template(template_id), &updated_template);
 
         env.events().publish(
             (TEMPLATE_APPLIED_EVENT,),
@@ -1877,7 +1823,7 @@ impl PayrollContract {
         Self::require_not_paused(&env)?;
 
         let storage = env.storage().persistent();
-        let mut template: PayrollTemplate = storage.get(&DataKey::PayrollTemplate(template_id))
+        let mut template: PayrollTemplate = storage.get(&DataKey::Template(template_id))
             .ok_or(PayrollError::TemplateNotFound)?;
 
         // Only template owner can update
@@ -1921,7 +1867,7 @@ impl PayrollContract {
         if let Some(new_public) = is_public {
             // Handle public status change
             if template.is_public != new_public {
-                let mut public_templates: Vec<u64> = storage.get(&DataKey::PublicTemplates).unwrap_or(Vec::new(&env));
+                let mut public_templates: Vec<u64> = storage.get(&DataKey::PubTemplates).unwrap_or(Vec::new(&env));
                 
                 if new_public {
                     // Add to public templates
@@ -1936,13 +1882,13 @@ impl PayrollContract {
                     }
                     public_templates = new_public_templates;
                 }
-                storage.set(&DataKey::PublicTemplates, &public_templates);
+                storage.set(&DataKey::PubTemplates, &public_templates);
             }
             template.is_public = new_public;
         }
 
         template.updated_at = env.ledger().timestamp();
-        storage.set(&DataKey::PayrollTemplate(template_id), &template);
+        storage.set(&DataKey::Template(template_id), &template);
 
         env.events().publish(
             (TEMPLATE_UPDATED_EVENT,),
@@ -1963,7 +1909,7 @@ impl PayrollContract {
         Self::require_not_paused(&env)?;
 
         let storage = env.storage().persistent();
-        let template: PayrollTemplate = storage.get(&DataKey::PayrollTemplate(template_id))
+        let template: PayrollTemplate = storage.get(&DataKey::Template(template_id))
             .ok_or(PayrollError::TemplateNotFound)?;
 
         // Only template owner can share
@@ -1972,11 +1918,11 @@ impl PayrollContract {
         }
 
         // Add to target employer's templates (create a copy)
-        let mut target_templates: Vec<u64> = storage.get(&DataKey::EmployerTemplates(target_employer.clone())).unwrap_or(Vec::new(&env));
+        let mut target_templates: Vec<u64> = storage.get(&DataKey::EmpTemplates(target_employer.clone())).unwrap_or(Vec::new(&env));
         
         // Create a new template ID for the shared copy
-        let next_id = storage.get(&DataKey::NextTemplateId).unwrap_or(0) + 1;
-        storage.set(&DataKey::NextTemplateId, &next_id);
+        let next_id = storage.get(&DataKey::NextTmplId).unwrap_or(0) + 1;
+        storage.set(&DataKey::NextTmplId, &next_id);
 
         let shared_template = PayrollTemplate {
             id: next_id,
@@ -1993,9 +1939,9 @@ impl PayrollContract {
             usage_count: 0,
         };
 
-        storage.set(&DataKey::PayrollTemplate(next_id), &shared_template);
+        storage.set(&DataKey::Template(next_id), &shared_template);
         target_templates.push_back(next_id);
-        storage.set(&DataKey::EmployerTemplates(target_employer.clone()), &target_templates);
+        storage.set(&DataKey::EmpTemplates(target_employer.clone()), &target_templates);
 
         env.events().publish(
             (TEMPLATE_SHARED_EVENT,),
@@ -2008,11 +1954,11 @@ impl PayrollContract {
     /// Get all templates for an employer
     pub fn get_employer_templates(env: Env, employer: Address) -> Vec<PayrollTemplate> {
         let storage = env.storage().persistent();
-        let template_ids: Vec<u64> = storage.get(&DataKey::EmployerTemplates(employer.clone())).unwrap_or(Vec::new(&env));
+        let template_ids: Vec<u64> = storage.get(&DataKey::EmpTemplates(employer.clone())).unwrap_or(Vec::new(&env));
         let mut templates = Vec::new(&env);
 
         for id in template_ids.iter() {
-            if let Some(template) = storage.get(&DataKey::PayrollTemplate(id)) {
+            if let Some(template) = storage.get(&DataKey::Template(id)) {
                 templates.push_back(template);
             }
         }
@@ -2023,11 +1969,11 @@ impl PayrollContract {
     /// Get all public templates
     pub fn get_public_templates(env: Env) -> Vec<PayrollTemplate> {
         let storage = env.storage().persistent();
-        let template_ids: Vec<u64> = storage.get(&DataKey::PublicTemplates).unwrap_or(Vec::new(&env));
+        let template_ids: Vec<u64> = storage.get(&DataKey::PubTemplates).unwrap_or(Vec::new(&env));
         let mut templates = Vec::new(&env);
 
         for id in template_ids.iter() {
-            if let Some(template) = storage.get(&DataKey::PayrollTemplate(id)) {
+            if let Some(template) = storage.get(&DataKey::Template(id)) {
                 templates.push_back(template);
             }
         }
@@ -2086,12 +2032,12 @@ impl PayrollContract {
         };
 
         // Store preset
-        storage.set(&DataKey::TemplatePreset(next_id), &preset);
+        storage.set(&DataKey::Preset(next_id), &preset);
 
         // Add to category
-        let mut category_presets: Vec<u64> = storage.get(&DataKey::PresetCategory(category.clone())).unwrap_or(Vec::new(&env));
+        let mut category_presets: Vec<u64> = storage.get(&DataKey::PresetCat(category.clone())).unwrap_or(Vec::new(&env));
         category_presets.push_back(next_id);
-        storage.set(&DataKey::PresetCategory(category.clone()), &category_presets);
+        storage.set(&DataKey::PresetCat(category.clone()), &category_presets);
 
         // Add to active presets
         let mut active_presets: Vec<u64> = storage.get(&DataKey::ActivePresets).unwrap_or(Vec::new(&env));
@@ -2109,7 +2055,7 @@ impl PayrollContract {
     /// Get a preset by ID
     pub fn get_preset(env: Env, preset_id: u64) -> Result<TemplatePreset, PayrollError> {
         let storage = env.storage().persistent();
-        storage.get(&DataKey::TemplatePreset(preset_id))
+        storage.get(&DataKey::Preset(preset_id))
             .ok_or(PayrollError::PresetNotFound)
     }
 
@@ -2126,7 +2072,7 @@ impl PayrollContract {
         Self::require_not_paused(&env)?;
 
         let storage = env.storage().persistent();
-        let preset: TemplatePreset = storage.get(&DataKey::TemplatePreset(preset_id))
+        let preset: TemplatePreset = storage.get(&DataKey::Preset(preset_id))
             .ok_or(PayrollError::PresetNotFound)?;
 
         if !preset.is_active {
@@ -2150,11 +2096,11 @@ impl PayrollContract {
     /// Get presets by category
     pub fn get_presets_by_category(env: Env, category: String) -> Vec<TemplatePreset> {
         let storage = env.storage().persistent();
-        let preset_ids: Vec<u64> = storage.get(&DataKey::PresetCategory(category.clone())).unwrap_or(Vec::new(&env));
+        let preset_ids: Vec<u64> = storage.get(&DataKey::PresetCat(category.clone())).unwrap_or(Vec::new(&env));
         let mut presets = Vec::new(&env);
 
         for id in preset_ids.iter() {
-            if let Some(preset) = storage.get(&DataKey::TemplatePreset(id)) {
+            if let Some(preset) = storage.get(&DataKey::Preset(id)) {
                 presets.push_back(preset);
             }
         }
@@ -2169,7 +2115,7 @@ impl PayrollContract {
         let mut presets = Vec::new(&env);
 
         for id in preset_ids.iter() {
-            if let Some(preset) = storage.get(&DataKey::TemplatePreset(id)) {
+            if let Some(preset) = storage.get(&DataKey::Preset(id)) {
                 presets.push_back(preset);
             }
         }
@@ -2220,12 +2166,12 @@ impl PayrollContract {
         };
 
         // Store backup metadata
-        storage.set(&DataKey::PayrollBackup(next_id), &backup);
+        storage.set(&DataKey::Backup(next_id), &backup);
 
         // Add to employer's backups
-        let mut employer_backups: Vec<u64> = storage.get(&DataKey::EmployerBackups(caller.clone())).unwrap_or(Vec::new(&env));
+        let mut employer_backups: Vec<u64> = storage.get(&DataKey::EmpBackups(caller.clone())).unwrap_or(Vec::new(&env));
         employer_backups.push_back(next_id);
-        storage.set(&DataKey::EmployerBackups(caller.clone()), &employer_backups);
+        storage.set(&DataKey::EmpBackups(caller.clone()), &employer_backups);
 
         // Add to backup index
         let mut backup_index: Vec<u64> = storage.get(&DataKey::BackupIndex).unwrap_or(Vec::new(&env));
@@ -2249,7 +2195,7 @@ impl PayrollContract {
         final_backup.checksum = checksum;
         final_backup.data_hash = data_hash;
         final_backup.size_bytes = size_bytes;
-        storage.set(&DataKey::PayrollBackup(next_id), &final_backup);
+        storage.set(&DataKey::Backup(next_id), &final_backup);
 
         env.events().publish(
             (BACKUP_CREATED_EVENT,),
@@ -2262,7 +2208,7 @@ impl PayrollContract {
     /// Get a backup by ID
     pub fn get_backup(env: Env, backup_id: u64) -> Result<PayrollBackup, PayrollError> {
         let storage = env.storage().persistent();
-        storage.get(&DataKey::PayrollBackup(backup_id))
+        storage.get(&DataKey::Backup(backup_id))
             .ok_or(PayrollError::BackupNotFound)
     }
 
@@ -2283,7 +2229,7 @@ impl PayrollContract {
         Self::require_not_paused(&env)?;
 
         let storage = env.storage().persistent();
-        let backup: PayrollBackup = storage.get(&DataKey::PayrollBackup(backup_id))
+        let backup: PayrollBackup = storage.get(&DataKey::Backup(backup_id))
             .ok_or(PayrollError::BackupNotFound)?;
 
         // Only backup owner can verify
@@ -2304,7 +2250,7 @@ impl PayrollContract {
         // Update backup status
         let mut updated_backup = backup.clone();
         updated_backup.status = if is_valid { BackupStatus::Verified } else { BackupStatus::Failed };
-        storage.set(&DataKey::PayrollBackup(backup_id), &updated_backup);
+        storage.set(&DataKey::Backup(backup_id), &updated_backup);
 
         env.events().publish(
             (BACKUP_VERIFIED_EVENT,),
@@ -2340,8 +2286,8 @@ impl PayrollContract {
         let current_time = env.ledger().timestamp();
 
         // Get next recovery point ID
-        let next_id = storage.get(&DataKey::NextRecoveryPointId).unwrap_or(0) + 1;
-        storage.set(&DataKey::NextRecoveryPointId, &next_id);
+        let next_id = storage.get(&DataKey::NextRecoveryId).unwrap_or(0) + 1;
+        storage.set(&DataKey::NextRecoveryId, &next_id);
 
         let recovery_point = RecoveryPoint {
             id: next_id,
@@ -2362,7 +2308,7 @@ impl PayrollContract {
             },
         };
 
-        storage.set(&DataKey::RecoveryPoint(next_id), &recovery_point);
+        storage.set(&DataKey::Recovery(next_id), &recovery_point);
 
         env.events().publish(
             (RECOVERY_STARTED_EVENT,),
@@ -2382,7 +2328,7 @@ impl PayrollContract {
         Self::require_not_paused(&env)?;
 
         let storage = env.storage().persistent();
-        let mut recovery_point: RecoveryPoint = storage.get(&DataKey::RecoveryPoint(recovery_point_id))
+        let mut recovery_point: RecoveryPoint = storage.get(&DataKey::Recovery(recovery_point_id))
             .ok_or(PayrollError::RecoveryPointNotFound)?;
 
         // Check if recovery is already in progress
@@ -2396,7 +2342,7 @@ impl PayrollContract {
 
         // Update recovery status
         recovery_point.status = RecoveryStatus::InProgress;
-        storage.set(&DataKey::RecoveryPoint(recovery_point_id), &recovery_point);
+        storage.set(&DataKey::Recovery(recovery_point_id), &recovery_point);
 
         let start_time = env.ledger().timestamp();
         let mut success_count = 0;
@@ -2442,7 +2388,7 @@ impl PayrollContract {
             String::from_str(&env, "failed") 
         };
 
-        storage.set(&DataKey::RecoveryPoint(recovery_point_id), &recovery_point);
+        storage.set(&DataKey::Recovery(recovery_point_id), &recovery_point);
 
         env.events().publish(
             (RECOVERY_COMPLETED_EVENT,),
@@ -2455,11 +2401,11 @@ impl PayrollContract {
     /// Get all backups for an employer
     pub fn get_employer_backups(env: Env, employer: Address) -> Vec<PayrollBackup> {
         let storage = env.storage().persistent();
-        let backup_ids: Vec<u64> = storage.get(&DataKey::EmployerBackups(employer.clone())).unwrap_or(Vec::new(&env));
+        let backup_ids: Vec<u64> = storage.get(&DataKey::EmpBackups(employer.clone())).unwrap_or(Vec::new(&env));
         let mut backups = Vec::new(&env);
 
         for id in backup_ids.iter() {
-            if let Some(backup) = storage.get(&DataKey::PayrollBackup(id)) {
+            if let Some(backup) = storage.get(&DataKey::Backup(id)) {
                 backups.push_back(backup);
             }
         }
@@ -2474,7 +2420,7 @@ impl PayrollContract {
         let mut next_id = 1;
 
         // Iterate through recovery points (this is a simplified approach)
-        while let Some(recovery_point) = storage.get(&DataKey::RecoveryPoint(next_id)) {
+        while let Some(recovery_point) = storage.get(&DataKey::Recovery(next_id)) {
             recovery_points.push_back(recovery_point);
             next_id += 1;
         }
@@ -2492,7 +2438,7 @@ impl PayrollContract {
         Self::require_not_paused(&env)?;
 
         let storage = env.storage().persistent();
-        let backup: PayrollBackup = storage.get(&DataKey::PayrollBackup(backup_id))
+        let backup: PayrollBackup = storage.get(&DataKey::Backup(backup_id))
             .ok_or(PayrollError::BackupNotFound)?;
 
         // Only backup owner can delete
@@ -2501,18 +2447,18 @@ impl PayrollContract {
         }
 
         // Remove from storage
-        storage.remove(&DataKey::PayrollBackup(backup_id));
+        storage.remove(&DataKey::Backup(backup_id));
         storage.remove(&DataKey::BackupData(backup_id));
 
         // Remove from employer's backups
-        let mut employer_backups: Vec<u64> = storage.get(&DataKey::EmployerBackups(caller.clone())).unwrap_or(Vec::new(&env));
+        let mut employer_backups: Vec<u64> = storage.get(&DataKey::EmpBackups(caller.clone())).unwrap_or(Vec::new(&env));
         let mut new_employer_backups = Vec::new(&env);
         for id in employer_backups.iter() {
             if id != backup_id {
                 new_employer_backups.push_back(id);
             }
         }
-        storage.set(&DataKey::EmployerBackups(caller.clone()), &new_employer_backups);
+        storage.set(&DataKey::EmpBackups(caller.clone()), &new_employer_backups);
 
         // Remove from backup index
         let mut backup_index: Vec<u64> = storage.get(&DataKey::BackupIndex).unwrap_or(Vec::new(&env));
@@ -2548,7 +2494,7 @@ impl PayrollContract {
                 // Collect all data
                 let backup_index: Vec<u64> = storage.get(&DataKey::BackupIndex).unwrap_or(Vec::new(env));
                 for backup_id in backup_index.iter() {
-                    if let Some(backup) = storage.get::<DataKey, PayrollBackup>(&DataKey::PayrollBackup(backup_id)) {
+                    if let Some(backup) = storage.get::<DataKey, PayrollBackup>(&DataKey::Backup(backup_id)) {
                         if let Some(data) = storage.get::<DataKey, BackupData>(&DataKey::BackupData(backup_id)) {
                             // Merge data from all backups
                             for payroll in data.payroll_data.iter() {
@@ -2682,17 +2628,17 @@ impl PayrollContract {
         let storage = env.storage().persistent();
         
         // Check if template already exists
-        if storage.has(&DataKey::PayrollTemplate(template.id)) {
+        if storage.has(&DataKey::Template(template.id)) {
             // Update existing template
-            storage.set(&DataKey::PayrollTemplate(template.id), template);
+            storage.set(&DataKey::Template(template.id), template);
         } else {
             // Create new template
-            storage.set(&DataKey::PayrollTemplate(template.id), template);
+            storage.set(&DataKey::Template(template.id), template);
             
             // Add to employer's templates
-            let mut employer_templates: Vec<u64> = storage.get(&DataKey::EmployerTemplates(template.employer.clone())).unwrap_or(Vec::new(env));
+            let mut employer_templates: Vec<u64> = storage.get(&DataKey::EmpTemplates(template.employer.clone())).unwrap_or(Vec::new(env));
             employer_templates.push_back(template.id);
-            storage.set(&DataKey::EmployerTemplates(template.employer.clone()), &employer_templates);
+            storage.set(&DataKey::EmpTemplates(template.employer.clone()), &employer_templates);
         }
         
         Ok(())
@@ -2703,17 +2649,17 @@ impl PayrollContract {
         let storage = env.storage().persistent();
         
         // Check if preset already exists
-        if storage.has(&DataKey::TemplatePreset(preset.id)) {
+        if storage.has(&DataKey::Preset(preset.id)) {
             // Update existing preset
-            storage.set(&DataKey::TemplatePreset(preset.id), preset);
+            storage.set(&DataKey::Preset(preset.id), preset);
         } else {
             // Create new preset
-            storage.set(&DataKey::TemplatePreset(preset.id), preset);
+            storage.set(&DataKey::Preset(preset.id), preset);
             
             // Add to category
-            let mut category_presets: Vec<u64> = storage.get(&DataKey::PresetCategory(preset.category.clone())).unwrap_or(Vec::new(env));
+            let mut category_presets: Vec<u64> = storage.get(&DataKey::PresetCat(preset.category.clone())).unwrap_or(Vec::new(env));
             category_presets.push_back(preset.id);
-            storage.set(&DataKey::PresetCategory(preset.category.clone()), &category_presets);
+            storage.set(&DataKey::PresetCat(preset.category.clone()), &category_presets);
             
             // Add to active presets if active
             if preset.is_active {
@@ -2763,8 +2709,8 @@ impl PayrollContract {
         let storage = env.storage().persistent();
 
         // Get next schedule ID
-        let next_id = storage.get(&DataKey::NextScheduleId).unwrap_or(0) + 1;
-        storage.set(&DataKey::NextScheduleId, &next_id);
+        let next_id = storage.get(&DataKey::NextSchedId).unwrap_or(0) + 1;
+        storage.set(&DataKey::NextSchedId, &next_id);
 
         // Calculate next execution time
         let next_execution = Self::_calculate_next_execution(&env, &frequency, start_date);
@@ -2800,12 +2746,12 @@ impl PayrollContract {
         };
 
         // Store schedule
-        storage.set(&DataKey::PayrollSchedule(next_id), &schedule);
+        storage.set(&DataKey::Schedule(next_id), &schedule);
 
         // Add to employer's schedules
-        let mut employer_schedules: Vec<u64> = storage.get(&DataKey::EmployerSchedules(caller.clone())).unwrap_or(Vec::new(&env));
+        let mut employer_schedules: Vec<u64> = storage.get(&DataKey::EmpSchedules(caller.clone())).unwrap_or(Vec::new(&env));
         employer_schedules.push_back(next_id);
-        storage.set(&DataKey::EmployerSchedules(caller.clone()), &employer_schedules);
+        storage.set(&DataKey::EmpSchedules(caller.clone()), &employer_schedules);
 
         // Note: Active schedules tracking removed due to storage constraints
 
@@ -2820,7 +2766,7 @@ impl PayrollContract {
     /// Get a schedule by ID
     pub fn get_schedule(env: Env, schedule_id: u64) -> Result<PayrollSchedule, PayrollError> {
         let storage = env.storage().persistent();
-        storage.get(&DataKey::PayrollSchedule(schedule_id))
+        storage.get(&DataKey::Schedule(schedule_id))
             .ok_or(PayrollError::ScheduleNotFound)
     }
 
@@ -2839,7 +2785,7 @@ impl PayrollContract {
         Self::require_not_paused(&env)?;
 
         let storage = env.storage().persistent();
-        let mut schedule: PayrollSchedule = storage.get(&DataKey::PayrollSchedule(schedule_id))
+        let mut schedule: PayrollSchedule = storage.get(&DataKey::Schedule(schedule_id))
             .ok_or(PayrollError::ScheduleNotFound)?;
 
         // Only schedule owner can update
@@ -2879,7 +2825,7 @@ impl PayrollContract {
         }
 
         schedule.updated_at = env.ledger().timestamp();
-        storage.set(&DataKey::PayrollSchedule(schedule_id), &schedule);
+        storage.set(&DataKey::Schedule(schedule_id), &schedule);
 
         env.events().publish(
             (SCHEDULE_UPDATED_EVENT,),
@@ -2899,7 +2845,7 @@ impl PayrollContract {
         Self::require_not_paused(&env)?;
 
         let storage = env.storage().persistent();
-        let mut schedule: PayrollSchedule = storage.get(&DataKey::PayrollSchedule(schedule_id))
+        let mut schedule: PayrollSchedule = storage.get(&DataKey::Schedule(schedule_id))
             .ok_or(PayrollError::ScheduleNotFound)?;
 
         // Check if schedule is active and ready for execution
@@ -2979,7 +2925,7 @@ impl PayrollContract {
         schedule.metadata.average_execution_time = duration;
         schedule.updated_at = current_time;
 
-        storage.set(&DataKey::PayrollSchedule(schedule_id), &schedule);
+        storage.set(&DataKey::Schedule(schedule_id), &schedule);
 
         env.events().publish(
             (SCHEDULE_EXECUTED_EVENT,),
@@ -3036,12 +2982,12 @@ impl PayrollContract {
         };
 
         // Store rule
-        storage.set(&DataKey::AutomationRule(next_id), &rule);
+        storage.set(&DataKey::Rule(next_id), &rule);
 
         // Add to employer's rules
-        let mut employer_rules: Vec<u64> = storage.get(&DataKey::EmployerRules(caller.clone())).unwrap_or(Vec::new(&env));
+        let mut employer_rules: Vec<u64> = storage.get(&DataKey::EmpRules(caller.clone())).unwrap_or(Vec::new(&env));
         employer_rules.push_back(next_id);
-        storage.set(&DataKey::EmployerRules(caller.clone()), &employer_rules);
+        storage.set(&DataKey::EmpRules(caller.clone()), &employer_rules);
 
         // Note: Active rules tracking removed due to storage constraints
 
@@ -3056,7 +3002,7 @@ impl PayrollContract {
     /// Get an automation rule by ID
     pub fn get_automation_rule(env: Env, rule_id: u64) -> Result<AutomationRule, PayrollError> {
         let storage = env.storage().persistent();
-        storage.get(&DataKey::AutomationRule(rule_id))
+        storage.get(&DataKey::Rule(rule_id))
             .ok_or(PayrollError::AutomationRuleNotFound)
     }
 
@@ -3072,9 +3018,9 @@ impl PayrollContract {
         let mut executed_count = 0;
 
         // Get all rules for the caller and execute active ones
-        let rule_ids: Vec<u64> = storage.get(&DataKey::EmployerRules(caller.clone())).unwrap_or(Vec::new(&env));
+        let rule_ids: Vec<u64> = storage.get(&DataKey::EmpRules(caller.clone())).unwrap_or(Vec::new(&env));
         for rule_id in rule_ids.iter() {
-            if let Some(rule) = storage.get::<DataKey, AutomationRule>(&DataKey::AutomationRule(rule_id)) {
+            if let Some(rule) = storage.get::<DataKey, AutomationRule>(&DataKey::Rule(rule_id)) {
                 if rule.employer == caller && rule.is_active {
                     match Self::_evaluate_and_execute_rule(&env, &rule) {
                         Ok(_) => executed_count += 1,
@@ -3095,11 +3041,11 @@ impl PayrollContract {
     /// Get all schedules for an employer
     pub fn get_employer_schedules(env: Env, employer: Address) -> Vec<PayrollSchedule> {
         let storage = env.storage().persistent();
-        let schedule_ids: Vec<u64> = storage.get(&DataKey::EmployerSchedules(employer.clone())).unwrap_or(Vec::new(&env));
+        let schedule_ids: Vec<u64> = storage.get(&DataKey::EmpSchedules(employer.clone())).unwrap_or(Vec::new(&env));
         let mut schedules = Vec::new(&env);
 
         for id in schedule_ids.iter() {
-            if let Some(schedule) = storage.get(&DataKey::PayrollSchedule(id)) {
+            if let Some(schedule) = storage.get(&DataKey::Schedule(id)) {
                 schedules.push_back(schedule);
             }
         }
@@ -3110,11 +3056,11 @@ impl PayrollContract {
     /// Get all automation rules for an employer
     pub fn get_employer_rules(env: Env, employer: Address) -> Vec<AutomationRule> {
         let storage = env.storage().persistent();
-        let rule_ids: Vec<u64> = storage.get(&DataKey::EmployerRules(employer.clone())).unwrap_or(Vec::new(&env));
+        let rule_ids: Vec<u64> = storage.get(&DataKey::EmpRules(employer.clone())).unwrap_or(Vec::new(&env));
         let mut rules = Vec::new(&env);
 
         for id in rule_ids.iter() {
-            if let Some(rule) = storage.get(&DataKey::AutomationRule(id)) {
+            if let Some(rule) = storage.get(&DataKey::Rule(id)) {
                 rules.push_back(rule);
             }
         }
@@ -3291,7 +3237,7 @@ impl PayrollContract {
             is_active: true,
         };
 
-        storage.set(&DataKey::UserRoleAssignment(user.clone()), &assignment);
+        storage.set(&DataKey::UserRole(user.clone()), &assignment);
 
         env.events().publish(
             (ROLE_ASSIGNED_EVENT,),
@@ -3314,9 +3260,9 @@ impl PayrollContract {
         let storage = env.storage().persistent();
 
         // Check if user has a role assignment
-        if let Some(mut assignment) = storage.get::<DataKey, UserRoleAssignment>(&DataKey::UserRoleAssignment(user.clone())) {
+        if let Some(mut assignment) = storage.get::<DataKey, UserRoleAssignment>(&DataKey::UserRole(user.clone())) {
             assignment.is_active = false;
-            storage.set(&DataKey::UserRoleAssignment(user.clone()), &assignment);
+            storage.set(&DataKey::UserRole(user.clone()), &assignment);
 
             env.events().publish(
                 (ROLE_REVOKED_EVENT,),
@@ -3329,7 +3275,7 @@ impl PayrollContract {
 
     /// Get user's role assignment
     pub fn get_user_role(env: Env, user: Address) -> Option<UserRoleAssignment> {
-        env.storage().persistent().get(&DataKey::UserRoleAssignment(user))
+        env.storage().persistent().get(&DataKey::UserRole(user))
     }
 
     /// Get role details
@@ -3346,7 +3292,7 @@ impl PayrollContract {
         let storage = env.storage().persistent();
 
         // Check if user has a role assignment
-        if let Some(assignment) = storage.get::<DataKey, UserRoleAssignment>(&DataKey::UserRoleAssignment(user.clone())) {
+        if let Some(assignment) = storage.get::<DataKey, UserRoleAssignment>(&DataKey::UserRole(user.clone())) {
             if !assignment.is_active {
                 return false;
             }
