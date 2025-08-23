@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod test_webhooks_simple {
     use crate::payroll::{PayrollContract, PayrollContractClient};
-    use crate::webhooks_simple::{EventType, WebhookError};
+    use crate::webhooks_simple::EventType;
     use soroban_sdk::{
         testutils::Address as _,
         vec, Address, Env, String,

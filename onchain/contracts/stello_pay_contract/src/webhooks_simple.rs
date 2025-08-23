@@ -61,7 +61,7 @@ impl WebhookSystem {
         owner: Address,
         url: String,
         events: Vec<EventType>,
-        secret: String,
+        _secret: String,
     ) -> Result<u64, WebhookError> {
         owner.require_auth();
 

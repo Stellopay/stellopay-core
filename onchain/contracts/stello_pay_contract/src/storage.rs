@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Symbol, BytesN, String, Vec, Map};
+use soroban_sdk::{contracttype, Address, Symbol, String, Vec, Map};
 
 // Import insurance types for backup functionality
 use crate::insurance::InsurancePolicy;
