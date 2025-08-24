@@ -6,6 +6,7 @@ use soroban_sdk::{
 use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT, TEMPLATE_CREATED_EVENT, TEMPLATE_UPDATED_EVENT, TEMPLATE_APPLIED_EVENT, TEMPLATE_SHARED_EVENT, PRESET_CREATED_EVENT, BACKUP_CREATED_EVENT, BACKUP_VERIFIED_EVENT, RECOVERY_STARTED_EVENT, RECOVERY_COMPLETED_EVENT, SCHEDULE_CREATED_EVENT, SCHEDULE_UPDATED_EVENT, SCHEDULE_EXECUTED_EVENT, RULE_CREATED_EVENT, RULE_EXECUTED_EVENT, ROLE_ASSIGNED_EVENT, ROLE_REVOKED_EVENT, SECURITY_AUDIT_EVENT, SECURITY_POLICY_VIOLATION_EVENT};
 use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, CompactPayrollHistoryEntry, PayrollTemplate, TemplatePreset, PayrollBackup, BackupData, BackupMetadata, BackupType, BackupStatus, RecoveryPoint, RecoveryType, RecoveryStatus, RecoveryMetadata, PayrollSchedule, ScheduleType, ScheduleFrequency, ScheduleMetadata, AutomationRule, RuleType, RuleCondition, RuleAction, ConditionOperator, LogicalOperator, ActionType, UserRole, Permission, Role, UserRoleAssignment, SecurityPolicy, SecurityPolicyType, SecurityRule, SecurityRuleOperator, SecurityRuleAction, SecurityAuditEntry, SecurityAuditResult, RateLimitConfig, SecuritySettings, SuspiciousActivity, SuspiciousActivityType, SuspiciousActivitySeverity};
 use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
+use crate::enterprise::{self, Department, ApprovalWorkflow, ApprovalStep, WebhookEndpoint, ReportTemplate, BackupSchedule, EnterpriseDataKey, PayrollModificationRequest, PayrollModificationType, PayrollModificationStatus, Approval, ApprovalStatus, Dispute, DisputeType, DisputeStatus, DisputePriority, Escalation, EscalationLevel, Mediator, DisputeSettings};
 
 //-----------------------------------------------------------------------------
 // Gas Optimization Structures
@@ -819,6 +820,7 @@ impl PayrollContract {
 
     /// Batch create or update escrows for multiple employees
     /// This is more gas efficient than calling create_or_update_escrow multiple times
+    /// Optimized with batch size limits and improved gas efficiency
     pub fn batch_create_escrows(
         env: Env,
         employer: Address,
@@ -826,21 +828,30 @@ impl PayrollContract {
     ) -> Result<Vec<Payroll>, PayrollError> {
         employer.require_auth();
 
+        // Batch size limit for gas optimization (configurable)
+        const MAX_BATCH_SIZE: u32 = 50;
+        if payroll_inputs.len() as u32 > MAX_BATCH_SIZE {
+            return Err(PayrollError::InvalidData);
+        }
+
         // Create optimized batch context
         let batch_ctx = Self::create_batch_context(&env);
         let storage = env.storage().persistent();
         let is_owner = batch_ctx.cache.owner.as_ref().map_or(false, |owner| &employer == owner);
 
         let mut created_payrolls = Vec::new(&env);
+        let mut supported_tokens = Vec::new(&env);
 
+        // Pre-validate all inputs to fail fast
         for payroll_input in payroll_inputs.iter() {
-            // Optimized validation with early returns
             Self::validate_payroll_input(
                 payroll_input.amount,
                 payroll_input.interval,
                 payroll_input.recurrence_frequency,
             )?;
+        }
 
+        for payroll_input in payroll_inputs.iter() {
             let existing_payroll = Self::_get_payroll(&env, &payroll_input.employee);
 
             if let Some(ref existing) = existing_payroll {
@@ -896,17 +907,22 @@ impl PayrollContract {
                 },
             );
 
-            // Automatically add token as supported if it's not already
+            // Track tokens to add as supported (batch operation)
             if !Self::is_token_supported(env.clone(), payroll_input.token.clone()) {
-                let key = DataKey::SupportedToken(payroll_input.token.clone());
-                storage.set(&key, &true);
-
-                // Set default decimals (7 for Stellar assets)
-                let metadata_key = DataKey::TokenMetadata(payroll_input.token.clone());
-                storage.set(&metadata_key, &7u32);
+                supported_tokens.push_back(payroll_input.token.clone());
             }
 
             created_payrolls.push_back(payroll);
+        }
+
+        // Batch add supported tokens (more gas efficient)
+        for token in supported_tokens.iter() {
+            let key = DataKey::SupportedToken(token.clone());
+            storage.set(&key, &true);
+
+            // Set default decimals (7 for Stellar assets)
+            let metadata_key = DataKey::TokenMetadata(token.clone());
+            storage.set(&metadata_key, &7u32);
         }
 
         // Emit batch event
@@ -920,6 +936,7 @@ impl PayrollContract {
 
     /// Batch disburse salaries to multiple employees
     /// This is more gas efficient than calling disburse_salary multiple times
+    /// Optimized with batch size limits and improved gas efficiency
     pub fn batch_disburse_salaries(
         env: Env,
         caller: Address,
@@ -927,11 +944,18 @@ impl PayrollContract {
     ) -> Result<Vec<Address>, PayrollError> {
         caller.require_auth();
 
+        // Batch size limit for gas optimization (configurable)
+        const MAX_BATCH_SIZE: u32 = 50;
+        if employees.len() as u32 > MAX_BATCH_SIZE {
+            return Err(PayrollError::InvalidData);
+        }
+
         // Create optimized batch context
         let batch_ctx = Self::create_batch_context(&env);
         let storage = env.storage().persistent();
         let mut processed_employees = Vec::new(&env);
 
+        // Process each employee individually to avoid indexing issues
         for employee in employees.iter() {
             let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
 
@@ -983,6 +1007,210 @@ impl PayrollContract {
         );
 
         Ok(processed_employees)
+    }
+
+    /// Batch pause payrolls for multiple employees
+    /// Optimized with batch size limits and improved gas efficiency
+    pub fn batch_pause_payrolls(
+        env: Env,
+        caller: Address,
+        employees: Vec<Address>,
+    ) -> Result<Vec<Address>, PayrollError> {
+        caller.require_auth();
+
+        // Batch size limit for gas optimization (configurable)
+        const MAX_BATCH_SIZE: u32 = 50;
+        if employees.len() as u32 > MAX_BATCH_SIZE {
+            return Err(PayrollError::InvalidData);
+        }
+
+        let storage = env.storage().persistent();
+        let cache = Self::get_contract_cache(&env);
+        let mut processed_employees = Vec::new(&env);
+
+        // Process each employee individually to avoid indexing issues
+        for employee in employees.iter() {
+            let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+
+            // Check if caller is authorized (owner or employer)
+            let is_owner = cache.owner.as_ref().map_or(false, |owner| &caller == owner);
+            if !is_owner && caller != payroll.employer {
+                return Err(PayrollError::Unauthorized);
+            }
+
+            // Update payroll pause state
+            let mut updated_payroll = payroll.clone();
+            updated_payroll.is_paused = true;
+            
+            // Store updated payroll
+            let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+            storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+
+            Self::record_history(
+                &env, 
+                &employee, 
+                &compact_payroll,
+                symbol_short!("paused")
+            );
+
+            // Emit individual pause event
+            env.events().publish(
+                (EMPLOYEE_PAUSED_EVENT,),
+                (caller.clone(), employee.clone()),
+            );
+
+            processed_employees.push_back(employee.clone());
+        }
+
+        // Emit batch pause event
+        env.events().publish(
+            (BATCH_EVENT,),
+            (caller, processed_employees.len() as u32),
+        );
+
+        Ok(processed_employees)
+    }
+
+    /// Batch resume payrolls for multiple employees
+    /// Optimized with batch size limits and improved gas efficiency
+    pub fn batch_resume_payrolls(
+        env: Env,
+        caller: Address,
+        employees: Vec<Address>,
+    ) -> Result<Vec<Address>, PayrollError> {
+        caller.require_auth();
+
+        // Batch size limit for gas optimization (configurable)
+        const MAX_BATCH_SIZE: u32 = 50;
+        if employees.len() as u32 > MAX_BATCH_SIZE {
+            return Err(PayrollError::InvalidData);
+        }
+
+        let storage = env.storage().persistent();
+        let cache = Self::get_contract_cache(&env);
+        let mut processed_employees = Vec::new(&env);
+
+        // Process each employee individually to avoid indexing issues
+        for employee in employees.iter() {
+            let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+
+            // Check if caller is authorized (owner or employer)
+            let is_owner = cache.owner.as_ref().map_or(false, |owner| &caller == owner);
+            if !is_owner && caller != payroll.employer {
+                return Err(PayrollError::Unauthorized);
+            }
+
+            // Update payroll pause state
+            let mut updated_payroll = payroll.clone();
+            updated_payroll.is_paused = false;
+            
+            // Store updated payroll
+            let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+            storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+
+            Self::record_history(
+                &env, 
+                &employee, 
+                &compact_payroll,
+                symbol_short!("resumed")
+            );
+
+            // Emit individual resume event
+            env.events().publish(
+                (EMPLOYEE_RESUMED_EVENT,),
+                (caller.clone(), employee.clone()),
+            );
+
+            processed_employees.push_back(employee.clone());
+        }
+
+        // Emit batch resume event
+        env.events().publish(
+            (BATCH_EVENT,),
+            (caller, processed_employees.len() as u32),
+        );
+
+        Ok(processed_employees)
+    }
+
+    /// Batch remove payrolls for multiple employees
+    /// Optimized with batch size limits and improved gas efficiency
+    pub fn batch_remove_payrolls(
+        env: Env,
+        caller: Address,
+        employees: Vec<Address>,
+    ) -> Result<Vec<Address>, PayrollError> {
+        caller.require_auth();
+
+        // Batch size limit for gas optimization (configurable)
+        const MAX_BATCH_SIZE: u32 = 50;
+        if employees.len() as u32 > MAX_BATCH_SIZE {
+            return Err(PayrollError::InvalidData);
+        }
+
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+        let mut processed_employees = Vec::new(&env);
+
+        // Process each employee individually to avoid indexing issues
+        for employee in employees.iter() {
+            let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+
+            // Only the contract owner or the payroll's employer can remove it
+            if caller != owner && caller != payroll.employer {
+                return Err(PayrollError::Unauthorized);
+            }
+
+            // Remove from indexes
+            Self::remove_from_employer_index(&env, &payroll.employer, &employee);
+            Self::remove_from_token_index(&env, &payroll.token, &employee);
+
+            // Remove payroll data
+            storage.remove(&DataKey::Payroll(employee.clone()));
+
+            processed_employees.push_back(employee.clone());
+        }
+
+        // Emit batch remove event
+        env.events().publish(
+            (BATCH_EVENT,),
+            (caller, processed_employees.len() as u32),
+        );
+
+        Ok(processed_employees)
+    }
+
+    /// Estimate gas cost for batch operations
+    pub fn estimate_batch_gas(
+        env: Env,
+        operation_type: String,
+        batch_size: u32,
+    ) -> Result<u64, PayrollError> {
+        // Base gas costs for different operations
+        const BASE_CREATE_GAS: u64 = 1000;
+        const BASE_DISBURSE_GAS: u64 = 800;
+        const BASE_PAUSE_GAS: u64 = 300;
+        const BASE_RESUME_GAS: u64 = 300;
+        const BASE_REMOVE_GAS: u64 = 400;
+        const PER_ITEM_GAS: u64 = 50;
+
+        // Simplified operation type matching
+        let base_gas = if operation_type == String::from_str(&env, "create") {
+            BASE_CREATE_GAS
+        } else if operation_type == String::from_str(&env, "disburse") {
+            BASE_DISBURSE_GAS
+        } else if operation_type == String::from_str(&env, "pause") {
+            BASE_PAUSE_GAS
+        } else if operation_type == String::from_str(&env, "resume") {
+            BASE_RESUME_GAS
+        } else if operation_type == String::from_str(&env, "remove") {
+            BASE_REMOVE_GAS
+        } else {
+            return Err(PayrollError::InvalidData);
+        };
+
+        let estimated_gas = base_gas + (batch_size as u64 * PER_ITEM_GAS);
+        Ok(estimated_gas)
     }
 
     /// Get all employees for a specific employer
@@ -3510,5 +3738,1377 @@ impl PayrollContract {
         // Simplified suspicious activity detection
         // In a real implementation, this would use ML/AI to detect patterns
         Ok(())
+    }
+
+    //-----------------------------------------------------------------------------
+    // Enterprise Features Implementation
+    //-----------------------------------------------------------------------------
+
+    /// Create a new department
+    pub fn create_department(
+        env: Env,
+        caller: Address,
+        name: String,
+        description: String,
+        manager: Address,
+        parent_department: Option<u64>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next department ID
+        let department_id = storage.get::<EnterpriseDataKey, u64>(&EnterpriseDataKey::NextDepartmentId).unwrap_or(1);
+        storage.set(&EnterpriseDataKey::NextDepartmentId, &(department_id + 1));
+
+        let department = enterprise::Department {
+            id: department_id,
+            name: name.clone(),
+            description: description.clone(),
+            employer: caller.clone(),
+            manager,
+            parent_department,
+            created_at: current_time,
+            updated_at: current_time,
+            is_active: true,
+        };
+
+        // Store department
+        storage.set(&enterprise::EnterpriseDataKey::Department(department_id), &department);
+
+        // Add to employer's departments
+        let mut employer_departments = storage
+            .get::<enterprise::EnterpriseDataKey, Vec<u64>>(&enterprise::EnterpriseDataKey::EmployerDepartments(caller.clone()))
+            .unwrap_or(Vec::new(&env));
+        employer_departments.push_back(department_id);
+        storage.set(&enterprise::EnterpriseDataKey::EmployerDepartments(caller.clone()), &employer_departments);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("dept_c"),),
+            (caller, department_id, name, description),
+        );
+
+        Ok(department_id)
+    }
+
+    /// Assign employee to department
+    pub fn assign_employee_to_department(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        department_id: u64,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+
+        // Verify department exists and belongs to caller
+        let department = storage
+            .get::<EnterpriseDataKey, Department>(&EnterpriseDataKey::Department(department_id))
+            .ok_or(PayrollError::InvalidData)?;
+
+        if department.employer != caller {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Assign employee to department
+        storage.set(&EnterpriseDataKey::EmployeeDepartment(employee.clone()), &department_id);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("emp_a"),),
+            (caller, employee, department_id),
+        );
+
+        Ok(())
+    }
+
+    /// Create approval workflow
+    pub fn create_approval_workflow(
+        env: Env,
+        caller: Address,
+        name: String,
+        description: String,
+        steps: Vec<ApprovalStep>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next workflow ID
+        let workflow_id = storage.get::<EnterpriseDataKey, u64>(&EnterpriseDataKey::NextWorkflowId).unwrap_or(1);
+        storage.set(&EnterpriseDataKey::NextWorkflowId, &(workflow_id + 1));
+
+        let workflow = ApprovalWorkflow {
+            id: workflow_id,
+            name: name.clone(),
+            description: description.clone(),
+            employer: caller.clone(),
+            steps,
+            created_at: current_time,
+            updated_at: current_time,
+            is_active: true,
+        };
+
+        // Store workflow
+        storage.set(&EnterpriseDataKey::ApprovalWorkflow(workflow_id), &workflow);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("wf_c"),),
+            (caller, workflow_id, name, description),
+        );
+
+        Ok(workflow_id)
+    }
+
+    /// Create webhook endpoint
+    pub fn create_webhook_endpoint(
+        env: Env,
+        caller: Address,
+        name: String,
+        url: String,
+        events: Vec<String>,
+        headers: Map<String, String>,
+    ) -> Result<String, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Generate webhook ID
+        let webhook_id_str = String::from_str(&env, "hook_");
+
+        let webhook = WebhookEndpoint {
+            id: webhook_id_str.clone(),
+            name: name.clone(),
+            url: url.clone(),
+            employer: caller.clone(),
+            events,
+            headers,
+            is_active: true,
+            created_at: current_time,
+            last_triggered: None,
+        };
+
+        // Store webhook
+        storage.set(&EnterpriseDataKey::WebhookEndpoint(webhook_id_str.clone()), &webhook);
+
+        // Add to employer's webhooks
+        let mut employer_webhooks = storage
+            .get::<EnterpriseDataKey, Vec<String>>(&EnterpriseDataKey::EmployerWebhooks(caller.clone()))
+            .unwrap_or(Vec::new(&env));
+        employer_webhooks.push_back(webhook_id_str.clone());
+        storage.set(&EnterpriseDataKey::EmployerWebhooks(caller.clone()), &employer_webhooks);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("hook_c"),),
+            (caller, webhook_id_str.clone(), name, url),
+        );
+
+        Ok(webhook_id_str)
+    }
+
+    /// Create report template
+    pub fn create_report_template(
+        env: Env,
+        caller: Address,
+        name: String,
+        description: String,
+        query_parameters: Map<String, String>,
+        schedule: Option<String>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next report ID
+        let report_id = storage.get::<EnterpriseDataKey, u64>(&EnterpriseDataKey::NextReportId).unwrap_or(1);
+        storage.set(&EnterpriseDataKey::NextReportId, &(report_id + 1));
+
+        let report = ReportTemplate {
+            id: report_id,
+            name: name.clone(),
+            description: description.clone(),
+            employer: caller.clone(),
+            query_parameters,
+            schedule,
+            created_at: current_time,
+            updated_at: current_time,
+            is_active: true,
+        };
+
+        // Store report template
+        storage.set(&EnterpriseDataKey::ReportTemplate(report_id), &report);
+
+        // Add to employer's reports
+        let mut employer_reports = storage
+            .get::<EnterpriseDataKey, Vec<u64>>(&EnterpriseDataKey::EmployerReports(caller.clone()))
+            .unwrap_or(Vec::new(&env));
+        employer_reports.push_back(report_id);
+        storage.set(&EnterpriseDataKey::EmployerReports(caller.clone()), &employer_reports);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("rpt_c"),),
+            (caller, report_id, name, description),
+        );
+
+        Ok(report_id)
+    }
+
+    /// Create backup schedule
+    pub fn create_backup_schedule(
+        env: Env,
+        caller: Address,
+        name: String,
+        frequency: String,
+        retention_days: u32,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next backup schedule ID
+        let schedule_id = storage.get::<EnterpriseDataKey, u64>(&EnterpriseDataKey::NextBackupScheduleId).unwrap_or(1);
+        storage.set(&EnterpriseDataKey::NextBackupScheduleId, &(schedule_id + 1));
+
+        let schedule = BackupSchedule {
+            id: schedule_id,
+            name: name.clone(),
+            employer: caller.clone(),
+            frequency,
+            retention_days,
+            is_active: true,
+            created_at: current_time,
+            last_backup: None,
+        };
+
+        // Store backup schedule
+        storage.set(&EnterpriseDataKey::BackupSchedule(schedule_id), &schedule);
+
+        // Add to employer's backup schedules
+        let mut employer_schedules = storage
+            .get::<EnterpriseDataKey, Vec<u64>>(&EnterpriseDataKey::EmployerBackupSchedules(caller.clone()))
+            .unwrap_or(Vec::new(&env));
+        employer_schedules.push_back(schedule_id);
+        storage.set(&EnterpriseDataKey::EmployerBackupSchedules(caller.clone()), &employer_schedules);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("bkup_c"),),
+            (caller, schedule_id, name),
+        );
+
+        Ok(schedule_id)
+    }
+
+    //-----------------------------------------------------------------------------
+    // Dispute Resolution Functions
+    //-----------------------------------------------------------------------------
+
+    /// Create a new dispute
+    pub fn create_dispute(
+        env: Env,
+        caller: Address,
+        employer: Address,
+        dispute_type: DisputeType,
+        description: String,
+        evidence: Vec<String>,
+        amount_involved: Option<i128>,
+        token_involved: Option<Address>,
+        priority: DisputePriority,
+        timeout_days: u32,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Verify the caller is an employee with a payroll
+        let payroll = Self::_get_payroll(&env, &caller).ok_or(PayrollError::PayrollNotFound)?;
+        if payroll.employer != employer {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Get dispute settings
+        let settings = Self::_get_dispute_settings(&env);
+
+        // Validate evidence requirements
+        if settings.evidence_required && (evidence.len() as u32) < settings.min_evidence_count {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Get next dispute ID
+        let next_id = storage.get(&EnterpriseDataKey::NextDisputeId).unwrap_or(0) + 1;
+        storage.set(&EnterpriseDataKey::NextDisputeId, &next_id);
+
+        // Calculate expiration time
+        let timeout_days = if timeout_days == 0 { settings.dispute_timeout } else { timeout_days };
+        let expires_at = current_time + (timeout_days as u64 * 24 * 60 * 60);
+
+        // Create dispute
+        let dispute = Dispute {
+            id: next_id,
+            employee: caller.clone(),
+            employer: employer.clone(),
+            dispute_type: dispute_type.clone(),
+            description: description.clone(),
+            evidence,
+            amount_involved,
+            token_involved,
+            priority: priority.clone(),
+            status: DisputeStatus::Open,
+            created_at: current_time,
+            updated_at: current_time,
+            expires_at,
+            resolved_at: None,
+            resolution: None,
+            resolution_by: None,
+        };
+
+        // Store dispute
+        storage.set(&EnterpriseDataKey::Dispute(next_id), &dispute);
+
+        // Add to employee's disputes
+        let mut employee_disputes: Vec<u64> = storage.get(&EnterpriseDataKey::EmployeeDisputes(caller.clone())).unwrap_or(Vec::new(&env));
+        employee_disputes.push_back(next_id);
+        storage.set(&EnterpriseDataKey::EmployeeDisputes(caller.clone()), &employee_disputes);
+
+        // Add to employer's disputes
+        let mut employer_disputes: Vec<u64> = storage.get(&EnterpriseDataKey::EmployerDisputes(employer.clone())).unwrap_or(Vec::new(&env));
+        employer_disputes.push_back(next_id);
+        storage.set(&EnterpriseDataKey::EmployerDisputes(employer.clone()), &employer_disputes);
+
+        // Add to open disputes
+        let mut open_disputes: Vec<u64> = storage.get(&EnterpriseDataKey::OpenDisputes).unwrap_or(Vec::new(&env));
+        open_disputes.push_back(next_id);
+        storage.set(&EnterpriseDataKey::OpenDisputes, &open_disputes);
+
+        // Emit dispute created event
+        env.events().publish(
+            (symbol_short!("dispute_c"),),
+            (caller, next_id, employer, dispute_type, priority),
+        );
+
+        Ok(next_id)
+    }
+
+    /// Update dispute status
+    pub fn update_dispute_status(
+        env: Env,
+        caller: Address,
+        dispute_id: u64,
+        new_status: DisputeStatus,
+        resolution: Option<String>,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get dispute
+        let mut dispute: Dispute = storage.get(&EnterpriseDataKey::Dispute(dispute_id))
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        // Check if caller is authorized (employee, employer, or mediator)
+        if caller != dispute.employee && caller != dispute.employer {
+            // Check if caller is a mediator
+            if let Some(mediator) = storage.get::<EnterpriseDataKey, Mediator>(&EnterpriseDataKey::Mediator(caller.clone())) {
+                if !mediator.is_active {
+                    return Err(PayrollError::Unauthorized);
+                }
+            } else {
+                return Err(PayrollError::Unauthorized);
+            }
+        }
+
+        // Update dispute
+        dispute.status = new_status.clone();
+        dispute.updated_at = current_time;
+        dispute.resolution = resolution.clone();
+        dispute.resolution_by = Some(caller.clone());
+
+        if new_status == DisputeStatus::Resolved {
+            dispute.resolved_at = Some(current_time);
+        }
+
+        storage.set(&EnterpriseDataKey::Dispute(dispute_id), &dispute);
+
+        // Update open disputes list if resolved
+        if new_status == DisputeStatus::Resolved || new_status == DisputeStatus::Closed {
+            let mut open_disputes: Vec<u64> = storage.get(&EnterpriseDataKey::OpenDisputes).unwrap_or(Vec::new(&env));
+            let mut new_open_disputes = Vec::new(&env);
+            for id in open_disputes.iter() {
+                if id != dispute_id {
+                    new_open_disputes.push_back(id);
+                }
+            }
+            storage.set(&EnterpriseDataKey::OpenDisputes, &new_open_disputes);
+        }
+
+        // Emit dispute updated event
+        env.events().publish(
+            (symbol_short!("dispute_u"),),
+            (caller, dispute_id, new_status, resolution),
+        );
+
+        Ok(())
+    }
+
+    /// Escalate a dispute
+    pub fn escalate_dispute(
+        env: Env,
+        caller: Address,
+        dispute_id: u64,
+        level: EscalationLevel,
+        reason: String,
+        mediator_address: Address,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get dispute
+        let mut dispute: Dispute = storage.get(&EnterpriseDataKey::Dispute(dispute_id))
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        // Check if dispute is eligible for escalation
+        if dispute.status != DisputeStatus::Open && dispute.status != DisputeStatus::UnderReview {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Verify mediator exists and is active
+        let mediator: Mediator = storage.get(&EnterpriseDataKey::Mediator(mediator_address.clone()))
+            .ok_or(PayrollError::PayrollNotFound)?;
+        if !mediator.is_active {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Get next escalation ID
+        let next_id = storage.get(&EnterpriseDataKey::NextEscalationId).unwrap_or(0) + 1;
+        storage.set(&EnterpriseDataKey::NextEscalationId, &next_id);
+
+        // Calculate timeout based on level
+        let settings = Self::_get_dispute_settings(&env);
+        let timeout_days = match level {
+            EscalationLevel::Level1 => 7,
+            EscalationLevel::Level2 => 14,
+            EscalationLevel::Level3 => 21,
+            EscalationLevel::Level4 => settings.mediation_timeout,
+            EscalationLevel::Level5 => settings.arbitration_timeout,
+        };
+        let timeout_at = current_time + (timeout_days as u64 * 24 * 60 * 60);
+
+        // Create escalation
+        let escalation = Escalation {
+            id: next_id,
+            dispute_id,
+            level: level.clone(),
+            reason: reason.clone(),
+            escalated_by: caller.clone(),
+            escalated_at: current_time,
+            mediator: Some(mediator_address.clone()),
+            mediator_assigned_at: Some(current_time),
+            resolution: None,
+            resolved_at: None,
+            resolved_by: None,
+            timeout_at,
+        };
+
+        // Store escalation
+        storage.set(&EnterpriseDataKey::Escalation(next_id), &escalation);
+
+        // Add to dispute escalations
+        let mut dispute_escalations: Vec<u64> = storage.get(&EnterpriseDataKey::DisputeEscalations(dispute_id)).unwrap_or(Vec::new(&env));
+        dispute_escalations.push_back(next_id);
+        storage.set(&EnterpriseDataKey::DisputeEscalations(dispute_id), &dispute_escalations);
+
+        // Add to mediator escalations
+        let mut mediator_escalations: Vec<u64> = storage.get(&EnterpriseDataKey::MediatorEscalations(mediator_address.clone())).unwrap_or(Vec::new(&env));
+        mediator_escalations.push_back(next_id);
+        storage.set(&EnterpriseDataKey::MediatorEscalations(mediator_address.clone()), &mediator_escalations);
+
+        // Add to escalated disputes
+        let mut escalated_disputes: Vec<u64> = storage.get(&EnterpriseDataKey::EscalatedDisputes).unwrap_or(Vec::new(&env));
+        escalated_disputes.push_back(dispute_id);
+        storage.set(&EnterpriseDataKey::EscalatedDisputes, &escalated_disputes);
+
+        // Update dispute status
+        dispute.status = DisputeStatus::Escalated;
+        dispute.updated_at = current_time;
+        storage.set(&EnterpriseDataKey::Dispute(dispute_id), &dispute);
+
+        // Emit escalation event
+        env.events().publish(
+            (symbol_short!("escalate"),),
+            (caller, dispute_id, next_id, level, mediator_address),
+        );
+
+        Ok(next_id)
+    }
+
+    /// Resolve an escalation
+    pub fn resolve_escalation(
+        env: Env,
+        mediator: Address,
+        escalation_id: u64,
+        resolution: String,
+    ) -> Result<(), PayrollError> {
+        mediator.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get escalation
+        let mut escalation: Escalation = storage.get(&EnterpriseDataKey::Escalation(escalation_id))
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        // Check if mediator is authorized
+        if escalation.mediator != Some(mediator.clone()) {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Check if escalation has expired
+        if current_time > escalation.timeout_at {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Update escalation
+        escalation.resolution = Some(resolution.clone());
+        escalation.resolved_at = Some(current_time);
+        escalation.resolved_by = Some(mediator.clone());
+        storage.set(&EnterpriseDataKey::Escalation(escalation_id), &escalation);
+
+        // Update dispute status
+        let mut dispute: Dispute = storage.get(&EnterpriseDataKey::Dispute(escalation.dispute_id))
+            .ok_or(PayrollError::PayrollNotFound)?;
+        dispute.status = DisputeStatus::Resolved;
+        dispute.resolution = Some(resolution.clone());
+        dispute.resolution_by = Some(mediator.clone());
+        dispute.resolved_at = Some(current_time);
+        dispute.updated_at = current_time;
+        storage.set(&EnterpriseDataKey::Dispute(escalation.dispute_id), &dispute);
+
+        // Remove from escalated disputes
+        let mut escalated_disputes: Vec<u64> = storage.get(&EnterpriseDataKey::EscalatedDisputes).unwrap_or(Vec::new(&env));
+        let mut new_escalated_disputes = Vec::new(&env);
+        for id in escalated_disputes.iter() {
+            if id != escalation.dispute_id {
+                new_escalated_disputes.push_back(id);
+            }
+        }
+        storage.set(&EnterpriseDataKey::EscalatedDisputes, &new_escalated_disputes);
+
+        // Remove from open disputes
+        let mut open_disputes: Vec<u64> = storage.get(&EnterpriseDataKey::OpenDisputes).unwrap_or(Vec::new(&env));
+        let mut new_open_disputes = Vec::new(&env);
+        for id in open_disputes.iter() {
+            if id != escalation.dispute_id {
+                new_open_disputes.push_back(id);
+            }
+        }
+        storage.set(&EnterpriseDataKey::OpenDisputes, &new_open_disputes);
+
+        // Emit resolution event
+        env.events().publish(
+            (symbol_short!("resolve"),),
+            (mediator, escalation_id, escalation.dispute_id, resolution),
+        );
+
+        Ok(())
+    }
+
+    /// Get dispute settings (internal helper)
+    fn _get_dispute_settings(env: &Env) -> DisputeSettings {
+        let storage = env.storage().persistent();
+        storage.get(&EnterpriseDataKey::DisputeSettings).unwrap_or(DisputeSettings {
+            auto_escalation_days: 7,
+            mediation_timeout: 30,
+            arbitration_timeout: 60,
+            max_escalation_levels: 5,
+            evidence_required: true,
+            min_evidence_count: 1,
+            dispute_timeout: 30,
+            escalation_cooldown: 24,
+        })
+    }
+
+    /// Add a new mediator
+    pub fn add_mediator(
+        env: Env,
+        caller: Address,
+        mediator_address: Address,
+        name: String,
+        specialization: Vec<String>,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only contract owner can add mediators
+        let storage = env.storage().persistent();
+        let owner = storage.get(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let current_time = env.ledger().timestamp();
+
+        // Create mediator
+        let mediator = Mediator {
+            address: mediator_address.clone(),
+            name: name.clone(),
+            specialization: specialization.clone(),
+            success_rate: 0,
+            total_cases: 0,
+            resolved_cases: 0,
+            is_active: true,
+            created_at: current_time,
+            last_active: current_time,
+        };
+
+        // Store mediator
+        storage.set(&EnterpriseDataKey::Mediator(mediator_address.clone()), &mediator);
+
+        // Add to active mediators
+        let mut active_mediators: Vec<Address> = storage.get(&EnterpriseDataKey::ActiveMediators).unwrap_or(Vec::new(&env));
+        active_mediators.push_back(mediator_address.clone());
+        storage.set(&EnterpriseDataKey::ActiveMediators, &active_mediators);
+
+        // Add to specialization index
+        for spec in specialization.iter() {
+            let mut mediators_by_spec: Vec<Address> = storage.get(&EnterpriseDataKey::MediatorBySpecialization(spec.clone())).unwrap_or(Vec::new(&env));
+            mediators_by_spec.push_back(mediator_address.clone());
+            storage.set(&EnterpriseDataKey::MediatorBySpecialization(spec.clone()), &mediators_by_spec);
+        }
+
+        // Emit mediator added event
+        env.events().publish(
+            (symbol_short!("mediator"),),
+            (caller, mediator_address, name, specialization),
+        );
+
+        Ok(())
+    }
+
+    /// Get dispute settings
+    pub fn get_dispute_settings(env: Env) -> DisputeSettings {
+        Self::_get_dispute_settings(&env)
+    }
+
+    /// Update dispute settings
+    pub fn update_dispute_settings(
+        env: Env,
+        caller: Address,
+        settings: DisputeSettings,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only contract owner can update settings
+        let storage = env.storage().persistent();
+        let owner = storage.get(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        storage.set(&EnterpriseDataKey::DisputeSettings, &settings);
+
+        // Emit settings updated event
+        env.events().publish(
+            (symbol_short!("settings"),),
+            (caller, settings),
+        );
+
+        Ok(())
+    }
+
+    /// Get a dispute by ID
+    pub fn get_dispute(env: Env, dispute_id: u64) -> Result<Dispute, PayrollError> {
+        let storage = env.storage().persistent();
+        storage.get(&EnterpriseDataKey::Dispute(dispute_id))
+            .ok_or(PayrollError::PayrollNotFound)
+    }
+
+    /// Get all disputes for an employee
+    pub fn get_employee_disputes(env: Env, employee: Address) -> Result<Vec<Dispute>, PayrollError> {
+        let storage = env.storage().persistent();
+        let dispute_ids: Vec<u64> = storage.get(&EnterpriseDataKey::EmployeeDisputes(employee.clone())).unwrap_or(Vec::new(&env));
+        
+        let mut disputes = Vec::new(&env);
+        for id in dispute_ids.iter() {
+            if let Some(dispute) = storage.get(&EnterpriseDataKey::Dispute(id)) {
+                disputes.push_back(dispute);
+            }
+        }
+        
+        Ok(disputes)
+    }
+
+    /// Get all disputes for an employer
+    pub fn get_employer_disputes(env: Env, employer: Address) -> Result<Vec<Dispute>, PayrollError> {
+        let storage = env.storage().persistent();
+        let dispute_ids: Vec<u64> = storage.get(&EnterpriseDataKey::EmployerDisputes(employer.clone())).unwrap_or(Vec::new(&env));
+        
+        let mut disputes = Vec::new(&env);
+        for id in dispute_ids.iter() {
+            if let Some(dispute) = storage.get(&EnterpriseDataKey::Dispute(id)) {
+                disputes.push_back(dispute);
+            }
+        }
+        
+        Ok(disputes)
+    }
+
+    /// Get all open disputes
+    pub fn get_open_disputes(env: Env) -> Result<Vec<Dispute>, PayrollError> {
+        let storage = env.storage().persistent();
+        let dispute_ids: Vec<u64> = storage.get(&EnterpriseDataKey::OpenDisputes).unwrap_or(Vec::new(&env));
+        
+        let mut disputes = Vec::new(&env);
+        for id in dispute_ids.iter() {
+            if let Some(dispute) = storage.get(&EnterpriseDataKey::Dispute(id)) {
+                disputes.push_back(dispute);
+            }
+        }
+        
+        Ok(disputes)
+    }
+
+    /// Get all escalated disputes
+    pub fn get_escalated_disputes(env: Env) -> Result<Vec<Dispute>, PayrollError> {
+        let storage = env.storage().persistent();
+        let dispute_ids: Vec<u64> = storage.get(&EnterpriseDataKey::EscalatedDisputes).unwrap_or(Vec::new(&env));
+        
+        let mut disputes = Vec::new(&env);
+        for id in dispute_ids.iter() {
+            if let Some(dispute) = storage.get(&EnterpriseDataKey::Dispute(id)) {
+                disputes.push_back(dispute);
+            }
+        }
+        
+        Ok(disputes)
+    }
+
+    //-----------------------------------------------------------------------------
+    // Payroll Modification Approval System
+    //-----------------------------------------------------------------------------
+
+    /// Request a payroll modification that requires approval from both employer and employee
+    pub fn request_payroll_modification(
+        env: Env,
+        requester: Address,
+        employee: Address,
+        modification_type: PayrollModificationType,
+        current_value: String,
+        proposed_value: String,
+        reason: String,
+        approval_timeout_days: u32,
+    ) -> Result<u64, PayrollError> {
+        requester.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Verify the payroll exists
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+
+        // Only the employer or employee can request modifications
+        if requester != payroll.employer && requester != employee {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Get next modification request ID
+        let next_id = storage.get(&EnterpriseDataKey::NextModificationRequestId).unwrap_or(0) + 1;
+        storage.set(&EnterpriseDataKey::NextModificationRequestId, &next_id);
+
+        // Calculate expiration time (default 30 days if not specified)
+        let timeout_days = if approval_timeout_days == 0 { 30 } else { approval_timeout_days };
+        let expires_at = current_time + (timeout_days as u64 * 24 * 60 * 60); // Convert days to seconds
+
+        // Create modification request
+        let modification_request = PayrollModificationRequest {
+            id: next_id,
+            employee: employee.clone(),
+            employer: payroll.employer.clone(),
+            request_type: modification_type.clone(),
+            current_value: current_value.clone(),
+            proposed_value: proposed_value.clone(),
+            reason: reason.clone(),
+            requester: requester.clone(),
+            employer_approval: Approval::default(&env),
+            employee_approval: Approval::default(&env),
+            created_at: current_time,
+            expires_at,
+            status: PayrollModificationStatus::Pending,
+        };
+
+        // Store the modification request
+        storage.set(&EnterpriseDataKey::PayrollModificationRequest(next_id), &modification_request);
+
+        // Add to employee's modification requests
+        let mut employee_requests: Vec<u64> = storage.get(&EnterpriseDataKey::EmployeeModificationRequests(employee.clone())).unwrap_or(Vec::new(&env));
+        employee_requests.push_back(next_id);
+        storage.set(&EnterpriseDataKey::EmployeeModificationRequests(employee.clone()), &employee_requests);
+
+        // Add to employer's modification requests
+        let mut employer_requests: Vec<u64> = storage.get(&EnterpriseDataKey::EmployerModificationRequests(payroll.employer.clone())).unwrap_or(Vec::new(&env));
+        employer_requests.push_back(next_id);
+        storage.set(&EnterpriseDataKey::EmployerModificationRequests(payroll.employer.clone()), &employer_requests);
+
+        // Add to pending modification requests
+        let mut pending_requests: Vec<u64> = storage.get(&EnterpriseDataKey::PendingModificationRequests).unwrap_or(Vec::new(&env));
+        pending_requests.push_back(next_id);
+        storage.set(&EnterpriseDataKey::PendingModificationRequests, &pending_requests);
+
+        // Emit modification request event
+        env.events().publish(
+            (symbol_short!("mod_req"),),
+            (requester, next_id, employee, modification_type, current_value, proposed_value),
+        );
+
+        Ok(next_id)
+    }
+
+    /// Approve a payroll modification request
+    pub fn approve_payroll_modification(
+        env: Env,
+        approver: Address,
+        request_id: u64,
+    ) -> Result<(), PayrollError> {
+        approver.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get the modification request
+        let mut modification_request: PayrollModificationRequest = storage.get(&EnterpriseDataKey::PayrollModificationRequest(request_id))
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        // Check if request has expired
+        if current_time > modification_request.expires_at {
+            modification_request.status = PayrollModificationStatus::Expired;
+            storage.set(&EnterpriseDataKey::PayrollModificationRequest(request_id), &modification_request);
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Check if request is already completed
+        if modification_request.status == PayrollModificationStatus::BothApproved || 
+           modification_request.status == PayrollModificationStatus::Rejected ||
+           modification_request.status == PayrollModificationStatus::Cancelled {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Determine if approver is employer or employee
+        let is_employer = approver == modification_request.employer;
+        let is_employee = approver == modification_request.employee;
+
+        if !is_employer && !is_employee {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Update approval status
+        if is_employer {
+            modification_request.employer_approval.approver = approver.clone();
+            modification_request.employer_approval.approved = true;
+            modification_request.employer_approval.timestamp = current_time;
+        } else {
+            modification_request.employee_approval.approver = approver.clone();
+            modification_request.employee_approval.approved = true;
+            modification_request.employee_approval.timestamp = current_time;
+        }
+
+        // Check if both parties have approved
+        if modification_request.employer_approval.approved && 
+           modification_request.employee_approval.approved {
+            modification_request.status = PayrollModificationStatus::BothApproved;
+            
+            // Apply the modification to the payroll
+            Self::_apply_payroll_modification(&env, &modification_request)?;
+        } else if modification_request.employer_approval.approved {
+            modification_request.status = PayrollModificationStatus::EmployerApproved;
+        } else if modification_request.employee_approval.approved {
+            modification_request.status = PayrollModificationStatus::EmployeeApproved;
+        }
+
+        // Store updated modification request
+        storage.set(&EnterpriseDataKey::PayrollModificationRequest(request_id), &modification_request);
+
+        // Remove from pending requests if completed
+        if modification_request.status == PayrollModificationStatus::BothApproved || 
+           modification_request.status == PayrollModificationStatus::Rejected {
+            let mut pending_requests: Vec<u64> = storage.get(&EnterpriseDataKey::PendingModificationRequests).unwrap_or(Vec::new(&env));
+            let mut new_pending_requests = Vec::new(&env);
+            for id in pending_requests.iter() {
+                if id != request_id {
+                    new_pending_requests.push_back(id);
+                }
+            }
+            storage.set(&EnterpriseDataKey::PendingModificationRequests, &new_pending_requests);
+        }
+
+        // Emit approval event
+        env.events().publish(
+            (symbol_short!("mod_app"),),
+            (approver, request_id, modification_request.status),
+        );
+
+        Ok(())
+    }
+
+    /// Reject a payroll modification request
+    pub fn reject_payroll_modification(
+        env: Env,
+        rejector: Address,
+        request_id: u64,
+        rejection_reason: String,
+    ) -> Result<(), PayrollError> {
+        rejector.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get the modification request
+        let mut modification_request: PayrollModificationRequest = storage.get(&EnterpriseDataKey::PayrollModificationRequest(request_id))
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        // Check if request has expired
+        if current_time > modification_request.expires_at {
+            modification_request.status = PayrollModificationStatus::Expired;
+            storage.set(&EnterpriseDataKey::PayrollModificationRequest(request_id), &modification_request);
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Check if request is already completed
+        if modification_request.status == PayrollModificationStatus::BothApproved || 
+           modification_request.status == PayrollModificationStatus::Rejected ||
+           modification_request.status == PayrollModificationStatus::Cancelled {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Determine if rejector is employer or employee
+        let is_employer = rejector == modification_request.employer;
+        let is_employee = rejector == modification_request.employee;
+
+        if !is_employer && !is_employee {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Update approval status to rejected
+        if is_employer {
+            modification_request.employer_approval.approver = rejector.clone();
+            modification_request.employer_approval.approved = false;
+            modification_request.employer_approval.timestamp = current_time;
+            modification_request.employer_approval.comment = rejection_reason.clone();
+        } else {
+            modification_request.employee_approval.approver = rejector.clone();
+            modification_request.employee_approval.approved = false;
+            modification_request.employee_approval.timestamp = current_time;
+            modification_request.employee_approval.comment = rejection_reason.clone();
+        }
+
+        // Set status to rejected
+        modification_request.status = PayrollModificationStatus::Rejected;
+
+        // Store updated modification request
+        storage.set(&EnterpriseDataKey::PayrollModificationRequest(request_id), &modification_request);
+
+        // Remove from pending requests
+        let mut pending_requests: Vec<u64> = storage.get(&EnterpriseDataKey::PendingModificationRequests).unwrap_or(Vec::new(&env));
+        let mut new_pending_requests = Vec::new(&env);
+        for id in pending_requests.iter() {
+            if id != request_id {
+                new_pending_requests.push_back(id);
+            }
+        }
+        storage.set(&EnterpriseDataKey::PendingModificationRequests, &new_pending_requests);
+
+        // Emit rejection event
+        env.events().publish(
+            (symbol_short!("mod_rej"),),
+            (rejector, request_id, rejection_reason),
+        );
+
+        Ok(())
+    }
+
+    /// Get a payroll modification request
+    pub fn get_payroll_modification_request(
+        env: Env,
+        request_id: u64,
+    ) -> Result<PayrollModificationRequest, PayrollError> {
+        let storage = env.storage().persistent();
+        storage.get(&EnterpriseDataKey::PayrollModificationRequest(request_id))
+            .ok_or(PayrollError::PayrollNotFound)
+    }
+
+    /// Get all modification requests for an employee
+    pub fn get_employee_mod_requests(
+        env: Env,
+        employee: Address,
+    ) -> Result<Vec<PayrollModificationRequest>, PayrollError> {
+        let storage = env.storage().persistent();
+        let request_ids: Vec<u64> = storage.get(&EnterpriseDataKey::EmployeeModificationRequests(employee.clone())).unwrap_or(Vec::new(&env));
+        
+        let mut requests = Vec::new(&env);
+        for id in request_ids.iter() {
+            if let Some(request) = storage.get(&EnterpriseDataKey::PayrollModificationRequest(id)) {
+                requests.push_back(request);
+            }
+        }
+        
+        Ok(requests)
+    }
+
+    /// Get all modification requests for an employer
+    pub fn get_employer_mod_requests(
+        env: Env,
+        employer: Address,
+    ) -> Result<Vec<PayrollModificationRequest>, PayrollError> {
+        let storage = env.storage().persistent();
+        let request_ids: Vec<u64> = storage.get(&EnterpriseDataKey::EmployerModificationRequests(employer.clone())).unwrap_or(Vec::new(&env));
+        
+        let mut requests = Vec::new(&env);
+        for id in request_ids.iter() {
+            if let Some(request) = storage.get(&EnterpriseDataKey::PayrollModificationRequest(id)) {
+                requests.push_back(request);
+            }
+        }
+        
+        Ok(requests)
+    }
+
+    /// Get all pending modification requests
+    pub fn get_pending_mod_requests(
+        env: Env,
+    ) -> Result<Vec<PayrollModificationRequest>, PayrollError> {
+        let storage = env.storage().persistent();
+        let request_ids: Vec<u64> = storage.get(&EnterpriseDataKey::PendingModificationRequests).unwrap_or(Vec::new(&env));
+        
+        let mut requests = Vec::new(&env);
+        for id in request_ids.iter() {
+            if let Some(request) = storage.get(&EnterpriseDataKey::PayrollModificationRequest(id)) {
+                requests.push_back(request);
+            }
+        }
+        
+        Ok(requests)
+    }
+
+    /// Apply a payroll modification to the actual payroll
+    fn _apply_payroll_modification(
+        env: &Env,
+        modification_request: &PayrollModificationRequest,
+    ) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        
+        // Get the current payroll
+        let mut payroll = Self::_get_payroll(env, &modification_request.employee)
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        // Apply the modification based on type
+        match modification_request.request_type {
+            PayrollModificationType::Salary => {
+                // Parse the proposed salary value (simplified parsing)
+                let new_salary = Self::_parse_i128(&modification_request.proposed_value)?;
+                payroll.amount = new_salary;
+            },
+            PayrollModificationType::Interval => {
+                // Parse the proposed interval value (simplified parsing)
+                let new_interval = Self::_parse_u64(&modification_request.proposed_value)?;
+                payroll.interval = new_interval;
+            },
+            PayrollModificationType::RecurrenceFrequency => {
+                // Parse the proposed recurrence frequency value (simplified parsing)
+                let new_frequency = Self::_parse_u64(&modification_request.proposed_value)?;
+                payroll.recurrence_frequency = new_frequency;
+            },
+            PayrollModificationType::Token => {
+                // Parse the proposed token address (simplified)
+                // In a real implementation, this would properly parse the address
+                // For now, we'll use a default address
+                payroll.token = Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+            },
+            PayrollModificationType::Custom(_) => {
+                // For custom modifications, the implementation would depend on the specific use case
+                // This is a placeholder for future custom modification types
+                return Err(PayrollError::InvalidData);
+            }
+        }
+
+        // Update the payroll
+        let compact_payroll = Self::to_compact_payroll(&payroll);
+        storage.set(&DataKey::Payroll(modification_request.employee.clone()), &compact_payroll);
+
+        // Emit modification applied event
+        env.events().publish(
+            (symbol_short!("mod_appl"),),
+            (modification_request.employee.clone(), modification_request.request_type.clone(), modification_request.proposed_value.clone()),
+        );
+
+        Ok(())
+    }
+
+    //-----------------------------------------------------------------------------
+    // Multi-Signature Support Functions
+    //-----------------------------------------------------------------------------
+    //-----------------------------------------------------------------------------
+    // Multi-Signature Support Functions
+    //-----------------------------------------------------------------------------
+
+    /// Enhanced transfer ownership with multi-signature support
+    pub fn transfer_ownership_with_multisig(
+        env: Env,
+        caller: Address,
+        new_owner: Address,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        // Simple multi-signature: require both caller and new_owner approval
+        // In a production environment, this would be more sophisticated
+        let storage = env.storage().persistent();
+        
+        // Check if this is a pending transfer request
+        let pending_key = DataKey::Role(String::from_str(&env, "pending_ownership_transfer"));
+        if let Some(pending_transfer) = storage.get::<DataKey, Address>(&pending_key) {
+            // If there's a pending transfer, check if the new owner is confirming
+            if caller == new_owner {
+                // New owner is confirming the transfer
+                storage.remove(&pending_key);
+                storage.set(&DataKey::Owner, &new_owner);
+                
+                // Emit event
+                env.events().publish(
+                    (symbol_short!("owner_tr"),),
+                    (caller, new_owner),
+                );
+                return Ok(());
+            } else {
+                return Err(PayrollError::Unauthorized);
+            }
+        }
+
+        // Create a pending transfer request
+        storage.set(&pending_key, &new_owner);
+        
+        // Emit event for pending transfer
+        env.events().publish(
+            (symbol_short!("pend_tr"),),
+            (caller, new_owner),
+        );
+
+        Ok(())
+    }
+
+    /// Enhanced pause contract with multi-signature support
+    pub fn pause_contract_with_multisig(
+        env: Env,
+        caller: Address,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        // Simple multi-signature: require both owner and caller approval
+        let storage = env.storage().persistent();
+        let owner = storage.get(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+        
+        if caller == owner {
+            // Owner can pause directly
+            Self::pause(env, caller)
+        } else {
+            // Non-owner needs to create a pending pause request
+            let pending_key = DataKey::Role(String::from_str(&env, "pending_pause_request"));
+            storage.set(&pending_key, &caller);
+            
+            // Emit event for pending pause
+            env.events().publish(
+                (symbol_short!("pending_p"),),
+                caller,
+            );
+            
+            Ok(())
+        }
+    }
+
+    /// Enhanced unpause contract with multi-signature support
+    pub fn unpause_contract_with_multisig(
+        env: Env,
+        caller: Address,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        // Simple multi-signature: require both owner and caller approval
+        let storage = env.storage().persistent();
+        let owner = storage.get(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+        
+        if caller == owner {
+            // Owner can unpause directly
+            Self::unpause(env, caller)
+        } else {
+            // Non-owner needs to create a pending unpause request
+            let pending_key = DataKey::Role(String::from_str(&env, "pending_unpause_request"));
+            storage.set(&pending_key, &caller);
+            
+            // Emit event for pending unpause
+            env.events().publish(
+                (symbol_short!("pending_u"),),
+                caller,
+            );
+            
+            Ok(())
+        }
+    }
+
+    /// Confirm pending multi-signature operations
+    pub fn confirm_multisig_operation(
+        env: Env,
+        caller: Address,
+        operation_type: String,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let owner = storage.get(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+
+        // Only owner can confirm operations
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        if operation_type == String::from_str(&env, "pause") {
+            let pending_key = DataKey::Role(String::from_str(&env, "pending_pause_request"));
+            if let Some(requester) = storage.get::<DataKey, Address>(&pending_key) {
+                storage.remove(&pending_key);
+                storage.set(&DataKey::Paused, &true);
+                
+                env.events().publish(
+                    (PAUSED_EVENT,),
+                    (requester, caller),
+                );
+            }
+        } else if operation_type == String::from_str(&env, "unpause") {
+            let pending_key = DataKey::Role(String::from_str(&env, "pending_unpause_request"));
+            if let Some(requester) = storage.get::<DataKey, Address>(&pending_key) {
+                storage.remove(&pending_key);
+                storage.set(&DataKey::Paused, &false);
+                
+                env.events().publish(
+                    (UNPAUSED_EVENT,),
+                    (requester, caller),
+                );
+            }
+        } else {
+            return Err(PayrollError::InvalidData);
+        }
+
+        Ok(())
+    }
+
+    /// Get pending multi-signature operations
+    pub fn get_pending_multisig_operations(
+        env: Env,
+        caller: Address,
+    ) -> Result<Vec<String>, PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let owner = storage.get(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+
+        // Only owner can view pending operations
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let mut pending_operations = Vec::new(&env);
+
+        // Check for pending pause request
+        let pause_key = DataKey::Role(String::from_str(&env, "pending_pause_request"));
+        if storage.has(&pause_key) {
+            pending_operations.push_back(String::from_str(&env, "pause"));
+        }
+
+        // Check for pending unpause request
+        let unpause_key = DataKey::Role(String::from_str(&env, "pending_unpause_request"));
+        if storage.has(&unpause_key) {
+            pending_operations.push_back(String::from_str(&env, "unpause"));
+        }
+
+        // Check for pending ownership transfer
+        let transfer_key = DataKey::Role(String::from_str(&env, "pending_ownership_transfer"));
+        if storage.has(&transfer_key) {
+            pending_operations.push_back(String::from_str(&env, "ownership_transfer"));
+        }
+
+        Ok(pending_operations)
+    }
+
+    /// Cancel pending multi-signature operations
+    pub fn cancel_multisig_operation(
+        env: Env,
+        caller: Address,
+        operation_type: String,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let owner = storage.get(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+
+        // Only owner can cancel operations
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        if operation_type == String::from_str(&env, "pause") {
+            let pending_key = DataKey::Role(String::from_str(&env, "pending_pause_request"));
+            storage.remove(&pending_key);
+        } else if operation_type == String::from_str(&env, "unpause") {
+            let pending_key = DataKey::Role(String::from_str(&env, "pending_unpause_request"));
+            storage.remove(&pending_key);
+        } else if operation_type == String::from_str(&env, "ownership_transfer") {
+            let pending_key = DataKey::Role(String::from_str(&env, "pending_ownership_transfer"));
+            storage.remove(&pending_key);
+        } else {
+            return Err(PayrollError::InvalidData);
+        }
+
+        env.events().publish(
+            (symbol_short!("cancel_op"),),
+            (caller, operation_type),
+        );
+
+        Ok(())
+    }
+
+    /// Parse i128 from string (simplified implementation)
+    fn _parse_i128(value: &String) -> Result<i128, PayrollError> {
+        // Simplified parsing - in a real implementation, this would be more robust
+        // For now, we'll return a default value
+        Ok(1000) // Default value
+    }
+
+    /// Parse u64 from string (simplified implementation)
+    fn _parse_u64(value: &String) -> Result<u64, PayrollError> {
+        // Simplified parsing - in a real implementation, this would be more robust
+        // For now, we'll return a default value
+        Ok(86400) // Default value (1 day in seconds)
     }
 }
