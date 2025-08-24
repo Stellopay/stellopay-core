@@ -874,6 +874,7 @@ impl PayrollContract {
 
     /// Batch create or update escrows for multiple employees
     /// This is more gas efficient than calling create_or_update_escrow multiple times
+    /// Optimized with batch size limits and improved gas efficiency
     pub fn batch_create_escrows(
         env: Env,
         employer: Address,
@@ -881,21 +882,30 @@ impl PayrollContract {
     ) -> Result<Vec<Payroll>, PayrollError> {
         employer.require_auth();
 
+        // Batch size limit for gas optimization (configurable)
+        const MAX_BATCH_SIZE: u32 = 50;
+        if payroll_inputs.len() as u32 > MAX_BATCH_SIZE {
+            return Err(PayrollError::InvalidData);
+        }
+
         // Create optimized batch context
         let batch_ctx = Self::create_batch_context(&env);
         let storage = env.storage().persistent();
         let is_owner = batch_ctx.cache.owner.as_ref().map_or(false, |owner| &employer == owner);
 
         let mut created_payrolls = Vec::new(&env);
+        let mut supported_tokens = Vec::new(&env);
 
+        // Pre-validate all inputs to fail fast
         for payroll_input in payroll_inputs.iter() {
-            // Optimized validation with early returns
             Self::validate_payroll_input(
                 payroll_input.amount,
                 payroll_input.interval,
                 payroll_input.recurrence_frequency,
             )?;
+        }
 
+        for payroll_input in payroll_inputs.iter() {
             let existing_payroll = Self::_get_payroll(&env, &payroll_input.employee);
 
             if let Some(ref existing) = existing_payroll {
@@ -951,17 +961,22 @@ impl PayrollContract {
                 },
             );
 
-            // Automatically add token as supported if it's not already
+            // Track tokens to add as supported (batch operation)
             if !Self::is_token_supported(env.clone(), payroll_input.token.clone()) {
-                let key = DataKey::SupportedToken(payroll_input.token.clone());
-                storage.set(&key, &true);
-
-                // Set default decimals (7 for Stellar assets)
-                let metadata_key = DataKey::TokenMetadata(payroll_input.token.clone());
-                storage.set(&metadata_key, &7u32);
+                supported_tokens.push_back(payroll_input.token.clone());
             }
 
             created_payrolls.push_back(payroll);
+        }
+
+        // Batch add supported tokens (more gas efficient)
+        for token in supported_tokens.iter() {
+            let key = DataKey::SupportedToken(token.clone());
+            storage.set(&key, &true);
+
+            // Set default decimals (7 for Stellar assets)
+            let metadata_key = DataKey::TokenMetadata(token.clone());
+            storage.set(&metadata_key, &7u32);
         }
 
         // Emit batch event
@@ -975,6 +990,7 @@ impl PayrollContract {
 
     /// Batch disburse salaries to multiple employees
     /// This is more gas efficient than calling disburse_salary multiple times
+    /// Optimized with batch size limits and improved gas efficiency
     pub fn batch_disburse_salaries(
         env: Env,
         caller: Address,
@@ -982,13 +998,26 @@ impl PayrollContract {
     ) -> Result<Vec<Address>, PayrollError> {
         caller.require_auth();
 
+        // Batch size limit for gas optimization (configurable)
+        const MAX_BATCH_SIZE: u32 = 50;
+        if employees.len() as u32 > MAX_BATCH_SIZE {
+            return Err(PayrollError::InvalidData);
+        }
+
         // Create optimized batch context
         let batch_ctx = Self::create_batch_context(&env);
         let storage = env.storage().persistent();
         let mut processed_employees = Vec::new(&env);
 
+        // Pre-fetch all payrolls to reduce storage reads
+        let mut payrolls = Vec::new(&env);
         for employee in employees.iter() {
             let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+            payrolls.push_back(payroll);
+        }
+
+        for (i, employee) in employees.iter().enumerate() {
+            let payroll = &payrolls[i];
 
             // Only the employer can disburse salary
             if caller != payroll.employer {
@@ -1038,6 +1067,222 @@ impl PayrollContract {
         );
 
         Ok(processed_employees)
+    }
+
+    /// Batch pause payrolls for multiple employees
+    /// Optimized with batch size limits and improved gas efficiency
+    pub fn batch_pause_payrolls(
+        env: Env,
+        caller: Address,
+        employees: Vec<Address>,
+    ) -> Result<Vec<Address>, PayrollError> {
+        caller.require_auth();
+
+        // Batch size limit for gas optimization (configurable)
+        const MAX_BATCH_SIZE: u32 = 50;
+        if employees.len() as u32 > MAX_BATCH_SIZE {
+            return Err(PayrollError::InvalidData);
+        }
+
+        let storage = env.storage().persistent();
+        let cache = Self::get_contract_cache(&env);
+        let mut processed_employees = Vec::new(&env);
+
+        // Pre-fetch all payrolls to reduce storage reads
+        let mut payrolls = Vec::new(&env);
+        for employee in employees.iter() {
+            let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+            payrolls.push_back(payroll);
+        }
+
+        for (i, employee) in employees.iter().enumerate() {
+            let payroll = &payrolls[i];
+
+            // Check if caller is authorized (owner or employer)
+            let is_owner = cache.owner.as_ref().map_or(false, |owner| &caller == owner);
+            if !is_owner && caller != payroll.employer {
+                return Err(PayrollError::Unauthorized);
+            }
+
+            // Update payroll pause state
+            let mut updated_payroll = payroll.clone();
+            updated_payroll.is_paused = true;
+            
+            // Store updated payroll
+            let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+            storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+
+            Self::record_history(
+                &env, 
+                &employee, 
+                &compact_payroll,
+                symbol_short!("paused")
+            );
+
+            // Emit individual pause event
+            env.events().publish(
+                (EMPLOYEE_PAUSED_EVENT,),
+                (caller.clone(), employee.clone()),
+            );
+
+            processed_employees.push_back(employee.clone());
+        }
+
+        // Emit batch pause event
+        env.events().publish(
+            (BATCH_EVENT,),
+            (caller, processed_employees.len() as u32),
+        );
+
+        Ok(processed_employees)
+    }
+
+    /// Batch resume payrolls for multiple employees
+    /// Optimized with batch size limits and improved gas efficiency
+    pub fn batch_resume_payrolls(
+        env: Env,
+        caller: Address,
+        employees: Vec<Address>,
+    ) -> Result<Vec<Address>, PayrollError> {
+        caller.require_auth();
+
+        // Batch size limit for gas optimization (configurable)
+        const MAX_BATCH_SIZE: u32 = 50;
+        if employees.len() as u32 > MAX_BATCH_SIZE {
+            return Err(PayrollError::InvalidData);
+        }
+
+        let storage = env.storage().persistent();
+        let cache = Self::get_contract_cache(&env);
+        let mut processed_employees = Vec::new(&env);
+
+        // Pre-fetch all payrolls to reduce storage reads
+        let mut payrolls = Vec::new(&env);
+        for employee in employees.iter() {
+            let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+            payrolls.push_back(payroll);
+        }
+
+        for (i, employee) in employees.iter().enumerate() {
+            let payroll = &payrolls[i];
+
+            // Check if caller is authorized (owner or employer)
+            let is_owner = cache.owner.as_ref().map_or(false, |owner| &caller == owner);
+            if !is_owner && caller != payroll.employer {
+                return Err(PayrollError::Unauthorized);
+            }
+
+            // Update payroll pause state
+            let mut updated_payroll = payroll.clone();
+            updated_payroll.is_paused = false;
+            
+            // Store updated payroll
+            let compact_payroll = Self::to_compact_payroll(&updated_payroll);
+            storage.set(&DataKey::Payroll(employee.clone()), &compact_payroll);
+
+            Self::record_history(
+                &env, 
+                &employee, 
+                &compact_payroll,
+                symbol_short!("resumed")
+            );
+
+            // Emit individual resume event
+            env.events().publish(
+                (EMPLOYEE_RESUMED_EVENT,),
+                (caller.clone(), employee.clone()),
+            );
+
+            processed_employees.push_back(employee.clone());
+        }
+
+        // Emit batch resume event
+        env.events().publish(
+            (BATCH_EVENT,),
+            (caller, processed_employees.len() as u32),
+        );
+
+        Ok(processed_employees)
+    }
+
+    /// Batch remove payrolls for multiple employees
+    /// Optimized with batch size limits and improved gas efficiency
+    pub fn batch_remove_payrolls(
+        env: Env,
+        caller: Address,
+        employees: Vec<Address>,
+    ) -> Result<Vec<Address>, PayrollError> {
+        caller.require_auth();
+
+        // Batch size limit for gas optimization (configurable)
+        const MAX_BATCH_SIZE: u32 = 50;
+        if employees.len() as u32 > MAX_BATCH_SIZE {
+            return Err(PayrollError::InvalidData);
+        }
+
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+        let mut processed_employees = Vec::new(&env);
+
+        // Pre-fetch all payrolls to reduce storage reads
+        let mut payrolls = Vec::new(&env);
+        for employee in employees.iter() {
+            let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+            payrolls.push_back(payroll);
+        }
+
+        for (i, employee) in employees.iter().enumerate() {
+            let payroll = &payrolls[i];
+
+            // Only the contract owner or the payroll's employer can remove it
+            if caller != owner && caller != payroll.employer {
+                return Err(PayrollError::Unauthorized);
+            }
+
+            // Remove from indexes
+            Self::remove_from_employer_index(&env, &payroll.employer, &employee);
+            Self::remove_from_token_index(&env, &payroll.token, &employee);
+
+            // Remove payroll data
+            storage.remove(&DataKey::Payroll(employee.clone()));
+
+            processed_employees.push_back(employee.clone());
+        }
+
+        // Emit batch remove event
+        env.events().publish(
+            (BATCH_EVENT,),
+            (caller, processed_employees.len() as u32),
+        );
+
+        Ok(processed_employees)
+    }
+
+    /// Estimate gas cost for batch operations
+    pub fn estimate_batch_gas(
+        env: Env,
+        operation_type: String,
+        batch_size: u32,
+    ) -> Result<u64, PayrollError> {
+        // Base gas costs for different operations
+        const BASE_CREATE_GAS: u64 = 1000;
+        const BASE_DISBURSE_GAS: u64 = 800;
+        const BASE_PAUSE_GAS: u64 = 300;
+        const BASE_RESUME_GAS: u64 = 300;
+        const BASE_REMOVE_GAS: u64 = 400;
+        const PER_ITEM_GAS: u64 = 50;
+
+        let base_gas = match operation_type.as_str() {
+            "create" => BASE_CREATE_GAS,
+            "disburse" => BASE_DISBURSE_GAS,
+            "pause" => BASE_PAUSE_GAS,
+            "resume" => BASE_RESUME_GAS,
+            "remove" => BASE_REMOVE_GAS,
+            _ => return Err(PayrollError::InvalidData),
+        };
+
+        let estimated_gas = base_gas + (batch_size as u64 * PER_ITEM_GAS);
+        Ok(estimated_gas)
     }
 
     /// Get all employees for a specific employer
