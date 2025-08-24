@@ -6,7 +6,7 @@ use soroban_sdk::{
 use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT};
 use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, CompactPayrollHistoryEntry, PayrollTemplate, TemplatePreset, PayrollBackup, BackupData, BackupMetadata, BackupType, BackupStatus, RecoveryPoint, RecoveryType, RecoveryStatus, RecoveryMetadata, PayrollSchedule, ScheduleType, ScheduleFrequency, ScheduleMetadata, AutomationRule, RuleType, RuleCondition, RuleAction, ConditionOperator, LogicalOperator, ActionType, UserRole, Permission, Role, UserRoleAssignment, SecurityPolicy, SecurityPolicyType, SecurityRule, SecurityRuleOperator, SecurityRuleAction, SecurityAuditEntry, SecurityAuditResult, RateLimitConfig, SecuritySettings, SuspiciousActivity, SuspiciousActivityType, SuspiciousActivitySeverity};
 use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
-use crate::enterprise::{self, Department, ApprovalWorkflow, ApprovalStep, WebhookEndpoint, ReportTemplate, BackupSchedule, EnterpriseDataKey};
+use crate::enterprise::{self, Department, ApprovalWorkflow, ApprovalStep, WebhookEndpoint, ReportTemplate, BackupSchedule, EnterpriseDataKey, PayrollModificationRequest, PayrollModificationType, PayrollModificationStatus, Approval, ApprovalStatus};
 
 //-----------------------------------------------------------------------------
 // Gas Optimization Structures
@@ -3796,5 +3796,377 @@ impl PayrollContract {
         );
 
         Ok(schedule_id)
+    }
+
+    //-----------------------------------------------------------------------------
+    // Payroll Modification Approval System
+    //-----------------------------------------------------------------------------
+
+    /// Request a payroll modification that requires approval from both employer and employee
+    pub fn request_payroll_modification(
+        env: Env,
+        requester: Address,
+        employee: Address,
+        modification_type: PayrollModificationType,
+        current_value: String,
+        proposed_value: String,
+        reason: String,
+        approval_timeout_days: u32,
+    ) -> Result<u64, PayrollError> {
+        requester.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Verify the payroll exists
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+
+        // Only the employer or employee can request modifications
+        if requester != payroll.employer && requester != employee {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Get next modification request ID
+        let next_id = storage.get(&EnterpriseDataKey::NextModificationRequestId).unwrap_or(0) + 1;
+        storage.set(&EnterpriseDataKey::NextModificationRequestId, &next_id);
+
+        // Calculate expiration time (default 30 days if not specified)
+        let timeout_days = if approval_timeout_days == 0 { 30 } else { approval_timeout_days };
+        let expires_at = current_time + (timeout_days as u64 * 24 * 60 * 60); // Convert days to seconds
+
+        // Create modification request
+        let modification_request = PayrollModificationRequest {
+            id: next_id,
+            employee: employee.clone(),
+            employer: payroll.employer.clone(),
+            request_type: modification_type.clone(),
+            current_value: current_value.clone(),
+            proposed_value: proposed_value.clone(),
+            reason: reason.clone(),
+            requester: requester.clone(),
+            employer_approval: Approval::default(&env),
+            employee_approval: Approval::default(&env),
+            created_at: current_time,
+            expires_at,
+            status: PayrollModificationStatus::Pending,
+        };
+
+        // Store the modification request
+        storage.set(&EnterpriseDataKey::PayrollModificationRequest(next_id), &modification_request);
+
+        // Add to employee's modification requests
+        let mut employee_requests: Vec<u64> = storage.get(&EnterpriseDataKey::EmployeeModificationRequests(employee.clone())).unwrap_or(Vec::new(&env));
+        employee_requests.push_back(next_id);
+        storage.set(&EnterpriseDataKey::EmployeeModificationRequests(employee.clone()), &employee_requests);
+
+        // Add to employer's modification requests
+        let mut employer_requests: Vec<u64> = storage.get(&EnterpriseDataKey::EmployerModificationRequests(payroll.employer.clone())).unwrap_or(Vec::new(&env));
+        employer_requests.push_back(next_id);
+        storage.set(&EnterpriseDataKey::EmployerModificationRequests(payroll.employer.clone()), &employer_requests);
+
+        // Add to pending modification requests
+        let mut pending_requests: Vec<u64> = storage.get(&EnterpriseDataKey::PendingModificationRequests).unwrap_or(Vec::new(&env));
+        pending_requests.push_back(next_id);
+        storage.set(&EnterpriseDataKey::PendingModificationRequests, &pending_requests);
+
+        // Emit modification request event
+        env.events().publish(
+            (symbol_short!("mod_req"),),
+            (requester, next_id, employee, modification_type, current_value, proposed_value),
+        );
+
+        Ok(next_id)
+    }
+
+    /// Approve a payroll modification request
+    pub fn approve_payroll_modification(
+        env: Env,
+        approver: Address,
+        request_id: u64,
+    ) -> Result<(), PayrollError> {
+        approver.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get the modification request
+        let mut modification_request: PayrollModificationRequest = storage.get(&EnterpriseDataKey::PayrollModificationRequest(request_id))
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        // Check if request has expired
+        if current_time > modification_request.expires_at {
+            modification_request.status = PayrollModificationStatus::Expired;
+            storage.set(&EnterpriseDataKey::PayrollModificationRequest(request_id), &modification_request);
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Check if request is already completed
+        if modification_request.status == PayrollModificationStatus::BothApproved || 
+           modification_request.status == PayrollModificationStatus::Rejected ||
+           modification_request.status == PayrollModificationStatus::Cancelled {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Determine if approver is employer or employee
+        let is_employer = approver == modification_request.employer;
+        let is_employee = approver == modification_request.employee;
+
+        if !is_employer && !is_employee {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Update approval status
+        if is_employer {
+            modification_request.employer_approval.approver = approver.clone();
+            modification_request.employer_approval.approved = true;
+            modification_request.employer_approval.timestamp = current_time;
+        } else {
+            modification_request.employee_approval.approver = approver.clone();
+            modification_request.employee_approval.approved = true;
+            modification_request.employee_approval.timestamp = current_time;
+        }
+
+        // Check if both parties have approved
+        if modification_request.employer_approval.approved && 
+           modification_request.employee_approval.approved {
+            modification_request.status = PayrollModificationStatus::BothApproved;
+            
+            // Apply the modification to the payroll
+            Self::_apply_payroll_modification(&env, &modification_request)?;
+        } else if modification_request.employer_approval.approved {
+            modification_request.status = PayrollModificationStatus::EmployerApproved;
+        } else if modification_request.employee_approval.approved {
+            modification_request.status = PayrollModificationStatus::EmployeeApproved;
+        }
+
+        // Store updated modification request
+        storage.set(&EnterpriseDataKey::PayrollModificationRequest(request_id), &modification_request);
+
+        // Remove from pending requests if completed
+        if modification_request.status == PayrollModificationStatus::BothApproved || 
+           modification_request.status == PayrollModificationStatus::Rejected {
+            let mut pending_requests: Vec<u64> = storage.get(&EnterpriseDataKey::PendingModificationRequests).unwrap_or(Vec::new(&env));
+            let mut new_pending_requests = Vec::new(&env);
+            for id in pending_requests.iter() {
+                if id != request_id {
+                    new_pending_requests.push_back(id);
+                }
+            }
+            storage.set(&EnterpriseDataKey::PendingModificationRequests, &new_pending_requests);
+        }
+
+        // Emit approval event
+        env.events().publish(
+            (symbol_short!("mod_app"),),
+            (approver, request_id, modification_request.status),
+        );
+
+        Ok(())
+    }
+
+    /// Reject a payroll modification request
+    pub fn reject_payroll_modification(
+        env: Env,
+        rejector: Address,
+        request_id: u64,
+        rejection_reason: String,
+    ) -> Result<(), PayrollError> {
+        rejector.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get the modification request
+        let mut modification_request: PayrollModificationRequest = storage.get(&EnterpriseDataKey::PayrollModificationRequest(request_id))
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        // Check if request has expired
+        if current_time > modification_request.expires_at {
+            modification_request.status = PayrollModificationStatus::Expired;
+            storage.set(&EnterpriseDataKey::PayrollModificationRequest(request_id), &modification_request);
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Check if request is already completed
+        if modification_request.status == PayrollModificationStatus::BothApproved || 
+           modification_request.status == PayrollModificationStatus::Rejected ||
+           modification_request.status == PayrollModificationStatus::Cancelled {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Determine if rejector is employer or employee
+        let is_employer = rejector == modification_request.employer;
+        let is_employee = rejector == modification_request.employee;
+
+        if !is_employer && !is_employee {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Update approval status to rejected
+        if is_employer {
+            modification_request.employer_approval.approver = rejector.clone();
+            modification_request.employer_approval.approved = false;
+            modification_request.employer_approval.timestamp = current_time;
+            modification_request.employer_approval.comment = rejection_reason.clone();
+        } else {
+            modification_request.employee_approval.approver = rejector.clone();
+            modification_request.employee_approval.approved = false;
+            modification_request.employee_approval.timestamp = current_time;
+            modification_request.employee_approval.comment = rejection_reason.clone();
+        }
+
+        // Set status to rejected
+        modification_request.status = PayrollModificationStatus::Rejected;
+
+        // Store updated modification request
+        storage.set(&EnterpriseDataKey::PayrollModificationRequest(request_id), &modification_request);
+
+        // Remove from pending requests
+        let mut pending_requests: Vec<u64> = storage.get(&EnterpriseDataKey::PendingModificationRequests).unwrap_or(Vec::new(&env));
+        let mut new_pending_requests = Vec::new(&env);
+        for id in pending_requests.iter() {
+            if id != request_id {
+                new_pending_requests.push_back(id);
+            }
+        }
+        storage.set(&EnterpriseDataKey::PendingModificationRequests, &new_pending_requests);
+
+        // Emit rejection event
+        env.events().publish(
+            (symbol_short!("mod_rej"),),
+            (rejector, request_id, rejection_reason),
+        );
+
+        Ok(())
+    }
+
+    /// Get a payroll modification request
+    pub fn get_payroll_modification_request(
+        env: Env,
+        request_id: u64,
+    ) -> Result<PayrollModificationRequest, PayrollError> {
+        let storage = env.storage().persistent();
+        storage.get(&EnterpriseDataKey::PayrollModificationRequest(request_id))
+            .ok_or(PayrollError::PayrollNotFound)
+    }
+
+    /// Get all modification requests for an employee
+    pub fn get_employee_mod_requests(
+        env: Env,
+        employee: Address,
+    ) -> Result<Vec<PayrollModificationRequest>, PayrollError> {
+        let storage = env.storage().persistent();
+        let request_ids: Vec<u64> = storage.get(&EnterpriseDataKey::EmployeeModificationRequests(employee.clone())).unwrap_or(Vec::new(&env));
+        
+        let mut requests = Vec::new(&env);
+        for id in request_ids.iter() {
+            if let Some(request) = storage.get(&EnterpriseDataKey::PayrollModificationRequest(id)) {
+                requests.push_back(request);
+            }
+        }
+        
+        Ok(requests)
+    }
+
+    /// Get all modification requests for an employer
+    pub fn get_employer_mod_requests(
+        env: Env,
+        employer: Address,
+    ) -> Result<Vec<PayrollModificationRequest>, PayrollError> {
+        let storage = env.storage().persistent();
+        let request_ids: Vec<u64> = storage.get(&EnterpriseDataKey::EmployerModificationRequests(employer.clone())).unwrap_or(Vec::new(&env));
+        
+        let mut requests = Vec::new(&env);
+        for id in request_ids.iter() {
+            if let Some(request) = storage.get(&EnterpriseDataKey::PayrollModificationRequest(id)) {
+                requests.push_back(request);
+            }
+        }
+        
+        Ok(requests)
+    }
+
+    /// Get all pending modification requests
+    pub fn get_pending_mod_requests(
+        env: Env,
+    ) -> Result<Vec<PayrollModificationRequest>, PayrollError> {
+        let storage = env.storage().persistent();
+        let request_ids: Vec<u64> = storage.get(&EnterpriseDataKey::PendingModificationRequests).unwrap_or(Vec::new(&env));
+        
+        let mut requests = Vec::new(&env);
+        for id in request_ids.iter() {
+            if let Some(request) = storage.get(&EnterpriseDataKey::PayrollModificationRequest(id)) {
+                requests.push_back(request);
+            }
+        }
+        
+        Ok(requests)
+    }
+
+    /// Apply a payroll modification to the actual payroll
+    fn _apply_payroll_modification(
+        env: &Env,
+        modification_request: &PayrollModificationRequest,
+    ) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        
+        // Get the current payroll
+        let mut payroll = Self::_get_payroll(env, &modification_request.employee)
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        // Apply the modification based on type
+        match modification_request.request_type {
+            PayrollModificationType::Salary => {
+                // Parse the proposed salary value
+                if let Ok(new_salary) = modification_request.proposed_value.parse::<i128>() {
+                    payroll.salary = new_salary;
+                } else {
+                    return Err(PayrollError::InvalidData);
+                }
+            },
+            PayrollModificationType::Interval => {
+                // Parse the proposed interval value
+                if let Ok(new_interval) = modification_request.proposed_value.parse::<u64>() {
+                    payroll.interval = new_interval;
+                } else {
+                    return Err(PayrollError::InvalidData);
+                }
+            },
+            PayrollModificationType::RecurrenceFrequency => {
+                // Parse the proposed recurrence frequency value
+                if let Ok(new_frequency) = modification_request.proposed_value.parse::<u32>() {
+                    payroll.recurrence_frequency = new_frequency;
+                } else {
+                    return Err(PayrollError::InvalidData);
+                }
+            },
+            PayrollModificationType::Token => {
+                // Parse the proposed token address
+                if let Ok(new_token) = Address::from_str(env, &modification_request.proposed_value) {
+                    payroll.token = new_token;
+                } else {
+                    return Err(PayrollError::InvalidData);
+                }
+            },
+            PayrollModificationType::Custom(_) => {
+                // For custom modifications, the implementation would depend on the specific use case
+                // This is a placeholder for future custom modification types
+                return Err(PayrollError::InvalidData);
+            }
+        }
+
+        // Update the payroll
+        storage.set(&DataKey::Payroll(modification_request.employee.clone()), &payroll);
+
+        // Emit modification applied event
+        env.events().publish(
+            (symbol_short!("mod_appl"),),
+            (modification_request.employee.clone(), modification_request.request_type, modification_request.proposed_value),
+        );
+
+        Ok(())
     }
 }
