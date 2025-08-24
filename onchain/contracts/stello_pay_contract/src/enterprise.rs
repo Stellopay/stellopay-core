@@ -177,6 +177,131 @@ pub enum PayrollModificationStatus {
     Expired,
     Cancelled,
 }
+
+//-----------------------------------------------------------------------------
+// Dispute Resolution Data Structures
+//-----------------------------------------------------------------------------
+
+/// Dispute type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DisputeType {
+    SalaryDiscrepancy,
+    PaymentDelay,
+    IncorrectAmount,
+    MissingPayment,
+    ContractViolation,
+    UnauthorizedDeduction,
+    WrongToken,
+    RecurrenceIssue,
+    PauseDispute,
+    TerminationDispute,
+    Custom(String),
+}
+
+/// Dispute status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DisputeStatus {
+    Open,
+    UnderReview,
+    Escalated,
+    Mediation,
+    Resolved,
+    Closed,
+    Expired,
+}
+
+/// Dispute priority levels
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DisputePriority {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+/// Dispute structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Dispute {
+    pub id: u64,
+    pub employee: Address,
+    pub employer: Address,
+    pub dispute_type: DisputeType,
+    pub description: String,
+    pub evidence: Vec<String>, // Evidence documents/descriptions
+    pub amount_involved: Option<i128>,
+    pub token_involved: Option<Address>,
+    pub priority: DisputePriority,
+    pub status: DisputeStatus,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub expires_at: u64,
+    pub resolved_at: Option<u64>,
+    pub resolution: Option<String>,
+    pub resolution_by: Option<Address>,
+}
+
+/// Escalation level enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum EscalationLevel {
+    Level1, // Direct resolution attempt
+    Level2, // Supervisor/Manager review
+    Level3, // HR/Compliance review
+    Level4, // Legal/External mediation
+    Level5, // Arbitration/Court
+}
+
+/// Escalation structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Escalation {
+    pub id: u64,
+    pub dispute_id: u64,
+    pub level: EscalationLevel,
+    pub reason: String,
+    pub escalated_by: Address,
+    pub escalated_at: u64,
+    pub mediator: Option<Address>,
+    pub mediator_assigned_at: Option<u64>,
+    pub resolution: Option<String>,
+    pub resolved_at: Option<u64>,
+    pub resolved_by: Option<Address>,
+    pub timeout_at: u64,
+}
+
+/// Mediator structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Mediator {
+    pub address: Address,
+    pub name: String,
+    pub specialization: Vec<String>,
+    pub success_rate: u32, // Percentage
+    pub total_cases: u32,
+    pub resolved_cases: u32,
+    pub is_active: bool,
+    pub created_at: u64,
+    pub last_active: u64,
+}
+
+/// Dispute settings structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisputeSettings {
+    pub auto_escalation_days: u32,
+    pub mediation_timeout: u32,
+    pub arbitration_timeout: u32,
+    pub max_escalation_levels: u32,
+    pub evidence_required: bool,
+    pub min_evidence_count: u32,
+    pub dispute_timeout: u32,
+    pub escalation_cooldown: u32,
+}
+
 //-----------------------------------------------------------------------------
 // Enterprise Storage Keys
 //-----------------------------------------------------------------------------
@@ -216,6 +341,22 @@ pub enum EnterpriseDataKey {
     EmployeeModificationRequests(Address), // employee -> Vec<u64> (request IDs)
     EmployerModificationRequests(Address), // employer -> Vec<u64> (request IDs)
     PendingModificationRequests,         // Vec<u64> (pending request IDs)
+    
+    // Dispute Resolution System
+    Dispute(u64),                        // dispute_id -> Dispute
+    NextDisputeId,                       // Next available dispute ID
+    EmployeeDisputes(Address),           // employee -> Vec<u64> (dispute IDs)
+    EmployerDisputes(Address),           // employer -> Vec<u64> (dispute IDs)
+    OpenDisputes,                        // Vec<u64> (open dispute IDs)
+    EscalatedDisputes,                   // Vec<u64> (escalated dispute IDs)
+    Escalation(u64),                     // escalation_id -> Escalation
+    NextEscalationId,                    // Next available escalation ID
+    DisputeEscalations(u64),             // dispute_id -> Vec<u64> (escalation IDs)
+    MediatorEscalations(Address),        // mediator -> Vec<u64> (escalation IDs)
+    Mediator(Address),                   // mediator_address -> Mediator
+    ActiveMediators,                     // Vec<Address> (active mediator addresses)
+    MediatorBySpecialization(String),   // specialization -> Vec<Address> (mediator addresses)
+    DisputeSettings,                     // Global dispute settings
 }
 
 //-----------------------------------------------------------------------------
@@ -244,4 +385,16 @@ pub enum EnterpriseError {
     InvalidModificationType,
     InvalidModificationValues,
     ModificationTimeoutInvalid,
+    DisputeNotFound,
+    DisputeAlreadyResolved,
+    DisputeExpired,
+    EscalationNotFound,
+    EscalationExpired,
+    MediatorNotFound,
+    MediatorNotActive,
+    InvalidDisputeType,
+    InvalidDisputePriority,
+    InsufficientEvidence,
+    DisputeTimeoutInvalid,
+    EscalationLevelInvalid,
 } 

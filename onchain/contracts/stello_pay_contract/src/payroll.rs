@@ -6,7 +6,7 @@ use soroban_sdk::{
 use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT};
 use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, CompactPayrollHistoryEntry, PayrollTemplate, TemplatePreset, PayrollBackup, BackupData, BackupMetadata, BackupType, BackupStatus, RecoveryPoint, RecoveryType, RecoveryStatus, RecoveryMetadata, PayrollSchedule, ScheduleType, ScheduleFrequency, ScheduleMetadata, AutomationRule, RuleType, RuleCondition, RuleAction, ConditionOperator, LogicalOperator, ActionType, UserRole, Permission, Role, UserRoleAssignment, SecurityPolicy, SecurityPolicyType, SecurityRule, SecurityRuleOperator, SecurityRuleAction, SecurityAuditEntry, SecurityAuditResult, RateLimitConfig, SecuritySettings, SuspiciousActivity, SuspiciousActivityType, SuspiciousActivitySeverity};
 use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
-use crate::enterprise::{self, Department, ApprovalWorkflow, ApprovalStep, WebhookEndpoint, ReportTemplate, BackupSchedule, EnterpriseDataKey, PayrollModificationRequest, PayrollModificationType, PayrollModificationStatus, Approval, ApprovalStatus};
+use crate::enterprise::{self, Department, ApprovalWorkflow, ApprovalStep, WebhookEndpoint, ReportTemplate, BackupSchedule, EnterpriseDataKey, PayrollModificationRequest, PayrollModificationType, PayrollModificationStatus, Approval, ApprovalStatus, Dispute, DisputeType, DisputeStatus, DisputePriority, Escalation, EscalationLevel, Mediator, DisputeSettings};
 
 //-----------------------------------------------------------------------------
 // Gas Optimization Structures
@@ -4026,6 +4026,498 @@ impl PayrollContract {
     }
 
     //-----------------------------------------------------------------------------
+    // Dispute Resolution Functions
+    //-----------------------------------------------------------------------------
+
+    /// Create a new dispute
+    pub fn create_dispute(
+        env: Env,
+        caller: Address,
+        employer: Address,
+        dispute_type: DisputeType,
+        description: String,
+        evidence: Vec<String>,
+        amount_involved: Option<i128>,
+        token_involved: Option<Address>,
+        priority: DisputePriority,
+        timeout_days: u32,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Verify the caller is an employee with a payroll
+        let payroll = Self::_get_payroll(&env, &caller).ok_or(PayrollError::PayrollNotFound)?;
+        if payroll.employer != employer {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Get dispute settings
+        let settings = Self::_get_dispute_settings(&env);
+
+        // Validate evidence requirements
+        if settings.evidence_required && (evidence.len() as u32) < settings.min_evidence_count {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Get next dispute ID
+        let next_id = storage.get(&EnterpriseDataKey::NextDisputeId).unwrap_or(0) + 1;
+        storage.set(&EnterpriseDataKey::NextDisputeId, &next_id);
+
+        // Calculate expiration time
+        let timeout_days = if timeout_days == 0 { settings.dispute_timeout } else { timeout_days };
+        let expires_at = current_time + (timeout_days as u64 * 24 * 60 * 60);
+
+        // Create dispute
+        let dispute = Dispute {
+            id: next_id,
+            employee: caller.clone(),
+            employer: employer.clone(),
+            dispute_type: dispute_type.clone(),
+            description: description.clone(),
+            evidence,
+            amount_involved,
+            token_involved,
+            priority: priority.clone(),
+            status: DisputeStatus::Open,
+            created_at: current_time,
+            updated_at: current_time,
+            expires_at,
+            resolved_at: None,
+            resolution: None,
+            resolution_by: None,
+        };
+
+        // Store dispute
+        storage.set(&EnterpriseDataKey::Dispute(next_id), &dispute);
+
+        // Add to employee's disputes
+        let mut employee_disputes: Vec<u64> = storage.get(&EnterpriseDataKey::EmployeeDisputes(caller.clone())).unwrap_or(Vec::new(&env));
+        employee_disputes.push_back(next_id);
+        storage.set(&EnterpriseDataKey::EmployeeDisputes(caller.clone()), &employee_disputes);
+
+        // Add to employer's disputes
+        let mut employer_disputes: Vec<u64> = storage.get(&EnterpriseDataKey::EmployerDisputes(employer.clone())).unwrap_or(Vec::new(&env));
+        employer_disputes.push_back(next_id);
+        storage.set(&EnterpriseDataKey::EmployerDisputes(employer.clone()), &employer_disputes);
+
+        // Add to open disputes
+        let mut open_disputes: Vec<u64> = storage.get(&EnterpriseDataKey::OpenDisputes).unwrap_or(Vec::new(&env));
+        open_disputes.push_back(next_id);
+        storage.set(&EnterpriseDataKey::OpenDisputes, &open_disputes);
+
+        // Emit dispute created event
+        env.events().publish(
+            (symbol_short!("dispute_c"),),
+            (caller, next_id, employer, dispute_type, priority),
+        );
+
+        Ok(next_id)
+    }
+
+    /// Update dispute status
+    pub fn update_dispute_status(
+        env: Env,
+        caller: Address,
+        dispute_id: u64,
+        new_status: DisputeStatus,
+        resolution: Option<String>,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get dispute
+        let mut dispute: Dispute = storage.get(&EnterpriseDataKey::Dispute(dispute_id))
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        // Check if caller is authorized (employee, employer, or mediator)
+        if caller != dispute.employee && caller != dispute.employer {
+            // Check if caller is a mediator
+            if let Some(mediator) = storage.get::<EnterpriseDataKey, Mediator>(&EnterpriseDataKey::Mediator(caller.clone())) {
+                if !mediator.is_active {
+                    return Err(PayrollError::Unauthorized);
+                }
+            } else {
+                return Err(PayrollError::Unauthorized);
+            }
+        }
+
+        // Update dispute
+        dispute.status = new_status.clone();
+        dispute.updated_at = current_time;
+        dispute.resolution = resolution.clone();
+        dispute.resolution_by = Some(caller.clone());
+
+        if new_status == DisputeStatus::Resolved {
+            dispute.resolved_at = Some(current_time);
+        }
+
+        storage.set(&EnterpriseDataKey::Dispute(dispute_id), &dispute);
+
+        // Update open disputes list if resolved
+        if new_status == DisputeStatus::Resolved || new_status == DisputeStatus::Closed {
+            let mut open_disputes: Vec<u64> = storage.get(&EnterpriseDataKey::OpenDisputes).unwrap_or(Vec::new(&env));
+            let mut new_open_disputes = Vec::new(&env);
+            for id in open_disputes.iter() {
+                if id != dispute_id {
+                    new_open_disputes.push_back(id);
+                }
+            }
+            storage.set(&EnterpriseDataKey::OpenDisputes, &new_open_disputes);
+        }
+
+        // Emit dispute updated event
+        env.events().publish(
+            (symbol_short!("dispute_u"),),
+            (caller, dispute_id, new_status, resolution),
+        );
+
+        Ok(())
+    }
+
+    /// Escalate a dispute
+    pub fn escalate_dispute(
+        env: Env,
+        caller: Address,
+        dispute_id: u64,
+        level: EscalationLevel,
+        reason: String,
+        mediator_address: Address,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get dispute
+        let mut dispute: Dispute = storage.get(&EnterpriseDataKey::Dispute(dispute_id))
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        // Check if dispute is eligible for escalation
+        if dispute.status != DisputeStatus::Open && dispute.status != DisputeStatus::UnderReview {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Verify mediator exists and is active
+        let mediator: Mediator = storage.get(&EnterpriseDataKey::Mediator(mediator_address.clone()))
+            .ok_or(PayrollError::PayrollNotFound)?;
+        if !mediator.is_active {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Get next escalation ID
+        let next_id = storage.get(&EnterpriseDataKey::NextEscalationId).unwrap_or(0) + 1;
+        storage.set(&EnterpriseDataKey::NextEscalationId, &next_id);
+
+        // Calculate timeout based on level
+        let settings = Self::_get_dispute_settings(&env);
+        let timeout_days = match level {
+            EscalationLevel::Level1 => 7,
+            EscalationLevel::Level2 => 14,
+            EscalationLevel::Level3 => 21,
+            EscalationLevel::Level4 => settings.mediation_timeout,
+            EscalationLevel::Level5 => settings.arbitration_timeout,
+        };
+        let timeout_at = current_time + (timeout_days as u64 * 24 * 60 * 60);
+
+        // Create escalation
+        let escalation = Escalation {
+            id: next_id,
+            dispute_id,
+            level: level.clone(),
+            reason: reason.clone(),
+            escalated_by: caller.clone(),
+            escalated_at: current_time,
+            mediator: Some(mediator_address.clone()),
+            mediator_assigned_at: Some(current_time),
+            resolution: None,
+            resolved_at: None,
+            resolved_by: None,
+            timeout_at,
+        };
+
+        // Store escalation
+        storage.set(&EnterpriseDataKey::Escalation(next_id), &escalation);
+
+        // Add to dispute escalations
+        let mut dispute_escalations: Vec<u64> = storage.get(&EnterpriseDataKey::DisputeEscalations(dispute_id)).unwrap_or(Vec::new(&env));
+        dispute_escalations.push_back(next_id);
+        storage.set(&EnterpriseDataKey::DisputeEscalations(dispute_id), &dispute_escalations);
+
+        // Add to mediator escalations
+        let mut mediator_escalations: Vec<u64> = storage.get(&EnterpriseDataKey::MediatorEscalations(mediator_address.clone())).unwrap_or(Vec::new(&env));
+        mediator_escalations.push_back(next_id);
+        storage.set(&EnterpriseDataKey::MediatorEscalations(mediator_address.clone()), &mediator_escalations);
+
+        // Add to escalated disputes
+        let mut escalated_disputes: Vec<u64> = storage.get(&EnterpriseDataKey::EscalatedDisputes).unwrap_or(Vec::new(&env));
+        escalated_disputes.push_back(dispute_id);
+        storage.set(&EnterpriseDataKey::EscalatedDisputes, &escalated_disputes);
+
+        // Update dispute status
+        dispute.status = DisputeStatus::Escalated;
+        dispute.updated_at = current_time;
+        storage.set(&EnterpriseDataKey::Dispute(dispute_id), &dispute);
+
+        // Emit escalation event
+        env.events().publish(
+            (symbol_short!("escalate"),),
+            (caller, dispute_id, next_id, level, mediator_address),
+        );
+
+        Ok(next_id)
+    }
+
+    /// Resolve an escalation
+    pub fn resolve_escalation(
+        env: Env,
+        mediator: Address,
+        escalation_id: u64,
+        resolution: String,
+    ) -> Result<(), PayrollError> {
+        mediator.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get escalation
+        let mut escalation: Escalation = storage.get(&EnterpriseDataKey::Escalation(escalation_id))
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        // Check if mediator is authorized
+        if escalation.mediator != Some(mediator.clone()) {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Check if escalation has expired
+        if current_time > escalation.timeout_at {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Update escalation
+        escalation.resolution = Some(resolution.clone());
+        escalation.resolved_at = Some(current_time);
+        escalation.resolved_by = Some(mediator.clone());
+        storage.set(&EnterpriseDataKey::Escalation(escalation_id), &escalation);
+
+        // Update dispute status
+        let mut dispute: Dispute = storage.get(&EnterpriseDataKey::Dispute(escalation.dispute_id))
+            .ok_or(PayrollError::PayrollNotFound)?;
+        dispute.status = DisputeStatus::Resolved;
+        dispute.resolution = Some(resolution.clone());
+        dispute.resolution_by = Some(mediator.clone());
+        dispute.resolved_at = Some(current_time);
+        dispute.updated_at = current_time;
+        storage.set(&EnterpriseDataKey::Dispute(escalation.dispute_id), &dispute);
+
+        // Remove from escalated disputes
+        let mut escalated_disputes: Vec<u64> = storage.get(&EnterpriseDataKey::EscalatedDisputes).unwrap_or(Vec::new(&env));
+        let mut new_escalated_disputes = Vec::new(&env);
+        for id in escalated_disputes.iter() {
+            if id != escalation.dispute_id {
+                new_escalated_disputes.push_back(id);
+            }
+        }
+        storage.set(&EnterpriseDataKey::EscalatedDisputes, &new_escalated_disputes);
+
+        // Remove from open disputes
+        let mut open_disputes: Vec<u64> = storage.get(&EnterpriseDataKey::OpenDisputes).unwrap_or(Vec::new(&env));
+        let mut new_open_disputes = Vec::new(&env);
+        for id in open_disputes.iter() {
+            if id != escalation.dispute_id {
+                new_open_disputes.push_back(id);
+            }
+        }
+        storage.set(&EnterpriseDataKey::OpenDisputes, &new_open_disputes);
+
+        // Emit resolution event
+        env.events().publish(
+            (symbol_short!("resolve"),),
+            (mediator, escalation_id, escalation.dispute_id, resolution),
+        );
+
+        Ok(())
+    }
+
+    /// Get dispute settings (internal helper)
+    fn _get_dispute_settings(env: &Env) -> DisputeSettings {
+        let storage = env.storage().persistent();
+        storage.get(&EnterpriseDataKey::DisputeSettings).unwrap_or(DisputeSettings {
+            auto_escalation_days: 7,
+            mediation_timeout: 30,
+            arbitration_timeout: 60,
+            max_escalation_levels: 5,
+            evidence_required: true,
+            min_evidence_count: 1,
+            dispute_timeout: 30,
+            escalation_cooldown: 24,
+        })
+    }
+
+    /// Add a new mediator
+    pub fn add_mediator(
+        env: Env,
+        caller: Address,
+        mediator_address: Address,
+        name: String,
+        specialization: Vec<String>,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only contract owner can add mediators
+        let storage = env.storage().persistent();
+        let owner = storage.get(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let current_time = env.ledger().timestamp();
+
+        // Create mediator
+        let mediator = Mediator {
+            address: mediator_address.clone(),
+            name: name.clone(),
+            specialization: specialization.clone(),
+            success_rate: 0,
+            total_cases: 0,
+            resolved_cases: 0,
+            is_active: true,
+            created_at: current_time,
+            last_active: current_time,
+        };
+
+        // Store mediator
+        storage.set(&EnterpriseDataKey::Mediator(mediator_address.clone()), &mediator);
+
+        // Add to active mediators
+        let mut active_mediators: Vec<Address> = storage.get(&EnterpriseDataKey::ActiveMediators).unwrap_or(Vec::new(&env));
+        active_mediators.push_back(mediator_address.clone());
+        storage.set(&EnterpriseDataKey::ActiveMediators, &active_mediators);
+
+        // Add to specialization index
+        for spec in specialization.iter() {
+            let mut mediators_by_spec: Vec<Address> = storage.get(&EnterpriseDataKey::MediatorBySpecialization(spec.clone())).unwrap_or(Vec::new(&env));
+            mediators_by_spec.push_back(mediator_address.clone());
+            storage.set(&EnterpriseDataKey::MediatorBySpecialization(spec.clone()), &mediators_by_spec);
+        }
+
+        // Emit mediator added event
+        env.events().publish(
+            (symbol_short!("mediator"),),
+            (caller, mediator_address, name, specialization),
+        );
+
+        Ok(())
+    }
+
+    /// Get dispute settings
+    pub fn get_dispute_settings(env: Env) -> DisputeSettings {
+        Self::_get_dispute_settings(&env)
+    }
+
+    /// Update dispute settings
+    pub fn update_dispute_settings(
+        env: Env,
+        caller: Address,
+        settings: DisputeSettings,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only contract owner can update settings
+        let storage = env.storage().persistent();
+        let owner = storage.get(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        storage.set(&EnterpriseDataKey::DisputeSettings, &settings);
+
+        // Emit settings updated event
+        env.events().publish(
+            (symbol_short!("settings"),),
+            (caller, settings),
+        );
+
+        Ok(())
+    }
+
+    /// Get a dispute by ID
+    pub fn get_dispute(env: Env, dispute_id: u64) -> Result<Dispute, PayrollError> {
+        let storage = env.storage().persistent();
+        storage.get(&EnterpriseDataKey::Dispute(dispute_id))
+            .ok_or(PayrollError::PayrollNotFound)
+    }
+
+    /// Get all disputes for an employee
+    pub fn get_employee_disputes(env: Env, employee: Address) -> Result<Vec<Dispute>, PayrollError> {
+        let storage = env.storage().persistent();
+        let dispute_ids: Vec<u64> = storage.get(&EnterpriseDataKey::EmployeeDisputes(employee.clone())).unwrap_or(Vec::new(&env));
+        
+        let mut disputes = Vec::new(&env);
+        for id in dispute_ids.iter() {
+            if let Some(dispute) = storage.get(&EnterpriseDataKey::Dispute(id)) {
+                disputes.push_back(dispute);
+            }
+        }
+        
+        Ok(disputes)
+    }
+
+    /// Get all disputes for an employer
+    pub fn get_employer_disputes(env: Env, employer: Address) -> Result<Vec<Dispute>, PayrollError> {
+        let storage = env.storage().persistent();
+        let dispute_ids: Vec<u64> = storage.get(&EnterpriseDataKey::EmployerDisputes(employer.clone())).unwrap_or(Vec::new(&env));
+        
+        let mut disputes = Vec::new(&env);
+        for id in dispute_ids.iter() {
+            if let Some(dispute) = storage.get(&EnterpriseDataKey::Dispute(id)) {
+                disputes.push_back(dispute);
+            }
+        }
+        
+        Ok(disputes)
+    }
+
+    /// Get all open disputes
+    pub fn get_open_disputes(env: Env) -> Result<Vec<Dispute>, PayrollError> {
+        let storage = env.storage().persistent();
+        let dispute_ids: Vec<u64> = storage.get(&EnterpriseDataKey::OpenDisputes).unwrap_or(Vec::new(&env));
+        
+        let mut disputes = Vec::new(&env);
+        for id in dispute_ids.iter() {
+            if let Some(dispute) = storage.get(&EnterpriseDataKey::Dispute(id)) {
+                disputes.push_back(dispute);
+            }
+        }
+        
+        Ok(disputes)
+    }
+
+    /// Get all escalated disputes
+    pub fn get_escalated_disputes(env: Env) -> Result<Vec<Dispute>, PayrollError> {
+        let storage = env.storage().persistent();
+        let dispute_ids: Vec<u64> = storage.get(&EnterpriseDataKey::EscalatedDisputes).unwrap_or(Vec::new(&env));
+        
+        let mut disputes = Vec::new(&env);
+        for id in dispute_ids.iter() {
+            if let Some(dispute) = storage.get(&EnterpriseDataKey::Dispute(id)) {
+                disputes.push_back(dispute);
+            }
+        }
+        
+        Ok(disputes)
+    }
+
+    //-----------------------------------------------------------------------------
     // Payroll Modification Approval System
     //-----------------------------------------------------------------------------
 
@@ -4387,6 +4879,9 @@ impl PayrollContract {
         Ok(())
     }
 
+    //-----------------------------------------------------------------------------
+    // Multi-Signature Support Functions
+    //-----------------------------------------------------------------------------
     //-----------------------------------------------------------------------------
     // Multi-Signature Support Functions
     //-----------------------------------------------------------------------------
