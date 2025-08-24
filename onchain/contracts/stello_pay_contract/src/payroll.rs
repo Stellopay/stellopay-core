@@ -4367,7 +4367,7 @@ impl PayrollContract {
             PayrollModificationType::Salary => {
                 // Parse the proposed salary value
                 if let Ok(new_salary) = modification_request.proposed_value.parse::<i128>() {
-                    payroll.salary = new_salary;
+                    payroll.amount = new_salary;
                 } else {
                     return Err(PayrollError::InvalidData);
                 }
@@ -4382,7 +4382,7 @@ impl PayrollContract {
             },
             PayrollModificationType::RecurrenceFrequency => {
                 // Parse the proposed recurrence frequency value
-                if let Ok(new_frequency) = modification_request.proposed_value.parse::<u32>() {
+                if let Ok(new_frequency) = modification_request.proposed_value.parse::<u64>() {
                     payroll.recurrence_frequency = new_frequency;
                 } else {
                     return Err(PayrollError::InvalidData);
@@ -4404,12 +4404,244 @@ impl PayrollContract {
         }
 
         // Update the payroll
-        storage.set(&DataKey::Payroll(modification_request.employee.clone()), &payroll);
+        let compact_payroll = Self::to_compact_payroll(&payroll);
+        storage.set(&DataKey::Payroll(modification_request.employee.clone()), &compact_payroll);
 
         // Emit modification applied event
         env.events().publish(
             (symbol_short!("mod_appl"),),
             (modification_request.employee.clone(), modification_request.request_type, modification_request.proposed_value),
+        );
+
+        Ok(())
+    }
+
+    //-----------------------------------------------------------------------------
+    // Multi-Signature Support Functions
+    //-----------------------------------------------------------------------------
+
+    /// Enhanced transfer ownership with multi-signature support
+    pub fn transfer_ownership_with_multisig(
+        env: Env,
+        caller: Address,
+        new_owner: Address,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        // Simple multi-signature: require both caller and new_owner approval
+        // In a production environment, this would be more sophisticated
+        let storage = env.storage().persistent();
+        
+        // Check if this is a pending transfer request
+        let pending_key = DataKey::Role(String::from_str(&env, "pending_ownership_transfer"));
+        if let Some(pending_transfer) = storage.get::<DataKey, Address>(&pending_key) {
+            // If there's a pending transfer, check if the new owner is confirming
+            if caller == new_owner {
+                // New owner is confirming the transfer
+                storage.remove(&pending_key);
+                storage.set(&DataKey::Owner, &new_owner);
+                
+                // Emit event
+                env.events().publish(
+                    (symbol_short!("owner_tr"),),
+                    (caller, new_owner),
+                );
+                return Ok(());
+            } else {
+                return Err(PayrollError::Unauthorized);
+            }
+        }
+
+        // Create a pending transfer request
+        storage.set(&pending_key, &new_owner);
+        
+        // Emit event for pending transfer
+        env.events().publish(
+            (symbol_short!("pend_tr"),),
+            (caller, new_owner),
+        );
+
+        Ok(())
+    }
+
+    /// Enhanced pause contract with multi-signature support
+    pub fn pause_contract_with_multisig(
+        env: Env,
+        caller: Address,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        // Simple multi-signature: require both owner and caller approval
+        let storage = env.storage().persistent();
+        let owner = storage.get(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+        
+        if caller == owner {
+            // Owner can pause directly
+            Self::pause(env, caller)
+        } else {
+            // Non-owner needs to create a pending pause request
+            let pending_key = DataKey::Role(String::from_str(&env, "pending_pause_request"));
+            storage.set(&pending_key, &caller);
+            
+            // Emit event for pending pause
+            env.events().publish(
+                (symbol_short!("pending_p"),),
+                caller,
+            );
+            
+            Ok(())
+        }
+    }
+
+    /// Enhanced unpause contract with multi-signature support
+    pub fn unpause_contract_with_multisig(
+        env: Env,
+        caller: Address,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        // Simple multi-signature: require both owner and caller approval
+        let storage = env.storage().persistent();
+        let owner = storage.get(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+        
+        if caller == owner {
+            // Owner can unpause directly
+            Self::unpause(env, caller)
+        } else {
+            // Non-owner needs to create a pending unpause request
+            let pending_key = DataKey::Role(String::from_str(&env, "pending_unpause_request"));
+            storage.set(&pending_key, &caller);
+            
+            // Emit event for pending unpause
+            env.events().publish(
+                (symbol_short!("pending_u"),),
+                caller,
+            );
+            
+            Ok(())
+        }
+    }
+
+    /// Confirm pending multi-signature operations
+    pub fn confirm_multisig_operation(
+        env: Env,
+        caller: Address,
+        operation_type: String,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let owner = storage.get(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+
+        // Only owner can confirm operations
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        match operation_type.as_str() {
+            "pause" => {
+                let pending_key = DataKey::Role(String::from_str(&env, "pending_pause_request"));
+                if let Some(requester) = storage.get::<DataKey, Address>(&pending_key) {
+                    storage.remove(&pending_key);
+                    storage.set(&DataKey::Paused, &true);
+                    
+                    env.events().publish(
+                        (PAUSED_EVENT,),
+                        (requester, caller),
+                    );
+                }
+            },
+            "unpause" => {
+                let pending_key = DataKey::Role(String::from_str(&env, "pending_unpause_request"));
+                if let Some(requester) = storage.get::<DataKey, Address>(&pending_key) {
+                    storage.remove(&pending_key);
+                    storage.set(&DataKey::Paused, &false);
+                    
+                    env.events().publish(
+                        (UNPAUSED_EVENT,),
+                        (requester, caller),
+                    );
+                }
+            },
+            _ => return Err(PayrollError::InvalidData),
+        }
+
+        Ok(())
+    }
+
+    /// Get pending multi-signature operations
+    pub fn get_pending_multisig_operations(
+        env: Env,
+        caller: Address,
+    ) -> Result<Vec<String>, PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let owner = storage.get(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+
+        // Only owner can view pending operations
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let mut pending_operations = Vec::new(&env);
+
+        // Check for pending pause request
+        let pause_key = DataKey::Role(String::from_str(&env, "pending_pause_request"));
+        if storage.has(&pause_key) {
+            pending_operations.push_back(String::from_str(&env, "pause"));
+        }
+
+        // Check for pending unpause request
+        let unpause_key = DataKey::Role(String::from_str(&env, "pending_unpause_request"));
+        if storage.has(&unpause_key) {
+            pending_operations.push_back(String::from_str(&env, "unpause"));
+        }
+
+        // Check for pending ownership transfer
+        let transfer_key = DataKey::Role(String::from_str(&env, "pending_ownership_transfer"));
+        if storage.has(&transfer_key) {
+            pending_operations.push_back(String::from_str(&env, "ownership_transfer"));
+        }
+
+        Ok(pending_operations)
+    }
+
+    /// Cancel pending multi-signature operations
+    pub fn cancel_multisig_operation(
+        env: Env,
+        caller: Address,
+        operation_type: String,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let owner = storage.get(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+
+        // Only owner can cancel operations
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        match operation_type.as_str() {
+            "pause" => {
+                let pending_key = DataKey::Role(String::from_str(&env, "pending_pause_request"));
+                storage.remove(&pending_key);
+            },
+            "unpause" => {
+                let pending_key = DataKey::Role(String::from_str(&env, "pending_unpause_request"));
+                storage.remove(&pending_key);
+            },
+            "ownership_transfer" => {
+                let pending_key = DataKey::Role(String::from_str(&env, "pending_ownership_transfer"));
+                storage.remove(&pending_key);
+            },
+            _ => return Err(PayrollError::InvalidData),
+        }
+
+        env.events().publish(
+            (symbol_short!("cancel_op"),),
+            (caller, operation_type),
         );
 
         Ok(())
