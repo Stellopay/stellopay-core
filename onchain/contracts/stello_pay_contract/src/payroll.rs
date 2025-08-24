@@ -6,6 +6,7 @@ use soroban_sdk::{
 use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT};
 use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, CompactPayrollHistoryEntry, PayrollTemplate, TemplatePreset, PayrollBackup, BackupData, BackupMetadata, BackupType, BackupStatus, RecoveryPoint, RecoveryType, RecoveryStatus, RecoveryMetadata, PayrollSchedule, ScheduleType, ScheduleFrequency, ScheduleMetadata, AutomationRule, RuleType, RuleCondition, RuleAction, ConditionOperator, LogicalOperator, ActionType, UserRole, Permission, Role, UserRoleAssignment, SecurityPolicy, SecurityPolicyType, SecurityRule, SecurityRuleOperator, SecurityRuleAction, SecurityAuditEntry, SecurityAuditResult, RateLimitConfig, SecuritySettings, SuspiciousActivity, SuspiciousActivityType, SuspiciousActivitySeverity};
 use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
+use crate::enterprise::{self, Department, ApprovalWorkflow, ApprovalStep, WebhookEndpoint, ReportTemplate, BackupSchedule, EnterpriseDataKey};
 
 //-----------------------------------------------------------------------------
 // Gas Optimization Structures
@@ -3520,5 +3521,280 @@ impl PayrollContract {
         // Simplified suspicious activity detection
         // In a real implementation, this would use ML/AI to detect patterns
         Ok(())
+    }
+
+    //-----------------------------------------------------------------------------
+    // Enterprise Features Implementation
+    //-----------------------------------------------------------------------------
+
+    /// Create a new department
+    pub fn create_department(
+        env: Env,
+        caller: Address,
+        name: String,
+        description: String,
+        manager: Address,
+        parent_department: Option<u64>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next department ID
+        let department_id = storage.get::<EnterpriseDataKey, u64>(&EnterpriseDataKey::NextDepartmentId).unwrap_or(1);
+        storage.set(&EnterpriseDataKey::NextDepartmentId, &(department_id + 1));
+
+        let department = enterprise::Department {
+            id: department_id,
+            name: name.clone(),
+            description: description.clone(),
+            employer: caller.clone(),
+            manager,
+            parent_department,
+            created_at: current_time,
+            updated_at: current_time,
+            is_active: true,
+        };
+
+        // Store department
+        storage.set(&enterprise::EnterpriseDataKey::Department(department_id), &department);
+
+        // Add to employer's departments
+        let mut employer_departments = storage
+            .get::<enterprise::EnterpriseDataKey, Vec<u64>>(&enterprise::EnterpriseDataKey::EmployerDepartments(caller.clone()))
+            .unwrap_or(Vec::new(&env));
+        employer_departments.push_back(department_id);
+        storage.set(&enterprise::EnterpriseDataKey::EmployerDepartments(caller.clone()), &employer_departments);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("dept_c"),),
+            (caller, department_id, name, description),
+        );
+
+        Ok(department_id)
+    }
+
+    /// Assign employee to department
+    pub fn assign_employee_to_department(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        department_id: u64,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+
+        // Verify department exists and belongs to caller
+        let department = storage
+            .get::<EnterpriseDataKey, Department>(&EnterpriseDataKey::Department(department_id))
+            .ok_or(PayrollError::InvalidData)?;
+
+        if department.employer != caller {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Assign employee to department
+        storage.set(&EnterpriseDataKey::EmployeeDepartment(employee.clone()), &department_id);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("emp_a"),),
+            (caller, employee, department_id),
+        );
+
+        Ok(())
+    }
+
+    /// Create approval workflow
+    pub fn create_approval_workflow(
+        env: Env,
+        caller: Address,
+        name: String,
+        description: String,
+        steps: Vec<ApprovalStep>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next workflow ID
+        let workflow_id = storage.get::<EnterpriseDataKey, u64>(&EnterpriseDataKey::NextWorkflowId).unwrap_or(1);
+        storage.set(&EnterpriseDataKey::NextWorkflowId, &(workflow_id + 1));
+
+        let workflow = ApprovalWorkflow {
+            id: workflow_id,
+            name: name.clone(),
+            description: description.clone(),
+            employer: caller.clone(),
+            steps,
+            created_at: current_time,
+            updated_at: current_time,
+            is_active: true,
+        };
+
+        // Store workflow
+        storage.set(&EnterpriseDataKey::ApprovalWorkflow(workflow_id), &workflow);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("wf_c"),),
+            (caller, workflow_id, name, description),
+        );
+
+        Ok(workflow_id)
+    }
+
+    /// Create webhook endpoint
+    pub fn create_webhook_endpoint(
+        env: Env,
+        caller: Address,
+        name: String,
+        url: String,
+        events: Vec<String>,
+        headers: Map<String, String>,
+    ) -> Result<String, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Generate webhook ID
+        let webhook_id_str = String::from_str(&env, "hook_");
+
+        let webhook = WebhookEndpoint {
+            id: webhook_id_str.clone(),
+            name: name.clone(),
+            url: url.clone(),
+            employer: caller.clone(),
+            events,
+            headers,
+            is_active: true,
+            created_at: current_time,
+            last_triggered: None,
+        };
+
+        // Store webhook
+        storage.set(&EnterpriseDataKey::WebhookEndpoint(webhook_id_str.clone()), &webhook);
+
+        // Add to employer's webhooks
+        let mut employer_webhooks = storage
+            .get::<EnterpriseDataKey, Vec<String>>(&EnterpriseDataKey::EmployerWebhooks(caller.clone()))
+            .unwrap_or(Vec::new(&env));
+        employer_webhooks.push_back(webhook_id_str.clone());
+        storage.set(&EnterpriseDataKey::EmployerWebhooks(caller.clone()), &employer_webhooks);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("hook_c"),),
+            (caller, webhook_id_str.clone(), name, url),
+        );
+
+        Ok(webhook_id_str)
+    }
+
+    /// Create report template
+    pub fn create_report_template(
+        env: Env,
+        caller: Address,
+        name: String,
+        description: String,
+        query_parameters: Map<String, String>,
+        schedule: Option<String>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next report ID
+        let report_id = storage.get::<EnterpriseDataKey, u64>(&EnterpriseDataKey::NextReportId).unwrap_or(1);
+        storage.set(&EnterpriseDataKey::NextReportId, &(report_id + 1));
+
+        let report = ReportTemplate {
+            id: report_id,
+            name: name.clone(),
+            description: description.clone(),
+            employer: caller.clone(),
+            query_parameters,
+            schedule,
+            created_at: current_time,
+            updated_at: current_time,
+            is_active: true,
+        };
+
+        // Store report template
+        storage.set(&EnterpriseDataKey::ReportTemplate(report_id), &report);
+
+        // Add to employer's reports
+        let mut employer_reports = storage
+            .get::<EnterpriseDataKey, Vec<u64>>(&EnterpriseDataKey::EmployerReports(caller.clone()))
+            .unwrap_or(Vec::new(&env));
+        employer_reports.push_back(report_id);
+        storage.set(&EnterpriseDataKey::EmployerReports(caller.clone()), &employer_reports);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("rpt_c"),),
+            (caller, report_id, name, description),
+        );
+
+        Ok(report_id)
+    }
+
+    /// Create backup schedule
+    pub fn create_backup_schedule(
+        env: Env,
+        caller: Address,
+        name: String,
+        frequency: String,
+        retention_days: u32,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next backup schedule ID
+        let schedule_id = storage.get::<EnterpriseDataKey, u64>(&EnterpriseDataKey::NextBackupScheduleId).unwrap_or(1);
+        storage.set(&EnterpriseDataKey::NextBackupScheduleId, &(schedule_id + 1));
+
+        let schedule = BackupSchedule {
+            id: schedule_id,
+            name: name.clone(),
+            employer: caller.clone(),
+            frequency,
+            retention_days,
+            is_active: true,
+            created_at: current_time,
+            last_backup: None,
+        };
+
+        // Store backup schedule
+        storage.set(&EnterpriseDataKey::BackupSchedule(schedule_id), &schedule);
+
+        // Add to employer's backup schedules
+        let mut employer_schedules = storage
+            .get::<EnterpriseDataKey, Vec<u64>>(&EnterpriseDataKey::EmployerBackupSchedules(caller.clone()))
+            .unwrap_or(Vec::new(&env));
+        employer_schedules.push_back(schedule_id);
+        storage.set(&EnterpriseDataKey::EmployerBackupSchedules(caller.clone()), &employer_schedules);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("bkup_c"),),
+            (caller, schedule_id, name),
+        );
+
+        Ok(schedule_id)
     }
 }
