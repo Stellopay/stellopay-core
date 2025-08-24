@@ -4882,6 +4882,9 @@ impl PayrollContract {
     //-----------------------------------------------------------------------------
     // Multi-Signature Support Functions
     //-----------------------------------------------------------------------------
+    //-----------------------------------------------------------------------------
+    // Multi-Signature Support Functions
+    //-----------------------------------------------------------------------------
 
     /// Enhanced transfer ownership with multi-signature support
     pub fn transfer_ownership_with_multisig(
