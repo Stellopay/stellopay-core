@@ -706,43 +706,45 @@ pub enum DataKey {
 
     // PayrollHistory
     PayrollHistoryEntry(Address),        // (employee) -> history_entry
-    PayrollHistoryIdCounter(Address),    // (employee) -> history_entry
+    PayrollHistoryCounter(Address),      // (employee) -> history_entry
     AuditTrail(Address),                 // (employee) -> audit_entry
-    AuditTrailIdCounter(Address),
 
-      // Compliance-related storage keys
-    ComplianceSettings,                  // Global compliance settings
-
-    // Template and Preset storage keys
-    PayrollTemplate(u64),                // template_id -> PayrollTemplate
-    NextTemplateId,                      // Next available template ID
-    EmployerTemplates(Address),          // employer -> Vec<u64> (template IDs)
-    PublicTemplates,                     // Vec<u64> (public template IDs)
-    TemplatePreset(u64),                 // preset_id -> TemplatePreset
+    // Webhook system keys - CORE FUNCTIONALITY
+    Webhook(u64),                        // webhook_id -> Webhook
+    NextWebhookId,                       // counter for webhook IDs
+    
+    // Audit and History - ESSENTIAL
+    AuditIdCounter(Address),
+    
+    // Templates - MINIMAL SET
+    NextTmplId,                          // Next available template ID
+    Template(u64),                       // template_id -> PayrollTemplate
+    EmpTemplates(Address),               // employer -> Vec<u64> (template IDs)  
+    PubTemplates,                        // Vec<u64> (public template IDs)
+    Preset(u64),                         // preset_id -> TemplatePreset
     NextPresetId,                        // Next available preset ID
-    PresetCategory(String),              // category -> Vec<u64> (preset IDs)
+    PresetCat(String),                   // category -> Vec<u64> (preset IDs)
     ActivePresets,                       // Vec<u64> (active preset IDs)
 
-    // Backup and Recovery storage keys
-    PayrollBackup(u64),                  // backup_id -> PayrollBackup
+    // Backup - MINIMAL SET  
+    Backup(u64),                         // backup_id -> PayrollBackup
     NextBackupId,                        // Next available backup ID
-    EmployerBackups(Address),            // employer -> Vec<u64> (backup IDs)
+    EmpBackups(Address),                 // employer -> Vec<u64> (backup IDs)
     BackupData(u64),                     // backup_id -> BackupData
     BackupIndex,                         // Vec<u64> (all backup IDs)
-    RecoveryPoint(u64),                  // recovery_point_id -> RecoveryPoint
-    NextRecoveryPointId,                 // Next available recovery point ID
-    DisasterRecoverySettings,            // Global disaster recovery settings
+    Recovery(u64),                       // recovery_point_id -> RecoveryPoint
+    NextRecoveryId,                      // Next available recovery point ID
 
-    // Scheduling and Automation storage keys
-    PayrollSchedule(u64),                // schedule_id -> PayrollSchedule
-    NextScheduleId,                      // Next available schedule ID
-    EmployerSchedules(Address),          // employer -> Vec<u64> (schedule IDs)
-    AutomationRule(u64),                 // rule_id -> AutomationRule
+    // Scheduling - MINIMAL SET
+    Schedule(u64),                       // schedule_id -> PayrollSchedule
+    NextSchedId,                         // Next available schedule ID
+    EmpSchedules(Address),               // employer -> Vec<u64> (schedule IDs)
+    Rule(u64),                           // rule_id -> AutomationRule
     NextRuleId,                          // Next available rule ID
-    EmployerRules(Address),              // employer -> Vec<u64> (rule IDs)
+    EmpRules(Address),                   // employer -> Vec<u64> (rule IDs)
 
-    // Security & Access Control storage keys
+    // Security - MINIMAL SET 
     Role(String),                        // role_id -> Role
-    UserRoleAssignment(Address),         // user -> UserRoleAssignment
-    SecuritySettings,                    // Global security settings
+    UserRole(Address),                   // user -> UserRoleAssignment
+    SecuritySettings                     // Global security settings
 }
