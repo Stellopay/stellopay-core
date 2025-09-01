@@ -3,8 +3,8 @@ use soroban_sdk::{
     Env, Symbol, Vec, String,
 };
 
-use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT};
-use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll};
+use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT, METRICS_UPDATED_EVENT};
+use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, PerformanceMetrics};
 use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
 
 //-----------------------------------------------------------------------------
@@ -955,6 +955,33 @@ impl PayrollContract {
         env.events().publish((EMPLOYEE_RESUMED_EVENT,), (caller, employee.clone()));
 
         Ok(())
+    }
+
+    /// Record performance metrics for an operation
+    fn record_metrics(env: Env, amount: i128, gas_used: u64) {
+        let storage = env.storage().persistent();
+        let timestamp = env.ledger().timestamp();
+        let metrics_key = DataKey::Metrics(timestamp.clone());
+
+        let mut metrics: PerformanceMetrics = storage.get(&metrics_key).unwrap_or(PerformanceMetrics {
+            total_disbursements: 0,
+            total_amount: 0,
+            gas_used: 0,
+            operation_count: 0,
+            timestamp,
+        });
+
+        metrics.total_disbursements += 1;
+        metrics.total_amount += amount;
+        metrics.gas_used += gas_used;
+        metrics.operation_count += 1;
+
+        storage.set(&metrics_key, &metrics);
+
+        env.events().publish(
+            (METRICS_UPDATED_EVENT,),
+            (timestamp, metrics.total_disbursements, metrics.total_amount),
+        );
     }
 
     //-----------------------------------------------------------------------------

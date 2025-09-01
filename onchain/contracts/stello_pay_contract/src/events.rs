@@ -18,6 +18,9 @@ pub const EMPLOYEE_PAUSED_EVENT: Symbol = symbol_short!("emppaused");
 /// Event emitted when an individual employee's payroll is resumed
 pub const EMPLOYEE_RESUMED_EVENT: Symbol = symbol_short!("empresume");
 
+/// Event emitted when performance metrics are updated
+pub const METRICS_UPDATED_EVENT: Symbol = symbol_short!("metricupd");
+
 // Insurance-related events
 pub const INS_POLICY_CREATED: Symbol = symbol_short!("ins_pol_c");
 pub const INS_POLICY_UPDATED: Symbol = symbol_short!("ins_pol_u");
@@ -85,6 +88,7 @@ pub struct GuaranteeIssued {
     pub guarantee_amount: i128,
     pub timestamp: u64,
 }
+
 
 pub fn emit_disburse(
     e: Env,
