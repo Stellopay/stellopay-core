@@ -32,6 +32,32 @@ pub const GUAR_ISSUED: Symbol = symbol_short!("guar_iss");
 pub const GUAR_REPAID: Symbol = symbol_short!("guar_rep");
 pub const POOL_FUNDED: Symbol = symbol_short!("pool_fun");
 
+// Template and Preset Events
+pub const TEMPLATE_CREATED_EVENT: Symbol = symbol_short!("tmpl_crt");
+pub const TEMPLATE_UPDATED_EVENT: Symbol = symbol_short!("tmpl_upd");
+pub const TEMPLATE_APPLIED_EVENT: Symbol = symbol_short!("tmpl_app");
+pub const TEMPLATE_SHARED_EVENT: Symbol = symbol_short!("tmpl_shr");
+pub const PRESET_CREATED_EVENT: Symbol = symbol_short!("prst_crt");
+
+// Backup and Recovery Events  
+pub const BACKUP_CREATED_EVENT: Symbol = symbol_short!("backup_c");
+pub const BACKUP_VERIFIED_EVENT: Symbol = symbol_short!("backup_v");
+pub const RECOVERY_STARTED_EVENT: Symbol = symbol_short!("rcvry_st");
+pub const RECOVERY_COMPLETED_EVENT: Symbol = symbol_short!("rcvry_cp");
+
+// Scheduling and Automation Events
+pub const SCHEDULE_CREATED_EVENT: Symbol = symbol_short!("sched_c");
+pub const SCHEDULE_UPDATED_EVENT: Symbol = symbol_short!("sched_u");
+pub const SCHEDULE_EXECUTED_EVENT: Symbol = symbol_short!("sched_e");
+pub const RULE_CREATED_EVENT: Symbol = symbol_short!("rule_c");
+pub const RULE_EXECUTED_EVENT: Symbol = symbol_short!("rule_e");
+
+// Security Events
+pub const ROLE_ASSIGNED_EVENT: Symbol = symbol_short!("role_a");
+pub const ROLE_REVOKED_EVENT: Symbol = symbol_short!("role_r");
+pub const SECURITY_AUDIT_EVENT: Symbol = symbol_short!("sec_aud");
+pub const SECURITY_POLICY_VIOLATION_EVENT: Symbol = symbol_short!("sec_viol");
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SalaryDisbursed {
