@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 5,
+    "address": 6,
     "nonce": 0
   },
   "auth": [
@@ -49,6 +49,7 @@
         }
       ]
     ],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
@@ -188,9 +189,9 @@
     "timestamp": 2592001,
     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
     "base_reserve": 0,
-    "min_persistent_entry_ttl": 4096,
-    "min_temp_entry_ttl": 16,
-    "max_entry_ttl": 6312000,
+    "min_persistent_entry_ttl": 0,
+    "min_temp_entry_ttl": 0,
+    "max_entry_ttl": 0,
     "ledger_entries": [
       [
         {
@@ -295,7 +296,7 @@
             },
             "ext": "v0"
           },
-          4095
+          0
         ]
       ],
       [
@@ -436,7 +437,7 @@
             },
             "ext": "v0"
           },
-          4095
+          0
         ]
       ],
       [
@@ -535,7 +536,7 @@
             },
             "ext": "v0"
           },
-          4095
+          0
         ]
       ],
       [
@@ -597,128 +598,6 @@
                   "symbol": "Metrics"
                 },
                 {
-                  "u64": 0
-                }
-              ]
-            },
-            "durability": "persistent"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-                "key": {
-                  "vec": [
-                    {
-                      "symbol": "Metrics"
-                    },
-                    {
-                      "u64": 0
-                    }
-                  ]
-                },
-                "durability": "persistent",
-                "val": {
-                  "map": [
-                    {
-                      "key": {
-                        "symbol": "employee_count"
-                      },
-                      "val": {
-                        "u32": 1
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "late_disbursements"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "operation_count"
-                      },
-                      "val": {
-                        "u64": 2
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "operation_type_counts"
-                      },
-                      "val": {
-                        "map": [
-                          {
-                            "key": {
-                              "symbol": "deposit"
-                            },
-                            "val": {
-                              "u64": 1
-                            }
-                          },
-                          {
-                            "key": {
-                              "symbol": "escrow"
-                            },
-                            "val": {
-                              "u64": 1
-                            }
-                          }
-                        ]
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "timestamp"
-                      },
-                      "val": {
-                        "u64": 0
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "total_amount"
-                      },
-                      "val": {
-                        "i128": {
-                          "hi": 0,
-                          "lo": 5000
-                        }
-                      }
-                    },
-                    {
-                      "key": {
-                        "symbol": "total_disbursements"
-                      },
-                      "val": {
-                        "u64": 2
-                      }
-                    }
-                  ]
-                }
-              }
-            },
-            "ext": "v0"
-          },
-          4095
-        ]
-      ],
-      [
-        {
-          "contract_data": {
-            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-            "key": {
-              "vec": [
-                {
-                  "symbol": "Metrics"
-                },
-                {
                   "u64": 2592000
                 }
               ]
@@ -751,7 +630,23 @@
                         "symbol": "employee_count"
                       },
                       "val": {
-                        "u32": 0
+                        "u32": 1
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "error_count"
+                      },
+                      "val": {
+                        "u64": 0
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "error_types"
+                      },
+                      "val": {
+                        "map": []
                       }
                     },
                     {
@@ -820,7 +715,7 @@
             },
             "ext": "v0"
           },
-          4095
+          0
         ]
       ],
       [
@@ -1500,7 +1395,7 @@
             },
             "ext": "v0"
           },
-          6311999
+          0
         ]
       ],
       [
@@ -1752,7 +1647,7 @@
             },
             "ext": "v0"
           },
-          518400
+          0
         ]
       ],
       [

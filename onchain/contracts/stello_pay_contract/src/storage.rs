@@ -45,6 +45,19 @@ pub struct CompactPayroll {
     pub is_paused: bool,
 }
 
+/// Structure to store performance metrics
+#[derive(Clone)]
+#[contracttype]
+pub struct PerformanceMetrics {
+    pub total_disbursements: u64,
+    pub total_amount: i128,
+    pub operation_count: u64,
+    pub timestamp: u64,
+    pub employee_count: u32,
+    pub operation_type_counts: Map<Symbol, u64>,
+    pub late_disbursements: u64,
+}
+
 /// Structure for compact history storage
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -684,6 +697,12 @@ pub enum DataKey {
 
     // Employer balance, keyed by (employer, token)
     Balance(Address, Address),
+
+    // Metrics storage - daily aggregated metrics
+    Metrics(u64), // timestamp -> PerformanceMetrics
+
+    // Unique employee tracking
+    Employee(Address), // employee -> bool
 
     // Admin
     Owner,

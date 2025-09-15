@@ -727,10 +727,10 @@ fn test_disburse_salary_emit_event() {
     let events = env.events().all();
 
     // Token `transfer`, `SalaryDisbursed` and record_audit events are expected
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 4);
 
     // Get the emitted `SalaryDisbursed` event data
-    let data = events.get(2).unwrap();
+    let data = events.get(3).unwrap();
 
     assert_eq!(data.0, contract_id);
 

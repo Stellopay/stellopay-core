@@ -1,10 +1,10 @@
 use soroban_sdk::{
     contract, contracterror, contractimpl, symbol_short, token::Client as TokenClient, Address,
-    Env, Symbol, Vec, String, Map,
+    Env, Symbol, Vec, String, Map,log
 };
 
-use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT, TEMPLATE_CREATED_EVENT, TEMPLATE_UPDATED_EVENT, TEMPLATE_APPLIED_EVENT, TEMPLATE_SHARED_EVENT, PRESET_CREATED_EVENT, BACKUP_CREATED_EVENT, BACKUP_VERIFIED_EVENT, RECOVERY_STARTED_EVENT, RECOVERY_COMPLETED_EVENT, SCHEDULE_CREATED_EVENT, SCHEDULE_UPDATED_EVENT, SCHEDULE_EXECUTED_EVENT, RULE_CREATED_EVENT, RULE_EXECUTED_EVENT, ROLE_ASSIGNED_EVENT, ROLE_REVOKED_EVENT, SECURITY_AUDIT_EVENT, SECURITY_POLICY_VIOLATION_EVENT};
-use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, CompactPayrollHistoryEntry, PayrollTemplate, TemplatePreset, PayrollBackup, BackupData, BackupMetadata, BackupType, BackupStatus, RecoveryPoint, RecoveryType, RecoveryStatus, RecoveryMetadata, PayrollSchedule, ScheduleType, ScheduleFrequency, ScheduleMetadata, AutomationRule, RuleType, RuleCondition, RuleAction, ConditionOperator, LogicalOperator, ActionType, UserRole, Permission, Role, UserRoleAssignment, SecurityPolicy, SecurityPolicyType, SecurityRule, SecurityRuleOperator, SecurityRuleAction, SecurityAuditEntry, SecurityAuditResult, RateLimitConfig, SecuritySettings, SuspiciousActivity, SuspiciousActivityType, SuspiciousActivitySeverity};
+use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT, METRICS_UPDATED_EVENT, TEMPLATE_CREATED_EVENT, TEMPLATE_UPDATED_EVENT, TEMPLATE_APPLIED_EVENT, TEMPLATE_SHARED_EVENT, PRESET_CREATED_EVENT, BACKUP_CREATED_EVENT, BACKUP_VERIFIED_EVENT, RECOVERY_STARTED_EVENT, RECOVERY_COMPLETED_EVENT, SCHEDULE_CREATED_EVENT, SCHEDULE_UPDATED_EVENT, SCHEDULE_EXECUTED_EVENT, RULE_CREATED_EVENT, RULE_EXECUTED_EVENT, ROLE_ASSIGNED_EVENT, ROLE_REVOKED_EVENT, SECURITY_AUDIT_EVENT, SECURITY_POLICY_VIOLATION_EVENT};
+use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, PerformanceMetrics, CompactPayrollHistoryEntry, PayrollTemplate, TemplatePreset, PayrollBackup, BackupData, BackupMetadata, BackupType, BackupStatus, RecoveryPoint, RecoveryType, RecoveryStatus, RecoveryMetadata, PayrollSchedule, ScheduleType, ScheduleFrequency, ScheduleMetadata, AutomationRule, RuleType, RuleCondition, RuleAction, ConditionOperator, LogicalOperator, ActionType, UserRole, Permission, Role, UserRoleAssignment, SecurityPolicy, SecurityPolicyType, SecurityRule, SecurityRuleOperator, SecurityRuleAction, SecurityAuditEntry, SecurityAuditResult, RateLimitConfig, SecuritySettings, SuspiciousActivity, SuspiciousActivityType, SuspiciousActivitySeverity};
 use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
 use crate::enterprise::{self, Department, ApprovalWorkflow, ApprovalStep, WebhookEndpoint, ReportTemplate, BackupSchedule, EnterpriseDataKey, PayrollModificationRequest, PayrollModificationType, PayrollModificationStatus, Approval, ApprovalStatus, Dispute, DisputeType, DisputeStatus, DisputePriority, Escalation, EscalationLevel, Mediator, DisputeSettings};
 
@@ -413,6 +413,9 @@ impl PayrollContract {
             storage.set(&metadata_key, &7u32);
         }
 
+        Self::record_metrics(&env, 0, symbol_short!("escrow"), true, Some(employee.clone()), false);
+
+
         // Emit payroll updated event
         env.events().publish(
             (UPDATED_EVENT,),
@@ -459,6 +462,8 @@ impl PayrollContract {
         let balance_key = DataKey::Balance(employer.clone(), token.clone());
         let current_balance: i128 = storage.get(&balance_key).unwrap_or(0);
         storage.set(&balance_key, &(current_balance + amount));
+
+        Self::record_metrics(&env, amount, symbol_short!("deposit"), true, None, false);
 
         env.events().publish(
             (DEPOSIT_EVENT, employer, token), // topics
@@ -513,6 +518,10 @@ impl PayrollContract {
         // Get cached contract state
         let cache = Self::get_contract_cache(&env);
         if let Some(true) = cache.is_paused {
+            // Self::record_metrics(&env, 0, symbol_short!("disburses"), false, Some(employee), Some(symbol_short!("paused")), false, false);
+            Self::record_metrics(&env, 0, symbol_short!("failed"), true, Some(employee.clone()), true);
+
+            // log!(&env, "PAUSE: {}");
             return Err(PayrollError::ContractPaused);
         }
 
@@ -520,17 +529,30 @@ impl PayrollContract {
 
         // Check if payroll is paused for this employee
         if payroll.is_paused {
+            // Self::record_metrics(&env, 0, symbol_short!("disburses"), false, Some(employee), Some(symbol_short!("paused")), false, false);
+            Self::record_metrics(&env, payroll.amount, symbol_short!("failed"), true, Some(employee.clone()), true);
+
+            // log!(&env, "PAUSE2: {}");
             return Err(PayrollError::ContractPaused);
+            // return Ok(());
         }
 
         // Only the employer can disburse salary
         if caller != payroll.employer {
+            // Self::record_metrics(&env, 0, symbol_short!("disburses"), false, Some(employee), Some(symbol_short!("unauth")), false, false);
+            Self::record_metrics(&env, payroll.amount, symbol_short!("failed"), true, Some(employee.clone()), true);
+
+            // log!(&env, "UNAUTH: {}");
             return Err(PayrollError::Unauthorized);
         }
 
+        let current_time = env.ledger().timestamp();
+        let is_late = current_time > payroll.next_payout_timestamp;
         // Check if next payout time has been reached
         let current_time = env.ledger().timestamp();
         if current_time < payroll.next_payout_timestamp {
+            // Self::record_metrics(&env, 0, symbol_short!("disburses"), false, Some(employee), Some(symbol_short!("early")), is_late, false);
+            // log!(&env, "EARLY: {}");
             return Err(PayrollError::NextPayoutTimeNotReached);
         }
 
@@ -547,16 +569,18 @@ impl PayrollContract {
 
         Self::record_audit(&env, &employee, &payroll.employer, &payroll.token, payroll.amount, current_time);
 
-        // Emit disburse event
+        // Self::record_metrics(&env, payroll.amount, symbol_short!("disburses"), true, Some(employee.clone()), None, false, true);
+        Self::record_metrics(&env, payroll.amount, symbol_short!("disburses"), true, Some(employee.clone()), is_late);
+
+        // Emit disburse eventSalaryDisbursed
         emit_disburse(
-            env,
+            env.clone(),
             payroll.employer,
-            employee,
+            employee.clone(),
             payroll.token.clone(),
             payroll.amount,
             current_time,
         );
-
         Ok(())
     }
 
@@ -989,6 +1013,9 @@ impl PayrollContract {
 
             Self::record_audit(&env, &employee, &payroll.employer, &payroll.token, payroll.amount, batch_ctx.current_time);
 
+            let is_late = batch_ctx.current_time > payroll.next_payout_timestamp;
+            Self::record_metrics(&env, payroll.amount, symbol_short!("disburses"), true, Some(employee.clone()), is_late);
+
             // Emit individual disbursement event
             emit_disburse(
                 env.clone(),
@@ -1328,6 +1355,7 @@ impl PayrollContract {
         Ok(())
     }
 
+    
     //-----------------------------------------------------------------------------
     // Gas Optimization Helper Functions
     //-----------------------------------------------------------------------------
@@ -5111,4 +5139,306 @@ impl PayrollContract {
         // For now, we'll return a default value
         Ok(86400) // Default value (1 day in seconds)
     }
+
+    // record_metrics(&env, 0, symbol_short!("disburses"), false, Some(employee), Some(symbol_short!("unauth")), false);
+    // record_metrics(env,amount. ,operation_type: Symbol, is_success, employee:    ,       error_type.         ,is_late: bool)
+    /// Record performance metrics for an operation with daily aggregation
+    // fn record_metrics(
+    //     env: &Env,
+    //     amount: i128,
+    //     operation_type: Symbol,
+    //     is_success: bool,
+    //     employee: Option<Address>,
+    //     error_type: Option<Symbol>,
+    //     is_late: bool,
+    // ) {
+    //     let storage = env.storage().persistent();
+        
+    //     // Convert timestamp to start of day (midnight UTC) for daily aggregation
+    //     let timestamp = env.ledger().timestamp();
+    //     log!(&env, "timestamp in record metrics: {}", timestamp);
+
+    //     let day_timestamp = (timestamp / 86_400) * 86_400; // Round down to nearest day (86,400 seconds)
+    //     // log!(&env, "day_timestamp: {}", day_timestamp);
+
+    //     let metrics_key = DataKey::Metrics(day_timestamp);
+
+    //     // Retrieve existing metrics or initialize new ones
+    //     let mut metrics: PerformanceMetrics = storage.get(&metrics_key).unwrap_or(PerformanceMetrics {
+    //         total_disbursements: 0,
+    //         total_amount: 0,
+    //         // gas_used: 0,
+    //         operation_count: 0,
+    //         timestamp: day_timestamp,
+    //         error_count: 0,
+    //         error_types: Map::new(&env),
+    //         employee_count: 0,
+    //         operation_type_counts: Map::new(&env),
+    //         // compliance_violations: 0,
+    //         late_disbursements: 0,
+    //     });
+
+    //     // Update metrics with overflow checks
+    //     let prev_operation_count = metrics.operation_count;
+
+    //     metrics.operation_count = metrics.operation_count.checked_add(1).unwrap_or(metrics.operation_count);
+
+    //     if is_success {
+    //         metrics.total_disbursements = metrics.total_disbursements.checked_add(1).unwrap_or(metrics.total_disbursements);
+    //         metrics.total_amount = metrics.total_amount.checked_add(amount).unwrap_or(metrics.total_amount);
+    //         log!(&env, "SUCCESS: {}");
+
+    //     } else {
+
+    //         metrics.error_count = metrics.error_count.checked_add(1).unwrap_or(metrics.error_count);
+    //         if let Some(err) = error_type {
+    //             let err_count = metrics.error_types.get(err.clone()).unwrap_or(0);
+    //             metrics.error_types.set(err, err_count.checked_add(1).unwrap_or(err_count));
+    //         }
+    //         log!(&env, "OTHERS: {}");
+
+
+    //     }
+    //     // metrics.gas_used = metrics.gas_used.checked_add(gas_used).unwrap_or(metrics.gas_used);
+
+    //     // Track unique employees
+    //     if let Some(emp) = employee {
+    //         let employee_key = DataKey::Employee(emp.clone());
+    //         if !storage.has(&employee_key) {
+    //             storage.set(&employee_key, &true);
+    //             metrics.employee_count = metrics.employee_count.checked_add(1).unwrap_or(metrics.employee_count);
+    //         }
+    //     }
+
+    //     // Update operation type counts
+    //     let current_count = metrics.operation_type_counts.get(operation_type.clone()).unwrap_or(0);
+    //     metrics.operation_type_counts.set(operation_type.clone(), current_count.checked_add(1).unwrap_or(current_count));
+
+    //     // Track compliance violations
+    //     // if is_compliance_issue {
+    //         // metrics.compliance_violations = metrics.compliance_violations.checked_add(1).unwrap_or(metrics.compliance_violations);
+    //     // }
+
+    //     // Track late disbursements
+    //     if is_late {
+    //         metrics.late_disbursements = metrics.late_disbursements.checked_add(1).unwrap_or(metrics.late_disbursements);
+    //     }
+
+    //     // Only write to storage if metrics have changed
+    //     // if metrics.operation_count > prev_operation_count || metrics.total_amount != 0 || metrics.error_count > 0 || metrics.late_disbursements > 0 {
+    //         storage.set(&metrics_key, &metrics);
+    //         log!(&env, "day_timestamp: {}", day_timestamp);
+    //         log!(&env, "metrics: {}", metrics);
+
+    //         // let res = Self::get_metrics(&env, Some(day_timestamp), Some(day_timestamp *3), Some(3));
+    //         // log!(&env, "res: {}", res);
+
+
+    //         // Publish event with key metrics
+    //         env.events().publish(
+    //             (METRICS_UPDATED_EVENT,),
+    //             (
+    //                 day_timestamp,
+    //                 operation_type,
+    //                 metrics.total_disbursements,
+    //                 metrics.total_amount,
+    //                 metrics.error_count,
+    //                 // metrics.compliance_violations,
+    //                 metrics.late_disbursements,
+    //             ),
+    //         );
+    //     // }
+    // }
+
+
+
+    fn record_metrics(
+        env: &Env,
+        amount: i128,
+        operation_type: Symbol,
+        is_success: bool,
+        employee: Option<Address>,
+        is_late: bool,
+    ) {
+        let storage = env.storage().persistent();
+        let timestamp = env.ledger().timestamp();
+        // log!(&env, "timestamp in record metrics: {}", timestamp);
+        let day_timestamp = (timestamp / 86_400) * 86_400;
+        let metrics_key = DataKey::Metrics(day_timestamp);
+
+        let mut metrics: PerformanceMetrics = storage.get(&metrics_key).unwrap_or(PerformanceMetrics {
+            total_disbursements: 0,
+            total_amount: 0,
+            operation_count: 0,
+            timestamp: day_timestamp,
+            employee_count: 0,
+            operation_type_counts: Map::new(&env),
+            late_disbursements: 0,
+        });
+
+        let prev_operation_count = metrics.operation_count;
+        metrics.operation_count = metrics.operation_count.checked_add(1).unwrap_or(metrics.operation_count);
+        if is_success {
+            metrics.total_disbursements = metrics.total_disbursements.checked_add(1).unwrap_or(metrics.total_disbursements);
+            metrics.total_amount = metrics.total_amount.checked_add(amount).unwrap_or(metrics.total_amount);
+            // log!(&env, "SUCCESS: {}");
+        } else {
+            // log!(&env, "OTHERS: {}");
+        }
+
+        if let Some(emp) = employee.clone() {
+            let employee_key = DataKey::Employee(emp.clone());
+            if !storage.has(&employee_key) {
+                storage.set(&employee_key, &true);
+                metrics.employee_count = metrics.employee_count.checked_add(1).unwrap_or(metrics.employee_count);
+            }
+        }
+
+        let current_count = metrics.operation_type_counts.get(operation_type.clone()).unwrap_or(0);
+        metrics.operation_type_counts.set(operation_type.clone(), current_count.checked_add(1).unwrap_or(current_count));
+
+        if is_late {
+            metrics.late_disbursements = metrics.late_disbursements.checked_add(1).unwrap_or(metrics.late_disbursements);
+        }
+
+        if metrics.operation_count > prev_operation_count || metrics.total_amount != 0 || metrics.late_disbursements > 0 {
+            storage.set(&metrics_key, &metrics);
+            // log!(&env, "day_timestamp: {}", day_timestamp);
+            let res = Self::get_metrics(&env, Some(day_timestamp), Some(day_timestamp * 3), Some(3));
+            // log!(&env, "res: {}", res);
+
+            env.events().publish(
+                (METRICS_UPDATED_EVENT,),
+                (
+                    day_timestamp,
+                    operation_type,
+                    metrics.total_disbursements,
+                    metrics.total_amount,
+                    metrics.late_disbursements,
+                ),
+            );
+        }
+    }
+
+        /// Get all performance metrics with optional time range and limit
+    pub fn get_metrics(env: &Env, start_timestamp: Option<u64>, end_timestamp: Option<u64>, limit: Option<u32>) -> Vec<PerformanceMetrics> {
+        let storage = env.storage().persistent();
+        let mut metrics_list = Vec::new(&env);
+        let max_entries = limit.unwrap_or(100);
+
+        // Default to all available metrics if no timestamps provided
+        let start = start_timestamp.unwrap_or(0);
+        let end = end_timestamp.unwrap_or(env.ledger().timestamp());
+        
+        // log!(&env, "timestamp in get metrics: {}", start);
+
+        // Round to day boundaries for daily aggregation
+        let start_day = (start / 86_400) * 86_400;
+        let end_day = (end / 86_400) * 86_400;
+
+        let mut count = 0;
+        for timestamp in (start_day..=end_day).step_by(86_400) {
+            if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(timestamp)) {
+                metrics_list.push_back(metrics);
+                count += 1;
+                if count >= max_entries {
+                    break;
+                }
+            }
+        }
+
+        metrics_list
+    }
+
+    /// Calculate average metrics over a time range
+    pub fn calculate_avg_metrics(env: &Env, start_timestamp: u64, end_timestamp: u64) -> Option<PerformanceMetrics> {
+        let storage = env.storage().persistent();
+        let mut total_disbursements = 0u64;
+        let mut total_amount = 0i128;
+        let mut total_operation_count = 0u64;
+        let mut employee_count = 0u32;
+        let mut operation_type_counts = Map::new(&env);
+        let mut late_disbursements = 0u64;
+
+        let start_day = (start_timestamp / 86_400) * 86_400;
+        let end_day = (end_timestamp / 86_400) * 86_400;
+
+        for timestamp in (start_day..=end_day).step_by(86_400) {
+            if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(timestamp)) {
+                total_disbursements = total_disbursements.checked_add(metrics.total_disbursements).unwrap_or(total_disbursements);
+                total_amount = total_amount.checked_add(metrics.total_amount).unwrap_or(total_amount);
+                total_operation_count = total_operation_count.checked_add(metrics.operation_count).unwrap_or(total_operation_count);
+                employee_count = employee_count.checked_add(metrics.employee_count).unwrap_or(employee_count);
+                late_disbursements = late_disbursements.checked_add(metrics.late_disbursements).unwrap_or(late_disbursements);
+
+                for (op_type, count) in metrics.operation_type_counts.iter() {
+                    let current_count = operation_type_counts.get(op_type.clone()).unwrap_or(0);
+                    operation_type_counts.set(op_type, (current_count as u64).checked_add(count as u64).unwrap_or(current_count));
+                }
+            }
+        }
+
+        if total_operation_count == 0 {
+            return None;
+        }
+
+        Some(PerformanceMetrics {
+            total_disbursements,
+            total_amount,
+            operation_count: total_operation_count,
+            timestamp: end_timestamp,
+            employee_count,
+            operation_type_counts,
+            late_disbursements,
+        })
+    }
+
+    pub fn calculate_total_deposited_token(env: &Env, start_timestamp: u64, end_timestamp: u64) -> Option<i128> {
+        let storage = env.storage().persistent();
+        let mut total_deposited_token = 0i128;
+        let mut total_operation_count = 0_u64;
+        let start_day = (start_timestamp / 86_400) * 86_400;
+        let end_day = (end_timestamp / 86_400) * 86_400;
+
+        for timestamp in (start_day..=end_day).step_by(86_400) {
+            if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(timestamp)) {
+                total_operation_count = total_operation_count.checked_add(metrics.operation_count).unwrap_or(total_operation_count);
+                for (op_type, count) in metrics.operation_type_counts.iter() {
+                    if op_type == symbol_short!("deposit") {
+                        total_deposited_token = total_deposited_token.checked_add(metrics.total_amount).unwrap_or(total_deposited_token);
+                    }
+                }
+            }
+        }
+
+        if total_operation_count == 0 {
+            return None;
+        }
+
+        Some(total_deposited_token)
+    }
+
+    pub fn generate_performance_report(env: &Env, start_timestamp: u64, end_timestamp: u64) -> Option<PerformanceMetrics> {
+        let metrics = Self::calculate_avg_metrics(&env, start_timestamp, end_timestamp)?;
+        env.events().publish(
+            (METRICS_UPDATED_EVENT,),
+            (
+                start_timestamp,
+                end_timestamp,
+                metrics.total_amount,
+                metrics.late_disbursements,
+            ),
+        );
+        Some(metrics)
+    }
+
+    // /// Calculate payroll accuracy (percentage of successful operations)
+    // pub fn calculate_payroll_accuracy(env: &Env, start_timestamp: u64, end_timestamp: u64) -> Option<u64> {
+    //     let metrics = Self::calculate_avg_metrics(&env, start_timestamp, end_timestamp)?;
+    //     if metrics.operation_count == 0 {
+    //         return None;
+    //     }
+    //     Some((metrics.total_disbursements * 100) / metrics.operation_count)
+    // }
+
 }

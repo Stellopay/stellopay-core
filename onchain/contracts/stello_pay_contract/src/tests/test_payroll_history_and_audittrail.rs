@@ -1,10 +1,11 @@
 use core::ops::Add;
 
 use soroban_sdk::vec;
-use soroban_sdk::{testutils::Address as _, Address, Env, log, symbol_short, Vec};
+use soroban_sdk::{testutils::Address as _, Address, Env, log, symbol_short, Vec, IntoVal};
 use soroban_sdk::token::{StellarAssetClient as TokenAdmin, TokenClient};
 use soroban_sdk::testutils::{Ledger, LedgerInfo};
-use crate::payroll::{PayrollContract, PayrollContractClient};
+use crate::payroll::{PayrollContract, PayrollContractClient, PayrollError};
+    use soroban_sdk::testutils::{ MockAuth, MockAuthInvoke};
 
 fn create_test_contract() -> (Env, Address, PayrollContractClient<'static>) {
     let env = Env::default();
@@ -395,4 +396,254 @@ fn test_audit_trail_disburse_same_multiple() {
 
     let entries = client.get_audit_trail(&employee, &Some(disbursement_timestamp *2), &Some(disbursement_timestamp * 10), &None);
     assert_eq!(entries.len(), 9);
+}
+
+#[test]
+// #[should_panic]
+fn test_calculate_get_metrics() {
+    let (env, contract_id, client) = create_test_contract();
+    let (token_address, token_admin) = setup_token(&env);
+    let employer = Address::generate(&env);
+    let employee1 = Address::generate(&env);
+    let employee2 = Address::generate(&env);
+    let employee3 = Address::generate(&env);
+    let amount = 1000i128;
+    let interval = 86400u64;
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
+
+    env.mock_all_auths();
+
+    // Fund the employer with tokens
+    token_admin.mint(&employer, &100000);
+
+    // Initialize contract and deposit tokens
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &50000i128);
+
+    // Create escrow for employees
+    client.create_or_update_escrow(&employer, &employee1, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(&employer, &employee2, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(&employer, &employee3, &token_address, &amount, &interval, &recurrence_frequency);
+
+    // Set ledger timestamp for first day
+    let day1_timestamp = 0u64; // Arbitrary start of day (2023-10-01 00:00:00 UTC)
+    env.ledger().set(LedgerInfo {
+        timestamp: day1_timestamp + recurrence_frequency + 1,
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6312000,
+    });
+
+    // Perform successful disbursement for employee1
+    client.disburse_salary(&employer, &employee1);
+
+    // Perform failed disbursement for employee2 (e.g., unauthorized)
+    client.pause_employee_payroll(&employer, &employee2);
+    let _ = client.try_disburse_salary(&employer, &employee2);
+
+    client.resume_employee_payroll(&employer, &employee2);
+
+    client.disburse_salary(&employer, &employee2);
+
+    // Set ledger timestamp for second day
+    let day2_timestamp = day1_timestamp + 86400; // Next day
+    env.ledger().set(LedgerInfo {
+        timestamp: day2_timestamp + recurrence_frequency + 1,
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6312000,
+    });
+
+    // Set ledger timestamp for third day
+    let day3_timestamp = day1_timestamp + 86400 + 86400; // Next day
+    env.ledger().set(LedgerInfo {
+        timestamp: day3_timestamp + recurrence_frequency + 1,
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6312000,
+    });
+
+    // // Perform another successful disbursement for employee3
+    client.disburse_salary(&employer, &employee3);
+
+    // Calculate average metrics over the two days
+    // let metrics_opt = client.calculate_avg_metrics(&( day1_timestamp + recurrence_frequency + 1), &( day3_timestamp + recurrence_frequency + 1));
+    let start = day1_timestamp + recurrence_frequency;
+    let metrics_opt = client.get_metrics(&Some(start), &Some(2678400*3), &Some(3));
+    log!(&env, "METRICS: {}", metrics_opt);
+
+    // // Verify aggregated metrics
+    assert_eq!(metrics_opt.len(), 2); // two disbursement 
+}
+
+#[test]
+fn test_calculate_avg_metrics() {
+    let (env, contract_id, client) = create_test_contract();
+    let (token_address, token_admin) = setup_token(&env);
+    let employer = Address::generate(&env);
+    let employee1 = Address::generate(&env);
+    let employee2 = Address::generate(&env);
+    let employee3 = Address::generate(&env);
+    let amount = 1000i128;
+    let interval = 86400u64;
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
+
+    // Set initial ledger timestamp
+    let initial_timestamp = 1000u64;
+    env.ledger().set(LedgerInfo {
+        timestamp: initial_timestamp,
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6312000,
+    });
+
+    env.mock_all_auths();
+
+    // Fund the employer with tokens
+    token_admin.mint(&employer, &100000);
+
+    // Verify minting
+    let token_client = TokenClient::new(&env, &token_address);
+    let employer_balance = token_client.balance(&employer);
+    assert_eq!(employer_balance, 100000);
+
+    // Initialize contract and deposit tokens
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &50000i128);
+
+    // Create escrow for employees
+    client.create_or_update_escrow(&employer, &employee1, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(&employer, &employee2, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(&employer, &employee3, &token_address, &amount, &interval, &recurrence_frequency);
+
+    // Set ledger timestamp for first day
+    let payday1 = initial_timestamp + recurrence_frequency; // Aligned to expected day
+    env.ledger().set(LedgerInfo {
+        timestamp: payday1,
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6312000,
+    });
+
+    client.disburse_salary(&employer, &employee1);
+    client.disburse_salary(&employer, &employee2);
+
+    let payday1_late = initial_timestamp + recurrence_frequency + 1; // Aligned to expected day
+    env.ledger().set(LedgerInfo {
+        timestamp: payday1_late,
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6312000,
+    });
+
+    client.disburse_salary(&employer, &employee3);
+
+    // Set ledger timestamp for second day
+    let payday2 = payday1 + recurrence_frequency ; 
+    env.ledger().set(LedgerInfo {
+        timestamp: payday2,
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6312000,
+    });
+
+    // // // Perform successful disbursement for employee2
+    client.disburse_salary(&employer, &employee1);
+    client.disburse_salary(&employer, &employee2);
+
+    let start = payday1;
+    let end = payday2;
+    let metrics_opt = client.calculate_avg_metrics(&start, &end);
+
+    // Verify aggregated metrics
+    assert!(metrics_opt.is_some());
+    let metrics = metrics_opt.unwrap();
+    assert_eq!(metrics.total_disbursements, 5); // 5 successful disbursements
+    assert_eq!(metrics.total_amount, 5000); // 5000 per disbursement
+    assert_eq!(metrics.operation_count, 5); // Four successful attempts (failed attempt not stored)
+    assert_eq!(metrics.late_disbursements, 1); // 1 disbursements was late
+    assert_eq!(metrics.operation_type_counts.get(symbol_short!("disburses")).unwrap_or(0), 5); // Four disbursement attempts
+    assert_eq!(metrics.timestamp, end); // End timestamp
+}
+
+
+#[test]
+fn test_calculate_total_deposited_token() {
+    let (env, contract_id, client) = create_test_contract();
+    let (token_address, token_admin) = setup_token(&env);
+    let employer = Address::generate(&env);
+    let employer2 = Address::generate(&env);
+    let employee1 = Address::generate(&env);
+    let employee2 = Address::generate(&env);
+    let employee3 = Address::generate(&env);
+    let amount = 1000i128;
+    let interval = 86400u64;
+    let recurrence_frequency = 2592000u64; // 30 days in seconds
+
+    // Set initial ledger timestamp
+    let initial_timestamp = 1000u64;
+    env.ledger().set(LedgerInfo {
+        timestamp: initial_timestamp,
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6312000,
+    });
+
+    env.mock_all_auths();
+
+    // Fund the employer with tokens
+    token_admin.mint(&employer, &10000);
+    token_admin.mint(&employer2, &10000);
+
+    // Initialize contract and deposit tokens
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &5000i128);
+    client.deposit_tokens(&employer2, &token_address, &1200i128);
+
+    // Create escrow for employees
+    client.create_or_update_escrow(&employer, &employee1, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(&employer, &employee2, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(&employer, &employee3, &token_address, &amount, &interval, &recurrence_frequency);
+
+
+    let payday1 = initial_timestamp + recurrence_frequency + 1; // Aligned to expected day
+    // Set ledger timestamp for second day
+    let payday2 = payday1 + recurrence_frequency ; 
+
+    let start = payday1;
+    let end = payday2;
+    let total_deposited_token = client.calculate_total_deposited_token(&initial_timestamp, &end).unwrap();
+    assert_eq!(total_deposited_token, 6200); // Three unique employees
 }
