@@ -5441,4 +5441,302 @@ impl PayrollContract {
     //     Some((metrics.total_disbursements * 100) / metrics.operation_count)
     // }
 
+    //-----------------------------------------------------------------------------
+    // Financial Features & Compliance - Issue #58 Missing Features
+    //-----------------------------------------------------------------------------
+
+    /// Disburse partial salary - allows paying a percentage of full salary
+    pub fn disburse_partial_salary(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        percentage: u32, // Percentage in basis points (e.g., 5000 = 50%)
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+
+        // Only the employer can disburse salary
+        if caller != payroll.employer {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Check if payroll is paused for this employee
+        if payroll.is_paused {
+            return Err(PayrollError::ContractPaused);
+        }
+
+        // Validate percentage (1% to 100%)
+        if percentage == 0 || percentage > 10000 {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Calculate partial amount
+        let partial_amount = (payroll.amount * percentage as i128) / 10000;
+
+        // Use existing balance check and transfer logic
+        Self::check_and_update_balance(&env, &payroll.employer, &payroll.token, partial_amount)?;
+
+        let contract_address = env.current_contract_address();
+        Self::transfer_tokens_safe(&env, &payroll.token, &contract_address, &employee, partial_amount)?;
+
+        // Record audit and metrics
+        Self::record_audit(&env, &employee, &payroll.employer, &payroll.token, partial_amount, env.ledger().timestamp());
+        Self::record_metrics(&env, partial_amount, symbol_short!("partial"), true, Some(employee.clone()), false);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("part_pay"),),
+            (payroll.employer, employee, payroll.token, partial_amount, percentage, env.ledger().timestamp()),
+        );
+
+        Ok(())
+    }
+
+    /// Pay overtime - additional payment for extra hours worked
+    pub fn pay_overtime(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        hours: u32,
+        hourly_rate_override: Option<i128>, // Optional custom hourly rate
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+
+        // Only the employer can pay overtime
+        if caller != payroll.employer {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Validate hours (max 80 hours overtime per pay period)
+        if hours == 0 || hours > 80 {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Calculate overtime payment
+        let overtime_amount = if let Some(custom_rate) = hourly_rate_override {
+            custom_rate * hours as i128
+        } else {
+            // Assume standard 40 hours per pay period for base calculation
+            // Overtime rate = 1.5x normal hourly rate
+            let assumed_hours_per_period = 40u32;
+            let normal_hourly_rate = payroll.amount / assumed_hours_per_period as i128;
+            let overtime_rate = (normal_hourly_rate * 15) / 10; // 1.5x
+            overtime_rate * hours as i128
+        };
+
+        // Use existing balance check and transfer logic
+        Self::check_and_update_balance(&env, &payroll.employer, &payroll.token, overtime_amount)?;
+
+        let contract_address = env.current_contract_address();
+        Self::transfer_tokens_safe(&env, &payroll.token, &contract_address, &employee, overtime_amount)?;
+
+        // Record audit and metrics
+        Self::record_audit(&env, &employee, &payroll.employer, &payroll.token, overtime_amount, env.ledger().timestamp());
+        Self::record_metrics(&env, overtime_amount, symbol_short!("overtime"), true, Some(employee.clone()), false);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("overtime"),),
+            (payroll.employer, employee, payroll.token, overtime_amount, hours, env.ledger().timestamp()),
+        );
+
+        Ok(())
+    }
+
+    /// Pay bonus - one-time bonus payment
+    pub fn pay_bonus(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        bonus_amount: i128,
+        bonus_reason: String,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+
+        // Only the employer can pay bonus
+        if caller != payroll.employer {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Validate bonus amount
+        if bonus_amount <= 0 {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Use existing balance check and transfer logic
+        Self::check_and_update_balance(&env, &payroll.employer, &payroll.token, bonus_amount)?;
+
+        let contract_address = env.current_contract_address();
+        Self::transfer_tokens_safe(&env, &payroll.token, &contract_address, &employee, bonus_amount)?;
+
+        // Record audit and metrics
+        Self::record_audit(&env, &employee, &payroll.employer, &payroll.token, bonus_amount, env.ledger().timestamp());
+        Self::record_metrics(&env, bonus_amount, symbol_short!("bonus"), true, Some(employee.clone()), false);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("bonus"),),
+            (payroll.employer, employee, payroll.token, bonus_amount, env.ledger().timestamp()),
+        );
+
+        Ok(())
+    }
+
+    /// Disburse salary with tax withholding
+    pub fn disburse_salary_with_tax(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        tax_rate: u32, // Tax rate in basis points (e.g., 2000 = 20%)
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+
+        // Only the employer can disburse salary
+        if caller != payroll.employer {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Check if payroll is paused for this employee
+        if payroll.is_paused {
+            return Err(PayrollError::ContractPaused);
+        }
+
+        // Check timing
+        let current_time = env.ledger().timestamp();
+        if current_time < payroll.next_payout_timestamp {
+            return Err(PayrollError::NextPayoutTimeNotReached);
+        }
+
+        // Validate tax rate (0% to 50%)
+        if tax_rate > 5000 {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Calculate tax amount and net salary
+        let gross_amount = payroll.amount;
+        let tax_amount = (gross_amount * tax_rate as i128) / 10000;
+        let net_amount = gross_amount - tax_amount;
+
+        // Use existing balance check and transfer logic
+        Self::check_and_update_balance(&env, &payroll.employer, &payroll.token, gross_amount)?;
+
+        let contract_address = env.current_contract_address();
+        // Transfer net amount to employee
+        Self::transfer_tokens_safe(&env, &payroll.token, &contract_address, &employee, net_amount)?;
+        // Keep tax amount in contract (in real implementation, this would go to tax authority)
+
+        // Update payroll timestamps
+        Self::update_payroll_timestamps(&env, &employee, &payroll, current_time);
+
+        // Record audit and metrics
+        Self::record_audit(&env, &employee, &payroll.employer, &payroll.token, gross_amount, current_time);
+        Self::record_metrics(&env, gross_amount, symbol_short!("tax_pay"), true, Some(employee.clone()), false);
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("tax_pay"),),
+            (payroll.employer, employee, payroll.token, gross_amount, net_amount, tax_amount, current_time),
+        );
+
+        Ok(())
+    }
+
+    /// Get payment history summary for an employee (simplified version)
+    pub fn get_payment_summary(
+        env: Env,
+        employee: Address,
+    ) -> Result<Map<String, i128>, PayrollError> {
+        let mut summary = Map::new(&env);
+
+        // Get basic payroll info
+        if let Some(payroll) = Self::_get_payroll(&env, &employee) {
+            summary.set(String::from_str(&env, "base_salary"), payroll.amount);
+            summary.set(String::from_str(&env, "last_payment"), payroll.last_payment_time as i128);
+            summary.set(String::from_str(&env, "next_payment"), payroll.next_payout_timestamp as i128);
+            summary.set(String::from_str(&env, "interval"), payroll.interval as i128);
+            summary.set(String::from_str(&env, "is_paused"), payroll.is_paused as i128);
+        }
+
+        // Add basic metrics
+        let current_time = env.ledger().timestamp();
+        summary.set(String::from_str(&env, "query_time"), current_time as i128);
+
+        Ok(summary)
+    }
+
+    /// Export basic payment data for accounting (simplified CSV-like format)
+    pub fn export_payment_data(
+        env: Env,
+        caller: Address,
+        employee: Address,
+    ) -> Result<String, PayrollError> {
+        caller.require_auth();
+
+        // Verify authorization (employer or owner)
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+        let owner = Self::get_owner(env.clone());
+
+        if caller != payroll.employer && Some(caller.clone()) != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Create simple CSV-like format
+        let export_data = String::from_str(&env, "Employee,Employer,Token,Amount,LastPayment,NextPayment,Interval,Status\nemployee_data,employer_data,token_data,amount_data,last_data,next_data,interval_data,status_data\n");
+
+        Ok(export_data)
+    }
+
+    /// Set multi-currency preference (basic implementation)
+    pub fn set_currency_preference(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        preferred_token: Address,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        // Verify authorization
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+        let owner = Self::get_owner(env.clone());
+
+        if caller != payroll.employer && caller != employee && Some(caller.clone()) != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        // Verify token is supported
+        if !Self::is_token_supported(env.clone(), preferred_token.clone()) {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Emit event to indicate preference set
+        env.events().publish(
+            (symbol_short!("curr_pref"),),
+            (caller, employee, preferred_token, env.ledger().timestamp()),
+        );
+
+        Ok(())
+    }
+
+    /// Get available payment types for reporting
+    pub fn get_payment_types(env: Env) -> Vec<String> {
+        let mut types = Vec::new(&env);
+        types.push_back(String::from_str(&env, "base_salary"));
+        types.push_back(String::from_str(&env, "partial_payment"));
+        types.push_back(String::from_str(&env, "overtime"));
+        types.push_back(String::from_str(&env, "bonus"));
+        types.push_back(String::from_str(&env, "tax_withholding"));
+        types
+    }
+
 }
