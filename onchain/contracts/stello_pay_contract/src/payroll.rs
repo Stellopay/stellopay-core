@@ -5442,7 +5442,7 @@ impl PayrollContract {
     // }
 
     //-----------------------------------------------------------------------------
-    // Financial Features & Compliance - Issue #58 Missing Features
+    // Financial Features & Compliance 
     //-----------------------------------------------------------------------------
 
     /// Disburse partial salary - allows paying a percentage of full salary
