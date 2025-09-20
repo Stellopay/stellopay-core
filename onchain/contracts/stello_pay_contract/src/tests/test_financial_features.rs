@@ -276,3 +276,133 @@ fn test_get_payment_summary_success() {
     let summary = client.get_payment_summary(&employee);
     assert!(summary.len() > 0);
 }
+
+#[test]
+fn test_export_payment_data_success() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let (token, token_admin) = setup_token(&env);
+    let amount = 1000i128;
+
+    setup_payroll_with_deposit(&env, &client, &employer, &employee, &token, &token_admin, amount);
+
+    // Test payment data export
+    let export_data = client.try_export_payment_data(&employer, &employee);
+    assert!(export_data.is_ok());
+}
+
+#[test]
+fn test_set_currency_preference_success() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let (token, token_admin) = setup_token(&env);
+    let amount = 1000i128;
+
+    setup_payroll_with_deposit(&env, &client, &employer, &employee, &token, &token_admin, amount);
+
+    // Test setting currency preference
+    let preferred_token = Address::generate(&env);
+    let result = client.try_set_currency_preference(&employer, &employee, &preferred_token);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_get_payment_types_success() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+
+    let employer = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&employer);
+
+    // Test get payment types
+    let payment_types = client.get_payment_types();
+    assert!(payment_types.len() > 0);
+}
+
+#[test]
+fn test_boundary_values_partial_salary() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let (token, token_admin) = setup_token(&env);
+    let amount = 1000i128;
+
+    setup_payroll_with_deposit(&env, &client, &employer, &employee, &token, &token_admin, amount);
+
+    // Test minimum valid percentage (1 basis point = 0.01%)
+    let min_percentage = 1u32;
+    let result = client.try_disburse_partial_salary(&employer, &employee, &min_percentage);
+    assert!(result.is_ok());
+
+    // Test maximum valid percentage (10000 basis points = 100%)
+    let max_percentage = 10000u32;
+    let result = client.try_disburse_partial_salary(&employer, &employee, &max_percentage);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_get_payment_summary_nonexistent_employee() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+
+    let nonexistent_employee = Address::generate(&env);
+
+    // Test payment summary for nonexistent employee
+    let summary = client.get_payment_summary(&nonexistent_employee);
+    assert_eq!(summary.len(), 0);
+}
+
+#[test]
+fn test_boundary_values_tax_rate() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let (token, token_admin) = setup_token(&env);
+    let amount = 1000i128;
+
+    setup_payroll_with_deposit(&env, &client, &employer, &employee, &token, &token_admin, amount);
+
+    // Advance time to make payout eligible
+    env.ledger().with_mut(|l| l.timestamp = 2592001); // Past the 30-day window
+
+    // Test minimum valid tax rate (0%)
+    let min_tax_rate = 0u32;
+    let result = client.try_disburse_salary_with_tax(&employer, &employee, &min_tax_rate);
+    assert!(result.is_ok());
+
+    // Need to create a new payroll for the second test since the first already disbursed
+    let employee2 = Address::generate(&env);
+    client.create_or_update_escrow(
+        &employer,
+        &employee2,
+        &token,
+        &amount,
+        &86400u64,
+        &2592000u64,
+    );
+
+    // Test maximum valid tax rate (50% = 5000 basis points - adjusted per implementation)
+    let max_tax_rate = 5000u32;
+    let result = client.try_disburse_salary_with_tax(&employer, &employee2, &max_tax_rate);
+    assert!(result.is_ok());
+}
+
+
