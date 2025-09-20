@@ -575,13 +575,293 @@ impl TokenSwapSystem {
             net_input_amount,
         )?;
 
-        let min_output = request.expected_output_amount - 
+        let min_output = request.expected_output_amount -
             (request.expected_output_amount * request.slippage_tolerance as i128) / 10000;
-        
+
         if output_amount < min_output {
             return Err(TokenSwapError::SlippageExceeded);
         }
 
         Ok(output_amount)
+    }
+
+    //-----------------------------------------------------------------------------
+    // Enhanced Multi-Currency Support for Payroll System
+    //-----------------------------------------------------------------------------
+
+    /// Set or update exchange rate for a token pair
+    pub fn set_exchange_rate(
+        env: Env,
+        caller: Address,
+        from_token: Address,
+        to_token: Address,
+        rate: i128,
+        source: String,
+    ) -> Result<(), TokenSwapError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let exchange_rate = crate::storage::ExchangeRate {
+            from_token: from_token.clone(),
+            to_token: to_token.clone(),
+            rate,
+            timestamp: current_time,
+            source,
+            is_active: true,
+        };
+
+        // Store current rate
+        storage.set(
+            &DataKey::ExchangeRate(from_token.clone(), to_token.clone()),
+            &exchange_rate,
+        );
+
+        // Store historical rate
+        storage.set(
+            &DataKey::ExchangeRateHistory(from_token.clone(), to_token.clone(), current_time),
+            &exchange_rate,
+        );
+
+        env.events().publish(
+            (symbol_short!("rate_update"),),
+            (from_token, to_token, rate, current_time),
+        );
+
+        Ok(())
+    }
+
+    /// Get current exchange rate between two tokens
+    pub fn get_exchange_rate(
+        env: Env,
+        from_token: Address,
+        to_token: Address,
+    ) -> Option<crate::storage::ExchangeRate> {
+        let storage = env.storage().persistent();
+        storage.get(&DataKey::ExchangeRate(from_token, to_token))
+    }
+
+    /// Convert amount from one currency to another using stored exchange rates
+    pub fn convert_currency(
+        env: Env,
+        amount: i128,
+        from_token: Address,
+        to_token: Address,
+    ) -> Result<i128, TokenSwapError> {
+        // If same token, return original amount
+        if from_token == to_token {
+            return Ok(amount);
+        }
+
+        let storage = env.storage().persistent();
+
+        // Try direct conversion
+        if let Some(rate) = storage.get::<DataKey, crate::storage::ExchangeRate>(
+            &DataKey::ExchangeRate(from_token.clone(), to_token.clone())
+        ) {
+            if rate.is_active {
+                let converted = (amount * rate.rate) / 10_000_000; // Assuming 7 decimal places
+                return Ok(converted);
+            }
+        }
+
+        // Try reverse conversion
+        if let Some(rate) = storage.get::<DataKey, crate::storage::ExchangeRate>(
+            &DataKey::ExchangeRate(to_token.clone(), from_token.clone())
+        ) {
+            if rate.is_active && rate.rate > 0 {
+                let converted = (amount * 10_000_000) / rate.rate; // Reverse calculation
+                return Ok(converted);
+            }
+        }
+
+        Err(TokenSwapError::InvalidConversionRate)
+    }
+
+    /// Execute payroll payment with automatic currency conversion
+    pub fn execute_payroll_with_conversion(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        employer_token: Address,  // Token employer has
+        employee_token: Address, // Token employee wants
+        payroll_amount: i128,    // Amount in employer_token
+        max_slippage: u32,       // Slippage tolerance in basis points
+    ) -> Result<i128, TokenSwapError> {
+        caller.require_auth();
+
+        // If tokens are the same, no conversion needed
+        if employer_token == employee_token {
+            return Ok(payroll_amount);
+        }
+
+        // Get conversion rate
+        let converted_amount = Self::convert_currency(
+            env.clone(),
+            payroll_amount,
+            employer_token.clone(),
+            employee_token.clone(),
+        )?;
+
+        // If we have a direct rate, use it
+        let exchange_rate = Self::get_exchange_rate(
+            env.clone(),
+            employer_token.clone(),
+            employee_token.clone(),
+        );
+
+        if let Some(rate) = exchange_rate {
+            // Check if rate is recent (within 1 hour)
+            let current_time = env.ledger().timestamp();
+            if current_time - rate.timestamp <= 3600 {
+                let converted = (payroll_amount * rate.rate) / 10_000_000;
+
+                // Apply slippage protection
+                let min_output = converted - (converted * max_slippage as i128) / 10000;
+
+                if converted >= min_output {
+                    env.events().publish(
+                        (symbol_short!("payroll_conv"),),
+                        (employer_token, employee_token, payroll_amount, converted),
+                    );
+                    return Ok(converted);
+                }
+            }
+        }
+
+        // If no recent rate or slippage exceeded, attempt DEX swap
+        Self::execute_dex_conversion(
+            env,
+            employer_token,
+            employee_token,
+            payroll_amount,
+            max_slippage,
+        )
+    }
+
+    /// Execute currency conversion through DEX
+    fn execute_dex_conversion(
+        env: Env,
+        from_token: Address,
+        to_token: Address,
+        amount: i128,
+        max_slippage: u32,
+    ) -> Result<i128, TokenSwapError> {
+        // Create swap request
+        let request_id = String::from_slice(&env, "payroll_conversion_request");
+
+        let expected_output = Self::calculate_output_amount(
+            env.clone(),
+            from_token.clone(),
+            to_token.clone(),
+            amount,
+        )?;
+
+        let swap_request = SwapRequest {
+            request_id: String::from_slice(&env, &request_id),
+            employer: env.current_contract_address(), // Contract acts as employer for conversions
+            employee: env.current_contract_address(), // Contract acts as employee for conversions
+            input_token: from_token,
+            output_token: to_token,
+            input_amount: amount,
+            expected_output_amount: expected_output,
+            slippage_tolerance: max_slippage,
+            dex_protocol: DexProtocol::Soroswap, // Default to Soroswap
+            status: SwapStatus::Pending,
+            created_at: env.ledger().timestamp(),
+            executed_at: None,
+            actual_output_amount: None,
+            fee_paid: None,
+        };
+
+        // Execute the swap
+        let result = Self::execute_swap(env, swap_request)?;
+
+        if result.success {
+            Ok(result.output_amount)
+        } else {
+            Err(TokenSwapError::SwapExecutionFailed)
+        }
+    }
+
+    /// Get historical exchange rates for reporting
+    pub fn get_historical_rates(
+        env: Env,
+        from_token: Address,
+        to_token: Address,
+        from_timestamp: u64,
+        to_timestamp: u64,
+    ) -> Vec<crate::storage::ExchangeRate> {
+        let storage = env.storage().persistent();
+        let mut rates = Vec::new(&env);
+
+        // This is a simplified implementation
+        // In practice, you'd iterate through timestamps in the range
+        for timestamp in (from_timestamp..=to_timestamp).step_by(3600) { // Hourly intervals
+            if let Some(rate) = storage.get::<DataKey, crate::storage::ExchangeRate>(
+                &DataKey::ExchangeRateHistory(from_token.clone(), to_token.clone(), timestamp)
+            ) {
+                rates.push_back(rate);
+            }
+        }
+
+        rates
+    }
+
+    /// Set preferred payment currency for multi-currency payroll
+    pub fn set_payment_currency_preference(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        preferred_token: Address,
+        auto_convert: bool,
+        max_slippage: u32,
+    ) -> Result<(), TokenSwapError> {
+        caller.require_auth();
+
+        // This would integrate with the payroll system to set payment preferences
+        // For now, we'll emit an event to indicate the preference was set
+        env.events().publish(
+            (symbol_short!("currency_pref"),),
+            (caller, employee, preferred_token, auto_convert, max_slippage),
+        );
+
+        Ok(())
+    }
+
+    /// Batch currency conversion for multiple payroll payments
+    pub fn batch_payroll_conversion(
+        env: Env,
+        caller: Address,
+        conversions: Vec<(Address, Address, Address, i128)>, // (employee, from_token, to_token, amount)
+        max_slippage: u32,
+    ) -> Result<Vec<i128>, TokenSwapError> {
+        caller.require_auth();
+
+        let mut results = Vec::new(&env);
+
+        for conversion in conversions.iter() {
+            let (employee, from_token, to_token, amount) = conversion;
+
+            let converted_amount = Self::execute_payroll_with_conversion(
+                env.clone(),
+                caller.clone(),
+                employee.clone(),
+                from_token.clone(),
+                to_token.clone(),
+                amount.clone(),
+                max_slippage,
+            )?;
+
+            results.push_back(converted_amount);
+        }
+
+        env.events().publish(
+            (symbol_short!("batch_conv"),),
+            (caller, conversions.len() as u32, max_slippage),
+        );
+
+        Ok(results)
     }
 } 

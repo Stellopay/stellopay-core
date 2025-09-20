@@ -743,13 +743,248 @@ impl ComplianceSystem {
     pub fn get_supported_jurisdictions(env: Env) -> Vec<Jurisdiction> {
         let storage = env.storage().persistent();
         let mut jurisdictions = Vec::new(&env);
-        
+
         // This would iterate through all jurisdiction configs
         // For now, return a default list
         jurisdictions.push_back(Jurisdiction::US);
         jurisdictions.push_back(Jurisdiction::EU);
         jurisdictions.push_back(Jurisdiction::UK);
-        
+
         jurisdictions
+    }
+
+    //-----------------------------------------------------------------------------
+    // Enhanced Tax & Payroll Compliance Integration
+    //-----------------------------------------------------------------------------
+
+    /// Validate tax withholding compliance for enhanced payroll system
+    pub fn validate_tax_compliance(
+        env: Env,
+        employee: Address,
+        jurisdiction: Jurisdiction,
+        gross_amount: i128,
+        tax_withheld: i128,
+        tax_breakdown: crate::storage::TaxBreakdown,
+    ) -> ComplianceValidation {
+        let storage = env.storage().persistent();
+        let key = DataKey::JurisdictionConfig(Self::hash_jurisdiction(&env, &jurisdiction));
+
+        let config = match storage.get(&key) {
+            Some(config) if config.enabled => config,
+            _ => {
+                return ComplianceValidation {
+                    is_compliant: false,
+                    violations: Vec::new(&env),
+                    warnings: vec![String::from_slice(&env, "Tax jurisdiction not configured")],
+                    timestamp: env.ledger().timestamp(),
+                };
+            }
+        };
+
+        let mut violations = Vec::new(&env);
+        let mut warnings = Vec::new(&env);
+        let current_time = env.ledger().timestamp();
+
+        // Validate tax withholding rules
+        for rule in config.rules.iter() {
+            if rule.rule_type == ComplianceRuleType::TaxWithholding {
+                if rule.effective_date <= current_time &&
+                   (rule.expiry_date.is_none() || rule.expiry_date.unwrap() > current_time) {
+
+                    // Calculate expected minimum tax withholding
+                    let expected_min_tax = (gross_amount * rule.min_value) / 10000;
+
+                    if tax_withheld < expected_min_tax {
+                        violations.push_back(ComplianceViolation {
+                            rule_type: ComplianceRuleType::TaxWithholding,
+                            jurisdiction: jurisdiction.clone(),
+                            violation_type: String::from_slice(&env, "insufficient_tax_withholding"),
+                            severity: ViolationSeverity::High,
+                            description: String::from_slice(&env, "Tax withholding below minimum required rate"),
+                            timestamp: current_time,
+                        });
+                    }
+
+                    // Check if maximum withholding is exceeded
+                    if let Some(max_value) = rule.max_value {
+                        let expected_max_tax = (gross_amount * max_value) / 10000;
+                        if tax_withheld > expected_max_tax {
+                            warnings.push_back(String::from_slice(&env, "Tax withholding exceeds recommended maximum"));
+                        }
+                    }
+                }
+            }
+
+            // Validate Social Security compliance
+            if rule.rule_type == ComplianceRuleType::SocialSecurity {
+                let expected_ss = (gross_amount * rule.min_value) / 10000;
+                if tax_breakdown.social_security < expected_ss {
+                    violations.push_back(ComplianceViolation {
+                        rule_type: ComplianceRuleType::SocialSecurity,
+                        jurisdiction: jurisdiction.clone(),
+                        violation_type: String::from_slice(&env, "insufficient_social_security"),
+                        severity: ViolationSeverity::High,
+                        description: String::from_slice(&env, "Social Security withholding below required rate"),
+                        timestamp: current_time,
+                    });
+                }
+            }
+        }
+
+        ComplianceValidation {
+            is_compliant: violations.len() == 0,
+            violations,
+            warnings,
+            timestamp: current_time,
+        }
+    }
+
+    /// Generate tax compliance report for a specific period
+    pub fn generate_tax_compliance_report(
+        env: Env,
+        caller: Address,
+        jurisdiction: Jurisdiction,
+        employee: Option<Address>,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<RegulatoryReport, ComplianceError> {
+        caller.require_auth();
+        Self::require_compliance_authorized(&env, &caller)?;
+
+        let current_time = env.ledger().timestamp();
+        let report_id = Self::generate_report_id(&env, &jurisdiction, &ReportType::PayrollTax, period_start);
+
+        // Collect tax data for the period
+        let tax_data = Self::collect_tax_compliance_data(&env, &jurisdiction, employee, period_start, period_end)?;
+
+        let report = RegulatoryReport {
+            report_id: report_id.clone(),
+            jurisdiction: jurisdiction.clone(),
+            report_type: ReportType::PayrollTax,
+            period_start,
+            period_end,
+            data: tax_data,
+            submitted_at: current_time,
+            status: ReportStatus::Draft,
+        };
+
+        // Store report
+        let storage = env.storage().persistent();
+        let key = DataKey::RegulatoryReport(report_id.clone());
+        storage.set(&key, &report);
+
+        // Add to audit trail
+        let mut details = Map::new(&env);
+        details.set(&String::from_slice(&env, "report_id"), &report_id);
+        details.set(&String::from_slice(&env, "report_type"), &String::from_slice(&env, "tax_compliance"));
+        if let Some(emp) = employee {
+            details.set(&String::from_slice(&env, "employee"), &emp.to_string());
+        }
+        Self::add_audit_entry(&env, "tax_compliance_report_generated", &caller, None, &details);
+
+        Ok(report)
+    }
+
+    /// Set tax compliance rules for a jurisdiction
+    pub fn set_tax_compliance_rules(
+        env: Env,
+        caller: Address,
+        jurisdiction: Jurisdiction,
+        federal_tax_rate: u32,       // In basis points
+        state_tax_rate: u32,         // In basis points
+        social_security_rate: u32,   // In basis points
+        medicare_rate: u32,          // In basis points
+        unemployment_rate: u32,      // In basis points
+    ) -> Result<(), ComplianceError> {
+        caller.require_auth();
+        Self::require_compliance_authorized(&env, &caller)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Create tax compliance rules
+        let mut rules = Vec::new(&env);
+
+        // Federal tax rule
+        rules.push_back(ComplianceRule {
+            rule_type: ComplianceRuleType::TaxWithholding,
+            jurisdiction: jurisdiction.clone(),
+            min_value: federal_tax_rate as i128,
+            max_value: Some((federal_tax_rate + 500) as i128), // Allow 5% variance
+            required: true,
+            description: String::from_slice(&env, "Federal income tax withholding"),
+            effective_date: current_time,
+            expiry_date: None,
+        });
+
+        // Social Security rule
+        rules.push_back(ComplianceRule {
+            rule_type: ComplianceRuleType::SocialSecurity,
+            jurisdiction: jurisdiction.clone(),
+            min_value: social_security_rate as i128,
+            max_value: Some(social_security_rate as i128),
+            required: true,
+            description: String::from_slice(&env, "Social Security tax withholding"),
+            effective_date: current_time,
+            expiry_date: None,
+        });
+
+        // Create or update jurisdiction config
+        let jurisdiction_hash = Self::hash_jurisdiction(&env, &jurisdiction);
+        let config = JurisdictionConfig {
+            jurisdiction: jurisdiction.clone(),
+            rules,
+            reporting_frequency: 86400 * 30, // Monthly reporting
+            audit_frequency: 86400 * 90,     // Quarterly audits
+            enabled: true,
+            last_updated: current_time,
+        };
+
+        let key = DataKey::JurisdictionConfig(jurisdiction_hash);
+        storage.set(&key, &config);
+
+        // Add to audit trail
+        let mut details = Map::new(&env);
+        details.set(&String::from_slice(&env, "jurisdiction"), &String::from_slice(&env, "jurisdiction_name"));
+        details.set(&String::from_slice(&env, "federal_rate"), &federal_tax_rate.to_string());
+        details.set(&String::from_slice(&env, "social_security_rate"), &social_security_rate.to_string());
+        Self::add_audit_entry(&env, "tax_compliance_rules_set", &caller, None, &details);
+
+        Ok(())
+    }
+
+    /// Helper function to hash jurisdiction for storage key
+    fn hash_jurisdiction(env: &Env, jurisdiction: &Jurisdiction) -> String {
+        // Simple string representation for now
+        String::from_slice(env, "jurisdiction_hash")
+    }
+
+    /// Collect tax compliance data for reporting
+    fn collect_tax_compliance_data(
+        env: &Env,
+        jurisdiction: &Jurisdiction,
+        employee: Option<Address>,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<Map<String, String>, ComplianceError> {
+        let mut data = Map::new(env);
+
+        // Basic reporting data structure
+        data.set(&String::from_slice(env, "jurisdiction"), &String::from_slice(env, "jurisdiction_name"));
+        data.set(&String::from_slice(env, "period_start"), &period_start.to_string());
+        data.set(&String::from_slice(env, "period_end"), &period_end.to_string());
+        data.set(&String::from_slice(env, "generated_at"), &env.ledger().timestamp().to_string());
+
+        if let Some(emp) = employee {
+            data.set(&String::from_slice(env, "employee_filter"), &emp.to_string());
+        }
+
+        // TODO: Integrate with payment transaction data to collect actual tax amounts
+        // This would query payment transactions within the period and aggregate tax data
+        data.set(&String::from_slice(env, "total_transactions"), &String::from_slice(env, "0"));
+        data.set(&String::from_slice(env, "total_tax_withheld"), &String::from_slice(env, "0"));
+        data.set(&String::from_slice(env, "total_gross_amount"), &String::from_slice(env, "0"));
+
+        Ok(data)
     }
 } 
