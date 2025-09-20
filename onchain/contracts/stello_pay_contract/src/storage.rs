@@ -1,7 +1,7 @@
 use soroban_sdk::{contracttype, Address, Symbol, String, Vec, Map};
 
 // Import insurance types for backup functionality
-use crate::insurance::InsurancePolicy;
+// use crate::insurance::InsurancePolicy;  // Temporarily commented out
 
 //-----------------------------------------------------------------------------
 // Data Structures
@@ -151,18 +151,18 @@ pub enum BackupStatus {
     Restored,       // Backup restored successfully
 }
 
-/// Backup data structure for storing actual backup content
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct BackupData {
-    pub backup_id: u64,
-    pub payroll_data: Vec<Payroll>,
-    pub template_data: Vec<PayrollTemplate>,
-    pub preset_data: Vec<TemplatePreset>,
-    pub insurance_data: Vec<InsurancePolicy>,
-    pub compliance_data: String, // Serialized compliance data as string
-    pub metadata: BackupMetadata,
-}
+// /// Backup data structure for storing actual backup content
+// #[contracttype]
+// #[derive(Clone, Debug, PartialEq)]
+// pub struct BackupData {
+//     pub backup_id: u64,
+//     pub payroll_data: Vec<Payroll>,
+//     pub template_data: Vec<PayrollTemplate>,
+//     pub preset_data: Vec<TemplatePreset>,
+//     pub insurance_data: Vec<InsurancePolicy>,
+//     pub compliance_data: String, // Serialized compliance data as string
+//     pub metadata: BackupMetadata,
+// }
 
 /// Backup metadata for additional information
 #[contracttype]
@@ -731,39 +731,27 @@ pub enum DataKey {
     // Webhook system keys - CORE FUNCTIONALITY
     Webhook(u64),                        // webhook_id -> Webhook
     NextWebhookId,                       // counter for webhook IDs
+    NextWebhookAttemptId,                // counter for webhook attempt IDs
+    OwnerWebhooks(Address),              // owner -> Vec<u64> (webhook IDs)
+    WebhookRateLimit(u64),               // webhook_id -> last_request_timestamp
     
     // Audit and History - ESSENTIAL
     AuditIdCounter(Address),
     
-    // Templates - MINIMAL SET
-    NextTmplId,                          // Next available template ID
-    Template(u64),                       // template_id -> PayrollTemplate
-    EmpTemplates(Address),               // employer -> Vec<u64> (template IDs)  
-    PubTemplates,                        // Vec<u64> (public template IDs)
-    Preset(u64),                         // preset_id -> TemplatePreset
-    NextPresetId,                        // Next available preset ID
-    PresetCat(String),                   // category -> Vec<u64> (preset IDs)
-    ActivePresets,                       // Vec<u64> (active preset IDs)
-
-    // Backup - MINIMAL SET  
-    Backup(u64),                         // backup_id -> PayrollBackup
-    NextBackupId,                        // Next available backup ID
-    EmpBackups(Address),                 // employer -> Vec<u64> (backup IDs)
-    BackupData(u64),                     // backup_id -> BackupData
-    BackupIndex,                         // Vec<u64> (all backup IDs)
-    Recovery(u64),                       // recovery_point_id -> RecoveryPoint
-    NextRecoveryId,                      // Next available recovery point ID
-
-    // Scheduling - MINIMAL SET
-    Schedule(u64),                       // schedule_id -> PayrollSchedule
-    NextSchedId,                         // Next available schedule ID
-    EmpSchedules(Address),               // employer -> Vec<u64> (schedule IDs)
-    Rule(u64),                           // rule_id -> AutomationRule
-    NextRuleId,                          // Next available rule ID
-    EmpRules(Address),                   // employer -> Vec<u64> (rule IDs)
-
     // Security - MINIMAL SET 
     Role(String),                        // role_id -> Role
     UserRole(Address),                   // user -> UserRoleAssignment
     SecuritySettings                     // Global security settings
+}
+
+#[contracttype]
+pub enum WebhookDataKey {
+    // Webhook Statistics
+    WebhookStats,                        // Global webhook statistics
+    ActiveWebhookStats,                  // Active webhook count
+    TotalDeliveryStats,                  // Total delivery count
+    SuccessfulDeliveryStats,             // Successful delivery count
+    AverageResponseTimeStats,            // Average response time
+    Last24hDeliveryStats,                // Last 24h delivery count
+    Last24hFailureStats,                 // Last 24h failure count
 }

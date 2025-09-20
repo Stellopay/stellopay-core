@@ -21,12 +21,15 @@ mod test_webhooks_simple {
         client.initialize(&integration_owner);
         
         // Register webhook through the contract client
-        let webhook_id = client.register_webhook(
-            &integration_owner,
-            &String::from_str(&env, "https://example.com/webhook"),
-            &vec![&env, EventType::SalaryDisbursed],
-            &String::from_str(&env, "secret123"),
-        );
+        let registration = crate::webhooks::WebhookRegistration {
+            name: String::from_str(&env, "Test Webhook"),
+            description: String::from_str(&env, "Test webhook"),
+            url: String::from_str(&env, "https://example.com/webhook"),
+            events: vec![&env, crate::webhooks::WebhookEventType::SalaryDisbursed],
+            secret: String::from_str(&env, "secret123"),
+        };
+        
+        let webhook_id = client.register_webhook(&integration_owner, &registration);
         
         assert_eq!(webhook_id, 1);
         
@@ -51,12 +54,15 @@ mod test_webhooks_simple {
         client.initialize(&integration_owner);
         
         // Register webhook
-        let webhook_id = client.register_webhook(
-            &integration_owner,
-            &String::from_str(&env, "https://example.com/webhook"),
-            &vec![&env, EventType::SalaryDisbursed],
-            &String::from_str(&env, "secret123"),
-        );
+        let registration = crate::webhooks::WebhookRegistration {
+            name: String::from_str(&env, "Test Webhook"),
+            description: String::from_str(&env, "Test webhook"),
+            url: String::from_str(&env, "https://example.com/webhook"),
+            events: vec![&env, crate::webhooks::WebhookEventType::SalaryDisbursed],
+            secret: String::from_str(&env, "secret123"),
+        };
+        
+        let webhook_id = client.register_webhook(&integration_owner, &registration);
         
         // Delete webhook
         client.delete_webhook(&integration_owner, &webhook_id);
@@ -83,12 +89,15 @@ mod test_webhooks_simple {
         client.initialize(&integration_owner);
         
         // Register webhook (need to mock auth for this)
-        let webhook_id = client.register_webhook(
-            &integration_owner,
-            &String::from_str(&env, "https://example.com/webhook"),
-            &vec![&env, EventType::SalaryDisbursed],
-            &String::from_str(&env, "secret123"),
-        );
+        let registration = crate::webhooks::WebhookRegistration {
+            name: String::from_str(&env, "Test Webhook"),
+            description: String::from_str(&env, "Test webhook"),
+            url: String::from_str(&env, "https://example.com/webhook"),
+            events: vec![&env, crate::webhooks::WebhookEventType::SalaryDisbursed],
+            secret: String::from_str(&env, "secret123"),
+        };
+        
+        let webhook_id = client.register_webhook(&integration_owner, &registration);
         
         // Clear auth mocks - now unauthorized deletion should fail with auth error
         env.set_auths(&[]);
@@ -113,12 +122,16 @@ mod test_webhooks_simple {
         
         // Try to register webhook with very long URL (over 255 chars) - should panic
         let long_url = "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        
+        let registration = crate::webhooks::WebhookRegistration {
+            name: String::from_str(&env, "Test Webhook"),
+            description: String::from_str(&env, "Test webhook"),
+            url: String::from_str(&env, long_url),
+            events: vec![&env, crate::webhooks::WebhookEventType::All],
+            secret: String::from_str(&env, "secret"),
+        };
+        
         // This should panic due to the URL being too long
-        client.register_webhook(
-            &integration_owner,
-            &String::from_str(&env, long_url),
-            &vec![&env, EventType::All],
-            &String::from_str(&env, "secret"),
-        );
+        client.register_webhook(&integration_owner, &registration);
     }
 }

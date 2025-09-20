@@ -3,7 +3,7 @@ use log::{info, warn, error};
 use std::path::PathBuf;
 use stellopay_cli::Config;
 // use crate::Config;
-use stellopay_cli::{require_admin,require_not_paused,TokenClient,Error};
+use stellopay_cli::{require_admin,require_not_paused,TokenClient,Error, WebhookCommands};
 // use crate::token;
 //use soroban_sdk::contractclient::Client as SorobanHttpClient;
 //use anyhow::{Result,anyhow};
@@ -231,5 +231,322 @@ pub async fn emergency_withdraw(
         ],
         &signer,
     ).await?;
+    Ok(())
+}
+
+pub async fn webhook_command(
+    command: WebhookCommands,
+    config: &Config,
+) -> Result<()> {
+    match command {
+        WebhookCommands::Register { name, description, url, events, secret, contract_id } => {
+            webhook_register_command(name, description, url, events, secret, contract_id, config).await
+        }
+        WebhookCommands::Update { webhook_id, name, description, url, events, active, contract_id } => {
+            webhook_update_command(webhook_id, name, description, url, events, active, contract_id, config).await
+        }
+        WebhookCommands::Delete { webhook_id, contract_id } => {
+            webhook_delete_command(webhook_id, contract_id, config).await
+        }
+        WebhookCommands::List { owner, contract_id } => {
+            webhook_list_command(owner, contract_id, config).await
+        }
+        WebhookCommands::Get { webhook_id, contract_id } => {
+            webhook_get_command(webhook_id, contract_id, config).await
+        }
+        WebhookCommands::Stats { contract_id } => {
+            webhook_stats_command(contract_id, config).await
+        }
+        WebhookCommands::Test { webhook_id, event_type, contract_id } => {
+            webhook_test_command(webhook_id, event_type, contract_id, config).await
+        }
+    }
+}
+
+pub async fn webhook_register_command(
+    name: String,
+    description: String,
+    url: String,
+    events: String,
+    secret: String,
+    contract_id: Option<String>,
+    config: &Config,
+) -> Result<()> {
+    let contract_id = contract_id
+        .or_else(|| config.contract.default_contract_id.clone())
+        .ok_or_else(|| anyhow::anyhow!("No contract ID provided"))?;
+    
+    info!("Registering webhook: {}", name);
+    
+    println!("Registering Webhook:");
+    println!("  Name: {}", name);
+    println!("  Description: {}", description);
+    println!("  URL: {}", url);
+    println!("  Events: {}", events);
+    println!("  Contract ID: {}", contract_id);
+    
+    // Parse events
+    let event_list: Vec<&str> = events.split(',').map(|s| s.trim()).collect();
+    
+    // Create webhook registration data structure
+    let registration_data = serde_json::json!({
+        "name": name,
+        "description": description,
+        "url": url,
+        "events": event_list,
+        "secret": secret,
+        "retry_config": {
+            "max_retries": 3,
+            "retry_delay": 60,
+            "exponential_backoff": true,
+            "max_delay": 3600
+        },
+        "security_config": {
+            "signature_method": "HmacSha256",
+            "rate_limit_per_minute": 60,
+            "require_tls": true
+        }
+    });
+    
+    // Call contract to register webhook
+    let contract_client = SorobanHttpClient::new(&config.network.rpc_url);
+    let signer = config.auth.secret_key
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("Missing secret key"))?;
+    
+    let result = contract_client.invoke(
+        &contract_id,
+        "register_webhook",
+        vec![
+            ("registration", &registration_data.to_string()),
+        ],
+        &signer,
+    ).await?;
+    
+    println!("✅ Webhook registered successfully!");
+    println!("Webhook ID: {}", result);
+    
+    Ok(())
+}
+
+pub async fn webhook_update_command(
+    webhook_id: u64,
+    name: Option<String>,
+    description: Option<String>,
+    url: Option<String>,
+    events: Option<String>,
+    active: Option<bool>,
+    contract_id: Option<String>,
+    config: &Config,
+) -> Result<()> {
+    let contract_id = contract_id
+        .or_else(|| config.contract.default_contract_id.clone())
+        .ok_or_else(|| anyhow::anyhow!("No contract ID provided"))?;
+    
+    info!("Updating webhook: {}", webhook_id);
+    
+    println!("Updating Webhook {}:", webhook_id);
+    
+    // Create update data structure
+    let mut update_data = serde_json::Map::new();
+    
+    if let Some(name) = name {
+        update_data.insert("name".to_string(), serde_json::Value::String(name));
+        println!("  Name: {}", name);
+    }
+    if let Some(description) = description {
+        update_data.insert("description".to_string(), serde_json::Value::String(description));
+        println!("  Description: {}", description);
+    }
+    if let Some(url) = url {
+        update_data.insert("url".to_string(), serde_json::Value::String(url));
+        println!("  URL: {}", url);
+    }
+    if let Some(events) = events {
+        let event_list: Vec<&str> = events.split(',').map(|s| s.trim()).collect();
+        update_data.insert("events".to_string(), serde_json::Value::Array(
+            event_list.iter().map(|e| serde_json::Value::String(e.to_string())).collect()
+        ));
+        println!("  Events: {}", events);
+    }
+    if let Some(active) = active {
+        update_data.insert("is_active".to_string(), serde_json::Value::Bool(active));
+        println!("  Active: {}", active);
+    }
+    
+    // Call contract to update webhook
+    let contract_client = SorobanHttpClient::new(&config.network.rpc_url);
+    let signer = config.auth.secret_key
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("Missing secret key"))?;
+    
+    contract_client.invoke(
+        &contract_id,
+        "update_webhook",
+        vec![
+            ("webhook_id", &webhook_id.to_string()),
+            ("update", &serde_json::Value::Object(update_data).to_string()),
+        ],
+        &signer,
+    ).await?;
+    
+    println!("✅ Webhook updated successfully!");
+    
+    Ok(())
+}
+
+pub async fn webhook_delete_command(
+    webhook_id: u64,
+    contract_id: Option<String>,
+    config: &Config,
+) -> Result<()> {
+    let contract_id = contract_id
+        .or_else(|| config.contract.default_contract_id.clone())
+        .ok_or_else(|| anyhow::anyhow!("No contract ID provided"))?;
+    
+    info!("Deleting webhook: {}", webhook_id);
+    
+    println!("Deleting Webhook {}:", webhook_id);
+    
+    // Call contract to delete webhook
+    let contract_client = SorobanHttpClient::new(&config.network.rpc_url);
+    let signer = config.auth.secret_key
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("Missing secret key"))?;
+    
+    contract_client.invoke(
+        &contract_id,
+        "delete_webhook",
+        vec![
+            ("webhook_id", &webhook_id.to_string()),
+        ],
+        &signer,
+    ).await?;
+    
+    println!("✅ Webhook deleted successfully!");
+    
+    Ok(())
+}
+
+pub async fn webhook_list_command(
+    owner: String,
+    contract_id: Option<String>,
+    config: &Config,
+) -> Result<()> {
+    let contract_id = contract_id
+        .or_else(|| config.contract.default_contract_id.clone())
+        .ok_or_else(|| anyhow::anyhow!("No contract ID provided"))?;
+    
+    info!("Listing webhooks for owner: {}", owner);
+    
+    println!("Webhooks for Owner: {}", owner);
+    
+    // Call contract to list webhooks
+    let contract_client = SorobanHttpClient::new(&config.network.rpc_url);
+    
+    let result = contract_client.query(
+        &contract_id,
+        "list_owner_webhooks",
+        vec![
+            ("owner", &owner),
+        ],
+    ).await?;
+    
+    println!("Webhook IDs: {}", result);
+    
+    Ok(())
+}
+
+pub async fn webhook_get_command(
+    webhook_id: u64,
+    contract_id: Option<String>,
+    config: &Config,
+) -> Result<()> {
+    let contract_id = contract_id
+        .or_else(|| config.contract.default_contract_id.clone())
+        .ok_or_else(|| anyhow::anyhow!("No contract ID provided"))?;
+    
+    info!("Getting webhook: {}", webhook_id);
+    
+    println!("Webhook Information:");
+    println!("  Webhook ID: {}", webhook_id);
+    
+    // Call contract to get webhook
+    let contract_client = SorobanHttpClient::new(&config.network.rpc_url);
+    
+    let result = contract_client.query(
+        &contract_id,
+        "get_webhook",
+        vec![
+            ("webhook_id", &webhook_id.to_string()),
+        ],
+    ).await?;
+    
+    println!("Webhook Details: {}", result);
+    
+    Ok(())
+}
+
+pub async fn webhook_stats_command(
+    contract_id: Option<String>,
+    config: &Config,
+) -> Result<()> {
+    let contract_id = contract_id
+        .or_else(|| config.contract.default_contract_id.clone())
+        .ok_or_else(|| anyhow::anyhow!("No contract ID provided"))?;
+    
+    info!("Getting webhook statistics");
+    
+    println!("Webhook Statistics:");
+    
+    // Call contract to get webhook stats
+    let contract_client = SorobanHttpClient::new(&config.network.rpc_url);
+    
+    let result = contract_client.query(
+        &contract_id,
+        "get_webhook_stats",
+        vec![],
+    ).await?;
+    
+    println!("Statistics: {}", result);
+    
+    Ok(())
+}
+
+pub async fn webhook_test_command(
+    webhook_id: u64,
+    event_type: String,
+    contract_id: Option<String>,
+    config: &Config,
+) -> Result<()> {
+    let contract_id = contract_id
+        .or_else(|| config.contract.default_contract_id.clone())
+        .ok_or_else(|| anyhow::anyhow!("No contract ID provided"))?;
+    
+    info!("Testing webhook: {} with event: {}", webhook_id, event_type);
+    
+    println!("Testing Webhook:");
+    println!("  Webhook ID: {}", webhook_id);
+    println!("  Event Type: {}", event_type);
+    
+    // Call contract to test webhook
+    let contract_client = SorobanHttpClient::new(&config.network.rpc_url);
+    let signer = config.auth.secret_key
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("Missing secret key"))?;
+    
+    let result = contract_client.invoke(
+        &contract_id,
+        "test_webhook",
+        vec![
+            ("webhook_id", &webhook_id.to_string()),
+            ("event_type", &event_type),
+        ],
+        &signer,
+    ).await?;
+    
+    println!("✅ Webhook test completed!");
+    println!("Result: {}", result);
+    
     Ok(())
 }
