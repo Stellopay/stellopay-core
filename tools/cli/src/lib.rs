@@ -58,6 +58,105 @@ pub enum Commands {
         #[arg(long)]
         amount:i128,
     },
+    /// Webhook management commands
+    Webhook {
+        #[command(subcommand)]
+        command: WebhookCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum WebhookCommands {
+    /// Register a new webhook
+    Register {
+        /// Webhook name
+        #[arg(long)]
+        name: String,
+        /// Webhook description
+        #[arg(long)]
+        description: String,
+        /// Webhook URL
+        #[arg(long)]
+        url: String,
+        /// Events to subscribe to (comma-separated)
+        #[arg(long)]
+        events: String,
+        /// Webhook secret
+        #[arg(long)]
+        secret: String,
+        /// Contract ID
+        #[arg(long)]
+        contract_id: Option<String>,
+    },
+    /// Update an existing webhook
+    Update {
+        /// Webhook ID
+        #[arg(long)]
+        webhook_id: u64,
+        /// New webhook name
+        #[arg(long)]
+        name: Option<String>,
+        /// New webhook description
+        #[arg(long)]
+        description: Option<String>,
+        /// New webhook URL
+        #[arg(long)]
+        url: Option<String>,
+        /// New events to subscribe to (comma-separated)
+        #[arg(long)]
+        events: Option<String>,
+        /// Activate/deactivate webhook
+        #[arg(long)]
+        active: Option<bool>,
+        /// Contract ID
+        #[arg(long)]
+        contract_id: Option<String>,
+    },
+    /// Delete a webhook
+    Delete {
+        /// Webhook ID
+        #[arg(long)]
+        webhook_id: u64,
+        /// Contract ID
+        #[arg(long)]
+        contract_id: Option<String>,
+    },
+    /// List webhooks for an owner
+    List {
+        /// Owner address
+        #[arg(long)]
+        owner: String,
+        /// Contract ID
+        #[arg(long)]
+        contract_id: Option<String>,
+    },
+    /// Get webhook information
+    Get {
+        /// Webhook ID
+        #[arg(long)]
+        webhook_id: u64,
+        /// Contract ID
+        #[arg(long)]
+        contract_id: Option<String>,
+    },
+    /// Get webhook statistics
+    Stats {
+        /// Contract ID
+        #[arg(long)]
+        contract_id: Option<String>,
+    },
+    /// Test webhook delivery
+    Test {
+        /// Webhook ID
+        #[arg(long)]
+        webhook_id: u64,
+        /// Event type to test
+        #[arg(long)]
+        event_type: String,
+        /// Contract ID
+        #[arg(long)]
+        contract_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]

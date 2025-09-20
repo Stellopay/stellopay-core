@@ -7,7 +7,7 @@ mod utils;
 
 use commands::*;
 use config::*;
-use stellopay_cli::{Cli, Commands};
+use stellopay_cli::{Cli, Commands, WebhookCommands};
 use anyhow::anyhow;
 
 #[tokio::main]
@@ -40,6 +40,9 @@ async fn main() ->anyhow::Result<()> {
         }
         Commands::Status => {
             status_command(&config).await
+        }
+        Commands::Webhook { command } => {
+            webhook_command(command, &config).await
         }
         Commands::EmergencyWithdraw{
             contract_id,

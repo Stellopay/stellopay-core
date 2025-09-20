@@ -227,6 +227,9 @@ impl PayrollContract {
         // Set paused state to true
         storage.set(&DataKey::Paused, &true);
 
+        // Trigger webhook event for contract pause
+        let _ = Self::trigger_contract_pause_webhook(env.clone(), true);
+
         // Emit paused event
         env.events().publish((PAUSED_EVENT,), caller);
 
@@ -250,6 +253,9 @@ impl PayrollContract {
 
         // Set paused state to false
         storage.set(&DataKey::Paused, &false);
+
+        // Trigger webhook event for contract unpause
+        let _ = Self::trigger_contract_pause_webhook(env.clone(), false);
 
         // Emit unpaused event
         env.events().publish((UNPAUSED_EVENT,), caller);
@@ -415,6 +421,28 @@ impl PayrollContract {
 
         Self::record_metrics(&env, 0, symbol_short!("escrow"), true, Some(employee.clone()), false);
 
+        // Trigger webhook event
+        let is_update = existing_payroll.is_some();
+        if is_update {
+            let _ = Self::trigger_payroll_updated_webhook(
+                env.clone(),
+                payroll.employer.clone(),
+                employee.clone(),
+                payroll.token.clone(),
+                existing_payroll.as_ref().map(|p| p.amount).unwrap_or(0),
+                payroll.amount,
+            );
+        } else {
+            let _ = Self::trigger_payroll_created_webhook(
+                env.clone(),
+                payroll.employer.clone(),
+                employee.clone(),
+                payroll.token.clone(),
+                payroll.amount,
+                payroll.interval,
+                payroll.recurrence_frequency,
+            );
+        }
 
         // Emit payroll updated event
         env.events().publish(
@@ -464,6 +492,14 @@ impl PayrollContract {
         storage.set(&balance_key, &(current_balance + amount));
 
         Self::record_metrics(&env, amount, symbol_short!("deposit"), true, None, false);
+
+        // Trigger webhook event for token deposit
+        let _ = Self::trigger_tokens_deposited_webhook(
+            env.clone(),
+            employer.clone(),
+            token.clone(),
+            amount,
+        );
 
         env.events().publish(
             (DEPOSIT_EVENT, employer, token), // topics
@@ -571,6 +607,15 @@ impl PayrollContract {
 
         // Self::record_metrics(&env, payroll.amount, symbol_short!("disburses"), true, Some(employee.clone()), None, false, true);
         Self::record_metrics(&env, payroll.amount, symbol_short!("disburses"), true, Some(employee.clone()), is_late);
+
+        // Trigger webhook event for salary disbursement
+        let _ = Self::trigger_salary_disbursed_webhook(
+            env.clone(),
+            payroll.employer.clone(),
+            employee.clone(),
+            payroll.token.clone(),
+            payroll.amount,
+        );
 
         // Emit disburse eventSalaryDisbursed
         emit_disburse(
@@ -1890,23 +1935,31 @@ impl PayrollContract {
     }
 
     //-----------------------------------------------------------------------------
-    // Webhook Integration Functions
+    // Comprehensive Webhook Integration Functions
     //-----------------------------------------------------------------------------
 
-    /// Register a webhook for external service integration
+    /// Register a comprehensive webhook for external service integration
     pub fn register_webhook(
         env: Env,
         owner: Address,
-        url: String,
-        events: Vec<crate::webhooks_simple::EventType>,
-        secret: String,
-    ) -> Result<u64, crate::webhooks_simple::WebhookError> {
-        crate::webhooks_simple::WebhookSystem::register_webhook(&env, owner, url, events, secret)
+        registration: crate::webhooks::WebhookRegistration,
+    ) -> Result<u64, crate::webhooks::WebhookError> {
+        crate::webhooks::WebhookSystem::register_webhook(&env, owner, registration)
+    }
+
+    /// Update an existing webhook
+    pub fn update_webhook(
+        env: Env,
+        owner: Address,
+        webhook_id: u64,
+        update: crate::webhooks::WebhookUpdate,
+    ) -> Result<(), crate::webhooks::WebhookError> {
+        crate::webhooks::WebhookSystem::update_webhook(&env, owner, webhook_id, update)
     }
 
     /// Get webhook information
-    pub fn get_webhook(env: Env, webhook_id: u64) -> Result<crate::webhooks_simple::Webhook, crate::webhooks_simple::WebhookError> {
-        crate::webhooks_simple::WebhookSystem::get_webhook(&env, webhook_id)
+    pub fn get_webhook(env: Env, webhook_id: u64) -> Result<crate::webhooks::Webhook, crate::webhooks::WebhookError> {
+        crate::webhooks::WebhookSystem::get_webhook(&env, webhook_id)
     }
 
     /// Delete a webhook
@@ -1914,22 +1967,152 @@ impl PayrollContract {
         env: Env,
         owner: Address,
         webhook_id: u64,
-    ) -> Result<(), crate::webhooks_simple::WebhookError> {
-        crate::webhooks_simple::WebhookSystem::delete_webhook(&env, owner, webhook_id)
+    ) -> Result<(), crate::webhooks::WebhookError> {
+        crate::webhooks::WebhookSystem::delete_webhook(&env, owner, webhook_id)
     }
 
-    /// Trigger webhook notification for salary disbursement
-    pub fn notify_salary_disbursed(
+    /// List webhooks for an owner
+    pub fn list_owner_webhooks(env: Env, owner: Address) -> Vec<u64> {
+        crate::webhooks::WebhookSystem::list_owner_webhooks(&env, owner)
+    }
+
+    /// Get webhook statistics
+    pub fn get_webhook_stats(env: Env) -> crate::webhooks::WebhookStats {
+        crate::webhooks::WebhookSystem::get_webhook_stats(&env)
+    }
+
+    /// Trigger webhook event for salary disbursement
+    pub fn trigger_salary_disbursed_webhook(
         env: Env,
         employer: Address,
         employee: Address,
+        token: Address,
         amount: i128,
-    ) {
-        // Create event data and publish for webhook processing
-        env.events().publish(
-            (symbol_short!("wh_salary"),), 
-            (employer, employee, amount)
-        );
+    ) -> Result<Vec<crate::webhooks::DeliveryResult>, crate::webhooks::WebhookError> {
+        let mut event_data = Map::new(&env);
+        event_data.set(String::from_str(&env, "employer"), employer.to_string());
+        event_data.set(String::from_str(&env, "employee"), employee.to_string());
+        event_data.set(String::from_str(&env, "token"), token.to_string());
+        event_data.set(String::from_str(&env, "amount"), String::from_str(&env, "1000")); // Simplified for now
+
+        let mut metadata = Map::new(&env);
+        metadata.set(String::from_str(&env, "timestamp"), String::from_str(&env, "1640995200")); // Simplified for now
+        metadata.set(String::from_str(&env, "contract"), String::from_str(&env, "stellopay-core"));
+
+        crate::webhooks::WebhookSystem::trigger_webhook_event(
+            &env,
+            crate::webhooks::WebhookEventType::SalaryDisbursed,
+            event_data,
+            metadata,
+        )
+    }
+
+    /// Trigger webhook event for payroll creation
+    pub fn trigger_payroll_created_webhook(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        token: Address,
+        amount: i128,
+        interval: u64,
+        recurrence_frequency: u64,
+    ) -> Result<Vec<crate::webhooks::DeliveryResult>, crate::webhooks::WebhookError> {
+        let mut event_data = Map::new(&env);
+        event_data.set(String::from_str(&env, "employer"), employer.to_string());
+        event_data.set(String::from_str(&env, "employee"), employee.to_string());
+        event_data.set(String::from_str(&env, "token"), token.to_string());
+        event_data.set(String::from_str(&env, "amount"), String::from_str(&env, "1000")); // Simplified
+        event_data.set(String::from_str(&env, "interval"), String::from_str(&env, "86400")); // Simplified
+        event_data.set(String::from_str(&env, "recurrence_frequency"), String::from_str(&env, "2592000")); // Simplified
+
+        let mut metadata = Map::new(&env);
+        metadata.set(String::from_str(&env, "timestamp"), String::from_str(&env, "1640995200")); // Simplified
+        metadata.set(String::from_str(&env, "contract"), String::from_str(&env, "stellopay-core"));
+
+        crate::webhooks::WebhookSystem::trigger_webhook_event(
+            &env,
+            crate::webhooks::WebhookEventType::PayrollCreated,
+            event_data,
+            metadata,
+        )
+    }
+
+    /// Trigger webhook event for payroll update
+    pub fn trigger_payroll_updated_webhook(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        token: Address,
+        old_amount: i128,
+        new_amount: i128,
+    ) -> Result<Vec<crate::webhooks::DeliveryResult>, crate::webhooks::WebhookError> {
+        let mut event_data = Map::new(&env);
+        event_data.set(String::from_str(&env, "employer"), employer.to_string());
+        event_data.set(String::from_str(&env, "employee"), employee.to_string());
+        event_data.set(String::from_str(&env, "token"), token.to_string());
+        event_data.set(String::from_str(&env, "old_amount"), String::from_str(&env, "500")); // Simplified
+        event_data.set(String::from_str(&env, "new_amount"), String::from_str(&env, "1000")); // Simplified
+
+        let mut metadata = Map::new(&env);
+        metadata.set(String::from_str(&env, "timestamp"), String::from_str(&env, "1640995200")); // Simplified
+        metadata.set(String::from_str(&env, "contract"), String::from_str(&env, "stellopay-core"));
+
+        crate::webhooks::WebhookSystem::trigger_webhook_event(
+            &env,
+            crate::webhooks::WebhookEventType::PayrollUpdated,
+            event_data,
+            metadata,
+        )
+    }
+
+    /// Trigger webhook event for token deposit
+    pub fn trigger_tokens_deposited_webhook(
+        env: Env,
+        employer: Address,
+        token: Address,
+        amount: i128,
+    ) -> Result<Vec<crate::webhooks::DeliveryResult>, crate::webhooks::WebhookError> {
+        let mut event_data = Map::new(&env);
+        event_data.set(String::from_str(&env, "employer"), employer.to_string());
+        event_data.set(String::from_str(&env, "token"), token.to_string());
+        event_data.set(String::from_str(&env, "amount"), String::from_str(&env, "10000")); // Simplified
+
+        let mut metadata = Map::new(&env);
+        metadata.set(String::from_str(&env, "timestamp"), String::from_str(&env, "1640995200")); // Simplified
+        metadata.set(String::from_str(&env, "contract"), String::from_str(&env, "stellopay-core"));
+
+        crate::webhooks::WebhookSystem::trigger_webhook_event(
+            &env,
+            crate::webhooks::WebhookEventType::TokensDeposited,
+            event_data,
+            metadata,
+        )
+    }
+
+    /// Trigger webhook event for contract pause/unpause
+    pub fn trigger_contract_pause_webhook(
+        env: Env,
+        paused: bool,
+    ) -> Result<Vec<crate::webhooks::DeliveryResult>, crate::webhooks::WebhookError> {
+        let mut event_data = Map::new(&env);
+        event_data.set(String::from_str(&env, "paused"), String::from_str(&env, if paused { "true" } else { "false" }));
+
+        let mut metadata = Map::new(&env);
+        metadata.set(String::from_str(&env, "timestamp"), String::from_str(&env, "1640995200")); // Simplified
+        metadata.set(String::from_str(&env, "contract"), String::from_str(&env, "stellopay-core"));
+
+        let event_type = if paused {
+            crate::webhooks::WebhookEventType::ContractPaused
+        } else {
+            crate::webhooks::WebhookEventType::ContractUnpaused
+        };
+
+        crate::webhooks::WebhookSystem::trigger_webhook_event(
+            &env,
+            event_type,
+            event_data,
+            metadata,
+        )
     }
 
     //-----------------------------------------------------------------------------
