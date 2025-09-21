@@ -4,7 +4,6 @@ mod events;
 mod payroll;
 mod storage;
 mod insurance;
-mod webhooks_simple;
 mod webhooks;
 mod webhook_contract;
 // take note: The following modules have compilation issues with current Soroban SDK
