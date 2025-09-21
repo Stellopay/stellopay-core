@@ -1,7 +1,7 @@
 use soroban_sdk::{contracttype, Address, Symbol, String, Vec, Map};
 
 // Import insurance types for backup functionality
-// use crate::insurance::InsurancePolicy;  // Temporarily commented out
+use crate::insurance::InsurancePolicy;
 
 //-----------------------------------------------------------------------------
 // Data Structures
@@ -159,7 +159,7 @@ pub struct BackupData {
     pub payroll_data: Vec<Payroll>,
     pub template_data: Vec<PayrollTemplate>,
     pub preset_data: Vec<TemplatePreset>,
-    // pub insurance_data: Vec<InsurancePolicy>, // Commented out until insurance module is fully integrated
+    pub insurance_data: Vec<InsurancePolicy>,
     pub compliance_data: String, // Serialized compliance data as string
     pub metadata: BackupMetadata,
 }

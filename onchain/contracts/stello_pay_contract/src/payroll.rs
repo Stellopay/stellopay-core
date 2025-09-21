@@ -2946,9 +2946,9 @@ impl PayrollContract {
                             for preset in data.preset_data.iter() {
                                 preset_data.push_back(preset);
                             }
-                            // for insurance in data.insurance_data.iter() { // Commented out until insurance module is fully integrated
-                            //     insurance_data.push_back(insurance);
-                            // }
+                            for insurance in data.insurance_data.iter() {
+                                insurance_data.push_back(insurance);
+                            }
                         }
                     }
                 }
@@ -3013,7 +3013,7 @@ impl PayrollContract {
             payroll_data,
             template_data,
             preset_data,
-            // insurance_data, // Commented out until insurance module is fully integrated
+            insurance_data,
             compliance_data: String::from_str(env, ""),
             metadata,
         })
@@ -3039,7 +3039,7 @@ impl PayrollContract {
         let payroll_size = backup_data.payroll_data.len() as u64 * 100; // Approximate size per payroll
         let template_size = backup_data.template_data.len() as u64 * 80; // Approximate size per template
         let preset_size = backup_data.preset_data.len() as u64 * 60; // Approximate size per preset
-        let insurance_size = 0; // Commented out until insurance module is fully integrated: backup_data.insurance_data.len() as u64 * 120;
+        let insurance_size = backup_data.insurance_data.len() as u64 * 120; // Approximate size per insurance policy
         let metadata_size = 200; // Approximate metadata size
         
         payroll_size + template_size + preset_size + insurance_size + metadata_size
