@@ -1,9 +1,9 @@
 #![no_std]
 
 mod events;
-// mod payroll;  // Temporarily commented out to test webhooks standalone
+mod payroll;
 mod storage;
-// mod insurance;  // Temporarily commented out to test webhooks standalone
+mod insurance;
 mod webhooks_simple;
 mod webhooks;
 mod webhook_contract;

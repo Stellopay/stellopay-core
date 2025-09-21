@@ -151,18 +151,18 @@ pub enum BackupStatus {
     Restored,       // Backup restored successfully
 }
 
-// /// Backup data structure for storing actual backup content
-// #[contracttype]
-// #[derive(Clone, Debug, PartialEq)]
-// pub struct BackupData {
-//     pub backup_id: u64,
-//     pub payroll_data: Vec<Payroll>,
-//     pub template_data: Vec<PayrollTemplate>,
-//     pub preset_data: Vec<TemplatePreset>,
-//     pub insurance_data: Vec<InsurancePolicy>,
-//     pub compliance_data: String, // Serialized compliance data as string
-//     pub metadata: BackupMetadata,
-// }
+/// Backup data structure for storing actual backup content
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BackupData {
+    pub backup_id: u64,
+    pub payroll_data: Vec<Payroll>,
+    pub template_data: Vec<PayrollTemplate>,
+    pub preset_data: Vec<TemplatePreset>,
+    // pub insurance_data: Vec<InsurancePolicy>, // Commented out until insurance module is fully integrated
+    pub compliance_data: String, // Serialized compliance data as string
+    pub metadata: BackupMetadata,
+}
 
 /// Backup metadata for additional information
 #[contracttype]
@@ -686,6 +686,7 @@ pub enum SuspiciousActivitySeverity {
 // Storage Keys
 //-----------------------------------------------------------------------------
 
+// Core DataKey enum - essential functionality only
 #[contracttype]
 pub enum DataKey {
     // Consolidated payroll storage - single key per employee
@@ -742,6 +743,41 @@ pub enum DataKey {
     Role(String),                        // role_id -> Role
     UserRole(Address),                   // user -> UserRoleAssignment
     SecuritySettings                     // Global security settings
+}
+
+// Extended functionality keys - separate enum to avoid size limits
+#[contracttype]
+pub enum ExtendedDataKey {
+    // Backup and Recovery - ESSENTIAL FUNCTIONALITY
+    Backup(u64),                         // backup_id -> PayrollBackup
+    BackupData(u64),                     // backup_id -> BackupData
+    NextBackupId,                        // Next available backup ID
+    EmpBackups(Address),                 // employer -> Vec<u64> (backup IDs)
+    BackupIndex,                         // Global backup index
+    
+    // Recovery Points
+    Recovery(u64),                       // recovery_point_id -> RecoveryPoint
+    NextRecoveryId,                      // Next available recovery ID
+    
+    // Templates and Presets - ESSENTIAL FUNCTIONALITY
+    Template(u64),                       // template_id -> PayrollTemplate
+    EmpTemplates(Address),               // employer -> Vec<u64> (template IDs)
+    NextTmplId,                          // Next available template ID
+    PubTemplates,                        // Public templates list
+    Preset(u64),                         // preset_id -> PayrollPreset
+    PresetCat(String),                   // category -> Vec<u64> (preset IDs)
+    NextPresetId,                        // Next available preset ID
+    ActivePresets,                       // Global active presets
+    
+    // Scheduling - ESSENTIAL FUNCTIONALITY
+    Schedule(u64),                       // schedule_id -> PayrollSchedule
+    NextSchedId,                         // Next available schedule ID
+    EmpSchedules(Address),               // employer -> Vec<u64> (schedule IDs)
+    
+    // Automation Rules - ESSENTIAL FUNCTIONALITY
+    Rule(u64),                           // rule_id -> AutomationRule
+    NextRuleId,                          // Next available rule ID
+    EmpRules(Address)                    // employer -> Vec<u64> (rule IDs)
 }
 
 #[contracttype]
