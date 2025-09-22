@@ -37,21 +37,56 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "string": "https://example.com/webhook"
-                },
-                {
-                  "vec": [
+                  "map": [
                     {
-                      "vec": [
-                        {
-                          "symbol": "SalaryDisbursed"
-                        }
-                      ]
+                      "key": {
+                        "symbol": "description"
+                      },
+                      "val": {
+                        "string": "Test webhook"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "events"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "vec": [
+                              {
+                                "symbol": "SalaryDisbursed"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "name"
+                      },
+                      "val": {
+                        "string": "Test Webhook"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "secret"
+                      },
+                      "val": {
+                        "string": "secret123"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "url"
+                      },
+                      "val": {
+                        "string": "https://example.com/webhook"
+                      }
                     }
                   ]
-                },
-                {
-                  "string": "secret123"
                 }
               ]
             }
@@ -98,11 +133,7 @@
           "contract_data": {
             "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
             "key": {
-              "vec": [
-                {
-                  "symbol": "NextWebhookId"
-                }
-              ]
+              "string": "next_webhook_id"
             },
             "durability": "persistent"
           }
@@ -115,15 +146,42 @@
                 "ext": "v0",
                 "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
                 "key": {
-                  "vec": [
-                    {
-                      "symbol": "NextWebhookId"
-                    }
-                  ]
+                  "string": "next_webhook_id"
                 },
                 "durability": "persistent",
                 "val": {
                   "u64": 2
+                }
+              }
+            },
+            "ext": "v0"
+          },
+          4095
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "string": "owner_webhooks_all"
+            },
+            "durability": "persistent"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "string": "owner_webhooks_all"
+                },
+                "durability": "persistent",
+                "val": {
+                  "vec": []
                 }
               }
             },

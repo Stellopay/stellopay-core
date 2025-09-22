@@ -1,9 +1,9 @@
-// mod test_create_or_update_escrow;  // Temporarily commented out
-// mod test_employer_deposit_base_salary;  // Temporarily commented out
-// mod test_pause_and_unpause;  // Temporarily commented out
-// mod test_payroll;  // Temporarily commented out
-// mod test_recurring_payments;  // Temporarily commented out
-// mod test_pause_and_resume_employee;  // Temporarily commented out
-// mod test_payroll_history_and_audittrail;  // Temporarily commented out
-// mod test_webhooks_simple;  // Temporarily commented out
+mod test_create_or_update_escrow;
+mod test_employer_deposit_base_salary;
+mod test_pause_and_unpause;
+mod test_payroll;
+mod test_recurring_payments;
+mod test_pause_and_resume_employee;
+mod test_payroll_history_and_audittrail;
+mod test_webhooks_simple;
 mod test_webhooks_standalone;
