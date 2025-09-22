@@ -6,3 +6,4 @@ mod test_recurring_payments;
 mod test_pause_and_resume_employee;
 mod test_payroll_history_and_audittrail;
 mod test_webhooks_simple;
+mod test_security;
