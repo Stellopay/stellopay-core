@@ -7,12 +7,6 @@ pub struct WebhookContract;
 
 #[contractimpl]
 impl WebhookContract {
-    /// Initialize the contract
-    pub fn initialize(env: &Env, owner: Address) {
-        // Set the owner
-        env.storage().persistent().set(&crate::storage::DataKey::Owner, &owner);
-    }
-
     /// Register a webhook
     pub fn register_webhook(
         env: &Env,
