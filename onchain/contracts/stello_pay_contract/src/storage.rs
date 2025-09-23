@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Symbol, String, Vec, Map};
+use soroban_sdk::{contracttype, Address, Map, String, Symbol, Vec};
 
 // Import insurance types for backup functionality
 use crate::insurance::InsurancePolicy;
@@ -130,25 +130,25 @@ pub struct PayrollBackup {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum BackupType {
-    Full,           // Complete system backup
-    Employer,       // Employer-specific backup
-    Employee,       // Employee-specific backup
-    Template,       // Template backup
-    Insurance,      // Insurance data backup
-    Compliance,     // Compliance data backup
+    Full,       // Complete system backup
+    Employer,   // Employer-specific backup
+    Employee,   // Employee-specific backup
+    Template,   // Template backup
+    Insurance,  // Insurance data backup
+    Compliance, // Compliance data backup
 }
 
 /// Backup status enumeration
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum BackupStatus {
-    Creating,       // Backup is being created
-    Completed,      // Backup completed successfully
-    Failed,         // Backup failed
-    Verifying,      // Backup is being verified
-    Verified,       // Backup verified successfully
-    Restoring,      // Backup is being restored
-    Restored,       // Backup restored successfully
+    Creating,  // Backup is being created
+    Completed, // Backup completed successfully
+    Failed,    // Backup failed
+    Verifying, // Backup is being verified
+    Verified,  // Backup verified successfully
+    Restoring, // Backup is being restored
+    Restored,  // Backup restored successfully
 }
 
 /// Backup data structure for storing actual backup content
@@ -196,21 +196,21 @@ pub struct RecoveryPoint {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum RecoveryType {
-    Full,           // Complete system recovery
-    Partial,        // Partial system recovery
-    Emergency,      // Emergency recovery
-    Test,           // Test recovery
+    Full,      // Complete system recovery
+    Partial,   // Partial system recovery
+    Emergency, // Emergency recovery
+    Test,      // Test recovery
 }
 
 /// Recovery status enumeration
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum RecoveryStatus {
-    Pending,        // Recovery pending
-    InProgress,     // Recovery in progress
-    Completed,      // Recovery completed
-    Failed,         // Recovery failed
-    RolledBack,     // Recovery rolled back
+    Pending,    // Recovery pending
+    InProgress, // Recovery in progress
+    Completed,  // Recovery completed
+    Failed,     // Recovery failed
+    RolledBack, // Recovery rolled back
 }
 
 /// Recovery metadata for additional information
@@ -250,24 +250,24 @@ pub struct PayrollSchedule {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScheduleType {
-    Recurring,      // Regular recurring payroll
-    OneTime,        // One-time scheduled payroll
-    Conditional,    // Conditional payroll based on triggers
-    Batch,          // Batch payroll processing
-    Emergency,      // Emergency payroll processing
+    Recurring,   // Regular recurring payroll
+    OneTime,     // One-time scheduled payroll
+    Conditional, // Conditional payroll based on triggers
+    Batch,       // Batch payroll processing
+    Emergency,   // Emergency payroll processing
 }
 
 /// Schedule frequency enumeration
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScheduleFrequency {
-    Daily,          // Daily execution
-    Weekly,         // Weekly execution
-    BiWeekly,       // Bi-weekly execution
-    Monthly,        // Monthly execution
-    Quarterly,      // Quarterly execution
-    Yearly,         // Yearly execution
-    Custom(u64),    // Custom frequency in seconds
+    Daily,       // Daily execution
+    Weekly,      // Weekly execution
+    BiWeekly,    // Bi-weekly execution
+    Monthly,     // Monthly execution
+    Quarterly,   // Quarterly execution
+    Yearly,      // Yearly execution
+    Custom(u64), // Custom frequency in seconds
 }
 
 /// Schedule metadata for additional information
@@ -307,11 +307,11 @@ pub struct AutomationRule {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuleType {
-    Balance,        // Balance-based triggers
-    Time,           // Time-based triggers
-    Employee,       // Employee-based triggers
-    Compliance,     // Compliance-based triggers
-    Custom,         // Custom triggers
+    Balance,    // Balance-based triggers
+    Time,       // Time-based triggers
+    Employee,   // Employee-based triggers
+    Compliance, // Compliance-based triggers
+    Custom,     // Custom triggers
 }
 
 /// Rule condition structure
@@ -680,7 +680,60 @@ pub enum SuspiciousActivitySeverity {
     Critical,
 }
 
+// Role delegation record: from -> to for a role, optional expiry
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoleDelegation {
+    pub id: u64,
+    pub role_id: String,
+    pub from: Address,
+    pub to: Address,
+    pub delegated_at: u64,
+    pub expires_at: Option<u64>,
+    pub accepted: bool,
+}
 
+// Temporary role assignment applied by admin/employer
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TempRoleAssignment {
+    pub id: u64,
+    pub role_id: String,
+    pub user: Address,
+    pub assigned_by: Address,
+    pub assigned_at: u64,
+    pub expires_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PermissionAuditEntry {
+    pub id: u64,
+    pub actor: Address,     // who triggered the action/check
+    pub subject: Address,   // user whose permissions were checked/changed
+    pub permission: String, // permission name
+    pub action: String,     // "check", "assign", "revoke", "delegate", ...
+    pub result: String,     // "allowed" / "denied" / "granted" / "revoked"
+    pub timestamp: u64,
+    pub details: String, // optional JSON or text
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserRolesResponse {
+    pub direct_roles: Vec<String>,
+    pub temp_roles: Vec<TempRoleAssignment>,
+    pub delegated_roles: Vec<RoleDelegation>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoleDetails {
+    pub role: Role,
+    pub parent_role: Option<String>,
+    pub members: Vec<Address>,
+    pub all_permissions: Vec<Permission>,
+}
 
 //-----------------------------------------------------------------------------
 // Storage Keys
@@ -712,58 +765,77 @@ pub enum DataKey {
     TokenMetadata(Address),
 
     // Insurance-related storage keys
-    InsurancePolicy(Address),            // employee -> InsurancePolicy
-    InsuranceClaim(u64),                 // claim_id -> InsuranceClaim
-    NextClaimId,                         // Next available claim ID
-    InsurancePool(Address),              // token -> InsurancePool
-    GuaranteeFund(Address),              // token -> GuaranteeFund
-    Guarantee(u64),                      // guarantee_id -> Guarantee
-    NextGuaranteeId,                     // Next available guarantee ID
-    EmployerGuarantees(Address),         // employer -> Vec<u64> (guarantee IDs)
-    RiskAssessment(Address),             // employee -> u32 (risk score)
-    InsuranceSettings,                   // Global insurance settings
+    InsurancePolicy(Address),    // employee -> InsurancePolicy
+    InsuranceClaim(u64),         // claim_id -> InsuranceClaim
+    NextClaimId,                 // Next available claim ID
+    InsurancePool(Address),      // token -> InsurancePool
+    GuaranteeFund(Address),      // token -> GuaranteeFund
+    Guarantee(u64),              // guarantee_id -> Guarantee
+    NextGuaranteeId,             // Next available guarantee ID
+    EmployerGuarantees(Address), // employer -> Vec<u64> (guarantee IDs)
+    RiskAssessment(Address),     // employee -> u32 (risk score)
+    InsuranceSettings,           // Global insurance settings
 
     // PayrollHistory
-    PayrollHistoryEntry(Address),        // (employee) -> history_entry
-    PayrollHistoryCounter(Address),      // (employee) -> history_entry
-    AuditTrail(Address),                 // (employee) -> audit_entry
+    PayrollHistoryEntry(Address),   // (employee) -> history_entry
+    PayrollHistoryCounter(Address), // (employee) -> history_entry
+    AuditTrail(Address),            // (employee) -> audit_entry
 
     // Webhook system keys - CORE FUNCTIONALITY
-    Webhook(u64),                        // webhook_id -> Webhook
-    NextWebhookId,                       // counter for webhook IDs
-    
+    Webhook(u64),  // webhook_id -> Webhook
+    NextWebhookId, // counter for webhook IDs
+
     // Audit and History - ESSENTIAL
     AuditIdCounter(Address),
-    
-    // Templates - MINIMAL SET
-    NextTmplId,                          // Next available template ID
-    Template(u64),                       // template_id -> PayrollTemplate
-    EmpTemplates(Address),               // employer -> Vec<u64> (template IDs)  
-    PubTemplates,                        // Vec<u64> (public template IDs)
-    Preset(u64),                         // preset_id -> TemplatePreset
-    NextPresetId,                        // Next available preset ID
-    PresetCat(String),                   // category -> Vec<u64> (preset IDs)
-    ActivePresets,                       // Vec<u64> (active preset IDs)
 
-    // Backup - MINIMAL SET  
-    Backup(u64),                         // backup_id -> PayrollBackup
-    NextBackupId,                        // Next available backup ID
-    EmpBackups(Address),                 // employer -> Vec<u64> (backup IDs)
-    BackupData(u64),                     // backup_id -> BackupData
-    BackupIndex,                         // Vec<u64> (all backup IDs)
-    Recovery(u64),                       // recovery_point_id -> RecoveryPoint
-    NextRecoveryId,                      // Next available recovery point ID
+    // Templates - MINIMAL SET
+    NextTmplId,            // Next available template ID
+    Template(u64),         // template_id -> PayrollTemplate
+    EmpTemplates(Address), // employer -> Vec<u64> (template IDs)
+    PubTemplates,          // Vec<u64> (public template IDs)
+    Preset(u64),           // preset_id -> TemplatePreset
+    NextPresetId,          // Next available preset ID
+    PresetCat(String),     // category -> Vec<u64> (preset IDs)
+    ActivePresets,         // Vec<u64> (active preset IDs)
+
+    // Backup - MINIMAL SET
+    Backup(u64),         // backup_id -> PayrollBackup
+    NextBackupId,        // Next available backup ID
+    EmpBackups(Address), // employer -> Vec<u64> (backup IDs)
+    BackupData(u64),     // backup_id -> BackupData
+    BackupIndex,         // Vec<u64> (all backup IDs)
+    Recovery(u64),       // recovery_point_id -> RecoveryPoint
+    NextRecoveryId,      // Next available recovery point ID
 
     // Scheduling - MINIMAL SET
-    Schedule(u64),                       // schedule_id -> PayrollSchedule
-    NextSchedId,                         // Next available schedule ID
-    EmpSchedules(Address),               // employer -> Vec<u64> (schedule IDs)
-    Rule(u64),                           // rule_id -> AutomationRule
-    NextRuleId,                          // Next available rule ID
-    EmpRules(Address),                   // employer -> Vec<u64> (rule IDs)
+    Schedule(u64),         // schedule_id -> PayrollSchedule
+    NextSchedId,           // Next available schedule ID
+    EmpSchedules(Address), // employer -> Vec<u64> (schedule IDs)
+    Rule(u64),             // rule_id -> AutomationRule
+    NextRuleId,            // Next available rule ID
+    EmpRules(Address),     // employer -> Vec<u64> (rule IDs)
 
-    // Security - MINIMAL SET 
-    Role(String),                        // role_id -> Role
-    UserRole(Address),                   // user -> UserRoleAssignment
-    SecuritySettings                     // Global security settings
+    // Security - MINIMAL SET
+    SecuritySettings, // Global security settings
+}
+
+#[contracttype]
+pub enum RoleDataKey {
+    // --- RBAC core ---
+    Role(String),        // role_id -> Role
+    RoleMembers(String), // role_id -> Vec<Address>
+    RoleParent(String),  // role_id -> Option<String>
+    UserRole(Address),   // user -> Vec<String> (assigned role ids)
+
+    // --- Delegation ---
+    Delegation(u64),  // delegation_id -> RoleDelegation
+    NextDelegationId, // counter for delegation ids
+
+    // --- Temporary role assignments ---
+    TempRole(u64),  // temp_role_id -> TempRoleAssignment
+    NextTempRoleId, // counter for temp assignments
+
+    // --- Auditing ---
+    Audit(u64),  // audit_id -> PermissionAuditEntry
+    NextAuditId, // counter for audits
 }
