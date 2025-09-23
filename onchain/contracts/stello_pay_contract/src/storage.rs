@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Symbol, String, Vec, Map};
+use soroban_sdk::{contracttype, Address, Env, Map, String, Symbol, Vec};
 
 // Import insurance types for backup functionality
 use crate::insurance::InsurancePolicy;
@@ -130,25 +130,25 @@ pub struct PayrollBackup {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum BackupType {
-    Full,           // Complete system backup
-    Employer,       // Employer-specific backup
-    Employee,       // Employee-specific backup
-    Template,       // Template backup
-    Insurance,      // Insurance data backup
-    Compliance,     // Compliance data backup
+    Full,       // Complete system backup
+    Employer,   // Employer-specific backup
+    Employee,   // Employee-specific backup
+    Template,   // Template backup
+    Insurance,  // Insurance data backup
+    Compliance, // Compliance data backup
 }
 
 /// Backup status enumeration
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum BackupStatus {
-    Creating,       // Backup is being created
-    Completed,      // Backup completed successfully
-    Failed,         // Backup failed
-    Verifying,      // Backup is being verified
-    Verified,       // Backup verified successfully
-    Restoring,      // Backup is being restored
-    Restored,       // Backup restored successfully
+    Creating,  // Backup is being created
+    Completed, // Backup completed successfully
+    Failed,    // Backup failed
+    Verifying, // Backup is being verified
+    Verified,  // Backup verified successfully
+    Restoring, // Backup is being restored
+    Restored,  // Backup restored successfully
 }
 
 /// Backup data structure for storing actual backup content
@@ -196,21 +196,21 @@ pub struct RecoveryPoint {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum RecoveryType {
-    Full,           // Complete system recovery
-    Partial,        // Partial system recovery
-    Emergency,      // Emergency recovery
-    Test,           // Test recovery
+    Full,      // Complete system recovery
+    Partial,   // Partial system recovery
+    Emergency, // Emergency recovery
+    Test,      // Test recovery
 }
 
 /// Recovery status enumeration
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum RecoveryStatus {
-    Pending,        // Recovery pending
-    InProgress,     // Recovery in progress
-    Completed,      // Recovery completed
-    Failed,         // Recovery failed
-    RolledBack,     // Recovery rolled back
+    Pending,    // Recovery pending
+    InProgress, // Recovery in progress
+    Completed,  // Recovery completed
+    Failed,     // Recovery failed
+    RolledBack, // Recovery rolled back
 }
 
 /// Recovery metadata for additional information
@@ -250,24 +250,24 @@ pub struct PayrollSchedule {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScheduleType {
-    Recurring,      // Regular recurring payroll
-    OneTime,        // One-time scheduled payroll
-    Conditional,    // Conditional payroll based on triggers
-    Batch,          // Batch payroll processing
-    Emergency,      // Emergency payroll processing
+    Recurring,   // Regular recurring payroll
+    OneTime,     // One-time scheduled payroll
+    Conditional, // Conditional payroll based on triggers
+    Batch,       // Batch payroll processing
+    Emergency,   // Emergency payroll processing
 }
 
 /// Schedule frequency enumeration
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScheduleFrequency {
-    Daily,          // Daily execution
-    Weekly,         // Weekly execution
-    BiWeekly,       // Bi-weekly execution
-    Monthly,        // Monthly execution
-    Quarterly,      // Quarterly execution
-    Yearly,         // Yearly execution
-    Custom(u64),    // Custom frequency in seconds
+    Daily,       // Daily execution
+    Weekly,      // Weekly execution
+    BiWeekly,    // Bi-weekly execution
+    Monthly,     // Monthly execution
+    Quarterly,   // Quarterly execution
+    Yearly,      // Yearly execution
+    Custom(u64), // Custom frequency in seconds
 }
 
 /// Schedule metadata for additional information
@@ -307,11 +307,11 @@ pub struct AutomationRule {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuleType {
-    Balance,        // Balance-based triggers
-    Time,           // Time-based triggers
-    Employee,       // Employee-based triggers
-    Compliance,     // Compliance-based triggers
-    Custom,         // Custom triggers
+    Balance,    // Balance-based triggers
+    Time,       // Time-based triggers
+    Employee,   // Employee-based triggers
+    Compliance, // Compliance-based triggers
+    Custom,     // Custom triggers
 }
 
 /// Rule condition structure
@@ -680,8 +680,6 @@ pub enum SuspiciousActivitySeverity {
     Critical,
 }
 
-
-
 //-----------------------------------------------------------------------------
 // Storage Keys
 //-----------------------------------------------------------------------------
@@ -712,58 +710,416 @@ pub enum DataKey {
     TokenMetadata(Address),
 
     // Insurance-related storage keys
-    InsurancePolicy(Address),            // employee -> InsurancePolicy
-    InsuranceClaim(u64),                 // claim_id -> InsuranceClaim
-    NextClaimId,                         // Next available claim ID
-    InsurancePool(Address),              // token -> InsurancePool
-    GuaranteeFund(Address),              // token -> GuaranteeFund
-    Guarantee(u64),                      // guarantee_id -> Guarantee
-    NextGuaranteeId,                     // Next available guarantee ID
-    EmployerGuarantees(Address),         // employer -> Vec<u64> (guarantee IDs)
-    RiskAssessment(Address),             // employee -> u32 (risk score)
-    InsuranceSettings,                   // Global insurance settings
+    InsurancePolicy(Address),    // employee -> InsurancePolicy
+    InsuranceClaim(u64),         // claim_id -> InsuranceClaim
+    NextClaimId,                 // Next available claim ID
+    InsurancePool(Address),      // token -> InsurancePool
+    GuaranteeFund(Address),      // token -> GuaranteeFund
+    Guarantee(u64),              // guarantee_id -> Guarantee
+    NextGuaranteeId,             // Next available guarantee ID
+    EmployerGuarantees(Address), // employer -> Vec<u64> (guarantee IDs)
+    RiskAssessment(Address),     // employee -> u32 (risk score)
+    InsuranceSettings,           // Global insurance settings
 
     // PayrollHistory
-    PayrollHistoryEntry(Address),        // (employee) -> history_entry
-    PayrollHistoryCounter(Address),      // (employee) -> history_entry
-    AuditTrail(Address),                 // (employee) -> audit_entry
+    PayrollHistoryEntry(Address),   // (employee) -> history_entry
+    PayrollHistoryCounter(Address), // (employee) -> history_entry
+    AuditTrail(Address),            // (employee) -> audit_entry
 
     // Webhook system keys - CORE FUNCTIONALITY
-    Webhook(u64),                        // webhook_id -> Webhook
-    NextWebhookId,                       // counter for webhook IDs
-    
+    Webhook(u64),  // webhook_id -> Webhook
+    NextWebhookId, // counter for webhook IDs
+
     // Audit and History - ESSENTIAL
     AuditIdCounter(Address),
-    
-    // Templates - MINIMAL SET
-    NextTmplId,                          // Next available template ID
-    Template(u64),                       // template_id -> PayrollTemplate
-    EmpTemplates(Address),               // employer -> Vec<u64> (template IDs)  
-    PubTemplates,                        // Vec<u64> (public template IDs)
-    Preset(u64),                         // preset_id -> TemplatePreset
-    NextPresetId,                        // Next available preset ID
-    PresetCat(String),                   // category -> Vec<u64> (preset IDs)
-    ActivePresets,                       // Vec<u64> (active preset IDs)
 
-    // Backup - MINIMAL SET  
-    Backup(u64),                         // backup_id -> PayrollBackup
-    NextBackupId,                        // Next available backup ID
-    EmpBackups(Address),                 // employer -> Vec<u64> (backup IDs)
-    BackupData(u64),                     // backup_id -> BackupData
-    BackupIndex,                         // Vec<u64> (all backup IDs)
-    Recovery(u64),                       // recovery_point_id -> RecoveryPoint
-    NextRecoveryId,                      // Next available recovery point ID
+    // Templates - MINIMAL SET
+    NextTmplId,            // Next available template ID
+    Template(u64),         // template_id -> PayrollTemplate
+    EmpTemplates(Address), // employer -> Vec<u64> (template IDs)
+    PubTemplates,          // Vec<u64> (public template IDs)
+    Preset(u64),           // preset_id -> TemplatePreset
+    NextPresetId,          // Next available preset ID
+    PresetCat(String),     // category -> Vec<u64> (preset IDs)
+    ActivePresets,         // Vec<u64> (active preset IDs)
+
+    // Backup - MINIMAL SET
+    Backup(u64),         // backup_id -> PayrollBackup
+    NextBackupId,        // Next available backup ID
+    EmpBackups(Address), // employer -> Vec<u64> (backup IDs)
+    BackupData(u64),     // backup_id -> BackupData
+    BackupIndex,         // Vec<u64> (all backup IDs)
+    Recovery(u64),       // recovery_point_id -> RecoveryPoint
+    NextRecoveryId,      // Next available recovery point ID
 
     // Scheduling - MINIMAL SET
-    Schedule(u64),                       // schedule_id -> PayrollSchedule
-    NextSchedId,                         // Next available schedule ID
-    EmpSchedules(Address),               // employer -> Vec<u64> (schedule IDs)
-    Rule(u64),                           // rule_id -> AutomationRule
-    NextRuleId,                          // Next available rule ID
-    EmpRules(Address),                   // employer -> Vec<u64> (rule IDs)
+    Schedule(u64),         // schedule_id -> PayrollSchedule
+    NextSchedId,           // Next available schedule ID
+    EmpSchedules(Address), // employer -> Vec<u64> (schedule IDs)
+    Rule(u64),             // rule_id -> AutomationRule
+    NextRuleId,            // Next available rule ID
+    EmpRules(Address),     // employer -> Vec<u64> (rule IDs)
 
-    // Security - MINIMAL SET 
-    Role(String),                        // role_id -> Role
-    UserRole(Address),                   // user -> UserRoleAssignment
-    SecuritySettings                     // Global security settings
+    // Security - MINIMAL SET
+    Role(String),      // role_id -> Role
+    UserRole(Address), // user -> UserRoleAssignment
+    SecuritySettings,  // Global security settings
+}
+
+//-----------------------------------------------------------------------------
+// Employee Lifecycle Management Data Structures
+//-----------------------------------------------------------------------------
+
+/// Employee status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum EmployeeStatus {
+    Pending,    // Onboarding in progress
+    Active,     // Active employee
+    Inactive,   // Temporarily inactive
+    Terminated, // Terminated employee
+    OnLeave,    // On leave
+    Suspended,  // Suspended
+}
+
+/// Employee profile structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EmployeeProfile {
+    pub employee: Address,
+    pub employer: Address,
+    pub department_id: Option<u64>,
+    pub status: EmployeeStatus,
+    pub hire_date: u64,
+    pub termination_date: Option<u64>,
+    pub job_title: String,
+    pub employee_id: String,
+    pub manager: Option<Address>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub metadata: Map<String, String>,
+}
+
+/// Onboarding workflow structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnboardingWorkflow {
+    pub id: u64,
+    pub employee: Address,
+    pub employer: Address,
+    pub status: WorkflowStatus,
+    pub checklist: Vec<OnboardingTask>,
+    pub approvals: Vec<WorkflowApproval>,
+    pub created_at: u64,
+    pub completed_at: Option<u64>,
+    pub expires_at: u64,
+}
+
+/// Offboarding workflow structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OffboardingWorkflow {
+    pub id: u64,
+    pub employee: Address,
+    pub employer: Address,
+    pub status: WorkflowStatus,
+    pub checklist: Vec<OffboardingTask>,
+    pub has_final_payment: bool,
+    pub approvals: Vec<WorkflowApproval>,
+    pub created_at: u64,
+    pub completed_at: Option<u64>,
+    pub termination_reason: String,
+}
+
+/// Workflow status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorkflowStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Cancelled,
+    Expired,
+}
+
+/// Onboarding task structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OnboardingTask {
+    pub id: u32,
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+    pub completed: bool,
+    pub completed_at: Option<u64>,
+    pub completed_by: Option<Address>,
+    pub due_date: Option<u64>,
+}
+
+/// Offboarding task structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OffboardingTask {
+    pub id: u32,
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+    pub completed: bool,
+    pub completed_at: Option<u64>,
+    pub completed_by: Option<Address>,
+    pub due_date: Option<u64>,
+}
+
+/// Workflow approval structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorkflowApproval {
+    pub approver: Address,
+    pub approved: bool,
+    pub comment: String,
+    pub timestamp: u64,
+    pub required: bool,
+}
+
+/// Final payment structure for offboarding
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FinalPayment {
+    pub amount: i128,
+    pub token: Address,
+    pub includes_severance: bool,
+    pub includes_unused_leave: bool,
+    pub processed: bool,
+    pub processed_at: Option<u64>,
+}
+
+/// Employee transfer structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EmployeeTransfer {
+    pub id: u64,
+    pub employee: Address,
+    pub from_department: u64,
+    pub to_department: u64,
+    pub from_manager: Address,
+    pub to_manager: Address,
+    pub transfer_date: u64,
+    pub reason: String,
+    pub approved: bool,
+    pub approved_by: Option<Address>,
+    pub approved_at: Option<u64>,
+    pub created_at: u64,
+}
+
+/// Compliance tracking structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComplianceRecord {
+    pub employee: Address,
+    pub compliance_type: String,
+    pub status: ComplianceStatus,
+    pub due_date: u64,
+    pub completed_date: Option<u64>,
+    pub notes: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// Compliance status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ComplianceStatus {
+    Pending,
+    Completed,
+    Overdue,
+    NotRequired,
+}
+
+//-----------------------------------------------------------------------------
+// Lifecycle Storage Helper - Clever workaround for DataKey size limit
+//-----------------------------------------------------------------------------
+
+/// Lifecycle storage helper that uses existing DataKey variants with prefixed strings
+/// This avoids adding new variants to the DataKey enum which is already at size limit
+pub struct LifecycleStorage;
+
+impl LifecycleStorage {
+    // Storage prefixes for different lifecycle data types
+    const PROFILE_PREFIX: &'static str = "lc_profile_";
+    const ONBOARDING_PREFIX: &'static str = "lc_onboard_";
+    const OFFBOARDING_PREFIX: &'static str = "lc_offboard_";
+    const TRANSFER_PREFIX: &'static str = "lc_transfer_";
+    const COMPLIANCE_PREFIX: &'static str = "lc_comply_";
+    const COUNTER_PREFIX: &'static str = "lc_counter_";
+
+    /// Store employee profile using existing Employee key
+    pub fn store_profile(env: &Env, employee: &Address, profile: &EmployeeProfile) {
+        // Use the employee address directly as the key for profiles
+        env.storage()
+            .persistent()
+            .set(&DataKey::Employee(employee.clone()), profile);
+    }
+
+    /// Get employee profile
+    pub fn get_profile(env: &Env, employee: &Address) -> Option<EmployeeProfile> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Employee(employee.clone()))
+    }
+
+    /// Store onboarding workflow using Template key with offset
+    pub fn store_onboarding(env: &Env, workflow_id: u64, workflow: &OnboardingWorkflow) {
+        let offset_id = workflow_id + 1000000; // Simple offset to avoid conflicts
+        env.storage()
+            .persistent()
+            .set(&DataKey::Template(offset_id), workflow);
+    }
+
+    /// Get onboarding workflow
+    pub fn get_onboarding(env: &Env, workflow_id: u64) -> Option<OnboardingWorkflow> {
+        let offset_id = workflow_id + 1000000;
+        env.storage()
+            .persistent()
+            .get(&DataKey::Template(offset_id))
+    }
+
+    /// Store offboarding workflow using Preset key with offset
+    pub fn store_offboarding(env: &Env, workflow_id: u64, workflow: &OffboardingWorkflow) {
+        let offset_id = workflow_id + 2000000; // Different offset for offboarding
+        env.storage()
+            .persistent()
+            .set(&DataKey::Preset(offset_id), workflow);
+    }
+
+    /// Get offboarding workflow
+    pub fn get_offboarding(env: &Env, workflow_id: u64) -> Option<OffboardingWorkflow> {
+        let offset_id = workflow_id + 2000000;
+        env.storage().persistent().get(&DataKey::Preset(offset_id))
+    }
+
+    /// Store employee transfer using Backup key with offset
+    pub fn store_transfer(env: &Env, transfer_id: u64, transfer: &EmployeeTransfer) {
+        let offset_id = transfer_id + 3000000; // Different offset for transfers
+        env.storage()
+            .persistent()
+            .set(&DataKey::Backup(offset_id), transfer);
+    }
+
+    /// Get employee transfer
+    pub fn get_transfer(env: &Env, transfer_id: u64) -> Option<EmployeeTransfer> {
+        let offset_id = transfer_id + 3000000;
+        env.storage().persistent().get(&DataKey::Backup(offset_id))
+    }
+
+    /// Store compliance record using AuditTrail key
+    pub fn store_compliance(
+        env: &Env,
+        employee: &Address,
+        _compliance_type: &String,
+        record: &ComplianceRecord,
+    ) {
+        // Use employee address for compliance records
+        env.storage()
+            .persistent()
+            .set(&DataKey::AuditTrail(employee.clone()), record);
+    }
+
+    /// Get compliance record
+    pub fn get_compliance(
+        env: &Env,
+        employee: &Address,
+        _compliance_type: &String,
+    ) -> Option<ComplianceRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AuditTrail(employee.clone()))
+    }
+
+    /// Store/get counters using simple numeric keys
+    pub fn get_next_onboarding_id(env: &Env) -> u64 {
+        let current_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NextTmplId)
+            .unwrap_or(1);
+        env.storage()
+            .persistent()
+            .set(&DataKey::NextTmplId, &(current_id + 1));
+        current_id
+    }
+
+    pub fn get_next_offboarding_id(env: &Env) -> u64 {
+        let current_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NextPresetId)
+            .unwrap_or(1);
+        env.storage()
+            .persistent()
+            .set(&DataKey::NextPresetId, &(current_id + 1));
+        current_id
+    }
+
+    pub fn get_next_transfer_id(env: &Env) -> u64 {
+        let current_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NextBackupId)
+            .unwrap_or(1);
+        env.storage()
+            .persistent()
+            .set(&DataKey::NextBackupId, &(current_id + 1));
+        current_id
+    }
+
+    /// Link employee to workflow ID using existing keys
+    pub fn link_employee_onboarding(env: &Env, employee: &Address, workflow_id: u64) {
+        // Store workflow ID in the employee's balance slot with a special token
+        let link_token = Address::from_string(&String::from_str(env, "ONBOARD"));
+        env.storage().persistent().set(
+            &DataKey::Balance(employee.clone(), link_token),
+            &(workflow_id as i128),
+        );
+    }
+
+    pub fn get_employee_onboarding_id(env: &Env, employee: &Address) -> Option<u64> {
+        let link_token = Address::from_string(&String::from_str(env, "ONBOARD"));
+        env.storage()
+            .persistent()
+            .get::<DataKey, i128>(&DataKey::Balance(employee.clone(), link_token))
+            .map(|id| id as u64)
+    }
+
+    pub fn link_employee_offboarding(env: &Env, employee: &Address, workflow_id: u64) {
+        let link_token = Address::from_string(&String::from_str(env, "OFFBOARD"));
+        env.storage().persistent().set(
+            &DataKey::Balance(employee.clone(), link_token),
+            &(workflow_id as i128),
+        );
+    }
+
+    pub fn get_employee_offboarding_id(env: &Env, employee: &Address) -> Option<u64> {
+        let link_token = Address::from_string(&String::from_str(env, "OFFBOARD"));
+        env.storage()
+            .persistent()
+            .get::<DataKey, i128>(&DataKey::Balance(employee.clone(), link_token))
+            .map(|id| id as u64)
+    }
+
+    /// Store final payment separately to avoid serialization issues
+    pub fn store_final_payment(env: &Env, employee: &Address, final_payment: &FinalPayment) {
+        let payment_key = Address::from_string(&String::from_str(env, "FINALPAY"));
+        env.storage().persistent().set(
+            &DataKey::Balance(employee.clone(), payment_key),
+            final_payment,
+        );
+    }
+
+    /// Get final payment
+    pub fn get_final_payment(env: &Env, employee: &Address) -> Option<FinalPayment> {
+        let payment_key = Address::from_string(&String::from_str(env, "FINALPAY"));
+        env.storage()
+            .persistent()
+            .get(&DataKey::Balance(employee.clone(), payment_key))
+    }
 }

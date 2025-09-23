@@ -360,6 +360,530 @@ pub enum EnterpriseDataKey {
 }
 
 //-----------------------------------------------------------------------------
+// Employee Lifecycle Management Functions
+//-----------------------------------------------------------------------------
+
+use crate::storage::{EmployeeProfile, EmployeeStatus, OnboardingWorkflow, OffboardingWorkflow, 
+    WorkflowStatus, OnboardingTask, OffboardingTask, WorkflowApproval, FinalPayment, 
+    EmployeeTransfer, ComplianceRecord, ComplianceStatus, LifecycleStorage};
+use crate::events::{emit_employee_onboarded, emit_employee_offboarded, emit_employee_transferred,
+    emit_employee_status_changed, emit_onboarding_workflow_event, emit_offboarding_workflow_event,
+    emit_final_payment_processed, emit_compliance_updated, emit_workflow_approved, emit_task_completed};
+
+/// HR Workflow Management System
+pub struct HRWorkflowManager;
+
+impl HRWorkflowManager {
+    /// Create employee onboarding workflow
+    pub fn create_onboarding_workflow(
+        env: &Env,
+        employee: Address,
+        employer: Address,
+        department_id: Option<u64>,
+        job_title: String,
+        manager: Option<Address>,
+    ) -> Result<u64, EnterpriseError> {
+        let current_time = env.ledger().timestamp();
+        let workflow_id = LifecycleStorage::get_next_onboarding_id(env);
+        
+        // Create default onboarding checklist
+        let mut checklist = Vec::new(env);
+        
+        checklist.push_back(OnboardingTask {
+            id: 1,
+            name: String::from_str(env, "Complete employment forms"),
+            description: String::from_str(env, "Fill out all required employment documentation"),
+            required: true,
+            completed: false,
+            completed_at: None,
+            completed_by: None,
+            due_date: Some(current_time + 7 * 24 * 3600), // 7 days
+        });
+        
+        checklist.push_back(OnboardingTask {
+            id: 2,
+            name: String::from_str(env, "Setup payroll information"),
+            description: String::from_str(env, "Configure salary and payment details"),
+            required: true,
+            completed: false,
+            completed_at: None,
+            completed_by: None,
+            due_date: Some(current_time + 3 * 24 * 3600), // 3 days
+        });
+        
+        checklist.push_back(OnboardingTask {
+            id: 3,
+            name: String::from_str(env, "Department orientation"),
+            description: String::from_str(env, "Complete department-specific orientation"),
+            required: true,
+            completed: false,
+            completed_at: None,
+            completed_by: None,
+            due_date: Some(current_time + 14 * 24 * 3600), // 14 days
+        });
+
+        let workflow = OnboardingWorkflow {
+            id: workflow_id,
+            employee: employee.clone(),
+            employer: employer.clone(),
+            status: WorkflowStatus::Pending,
+            checklist,
+            approvals: Vec::new(env),
+            created_at: current_time,
+            completed_at: None,
+            expires_at: current_time + 30 * 24 * 3600, // 30 days
+        };
+
+        LifecycleStorage::store_onboarding(env, workflow_id, &workflow);
+        LifecycleStorage::link_employee_onboarding(env, &employee, workflow_id);
+
+        // Create employee profile
+        let profile = EmployeeProfile {
+            employee: employee.clone(),
+            employer: employer.clone(),
+            department_id,
+            status: EmployeeStatus::Pending,
+            hire_date: current_time,
+            termination_date: None,
+            job_title,
+            employee_id: String::from_str(env, "EMP000001"), // Simple ID for now
+            manager,
+            created_at: current_time,
+            updated_at: current_time,
+            metadata: Map::new(env),
+        };
+
+        LifecycleStorage::store_profile(env, &employee, &profile);
+
+        // Emit onboarding started event
+        emit_onboarding_workflow_event(
+            env.clone(),
+            workflow_id,
+            employee,
+            employer,
+            String::from_str(env, "Pending"),
+            0,
+            3,
+            current_time,
+        );
+
+        Ok(workflow_id)
+    }
+
+    /// Complete onboarding task
+    pub fn complete_onboarding_task(
+        env: &Env,
+        workflow_id: u64,
+        task_id: u32,
+        completed_by: Address,
+    ) -> Result<(), EnterpriseError> {
+        let mut workflow = LifecycleStorage::get_onboarding(env, workflow_id)
+            .ok_or(EnterpriseError::WorkflowNotFound)?;
+
+        let current_time = env.ledger().timestamp();
+        
+        // Find and update the task
+        let mut task_found = false;
+        let mut completed_tasks = 0u32;
+        
+        for i in 0..workflow.checklist.len() {
+            let mut task = workflow.checklist.get(i).unwrap();
+            if task.id == task_id && !task.completed {
+                task.completed = true;
+                task.completed_at = Some(current_time);
+                task.completed_by = Some(completed_by.clone());
+                workflow.checklist.set(i, task.clone());
+                task_found = true;
+                
+                emit_task_completed(
+                    env.clone(),
+                    workflow_id,
+                    task_id,
+                    task.name.clone(),
+                    completed_by.clone(),
+                    current_time,
+                );
+            }
+            if task.completed {
+                completed_tasks += 1;
+            }
+        }
+
+        if !task_found {
+            return Err(EnterpriseError::WorkflowStepNotFound);
+        }
+
+        // Check if all required tasks are completed
+        let mut total_required_tasks = 0u32;
+        let mut completed_required_tasks = 0u32;
+        
+        for i in 0..workflow.checklist.len() {
+            let task = workflow.checklist.get(i).unwrap();
+            if task.required {
+                total_required_tasks += 1;
+                if task.completed {
+                    completed_required_tasks += 1;
+                }
+            }
+        }
+
+        if completed_required_tasks == total_required_tasks {
+            workflow.status = WorkflowStatus::Completed;
+            workflow.completed_at = Some(current_time);
+            
+            // Update employee status to active
+            if let Some(mut profile) = LifecycleStorage::get_profile(env, &workflow.employee) {
+                profile.status = EmployeeStatus::Active;
+                profile.updated_at = current_time;
+                LifecycleStorage::store_profile(env, &workflow.employee, &profile);
+
+                emit_employee_status_changed(
+                    env.clone(),
+                    workflow.employee.clone(),
+                    workflow.employer.clone(),
+                    String::from_str(env, "Pending"),
+                    String::from_str(env, "Active"),
+                    completed_by,
+                    current_time,
+                );
+
+                emit_employee_onboarded(
+                    env.clone(),
+                    workflow.employee.clone(),
+                    workflow.employer.clone(),
+                    profile.department_id,
+                    profile.job_title,
+                    profile.hire_date,
+                    current_time,
+                );
+            }
+        }
+
+        LifecycleStorage::store_onboarding(env, workflow_id, &workflow);
+
+        emit_onboarding_workflow_event(
+            env.clone(),
+            workflow_id,
+            workflow.employee,
+            workflow.employer,
+            String::from_str(env, "InProgress"),
+            completed_tasks,
+            workflow.checklist.len() as u32,
+            current_time,
+        );
+
+        Ok(())
+    }
+
+    /// Create employee offboarding workflow
+    pub fn create_offboarding_workflow(
+        env: &Env,
+        employee: Address,
+        employer: Address,
+        termination_reason: String,
+        final_payment: Option<FinalPayment>,
+    ) -> Result<u64, EnterpriseError> {
+        let current_time = env.ledger().timestamp();
+        let workflow_id = LifecycleStorage::get_next_offboarding_id(env);
+        
+        // Create default offboarding checklist
+        let mut checklist = Vec::new(env);
+        
+        checklist.push_back(OffboardingTask {
+            id: 1,
+            name: String::from_str(env, "Return company assets"),
+            description: String::from_str(env, "Return all company property and equipment"),
+            required: true,
+            completed: false,
+            completed_at: None,
+            completed_by: None,
+            due_date: Some(current_time + 7 * 24 * 3600), // 7 days
+        });
+        
+        checklist.push_back(OffboardingTask {
+            id: 2,
+            name: String::from_str(env, "Complete exit interview"),
+            description: String::from_str(env, "Participate in exit interview process"),
+            required: false,
+            completed: false,
+            completed_at: None,
+            completed_by: None,
+            due_date: Some(current_time + 14 * 24 * 3600), // 14 days
+        });
+        
+        checklist.push_back(OffboardingTask {
+            id: 3,
+            name: String::from_str(env, "Process final payment"),
+            description: String::from_str(env, "Calculate and process final compensation"),
+            required: true,
+            completed: false,
+            completed_at: None,
+            completed_by: None,
+            due_date: Some(current_time + 30 * 24 * 3600), // 30 days
+        });
+
+        let workflow = OffboardingWorkflow {
+            id: workflow_id,
+            employee: employee.clone(),
+            employer: employer.clone(),
+            status: WorkflowStatus::Pending,
+            checklist,
+            has_final_payment: final_payment.is_some(),
+            approvals: Vec::new(env),
+            created_at: current_time,
+            completed_at: None,
+            termination_reason,
+        };
+
+        LifecycleStorage::store_offboarding(env, workflow_id, &workflow);
+
+        // Update employee status
+        if let Some(mut profile) = LifecycleStorage::get_profile(env, &employee) {
+            profile.status = EmployeeStatus::Terminated;
+            profile.termination_date = Some(current_time);
+            profile.updated_at = current_time;
+            LifecycleStorage::store_profile(env, &employee, &profile);
+
+            emit_employee_status_changed(
+                env.clone(),
+                employee.clone(),
+                employer.clone(),
+                String::from_str(env, "Active"),
+                String::from_str(env, "Terminated"),
+                employer.clone(),
+                current_time,
+            );
+        }
+
+        // Emit offboarding started event
+        emit_offboarding_workflow_event(
+            env.clone(),
+            workflow_id,
+            employee,
+            employer,
+            String::from_str(env, "Pending"),
+            0,
+            3,
+            final_payment.is_some(),
+            current_time,
+        );
+
+        Ok(workflow_id)
+    }
+
+    /// Process final payment during offboarding
+    pub fn process_final_payment(
+        env: &Env,
+        workflow_id: u64,
+        payment: FinalPayment,
+        processed_by: Address,
+    ) -> Result<(), EnterpriseError> {
+        let mut workflow = LifecycleStorage::get_offboarding(env, workflow_id)
+            .ok_or(EnterpriseError::WorkflowNotFound)?;
+
+        let current_time = env.ledger().timestamp();
+
+        // Mark final payment task as completed
+        for i in 0..workflow.checklist.len() {
+            let mut task = workflow.checklist.get(i).unwrap();
+            if task.name == String::from_str(env, "Process final payment") {
+                task.completed = true;
+                task.completed_at = Some(current_time);
+                task.completed_by = Some(processed_by.clone());
+                workflow.checklist.set(i, task);
+                break;
+            }
+        }
+
+        LifecycleStorage::store_offboarding(env, workflow_id, &workflow);
+
+        emit_final_payment_processed(
+            env.clone(),
+            workflow.employee.clone(),
+            workflow.employer.clone(),
+            payment.amount,
+            payment.token,
+            payment.includes_severance,
+            payment.includes_unused_leave,
+            current_time,
+        );
+
+        emit_employee_offboarded(
+            env.clone(),
+            workflow.employee,
+            workflow.employer,
+            current_time,
+            workflow.termination_reason,
+            Some(payment.amount),
+            current_time,
+        );
+
+        Ok(())
+    }
+
+    /// Transfer employee between departments
+    pub fn transfer_employee(
+        env: &Env,
+        employee: Address,
+        to_department: u64,
+        to_manager: Address,
+        reason: String,
+        approved_by: Address,
+    ) -> Result<u64, EnterpriseError> {
+        let current_time = env.ledger().timestamp();
+        let transfer_id = LifecycleStorage::get_next_transfer_id(env);
+
+        let mut profile = LifecycleStorage::get_profile(env, &employee)
+            .ok_or(EnterpriseError::EmployeeNotFound)?;
+
+        let from_department = profile.department_id.unwrap_or(0);
+        let from_manager = profile.manager.clone().unwrap_or(employee.clone());
+
+        let transfer = EmployeeTransfer {
+            id: transfer_id,
+            employee: employee.clone(),
+            from_department,
+            to_department,
+            from_manager: from_manager.clone(),
+            to_manager: to_manager.clone(),
+            transfer_date: current_time,
+            reason,
+            approved: true,
+            approved_by: Some(approved_by),
+            approved_at: Some(current_time),
+            created_at: current_time,
+        };
+
+        // Update employee profile
+        profile.department_id = Some(to_department);
+        profile.manager = Some(to_manager.clone());
+        profile.updated_at = current_time;
+
+        LifecycleStorage::store_transfer(env, transfer_id, &transfer);
+        LifecycleStorage::store_profile(env, &employee, &profile);
+
+        emit_employee_transferred(
+            env.clone(),
+            employee,
+            from_department,
+            to_department,
+            from_manager,
+            to_manager,
+            current_time,
+            current_time,
+        );
+
+        Ok(transfer_id)
+    }
+
+    /// Update compliance record
+    pub fn update_compliance(
+        env: &Env,
+        employee: Address,
+        compliance_type: String,
+        status: ComplianceStatus,
+        due_date: u64,
+        notes: String,
+    ) -> Result<(), EnterpriseError> {
+        let current_time = env.ledger().timestamp();
+        
+        let completed_date = match status {
+            ComplianceStatus::Completed => Some(current_time),
+            _ => None,
+        };
+
+        let record = ComplianceRecord {
+            employee: employee.clone(),
+            compliance_type: compliance_type.clone(),
+            status: status.clone(),
+            due_date,
+            completed_date,
+            notes,
+            created_at: current_time,
+            updated_at: current_time,
+        };
+
+        LifecycleStorage::store_compliance(env, &employee, &compliance_type, &record);
+
+        let status_str = match status {
+            ComplianceStatus::Pending => String::from_str(env, "Pending"),
+            ComplianceStatus::Completed => String::from_str(env, "Completed"),
+            ComplianceStatus::Overdue => String::from_str(env, "Overdue"),
+            ComplianceStatus::NotRequired => String::from_str(env, "NotRequired"),
+        };
+
+        emit_compliance_updated(
+            env.clone(),
+            employee,
+            compliance_type,
+            status_str,
+            due_date,
+            completed_date,
+            current_time,
+        );
+
+        Ok(())
+    }
+
+    /// Approve workflow step
+    pub fn approve_workflow(
+        env: &Env,
+        workflow_id: u64,
+        workflow_type: String,
+        approver: Address,
+        approved: bool,
+        comment: String,
+    ) -> Result<(), EnterpriseError> {
+        let current_time = env.ledger().timestamp();
+
+        let approval = WorkflowApproval {
+            approver: approver.clone(),
+            approved,
+            comment: comment.clone(),
+            timestamp: current_time,
+            required: true,
+        };
+
+        // Update appropriate workflow based on type
+        if workflow_type == String::from_str(env, "onboarding") {
+            if let Some(mut workflow) = LifecycleStorage::get_onboarding(env, workflow_id) {
+                workflow.approvals.push_back(approval);
+                LifecycleStorage::store_onboarding(env, workflow_id, &workflow);
+                
+                emit_workflow_approved(
+                    env.clone(),
+                    workflow_id,
+                    workflow_type,
+                    workflow.employee,
+                    approver,
+                    approved,
+                    comment,
+                    current_time,
+                );
+            }
+        } else if workflow_type == String::from_str(env, "offboarding") {
+            if let Some(mut workflow) = LifecycleStorage::get_offboarding(env, workflow_id) {
+                workflow.approvals.push_back(approval);
+                LifecycleStorage::store_offboarding(env, workflow_id, &workflow);
+                
+                emit_workflow_approved(
+                    env.clone(),
+                    workflow_id,
+                    workflow_type,
+                    workflow.employee,
+                    approver,
+                    approved,
+                    comment,
+                    current_time,
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
+//-----------------------------------------------------------------------------
 // Enterprise Errors
 //-----------------------------------------------------------------------------
 
@@ -397,4 +921,15 @@ pub enum EnterpriseError {
     InsufficientEvidence,
     DisputeTimeoutInvalid,
     EscalationLevelInvalid,
+    // Lifecycle management errors
+    EmployeeNotFound,
+    InvalidEmployeeStatus,
+    OnboardingWorkflowNotFound,
+    OffboardingWorkflowNotFound,
+    TaskNotFound,
+    TaskAlreadyCompleted,
+    WorkflowExpired,
+    InvalidTransferRequest,
+    ComplianceRecordNotFound,
+    InvalidComplianceStatus,
 } 

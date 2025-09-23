@@ -4,7 +4,7 @@ use soroban_sdk::{
 };
 
 use crate::events::{emit_disburse, DEPOSIT_EVENT, PAUSED_EVENT, UNPAUSED_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT, METRICS_UPDATED_EVENT, TEMPLATE_CREATED_EVENT, TEMPLATE_UPDATED_EVENT, TEMPLATE_APPLIED_EVENT, TEMPLATE_SHARED_EVENT, PRESET_CREATED_EVENT, BACKUP_CREATED_EVENT, BACKUP_VERIFIED_EVENT, RECOVERY_STARTED_EVENT, RECOVERY_COMPLETED_EVENT, SCHEDULE_CREATED_EVENT, SCHEDULE_UPDATED_EVENT, SCHEDULE_EXECUTED_EVENT, RULE_CREATED_EVENT, RULE_EXECUTED_EVENT, ROLE_ASSIGNED_EVENT, ROLE_REVOKED_EVENT, SECURITY_AUDIT_EVENT, SECURITY_POLICY_VIOLATION_EVENT};
-use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, PerformanceMetrics, CompactPayrollHistoryEntry, PayrollTemplate, TemplatePreset, PayrollBackup, BackupData, BackupMetadata, BackupType, BackupStatus, RecoveryPoint, RecoveryType, RecoveryStatus, RecoveryMetadata, PayrollSchedule, ScheduleType, ScheduleFrequency, ScheduleMetadata, AutomationRule, RuleType, RuleCondition, RuleAction, ConditionOperator, LogicalOperator, ActionType, UserRole, Permission, Role, UserRoleAssignment, SecurityPolicy, SecurityPolicyType, SecurityRule, SecurityRuleOperator, SecurityRuleAction, SecurityAuditEntry, SecurityAuditResult, RateLimitConfig, SecuritySettings, SuspiciousActivity, SuspiciousActivityType, SuspiciousActivitySeverity};
+use crate::storage::{DataKey, Payroll, PayrollInput, CompactPayroll, PerformanceMetrics, CompactPayrollHistoryEntry, PayrollTemplate, TemplatePreset, PayrollBackup, BackupData, BackupMetadata, BackupType, BackupStatus, RecoveryPoint, RecoveryType, RecoveryStatus, RecoveryMetadata, PayrollSchedule, ScheduleType, ScheduleFrequency, ScheduleMetadata, AutomationRule, RuleType, RuleCondition, RuleAction, ConditionOperator, LogicalOperator, ActionType, UserRole, Permission, Role, UserRoleAssignment, SecurityPolicy, SecurityPolicyType, SecurityRule, SecurityRuleOperator, SecurityRuleAction, SecurityAuditEntry, SecurityAuditResult, RateLimitConfig, SecuritySettings, SuspiciousActivity, SuspiciousActivityType, SuspiciousActivitySeverity, EmployeeProfile, EmployeeStatus, OnboardingWorkflow, OffboardingWorkflow, WorkflowStatus, OnboardingTask, OffboardingTask, WorkflowApproval, FinalPayment, EmployeeTransfer, ComplianceRecord, ComplianceStatus, LifecycleStorage};
 use crate::insurance::{InsuranceSystem, InsuranceError, InsurancePolicy, InsuranceClaim, Guarantee, InsuranceSettings};
 use crate::enterprise::{self, Department, ApprovalWorkflow, ApprovalStep, WebhookEndpoint, ReportTemplate, BackupSchedule, EnterpriseDataKey, PayrollModificationRequest, PayrollModificationType, PayrollModificationStatus, Approval, ApprovalStatus, Dispute, DisputeType, DisputeStatus, DisputePriority, Escalation, EscalationLevel, Mediator, DisputeSettings};
 
@@ -5430,6 +5430,473 @@ impl PayrollContract {
             ),
         );
         Some(metrics)
+    }
+
+    //-----------------------------------------------------------------------------
+    // Employee Lifecycle Management
+    //-----------------------------------------------------------------------------
+
+    /// Create employee profile and start onboarding workflow
+    pub fn onboard_employee(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        department_id: Option<u64>,
+        job_title: String,
+        employee_id: String,
+        manager: Option<Address>,
+    ) -> Result<u64, PayrollError> {
+        employer.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let current_time = env.ledger().timestamp();
+
+        // Check if employee already exists
+        if LifecycleStorage::get_profile(&env, &employee).is_some() {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Create employee profile
+        let profile = EmployeeProfile {
+            employee: employee.clone(),
+            employer: employer.clone(),
+            department_id,
+            status: EmployeeStatus::Pending,
+            hire_date: current_time,
+            termination_date: None,
+            job_title,
+            employee_id,
+            manager,
+            created_at: current_time,
+            updated_at: current_time,
+            metadata: Map::new(&env),
+        };
+
+        LifecycleStorage::store_profile(&env, &employee, &profile);
+
+        // Create onboarding workflow
+        let workflow_id = LifecycleStorage::get_next_onboarding_id(&env);
+        let mut checklist = Vec::new(&env);
+        
+        // Default onboarding tasks
+        checklist.push_back(OnboardingTask {
+            id: 1,
+            name: String::from_str(&env, "Complete paperwork"),
+            description: String::from_str(&env, "Fill out employment forms"),
+            required: true,
+            completed: false,
+            completed_at: None,
+            completed_by: None,
+            due_date: Some(current_time + 604800), // 7 days
+        });
+
+        checklist.push_back(OnboardingTask {
+            id: 2,
+            name: String::from_str(&env, "Setup payroll"),
+            description: String::from_str(&env, "Configure salary and payment details"),
+            required: true,
+            completed: false,
+            completed_at: None,
+            completed_by: None,
+            due_date: Some(current_time + 1209600), // 14 days
+        });
+
+        let workflow = OnboardingWorkflow {
+            id: workflow_id,
+            employee: employee.clone(),
+            employer: employer.clone(),
+            status: WorkflowStatus::InProgress,
+            checklist,
+            approvals: Vec::new(&env),
+            created_at: current_time,
+            completed_at: None,
+            expires_at: current_time + 2592000, // 30 days
+        };
+
+        LifecycleStorage::store_onboarding(&env, workflow_id, &workflow);
+        LifecycleStorage::link_employee_onboarding(&env, &employee, workflow_id);
+
+        env.events().publish((symbol_short!("onb_start"),), (employer, employee.clone(), workflow_id));
+
+        Ok(workflow_id)
+    }
+
+    /// Complete onboarding task
+    pub fn complete_onboarding_task(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        task_id: u32,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let workflow_id = LifecycleStorage::get_employee_onboarding_id(&env, &employee)
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        let mut workflow = LifecycleStorage::get_onboarding(&env, workflow_id)
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        // Find and complete the task
+        let mut task_found = false;
+        let current_time = env.ledger().timestamp();
+        
+        for i in 0..workflow.checklist.len() {
+            if let Some(mut task) = workflow.checklist.get(i) {
+                if task.id == task_id {
+                    task.completed = true;
+                    task.completed_at = Some(current_time);
+                    task.completed_by = Some(caller.clone());
+                    workflow.checklist.set(i, task);
+                    task_found = true;
+                    break;
+                }
+            }
+        }
+
+        if !task_found {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Check if all required tasks are completed
+        let mut all_required_completed = true;
+        for i in 0..workflow.checklist.len() {
+            if let Some(task) = workflow.checklist.get(i) {
+                if task.required && !task.completed {
+                    all_required_completed = false;
+                    break;
+                }
+            }
+        }
+
+        // If all required tasks completed, finish onboarding
+        if all_required_completed {
+            workflow.status = WorkflowStatus::Completed;
+            workflow.completed_at = Some(current_time);
+
+            // Update employee status to active
+            Self::update_employee_status(env.clone(), employee.clone(), EmployeeStatus::Active)?;
+
+            env.events().publish((symbol_short!("onb_comp"),), (workflow.employer.clone(), employee.clone(), workflow_id));
+        }
+
+        LifecycleStorage::store_onboarding(&env, workflow_id, &workflow);
+
+        Ok(())
+    }
+
+    /// Start offboarding process
+    pub fn start_offboarding(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        termination_reason: String,
+        final_payment_amount: Option<i128>,
+        final_payment_token: Option<Address>,
+    ) -> Result<u64, PayrollError> {
+        employer.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let current_time = env.ledger().timestamp();
+
+        // Check if employee exists and is active
+        let profile = LifecycleStorage::get_profile(&env, &employee)
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        if profile.status == EmployeeStatus::Terminated {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Create offboarding workflow
+        let workflow_id = LifecycleStorage::get_next_offboarding_id(&env);
+        let mut checklist = Vec::new(&env);
+
+        // Default offboarding tasks
+        checklist.push_back(OffboardingTask {
+            id: 1,
+            name: String::from_str(&env, "Return company assets"),
+            description: String::from_str(&env, "Return all company property"),
+            required: true,
+            completed: false,
+            completed_at: None,
+            completed_by: None,
+            due_date: Some(current_time + 604800), // 7 days
+        });
+
+        checklist.push_back(OffboardingTask {
+            id: 2,
+            name: String::from_str(&env, "Knowledge transfer"),
+            description: String::from_str(&env, "Complete knowledge transfer"),
+            required: true,
+            completed: false,
+            completed_at: None,
+            completed_by: None,
+            due_date: Some(current_time + 1209600), // 14 days
+        });
+
+        let has_final_payment = final_payment_amount.is_some() && final_payment_token.is_some();
+        
+        // Store final payment separately if provided
+        if let (Some(amount), Some(token)) = (final_payment_amount, final_payment_token) {
+            let final_payment = FinalPayment {
+                amount,
+                token,
+                includes_severance: false,
+                includes_unused_leave: false,
+                processed: false,
+                processed_at: None,
+            };
+            LifecycleStorage::store_final_payment(&env, &employee, &final_payment);
+        }
+
+        let workflow = OffboardingWorkflow {
+            id: workflow_id,
+            employee: employee.clone(),
+            employer: employer.clone(),
+            status: WorkflowStatus::InProgress,
+            checklist,
+            has_final_payment,
+            approvals: Vec::new(&env),
+            created_at: current_time,
+            completed_at: None,
+            termination_reason,
+        };
+
+        LifecycleStorage::store_offboarding(&env, workflow_id, &workflow);
+        LifecycleStorage::link_employee_offboarding(&env, &employee, workflow_id);
+
+        // Update employee status to inactive
+        Self::update_employee_status(env.clone(), employee.clone(), EmployeeStatus::Inactive)?;
+
+        env.events().publish((symbol_short!("off_start"),), (employer, employee.clone(), workflow_id));
+
+        Ok(workflow_id)
+    }
+
+    /// Complete offboarding task
+    pub fn complete_offboarding_task(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        task_id: u32,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let workflow_id = LifecycleStorage::get_employee_offboarding_id(&env, &employee)
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        let mut workflow = LifecycleStorage::get_offboarding(&env, workflow_id)
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        // Find and complete the task
+        let mut task_found = false;
+        let current_time = env.ledger().timestamp();
+        
+        for i in 0..workflow.checklist.len() {
+            if let Some(mut task) = workflow.checklist.get(i) {
+                if task.id == task_id {
+                    task.completed = true;
+                    task.completed_at = Some(current_time);
+                    task.completed_by = Some(caller.clone());
+                    workflow.checklist.set(i, task);
+                    task_found = true;
+                    break;
+                }
+            }
+        }
+
+        if !task_found {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Check if all required tasks are completed
+        let mut all_required_completed = true;
+        for i in 0..workflow.checklist.len() {
+            if let Some(task) = workflow.checklist.get(i) {
+                if task.required && !task.completed {
+                    all_required_completed = false;
+                    break;
+                }
+            }
+        }
+
+        // If all required tasks completed, finish offboarding
+        if all_required_completed {
+            workflow.status = WorkflowStatus::Completed;
+            workflow.completed_at = Some(current_time);
+
+            // Process final payment if exists
+            if workflow.has_final_payment {
+                if let Some(mut final_payment) = LifecycleStorage::get_final_payment(&env, &employee) {
+                    if !final_payment.processed {
+                        // Transfer final payment
+                        let contract_address = env.current_contract_address();
+                        if let Ok(()) = Self::transfer_tokens_safe(&env, &final_payment.token, &contract_address, &employee, final_payment.amount) {
+                            final_payment.processed = true;
+                            final_payment.processed_at = Some(current_time);
+                            LifecycleStorage::store_final_payment(&env, &employee, &final_payment);
+                        }
+                    }
+                }
+            }
+
+            // Update employee status to terminated
+            Self::update_employee_status(env.clone(), employee.clone(), EmployeeStatus::Terminated)?;
+
+            env.events().publish((symbol_short!("off_comp"),), (workflow.employer.clone(), employee.clone(), workflow_id));
+        }
+
+        LifecycleStorage::store_offboarding(&env, workflow_id, &workflow);
+
+        Ok(())
+    }
+
+    /// Update employee status
+    pub fn update_employee_status(
+        env: Env,
+        employee: Address,
+        new_status: EmployeeStatus,
+    ) -> Result<(), PayrollError> {
+        let mut profile = LifecycleStorage::get_profile(&env, &employee)
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        profile.status = new_status.clone();
+        profile.updated_at = env.ledger().timestamp();
+
+        if new_status == EmployeeStatus::Terminated {
+            profile.termination_date = Some(env.ledger().timestamp());
+        }
+
+        LifecycleStorage::store_profile(&env, &employee, &profile);
+
+        env.events().publish((symbol_short!("emp_stat"),), (employee.clone(), Self::status_to_u32(&new_status)));
+
+        Ok(())
+    }
+
+    /// Transfer employee between departments
+    pub fn transfer_employee(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        to_department: u64,
+        to_manager: Address,
+        reason: String,
+    ) -> Result<u64, PayrollError> {
+        employer.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let current_time = env.ledger().timestamp();
+
+        let mut profile = LifecycleStorage::get_profile(&env, &employee)
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        let from_department = profile.department_id.unwrap_or(0);
+        let from_manager = profile.manager.clone().unwrap_or(employer.clone());
+
+        // Create transfer record
+        let transfer_id = LifecycleStorage::get_next_transfer_id(&env);
+        let transfer = EmployeeTransfer {
+            id: transfer_id,
+            employee: employee.clone(),
+            from_department,
+            to_department,
+            from_manager,
+            to_manager: to_manager.clone(),
+            transfer_date: current_time,
+            reason,
+            approved: true, // Auto-approved by employer
+            approved_by: Some(employer.clone()),
+            approved_at: Some(current_time),
+            created_at: current_time,
+        };
+
+        LifecycleStorage::store_transfer(&env, transfer_id, &transfer);
+
+        // Update employee profile
+        profile.department_id = Some(to_department);
+        profile.manager = Some(to_manager);
+        profile.updated_at = current_time;
+
+        LifecycleStorage::store_profile(&env, &employee, &profile);
+
+        env.events().publish((symbol_short!("emp_trf"),), (employee.clone(), from_department, to_department));
+
+        Ok(transfer_id)
+    }
+
+    /// Get employee profile
+    pub fn get_employee_profile(env: Env, employee: Address) -> Option<EmployeeProfile> {
+        LifecycleStorage::get_profile(&env, &employee)
+    }
+
+    /// Get onboarding workflow
+    pub fn get_onboarding_workflow(env: Env, employee: Address) -> Option<OnboardingWorkflow> {
+        if let Some(workflow_id) = LifecycleStorage::get_employee_onboarding_id(&env, &employee) {
+            LifecycleStorage::get_onboarding(&env, workflow_id)
+        } else {
+            None
+        }
+    }
+
+    /// Get offboarding workflow
+    pub fn get_offboarding_workflow(env: Env, employee: Address) -> Option<OffboardingWorkflow> {
+        if let Some(workflow_id) = LifecycleStorage::get_employee_offboarding_id(&env, &employee) {
+            LifecycleStorage::get_offboarding(&env, workflow_id)
+        } else {
+            None
+        }
+    }
+
+    /// Update compliance record
+    pub fn update_compliance(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        compliance_type: String,
+        status: ComplianceStatus,
+        due_date: u64,
+        notes: String,
+    ) -> Result<(), PayrollError> {
+        employer.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let current_time = env.ledger().timestamp();
+
+        let record = ComplianceRecord {
+            employee: employee.clone(),
+            compliance_type: compliance_type.clone(),
+            status: status.clone(),
+            due_date,
+            completed_date: if status == ComplianceStatus::Completed { Some(current_time) } else { None },
+            notes,
+            created_at: current_time,
+            updated_at: current_time,
+        };
+
+        LifecycleStorage::store_compliance(&env, &employee, &compliance_type, &record);
+
+        env.events().publish((symbol_short!("comp_upd"),), (employee, compliance_type));
+
+        Ok(())
+    }
+
+    /// Get compliance record
+    pub fn get_compliance_record(env: Env, employee: Address, compliance_type: String) -> Option<ComplianceRecord> {
+        LifecycleStorage::get_compliance(&env, &employee, &compliance_type)
+    }
+
+    /// Helper function to convert status to u32
+    fn status_to_u32(status: &EmployeeStatus) -> u32 {
+        match status {
+            EmployeeStatus::Pending => 0,
+            EmployeeStatus::Active => 1,
+            EmployeeStatus::Inactive => 2,
+            EmployeeStatus::Terminated => 3,
+            EmployeeStatus::OnLeave => 4,
+            EmployeeStatus::Suspended => 5,
+        }
     }
 
     // /// Calculate payroll accuracy (percentage of successful operations)
