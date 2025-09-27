@@ -680,6 +680,61 @@ pub enum SuspiciousActivitySeverity {
     Critical,
 }
 
+// Role delegation record: from -> to for a role, optional expiry
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoleDelegation {
+    pub id: u64,
+    pub role_id: String,
+    pub from: Address,
+    pub to: Address,
+    pub delegated_at: u64,
+    pub expires_at: Option<u64>,
+    pub accepted: bool,
+}
+
+// Temporary role assignment applied by admin/employer
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TempRoleAssignment {
+    pub id: u64,
+    pub role_id: String,
+    pub user: Address,
+    pub assigned_by: Address,
+    pub assigned_at: u64,
+    pub expires_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PermissionAuditEntry {
+    pub id: u64,
+    pub actor: Address,     // who triggered the action/check
+    pub subject: Address,   // user whose permissions were checked/changed
+    pub permission: String, // permission name
+    pub action: String,     // "check", "assign", "revoke", "delegate", ...
+    pub result: String,     // "allowed" / "denied" / "granted" / "revoked"
+    pub timestamp: u64,
+    pub details: String, // optional JSON or text
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserRolesResponse {
+    pub direct_roles: Vec<String>,
+    pub temp_roles: Vec<TempRoleAssignment>,
+    pub delegated_roles: Vec<RoleDelegation>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoleDetails {
+    pub role: Role,
+    pub parent_role: Option<String>,
+    pub members: Vec<Address>,
+    pub all_permissions: Vec<Permission>,
+}
+
 //-----------------------------------------------------------------------------
 // Storage Keys
 //-----------------------------------------------------------------------------
@@ -761,9 +816,28 @@ pub enum DataKey {
     EmpRules(Address),     // employer -> Vec<u64> (rule IDs)
 
     // Security - MINIMAL SET
-    Role(String),      // role_id -> Role
-    UserRole(Address), // user -> UserRoleAssignment
-    SecuritySettings,  // Global security settings
+    SecuritySettings, // Global security settings
+}
+
+#[contracttype]
+pub enum RoleDataKey {
+    // --- RBAC core ---
+    Role(String),        // role_id -> Role
+    RoleMembers(String), // role_id -> Vec<Address>
+    RoleParent(String),  // role_id -> Option<String>
+    UserRole(Address),   // user -> Vec<String> (assigned role ids)
+
+    // --- Delegation ---
+    Delegation(u64),  // delegation_id -> RoleDelegation
+    NextDelegationId, // counter for delegation ids
+
+    // --- Temporary role assignments ---
+    TempRole(u64),  // temp_role_id -> TempRoleAssignment
+    NextTempRoleId, // counter for temp assignments
+
+    // --- Auditing ---
+    Audit(u64),  // audit_id -> PermissionAuditEntry
+    NextAuditId, // counter for audits
 }
 
 //-----------------------------------------------------------------------------
