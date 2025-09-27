@@ -316,7 +316,7 @@
                         "symbol": "compliance_data"
                       },
                       "val": {
-                        "string": ""
+                        "string": "compliance"
                       }
                     },
                     {
@@ -354,7 +354,7 @@
                               "symbol": "data_integrity_hash"
                             },
                             "val": {
-                              "string": ""
+                              "string": "hash"
                             }
                           },
                           {

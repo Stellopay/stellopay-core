@@ -221,7 +221,7 @@
                         "symbol": "size_bytes"
                       },
                       "val": {
-                        "u64": 280
+                        "u64": 200
                       }
                     },
                     {
@@ -303,7 +303,7 @@
                         "symbol": "compliance_data"
                       },
                       "val": {
-                        "string": ""
+                        "string": "compliance"
                       }
                     },
                     {
@@ -341,7 +341,7 @@
                               "symbol": "data_integrity_hash"
                             },
                             "val": {
-                              "string": ""
+                              "string": "hash"
                             }
                           },
                           {
@@ -373,7 +373,7 @@
                               "symbol": "total_templates"
                             },
                             "val": {
-                              "u32": 1
+                              "u32": 0
                             }
                           }
                         ]
@@ -400,111 +400,7 @@
                         "symbol": "template_data"
                       },
                       "val": {
-                        "vec": [
-                          {
-                            "map": [
-                              {
-                                "key": {
-                                  "symbol": "amount"
-                                },
-                                "val": {
-                                  "i128": {
-                                    "hi": 0,
-                                    "lo": 5000
-                                  }
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "created_at"
-                                },
-                                "val": {
-                                  "u64": 0
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "description"
-                                },
-                                "val": {
-                                  "string": "Test Description"
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "employer"
-                                },
-                                "val": {
-                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "id"
-                                },
-                                "val": {
-                                  "u64": 1
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "interval"
-                                },
-                                "val": {
-                                  "u64": 2592000
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "is_public"
-                                },
-                                "val": {
-                                  "bool": false
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "name"
-                                },
-                                "val": {
-                                  "string": "Test Template"
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "recurrence_frequency"
-                                },
-                                "val": {
-                                  "u64": 2592000
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "token"
-                                },
-                                "val": {
-                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "updated_at"
-                                },
-                                "val": {
-                                  "u64": 0
-                                }
-                              },
-                              {
-                                "key": {
-                                  "symbol": "usage_count"
-                                },
-                                "val": {
-                                  "u32": 0
-                                }
-                              }
-                            ]
-                          }
-                        ]
+                        "vec": []
                       }
                     }
                   ]
