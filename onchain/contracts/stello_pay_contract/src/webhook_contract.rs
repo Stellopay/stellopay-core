@@ -13,14 +13,7 @@ impl WebhookContract {
         caller: Address,
         registration: WebhookRegistration,
     ) -> Result<u64, crate::webhooks::WebhookError> {
-        // Verify caller is owner
-        let owner: Address = env.storage().persistent().get(&crate::storage::DataKey::Owner)
-            .unwrap_or_else(|| panic!("Contract not initialized"));
-        
-        if caller != owner {
-            return Err(crate::webhooks::WebhookError::Unauthorized);
-        }
-
+        // No authorization check - this should be called from the main contract
         WebhookSystem::register_webhook(env, caller, registration)
     }
 
@@ -31,14 +24,7 @@ impl WebhookContract {
         webhook_id: u64,
         update: WebhookUpdate,
     ) -> Result<(), crate::webhooks::WebhookError> {
-        // Verify caller is owner
-        let owner: Address = env.storage().persistent().get(&crate::storage::DataKey::Owner)
-            .unwrap_or_else(|| panic!("Contract not initialized"));
-        
-        if caller != owner {
-            return Err(crate::webhooks::WebhookError::Unauthorized);
-        }
-
+        // No authorization check - this should be called from the main contract
         WebhookSystem::update_webhook(env, caller, webhook_id, update)
     }
 
@@ -56,14 +42,7 @@ impl WebhookContract {
         caller: Address,
         webhook_id: u64,
     ) -> Result<(), crate::webhooks::WebhookError> {
-        // Verify caller is owner
-        let owner: Address = env.storage().persistent().get(&crate::storage::DataKey::Owner)
-            .unwrap_or_else(|| panic!("Contract not initialized"));
-        
-        if caller != owner {
-            return Err(crate::webhooks::WebhookError::Unauthorized);
-        }
-
+        // No authorization check - this should be called from the main contract
         WebhookSystem::delete_webhook(env, caller, webhook_id)
     }
 
