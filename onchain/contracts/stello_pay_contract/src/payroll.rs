@@ -2596,7 +2596,6 @@ impl PayrollContract {
         backup_index.push_back(next_id);
         storage.set(&DataKey::BackupIndex, &backup_index);
 
-
         // Create simple backup data
         let backup_data = BackupData {
             backup_id: next_id,
@@ -2615,7 +2614,6 @@ impl PayrollContract {
                 data_integrity_hash: String::from_str(&env, "simple_hash"),
             },
         };
-
 
         // Store backup data
         storage.set(&DataKey::BackupData(next_id), &backup_data);
@@ -2955,7 +2953,6 @@ impl PayrollContract {
         let mut template_data = Vec::new(env);
         let mut preset_data = Vec::new(env);
         let mut insurance_data = Vec::new(env);
-
 
         if *backup_type == String::from_str(env, "Full") {
             // Collect all data
@@ -3745,9 +3742,7 @@ impl PayrollContract {
 
         // Verify role exists
         let role: Role = storage
-
-            .get(&DataKey::Role(role_id.clone()))
-
+            .get(&RoleDataKey::Role(role_id.clone()))
             .ok_or(PayrollError::RoleNotFound)?;
 
         if !role.is_active {
@@ -3770,7 +3765,6 @@ impl PayrollContract {
 
         Ok(())
     }
-
 
     /// Create a temporary role assignment
     pub fn assign_temp_role(
@@ -4196,7 +4190,6 @@ impl PayrollContract {
         permissions
     }
 
-
     /// Revoke a role from a user
     pub fn revoke_role(env: Env, caller: Address, user: Address) -> Result<(), PayrollError> {
         caller.require_auth();
@@ -4207,9 +4200,7 @@ impl PayrollContract {
 
         // Check if user has a role assignment
         if let Some(mut assignment) =
-
             storage.get::<RoleDataKey, UserRoleAssignment>(&RoleDataKey::UserRole(user.clone()))
-
         {
             assignment.is_active = false;
             storage.set(&RoleDataKey::UserRole(user.clone()), &assignment);
@@ -4237,7 +4228,6 @@ impl PayrollContract {
         // Check if user has a role assignment
         if let Some(assignment) =
             storage.get::<RoleDataKey, UserRoleAssignment>(&RoleDataKey::UserRole(user.clone()))
-
         {
             if !assignment.is_active {
                 return false;

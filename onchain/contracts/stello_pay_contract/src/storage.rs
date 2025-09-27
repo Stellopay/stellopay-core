@@ -680,7 +680,6 @@ pub enum SuspiciousActivitySeverity {
     Critical,
 }
 
-
 // Role delegation record: from -> to for a role, optional expiry
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -735,7 +734,6 @@ pub struct RoleDetails {
     pub members: Vec<Address>,
     pub all_permissions: Vec<Permission>,
 }
-
 
 //-----------------------------------------------------------------------------
 // Storage Keys
@@ -818,7 +816,6 @@ pub enum DataKey {
     EmpRules(Address),     // employer -> Vec<u64> (rule IDs)
 
     // Security - MINIMAL SET
-
     SecuritySettings, // Global security settings
 }
 
@@ -841,5 +838,4 @@ pub enum RoleDataKey {
     // --- Auditing ---
     Audit(u64),  // audit_id -> PermissionAuditEntry
     NextAuditId, // counter for audits
-
 }
