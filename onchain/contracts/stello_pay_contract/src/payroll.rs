@@ -3551,12 +3551,8 @@ impl PayrollContract {
         let current_time = env.ledger().timestamp();
 
         // Verify role exists
-<<<<<<< HEAD
-        let role: Role = storage.get(&DataKey::Role(role_id.clone()))
-=======
         let role: Role = storage
             .get(&RoleDataKey::Role(role_id.clone()))
->>>>>>> origin/main
             .ok_or(PayrollError::RoleNotFound)?;
 
         if !role.is_active {
@@ -4019,13 +4015,9 @@ impl PayrollContract {
         let storage = env.storage().persistent();
 
         // Check if user has a role assignment
-<<<<<<< HEAD
-        if let Some(mut assignment) = storage.get::<DataKey, UserRoleAssignment>(&DataKey::UserRole(user.clone())) {
-=======
         if let Some(mut assignment) =
             storage.get::<RoleDataKey, UserRoleAssignment>(&RoleDataKey::UserRole(user.clone()))
         {
->>>>>>> origin/main
             assignment.is_active = false;
             storage.set(&RoleDataKey::UserRole(user.clone()), &assignment);
 
@@ -4057,13 +4049,9 @@ impl PayrollContract {
         let storage = env.storage().persistent();
 
         // Check if user has a role assignment
-<<<<<<< HEAD
-        if let Some(assignment) = storage.get::<DataKey, UserRoleAssignment>(&DataKey::UserRole(user.clone())) {
-=======
         if let Some(assignment) =
             storage.get::<RoleDataKey, UserRoleAssignment>(&RoleDataKey::UserRole(user.clone()))
         {
->>>>>>> origin/main
             if !assignment.is_active {
                 return false;
             }
