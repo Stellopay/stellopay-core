@@ -6,5 +6,6 @@ mod test_pause_and_unpause;
 mod test_payroll;
 mod test_payroll_history_and_audittrail;
 mod test_webhooks_simple;
+mod test_webhooks_standalone;
 mod test_security;
 mod test_recurring_payments;

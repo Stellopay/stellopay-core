@@ -49,7 +49,7 @@ fn test_create_backup_success() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     assert_eq!(backup_id, 1);
@@ -77,7 +77,7 @@ fn test_create_backup_invalid_name() {
         &employer,
         &SorobanString::from_str(&env, ""),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
     // Test should fail with InvalidTemplateName error
     // Note: Client methods panic on error, so this test will panic as expected
@@ -88,7 +88,7 @@ fn test_create_backup_invalid_name() {
         &employer,
         &SorobanString::from_str(&env, &long_name),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
     // Test should fail with InvalidTemplateName error
     // Note: Client methods panic on error, so this test will panic as expected
@@ -119,7 +119,7 @@ fn test_create_backup_unauthorized() {
         &unauthorized,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
     // Test should fail with Unauthorized error
     // Note: Client methods panic on error, so this test will panic as expected
@@ -141,7 +141,7 @@ fn test_create_backup_when_paused() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
     // Test should fail with ContractPaused error
     // Note: Client methods panic on error, so this test will panic as expected
@@ -172,7 +172,7 @@ fn test_verify_backup_success() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Verify backup
@@ -223,7 +223,7 @@ fn test_verify_backup_unauthorized() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Try to verify as unauthorized user
@@ -257,7 +257,7 @@ fn test_create_recovery_point_success() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Create recovery point
@@ -266,7 +266,7 @@ fn test_create_recovery_point_success() {
         &backup_id,
         &SorobanString::from_str(&env, "Test Recovery"),
         &SorobanString::from_str(&env, "Test Recovery Description"),
-        &SorobanString::from_str(&env, "Full"),
+        &RecoveryType::Full,
     );
 
     assert_eq!(recovery_id, 1);
@@ -297,7 +297,7 @@ fn test_create_recovery_point_invalid_backup() {
         &999,
         &SorobanString::from_str(&env, "Test Recovery"),
         &SorobanString::from_str(&env, "Test Recovery Description"),
-        &SorobanString::from_str(&env, "Full"),
+        &RecoveryType::Full,
     );
     // Test should fail with BackupNotFound error
     // Note: Client methods panic on error, so this test will panic as expected
@@ -324,7 +324,7 @@ fn test_execute_recovery_success() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Create and execute recovery point
@@ -333,7 +333,7 @@ fn test_execute_recovery_success() {
         &backup_id,
         &SorobanString::from_str(&env, "Test Recovery"),
         &SorobanString::from_str(&env, "Test Recovery Description"),
-        &SorobanString::from_str(&env, "Full"),
+        &RecoveryType::Full,
     );
 
     let success = contract.execute_recovery(&employer, &recovery_id);
@@ -386,7 +386,7 @@ fn test_execute_recovery_already_in_progress() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Create recovery point
@@ -395,7 +395,7 @@ fn test_execute_recovery_already_in_progress() {
         &backup_id,
         &SorobanString::from_str(&env, "Test Recovery"),
         &SorobanString::from_str(&env, "Test Recovery Description"),
-        &SorobanString::from_str(&env, "Full"),
+        &RecoveryType::Full,
     );
 
     // Execute recovery first time (should succeed)
@@ -434,14 +434,14 @@ fn test_get_employer_backups() {
         &employer,
         &SorobanString::from_str(&env, "Backup 1"),
         &SorobanString::from_str(&env, "Description 1"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     let backup2 = contract.create_backup(
         &employer,
         &SorobanString::from_str(&env, "Backup 2"),
         &SorobanString::from_str(&env, "Description 2"),
-        &SorobanString::from_str(&env, "Full"),
+        &BackupType::Full,
     );
 
     // Get employer backups
@@ -485,7 +485,7 @@ fn test_delete_backup_success() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Delete backup
@@ -524,7 +524,7 @@ fn test_delete_backup_unauthorized() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Try to delete as unauthorized user
@@ -575,12 +575,12 @@ fn test_create_full_backup() {
         &employer,
         &SorobanString::from_str(&env, "Full Backup"),
         &SorobanString::from_str(&env, "Complete system backup"),
-        &SorobanString::from_str(&env, "Full"),
+        &BackupType::Full,
     );
 
     // Verify backup was created
     let backup = contract.get_backup(&backup_id);
-    assert_eq!(backup.backup_type, SorobanString::from_str(&env, "Full"));
+    assert_eq!(backup.backup_type, BackupType::Full);
     assert_eq!(backup.status, BackupStatus::Completed);
 }
 
@@ -606,14 +606,14 @@ fn test_create_employer_backup() {
         &employer,
         &SorobanString::from_str(&env, "Employer Backup"),
         &SorobanString::from_str(&env, "Employer-specific backup"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Verify backup was created
     let backup = contract.get_backup(&backup_id);
     assert_eq!(
         backup.backup_type,
-        SorobanString::from_str(&env, "Employer")
+        BackupType::Employer
     );
     assert_eq!(backup.status, BackupStatus::Completed);
 }
@@ -645,14 +645,14 @@ fn test_create_template_backup() {
         &employer,
         &SorobanString::from_str(&env, "Template Backup"),
         &SorobanString::from_str(&env, "Template-specific backup"),
-        &SorobanString::from_str(&env, "Template"),
+        &BackupType::Template,
     );
 
     // Verify backup was created
     let backup = contract.get_backup(&backup_id);
     assert_eq!(
         backup.backup_type,
-        SorobanString::from_str(&env, "Template")
+        BackupType::Template
     );
     assert_eq!(backup.status, BackupStatus::Completed);
 }
@@ -683,7 +683,7 @@ fn test_backup_created_event() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Verify event was emitted (this would require event testing infrastructure)
@@ -711,7 +711,7 @@ fn test_backup_verified_event() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Verify backup
@@ -742,7 +742,7 @@ fn test_recovery_started_event() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Create recovery point
@@ -751,7 +751,7 @@ fn test_recovery_started_event() {
         &backup_id,
         &SorobanString::from_str(&env, "Test Recovery"),
         &SorobanString::from_str(&env, "Test Recovery Description"),
-        &SorobanString::from_str(&env, "Full"),
+        &RecoveryType::Full,
     );
 
     // Verify event was emitted (this would require event testing infrastructure)
@@ -779,7 +779,7 @@ fn test_recovery_completed_event() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Create and execute recovery point
@@ -788,7 +788,7 @@ fn test_recovery_completed_event() {
         &backup_id,
         &SorobanString::from_str(&env, "Test Recovery"),
         &SorobanString::from_str(&env, "Test Recovery Description"),
-        &SorobanString::from_str(&env, "Full"),
+        &RecoveryType::Full,
     );
 
     let success = contract.execute_recovery(&employer, &recovery_id);
@@ -816,7 +816,7 @@ fn test_backup_creation_with_corrupted_data() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     assert_eq!(backup_id, 1);
@@ -836,7 +836,7 @@ fn test_recovery_with_invalid_backup_data() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Create recovery point
@@ -845,7 +845,7 @@ fn test_recovery_with_invalid_backup_data() {
         &backup_id,
         &SorobanString::from_str(&env, "Test Recovery"),
         &SorobanString::from_str(&env, "Test Recovery Description"),
-        &SorobanString::from_str(&env, "Full"),
+        &RecoveryType::Full,
     );
 
     // Execute recovery (should succeed with empty data)
@@ -874,7 +874,7 @@ fn test_backup_verification_with_tampered_data() {
         &employer,
         &SorobanString::from_str(&env, "Test Backup"),
         &SorobanString::from_str(&env, "Test Description"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Verify backup (should succeed with current implementation)
@@ -908,19 +908,19 @@ fn test_multiple_backups_same_employer() {
         &employer,
         &SorobanString::from_str(&env, "Backup 1"),
         &SorobanString::from_str(&env, "Description 1"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
     let backup2 = contract.create_backup(
         &employer,
         &SorobanString::from_str(&env, "Backup 2"),
         &SorobanString::from_str(&env, "Description 2"),
-        &SorobanString::from_str(&env, "Full"),
+        &BackupType::Full,
     );
     let backup3 = contract.create_backup(
         &employer,
         &SorobanString::from_str(&env, "Backup 3"),
         &SorobanString::from_str(&env, "Description 3"),
-        &SorobanString::from_str(&env, "Template"),
+        &BackupType::Template,
     );
 
     // Verify all backups were created
@@ -957,7 +957,7 @@ fn test_backup_with_large_dataset() {
         &employer,
         &SorobanString::from_str(&env, "Large Dataset Backup"),
         &SorobanString::from_str(&env, "Backup with multiple employees"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Verify backup was created successfully
@@ -988,14 +988,14 @@ fn test_concurrent_backup_operations() {
         &employer,
         &SorobanString::from_str(&env, "Concurrent Backup 1"),
         &SorobanString::from_str(&env, "First backup"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     let backup2 = contract.create_backup(
         &employer,
         &SorobanString::from_str(&env, "Concurrent Backup 2"),
         &SorobanString::from_str(&env, "Second backup"),
-        &SorobanString::from_str(&env, "Employer"),
+        &BackupType::Employer,
     );
 
     // Verify both backups were created with unique IDs

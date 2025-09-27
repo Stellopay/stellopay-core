@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Map, String, Symbol, Vec};
+use soroban_sdk::{contracttype, Address, Symbol, String, Vec, Map};
 
 // Import insurance types for backup functionality
 use crate::insurance::InsurancePolicy;
@@ -118,7 +118,7 @@ pub struct PayrollBackup {
     pub description: String,
     pub employer: Address,
     pub created_at: u64,
-    pub backup_type: String,
+    pub backup_type: BackupType,
     pub status: BackupStatus,
     pub checksum: String,
     pub data_hash: String,
@@ -130,25 +130,25 @@ pub struct PayrollBackup {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum BackupType {
-    Full,       // Complete system backup
-    Employer,   // Employer-specific backup
-    Employee,   // Employee-specific backup
-    Template,   // Template backup
-    Insurance,  // Insurance data backup
-    Compliance, // Compliance data backup
+    Full,           // Complete system backup
+    Employer,       // Employer-specific backup
+    Employee,       // Employee-specific backup
+    Template,       // Template backup
+    Insurance,      // Insurance data backup
+    Compliance,     // Compliance data backup
 }
 
 /// Backup status enumeration
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum BackupStatus {
-    Creating,  // Backup is being created
-    Completed, // Backup completed successfully
-    Failed,    // Backup failed
-    Verifying, // Backup is being verified
-    Verified,  // Backup verified successfully
-    Restoring, // Backup is being restored
-    Restored,  // Backup restored successfully
+    Creating,       // Backup is being created
+    Completed,      // Backup completed successfully
+    Failed,         // Backup failed
+    Verifying,      // Backup is being verified
+    Verified,       // Backup verified successfully
+    Restoring,      // Backup is being restored
+    Restored,       // Backup restored successfully
 }
 
 /// Backup data structure for storing actual backup content
@@ -196,21 +196,21 @@ pub struct RecoveryPoint {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum RecoveryType {
-    Full,      // Complete system recovery
-    Partial,   // Partial system recovery
-    Emergency, // Emergency recovery
-    Test,      // Test recovery
+    Full,           // Complete system recovery
+    Partial,        // Partial system recovery
+    Emergency,      // Emergency recovery
+    Test,           // Test recovery
 }
 
 /// Recovery status enumeration
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum RecoveryStatus {
-    Pending,    // Recovery pending
-    InProgress, // Recovery in progress
-    Completed,  // Recovery completed
-    Failed,     // Recovery failed
-    RolledBack, // Recovery rolled back
+    Pending,        // Recovery pending
+    InProgress,     // Recovery in progress
+    Completed,      // Recovery completed
+    Failed,         // Recovery failed
+    RolledBack,     // Recovery rolled back
 }
 
 /// Recovery metadata for additional information
@@ -250,24 +250,24 @@ pub struct PayrollSchedule {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScheduleType {
-    Recurring,   // Regular recurring payroll
-    OneTime,     // One-time scheduled payroll
-    Conditional, // Conditional payroll based on triggers
-    Batch,       // Batch payroll processing
-    Emergency,   // Emergency payroll processing
+    Recurring,      // Regular recurring payroll
+    OneTime,        // One-time scheduled payroll
+    Conditional,    // Conditional payroll based on triggers
+    Batch,          // Batch payroll processing
+    Emergency,      // Emergency payroll processing
 }
 
 /// Schedule frequency enumeration
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScheduleFrequency {
-    Daily,       // Daily execution
-    Weekly,      // Weekly execution
-    BiWeekly,    // Bi-weekly execution
-    Monthly,     // Monthly execution
-    Quarterly,   // Quarterly execution
-    Yearly,      // Yearly execution
-    Custom(u64), // Custom frequency in seconds
+    Daily,          // Daily execution
+    Weekly,         // Weekly execution
+    BiWeekly,       // Bi-weekly execution
+    Monthly,        // Monthly execution
+    Quarterly,      // Quarterly execution
+    Yearly,         // Yearly execution
+    Custom(u64),    // Custom frequency in seconds
 }
 
 /// Schedule metadata for additional information
@@ -307,11 +307,11 @@ pub struct AutomationRule {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuleType {
-    Balance,    // Balance-based triggers
-    Time,       // Time-based triggers
-    Employee,   // Employee-based triggers
-    Compliance, // Compliance-based triggers
-    Custom,     // Custom triggers
+    Balance,        // Balance-based triggers
+    Time,           // Time-based triggers
+    Employee,       // Employee-based triggers
+    Compliance,     // Compliance-based triggers
+    Custom,         // Custom triggers
 }
 
 /// Rule condition structure
@@ -739,6 +739,7 @@ pub struct RoleDetails {
 // Storage Keys
 //-----------------------------------------------------------------------------
 
+// Core DataKey enum - essential functionality only
 #[contracttype]
 pub enum DataKey {
     // Consolidated payroll storage - single key per employee
@@ -765,29 +766,39 @@ pub enum DataKey {
     TokenMetadata(Address),
 
     // Insurance-related storage keys
-    InsurancePolicy(Address),    // employee -> InsurancePolicy
-    InsuranceClaim(u64),         // claim_id -> InsuranceClaim
-    NextClaimId,                 // Next available claim ID
-    InsurancePool(Address),      // token -> InsurancePool
-    GuaranteeFund(Address),      // token -> GuaranteeFund
-    Guarantee(u64),              // guarantee_id -> Guarantee
-    NextGuaranteeId,             // Next available guarantee ID
-    EmployerGuarantees(Address), // employer -> Vec<u64> (guarantee IDs)
-    RiskAssessment(Address),     // employee -> u32 (risk score)
-    InsuranceSettings,           // Global insurance settings
+    InsurancePolicy(Address),            // employee -> InsurancePolicy
+    InsuranceClaim(u64),                 // claim_id -> InsuranceClaim
+    NextClaimId,                         // Next available claim ID
+    InsurancePool(Address),              // token -> InsurancePool
+    GuaranteeFund(Address),              // token -> GuaranteeFund
+    Guarantee(u64),                      // guarantee_id -> Guarantee
+    NextGuaranteeId,                     // Next available guarantee ID
+    EmployerGuarantees(Address),         // employer -> Vec<u64> (guarantee IDs)
+    RiskAssessment(Address),             // employee -> u32 (risk score)
+    InsuranceSettings,                   // Global insurance settings
 
     // PayrollHistory
-    PayrollHistoryEntry(Address),   // (employee) -> history_entry
-    PayrollHistoryCounter(Address), // (employee) -> history_entry
-    AuditTrail(Address),            // (employee) -> audit_entry
+    PayrollHistoryEntry(Address),        // (employee) -> history_entry
+    PayrollHistoryCounter(Address),      // (employee) -> history_entry
+    AuditTrail(Address),                 // (employee) -> audit_entry
 
     // Webhook system keys - CORE FUNCTIONALITY
-    Webhook(u64),  // webhook_id -> Webhook
-    NextWebhookId, // counter for webhook IDs
-
+    Webhook(u64),                        // webhook_id -> Webhook
+    NextWebhookId,                       // counter for webhook IDs
+    NextWebhookAttemptId,                // counter for webhook attempt IDs
+    OwnerWebhooks(Address),              // owner -> Vec<u64> (webhook IDs)
+    WebhookRateLimit(u64),               // webhook_id -> last_request_timestamp
+    
     // Audit and History - ESSENTIAL
     AuditIdCounter(Address),
 
+    // Security - MINIMAL SET
+    SecuritySettings, // Global security settings
+}
+
+// Extended functionality keys - separate enum to avoid size limits
+#[contracttype]
+pub enum ExtendedDataKey {
     // Templates - MINIMAL SET
     NextTmplId,            // Next available template ID
     Template(u64),         // template_id -> PayrollTemplate
@@ -814,9 +825,6 @@ pub enum DataKey {
     Rule(u64),             // rule_id -> AutomationRule
     NextRuleId,            // Next available rule ID
     EmpRules(Address),     // employer -> Vec<u64> (rule IDs)
-
-    // Security - MINIMAL SET
-    SecuritySettings, // Global security settings
 }
 
 #[contracttype]
