@@ -734,7 +734,6 @@ pub struct RoleDetails {
     pub members: Vec<Address>,
     pub all_permissions: Vec<Permission>,
 }
->>>>>>> origin/main
 
 //-----------------------------------------------------------------------------
 // Storage Keys
