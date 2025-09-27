@@ -80,7 +80,11 @@
                   "string": "Test Description"
                 },
                 {
-                  "string": "Employer"
+                  "vec": [
+                    {
+                      "symbol": "Employer"
+                    }
+                  ]
                 }
               ]
             }
@@ -142,7 +146,11 @@
                         "symbol": "backup_type"
                       },
                       "val": {
-                        "string": "Employer"
+                        "vec": [
+                          {
+                            "symbol": "Employer"
+                          }
+                        ]
                       }
                     },
                     {
@@ -150,7 +158,7 @@
                         "symbol": "checksum"
                       },
                       "val": {
-                        "string": "simple_checksum"
+                        "string": "checksum"
                       }
                     },
                     {
@@ -166,7 +174,7 @@
                         "symbol": "data_hash"
                       },
                       "val": {
-                        "string": "simple_hash"
+                        "string": "hash"
                       }
                     },
                     {
@@ -206,7 +214,7 @@
                         "symbol": "size_bytes"
                       },
                       "val": {
-                        "u64": 1000
+                        "u64": 200
                       }
                     },
                     {
@@ -280,7 +288,7 @@
                         "symbol": "backup_id"
                       },
                       "val": {
-                        "u64": 1
+                        "u64": 0
                       }
                     },
                     {
@@ -288,7 +296,7 @@
                         "symbol": "compliance_data"
                       },
                       "val": {
-                        "string": ""
+                        "string": "compliance"
                       }
                     },
                     {
@@ -326,7 +334,7 @@
                               "symbol": "data_integrity_hash"
                             },
                             "val": {
-                              "string": "simple_hash"
+                              "string": "hash"
                             }
                           },
                           {
@@ -1429,9 +1437,6 @@
                 },
                 {
                   "string": "Test Backup"
-                },
-                {
-                  "string": "Employer"
                 }
               ]
             }

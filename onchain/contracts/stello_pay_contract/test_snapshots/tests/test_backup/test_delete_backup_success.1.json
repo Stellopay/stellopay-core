@@ -80,7 +80,11 @@
                   "string": "Test Description"
                 },
                 {
-                  "string": "Employer"
+                  "vec": [
+                    {
+                      "symbol": "Employer"
+                    }
+                  ]
                 }
               ]
             }
