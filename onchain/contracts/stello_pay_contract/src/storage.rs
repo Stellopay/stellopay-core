@@ -680,12 +680,66 @@ pub enum SuspiciousActivitySeverity {
     Critical,
 }
 
+// Role delegation record: from -> to for a role, optional expiry
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoleDelegation {
+    pub id: u64,
+    pub role_id: String,
+    pub from: Address,
+    pub to: Address,
+    pub delegated_at: u64,
+    pub expires_at: Option<u64>,
+    pub accepted: bool,
+}
 
+// Temporary role assignment applied by admin/employer
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TempRoleAssignment {
+    pub id: u64,
+    pub role_id: String,
+    pub user: Address,
+    pub assigned_by: Address,
+    pub assigned_at: u64,
+    pub expires_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PermissionAuditEntry {
+    pub id: u64,
+    pub actor: Address,     // who triggered the action/check
+    pub subject: Address,   // user whose permissions were checked/changed
+    pub permission: String, // permission name
+    pub action: String,     // "check", "assign", "revoke", "delegate", ...
+    pub result: String,     // "allowed" / "denied" / "granted" / "revoked"
+    pub timestamp: u64,
+    pub details: String, // optional JSON or text
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserRolesResponse {
+    pub direct_roles: Vec<String>,
+    pub temp_roles: Vec<TempRoleAssignment>,
+    pub delegated_roles: Vec<RoleDelegation>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoleDetails {
+    pub role: Role,
+    pub parent_role: Option<String>,
+    pub members: Vec<Address>,
+    pub all_permissions: Vec<Permission>,
+}
 
 //-----------------------------------------------------------------------------
 // Storage Keys
 //-----------------------------------------------------------------------------
 
+// Core DataKey enum - essential functionality only
 #[contracttype]
 pub enum DataKey {
     // Consolidated payroll storage - single key per employee
@@ -731,39 +785,65 @@ pub enum DataKey {
     // Webhook system keys - CORE FUNCTIONALITY
     Webhook(u64),                        // webhook_id -> Webhook
     NextWebhookId,                       // counter for webhook IDs
+    NextWebhookAttemptId,                // counter for webhook attempt IDs
+    OwnerWebhooks(Address),              // owner -> Vec<u64> (webhook IDs)
+    WebhookRateLimit(u64),               // webhook_id -> last_request_timestamp
     
     // Audit and History - ESSENTIAL
     AuditIdCounter(Address),
-    
-    // Templates - MINIMAL SET
-    NextTmplId,                          // Next available template ID
-    Template(u64),                       // template_id -> PayrollTemplate
-    EmpTemplates(Address),               // employer -> Vec<u64> (template IDs)  
-    PubTemplates,                        // Vec<u64> (public template IDs)
-    Preset(u64),                         // preset_id -> TemplatePreset
-    NextPresetId,                        // Next available preset ID
-    PresetCat(String),                   // category -> Vec<u64> (preset IDs)
-    ActivePresets,                       // Vec<u64> (active preset IDs)
 
-    // Backup - MINIMAL SET  
-    Backup(u64),                         // backup_id -> PayrollBackup
-    NextBackupId,                        // Next available backup ID
-    EmpBackups(Address),                 // employer -> Vec<u64> (backup IDs)
-    BackupData(u64),                     // backup_id -> BackupData
-    BackupIndex,                         // Vec<u64> (all backup IDs)
-    Recovery(u64),                       // recovery_point_id -> RecoveryPoint
-    NextRecoveryId,                      // Next available recovery point ID
+    // Security - MINIMAL SET
+    SecuritySettings, // Global security settings
+}
+
+// Extended functionality keys - separate enum to avoid size limits
+#[contracttype]
+pub enum ExtendedDataKey {
+    // Templates - MINIMAL SET
+    NextTmplId,            // Next available template ID
+    Template(u64),         // template_id -> PayrollTemplate
+    EmpTemplates(Address), // employer -> Vec<u64> (template IDs)
+    PubTemplates,          // Vec<u64> (public template IDs)
+    Preset(u64),           // preset_id -> TemplatePreset
+    NextPresetId,          // Next available preset ID
+    PresetCat(String),     // category -> Vec<u64> (preset IDs)
+    ActivePresets,         // Vec<u64> (active preset IDs)
+
+    // Backup - MINIMAL SET
+    Backup(u64),         // backup_id -> PayrollBackup
+    NextBackupId,        // Next available backup ID
+    EmpBackups(Address), // employer -> Vec<u64> (backup IDs)
+    BackupData(u64),     // backup_id -> BackupData
+    BackupIndex,         // Vec<u64> (all backup IDs)
+    Recovery(u64),       // recovery_point_id -> RecoveryPoint
+    NextRecoveryId,      // Next available recovery point ID
 
     // Scheduling - MINIMAL SET
-    Schedule(u64),                       // schedule_id -> PayrollSchedule
-    NextSchedId,                         // Next available schedule ID
-    EmpSchedules(Address),               // employer -> Vec<u64> (schedule IDs)
-    Rule(u64),                           // rule_id -> AutomationRule
-    NextRuleId,                          // Next available rule ID
-    EmpRules(Address),                   // employer -> Vec<u64> (rule IDs)
+    Schedule(u64),         // schedule_id -> PayrollSchedule
+    NextSchedId,           // Next available schedule ID
+    EmpSchedules(Address), // employer -> Vec<u64> (schedule IDs)
+    Rule(u64),             // rule_id -> AutomationRule
+    NextRuleId,            // Next available rule ID
+    EmpRules(Address),     // employer -> Vec<u64> (rule IDs)
+}
 
-    // Security - MINIMAL SET 
-    Role(String),                        // role_id -> Role
-    UserRole(Address),                   // user -> UserRoleAssignment
-    SecuritySettings                     // Global security settings
+#[contracttype]
+pub enum RoleDataKey {
+    // --- RBAC core ---
+    Role(String),        // role_id -> Role
+    RoleMembers(String), // role_id -> Vec<Address>
+    RoleParent(String),  // role_id -> Option<String>
+    UserRole(Address),   // user -> Vec<String> (assigned role ids)
+
+    // --- Delegation ---
+    Delegation(u64),  // delegation_id -> RoleDelegation
+    NextDelegationId, // counter for delegation ids
+
+    // --- Temporary role assignments ---
+    TempRole(u64),  // temp_role_id -> TempRoleAssignment
+    NextTempRoleId, // counter for temp assignments
+
+    // --- Auditing ---
+    Audit(u64),  // audit_id -> PermissionAuditEntry
+    NextAuditId, // counter for audits
 }
