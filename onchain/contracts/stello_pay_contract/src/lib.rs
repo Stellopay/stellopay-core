@@ -1,9 +1,9 @@
 #![no_std]
 
 mod events;
+mod insurance;
 mod payroll;
 mod storage;
-mod insurance;
 mod webhooks_simple;
 // take note: The following modules have compilation issues with current Soroban SDK
 // They need to be fixed to work with the current version
