@@ -118,7 +118,7 @@ pub struct PayrollBackup {
     pub description: String,
     pub employer: Address,
     pub created_at: u64,
-    pub backup_type: BackupType,
+    pub backup_type: String,
     pub status: BackupStatus,
     pub checksum: String,
     pub data_hash: String,
