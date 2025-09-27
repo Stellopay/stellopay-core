@@ -118,7 +118,7 @@ pub struct PayrollBackup {
     pub description: String,
     pub employer: Address,
     pub created_at: u64,
-    pub backup_type: BackupType,
+    pub backup_type: String,
     pub status: BackupStatus,
     pub checksum: String,
     pub data_hash: String,
@@ -680,6 +680,7 @@ pub enum SuspiciousActivitySeverity {
     Critical,
 }
 
+
 // Role delegation record: from -> to for a role, optional expiry
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -734,6 +735,7 @@ pub struct RoleDetails {
     pub members: Vec<Address>,
     pub all_permissions: Vec<Permission>,
 }
+
 
 //-----------------------------------------------------------------------------
 // Storage Keys
@@ -816,6 +818,7 @@ pub enum DataKey {
     EmpRules(Address),     // employer -> Vec<u64> (rule IDs)
 
     // Security - MINIMAL SET
+
     SecuritySettings, // Global security settings
 }
 
@@ -838,4 +841,5 @@ pub enum RoleDataKey {
     // --- Auditing ---
     Audit(u64),  // audit_id -> PermissionAuditEntry
     NextAuditId, // counter for audits
+
 }
