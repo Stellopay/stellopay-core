@@ -25,12 +25,13 @@ use crate::storage::{
     ActionType, AutomationRule, BackupData, BackupMetadata, BackupStatus, BackupType,
     CompactPayroll, CompactPayrollHistoryEntry, ConditionOperator, DataKey, LogicalOperator,
     Payroll, PayrollBackup, PayrollInput, PayrollSchedule, PayrollTemplate, PerformanceMetrics,
-    Permission, RateLimitConfig, RecoveryMetadata, RecoveryPoint, RecoveryStatus, RecoveryType,
-    Role, RuleAction, RuleCondition, RuleType, ScheduleFrequency, ScheduleMetadata, ScheduleType,
-    SecurityAuditEntry, SecurityAuditResult, SecurityPolicy, SecurityPolicyType, SecurityRule,
-    SecurityRuleAction, SecurityRuleOperator, SecuritySettings, SuspiciousActivity,
-    SuspiciousActivitySeverity, SuspiciousActivityType, TemplatePreset, UserRole,
-    UserRoleAssignment,
+    Permission, PermissionAuditEntry, RateLimitConfig, RecoveryMetadata, RecoveryPoint,
+    RecoveryStatus, RecoveryType, Role, RoleDataKey, RoleDelegation, RoleDetails, RuleAction,
+    RuleCondition, RuleType, ScheduleFrequency, ScheduleMetadata, ScheduleType, SecurityAuditEntry,
+    SecurityAuditResult, SecurityPolicy, SecurityPolicyType, SecurityRule, SecurityRuleAction,
+    SecurityRuleOperator, SecuritySettings, SuspiciousActivity, SuspiciousActivitySeverity,
+    SuspiciousActivityType, TempRoleAssignment, TemplatePreset, UserRole, UserRoleAssignment,
+    UserRolesResponse,
 };
 
 //-----------------------------------------------------------------------------
@@ -163,6 +164,10 @@ pub enum PayrollError {
     AccountLocked = 47,
     /// Security clearance insufficient
     SecurityClearanceInsufficient = 48,
+    /// Invalid  time range
+    InvalidTimeRange = 49,
+    /// Delegation time expired
+    DelegationExpired = 50,
 }
 
 //-----------------------------------------------------------------------------
@@ -3698,7 +3703,7 @@ impl PayrollContract {
         let current_time = env.ledger().timestamp();
 
         // Check if role already exists
-        if storage.has(&DataKey::Role(role_id.clone())) {
+        if storage.has(&RoleDataKey::Role(role_id.clone())) {
             return Err(PayrollError::RoleNotFound);
         }
 
@@ -3712,7 +3717,7 @@ impl PayrollContract {
             updated_at: current_time,
         };
 
-        storage.set(&DataKey::Role(role_id.clone()), &role);
+        storage.set(&RoleDataKey::Role(role_id.clone()), &role);
 
         env.events()
             .publish((ROLE_ASSIGNED_EVENT,), (caller, role_id, name));
@@ -3737,7 +3742,7 @@ impl PayrollContract {
 
         // Verify role exists
         let role: Role = storage
-            .get(&DataKey::Role(role_id.clone()))
+            .get(&RoleDataKey::Role(role_id.clone()))
             .ok_or(PayrollError::RoleNotFound)?;
 
         if !role.is_active {
@@ -3753,12 +3758,436 @@ impl PayrollContract {
             is_active: true,
         };
 
-        storage.set(&DataKey::UserRole(user.clone()), &assignment);
+        storage.set(&RoleDataKey::UserRole(user.clone()), &assignment);
 
         env.events()
             .publish((ROLE_ASSIGNED_EVENT,), (caller, user, role_id));
 
         Ok(())
+    }
+
+    /// Create a temporary role assignment
+    pub fn assign_temp_role(
+        env: Env,
+        caller: Address,
+        user: Address,
+        role_id: String,
+        expires_at: u64,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+        Self::_require_security_permission(&env, &caller, Permission::ManageRoles)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Verify role exists
+        let role: Role = storage
+            .get(&RoleDataKey::Role(role_id.clone()))
+            .ok_or(PayrollError::RoleNotFound)?;
+
+        if !role.is_active {
+            return Err(PayrollError::RoleNotFound);
+        }
+
+        // Ensure expires_at is in the future
+        if expires_at <= current_time {
+            return Err(PayrollError::InvalidTimeRange);
+        }
+
+        // Get next temp role ID
+        let temp_id = storage
+            .get::<RoleDataKey, u64>(&RoleDataKey::NextTempRoleId)
+            .unwrap_or(1);
+
+        let temp_assignment = TempRoleAssignment {
+            id: temp_id,
+            role_id: role_id.clone(),
+            user: user.clone(),
+            assigned_by: caller.clone(),
+            assigned_at: current_time,
+            expires_at,
+        };
+
+        storage.set(&RoleDataKey::TempRole(temp_id), &temp_assignment);
+        storage.set(&RoleDataKey::NextTempRoleId, &(temp_id + 1));
+
+        // Log audit entry
+        Self::_log_permission_audit(
+            &env,
+            caller.clone(),
+            user.clone(),
+            String::from_str(&env, "ManageRoles"),
+            String::from_str(&env, "assign_temp_role"),
+            String::from_str(&env, "granted"),
+            String::from_str(&env, "Accepted delegation role"),
+        )?;
+
+        env.events().publish(
+            (String::from_str(&env, "temp_role_assigned"),),
+            (caller, user, role_id, temp_id),
+        );
+
+        Ok(temp_id)
+    }
+
+    /// Get active temporary roles for a user
+    fn _get_active_temp_roles(
+        env: &Env,
+        user: Address,
+        current_time: u64,
+    ) -> Vec<TempRoleAssignment> {
+        let storage = env.storage().persistent();
+        let mut active_temp_roles = Vec::new(env);
+
+        let next_id = storage
+            .get::<RoleDataKey, u64>(&RoleDataKey::NextTempRoleId)
+            .unwrap_or(1);
+
+        for id in 1..next_id {
+            if let Some(temp_role) =
+                storage.get::<RoleDataKey, TempRoleAssignment>(&RoleDataKey::TempRole(id))
+            {
+                if temp_role.user == user && temp_role.expires_at > current_time {
+                    active_temp_roles.push_back(temp_role);
+                }
+            }
+        }
+
+        active_temp_roles
+    }
+
+    /// Get active delegations for a user
+    fn _get_active_delegations(env: &Env, user: Address, current_time: u64) -> Vec<RoleDelegation> {
+        let storage = env.storage().persistent();
+        let mut active_delegations = Vec::new(env);
+
+        let next_id = storage
+            .get::<RoleDataKey, u64>(&RoleDataKey::NextDelegationId)
+            .unwrap_or(1);
+
+        for id in 1..next_id {
+            if let Some(delegation) =
+                storage.get::<RoleDataKey, RoleDelegation>(&RoleDataKey::Delegation(id))
+            {
+                if delegation.to == user
+                    && delegation.accepted
+                    && (delegation.expires_at.is_none()
+                        || delegation.expires_at.unwrap() > current_time)
+                {
+                    active_delegations.push_back(delegation);
+                }
+            }
+        }
+
+        active_delegations
+    }
+
+    /// Log permission audit entry
+
+    fn _log_permission_audit(
+        env: &Env,
+        actor: Address,
+        subject: Address,
+        permission: String,
+        action: String,
+        result: String,
+        details: String,
+    ) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let audit_id = storage
+            .get::<RoleDataKey, u64>(&RoleDataKey::NextAuditId)
+            .unwrap_or(1);
+
+        let audit_entry = PermissionAuditEntry {
+            id: audit_id,
+            actor,
+            subject,
+            permission,
+            action,
+            result,
+            timestamp: current_time,
+            details,
+        };
+
+        storage.set(&RoleDataKey::Audit(audit_id), &audit_entry);
+        storage.set(&RoleDataKey::NextAuditId, &(audit_id + 1));
+
+        Ok(())
+    }
+
+    /// Get user's roles (direct, temp, and delegated)
+    pub fn get_user_roles(env: Env, user: Address) -> UserRolesResponse {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Direct roles
+        let direct_roles = storage
+            .get::<RoleDataKey, Vec<String>>(&RoleDataKey::UserRole(user.clone()))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Temporary roles
+        let temp_roles = Self::_get_active_temp_roles(&env, user.clone(), current_time);
+
+        // Delegated roles
+        let delegated_roles = Self::_get_active_delegations(&env, user.clone(), current_time);
+
+        UserRolesResponse {
+            direct_roles,
+            temp_roles,
+            delegated_roles,
+        }
+    }
+
+    /// Get role details with hierarchy info
+    pub fn get_role_details(env: Env, role_id: String) -> Option<RoleDetails> {
+        let storage = env.storage().persistent();
+
+        if let Some(role) = storage.get::<RoleDataKey, Role>(&RoleDataKey::Role(role_id.clone())) {
+            let parent_role =
+                storage.get::<RoleDataKey, String>(&RoleDataKey::RoleParent(role_id.clone()));
+            let members = storage
+                .get::<RoleDataKey, Vec<Address>>(&RoleDataKey::RoleMembers(role_id.clone()))
+                .unwrap_or_else(|| Vec::new(&env));
+            let all_permissions = Self::get_role_permissions(env.clone(), role_id);
+
+            Some(RoleDetails {
+                role,
+                parent_role,
+                members,
+                all_permissions,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Get permission audit trail
+    pub fn get_permission_audit_trail(
+        env: Env,
+        caller: Address,
+        user: Option<Address>,
+        limit: Option<u32>,
+    ) -> Result<Vec<PermissionAuditEntry>, PayrollError> {
+        caller.require_auth();
+        Self::_require_security_permission(&env, &caller, Permission::ViewAuditTrail)?;
+
+        let storage = env.storage().persistent();
+        let mut audit_entries = Vec::new(&env);
+
+        let next_id = storage
+            .get::<RoleDataKey, u64>(&RoleDataKey::NextAuditId)
+            .unwrap_or(1);
+
+        let max_entries = limit.unwrap_or(100) as u64;
+        let start_id = if next_id > max_entries {
+            next_id - max_entries
+        } else {
+            1
+        };
+
+        for id in start_id..next_id {
+            if let Some(entry) =
+                storage.get::<RoleDataKey, PermissionAuditEntry>(&RoleDataKey::Audit(id))
+            {
+                if let Some(target_user) = &user {
+                    if entry.subject == *target_user || entry.actor == *target_user {
+                        audit_entries.push_back(entry);
+                    }
+                } else {
+                    audit_entries.push_back(entry);
+                }
+            }
+        }
+
+        Ok(audit_entries)
+    }
+
+    /// Delegate a role from one user to another
+
+    pub fn delegate_role(
+        env: Env,
+        caller: Address,
+        to: Address,
+        role_id: String,
+        expires_at: Option<u64>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Verify caller has the role they want to delegate
+
+        if !Self::has_role(env.clone(), caller.clone(), role_id.clone()) {
+            return Err(PayrollError::InsufficientPermissions);
+        }
+
+        // Verify role exists and is active
+        let role: Role = storage
+            .get(&RoleDataKey::Role(role_id.clone()))
+            .ok_or(PayrollError::RoleNotFound)?;
+
+        if !role.is_active {
+            return Err(PayrollError::RoleNotFound);
+        }
+
+        // Get next delegation ID
+        let delegation_id = storage
+            .get::<RoleDataKey, u64>(&RoleDataKey::NextDelegationId)
+            .unwrap_or(1);
+
+        let delegation = RoleDelegation {
+            id: delegation_id,
+            role_id: role_id.clone(),
+            from: caller.clone(),
+            to: to.clone(),
+            delegated_at: current_time,
+            expires_at,
+            accepted: false,
+        };
+
+        storage.set(&RoleDataKey::Delegation(delegation_id), &delegation);
+        storage.set(&RoleDataKey::NextDelegationId, &(delegation_id + 1));
+
+        // Log audit entry
+        Self::_log_permission_audit(
+            &env,
+            caller.clone(),
+            to.clone(),
+            String::from_str(&env, "RoleDelegate"),
+            String::from_str(&env, "delegate_role"),
+            String::from_str(&env, "pending"),
+            String::from_str(&env, "Role delegation created"),
+        )?;
+
+        env.events().publish(
+            (String::from_str(&env, "role_delegated"),),
+            (caller, to, role_id, delegation_id),
+        );
+
+        Ok(delegation_id)
+    }
+
+    /// Accept a delegated role
+    pub fn accept_role_delegation(
+        env: Env,
+        caller: Address,
+        delegation_id: u64,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env);
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let mut delegation: RoleDelegation = storage
+            .get(&RoleDataKey::Delegation(delegation_id))
+            .ok_or(PayrollError::InvalidData)?;
+
+        // Verify caller is the recipient
+        if delegation.to != caller {
+            return Err(PayrollError::InsufficientPermissions);
+        }
+
+        // Check if delegation hasn't expired
+        if let Some(expires_at) = delegation.expires_at {
+            if current_time > expires_at {
+                return Err(PayrollError::DelegationExpired);
+            }
+        }
+
+        delegation.accepted = true;
+        storage.set(&RoleDataKey::Delegation(delegation_id), &delegation);
+
+        // Log audit entry
+        Self::_log_permission_audit(
+            &env,
+            caller.clone(),
+            caller.clone(),
+            String::from_str(&env, "RoleDelegate"),
+            String::from_str(&env, "accept_delegation"),
+            String::from_str(&env, "granted"),
+            String::from_str(&env, "Accepted delegation for role"),
+        )?;
+
+        env.events().publish(
+            (String::from_str(&env, "role_delegation_accepted"),),
+            (caller, delegation.role_id, current_time),
+        );
+
+        Ok(())
+    }
+
+    /// Check if user has a specific role
+    pub fn has_role(env: Env, user: Address, role_id: String) -> bool {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Check direct role assignment
+        if let Some(user_roles) =
+            storage.get::<RoleDataKey, Vec<String>>(&RoleDataKey::UserRole(user.clone()))
+        {
+            if user_roles.contains(&role_id) {
+                return true;
+            }
+        }
+
+        // Check temporary assignments
+        let temp_roles = Self::_get_active_temp_roles(&env, user.clone(), current_time);
+        for temp_role in temp_roles.iter() {
+            if temp_role.role_id == role_id {
+                return true;
+            }
+        }
+
+        // Check accepted delegations
+        let delegations = Self::_get_active_delegations(&env, user, current_time);
+        for delegation in delegations.iter() {
+            if delegation.role_id == role_id {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Get all permissions for a role (including inherited)
+    pub fn get_role_permissions(env: Env, role_id: String) -> Vec<Permission> {
+        Self::_get_role_permissions_recursive(&env, &role_id)
+    }
+
+    fn _get_role_permissions_recursive(env: &Env, role_id: &String) -> Vec<Permission> {
+        let storage = env.storage().persistent();
+        let mut permissions = Vec::new(env);
+
+        if let Some(role) = storage.get::<RoleDataKey, Role>(&RoleDataKey::Role(role_id.clone())) {
+            if role.is_active {
+                // Add direct permissions
+                for perm in role.permissions.iter() {
+                    if !permissions.contains(&perm) {
+                        permissions.push_back(perm);
+                    }
+                }
+
+                // Add inherited permissions from parent
+                if let Some(parent_id) =
+                    storage.get::<RoleDataKey, String>(&RoleDataKey::RoleParent(role_id.clone()))
+                {
+                    let parent_permissions = Self::_get_role_permissions_recursive(env, &parent_id);
+                    for perm in parent_permissions.iter() {
+                        if !permissions.contains(&perm) {
+                            permissions.push_back(perm);
+                        }
+                    }
+                }
+            }
+        }
+
+        permissions
     }
 
     /// Revoke a role from a user
@@ -3771,10 +4200,10 @@ impl PayrollContract {
 
         // Check if user has a role assignment
         if let Some(mut assignment) =
-            storage.get::<DataKey, UserRoleAssignment>(&DataKey::UserRole(user.clone()))
+            storage.get::<RoleDataKey, UserRoleAssignment>(&RoleDataKey::UserRole(user.clone()))
         {
             assignment.is_active = false;
-            storage.set(&DataKey::UserRole(user.clone()), &assignment);
+            storage.set(&RoleDataKey::UserRole(user.clone()), &assignment);
 
             env.events().publish((ROLE_REVOKED_EVENT,), (caller, user));
         }
@@ -3784,12 +4213,12 @@ impl PayrollContract {
 
     /// Get user's role assignment
     pub fn get_user_role(env: Env, user: Address) -> Option<UserRoleAssignment> {
-        env.storage().persistent().get(&DataKey::UserRole(user))
+        env.storage().persistent().get(&RoleDataKey::UserRole(user))
     }
 
     /// Get role details
     pub fn get_role(env: Env, role_id: String) -> Option<Role> {
-        env.storage().persistent().get(&DataKey::Role(role_id))
+        env.storage().persistent().get(&RoleDataKey::Role(role_id))
     }
 
     /// Check if user has a specific permission
@@ -3798,7 +4227,7 @@ impl PayrollContract {
 
         // Check if user has a role assignment
         if let Some(assignment) =
-            storage.get::<DataKey, UserRoleAssignment>(&DataKey::UserRole(user.clone()))
+            storage.get::<RoleDataKey, UserRoleAssignment>(&RoleDataKey::UserRole(user.clone()))
         {
             if !assignment.is_active {
                 return false;
@@ -3812,7 +4241,9 @@ impl PayrollContract {
             }
 
             // Get role and check permissions
-            if let Some(role) = storage.get::<DataKey, Role>(&DataKey::Role(assignment.role)) {
+            if let Some(role) =
+                storage.get::<RoleDataKey, Role>(&RoleDataKey::Role(assignment.role))
+            {
                 if role.is_active && role.permissions.contains(&permission) {
                     return true;
                 }
@@ -5360,8 +5791,8 @@ impl PayrollContract {
         let storage = env.storage().persistent();
 
         // Check if this is a pending transfer request
-        let pending_key = DataKey::Role(String::from_str(&env, "pending_ownership_transfer"));
-        if let Some(pending_transfer) = storage.get::<DataKey, Address>(&pending_key) {
+        let pending_key = RoleDataKey::Role(String::from_str(&env, "pending_ownership_transfer"));
+        if let Some(pending_transfer) = storage.get::<RoleDataKey, Address>(&pending_key) {
             // If there's a pending transfer, check if the new owner is confirming
             if caller == new_owner {
                 // New owner is confirming the transfer
@@ -5402,7 +5833,7 @@ impl PayrollContract {
             Self::pause(env, caller)
         } else {
             // Non-owner needs to create a pending pause request
-            let pending_key = DataKey::Role(String::from_str(&env, "pending_pause_request"));
+            let pending_key = RoleDataKey::Role(String::from_str(&env, "pending_pause_request"));
             storage.set(&pending_key, &caller);
 
             // Emit event for pending pause
@@ -5427,7 +5858,7 @@ impl PayrollContract {
             Self::unpause(env, caller)
         } else {
             // Non-owner needs to create a pending unpause request
-            let pending_key = DataKey::Role(String::from_str(&env, "pending_unpause_request"));
+            let pending_key = RoleDataKey::Role(String::from_str(&env, "pending_unpause_request"));
             storage.set(&pending_key, &caller);
 
             // Emit event for pending unpause
@@ -5456,16 +5887,16 @@ impl PayrollContract {
         }
 
         if operation_type == String::from_str(&env, "pause") {
-            let pending_key = DataKey::Role(String::from_str(&env, "pending_pause_request"));
-            if let Some(requester) = storage.get::<DataKey, Address>(&pending_key) {
+            let pending_key = RoleDataKey::Role(String::from_str(&env, "pending_pause_request"));
+            if let Some(requester) = storage.get::<RoleDataKey, Address>(&pending_key) {
                 storage.remove(&pending_key);
                 storage.set(&DataKey::Paused, &true);
 
                 env.events().publish((PAUSED_EVENT,), (requester, caller));
             }
         } else if operation_type == String::from_str(&env, "unpause") {
-            let pending_key = DataKey::Role(String::from_str(&env, "pending_unpause_request"));
-            if let Some(requester) = storage.get::<DataKey, Address>(&pending_key) {
+            let pending_key = RoleDataKey::Role(String::from_str(&env, "pending_unpause_request"));
+            if let Some(requester) = storage.get::<RoleDataKey, Address>(&pending_key) {
                 storage.remove(&pending_key);
                 storage.set(&DataKey::Paused, &false);
 
@@ -5498,19 +5929,19 @@ impl PayrollContract {
         let mut pending_operations = Vec::new(&env);
 
         // Check for pending pause request
-        let pause_key = DataKey::Role(String::from_str(&env, "pending_pause_request"));
+        let pause_key = RoleDataKey::Role(String::from_str(&env, "pending_pause_request"));
         if storage.has(&pause_key) {
             pending_operations.push_back(String::from_str(&env, "pause"));
         }
 
         // Check for pending unpause request
-        let unpause_key = DataKey::Role(String::from_str(&env, "pending_unpause_request"));
+        let unpause_key = RoleDataKey::Role(String::from_str(&env, "pending_unpause_request"));
         if storage.has(&unpause_key) {
             pending_operations.push_back(String::from_str(&env, "unpause"));
         }
 
         // Check for pending ownership transfer
-        let transfer_key = DataKey::Role(String::from_str(&env, "pending_ownership_transfer"));
+        let transfer_key = RoleDataKey::Role(String::from_str(&env, "pending_ownership_transfer"));
         if storage.has(&transfer_key) {
             pending_operations.push_back(String::from_str(&env, "ownership_transfer"));
         }
@@ -5537,13 +5968,14 @@ impl PayrollContract {
         }
 
         if operation_type == String::from_str(&env, "pause") {
-            let pending_key = DataKey::Role(String::from_str(&env, "pending_pause_request"));
+            let pending_key = RoleDataKey::Role(String::from_str(&env, "pending_pause_request"));
             storage.remove(&pending_key);
         } else if operation_type == String::from_str(&env, "unpause") {
-            let pending_key = DataKey::Role(String::from_str(&env, "pending_unpause_request"));
+            let pending_key = RoleDataKey::Role(String::from_str(&env, "pending_unpause_request"));
             storage.remove(&pending_key);
         } else if operation_type == String::from_str(&env, "ownership_transfer") {
-            let pending_key = DataKey::Role(String::from_str(&env, "pending_ownership_transfer"));
+            let pending_key =
+                RoleDataKey::Role(String::from_str(&env, "pending_ownership_transfer"));
             storage.remove(&pending_key);
         } else {
             return Err(PayrollError::InvalidData);
