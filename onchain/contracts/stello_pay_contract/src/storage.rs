@@ -792,6 +792,13 @@ pub enum DataKey {
     // Audit and History - ESSENTIAL
     AuditIdCounter(Address),
 
+    // Security - MINIMAL SET
+    SecuritySettings, // Global security settings
+}
+
+// Extended functionality keys - separate enum to avoid size limits
+#[contracttype]
+pub enum ExtendedDataKey {
     // Templates - MINIMAL SET
     NextTmplId,            // Next available template ID
     Template(u64),         // template_id -> PayrollTemplate
@@ -818,9 +825,6 @@ pub enum DataKey {
     Rule(u64),             // rule_id -> AutomationRule
     NextRuleId,            // Next available rule ID
     EmpRules(Address),     // employer -> Vec<u64> (rule IDs)
-
-    // Security - MINIMAL SET
-    SecuritySettings, // Global security settings
 }
 
 #[contracttype]
