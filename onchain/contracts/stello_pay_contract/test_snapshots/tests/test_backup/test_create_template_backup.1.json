@@ -86,7 +86,11 @@
                   "string": "Template-specific backup"
                 },
                 {
-                  "string": "Template"
+                  "vec": [
+                    {
+                      "symbol": "Template"
+                    }
+                  ]
                 }
               ]
             }
@@ -149,7 +153,11 @@
                         "symbol": "backup_type"
                       },
                       "val": {
-                        "string": "Template"
+                        "vec": [
+                          {
+                            "symbol": "Template"
+                          }
+                        ]
                       }
                     },
                     {
@@ -157,7 +165,7 @@
                         "symbol": "checksum"
                       },
                       "val": {
-                        "string": "simple_checksum"
+                        "string": "checksum"
                       }
                     },
                     {
@@ -173,7 +181,7 @@
                         "symbol": "data_hash"
                       },
                       "val": {
-                        "string": "simple_hash"
+                        "string": "hash"
                       }
                     },
                     {
@@ -213,7 +221,7 @@
                         "symbol": "size_bytes"
                       },
                       "val": {
-                        "u64": 1000
+                        "u64": 280
                       }
                     },
                     {
@@ -287,7 +295,7 @@
                         "symbol": "backup_id"
                       },
                       "val": {
-                        "u64": 1
+                        "u64": 0
                       }
                     },
                     {
@@ -333,7 +341,7 @@
                               "symbol": "data_integrity_hash"
                             },
                             "val": {
-                              "string": "simple_hash"
+                              "string": ""
                             }
                           },
                           {
@@ -365,7 +373,7 @@
                               "symbol": "total_templates"
                             },
                             "val": {
-                              "u32": 0
+                              "u32": 1
                             }
                           }
                         ]
@@ -392,7 +400,111 @@
                         "symbol": "template_data"
                       },
                       "val": {
-                        "vec": []
+                        "vec": [
+                          {
+                            "map": [
+                              {
+                                "key": {
+                                  "symbol": "amount"
+                                },
+                                "val": {
+                                  "i128": {
+                                    "hi": 0,
+                                    "lo": 5000
+                                  }
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "created_at"
+                                },
+                                "val": {
+                                  "u64": 0
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "description"
+                                },
+                                "val": {
+                                  "string": "Test Description"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "employer"
+                                },
+                                "val": {
+                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "id"
+                                },
+                                "val": {
+                                  "u64": 1
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "interval"
+                                },
+                                "val": {
+                                  "u64": 2592000
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "is_public"
+                                },
+                                "val": {
+                                  "bool": false
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "name"
+                                },
+                                "val": {
+                                  "string": "Test Template"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "recurrence_frequency"
+                                },
+                                "val": {
+                                  "u64": 2592000
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "token"
+                                },
+                                "val": {
+                                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "updated_at"
+                                },
+                                "val": {
+                                  "u64": 0
+                                }
+                              },
+                              {
+                                "key": {
+                                  "symbol": "usage_count"
+                                },
+                                "val": {
+                                  "u32": 0
+                                }
+                              }
+                            ]
+                          }
+                        ]
                       }
                     }
                   ]

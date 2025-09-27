@@ -1,4 +1,4 @@
-// mod test_backup; // Temporarily commented out due to type incompatibility with webhook integration
+mod test_backup;
 mod test_create_or_update_escrow;
 mod test_employer_deposit_base_salary;
 mod test_pause_and_resume_employee;
