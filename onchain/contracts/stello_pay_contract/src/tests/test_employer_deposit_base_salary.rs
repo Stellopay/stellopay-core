@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod tests {
-    use soroban_sdk::{testutils::Address as _, Env, Address, IntoVal};
-    use soroban_sdk::token::{StellarAssetClient as TokenAdmin, TokenClient};
-    use soroban_sdk::testutils::{Ledger, LedgerInfo, MockAuth, MockAuthInvoke};
     use crate::payroll::{PayrollContract, PayrollContractClient};
+    use soroban_sdk::testutils::{Ledger, LedgerInfo, MockAuth, MockAuthInvoke};
+    use soroban_sdk::token::{StellarAssetClient as TokenAdmin, TokenClient};
+    use soroban_sdk::{testutils::Address as _, Address, Env, IntoVal};
 
     fn create_test_contract() -> (Env, Address, PayrollContractClient<'static>) {
         let env = Env::default();
@@ -34,7 +34,14 @@ mod tests {
         env.mock_all_auths();
 
         client.initialize(&employer);
-        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &recurrence_frequency);
+        client.create_or_update_escrow(
+            &employer,
+            &employee,
+            &token,
+            &amount,
+            &interval,
+            &recurrence_frequency,
+        );
 
         let payroll_data = client.get_payroll(&employee).unwrap();
         assert_eq!(payroll_data.employer, employer);
@@ -72,7 +79,14 @@ mod tests {
         let payroll_contract_balance = token_client.balance(&contract_id);
         assert_eq!(payroll_contract_balance, 5000);
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+        client.create_or_update_escrow(
+            &employer,
+            &employee,
+            &token_address,
+            &amount,
+            &interval,
+            &recurrence_frequency,
+        );
 
         let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
         env.ledger().set(LedgerInfo {
@@ -113,7 +127,14 @@ mod tests {
         client.initialize(&employer);
         client.deposit_tokens(&employer, &token_address, &5000i128);
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+        client.create_or_update_escrow(
+            &employer,
+            &employee,
+            &token_address,
+            &amount,
+            &interval,
+            &recurrence_frequency,
+        );
 
         // Try to disburse immediately (without advancing time)
         client.disburse_salary(&employer, &employee);
@@ -156,7 +177,15 @@ mod tests {
                 invoke: &MockAuthInvoke {
                     contract: &contract_id,
                     fn_name: "create_or_update_escrow",
-                    args: (&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency).into_val(&env),
+                    args: (
+                        &employer,
+                        &employee,
+                        &token_address,
+                        &amount,
+                        &interval,
+                        &recurrence_frequency,
+                    )
+                        .into_val(&env),
                     sub_invokes: &[],
                 },
             },
@@ -169,7 +198,14 @@ mod tests {
         client.initialize(&employer);
         client.deposit_tokens(&employer, &token_address, &5000i128);
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+        client.create_or_update_escrow(
+            &employer,
+            &employee,
+            &token_address,
+            &amount,
+            &interval,
+            &recurrence_frequency,
+        );
 
         // Try to disburse with unauthorized user - NO mock auth for this call
         // This should panic because unauthorized.require_auth() will fail
@@ -206,7 +242,14 @@ mod tests {
         client.initialize(&employer);
         client.deposit_tokens(&employer, &token_address, &5000i128);
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+        client.create_or_update_escrow(
+            &employer,
+            &employee,
+            &token_address,
+            &amount,
+            &interval,
+            &recurrence_frequency,
+        );
 
         let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
         env.ledger().set(LedgerInfo {
@@ -248,7 +291,14 @@ mod tests {
         client.initialize(&employer);
         client.deposit_tokens(&employer, &token_address, &5000i128);
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+        client.create_or_update_escrow(
+            &employer,
+            &employee,
+            &token_address,
+            &amount,
+            &interval,
+            &recurrence_frequency,
+        );
 
         // Don't advance time - should fail
         client.employee_withdraw(&employee);
@@ -288,7 +338,14 @@ mod tests {
         client.initialize(&employer);
         client.deposit_tokens(&employer, &token_address, &5000i128);
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+        client.create_or_update_escrow(
+            &employer,
+            &employee,
+            &token_address,
+            &amount,
+            &interval,
+            &recurrence_frequency,
+        );
 
         let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
         env.ledger().set(LedgerInfo {
@@ -340,7 +397,14 @@ mod tests {
         env.mock_all_auths();
 
         client.initialize(&employer);
-        client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &recurrence_frequency);
+        client.create_or_update_escrow(
+            &employer,
+            &employee,
+            &token,
+            &amount,
+            &interval,
+            &recurrence_frequency,
+        );
 
         let payroll_data = client.get_payroll(&employee).unwrap();
         assert_eq!(payroll_data.amount, amount);
@@ -368,7 +432,14 @@ mod tests {
         client.initialize(&employer);
         client.deposit_tokens(&employer, &token_address, &500i128); // Less than needed
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+        client.create_or_update_escrow(
+            &employer,
+            &employee,
+            &token_address,
+            &amount,
+            &interval,
+            &recurrence_frequency,
+        );
 
         let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
         env.ledger().set(LedgerInfo {
@@ -406,7 +477,14 @@ mod tests {
         client.initialize(&employer);
         client.deposit_tokens(&employer, &token_address, &500i128); // Less than needed
 
-        client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+        client.create_or_update_escrow(
+            &employer,
+            &employee,
+            &token_address,
+            &amount,
+            &interval,
+            &recurrence_frequency,
+        );
 
         let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
         env.ledger().set(LedgerInfo {

@@ -2,7 +2,7 @@
 // Events
 //-----------------------------------------------------------------------------
 
-use soroban_sdk::{contracttype, symbol_short, Address, Env, Symbol, String};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, String, Symbol};
 
 /// Event emitted when contract is paused
 pub const PAUSED_EVENT: Symbol = symbol_short!("paused");
@@ -39,7 +39,7 @@ pub const TEMPLATE_APPLIED_EVENT: Symbol = symbol_short!("tmpl_app");
 pub const TEMPLATE_SHARED_EVENT: Symbol = symbol_short!("tmpl_shr");
 pub const PRESET_CREATED_EVENT: Symbol = symbol_short!("prst_crt");
 
-// Backup and Recovery Events  
+// Backup and Recovery Events
 pub const BACKUP_CREATED_EVENT: Symbol = symbol_short!("backup_c");
 pub const BACKUP_VERIFIED_EVENT: Symbol = symbol_short!("backup_v");
 pub const RECOVERY_STARTED_EVENT: Symbol = symbol_short!("rcvry_st");
@@ -244,7 +244,6 @@ pub struct TaskCompleted {
     pub completed_by: Address,
     pub timestamp: u64,
 }
-
 
 pub fn emit_disburse(
     e: Env,

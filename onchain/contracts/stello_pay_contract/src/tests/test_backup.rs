@@ -611,10 +611,7 @@ fn test_create_employer_backup() {
 
     // Verify backup was created
     let backup = contract.get_backup(&backup_id);
-    assert_eq!(
-        backup.backup_type,
-        BackupType::Employer
-    );
+    assert_eq!(backup.backup_type, BackupType::Employer);
     assert_eq!(backup.status, BackupStatus::Completed);
 }
 
@@ -650,10 +647,7 @@ fn test_create_template_backup() {
 
     // Verify backup was created
     let backup = contract.get_backup(&backup_id);
-    assert_eq!(
-        backup.backup_type,
-        BackupType::Template
-    );
+    assert_eq!(backup.backup_type, BackupType::Template);
     assert_eq!(backup.status, BackupStatus::Completed);
 }
 

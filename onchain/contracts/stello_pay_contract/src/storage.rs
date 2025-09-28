@@ -130,25 +130,25 @@ pub struct PayrollBackup {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum BackupType {
-    Full,           // Complete system backup
-    Employer,       // Employer-specific backup
-    Employee,       // Employee-specific backup
-    Template,       // Template backup
-    Insurance,      // Insurance data backup
-    Compliance,     // Compliance data backup
+    Full,       // Complete system backup
+    Employer,   // Employer-specific backup
+    Employee,   // Employee-specific backup
+    Template,   // Template backup
+    Insurance,  // Insurance data backup
+    Compliance, // Compliance data backup
 }
 
 /// Backup status enumeration
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum BackupStatus {
-    Creating,       // Backup is being created
-    Completed,      // Backup completed successfully
-    Failed,         // Backup failed
-    Verifying,      // Backup is being verified
-    Verified,       // Backup verified successfully
-    Restoring,      // Backup is being restored
-    Restored,       // Backup restored successfully
+    Creating,  // Backup is being created
+    Completed, // Backup completed successfully
+    Failed,    // Backup failed
+    Verifying, // Backup is being verified
+    Verified,  // Backup verified successfully
+    Restoring, // Backup is being restored
+    Restored,  // Backup restored successfully
 }
 
 /// Backup data structure for storing actual backup content
@@ -196,21 +196,21 @@ pub struct RecoveryPoint {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum RecoveryType {
-    Full,           // Complete system recovery
-    Partial,        // Partial system recovery
-    Emergency,      // Emergency recovery
-    Test,           // Test recovery
+    Full,      // Complete system recovery
+    Partial,   // Partial system recovery
+    Emergency, // Emergency recovery
+    Test,      // Test recovery
 }
 
 /// Recovery status enumeration
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum RecoveryStatus {
-    Pending,        // Recovery pending
-    InProgress,     // Recovery in progress
-    Completed,      // Recovery completed
-    Failed,         // Recovery failed
-    RolledBack,     // Recovery rolled back
+    Pending,    // Recovery pending
+    InProgress, // Recovery in progress
+    Completed,  // Recovery completed
+    Failed,     // Recovery failed
+    RolledBack, // Recovery rolled back
 }
 
 /// Recovery metadata for additional information
@@ -250,24 +250,24 @@ pub struct PayrollSchedule {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScheduleType {
-    Recurring,      // Regular recurring payroll
-    OneTime,        // One-time scheduled payroll
-    Conditional,    // Conditional payroll based on triggers
-    Batch,          // Batch payroll processing
-    Emergency,      // Emergency payroll processing
+    Recurring,   // Regular recurring payroll
+    OneTime,     // One-time scheduled payroll
+    Conditional, // Conditional payroll based on triggers
+    Batch,       // Batch payroll processing
+    Emergency,   // Emergency payroll processing
 }
 
 /// Schedule frequency enumeration
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScheduleFrequency {
-    Daily,          // Daily execution
-    Weekly,         // Weekly execution
-    BiWeekly,       // Bi-weekly execution
-    Monthly,        // Monthly execution
-    Quarterly,      // Quarterly execution
-    Yearly,         // Yearly execution
-    Custom(u64),    // Custom frequency in seconds
+    Daily,       // Daily execution
+    Weekly,      // Weekly execution
+    BiWeekly,    // Bi-weekly execution
+    Monthly,     // Monthly execution
+    Quarterly,   // Quarterly execution
+    Yearly,      // Yearly execution
+    Custom(u64), // Custom frequency in seconds
 }
 
 /// Schedule metadata for additional information
@@ -307,11 +307,11 @@ pub struct AutomationRule {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuleType {
-    Balance,        // Balance-based triggers
-    Time,           // Time-based triggers
-    Employee,       // Employee-based triggers
-    Compliance,     // Compliance-based triggers
-    Custom,         // Custom triggers
+    Balance,    // Balance-based triggers
+    Time,       // Time-based triggers
+    Employee,   // Employee-based triggers
+    Compliance, // Compliance-based triggers
+    Custom,     // Custom triggers
 }
 
 /// Rule condition structure
@@ -766,29 +766,29 @@ pub enum DataKey {
     TokenMetadata(Address),
 
     // Insurance-related storage keys
-    InsurancePolicy(Address),            // employee -> InsurancePolicy
-    InsuranceClaim(u64),                 // claim_id -> InsuranceClaim
-    NextClaimId,                         // Next available claim ID
-    InsurancePool(Address),              // token -> InsurancePool
-    GuaranteeFund(Address),              // token -> GuaranteeFund
-    Guarantee(u64),                      // guarantee_id -> Guarantee
-    NextGuaranteeId,                     // Next available guarantee ID
-    EmployerGuarantees(Address),         // employer -> Vec<u64> (guarantee IDs)
-    RiskAssessment(Address),             // employee -> u32 (risk score)
-    InsuranceSettings,                   // Global insurance settings
+    InsurancePolicy(Address),    // employee -> InsurancePolicy
+    InsuranceClaim(u64),         // claim_id -> InsuranceClaim
+    NextClaimId,                 // Next available claim ID
+    InsurancePool(Address),      // token -> InsurancePool
+    GuaranteeFund(Address),      // token -> GuaranteeFund
+    Guarantee(u64),              // guarantee_id -> Guarantee
+    NextGuaranteeId,             // Next available guarantee ID
+    EmployerGuarantees(Address), // employer -> Vec<u64> (guarantee IDs)
+    RiskAssessment(Address),     // employee -> u32 (risk score)
+    InsuranceSettings,           // Global insurance settings
 
     // PayrollHistory
-    PayrollHistoryEntry(Address),        // (employee) -> history_entry
-    PayrollHistoryCounter(Address),      // (employee) -> history_entry
-    AuditTrail(Address),                 // (employee) -> audit_entry
+    PayrollHistoryEntry(Address),   // (employee) -> history_entry
+    PayrollHistoryCounter(Address), // (employee) -> history_entry
+    AuditTrail(Address),            // (employee) -> audit_entry
 
     // Webhook system keys - CORE FUNCTIONALITY
-    Webhook(u64),                        // webhook_id -> Webhook
-    NextWebhookId,                       // counter for webhook IDs
-    NextWebhookAttemptId,                // counter for webhook attempt IDs
-    OwnerWebhooks(Address),              // owner -> Vec<u64> (webhook IDs)
-    WebhookRateLimit(u64),               // webhook_id -> last_request_timestamp
-    
+    Webhook(u64),           // webhook_id -> Webhook
+    NextWebhookId,          // counter for webhook IDs
+    NextWebhookAttemptId,   // counter for webhook attempt IDs
+    OwnerWebhooks(Address), // owner -> Vec<u64> (webhook IDs)
+    WebhookRateLimit(u64),  // webhook_id -> last_request_timestamp
+
     // Audit and History - ESSENTIAL
     AuditIdCounter(Address),
 
@@ -1054,7 +1054,7 @@ impl LifecycleStorage {
         let offset_id = workflow_id + 1000000; // Simple offset to avoid conflicts
         env.storage()
             .persistent()
-            .set(&DataKey::Template(offset_id), workflow);
+            .set(&ExtendedDataKey::Template(offset_id), workflow);
     }
 
     /// Get onboarding workflow
@@ -1062,7 +1062,7 @@ impl LifecycleStorage {
         let offset_id = workflow_id + 1000000;
         env.storage()
             .persistent()
-            .get(&DataKey::Template(offset_id))
+            .get(&ExtendedDataKey::Template(offset_id))
     }
 
     /// Store offboarding workflow using Preset key with offset
@@ -1070,13 +1070,15 @@ impl LifecycleStorage {
         let offset_id = workflow_id + 2000000; // Different offset for offboarding
         env.storage()
             .persistent()
-            .set(&DataKey::Preset(offset_id), workflow);
+            .set(&ExtendedDataKey::Preset(offset_id), workflow);
     }
 
     /// Get offboarding workflow
     pub fn get_offboarding(env: &Env, workflow_id: u64) -> Option<OffboardingWorkflow> {
         let offset_id = workflow_id + 2000000;
-        env.storage().persistent().get(&DataKey::Preset(offset_id))
+        env.storage()
+            .persistent()
+            .get(&ExtendedDataKey::Preset(offset_id))
     }
 
     /// Store employee transfer using Backup key with offset
@@ -1084,13 +1086,15 @@ impl LifecycleStorage {
         let offset_id = transfer_id + 3000000; // Different offset for transfers
         env.storage()
             .persistent()
-            .set(&DataKey::Backup(offset_id), transfer);
+            .set(&ExtendedDataKey::Backup(offset_id), transfer);
     }
 
     /// Get employee transfer
     pub fn get_transfer(env: &Env, transfer_id: u64) -> Option<EmployeeTransfer> {
         let offset_id = transfer_id + 3000000;
-        env.storage().persistent().get(&DataKey::Backup(offset_id))
+        env.storage()
+            .persistent()
+            .get(&ExtendedDataKey::Backup(offset_id))
     }
 
     /// Store compliance record using AuditTrail key
@@ -1122,11 +1126,11 @@ impl LifecycleStorage {
         let current_id: u64 = env
             .storage()
             .persistent()
-            .get(&DataKey::NextTmplId)
+            .get(&ExtendedDataKey::NextTmplId)
             .unwrap_or(1);
         env.storage()
             .persistent()
-            .set(&DataKey::NextTmplId, &(current_id + 1));
+            .set(&ExtendedDataKey::NextTmplId, &(current_id + 1));
         current_id
     }
 
@@ -1134,11 +1138,11 @@ impl LifecycleStorage {
         let current_id: u64 = env
             .storage()
             .persistent()
-            .get(&DataKey::NextPresetId)
+            .get(&ExtendedDataKey::NextPresetId)
             .unwrap_or(1);
         env.storage()
             .persistent()
-            .set(&DataKey::NextPresetId, &(current_id + 1));
+            .set(&ExtendedDataKey::NextPresetId, &(current_id + 1));
         current_id
     }
 
@@ -1146,11 +1150,11 @@ impl LifecycleStorage {
         let current_id: u64 = env
             .storage()
             .persistent()
-            .get(&DataKey::NextBackupId)
+            .get(&ExtendedDataKey::NextBackupId)
             .unwrap_or(1);
         env.storage()
             .persistent()
-            .set(&DataKey::NextBackupId, &(current_id + 1));
+            .set(&ExtendedDataKey::NextBackupId, &(current_id + 1));
         current_id
     }
 

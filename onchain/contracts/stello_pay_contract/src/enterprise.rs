@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Symbol, String, Vec, Map, Env};
+use soroban_sdk::{contracttype, Address, Env, Map, String, Symbol, Vec};
 
 //-----------------------------------------------------------------------------
 // Enterprise Features Data Structures
@@ -73,7 +73,10 @@ pub struct Approval {
 impl Approval {
     pub fn default(env: &Env) -> Self {
         Self {
-            approver: Address::from_str(env, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+            approver: Address::from_str(
+                env,
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            ),
             step_number: 0,
             approved: false,
             comment: String::from_str(env, ""),
@@ -309,66 +312,71 @@ pub struct DisputeSettings {
 #[contracttype]
 pub enum EnterpriseDataKey {
     // Department management
-    Department(u64),                     // department_id -> Department
-    NextDepartmentId,                    // Next available department ID
-    EmployerDepartments(Address),        // employer -> Vec<u64> (department IDs)
-    EmployeeDepartment(Address),         // employee -> department_id
-    
+    Department(u64),              // department_id -> Department
+    NextDepartmentId,             // Next available department ID
+    EmployerDepartments(Address), // employer -> Vec<u64> (department IDs)
+    EmployeeDepartment(Address),  // employee -> department_id
+
     // Approval workflows
-    ApprovalWorkflow(u64),               // workflow_id -> ApprovalWorkflow
-    NextWorkflowId,                      // Next available workflow ID
-    PendingApproval(u64),                // approval_id -> PendingApproval
-    NextApprovalId,                      // Next available approval ID
-    
+    ApprovalWorkflow(u64), // workflow_id -> ApprovalWorkflow
+    NextWorkflowId,        // Next available workflow ID
+    PendingApproval(u64),  // approval_id -> PendingApproval
+    NextApprovalId,        // Next available approval ID
+
     // Integration capabilities
-    WebhookEndpoint(String),             // endpoint_id -> WebhookEndpoint
-    NextWebhookId,                       // Next available webhook ID
-    EmployerWebhooks(Address),           // employer -> Vec<String> (webhook IDs)
-    
+    WebhookEndpoint(String),   // endpoint_id -> WebhookEndpoint
+    NextWebhookId,             // Next available webhook ID
+    EmployerWebhooks(Address), // employer -> Vec<String> (webhook IDs)
+
     // Reporting
-    ReportTemplate(u64),                 // report_id -> ReportTemplate
-    NextReportId,                        // Next available report ID
-    EmployerReports(Address),            // employer -> Vec<u64> (report IDs)
-    
+    ReportTemplate(u64),      // report_id -> ReportTemplate
+    NextReportId,             // Next available report ID
+    EmployerReports(Address), // employer -> Vec<u64> (report IDs)
+
     // Backup & Recovery
-    BackupSchedule(u64),                 // schedule_id -> BackupSchedule
-    NextBackupScheduleId,                // Next available backup schedule ID
-    EmployerBackupSchedules(Address),    // employer -> Vec<u64> (backup schedule IDs)
-    
+    BackupSchedule(u64),              // schedule_id -> BackupSchedule
+    NextBackupScheduleId,             // Next available backup schedule ID
+    EmployerBackupSchedules(Address), // employer -> Vec<u64> (backup schedule IDs)
+
     // Payroll Modification Approval System
-    PayrollModificationRequest(u64),     // request_id -> PayrollModificationRequest
-    NextModificationRequestId,           // Next available modification request ID
+    PayrollModificationRequest(u64), // request_id -> PayrollModificationRequest
+    NextModificationRequestId,       // Next available modification request ID
     EmployeeModificationRequests(Address), // employee -> Vec<u64> (request IDs)
     EmployerModificationRequests(Address), // employer -> Vec<u64> (request IDs)
-    PendingModificationRequests,         // Vec<u64> (pending request IDs)
-    
+    PendingModificationRequests,     // Vec<u64> (pending request IDs)
+
     // Dispute Resolution System
-    Dispute(u64),                        // dispute_id -> Dispute
-    NextDisputeId,                       // Next available dispute ID
-    EmployeeDisputes(Address),           // employee -> Vec<u64> (dispute IDs)
-    EmployerDisputes(Address),           // employer -> Vec<u64> (dispute IDs)
-    OpenDisputes,                        // Vec<u64> (open dispute IDs)
-    EscalatedDisputes,                   // Vec<u64> (escalated dispute IDs)
-    Escalation(u64),                     // escalation_id -> Escalation
-    NextEscalationId,                    // Next available escalation ID
-    DisputeEscalations(u64),             // dispute_id -> Vec<u64> (escalation IDs)
-    MediatorEscalations(Address),        // mediator -> Vec<u64> (escalation IDs)
-    Mediator(Address),                   // mediator_address -> Mediator
-    ActiveMediators,                     // Vec<Address> (active mediator addresses)
-    MediatorBySpecialization(String),   // specialization -> Vec<Address> (mediator addresses)
-    DisputeSettings,                     // Global dispute settings
+    Dispute(u64),                     // dispute_id -> Dispute
+    NextDisputeId,                    // Next available dispute ID
+    EmployeeDisputes(Address),        // employee -> Vec<u64> (dispute IDs)
+    EmployerDisputes(Address),        // employer -> Vec<u64> (dispute IDs)
+    OpenDisputes,                     // Vec<u64> (open dispute IDs)
+    EscalatedDisputes,                // Vec<u64> (escalated dispute IDs)
+    Escalation(u64),                  // escalation_id -> Escalation
+    NextEscalationId,                 // Next available escalation ID
+    DisputeEscalations(u64),          // dispute_id -> Vec<u64> (escalation IDs)
+    MediatorEscalations(Address),     // mediator -> Vec<u64> (escalation IDs)
+    Mediator(Address),                // mediator_address -> Mediator
+    ActiveMediators,                  // Vec<Address> (active mediator addresses)
+    MediatorBySpecialization(String), // specialization -> Vec<Address> (mediator addresses)
+    DisputeSettings,                  // Global dispute settings
 }
 
 //-----------------------------------------------------------------------------
 // Employee Lifecycle Management Functions
 //-----------------------------------------------------------------------------
 
-use crate::storage::{EmployeeProfile, EmployeeStatus, OnboardingWorkflow, OffboardingWorkflow, 
-    WorkflowStatus, OnboardingTask, OffboardingTask, WorkflowApproval, FinalPayment, 
-    EmployeeTransfer, ComplianceRecord, ComplianceStatus, LifecycleStorage};
-use crate::events::{emit_employee_onboarded, emit_employee_offboarded, emit_employee_transferred,
-    emit_employee_status_changed, emit_onboarding_workflow_event, emit_offboarding_workflow_event,
-    emit_final_payment_processed, emit_compliance_updated, emit_workflow_approved, emit_task_completed};
+use crate::events::{
+    emit_compliance_updated, emit_employee_offboarded, emit_employee_onboarded,
+    emit_employee_status_changed, emit_employee_transferred, emit_final_payment_processed,
+    emit_offboarding_workflow_event, emit_onboarding_workflow_event, emit_task_completed,
+    emit_workflow_approved,
+};
+use crate::storage::{
+    ComplianceRecord, ComplianceStatus, EmployeeProfile, EmployeeStatus, EmployeeTransfer,
+    FinalPayment, LifecycleStorage, OffboardingTask, OffboardingWorkflow, OnboardingTask,
+    OnboardingWorkflow, WorkflowApproval, WorkflowStatus,
+};
 
 /// HR Workflow Management System
 pub struct HRWorkflowManager;
@@ -385,10 +393,10 @@ impl HRWorkflowManager {
     ) -> Result<u64, EnterpriseError> {
         let current_time = env.ledger().timestamp();
         let workflow_id = LifecycleStorage::get_next_onboarding_id(env);
-        
+
         // Create default onboarding checklist
         let mut checklist = Vec::new(env);
-        
+
         checklist.push_back(OnboardingTask {
             id: 1,
             name: String::from_str(env, "Complete employment forms"),
@@ -399,7 +407,7 @@ impl HRWorkflowManager {
             completed_by: None,
             due_date: Some(current_time + 7 * 24 * 3600), // 7 days
         });
-        
+
         checklist.push_back(OnboardingTask {
             id: 2,
             name: String::from_str(env, "Setup payroll information"),
@@ -410,7 +418,7 @@ impl HRWorkflowManager {
             completed_by: None,
             due_date: Some(current_time + 3 * 24 * 3600), // 3 days
         });
-        
+
         checklist.push_back(OnboardingTask {
             id: 3,
             name: String::from_str(env, "Department orientation"),
@@ -481,11 +489,11 @@ impl HRWorkflowManager {
             .ok_or(EnterpriseError::WorkflowNotFound)?;
 
         let current_time = env.ledger().timestamp();
-        
+
         // Find and update the task
         let mut task_found = false;
         let mut completed_tasks = 0u32;
-        
+
         for i in 0..workflow.checklist.len() {
             let mut task = workflow.checklist.get(i).unwrap();
             if task.id == task_id && !task.completed {
@@ -494,7 +502,7 @@ impl HRWorkflowManager {
                 task.completed_by = Some(completed_by.clone());
                 workflow.checklist.set(i, task.clone());
                 task_found = true;
-                
+
                 emit_task_completed(
                     env.clone(),
                     workflow_id,
@@ -516,7 +524,7 @@ impl HRWorkflowManager {
         // Check if all required tasks are completed
         let mut total_required_tasks = 0u32;
         let mut completed_required_tasks = 0u32;
-        
+
         for i in 0..workflow.checklist.len() {
             let task = workflow.checklist.get(i).unwrap();
             if task.required {
@@ -530,7 +538,7 @@ impl HRWorkflowManager {
         if completed_required_tasks == total_required_tasks {
             workflow.status = WorkflowStatus::Completed;
             workflow.completed_at = Some(current_time);
-            
+
             // Update employee status to active
             if let Some(mut profile) = LifecycleStorage::get_profile(env, &workflow.employee) {
                 profile.status = EmployeeStatus::Active;
@@ -585,10 +593,10 @@ impl HRWorkflowManager {
     ) -> Result<u64, EnterpriseError> {
         let current_time = env.ledger().timestamp();
         let workflow_id = LifecycleStorage::get_next_offboarding_id(env);
-        
+
         // Create default offboarding checklist
         let mut checklist = Vec::new(env);
-        
+
         checklist.push_back(OffboardingTask {
             id: 1,
             name: String::from_str(env, "Return company assets"),
@@ -599,7 +607,7 @@ impl HRWorkflowManager {
             completed_by: None,
             due_date: Some(current_time + 7 * 24 * 3600), // 7 days
         });
-        
+
         checklist.push_back(OffboardingTask {
             id: 2,
             name: String::from_str(env, "Complete exit interview"),
@@ -610,7 +618,7 @@ impl HRWorkflowManager {
             completed_by: None,
             due_date: Some(current_time + 14 * 24 * 3600), // 14 days
         });
-        
+
         checklist.push_back(OffboardingTask {
             id: 3,
             name: String::from_str(env, "Process final payment"),
@@ -786,7 +794,7 @@ impl HRWorkflowManager {
         notes: String,
     ) -> Result<(), EnterpriseError> {
         let current_time = env.ledger().timestamp();
-        
+
         let completed_date = match status {
             ComplianceStatus::Completed => Some(current_time),
             _ => None,
@@ -849,7 +857,7 @@ impl HRWorkflowManager {
             if let Some(mut workflow) = LifecycleStorage::get_onboarding(env, workflow_id) {
                 workflow.approvals.push_back(approval);
                 LifecycleStorage::store_onboarding(env, workflow_id, &workflow);
-                
+
                 emit_workflow_approved(
                     env.clone(),
                     workflow_id,
@@ -865,7 +873,7 @@ impl HRWorkflowManager {
             if let Some(mut workflow) = LifecycleStorage::get_offboarding(env, workflow_id) {
                 workflow.approvals.push_back(approval);
                 LifecycleStorage::store_offboarding(env, workflow_id, &workflow);
-                
+
                 emit_workflow_approved(
                     env.clone(),
                     workflow_id,
@@ -932,4 +940,4 @@ pub enum EnterpriseError {
     InvalidTransferRequest,
     ComplianceRecordNotFound,
     InvalidComplianceStatus,
-} 
+}

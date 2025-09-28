@@ -1,9 +1,9 @@
 #[cfg(test)]
 mod test_webhooks_standalone {
     use crate::webhooks::{
-        WebhookEventType, WebhookRegistration, WebhookUpdate, Webhook, WebhookError,
+        Webhook, WebhookError, WebhookEventType, WebhookRegistration, WebhookUpdate,
     };
-    use soroban_sdk::{testutils::Address as _, vec, Address, Env, String, Map};
+    use soroban_sdk::{testutils::Address as _, vec, Address, Env, Map, String};
 
     fn create_test_env() -> Env {
         let env = Env::default();
@@ -28,15 +28,21 @@ mod test_webhooks_standalone {
 
         // Test that we can create webhook registration
         assert_eq!(registration.name, String::from_str(&env, "Test Webhook"));
-        assert_eq!(registration.url, String::from_str(&env, "https://example.com/webhook"));
+        assert_eq!(
+            registration.url,
+            String::from_str(&env, "https://example.com/webhook")
+        );
         assert_eq!(registration.events.len(), 1);
-        assert_eq!(registration.events.get(0), Some(WebhookEventType::SalaryDisbursed));
+        assert_eq!(
+            registration.events.get(0),
+            Some(WebhookEventType::SalaryDisbursed)
+        );
     }
 
     #[test]
     fn test_webhook_event_types() {
         let env = create_test_env();
-        
+
         // Test that we can create different event types
         let events = vec![
             &env,
@@ -58,7 +64,7 @@ mod test_webhooks_standalone {
     #[test]
     fn test_webhook_update_structure() {
         let env = create_test_env();
-        
+
         let update = WebhookUpdate {
             name: Some(String::from_str(&env, "Updated Webhook")),
             description: Some(String::from_str(&env, "Updated description")),
@@ -68,8 +74,14 @@ mod test_webhooks_standalone {
         };
 
         assert_eq!(update.name, Some(String::from_str(&env, "Updated Webhook")));
-        assert_eq!(update.description, Some(String::from_str(&env, "Updated description")));
-        assert_eq!(update.url, Some(String::from_str(&env, "https://updated.com/webhook")));
+        assert_eq!(
+            update.description,
+            Some(String::from_str(&env, "Updated description"))
+        );
+        assert_eq!(
+            update.url,
+            Some(String::from_str(&env, "https://updated.com/webhook"))
+        );
         assert_eq!(update.events.as_ref().unwrap().len(), 1);
         assert_eq!(update.is_active, Some(true));
     }
@@ -102,22 +114,37 @@ mod test_webhooks_standalone {
         let mut event_data = Map::new(&env);
         event_data.set(String::from_str(&env, "employer"), owner.to_string());
         event_data.set(String::from_str(&env, "employee"), employee.to_string());
-        event_data.set(String::from_str(&env, "amount"), String::from_str(&env, "1000"));
+        event_data.set(
+            String::from_str(&env, "amount"),
+            String::from_str(&env, "1000"),
+        );
 
         let mut metadata = Map::new(&env);
-        metadata.set(String::from_str(&env, "timestamp"), String::from_str(&env, "1640995200"));
-        metadata.set(String::from_str(&env, "transaction_id"), String::from_str(&env, "tx123"));
+        metadata.set(
+            String::from_str(&env, "timestamp"),
+            String::from_str(&env, "1640995200"),
+        );
+        metadata.set(
+            String::from_str(&env, "transaction_id"),
+            String::from_str(&env, "tx123"),
+        );
 
         assert_eq!(event_data.len(), 3);
         assert_eq!(metadata.len(), 2);
-        assert_eq!(event_data.get(String::from_str(&env, "amount")), Some(String::from_str(&env, "1000")));
-        assert_eq!(metadata.get(String::from_str(&env, "timestamp")), Some(String::from_str(&env, "1640995200")));
+        assert_eq!(
+            event_data.get(String::from_str(&env, "amount")),
+            Some(String::from_str(&env, "1000"))
+        );
+        assert_eq!(
+            metadata.get(String::from_str(&env, "timestamp")),
+            Some(String::from_str(&env, "1640995200"))
+        );
     }
 
     #[test]
     fn test_webhook_creation_and_validation() {
         let env = create_test_env();
-        
+
         // Test valid webhook registration
         let valid_registration = WebhookRegistration {
             name: String::from_str(&env, "Valid Webhook"),

@@ -1,11 +1,11 @@
 use core::ops::Add;
 
-use soroban_sdk::vec;
-use soroban_sdk::{testutils::Address as _, Address, Env, log, symbol_short, Vec, IntoVal};
-use soroban_sdk::token::{StellarAssetClient as TokenAdmin, TokenClient};
-use soroban_sdk::testutils::{Ledger, LedgerInfo};
 use crate::payroll::{PayrollContract, PayrollContractClient, PayrollError};
-    use soroban_sdk::testutils::{ MockAuth, MockAuthInvoke};
+use soroban_sdk::testutils::{Ledger, LedgerInfo};
+use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+use soroban_sdk::token::{StellarAssetClient as TokenAdmin, TokenClient};
+use soroban_sdk::vec;
+use soroban_sdk::{log, symbol_short, testutils::Address as _, Address, Env, IntoVal, Vec};
 
 fn create_test_contract() -> (Env, Address, PayrollContractClient<'static>) {
     let env = Env::default();
@@ -37,20 +37,18 @@ fn test_record_new_escrow() {
 
     client.initialize(&employer);
 
-    let _created_payroll =
-        client.create_or_update_escrow(
-        &employer, 
+    let _created_payroll = client.create_or_update_escrow(
+        &employer,
         &employee,
-        &token, 
-        &amount, 
-        &interval, 
-        &recurrence_frequency
+        &token,
+        &amount,
+        &interval,
+        &recurrence_frequency,
     );
 
     let entries = client.get_payroll_history(&employee, &None, &None, &Some(5));
-    assert_eq!(entries.len(), 1); 
+    assert_eq!(entries.len(), 1);
     assert_eq!(entries.get(0).unwrap().action, symbol_short!("created"));
-
 }
 
 #[test]
@@ -71,12 +69,12 @@ fn test_payroll_history_query() {
     // Set different ledger timestamps to create history entries
     env.ledger().with_mut(|l| l.timestamp = 1000);
     client.create_or_update_escrow(
-        &employer, 
+        &employer,
         &employee,
-        &token, 
-        &amount, 
-        &interval, 
-        &recurrence_frequency
+        &token,
+        &amount,
+        &interval,
+        &recurrence_frequency,
     );
 
     env.ledger().with_mut(|l| l.timestamp = 2000);
@@ -86,7 +84,14 @@ fn test_payroll_history_query() {
     client.resume_employee_payroll(&employer, &employee);
 
     env.ledger().with_mut(|l| l.timestamp = 4000);
-    client.create_or_update_escrow(&employer, &employee, &token, &(amount * 2), &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token,
+        &(amount * 2),
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Test 1: Query all entries (no timestamp filters, default limit)
     let entries = client.get_payroll_history(&employee, &None, &None, &Some(5));
@@ -140,12 +145,12 @@ fn test_payroll_history_edge_cases() {
     // Create some history entries
     env.ledger().with_mut(|l| l.timestamp = 1000);
     client.create_or_update_escrow(
-        &employer, 
-        &employee, 
-        &token, 
-        &amount, 
-        &interval, 
-        &recurrence_frequency
+        &employer,
+        &employee,
+        &token,
+        &amount,
+        &interval,
+        &recurrence_frequency,
     );
 
     env.ledger().with_mut(|l| l.timestamp = 2000);
@@ -154,7 +159,7 @@ fn test_payroll_history_edge_cases() {
     // Test 1: Query for non-existent employee
     let non_existent_employee = Address::generate(&env);
     let entries = client.get_payroll_history(&non_existent_employee, &None, &None, &Some(5));
-    assert_eq!(entries.len(), 0); 
+    assert_eq!(entries.len(), 0);
 
     // Test 2: Invalid timestamp range (start > end)
     let entries = client.get_payroll_history(&employee, &Some(3000), &Some(1000), &Some(5));
@@ -168,7 +173,6 @@ fn test_payroll_history_edge_cases() {
     let entries = client.get_payroll_history(&employee, &None, &None, &Some(0));
     assert_eq!(entries.len(), 0);
 }
-
 
 #[test]
 fn test_audit_trail_disburse_success() {
@@ -200,12 +204,12 @@ fn test_audit_trail_disburse_success() {
 
     // Create escrow
     client.create_or_update_escrow(
-        &employer, 
+        &employer,
         &employee,
         &token_address,
-        &amount, 
-        &interval, 
-        &recurrence_frequency
+        &amount,
+        &interval,
+        &recurrence_frequency,
     );
 
     // Advance timestamp to allow disbursement
@@ -240,7 +244,7 @@ fn test_audit_trail_disburse_success() {
     assert_eq!(entry.timestamp, disbursement_timestamp);
     assert_eq!(entry.last_payment_time, disbursement_timestamp);
     assert_eq!(
-        entry.next_payout_timestamp, 
+        entry.next_payout_timestamp,
         disbursement_timestamp + recurrence_frequency
     );
     assert_eq!(entry.id, 1); // First audit entry
@@ -279,7 +283,14 @@ fn test_audit_trail_disburse_multiple() {
 
     // Create escrow for each employee
     for (i, employee) in employees.iter().enumerate() {
-        client.create_or_update_escrow(&employer, &employee, &token_address, &(amount), &interval, &recurrence_frequency);
+        client.create_or_update_escrow(
+            &employer,
+            &employee,
+            &token_address,
+            &(amount),
+            &interval,
+            &recurrence_frequency,
+        );
     }
 
     // Perform disbursements for each employee
@@ -316,22 +327,34 @@ fn test_audit_trail_disburse_multiple() {
         assert_eq!(entry.amount, amount);
         assert_eq!(entry.timestamp, disbursement_timestamp);
         assert_eq!(entry.last_payment_time, disbursement_timestamp);
-        assert_eq!(entry.next_payout_timestamp, disbursement_timestamp + recurrence_frequency);
+        assert_eq!(
+            entry.next_payout_timestamp,
+            disbursement_timestamp + recurrence_frequency
+        );
         assert_eq!(entry.id, 1);
     }
 
     // Test with start_timestamp (after disbursement)
     for employee in employees.iter() {
-        let entries = client.get_audit_trail(&employee, &Some(disbursement_timestamp + 1), &None, &Some(5));
+        let entries = client.get_audit_trail(
+            &employee,
+            &Some(disbursement_timestamp + 1),
+            &None,
+            &Some(5),
+        );
         assert_eq!(entries.len(), 0);
     }
 
     // Test with end_timestamp (before disbursement)
     for employee in employees.iter() {
-        let entries = client.get_audit_trail(&employee, &None, &Some(disbursement_timestamp - 1), &Some(5));
+        let entries = client.get_audit_trail(
+            &employee,
+            &None,
+            &Some(disbursement_timestamp - 1),
+            &Some(5),
+        );
         assert_eq!(entries.len(), 0);
     }
-
 }
 
 #[test]
@@ -366,7 +389,14 @@ fn test_audit_trail_disburse_same_multiple() {
     let payroll_contract_balance = token_client.balance(&contract_id);
     assert_eq!(payroll_contract_balance, 50000);
 
-    client.create_or_update_escrow(&employer, &employee, &token_address, &(amount), &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &(amount),
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Perform disbursements for each employee
     let disbursement_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
@@ -388,13 +418,28 @@ fn test_audit_trail_disburse_same_multiple() {
         assert_eq!(employee_balance, amount * i as i128);
     }
 
-    let entries = client.get_audit_trail(&employee, &None, &Some(disbursement_timestamp * 10), &Some(5));
+    let entries = client.get_audit_trail(
+        &employee,
+        &None,
+        &Some(disbursement_timestamp * 10),
+        &Some(5),
+    );
     assert_eq!(entries.len(), 5);
 
-    let entries = client.get_audit_trail(&employee, &Some(disbursement_timestamp *3), &None, &Some(5));
+    let entries = client.get_audit_trail(
+        &employee,
+        &Some(disbursement_timestamp * 3),
+        &None,
+        &Some(5),
+    );
     assert_eq!(entries.len(), 5);
 
-    let entries = client.get_audit_trail(&employee, &Some(disbursement_timestamp *2), &Some(disbursement_timestamp * 10), &None);
+    let entries = client.get_audit_trail(
+        &employee,
+        &Some(disbursement_timestamp * 2),
+        &Some(disbursement_timestamp * 10),
+        &None,
+    );
     assert_eq!(entries.len(), 9);
 }
 
@@ -421,9 +466,30 @@ fn test_calculate_get_metrics() {
     client.deposit_tokens(&employer, &token_address, &50000i128);
 
     // Create escrow for employees
-    client.create_or_update_escrow(&employer, &employee1, &token_address, &amount, &interval, &recurrence_frequency);
-    client.create_or_update_escrow(&employer, &employee2, &token_address, &amount, &interval, &recurrence_frequency);
-    client.create_or_update_escrow(&employer, &employee3, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee1,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
+    client.create_or_update_escrow(
+        &employer,
+        &employee2,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
+    client.create_or_update_escrow(
+        &employer,
+        &employee3,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Set ledger timestamp for first day
     let day1_timestamp = 0u64; // Arbitrary start of day (2023-10-01 00:00:00 UTC)
@@ -481,11 +547,11 @@ fn test_calculate_get_metrics() {
     // Calculate average metrics over the two days
     // let metrics_opt = client.calculate_avg_metrics(&( day1_timestamp + recurrence_frequency + 1), &( day3_timestamp + recurrence_frequency + 1));
     let start = day1_timestamp + recurrence_frequency;
-    let metrics_opt = client.get_metrics(&Some(start), &Some(2678400*3), &Some(3));
+    let metrics_opt = client.get_metrics(&Some(start), &Some(2678400 * 3), &Some(3));
     log!(&env, "METRICS: {}", metrics_opt);
 
     // // Verify aggregated metrics
-    assert_eq!(metrics_opt.len(), 2); // two disbursement 
+    assert_eq!(metrics_opt.len(), 2); // two disbursement
 }
 
 #[test]
@@ -528,9 +594,30 @@ fn test_calculate_avg_metrics() {
     client.deposit_tokens(&employer, &token_address, &50000i128);
 
     // Create escrow for employees
-    client.create_or_update_escrow(&employer, &employee1, &token_address, &amount, &interval, &recurrence_frequency);
-    client.create_or_update_escrow(&employer, &employee2, &token_address, &amount, &interval, &recurrence_frequency);
-    client.create_or_update_escrow(&employer, &employee3, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee1,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
+    client.create_or_update_escrow(
+        &employer,
+        &employee2,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
+    client.create_or_update_escrow(
+        &employer,
+        &employee3,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Set ledger timestamp for first day
     let payday1 = initial_timestamp + recurrence_frequency; // Aligned to expected day
@@ -563,7 +650,7 @@ fn test_calculate_avg_metrics() {
     client.disburse_salary(&employer, &employee3);
 
     // Set ledger timestamp for second day
-    let payday2 = payday1 + recurrence_frequency ; 
+    let payday2 = payday1 + recurrence_frequency;
     env.ledger().set(LedgerInfo {
         timestamp: payday2,
         protocol_version: 22,
@@ -590,10 +677,15 @@ fn test_calculate_avg_metrics() {
     assert_eq!(metrics.total_amount, 5000); // 5000 per disbursement
     assert_eq!(metrics.operation_count, 5); // Four successful attempts (failed attempt not stored)
     assert_eq!(metrics.late_disbursements, 1); // 1 disbursements was late
-    assert_eq!(metrics.operation_type_counts.get(symbol_short!("disburses")).unwrap_or(0), 5); // Four disbursement attempts
+    assert_eq!(
+        metrics
+            .operation_type_counts
+            .get(symbol_short!("disburses"))
+            .unwrap_or(0),
+        5
+    ); // Four disbursement attempts
     assert_eq!(metrics.timestamp, end); // End timestamp
 }
-
 
 #[test]
 fn test_calculate_total_deposited_token() {
@@ -633,17 +725,39 @@ fn test_calculate_total_deposited_token() {
     client.deposit_tokens(&employer2, &token_address, &1200i128);
 
     // Create escrow for employees
-    client.create_or_update_escrow(&employer, &employee1, &token_address, &amount, &interval, &recurrence_frequency);
-    client.create_or_update_escrow(&employer, &employee2, &token_address, &amount, &interval, &recurrence_frequency);
-    client.create_or_update_escrow(&employer, &employee3, &token_address, &amount, &interval, &recurrence_frequency);
-
+    client.create_or_update_escrow(
+        &employer,
+        &employee1,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
+    client.create_or_update_escrow(
+        &employer,
+        &employee2,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
+    client.create_or_update_escrow(
+        &employer,
+        &employee3,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     let payday1 = initial_timestamp + recurrence_frequency + 1; // Aligned to expected day
-    // Set ledger timestamp for second day
-    let payday2 = payday1 + recurrence_frequency ; 
+                                                                // Set ledger timestamp for second day
+    let payday2 = payday1 + recurrence_frequency;
 
     let start = payday1;
     let end = payday2;
-    let total_deposited_token = client.calculate_total_deposited_token(&initial_timestamp, &end).unwrap();
+    let total_deposited_token = client
+        .calculate_total_deposited_token(&initial_timestamp, &end)
+        .unwrap();
     assert_eq!(total_deposited_token, 6200); // Three unique employees
 }

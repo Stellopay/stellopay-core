@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::payroll::{PayrollContractClient};
+use crate::payroll::PayrollContractClient;
 use soroban_sdk::token::{StellarAssetClient as TokenAdmin, TokenClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
@@ -33,7 +33,14 @@ fn test_create_escrow_with_recurrence() {
     env.mock_all_auths();
 
     client.initialize(&employer);
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     let payroll = client.get_payroll(&employee);
     assert!(payroll.is_some());
@@ -45,7 +52,10 @@ fn test_create_escrow_with_recurrence() {
     assert_eq!(payroll_data.interval, interval);
     assert_eq!(payroll_data.recurrence_frequency, recurrence_frequency);
     assert_eq!(payroll_data.last_payment_time, env.ledger().timestamp());
-    assert_eq!(payroll_data.next_payout_timestamp, env.ledger().timestamp() + recurrence_frequency);
+    assert_eq!(
+        payroll_data.next_payout_timestamp,
+        env.ledger().timestamp() + recurrence_frequency
+    );
 }
 
 #[test]
@@ -72,7 +82,14 @@ fn test_disburse_salary_with_recurrence() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow with recurrence
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Advance time beyond next payout timestamp
     let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
@@ -97,7 +114,10 @@ fn test_disburse_salary_with_recurrence() {
     // Verify timestamps were updated
     let payroll = client.get_payroll(&employee).unwrap();
     assert_eq!(payroll.last_payment_time, env.ledger().timestamp());
-    assert_eq!(payroll.next_payout_timestamp, env.ledger().timestamp() + recurrence_frequency);
+    assert_eq!(
+        payroll.next_payout_timestamp,
+        env.ledger().timestamp() + recurrence_frequency
+    );
 }
 
 #[test]
@@ -125,7 +145,14 @@ fn test_disburse_salary_before_next_payout_time() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow with recurrence
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Try to disburse before next payout time (should fail)
     client.disburse_salary(&employer, &employee);
@@ -148,7 +175,14 @@ fn test_is_eligible_for_disbursement() {
     env.mock_all_auths();
 
     client.initialize(&employer);
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Should not be eligible immediately after creation
     assert!(!client.is_eligible_for_disbursement(&employee));
@@ -195,8 +229,22 @@ fn test_process_recurring_disbursements() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrows for two employees
-    client.create_or_update_escrow(&employer, &employee1, &token_address, &amount, &interval, &recurrence_frequency);
-    client.create_or_update_escrow(&employer, &employee2, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee1,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
+    client.create_or_update_escrow(
+        &employer,
+        &employee2,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Advance time beyond next payout timestamp
     let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
@@ -243,7 +291,7 @@ fn test_process_recurring_disbursements_unauthorized() {
     client.initialize(&employer);
 
     let employees = Vec::new(&env);
-    
+
     // Try to process recurring disbursements with unauthorized user
     client.process_recurring_disbursements(&unauthorized, &employees);
 }
@@ -265,11 +313,21 @@ fn test_get_next_payout_timestamp() {
     env.mock_all_auths();
 
     client.initialize(&employer);
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     let next_payout = client.get_next_payout_timestamp(&employee);
     assert!(next_payout.is_some());
-    assert_eq!(next_payout.unwrap(), env.ledger().timestamp() + recurrence_frequency);
+    assert_eq!(
+        next_payout.unwrap(),
+        env.ledger().timestamp() + recurrence_frequency
+    );
 }
 
 #[test]
@@ -289,7 +347,14 @@ fn test_get_recurrence_frequency() {
     env.mock_all_auths();
 
     client.initialize(&employer);
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     let frequency = client.get_recurrence_frequency(&employee);
     assert!(frequency.is_some());
@@ -320,7 +385,14 @@ fn test_multiple_recurring_disbursements() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrow with recurrence
-    client.create_or_update_escrow(&employer, &employee, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     let token_client = TokenClient::new(&env, &token_address);
     let mut total_disbursed = 0;
@@ -367,17 +439,34 @@ fn test_update_escrow_with_recurrence() {
     env.mock_all_auths();
 
     client.initialize(&employer);
-    
+
     // Create initial escrow
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &initial_recurrence);
-    
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token,
+        &amount,
+        &interval,
+        &initial_recurrence,
+    );
+
     let initial_payroll = client.get_payroll(&employee).unwrap();
     assert_eq!(initial_payroll.recurrence_frequency, initial_recurrence);
 
     // Update escrow with new recurrence frequency
-    client.create_or_update_escrow(&employer, &employee, &token, &amount, &interval, &updated_recurrence);
-    
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token,
+        &amount,
+        &interval,
+        &updated_recurrence,
+    );
+
     let updated_payroll = client.get_payroll(&employee).unwrap();
     assert_eq!(updated_payroll.recurrence_frequency, updated_recurrence);
-    assert_eq!(updated_payroll.next_payout_timestamp, env.ledger().timestamp() + updated_recurrence);
-} 
+    assert_eq!(
+        updated_payroll.next_payout_timestamp,
+        env.ledger().timestamp() + updated_recurrence
+    );
+}
