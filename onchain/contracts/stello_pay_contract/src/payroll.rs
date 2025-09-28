@@ -36,7 +36,7 @@ use crate::storage::{
     SecurityAuditResult, SecurityPolicy, SecurityPolicyType, SecurityRule, SecurityRuleAction,
     SecurityRuleOperator, SecuritySettings, SuspiciousActivity, SuspiciousActivitySeverity,
     SuspiciousActivityType, TempRoleAssignment, TemplatePreset, UserRole, UserRoleAssignment,
-    UserRolesResponse, WorkflowApproval, WorkflowStatus,
+    UserRolesResponse, WorkflowApproval, WorkflowStatus, EmployeeTransfer, ComplianceStatus, ComplianceRecord
 };
 
 //-----------------------------------------------------------------------------
