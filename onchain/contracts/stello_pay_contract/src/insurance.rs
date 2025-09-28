@@ -1,7 +1,4 @@
-use soroban_sdk::{
-    contracttype, symbol_short, Address, Env, Symbol, Vec, 
-    contracterror, String
-};
+use soroban_sdk::{contracterror, contracttype, symbol_short, Address, Env, String, Symbol, Vec};
 
 //-----------------------------------------------------------------------------
 // Insurance Errors
@@ -51,18 +48,18 @@ pub struct InsurancePolicy {
     pub employee: Address,
     pub employer: Address,
     pub token: Address,
-    pub coverage_amount: i128,           // Maximum coverage amount
-    pub premium_rate: u32,               // Premium rate in basis points (1/10000)
-    pub premium_amount: i128,            // Calculated premium amount
-    pub start_timestamp: u64,            // When insurance coverage starts
-    pub end_timestamp: u64,              // When insurance coverage ends
-    pub is_active: bool,                 // Whether policy is active
-    pub risk_score: u32,                 // Risk assessment score (1-100)
-    pub claim_count: u32,                // Number of claims made
-    pub total_claims_paid: i128,         // Total amount paid in claims
-    pub last_premium_payment: u64,       // Last premium payment timestamp
-    pub next_premium_due: u64,           // Next premium due timestamp
-    pub premium_frequency: u64,          // Premium payment frequency in seconds
+    pub coverage_amount: i128,     // Maximum coverage amount
+    pub premium_rate: u32,         // Premium rate in basis points (1/10000)
+    pub premium_amount: i128,      // Calculated premium amount
+    pub start_timestamp: u64,      // When insurance coverage starts
+    pub end_timestamp: u64,        // When insurance coverage ends
+    pub is_active: bool,           // Whether policy is active
+    pub risk_score: u32,           // Risk assessment score (1-100)
+    pub claim_count: u32,          // Number of claims made
+    pub total_claims_paid: i128,   // Total amount paid in claims
+    pub last_premium_payment: u64, // Last premium payment timestamp
+    pub next_premium_due: u64,     // Next premium due timestamp
+    pub premium_frequency: u64,    // Premium payment frequency in seconds
 }
 
 #[contracttype]
@@ -73,13 +70,13 @@ pub struct InsuranceClaim {
     pub employer: Address,
     pub token: Address,
     pub claim_amount: i128,
-    pub claim_reason: String,            // Reason for claim
+    pub claim_reason: String, // Reason for claim
     pub claim_timestamp: u64,
     pub status: ClaimStatus,
     pub approved_amount: i128,
     pub approved_timestamp: Option<u64>,
     pub approved_by: Option<Address>,
-    pub evidence_hash: Option<String>,   // Hash of supporting evidence
+    pub evidence_hash: Option<String>, // Hash of supporting evidence
 }
 
 #[contracttype]
@@ -95,29 +92,29 @@ pub enum ClaimStatus {
 #[derive(Clone, Debug, PartialEq)]
 pub struct InsurancePool {
     pub token: Address,
-    pub total_funds: i128,               // Total funds in pool
-    pub available_funds: i128,           // Available funds for claims
-    pub reserved_funds: i128,            // Reserved for pending claims
-    pub total_premiums_collected: i128,  // Total premiums collected
-    pub total_claims_paid: i128,         // Total claims paid out
-    pub active_policies: u32,            // Number of active policies
-    pub risk_adjustment_factor: u32,     // Risk adjustment factor (1-200)
-    pub min_coverage_amount: i128,       // Minimum coverage amount
-    pub max_coverage_amount: i128,       // Maximum coverage amount
-    pub pool_fee_rate: u32,              // Pool management fee rate in basis points
+    pub total_funds: i128,              // Total funds in pool
+    pub available_funds: i128,          // Available funds for claims
+    pub reserved_funds: i128,           // Reserved for pending claims
+    pub total_premiums_collected: i128, // Total premiums collected
+    pub total_claims_paid: i128,        // Total claims paid out
+    pub active_policies: u32,           // Number of active policies
+    pub risk_adjustment_factor: u32,    // Risk adjustment factor (1-200)
+    pub min_coverage_amount: i128,      // Minimum coverage amount
+    pub max_coverage_amount: i128,      // Maximum coverage amount
+    pub pool_fee_rate: u32,             // Pool management fee rate in basis points
 }
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct GuaranteeFund {
     pub token: Address,
-    pub total_funds: i128,               // Total guarantee funds
-    pub available_funds: i128,           // Available guarantee funds
-    pub total_guarantees_issued: i128,   // Total guarantees issued
-    pub total_guarantees_repaid: i128,   // Total guarantees repaid
-    pub guarantee_fee_rate: u32,         // Guarantee fee rate in basis points
-    pub max_guarantee_amount: i128,      // Maximum guarantee amount per employer
-    pub min_guarantee_amount: i128,      // Minimum guarantee amount
+    pub total_funds: i128,             // Total guarantee funds
+    pub available_funds: i128,         // Available guarantee funds
+    pub total_guarantees_issued: i128, // Total guarantees issued
+    pub total_guarantees_repaid: i128, // Total guarantees repaid
+    pub guarantee_fee_rate: u32,       // Guarantee fee rate in basis points
+    pub max_guarantee_amount: i128,    // Maximum guarantee amount per employer
+    pub min_guarantee_amount: i128,    // Minimum guarantee amount
 }
 
 #[contracttype]
@@ -132,7 +129,7 @@ pub struct Guarantee {
     pub is_active: bool,
     pub is_repaid: bool,
     pub fee_amount: i128,
-    pub collateral_amount: i128,         // Collateral provided by employer
+    pub collateral_amount: i128, // Collateral provided by employer
 }
 
 //-----------------------------------------------------------------------------
@@ -156,30 +153,30 @@ pub const POOL_FUNDED: Symbol = symbol_short!("pool_fun");
 #[contracttype]
 pub enum InsuranceDataKey {
     // Insurance policies
-    InsurancePolicy(Address),            // employee -> InsurancePolicy
-    
+    InsurancePolicy(Address), // employee -> InsurancePolicy
+
     // Insurance claims
-    InsuranceClaim(u64),                 // claim_id -> InsuranceClaim
-    NextClaimId,                         // Next available claim ID
-    
+    InsuranceClaim(u64), // claim_id -> InsuranceClaim
+    NextClaimId,         // Next available claim ID
+
     // Insurance pools by token
-    InsurancePool(Address),              // token -> InsurancePool
-    
+    InsurancePool(Address), // token -> InsurancePool
+
     // Guarantee funds by token
-    GuaranteeFund(Address),              // token -> GuaranteeFund
-    
+    GuaranteeFund(Address), // token -> GuaranteeFund
+
     // Guarantees
-    Guarantee(u64),                      // guarantee_id -> Guarantee
-    NextGuaranteeId,                     // Next available guarantee ID
-    
+    Guarantee(u64),  // guarantee_id -> Guarantee
+    NextGuaranteeId, // Next available guarantee ID
+
     // Employer guarantees
-    EmployerGuarantees(Address),         // employer -> Vec<u64> (guarantee IDs)
-    
+    EmployerGuarantees(Address), // employer -> Vec<u64> (guarantee IDs)
+
     // Risk assessment data
-    RiskAssessment(Address),             // employee -> u32 (risk score)
-    
+    RiskAssessment(Address), // employee -> u32 (risk score)
+
     // Insurance settings
-    InsuranceSettings,                   // Global insurance settings
+    InsuranceSettings, // Global insurance settings
 }
 
 //-----------------------------------------------------------------------------
@@ -189,13 +186,13 @@ pub enum InsuranceDataKey {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct InsuranceSettings {
-    pub default_premium_rate: u32,       // Default premium rate in basis points
-    pub max_risk_score: u32,             // Maximum acceptable risk score
-    pub min_premium_frequency: u64,      // Minimum premium payment frequency
-    pub claim_processing_fee: u32,       // Fee for processing claims in basis points
-    pub max_claim_amount: i128,          // Maximum claim amount per policy
-    pub claim_approval_threshold: u32,   // Minimum approvals needed for large claims
-    pub insurance_enabled: bool,         // Whether insurance system is enabled
+    pub default_premium_rate: u32,  // Default premium rate in basis points
+    pub max_risk_score: u32,        // Maximum acceptable risk score
+    pub min_premium_frequency: u64, // Minimum premium payment frequency
+    pub claim_processing_fee: u32,  // Fee for processing claims in basis points
+    pub max_claim_amount: i128,     // Maximum claim amount per policy
+    pub claim_approval_threshold: u32, // Minimum approvals needed for large claims
+    pub insurance_enabled: bool,    // Whether insurance system is enabled
 }
 
 //-----------------------------------------------------------------------------
@@ -218,26 +215,27 @@ impl InsuranceSystem {
         if coverage_amount <= 0 {
             return Err(InsuranceError::InvalidPremiumCalculation);
         }
-        
+
         if premium_frequency == 0 {
             return Err(InsuranceError::InvalidPremiumCalculation);
         }
 
         let storage = env.storage().persistent();
         let current_time = env.ledger().timestamp();
-        
+
         // Get or create insurance pool
         let mut pool = Self::get_or_create_insurance_pool(env, token)?;
-        
+
         // Calculate risk score
         let risk_score = Self::calculate_risk_score(env, employee, employer)?;
-        
+
         // Calculate premium rate based on risk
         let premium_rate = Self::calculate_premium_rate(&pool, risk_score)?;
-        
+
         // Calculate premium amount
-        let premium_amount = Self::calculate_premium_amount(coverage_amount, premium_rate, premium_frequency)?;
-        
+        let premium_amount =
+            Self::calculate_premium_amount(coverage_amount, premium_rate, premium_frequency)?;
+
         // Get existing policy or create new one
         let mut policy = storage
             .get(&InsuranceDataKey::InsurancePolicy(employee.clone()))
@@ -270,8 +268,11 @@ impl InsuranceSystem {
         }
 
         // Store policy
-        storage.set(&InsuranceDataKey::InsurancePolicy(employee.clone()), &policy);
-        
+        storage.set(
+            &InsuranceDataKey::InsurancePolicy(employee.clone()),
+            &policy,
+        );
+
         // Update pool active policies count
         pool.active_policies += 1;
         storage.set(&InsuranceDataKey::InsurancePool(token.clone()), &pool);
@@ -279,7 +280,12 @@ impl InsuranceSystem {
         // Emit event
         env.events().publish(
             (INSURANCE_POLICY_CREATED,),
-            (employer.clone(), employee.clone(), coverage_amount, premium_amount),
+            (
+                employer.clone(),
+                employee.clone(),
+                coverage_amount,
+                premium_amount,
+            ),
         );
 
         Ok(policy)
@@ -320,13 +326,19 @@ impl InsuranceSystem {
         policy.is_active = true;
 
         // Store updated policy
-        storage.set(&InsuranceDataKey::InsurancePolicy(employee.clone()), &policy);
+        storage.set(
+            &InsuranceDataKey::InsurancePolicy(employee.clone()),
+            &policy,
+        );
 
         // Update insurance pool
         let mut pool = Self::get_insurance_pool(env, &policy.token)?;
         pool.total_premiums_collected += amount;
         pool.available_funds += amount;
-        storage.set(&InsuranceDataKey::InsurancePool(policy.token.clone()), &pool);
+        storage.set(
+            &InsuranceDataKey::InsurancePool(policy.token.clone()),
+            &pool,
+        );
 
         // Emit event
         env.events().publish(
@@ -368,9 +380,7 @@ impl InsuranceSystem {
         }
 
         // Get next claim ID
-        let claim_id = storage
-            .get(&InsuranceDataKey::NextClaimId)
-            .unwrap_or(1u64);
+        let claim_id = storage.get(&InsuranceDataKey::NextClaimId).unwrap_or(1u64);
 
         // Create claim
         let claim = InsuranceClaim {
@@ -395,7 +405,10 @@ impl InsuranceSystem {
         // Update policy claim count
         let mut updated_policy = policy.clone();
         updated_policy.claim_count += 1;
-        storage.set(&InsuranceDataKey::InsurancePolicy(employee.clone()), &updated_policy);
+        storage.set(
+            &InsuranceDataKey::InsurancePolicy(employee.clone()),
+            &updated_policy,
+        );
 
         // Emit event
         env.events().publish(
@@ -449,10 +462,7 @@ impl InsuranceSystem {
     }
 
     /// Pay out an approved claim
-    pub fn pay_claim(
-        env: &Env,
-        claim_id: u64,
-    ) -> Result<(), InsuranceError> {
+    pub fn pay_claim(env: &Env, claim_id: u64) -> Result<(), InsuranceError> {
         let storage = env.storage().persistent();
         let current_time = env.ledger().timestamp();
 
@@ -487,12 +497,20 @@ impl InsuranceSystem {
             .get(&InsuranceDataKey::InsurancePolicy(claim.employee.clone()))
             .ok_or(InsuranceError::InsuranceNotActive)?;
         policy.total_claims_paid += claim.approved_amount;
-        storage.set(&InsuranceDataKey::InsurancePolicy(claim.employee.clone()), &policy);
+        storage.set(
+            &InsuranceDataKey::InsurancePolicy(claim.employee.clone()),
+            &policy,
+        );
 
         // Emit event
         env.events().publish(
             (INSURANCE_CLAIM_PAID,),
-            (claim_id, claim.employee.clone(), claim.approved_amount, current_time),
+            (
+                claim_id,
+                claim.employee.clone(),
+                claim.approved_amount,
+                current_time,
+            ),
         );
 
         Ok(())
@@ -568,12 +586,20 @@ impl InsuranceSystem {
             .get(&InsuranceDataKey::EmployerGuarantees(employer.clone()))
             .unwrap_or(Vec::new(env));
         employer_guarantees.push_back(guarantee_id);
-        storage.set(&InsuranceDataKey::EmployerGuarantees(employer.clone()), &employer_guarantees);
+        storage.set(
+            &InsuranceDataKey::EmployerGuarantees(employer.clone()),
+            &employer_guarantees,
+        );
 
         // Emit event
         env.events().publish(
             (GUARANTEE_ISSUED,),
-            (employer.clone(), guarantee_id, guarantee_amount, current_time),
+            (
+                employer.clone(),
+                guarantee_id,
+                guarantee_amount,
+                current_time,
+            ),
         );
 
         Ok(guarantee_id)
@@ -616,12 +642,20 @@ impl InsuranceSystem {
         let mut fund = Self::get_guarantee_fund(env, &guarantee.token)?;
         fund.available_funds += guarantee.guarantee_amount;
         fund.total_guarantees_repaid += repayment_amount;
-        storage.set(&InsuranceDataKey::GuaranteeFund(guarantee.token.clone()), &fund);
+        storage.set(
+            &InsuranceDataKey::GuaranteeFund(guarantee.token.clone()),
+            &fund,
+        );
 
         // Emit event
         env.events().publish(
             (GUARANTEE_REPAID,),
-            (employer.clone(), guarantee_id, repayment_amount, current_time),
+            (
+                employer.clone(),
+                guarantee_id,
+                repayment_amount,
+                current_time,
+            ),
         );
 
         Ok(())
@@ -650,10 +684,8 @@ impl InsuranceSystem {
         storage.set(&InsuranceDataKey::InsurancePool(token.clone()), &pool);
 
         // Emit event
-        env.events().publish(
-            (POOL_FUNDED,),
-            (funder.clone(), amount, current_time),
-        );
+        env.events()
+            .publish((POOL_FUNDED,), (funder.clone(), amount, current_time));
 
         Ok(())
     }
@@ -668,7 +700,7 @@ impl InsuranceSystem {
         token: &Address,
     ) -> Result<InsurancePool, InsuranceError> {
         let storage = env.storage().persistent();
-        
+
         if let Some(pool) = storage.get(&InsuranceDataKey::InsurancePool(token.clone())) {
             Ok(pool)
         } else {
@@ -681,10 +713,10 @@ impl InsuranceSystem {
                 total_premiums_collected: 0,
                 total_claims_paid: 0,
                 active_policies: 0,
-                risk_adjustment_factor: 100, // 1.0x
-                min_coverage_amount: 1000,   // Minimum coverage
+                risk_adjustment_factor: 100,  // 1.0x
+                min_coverage_amount: 1000,    // Minimum coverage
                 max_coverage_amount: 1000000, // Maximum coverage
-                pool_fee_rate: 50,           // 0.5% pool fee
+                pool_fee_rate: 50,            // 0.5% pool fee
             };
             storage.set(&InsuranceDataKey::InsurancePool(token.clone()), &pool);
             Ok(pool)
@@ -692,10 +724,7 @@ impl InsuranceSystem {
     }
 
     /// Get insurance pool
-    fn get_insurance_pool(
-        env: &Env,
-        token: &Address,
-    ) -> Result<InsurancePool, InsuranceError> {
+    fn get_insurance_pool(env: &Env, token: &Address) -> Result<InsurancePool, InsuranceError> {
         let storage = env.storage().persistent();
         storage
             .get(&InsuranceDataKey::InsurancePool(token.clone()))
@@ -708,7 +737,7 @@ impl InsuranceSystem {
         token: &Address,
     ) -> Result<GuaranteeFund, InsuranceError> {
         let storage = env.storage().persistent();
-        
+
         if let Some(fund) = storage.get(&InsuranceDataKey::GuaranteeFund(token.clone())) {
             Ok(fund)
         } else {
@@ -719,7 +748,7 @@ impl InsuranceSystem {
                 available_funds: 0,
                 total_guarantees_issued: 0,
                 total_guarantees_repaid: 0,
-                guarantee_fee_rate: 100,     // 1% guarantee fee
+                guarantee_fee_rate: 100,      // 1% guarantee fee
                 max_guarantee_amount: 500000, // Maximum guarantee per employer
                 min_guarantee_amount: 1000,   // Minimum guarantee
             };
@@ -729,10 +758,7 @@ impl InsuranceSystem {
     }
 
     /// Get guarantee fund
-    fn get_guarantee_fund(
-        env: &Env,
-        token: &Address,
-    ) -> Result<GuaranteeFund, InsuranceError> {
+    fn get_guarantee_fund(env: &Env, token: &Address) -> Result<GuaranteeFund, InsuranceError> {
         let storage = env.storage().persistent();
         storage
             .get(&InsuranceDataKey::GuaranteeFund(token.clone()))
@@ -746,28 +772,34 @@ impl InsuranceSystem {
         employer: &Address,
     ) -> Result<u32, InsuranceError> {
         let storage = env.storage().persistent();
-        
+
         // Check if we have a cached risk assessment
-        if let Some(cached_score) = storage.get(&InsuranceDataKey::RiskAssessment(employee.clone())) {
+        if let Some(cached_score) = storage.get(&InsuranceDataKey::RiskAssessment(employee.clone()))
+        {
             return Ok(cached_score);
         }
 
         // Simple risk calculation based on employer and employee factors
         // In a real implementation, this would be more sophisticated
         let base_score = 50u32; // Base risk score
-        
+
         // Adjust based on employer factors (simplified)
         let employer_factor = 10u32; // Could be based on employer history
-        
+
         // Adjust based on employee factors (simplified)
         let employee_factor = 5u32; // Could be based on employee history
-        
-        let risk_score = base_score.saturating_add(employer_factor).saturating_add(employee_factor);
+
+        let risk_score = base_score
+            .saturating_add(employer_factor)
+            .saturating_add(employee_factor);
         let risk_score = risk_score.min(100); // Cap at 100
-        
+
         // Cache the risk score
-        storage.set(&InsuranceDataKey::RiskAssessment(employee.clone()), &risk_score);
-        
+        storage.set(
+            &InsuranceDataKey::RiskAssessment(employee.clone()),
+            &risk_score,
+        );
+
         Ok(risk_score)
     }
 
@@ -782,16 +814,18 @@ impl InsuranceSystem {
 
         // Base premium rate (0.5%)
         let base_rate = 50u32;
-        
+
         // Risk adjustment (higher risk = higher premium)
         let risk_adjustment = (risk_score as u32 * 2) / 100; // 0-2% additional
-        
+
         // Pool adjustment based on pool health
         let pool_health_factor = if pool.total_claims_paid > 0 {
             let claims_ratio = (pool.total_claims_paid * 10000) / pool.total_premiums_collected;
-            if claims_ratio > 8000 { // >80% claims ratio
+            if claims_ratio > 8000 {
+                // >80% claims ratio
                 50u32 // 0.5% additional
-            } else if claims_ratio > 6000 { // >60% claims ratio
+            } else if claims_ratio > 6000 {
+                // >60% claims ratio
                 25u32 // 0.25% additional
             } else {
                 0u32
@@ -800,8 +834,10 @@ impl InsuranceSystem {
             0u32
         };
 
-        let premium_rate = base_rate.saturating_add(risk_adjustment).saturating_add(pool_health_factor);
-        
+        let premium_rate = base_rate
+            .saturating_add(risk_adjustment)
+            .saturating_add(pool_health_factor);
+
         Ok(premium_rate)
     }
 
@@ -821,45 +857,33 @@ impl InsuranceSystem {
 
         // Calculate annual premium
         let annual_premium = (coverage_amount * premium_rate as i128) / 10000;
-        
+
         // Calculate periodic premium
         let periodic_premium = annual_premium / frequency_factor as i128;
-        
+
         Ok(periodic_premium)
     }
 
     /// Get insurance policy for an employee
-    pub fn get_insurance_policy(
-        env: &Env,
-        employee: &Address,
-    ) -> Option<InsurancePolicy> {
+    pub fn get_insurance_policy(env: &Env, employee: &Address) -> Option<InsurancePolicy> {
         let storage = env.storage().persistent();
         storage.get(&InsuranceDataKey::InsurancePolicy(employee.clone()))
     }
 
     /// Get insurance claim by ID
-    pub fn get_insurance_claim(
-        env: &Env,
-        claim_id: u64,
-    ) -> Option<InsuranceClaim> {
+    pub fn get_insurance_claim(env: &Env, claim_id: u64) -> Option<InsuranceClaim> {
         let storage = env.storage().persistent();
         storage.get(&InsuranceDataKey::InsuranceClaim(claim_id))
     }
 
     /// Get guarantee by ID
-    pub fn get_guarantee(
-        env: &Env,
-        guarantee_id: u64,
-    ) -> Option<Guarantee> {
+    pub fn get_guarantee(env: &Env, guarantee_id: u64) -> Option<Guarantee> {
         let storage = env.storage().persistent();
         storage.get(&InsuranceDataKey::Guarantee(guarantee_id))
     }
 
     /// Get employer guarantees
-    pub fn get_employer_guarantees(
-        env: &Env,
-        employer: &Address,
-    ) -> Vec<u64> {
+    pub fn get_employer_guarantees(env: &Env, employer: &Address) -> Vec<u64> {
         let storage = env.storage().persistent();
         storage
             .get(&InsuranceDataKey::EmployerGuarantees(employer.clone()))
@@ -872,13 +896,13 @@ impl InsuranceSystem {
         storage
             .get(&InsuranceDataKey::InsuranceSettings)
             .unwrap_or(InsuranceSettings {
-                default_premium_rate: 50,      // 0.5% default
-                max_risk_score: 100,           // Maximum risk score
-                min_premium_frequency: 86400,  // 1 day minimum
-                claim_processing_fee: 25,      // 0.25% processing fee
-                max_claim_amount: 100000,      // Maximum claim amount
-                claim_approval_threshold: 2,   // Minimum approvals needed
-                insurance_enabled: true,       // Insurance system enabled
+                default_premium_rate: 50,     // 0.5% default
+                max_risk_score: 100,          // Maximum risk score
+                min_premium_frequency: 86400, // 1 day minimum
+                claim_processing_fee: 25,     // 0.25% processing fee
+                max_claim_amount: 100000,     // Maximum claim amount
+                claim_approval_threshold: 2,  // Minimum approvals needed
+                insurance_enabled: true,      // Insurance system enabled
             })
     }
 
@@ -891,4 +915,4 @@ impl InsuranceSystem {
         storage.set(&InsuranceDataKey::InsuranceSettings, &settings);
         Ok(())
     }
-} 
+}

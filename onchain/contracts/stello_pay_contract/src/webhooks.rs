@@ -1,6 +1,4 @@
-use soroban_sdk::{
-    contracttype, Address, Env, String, Vec, Map
-};
+use soroban_sdk::{contracttype, Address, Env, Map, String, Vec};
 
 //-----------------------------------------------------------------------------
 // Webhook Event Types
@@ -216,11 +214,7 @@ impl WebhookSystem {
     }
 
     /// Delete a webhook
-    pub fn delete_webhook(
-        env: &Env,
-        owner: Address,
-        webhook_id: u64,
-    ) -> Result<(), WebhookError> {
+    pub fn delete_webhook(env: &Env, owner: Address, webhook_id: u64) -> Result<(), WebhookError> {
         owner.require_auth();
 
         let webhook = Self::get_webhook(env, webhook_id)?;
@@ -245,13 +239,14 @@ impl WebhookSystem {
         // Use a simple key pattern - in production, you'd want more sophisticated key generation
         let key = match webhook_id {
             1 => "webhook_1",
-            2 => "webhook_2", 
+            2 => "webhook_2",
             3 => "webhook_3",
             4 => "webhook_4",
             5 => "webhook_5",
             _ => "webhook_unknown", // Fallback for now
         };
-        storage.get(&String::from_str(env, key))
+        storage
+            .get(&String::from_str(env, key))
             .ok_or(WebhookError::WebhookNotFound)
     }
 
@@ -303,7 +298,8 @@ impl WebhookSystem {
             if let Ok(webhook) = Self::get_webhook(env, webhook_id) {
                 if webhook.is_active {
                     // Simulate webhook delivery (in real implementation, this would make HTTP requests)
-                    let result = Self::deliver_webhook(env, &webhook, &event_type, &event_data, &metadata);
+                    let result =
+                        Self::deliver_webhook(env, &webhook, &event_type, &event_data, &metadata);
                     results.push_back(result);
                 }
             }
@@ -348,7 +344,7 @@ impl WebhookSystem {
         let key = match webhook_id {
             1 => "webhook_1",
             2 => "webhook_2",
-            3 => "webhook_3", 
+            3 => "webhook_3",
             4 => "webhook_4",
             5 => "webhook_5",
             _ => "webhook_unknown", // Fallback for now
@@ -363,7 +359,7 @@ impl WebhookSystem {
             1 => "webhook_1",
             2 => "webhook_2",
             3 => "webhook_3",
-            4 => "webhook_4", 
+            4 => "webhook_4",
             5 => "webhook_5",
             _ => "webhook_unknown", // Fallback for now
         };
@@ -372,7 +368,8 @@ impl WebhookSystem {
 
     fn get_next_webhook_id(env: &Env) -> u64 {
         let storage = env.storage().persistent();
-        storage.get(&String::from_str(env, "next_webhook_id"))
+        storage
+            .get(&String::from_str(env, "next_webhook_id"))
             .unwrap_or(1)
     }
 
@@ -385,14 +382,15 @@ impl WebhookSystem {
         let storage = env.storage().persistent();
         // Simplified for now - use a single key for all owner webhooks
         let key = "owner_webhooks_all";
-        storage.get(&String::from_str(env, key))
+        storage
+            .get(&String::from_str(env, key))
             .unwrap_or(Vec::new(env))
     }
 
     fn add_owner_webhook(env: &Env, owner: &Address, webhook_id: u64) {
         let mut webhooks = Self::get_owner_webhooks(env, owner);
         webhooks.push_back(webhook_id);
-        
+
         let storage = env.storage().persistent();
         // Simplified for now - use a single key for all owner webhooks
         let key = "owner_webhooks_all";
@@ -401,7 +399,7 @@ impl WebhookSystem {
 
     fn remove_owner_webhook(env: &Env, owner: &Address, webhook_id: u64) {
         let mut webhooks = Self::get_owner_webhooks(env, owner);
-        
+
         // Remove webhook_id from the vector
         let mut new_webhooks = Vec::new(env);
         for id in webhooks.iter() {
@@ -409,7 +407,7 @@ impl WebhookSystem {
                 new_webhooks.push_back(id);
             }
         }
-        
+
         let storage = env.storage().persistent();
         // Simplified for now - use a single key for all owner webhooks
         let key = "owner_webhooks_all";
@@ -418,16 +416,18 @@ impl WebhookSystem {
 
     fn get_webhooks_for_event(env: &Env, event_type: &WebhookEventType) -> Vec<u64> {
         let mut webhooks = Vec::new(env);
-        
+
         // Simple implementation - check all webhooks
         for i in 1..=1000 {
             if let Ok(webhook) = Self::get_webhook(env, i) {
-                if webhook.events.contains(event_type) || webhook.events.contains(&WebhookEventType::All) {
+                if webhook.events.contains(event_type)
+                    || webhook.events.contains(&WebhookEventType::All)
+                {
                     webhooks.push_back(i);
                 }
             }
         }
-        
+
         webhooks
     }
 
@@ -440,12 +440,12 @@ impl WebhookSystem {
     ) -> DeliveryResult {
         // In a real implementation, this would make an HTTP request to the webhook URL
         // For now, we'll simulate a successful delivery
-        
+
         // Update webhook statistics
         let mut updated_webhook = webhook.clone();
         updated_webhook.success_count += 1;
         updated_webhook.updated_at = env.ledger().timestamp();
-        
+
         Self::store_webhook(env, webhook.id, &updated_webhook);
 
         DeliveryResult {

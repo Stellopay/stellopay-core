@@ -1,7 +1,10 @@
-use soroban_sdk::{testutils::{Address as _, Ledger, LedgerInfo}, Address, Env, Vec};
 use soroban_sdk::token::{StellarAssetClient as TokenAdmin, TokenClient};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger, LedgerInfo},
+    Address, Env, Vec,
+};
 
-use crate::payroll::{PayrollContractClient};
+use crate::payroll::PayrollContractClient;
 
 fn setup_token(env: &Env) -> (Address, TokenAdmin) {
     let token_admin = Address::generate(env);
@@ -17,7 +20,7 @@ fn test_pause_resume_employee_payroll_by_owner() {
     let env = Env::default();
     let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
-    
+
     let owner = Address::generate(&env);
     let employee = Address::generate(&env);
     let token = Address::generate(&env);
@@ -29,7 +32,14 @@ fn test_pause_resume_employee_payroll_by_owner() {
 
     // Initialize contract and create payroll
     client.initialize(&owner);
-    client.create_or_update_escrow(&owner, &employee, &token, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &owner,
+        &employee,
+        &token,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Default should be false
     client.resume_employee_payroll(&owner, &employee);
@@ -52,7 +62,7 @@ fn test_pause_resume_employee_payroll_by_employer() {
     let env = Env::default();
     let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
-    
+
     let owner = Address::generate(&env);
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
@@ -65,7 +75,14 @@ fn test_pause_resume_employee_payroll_by_employer() {
 
     // Initialize contract and create payroll
     client.initialize(&owner);
-    client.create_or_update_escrow(&owner, &employee, &token, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &owner,
+        &employee,
+        &token,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Transfer ownership to employer
     client.transfer_ownership(&owner, &employer);
@@ -81,14 +98,13 @@ fn test_pause_resume_employee_payroll_by_employer() {
     assert_eq!(payroll.is_paused, false);
 }
 
-
 #[test]
 #[should_panic(expected = "HostError: Error(Contract, #1)")]
 fn test_pause_employee_payroll_unauthorized() {
     let env = Env::default();
     let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
-    
+
     let owner = Address::generate(&env);
     let unauthorized = Address::generate(&env);
     let employee = Address::generate(&env);
@@ -101,7 +117,14 @@ fn test_pause_employee_payroll_unauthorized() {
 
     // Initialize contract and create payroll
     client.initialize(&owner);
-    client.create_or_update_escrow(&owner, &employee, &token, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &owner,
+        &employee,
+        &token,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     client.resume_employee_payroll(&unauthorized, &employee);
 }
@@ -112,7 +135,7 @@ fn test_resume_employee_payroll_unauthorized() {
     let env = Env::default();
     let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
-    
+
     let owner = Address::generate(&env);
     let unauthorized = Address::generate(&env);
     let employee = Address::generate(&env);
@@ -124,7 +147,14 @@ fn test_resume_employee_payroll_unauthorized() {
     env.mock_all_auths();
 
     client.initialize(&owner);
-    client.create_or_update_escrow(&owner, &employee, &token, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &owner,
+        &employee,
+        &token,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
     client.pause_employee_payroll(&owner, &employee);
 
     // Should fail when non-owner/non-employer tries to resume
@@ -137,7 +167,7 @@ fn test_pause_nonexistent_employee_payroll() {
     let env = Env::default();
     let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
-    
+
     let owner = Address::generate(&env);
     let employee = Address::generate(&env);
 
@@ -149,15 +179,13 @@ fn test_pause_nonexistent_employee_payroll() {
     client.pause_employee_payroll(&owner, &employee);
 }
 
-
-
 #[test]
 #[should_panic(expected = "HostError: Error(Contract, #7)")]
 fn test_pause_disburse_salary_paused_employee() {
     let env = Env::default();
     let contract_id = env.register(crate::payroll::PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
-    
+
     let owner = Address::generate(&env);
     let employee = Address::generate(&env);
     let token = Address::generate(&env);
@@ -168,13 +196,19 @@ fn test_pause_disburse_salary_paused_employee() {
     env.mock_all_auths();
 
     client.initialize(&owner);
-    client.create_or_update_escrow(&owner, &employee, &token, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &owner,
+        &employee,
+        &token,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
     client.pause_employee_payroll(&owner, &employee);
 
     // Should fail when trying to disburse to paused employee
     client.disburse_salary(&owner, &employee);
 }
-
 
 #[test]
 fn test_pause_resume_disburse_salary_success() {
@@ -246,8 +280,6 @@ fn test_pause_resume_disburse_salary_success() {
     assert_eq!(payroll.last_payment_time, env.ledger().timestamp());
 }
 
-
-
 #[test]
 #[should_panic(expected = "HostError: Error(Contract, #7)")]
 fn test_pause_disburse_salary_fail() {
@@ -317,7 +349,6 @@ fn test_pause_disburse_salary_fail() {
     assert_eq!(payroll.last_payment_time, env.ledger().timestamp());
 }
 
-
 #[test]
 fn test_pause_process_recurring_disbursements() {
     let env = Env::default();
@@ -343,8 +374,22 @@ fn test_pause_process_recurring_disbursements() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrows for two employees
-    client.create_or_update_escrow(&employer, &employee1, &token_address, &amount, &interval, &recurrence_frequency);
-    client.create_or_update_escrow(&employer, &employee2, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee1,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
+    client.create_or_update_escrow(
+        &employer,
+        &employee2,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Advance time beyond next payout timestamp
     let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;
@@ -378,7 +423,6 @@ fn test_pause_process_recurring_disbursements() {
     assert_eq!(employee2_balance, amount);
 }
 
-
 #[test]
 fn test_pause_resume_process_recurring_disbursements() {
     let env = Env::default();
@@ -404,8 +448,22 @@ fn test_pause_resume_process_recurring_disbursements() {
     client.deposit_tokens(&employer, &token_address, &5000i128);
 
     // Create escrows for two employees
-    client.create_or_update_escrow(&employer, &employee1, &token_address, &amount, &interval, &recurrence_frequency);
-    client.create_or_update_escrow(&employer, &employee2, &token_address, &amount, &interval, &recurrence_frequency);
+    client.create_or_update_escrow(
+        &employer,
+        &employee1,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
+    client.create_or_update_escrow(
+        &employer,
+        &employee2,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
 
     // Advance time beyond next payout timestamp
     let next_timestamp = env.ledger().timestamp() + recurrence_frequency + 1;

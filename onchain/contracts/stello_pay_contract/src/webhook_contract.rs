@@ -1,6 +1,6 @@
-use soroban_sdk::{contract, contractimpl, Address, Env, String, Map, Vec};
+use soroban_sdk::{contract, contractimpl, Address, Env, Map, String, Vec};
 
-use crate::webhooks::{WebhookSystem, WebhookRegistration, WebhookUpdate, WebhookEventType};
+use crate::webhooks::{WebhookEventType, WebhookRegistration, WebhookSystem, WebhookUpdate};
 
 #[contract]
 pub struct WebhookContract;

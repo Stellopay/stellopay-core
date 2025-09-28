@@ -1,12 +1,11 @@
 #![cfg(test)]
 
+use crate::events::{PAUSED_EVENT, UNPAUSED_EVENT};
+use crate::payroll::{PayrollContract, PayrollContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Events},
     Address, Env, Symbol, TryFromVal,
 };
-use crate::payroll::{PayrollContract, PayrollContractClient};
-use crate::events::{PAUSED_EVENT, UNPAUSED_EVENT};
-
 
 // Helper to setup env + contract
 fn setup() -> (Env, Address, Address, PayrollContractClient<'static>) {
@@ -115,8 +114,8 @@ fn unpause_emits_event() {
     let (env, owner, _attacker, client) = setup();
     env.mock_all_auths();
     client.initialize(&owner);
-    client.pause(&owner);    // First pause to set state
-    client.unpause(&owner);  // Then unpause
+    client.pause(&owner); // First pause to set state
+    client.unpause(&owner); // Then unpause
 
     let events = env.events().all();
     let has_unpaused = events.iter().any(|e| {
