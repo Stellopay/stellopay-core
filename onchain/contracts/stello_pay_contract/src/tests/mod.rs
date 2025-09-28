@@ -9,4 +9,5 @@ mod test_payroll_history_and_audittrail;
 mod test_recurring_payments;
 mod test_security;
 mod test_webhooks_simple;
+mod test_templates;
 mod test_webhooks_standalone;
