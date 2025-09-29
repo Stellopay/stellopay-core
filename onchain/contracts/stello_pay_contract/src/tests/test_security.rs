@@ -130,3 +130,35 @@ fn unpause_emits_event() {
 
     assert!(has_unpaused, "Unpaused event not emitted");
 }
+
+// Additional security edge case tests
+
+// Note: pause/unpause functions don't check current state, they just set the state
+// So pausing when already paused or unpausing when not paused is allowed
+
+#[test]
+fn test_ownership_transfer_to_same_address() {
+    let (env, owner, _attacker, client) = setup();
+    env.mock_all_auths();
+    client.initialize(&owner);
+    
+    // Transfer ownership to same address
+    client.transfer_ownership(&owner, &owner);
+    
+    // Should still be the owner
+    assert_eq!(client.get_owner(), Some(owner));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract")]
+fn test_operations_after_ownership_transfer() {
+    let (env, owner, new_owner, client) = setup();
+    env.mock_all_auths();
+    client.initialize(&owner);
+    
+    // Transfer ownership
+    client.transfer_ownership(&owner, &new_owner);
+    
+    // Old owner should not be able to pause
+    client.pause(&owner);
+}

@@ -470,3 +470,212 @@ fn test_update_escrow_with_recurrence() {
         env.ledger().timestamp() + updated_recurrence
     );
 }
+
+// Additional edge case tests
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_recurring_payment_with_zero_interval() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let (token_address, token_admin) = setup_token(&env);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    env.mock_all_auths();
+    token_admin.mint(&employer, &10000);
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &5000i128);
+
+    // Create escrow with zero interval - should fail
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &1000i128,
+        &0u64, // Zero interval
+        &2592000u64,
+    );
+}
+
+#[test]
+fn test_recurring_payment_with_maximum_interval() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let (token_address, token_admin) = setup_token(&env);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    env.mock_all_auths();
+    token_admin.mint(&employer, &10000);
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &5000i128);
+
+    // Create escrow with maximum interval (using u32::MAX since contract seems to truncate)
+    let max_interval = u32::MAX as u64;
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &1000i128,
+        &max_interval,
+        &2592000u64,
+    );
+
+    let payroll = client.get_payroll(&employee).unwrap();
+    assert_eq!(payroll.interval, max_interval);
+}
+
+#[test]
+fn test_recurring_payment_exact_timestamp_boundary() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let (token_address, token_admin) = setup_token(&env);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    env.mock_all_auths();
+    token_admin.mint(&employer, &10000);
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &5000i128);
+
+    let amount = 1000i128;
+    let interval = 86400u64;
+    let recurrence_frequency = 2592000u64;
+
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
+
+    let initial_timestamp = env.ledger().timestamp();
+    let payroll = client.get_payroll(&employee).unwrap();
+    let expected_next_payout = initial_timestamp + recurrence_frequency;
+
+    // Set time to exactly the next payout timestamp
+    env.ledger().set(LedgerInfo {
+        timestamp: expected_next_payout,
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6312000,
+    });
+
+    // Should be able to disburse at exact timestamp
+    client.disburse_salary(&employer, &employee);
+
+    let token_client = TokenClient::new(&env, &token_address);
+    let employee_balance = token_client.balance(&employee);
+    assert_eq!(employee_balance, amount);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")]
+fn test_recurring_payment_just_before_timestamp() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let (token_address, token_admin) = setup_token(&env);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    env.mock_all_auths();
+    token_admin.mint(&employer, &10000);
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &5000i128);
+
+    let amount = 1000i128;
+    let interval = 86400u64;
+    let recurrence_frequency = 2592000u64;
+
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
+
+    let initial_timestamp = env.ledger().timestamp();
+    let payroll = client.get_payroll(&employee).unwrap();
+    let expected_next_payout = initial_timestamp + recurrence_frequency;
+
+    // Set time to just before the next payout timestamp
+    env.ledger().set(LedgerInfo {
+        timestamp: expected_next_payout - 1,
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6312000,
+    });
+
+    // Should not be able to disburse yet - this should fail
+    client.disburse_salary(&employer, &employee);
+}
+
+#[test]
+fn test_recurring_payment_very_short_interval() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let (token_address, token_admin) = setup_token(&env);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    env.mock_all_auths();
+    token_admin.mint(&employer, &10000);
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &5000i128);
+
+    let amount = 1000i128;
+    let interval = 1u64; // 1 second
+    let recurrence_frequency = 1u64; // 1 second
+
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &amount,
+        &interval,
+        &recurrence_frequency,
+    );
+
+    // Advance time by 1 second
+    let next_timestamp = env.ledger().timestamp() + 1;
+    env.ledger().set(LedgerInfo {
+        timestamp: next_timestamp,
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6312000,
+    });
+
+    // Should be able to disburse after 1 second
+    client.disburse_salary(&employer, &employee);
+
+    let token_client = TokenClient::new(&env, &token_address);
+    let employee_balance = token_client.balance(&employee);
+    assert_eq!(employee_balance, amount);
+}

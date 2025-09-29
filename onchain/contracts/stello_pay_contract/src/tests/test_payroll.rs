@@ -776,3 +776,133 @@ fn test_disburse_salary_emit_event() {
         salary_data_map
     );
 }
+
+// Additional edge case tests
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_disburse_salary_nonexistent_employee() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+
+    let employer = Address::generate(&env);
+    let nonexistent_employee = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&employer);
+    
+    // Try to disburse salary for non-existent employee
+    client.disburse_salary(&employer, &nonexistent_employee);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #4)")]
+fn test_employee_withdraw_nonexistent_employee() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+
+    let nonexistent_employee = Address::generate(&env);
+
+    env.mock_all_auths();
+    
+    // Try to withdraw for non-existent employee
+    client.employee_withdraw(&nonexistent_employee);
+}
+
+#[test]
+fn test_get_balance_nonexistent_employer() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+
+    let nonexistent_employer = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    env.mock_all_auths();
+    
+    // Should return 0 for non-existent employer
+    let balance = client.get_employer_balance(&nonexistent_employer, &token);
+    assert_eq!(balance, 0);
+}
+
+#[test]
+fn test_get_balance_nonexistent_token() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+
+    let employer = Address::generate(&env);
+    let nonexistent_token = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&employer);
+    
+    // Should return 0 for non-existent token
+    let balance = client.get_employer_balance(&employer, &nonexistent_token);
+    assert_eq!(balance, 0);
+}
+
+#[test]
+fn test_very_small_amounts() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Test with very small amount (1 unit)
+    let tiny_amount = 1i128;
+    let interval = 86400u64;
+    let recurrence_frequency = 2592000u64;
+
+    env.mock_all_auths();
+    client.initialize(&employer);
+    
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token,
+        &tiny_amount,
+        &interval,
+        &recurrence_frequency,
+    );
+
+    let payroll = client.get_payroll(&employee).unwrap();
+    assert_eq!(payroll.amount, tiny_amount);
+}
+
+#[test]
+fn test_very_short_intervals() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Test with very short interval (1 second)
+    let amount = 1000i128;
+    let short_interval = 1u64;
+    let recurrence_frequency = 60u64; // 1 minute
+
+    env.mock_all_auths();
+    client.initialize(&employer);
+    
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token,
+        &amount,
+        &short_interval,
+        &recurrence_frequency,
+    );
+
+    let payroll = client.get_payroll(&employee).unwrap();
+    assert_eq!(payroll.interval, short_interval);
+    assert_eq!(payroll.recurrence_frequency, recurrence_frequency);
+}

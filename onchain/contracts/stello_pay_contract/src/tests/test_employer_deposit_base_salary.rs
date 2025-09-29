@@ -501,4 +501,173 @@ mod tests {
         // Should fail due to insufficient balance
         client.employee_withdraw(&employee);
     }
+
+    // Additional edge case tests
+
+    #[test]
+    #[should_panic]
+    fn test_deposit_insufficient_balance() {
+        let (env, _, client) = create_test_contract();
+        let (token_address, token_admin) = setup_token(&env);
+        let employer = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.initialize(&employer);
+
+        // Mint only 100 tokens but try to deposit 1000
+        token_admin.mint(&employer, &100);
+        client.deposit_tokens(&employer, &token_address, &1000i128);
+    }
+
+    #[test]
+    fn test_deposit_maximum_amount() {
+        let (env, _, client) = create_test_contract();
+        let (token_address, token_admin) = setup_token(&env);
+        let employer = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.initialize(&employer);
+
+        // Test with maximum i128 value
+        let max_amount = i128::MAX;
+        token_admin.mint(&employer, &max_amount);
+        client.deposit_tokens(&employer, &token_address, &max_amount);
+
+        let balance = client.get_employer_balance(&employer, &token_address);
+        assert_eq!(balance, max_amount);
+    }
+
+    #[test]
+    fn test_deposit_minimum_amount() {
+        let (env, _, client) = create_test_contract();
+        let (token_address, token_admin) = setup_token(&env);
+        let employer = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.initialize(&employer);
+
+        // Test with minimum valid amount (1)
+        let min_amount = 1i128;
+        token_admin.mint(&employer, &min_amount);
+        client.deposit_tokens(&employer, &token_address, &min_amount);
+
+        let balance = client.get_employer_balance(&employer, &token_address);
+        assert_eq!(balance, min_amount);
+    }
+
+    #[test]
+    fn test_deposit_unauthorized() {
+        let (env, _, client) = create_test_contract();
+        let (token_address, token_admin) = setup_token(&env);
+        let employer = Address::generate(&env);
+        let unauthorized = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.initialize(&employer);
+
+        // Fund the unauthorized user
+        token_admin.mint(&unauthorized, &10000);
+
+        // Try to deposit as unauthorized user - this should work since deposit_tokens doesn't check authorization
+        client.deposit_tokens(&unauthorized, &token_address, &1000i128);
+        
+        // Verify the deposit worked
+        let balance = client.get_employer_balance(&unauthorized, &token_address);
+        assert_eq!(balance, 1000);
+    }
+
+    #[test]
+    fn test_multiple_deposits_same_employer() {
+        let (env, _, client) = create_test_contract();
+        let (token_address, token_admin) = setup_token(&env);
+        let employer = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.initialize(&employer);
+
+        // Fund the employer
+        token_admin.mint(&employer, &10000);
+
+        // Make multiple deposits
+        client.deposit_tokens(&employer, &token_address, &1000i128);
+        client.deposit_tokens(&employer, &token_address, &2000i128);
+        client.deposit_tokens(&employer, &token_address, &500i128);
+
+        let balance = client.get_employer_balance(&employer, &token_address);
+        assert_eq!(balance, 3500);
+    }
+
+    #[test]
+    fn test_deposit_different_tokens() {
+        let (env, _, client) = create_test_contract();
+        let (token1_address, token1_admin) = setup_token(&env);
+        let (token2_address, token2_admin) = setup_token(&env);
+        let employer = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.initialize(&employer);
+
+        // Fund the employer with both tokens
+        token1_admin.mint(&employer, &5000);
+        token2_admin.mint(&employer, &3000);
+
+        // Deposit different amounts for different tokens
+        client.deposit_tokens(&employer, &token1_address, &2000i128);
+        client.deposit_tokens(&employer, &token2_address, &1500i128);
+
+        let balance1 = client.get_employer_balance(&employer, &token1_address);
+        let balance2 = client.get_employer_balance(&employer, &token2_address);
+
+        assert_eq!(balance1, 2000);
+        assert_eq!(balance2, 1500);
+    }
+
+    #[test]
+    fn test_disburse_exact_balance() {
+        let (env, _, client) = create_test_contract();
+        let (token_address, token_admin) = setup_token(&env);
+        let employer = Address::generate(&env);
+        let employee = Address::generate(&env);
+
+        env.mock_all_auths();
+        client.initialize(&employer);
+
+        // Deposit exactly the amount needed for one payment
+        let amount = 1000i128;
+        token_admin.mint(&employer, &amount);
+        client.deposit_tokens(&employer, &token_address, &amount);
+
+        client.create_or_update_escrow(
+            &employer,
+            &employee,
+            &token_address,
+            &amount,
+            &86400u64,
+            &2592000u64,
+        );
+
+        // Advance time
+        let next_timestamp = env.ledger().timestamp() + 2592000u64 + 1;
+        env.ledger().set(LedgerInfo {
+            timestamp: next_timestamp,
+            protocol_version: 22,
+            sequence_number: env.ledger().sequence(),
+            network_id: Default::default(),
+            base_reserve: 0,
+            min_persistent_entry_ttl: 4096,
+            min_temp_entry_ttl: 16,
+            max_entry_ttl: 6312000,
+        });
+
+        client.disburse_salary(&employer, &employee);
+
+        // Verify balance is now 0
+        let balance = client.get_employer_balance(&employer, &token_address);
+        assert_eq!(balance, 0);
+
+        // Verify employee received the tokens
+        let token_client = TokenClient::new(&env, &token_address);
+        let employee_balance = token_client.balance(&employee);
+        assert_eq!(employee_balance, amount);
+    }
 }
