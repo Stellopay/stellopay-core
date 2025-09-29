@@ -498,3 +498,231 @@ fn test_pause_resume_process_recurring_disbursements() {
     assert_eq!(employee1_balance, amount);
     assert_eq!(employee2_balance, amount);
 }
+
+// Additional edge case tests
+
+#[test]
+fn test_pause_already_paused_employee() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let (token_address, token_admin) = setup_token(&env);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    env.mock_all_auths();
+    token_admin.mint(&employer, &10000);
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &5000i128);
+
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &1000i128,
+        &86400u64,
+        &2592000u64,
+    );
+
+    // Pause employee twice - should not fail
+    client.pause_employee_payroll(&employer, &employee);
+    client.pause_employee_payroll(&employer, &employee);
+
+    // Verify employee is still paused
+    let payroll = client.get_payroll(&employee).unwrap();
+    assert!(payroll.is_paused);
+}
+
+#[test]
+fn test_resume_not_paused_employee() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let (token_address, token_admin) = setup_token(&env);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    env.mock_all_auths();
+    token_admin.mint(&employer, &10000);
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &5000i128);
+
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &1000i128,
+        &86400u64,
+        &2592000u64,
+    );
+
+    // Resume employee that's not paused - should not fail
+    client.resume_employee_payroll(&employer, &employee);
+
+    // Verify employee is not paused
+    let payroll = client.get_payroll(&employee).unwrap();
+    assert!(!payroll.is_paused);
+}
+
+#[test]
+fn test_pause_resume_cycle_multiple_times() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let (token_address, token_admin) = setup_token(&env);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    env.mock_all_auths();
+    token_admin.mint(&employer, &10000);
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &5000i128);
+
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &1000i128,
+        &86400u64,
+        &2592000u64,
+    );
+
+    // Multiple pause/resume cycles
+    for _ in 0..5 {
+        client.pause_employee_payroll(&employer, &employee);
+        let payroll = client.get_payroll(&employee).unwrap();
+        assert!(payroll.is_paused);
+
+        client.resume_employee_payroll(&employer, &employee);
+        let payroll = client.get_payroll(&employee).unwrap();
+        assert!(!payroll.is_paused);
+    }
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #3)")]
+fn test_pause_employee_with_zero_balance() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let (token_address, token_admin) = setup_token(&env);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    env.mock_all_auths();
+    token_admin.mint(&employer, &10000);
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &5000i128);
+
+    // Zero amount should fail
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &0i128, // Zero amount
+        &86400u64,
+        &2592000u64,
+    );
+}
+
+#[test]
+fn test_pause_employee_after_disbursement() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let (token_address, token_admin) = setup_token(&env);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    env.mock_all_auths();
+    token_admin.mint(&employer, &10000);
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &5000i128);
+
+    client.create_or_update_escrow(
+        &employer,
+        &employee,
+        &token_address,
+        &1000i128,
+        &86400u64,
+        &2592000u64,
+    );
+
+    // Advance time and disburse
+    let next_timestamp = env.ledger().timestamp() + 2592000u64 + 1;
+    env.ledger().set(LedgerInfo {
+        timestamp: next_timestamp,
+        protocol_version: 22,
+        sequence_number: env.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 0,
+        min_persistent_entry_ttl: 4096,
+        min_temp_entry_ttl: 16,
+        max_entry_ttl: 6312000,
+    });
+
+    client.disburse_salary(&employer, &employee);
+
+    // Pause after disbursement
+    client.pause_employee_payroll(&employer, &employee);
+
+    let payroll = client.get_payroll(&employee).unwrap();
+    assert!(payroll.is_paused);
+}
+
+#[test]
+fn test_pause_multiple_employees_same_employer() {
+    let env = Env::default();
+    let contract_id = env.register(crate::payroll::PayrollContract, ());
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let (token_address, token_admin) = setup_token(&env);
+
+    let employer = Address::generate(&env);
+    let employee1 = Address::generate(&env);
+    let employee2 = Address::generate(&env);
+    let employee3 = Address::generate(&env);
+
+    env.mock_all_auths();
+    token_admin.mint(&employer, &10000);
+    client.initialize(&employer);
+    client.deposit_tokens(&employer, &token_address, &5000i128);
+
+    // Create escrows for all employees
+    for employee in [&employee1, &employee2, &employee3] {
+        client.create_or_update_escrow(
+            &employer,
+            employee,
+            &token_address,
+            &1000i128,
+            &86400u64,
+            &2592000u64,
+        );
+    }
+
+    // Pause all employees
+    client.pause_employee_payroll(&employer, &employee1);
+    client.pause_employee_payroll(&employer, &employee2);
+    client.pause_employee_payroll(&employer, &employee3);
+
+    // Verify all are paused
+    for employee in [&employee1, &employee2, &employee3] {
+        let payroll = client.get_payroll(employee).unwrap();
+        assert!(payroll.is_paused);
+    }
+
+    // Resume all employees
+    client.resume_employee_payroll(&employer, &employee1);
+    client.resume_employee_payroll(&employer, &employee2);
+    client.resume_employee_payroll(&employer, &employee3);
+
+    // Verify all are resumed
+    for employee in [&employee1, &employee2, &employee3] {
+        let payroll = client.get_payroll(employee).unwrap();
+        assert!(!payroll.is_paused);
+    }
+}
