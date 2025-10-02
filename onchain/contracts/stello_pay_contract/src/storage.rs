@@ -20,6 +20,67 @@ pub struct Payroll {
     pub is_paused: bool,
 }
 
+// -----------------------------------------------------------------------------
+// Multi-currency hedging & taxation data structures (top-level)
+// -----------------------------------------------------------------------------
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HedgeSettings {
+    pub enabled: bool,
+    pub target_coverage_bps: u32, // e.g., 5000 = 50%
+    pub max_tenor_days: u32,
+    pub rebalance_threshold_bps: u32,
+    pub last_updated: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum HedgeSide {
+    Buy,
+    Sell,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HedgingPosition {
+    pub id: u64,
+    pub employer: Address,
+    pub base_token: Address,
+    pub quote_token: Address,
+    pub side: HedgeSide,
+    pub notional: i128,
+    pub opened_at: u64,
+    pub expires_at: Option<u64>,
+    pub is_open: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaxBracket {
+    pub up_to: i128,
+    pub rate_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaxConfig {
+    pub jurisdiction: crate::compliance::Jurisdiction,
+    pub brackets: Vec<TaxBracket>,
+    pub flat_withholding_bps: u32,
+    pub allowance: i128,
+    pub last_updated: u64,
+}
+
+#[contracttype]
+pub enum FxExtendedKey {
+    EmployerHedgeSettings(Address),
+    HedgePosition(u64),
+    NextHedgeId,
+    EmployerHedges(Address),
+    TaxConfig(crate::compliance::Jurisdiction),
+}
+
 /// Input structure for batch payroll creation
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -794,6 +855,41 @@ pub enum DataKey {
 
     // Security - MINIMAL SET
     SecuritySettings, // Global security settings
+
+    // -----------------------------
+    // Multi-currency & FX (used by token_swap.rs)
+    // -----------------------------
+    /// Token pair configuration key. Uses a deterministic Address key derived by TokenSwapSystem
+    TokenPair(Address),
+    /// Conversion rate for a token pair. Key must match TokenPair(Address)
+    ConversionRate(Address),
+    /// Global swap fee configuration
+    SwapFee,
+    /// Swap request/result/history
+    SwapRequest(String),
+    SwapResult(String),
+    SwapHistoryEntry(String),
+    SwapHistoryIndex(Address),
+    /// Global token swap settings
+    TokenSwapSettings,
+
+    // -----------------------------
+    // International Compliance & Reporting (used by compliance.rs)
+    // -----------------------------
+    /// Global compliance settings
+    ComplianceSettings,
+    /// Metrics per jurisdiction
+    ComplianceMetrics(crate::compliance::Jurisdiction),
+    /// Jurisdiction configuration
+    JurisdictionConfig(crate::compliance::Jurisdiction),
+    /// Audit trail storage
+    AuditEntry(String),
+    AuditIndex(Address),
+    /// Regulatory report storage
+    RegulatoryReport(String),
+
+    // Employee region/jurisdiction mapping
+    EmployeeJurisdiction(Address),
 }
 
 // Extended functionality keys - separate enum to avoid size limits
@@ -1034,68 +1130,7 @@ impl LifecycleStorage {
     const COMPLIANCE_PREFIX: &'static str = "lc_comply_";
     const COUNTER_PREFIX: &'static str = "lc_counter_";
 
-    /// Store employee profile using existing Employee key
-    pub fn store_profile(env: &Env, employee: &Address, profile: &EmployeeProfile) {
-        // Use the employee address directly as the key for profiles
-        env.storage()
-            .persistent()
-            .set(&DataKey::Employee(employee.clone()), profile);
-    }
-
-    /// Get employee profile
-    pub fn get_profile(env: &Env, employee: &Address) -> Option<EmployeeProfile> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Employee(employee.clone()))
-    }
-
-    /// Store onboarding workflow using Template key with offset
-    pub fn store_onboarding(env: &Env, workflow_id: u64, workflow: &OnboardingWorkflow) {
-        let offset_id = workflow_id + 1000000; // Simple offset to avoid conflicts
-        env.storage()
-            .persistent()
-            .set(&ExtendedDataKey::Template(offset_id), workflow);
-    }
-
-    /// Get onboarding workflow
-    pub fn get_onboarding(env: &Env, workflow_id: u64) -> Option<OnboardingWorkflow> {
-        let offset_id = workflow_id + 1000000;
-        env.storage()
-            .persistent()
-            .get(&ExtendedDataKey::Template(offset_id))
-    }
-
-    /// Store offboarding workflow using Preset key with offset
-    pub fn store_offboarding(env: &Env, workflow_id: u64, workflow: &OffboardingWorkflow) {
-        let offset_id = workflow_id + 2000000; // Different offset for offboarding
-        env.storage()
-            .persistent()
-            .set(&ExtendedDataKey::Preset(offset_id), workflow);
-    }
-
-    /// Get offboarding workflow
-    pub fn get_offboarding(env: &Env, workflow_id: u64) -> Option<OffboardingWorkflow> {
-        let offset_id = workflow_id + 2000000;
-        env.storage()
-            .persistent()
-            .get(&ExtendedDataKey::Preset(offset_id))
-    }
-
-    /// Store employee transfer using Backup key with offset
-    pub fn store_transfer(env: &Env, transfer_id: u64, transfer: &EmployeeTransfer) {
-        let offset_id = transfer_id + 3000000; // Different offset for transfers
-        env.storage()
-            .persistent()
-            .set(&ExtendedDataKey::Backup(offset_id), transfer);
-    }
-
-    /// Get employee transfer
-    pub fn get_transfer(env: &Env, transfer_id: u64) -> Option<EmployeeTransfer> {
-        let offset_id = transfer_id + 3000000;
-        env.storage()
-            .persistent()
-            .get(&ExtendedDataKey::Backup(offset_id))
-    }
+    // methods continue below
 
     /// Store compliance record using AuditTrail key
     pub fn store_compliance(

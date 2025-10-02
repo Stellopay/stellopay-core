@@ -72,6 +72,15 @@ pub const COMPLIANCE_UPDATED: Symbol = symbol_short!("cmp_upd");
 pub const WORKFLOW_APPROVED: Symbol = symbol_short!("wf_app");
 pub const TASK_COMPLETED: Symbol = symbol_short!("tsk_cmp");
 
+// Currency/FX and International Payroll Events
+pub const FX_RATE_UPDATED: Symbol = symbol_short!("fx_upd");
+pub const TAX_WITHHELD: Symbol = symbol_short!("tax_wh");
+pub const CROSS_BORDER_INITIATED: Symbol = symbol_short!("cb_init");
+pub const CROSS_BORDER_COMPLETED: Symbol = symbol_short!("cb_comp");
+pub const HEDGE_OPENED: Symbol = symbol_short!("hedg_opn");
+pub const HEDGE_CLOSED: Symbol = symbol_short!("hedg_cls");
+pub const HEDGE_EXPOSURE_UPDATED: Symbol = symbol_short!("hedg_exp");
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SalaryDisbursed {
@@ -79,6 +88,42 @@ pub struct SalaryDisbursed {
     pub employee: Address,
     pub token: Address,
     pub amount: i128,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaxWithheldEvent {
+    pub employer: Address,
+    pub employee: Address,
+    pub token: Address,
+    pub gross_amount: i128,
+    pub tax_amount: i128,
+    pub net_amount: i128,
+    pub jurisdiction: String,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CrossBorderEvent {
+    pub employer: Address,
+    pub employee: Address,
+    pub from_jurisdiction: String,
+    pub to_jurisdiction: String,
+    pub token: Address,
+    pub amount: i128,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FxRateUpdatedEvent {
+    pub base_token: Address,
+    pub quote_token: Address,
+    pub rate: i128,
+    pub precision: u32,
+    pub source: String,
     pub timestamp: u64,
 }
 

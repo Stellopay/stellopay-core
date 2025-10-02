@@ -18,6 +18,8 @@ use crate::events::{
     SCHEDULE_EXECUTED_EVENT, SCHEDULE_UPDATED_EVENT, SECURITY_AUDIT_EVENT,
     SECURITY_POLICY_VIOLATION_EVENT, TEMPLATE_APPLIED_EVENT, TEMPLATE_CREATED_EVENT,
     TEMPLATE_SHARED_EVENT, TEMPLATE_UPDATED_EVENT, UNPAUSED_EVENT,
+    TAX_WITHHELD, CROSS_BORDER_INITIATED, CROSS_BORDER_COMPLETED, emit_tax_withheld,
+    FX_RATE_UPDATED, FxRateUpdatedEvent,
 };
 
 use crate::insurance::{
@@ -39,6 +41,9 @@ use crate::storage::{
     TemplatePreset, UserRole, UserRoleAssignment, UserRolesResponse, WorkflowApproval,
     WorkflowStatus,
 };
+
+use crate::compliance::{Jurisdiction, ComplianceSystem};
+use crate::storage::{FxExtendedKey, TaxConfig};
 
 //-----------------------------------------------------------------------------
 // Gas Optimization Structures
@@ -239,11 +244,279 @@ impl PayrollContract {
             panic!("Contract already initialized");
         }
 
+        // Set initial owner and pause state
         storage.set(&DataKey::Owner, &owner);
-
-        // Contract starts unpaused by default
         storage.set(&DataKey::Paused, &false);
     }
+
+    // -----------------------------
+    // International payroll helpers
+    // -----------------------------
+
+    /// Set an employee's jurisdiction (region) for tax/compliance
+    pub fn set_employee_jurisdiction(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        jurisdiction: Jurisdiction,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        // Only owner can set for now
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+        if caller != owner { return Err(PayrollError::Unauthorized); }
+        storage.set(&DataKey::EmployeeJurisdiction(employee), &jurisdiction);
+        Ok(())
+    }
+
+    /// Admin: Update FX rate via TokenSwapSystem and emit FX_RATE_UPDATED
+    pub fn update_fx_rate(
+        env: Env,
+        caller: Address,
+        token_a: Address,
+        token_b: Address,
+        rate: i128,
+        precision: u32,
+        source: String,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        // Only owner can update FX
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+        if caller != owner { return Err(PayrollError::Unauthorized); }
+
+        // Delegate to TokenSwapSystem
+        let _ = crate::token_swap::TokenSwapSystem::set_conversion_rate(
+            env.clone(), caller.clone(), token_a.clone(), token_b.clone(), rate, precision, source.clone(),
+        );
+
+        // Emit event
+        let evt = FxRateUpdatedEvent {
+            base_token: token_a,
+            quote_token: token_b,
+            rate,
+            precision,
+            source,
+            timestamp: env.ledger().timestamp(),
+        };
+        env.events().publish((FX_RATE_UPDATED,), evt);
+        Ok(())
+    }
+
+    /// Set tax configuration for a jurisdiction
+    pub fn set_tax_config(
+        env: Env,
+        caller: Address,
+        config: TaxConfig,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+        if caller != owner { return Err(PayrollError::Unauthorized); }
+        storage.set(&FxExtendedKey::TaxConfig(config.jurisdiction.clone()), &config);
+        Ok(())
+    }
+
+    /// Disburse salary with optional FX conversion and tax withholding.
+    /// If employer funds are in a different token than payroll.token, provide `input_token`.
+    pub fn disburse_salary_fx(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        input_token: Option<Address>,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        // Reuse core checks from regular disbursement
+        let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
+        if caller != payroll.employer { return Err(PayrollError::Unauthorized); }
+
+        let current_time = env.ledger().timestamp();
+        if current_time < payroll.next_payout_timestamp { return Err(PayrollError::NextPayoutTimeNotReached); }
+
+        // Load employee jurisdiction for compliance + tax
+        let jurisdiction = env
+            .storage()
+            .persistent()
+            .get::<DataKey, Jurisdiction>(&DataKey::EmployeeJurisdiction(employee.clone()));
+        let jurisdiction_val = jurisdiction.ok_or(PayrollError::InvalidData)?;
+
+        // Compliance validation (region-specific rules)
+        let validation = ComplianceSystem::validate_payroll_compliance(
+            env.clone(),
+            payroll.employer.clone(),
+            employee.clone(),
+            jurisdiction_val.clone(),
+            payroll.amount,
+            None,
+        );
+        if !validation.is_compliant {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Compute taxes after compliance check
+        let tax_amount = Self::compute_tax_amount(&env, Some(&jurisdiction_val), payroll.amount);
+        let net_amount = payroll.amount - tax_amount;
+        if net_amount <= 0 { return Err(PayrollError::InvalidData); }
+
+        // Funding and transfer
+        let payout_token = payroll.token.clone();
+        let contract_address = env.current_contract_address();
+        let employer = payroll.employer.clone();
+        match input_token.clone() {
+            Some(inp) if inp != payout_token => {
+                if let Some(rate) = crate::token_swap::TokenSwapSystem::get_conversion_rate(
+                    env.clone(), inp.clone(), payout_token.clone(),
+                ) {
+                    let denom = 10i128.pow(rate.precision);
+                    let required_input = (net_amount * denom + rate.rate - 1) / rate.rate; // ceil div
+
+                    // Deduct employer balance in input token
+                    Self::check_and_update_balance(&env, &employer, &inp, required_input)?;
+
+                    // In a full integration, we'd receive payout_token via DEX. Here, directly transfer payout.
+                    Self::transfer_tokens_safe(&env, &payout_token, &contract_address, &employee, net_amount)?;
+                } else {
+                    return Err(PayrollError::InvalidData);
+                }
+            }
+            _ => {
+                // Same-token funding path: deduct employer balance and transfer net
+                Self::check_and_update_balance(&env, &employer, &payout_token, net_amount)?;
+                Self::transfer_tokens_safe(&env, &payout_token, &contract_address, &employee, net_amount)?;
+            }
+        }
+
+        // Emit tax withheld event (informational)
+        let juris_str = format!("{:?}", jurisdiction_val);
+        emit_tax_withheld(
+            env.clone(),
+            employer.clone(),
+            employee.clone(),
+            payout_token.clone(),
+            payroll.amount,
+            tax_amount,
+            net_amount,
+            String::from_str(&env, &juris_str),
+            current_time,
+        );
+
+        // Cross-border events (best-effort; employer jurisdiction unknown here)
+        env.events().publish((CROSS_BORDER_INITIATED,), (employer.clone(), employee.clone()));
+
+        // Update payroll timestamps/history/metrics similar to base function
+        Self::update_payroll_timestamps(&env, &employee, &payroll, current_time);
+        Self::record_audit(&env, &employee, &employer, &payout_token, net_amount, current_time);
+        Self::record_metrics(&env, net_amount, symbol_short!("disb_fx"), true, Some(employee.clone()), false);
+
+        env.events().publish((CROSS_BORDER_COMPLETED,), (employer, employee));
+        Ok(())
+    }
+
+    fn compute_tax_amount(env: &Env, jurisdiction: Option<&Jurisdiction>, gross: i128) -> i128 {
+        if gross <= 0 { return 0; }
+        if let Some(j) = jurisdiction {
+            if let Some(cfg) = env.storage().persistent().get::<FxExtendedKey, TaxConfig>(&FxExtendedKey::TaxConfig(j.clone())) {
+                let mut tax: i128 = 0;
+                let mut remaining = gross.max(0);
+                for br in cfg.brackets.iter() {
+                    let slice = remaining.min(br.up_to);
+                    tax += (slice * br.rate_bps as i128) / 10000;
+                    remaining -= slice;
+                    if remaining <= 0 { break; }
+                }
+                tax += (gross * cfg.flat_withholding_bps as i128) / 10000;
+                tax = tax.saturating_sub(cfg.allowance.max(0));
+                return tax.max(0).min(gross);
+            }
+        }
+        0
+    }
+
+    // -----------------------------
+    // Hedging management (basic)
+    // -----------------------------
+
+    /// Set hedge settings for an employer
+    pub fn set_hedge_settings(
+        env: Env,
+        caller: Address,
+        employer: Address,
+        settings: crate::storage::HedgeSettings,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+        if caller != owner { return Err(PayrollError::Unauthorized); }
+        storage.set(&crate::storage::FxExtendedKey::EmployerHedgeSettings(employer), &settings);
+        Ok(())
+    }
+
+    /// Open a hedge position (records intent; DEX execution is off-chain or separate)
+    pub fn open_hedge(
+        env: Env,
+        caller: Address,
+        employer: Address,
+        base_token: Address,
+        quote_token: Address,
+        side: crate::storage::HedgeSide,
+        notional: i128,
+        tenor_seconds: Option<u64>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+        if caller != owner { return Err(PayrollError::Unauthorized); }
+
+        let hedge_id: u64 = storage
+            .get(&crate::storage::FxExtendedKey::NextHedgeId)
+            .unwrap_or(1u64);
+        storage.set(&crate::storage::FxExtendedKey::NextHedgeId, &(hedge_id + 1));
+
+        let pos = crate::storage::HedgingPosition {
+            id: hedge_id,
+            employer: employer.clone(),
+            base_token,
+            quote_token,
+            side,
+            notional,
+            opened_at: env.ledger().timestamp(),
+            expires_at: tenor_seconds.map(|t| env.ledger().timestamp() + t),
+            is_open: true,
+        };
+        storage.set(&crate::storage::FxExtendedKey::HedgePosition(hedge_id), &pos);
+
+        // index by employer
+        let mut list: Vec<u64> = storage
+            .get(&crate::storage::FxExtendedKey::EmployerHedges(employer.clone()))
+            .unwrap_or(Vec::new(&env));
+        list.push_back(hedge_id);
+        storage.set(&crate::storage::FxExtendedKey::EmployerHedges(employer.clone()), &list);
+
+        // Emit event
+        env.events().publish((HEDGE_OPENED,), (employer, hedge_id));
+        Ok(hedge_id)
+    }
+
+    /// Close an existing hedge position
+    pub fn close_hedge(
+        env: Env,
+        caller: Address,
+        hedge_id: u64,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).unwrap();
+        if caller != owner { return Err(PayrollError::Unauthorized); }
+
+        if let Some(mut pos) = storage.get::<crate::storage::FxExtendedKey, crate::storage::HedgingPosition>(&crate::storage::FxExtendedKey::HedgePosition(hedge_id)) {
+            pos.is_open = false;
+            storage.set(&crate::storage::FxExtendedKey::HedgePosition(hedge_id), &pos);
+            env.events().publish((HEDGE_CLOSED,), (pos.employer, hedge_id));
+        }
+        Ok(())
+    }
+
 
     /// Pause the contract - only callable by owner
     pub fn pause(env: Env, caller: Address) -> Result<(), PayrollError> {

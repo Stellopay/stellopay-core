@@ -229,8 +229,7 @@ impl ComplianceSystem {
         Self::require_compliance_authorized(&env, &caller)?;
 
         let storage = env.storage().persistent();
-        let jurisdiction_hash = Self::hash_jurisdiction(&env, &config.jurisdiction);
-        let key = DataKey::JurisdictionConfig(jurisdiction_hash);
+        let key = DataKey::JurisdictionConfig(config.jurisdiction.clone());
         storage.set(&key, &config);
 
         // Add to audit trail
