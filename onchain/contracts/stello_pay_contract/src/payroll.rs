@@ -734,6 +734,67 @@ impl PayrollContract {
             return Err(PayrollError::Unauthorized);
         }
 
+        // Security: rate limit and suspicious activity checks for disbursement
+        // Rate limit check
+        if let Err(_e) = Self::_check_rate_limit(&env, &caller, "disburse_salary") {
+            let now = env.ledger().timestamp();
+            let mut details = Map::new(&env);
+            details.set(String::from_str(&env, "operation"), String::from_str(&env, "disburse_salary"));
+            details.set(String::from_str(&env, "reason"), String::from_str(&env, "rate_limit"));
+
+            // Log audit entry for rate limit
+            Self::_log_security_event(
+                &env,
+                &caller,
+                "disburse_salary",
+                "payroll",
+                crate::storage::SecurityAuditResult::RateLimited,
+                details.clone(),
+            );
+
+            // Emit rate limit exceeded alert with placeholder limits (to be wired later)
+            crate::events::emit_rate_limit_exceeded(
+                env.clone(),
+                caller.clone(),
+                String::from_str(&env, "disburse_salary"),
+                0,
+                0,
+                0,
+                now,
+            );
+
+            return Err(PayrollError::RateLimitExceeded);
+        }
+
+        // Suspicious activity detection
+        if let Err(_e) = Self::_detect_suspicious_activity(&env, &caller, "disburse_salary") {
+            let now = env.ledger().timestamp();
+            let mut details = Map::new(&env);
+            details.set(String::from_str(&env, "operation"), String::from_str(&env, "disburse_salary"));
+
+            // Log audit entry for suspicious activity
+            Self::_log_security_event(
+                &env,
+                &caller,
+                "disburse_salary",
+                "payroll",
+                crate::storage::SecurityAuditResult::Suspicious,
+                details.clone(),
+            );
+
+            // Emit suspicious activity alert
+            crate::events::emit_suspicious_activity(
+                env.clone(),
+                caller.clone(),
+                String::from_str(&env, "disburse_salary"),
+                String::from_str(&env, "medium"),
+                details,
+                now,
+            );
+
+            return Err(PayrollError::SuspiciousActivityDetected);
+        }
+
         let current_time = env.ledger().timestamp();
         let is_late = current_time > payroll.next_payout_timestamp;
         // Check if next payout time has been reached
@@ -4501,9 +4562,19 @@ impl PayrollContract {
             session_id: None,
         };
 
-        // Store audit entry (simplified - in real implementation would use proper indexing)
-        // Note: In a real implementation, this would use proper indexing
-        // For now, we'll just log the event
+        // Store audit entry (simplified)
+        storage.set(&DataKey::AuditTrail(user.clone()), &audit_entry);
+
+        // Emit audit event for off-chain listeners
+        env.events().publish(
+            (SECURITY_AUDIT_EVENT,),
+            (
+                user.clone(),
+                String::from_str(env, action),
+                String::from_str(env, resource),
+                current_time,
+            ),
+        );
     }
 
     /// Check rate limiting

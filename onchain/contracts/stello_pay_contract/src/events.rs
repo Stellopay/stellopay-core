@@ -57,6 +57,10 @@ pub const ROLE_ASSIGNED_EVENT: Symbol = symbol_short!("role_a");
 pub const ROLE_REVOKED_EVENT: Symbol = symbol_short!("role_r");
 pub const SECURITY_AUDIT_EVENT: Symbol = symbol_short!("sec_aud");
 pub const SECURITY_POLICY_VIOLATION_EVENT: Symbol = symbol_short!("sec_viol");
+pub const SUSPICIOUS_ACTIVITY_EVENT: Symbol = symbol_short!("susp_act");
+pub const RATE_LIMIT_EXCEEDED_EVENT: Symbol = symbol_short!("rate_lim");
+pub const ACCESS_DENIED_EVENT: Symbol = symbol_short!("acc_den");
+pub const ACCOUNT_LOCKED_EVENT: Symbol = symbol_short!("acc_lck");
 
 // Employee Lifecycle Events
 pub const EMPLOYEE_ONBOARDED: Symbol = symbol_short!("emp_onb");
@@ -242,6 +246,47 @@ pub struct TaskCompleted {
     pub task_id: u32,
     pub task_name: String,
     pub completed_by: Address,
+    pub timestamp: u64,
+}
+
+// Security Alert Structures
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SuspiciousActivityAlert {
+    pub user: Address,
+    pub activity_type: String,
+    pub severity: String,
+    pub details: Map<String, String>,
+    pub detected_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateLimitExceededAlert {
+    pub user: Address,
+    pub operation: String,
+    pub max_requests: u32,
+    pub time_window: u64,
+    pub current_count: u32,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccessDeniedAlert {
+    pub user: Address,
+    pub permission: String,
+    pub resource: String,
+    pub reason: String,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccountLockedAlert {
+    pub user: Address,
+    pub reason: String,
+    pub lock_until: Option<u64>,
     pub timestamp: u64,
 }
 
@@ -568,6 +613,83 @@ pub fn emit_task_completed(
         task_id,
         task_name,
         completed_by,
+        timestamp,
+    };
+    e.events().publish(topics, event_data);
+}
+
+// Security Alert Emitters
+pub fn emit_suspicious_activity(
+    e: Env,
+    user: Address,
+    activity_type: String,
+    severity: String,
+    details: Map<String, String>,
+    detected_at: u64,
+) {
+    let topics = (SUSPICIOUS_ACTIVITY_EVENT,);
+    let event_data = SuspiciousActivityAlert {
+        user,
+        activity_type,
+        severity,
+        details,
+        detected_at,
+    };
+    e.events().publish(topics, event_data);
+}
+
+pub fn emit_rate_limit_exceeded(
+    e: Env,
+    user: Address,
+    operation: String,
+    max_requests: u32,
+    time_window: u64,
+    current_count: u32,
+    timestamp: u64,
+) {
+    let topics = (RATE_LIMIT_EXCEEDED_EVENT,);
+    let event_data = RateLimitExceededAlert {
+        user,
+        operation,
+        max_requests,
+        time_window,
+        current_count,
+        timestamp,
+    };
+    e.events().publish(topics, event_data);
+}
+
+pub fn emit_access_denied(
+    e: Env,
+    user: Address,
+    permission: String,
+    resource: String,
+    reason: String,
+    timestamp: u64,
+) {
+    let topics = (ACCESS_DENIED_EVENT,);
+    let event_data = AccessDeniedAlert {
+        user,
+        permission,
+        resource,
+        reason,
+        timestamp,
+    };
+    e.events().publish(topics, event_data);
+}
+
+pub fn emit_account_locked(
+    e: Env,
+    user: Address,
+    reason: String,
+    lock_until: Option<u64>,
+    timestamp: u64,
+) {
+    let topics = (ACCOUNT_LOCKED_EVENT,);
+    let event_data = AccountLockedAlert {
+        user,
+        reason,
+        lock_until,
         timestamp,
     };
     e.events().publish(topics, event_data);
