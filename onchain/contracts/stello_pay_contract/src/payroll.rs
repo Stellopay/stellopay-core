@@ -41,6 +41,103 @@ use crate::storage::{
 };
 
 //-----------------------------------------------------------------------------
+// Input Validation Module
+//-----------------------------------------------------------------------------
+
+mod validation {
+    use super::*;
+
+    /// Validates that an address is not a zero address
+    pub fn validate_address_not_zero(env: &Env, addr: &Address) -> Result<(), PayrollError> {
+        let zero_addr = Address::from_str(
+            env,
+            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+        );
+        if addr == &zero_addr {
+            return Err(PayrollError::InvalidData);
+        }
+        Ok(())
+    }
+
+    /// Validates that an address is not the contract itself
+    pub fn validate_address_not_contract(env: &Env, addr: &Address) -> Result<(), PayrollError> {
+        let contract_addr = env.current_contract_address();
+        if addr == &contract_addr {
+            return Err(PayrollError::InvalidData);
+        }
+        Ok(())
+    }
+
+    /// Validates string length and content
+    pub fn validate_string(s: &String, min_len: u32, max_len: u32) -> Result<(), PayrollError> {
+        let len = s.len();
+        if len < min_len || len > max_len {
+            return Err(PayrollError::InvalidData);
+        }
+        // Check for null bytes or control characters would go here
+        // but String type in Soroban doesn't expose byte access easily
+        Ok(())
+    }
+
+    /// Validates numeric bounds for amounts
+    pub fn validate_amount_bounds(amount: i128) -> Result<(), PayrollError> {
+        const MAX_AMOUNT: i128 = i128::MAX / 1000; // Leave headroom for calculations
+        const MIN_AMOUNT: i128 = 1;
+
+        if amount < MIN_AMOUNT || amount > MAX_AMOUNT {
+            return Err(PayrollError::InvalidData);
+        }
+        Ok(())
+    }
+
+    /// Validates interval bounds (in seconds)
+    pub fn validate_interval_bounds(interval: u64) -> Result<(), PayrollError> {
+        const MIN_INTERVAL: u64 = 3600; // 1 hour minimum
+        const MAX_INTERVAL: u64 = 31536000 * 10; // 10 years maximum
+
+        if interval < MIN_INTERVAL || interval > MAX_INTERVAL {
+            return Err(PayrollError::InvalidData);
+        }
+        Ok(())
+    }
+
+    /// Validates recurrence frequency bounds
+    pub fn validate_frequency_bounds(frequency: u64) -> Result<(), PayrollError> {
+        const MIN_FREQUENCY: u64 = 86400; // 1 day minimum
+        const MAX_FREQUENCY: u64 = 31536000; // 1 year maximum
+
+        if frequency == 0 || frequency < MIN_FREQUENCY || frequency > MAX_FREQUENCY {
+            return Err(PayrollError::InvalidRecurrenceFrequency);
+        }
+        Ok(())
+    }
+
+    /// Validates timestamp is not in the past (with small tolerance)
+    pub fn validate_future_timestamp(
+        env: &Env,
+        timestamp: u64,
+        tolerance_seconds: u64,
+    ) -> Result<(), PayrollError> {
+        let current_time = env.ledger().timestamp();
+        if timestamp < current_time.saturating_sub(tolerance_seconds) {
+            return Err(PayrollError::InvalidTimeRange);
+        }
+        Ok(())
+    }
+
+    /// Validates timeout duration is reasonable
+    pub fn validate_timeout_duration(timeout_days: u32) -> Result<(), PayrollError> {
+        const MIN_TIMEOUT_DAYS: u32 = 1;
+        const MAX_TIMEOUT_DAYS: u32 = 365;
+
+        if timeout_days < MIN_TIMEOUT_DAYS || timeout_days > MAX_TIMEOUT_DAYS {
+            return Err(PayrollError::InvalidData);
+        }
+        Ok(())
+    }
+}
+
+//-----------------------------------------------------------------------------
 // Gas Optimization Structures
 //-----------------------------------------------------------------------------
 
@@ -391,6 +488,11 @@ impl PayrollContract {
         interval: u64,
         recurrence_frequency: u64,
     ) -> Result<Payroll, PayrollError> {
+        // Validate addresses
+        validation::validate_address_not_zero(&env, &employer)?;
+        validation::validate_address_not_zero(&env, &employee)?;
+        validation::validate_address_not_zero(&env, &token)?;
+        validation::validate_address_not_contract(&env, &employee)?;
         // Optimized validation with early returns
         Self::validate_payroll_input(amount, interval, recurrence_frequency)?;
 
@@ -1110,7 +1212,11 @@ impl PayrollContract {
         if payroll_inputs.len() as u32 > MAX_BATCH_SIZE {
             return Err(PayrollError::InvalidData);
         }
-
+        for payroll_input in payroll_inputs.iter() {
+            validation::validate_address_not_zero(&env, &payroll_input.employee)?;
+            validation::validate_address_not_zero(&env, &payroll_input.token)?;
+            validation::validate_address_not_contract(&env, &payroll_input.employee)?;
+        }
         // Create optimized batch context
         let batch_ctx = Self::create_batch_context(&env);
         let storage = env.storage().persistent();
@@ -1688,16 +1794,14 @@ impl PayrollContract {
         interval: u64,
         recurrence_frequency: u64,
     ) -> Result<(), PayrollError> {
-        // Early return for invalid data to avoid unnecessary processing
-        if amount <= 0 {
-            return Err(PayrollError::InvalidData);
-        }
-        if interval == 0 {
-            return Err(PayrollError::InvalidData);
-        }
-        if recurrence_frequency == 0 {
-            return Err(PayrollError::InvalidRecurrenceFrequency);
-        }
+        // Validate amount
+        validation::validate_amount_bounds(amount)?;
+
+        // Validate interval
+        validation::validate_interval_bounds(interval)?;
+
+        // Validate recurrence frequency
+        validation::validate_frequency_bounds(recurrence_frequency)?;
         Ok(())
     }
 
@@ -2224,13 +2328,12 @@ impl PayrollContract {
         Self::require_not_paused(&env)?;
 
         // Validate template data
-        if name.len() == 0 || name.len() > 100 {
-            return Err(PayrollError::InvalidTemplateName);
-        }
-
-        if amount <= 0 || interval == 0 || recurrence_frequency == 0 {
-            return Err(PayrollError::TemplateValidationFailed);
-        }
+        validation::validate_string(&name, 1, 100)?;
+        validation::validate_string(&description, 0, 500)?;
+        validation::validate_address_not_zero(&env, &token)?;
+        validation::validate_amount_bounds(amount)?;
+        validation::validate_interval_bounds(interval)?;
+        validation::validate_frequency_bounds(recurrence_frequency)?;
 
         let storage = env.storage().persistent();
         let current_time = env.ledger().timestamp();
@@ -3268,6 +3371,21 @@ impl PayrollContract {
         if let Some(end) = end_date {
             if end <= start_date {
                 return Err(PayrollError::ScheduleValidationFailed);
+            }
+        }
+        // Enhanced validation
+        validation::validate_address_not_zero(&env, &caller)?;
+        validation::validate_string(&name, 1, 100)?;
+        validation::validate_string(&description, 0, 500)?;
+        validation::validate_future_timestamp(&env, start_date, 60)?; // 60 second tolerance
+        
+        if let Some(end) = end_date {
+            if end <= start_date {
+                return Err(PayrollError::InvalidTimeRange);
+            }
+            // Validate end date is not too far in future (10 years max)
+            if end > start_date + (10 * 365 * 24 * 3600) {
+                return Err(PayrollError::InvalidTimeRange);
             }
         }
 
@@ -4863,10 +4981,25 @@ impl PayrollContract {
         let settings = Self::_get_dispute_settings(&env);
 
         // Validate evidence requirements
-        if settings.evidence_required && (evidence.len() as u32) < settings.min_evidence_count {
+        validation::validate_address_not_zero(&env, &employer)?;
+        validation::validate_address_not_zero(&env, &caller)?;
+        validation::validate_string(&description, 10, 1000)?;
+        validation::validate_timeout_duration(timeout_days)?;
+
+        // Validate evidence count
+        if evidence.len() < 1 || evidence.len() > 10 {
             return Err(PayrollError::InvalidData);
         }
 
+        // Validate each evidence string
+        for ev in evidence.iter() {
+            validation::validate_string(&ev, 1, 500)?;
+        }
+
+        // Validate amount if provided
+        if let Some(amt) = amount_involved {
+            validation::validate_amount_bounds(amt)?;
+        }
         // Get next dispute ID
         let next_id = storage.get(&EnterpriseDataKey::NextDisputeId).unwrap_or(0) + 1;
         storage.set(&EnterpriseDataKey::NextDisputeId, &next_id);
@@ -5421,6 +5554,14 @@ impl PayrollContract {
         let storage = env.storage().persistent();
         let current_time = env.ledger().timestamp();
 
+        // Enhanced validation
+        validation::validate_address_not_zero(&env, &requester)?;
+        validation::validate_address_not_zero(&env, &employee)?;
+        validation::validate_string(&reason, 10, 500)?;
+        validation::validate_string(&current_value, 1, 100)?;
+        validation::validate_string(&proposed_value, 1, 100)?;
+        validation::validate_timeout_duration(approval_timeout_days)?;
+        
         // Verify the payroll exists
         let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
 

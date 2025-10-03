@@ -4,6 +4,318 @@ use soroban_sdk::{contracttype, Address, Env, Map, String, Symbol, Vec};
 use crate::insurance::InsurancePolicy;
 
 //-----------------------------------------------------------------------------
+// Storage Validation Helpers
+//-----------------------------------------------------------------------------
+
+pub mod storage_validation {
+    use super::*;
+
+    /// Validates PayrollInput structure
+    pub fn validate_payroll_input(env: &Env, input: &PayrollInput) -> Result<(), String> {
+        // Validate employee address
+        if input.employee
+            == Address::from_str(
+                env,
+                "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+            )
+        {
+            return Err(String::from_str(env, "Invalid employee address"));
+        }
+
+        // Validate token address
+        if input.token
+            == Address::from_str(
+                env,
+                "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+            )
+        {
+            return Err(String::from_str(env, "Invalid token address"));
+        }
+
+        // Validate amount bounds
+        if input.amount <= 0 || input.amount > (i128::MAX / 1000) {
+            return Err(String::from_str(env, "Amount out of bounds"));
+        }
+
+        // Validate interval bounds
+        if input.interval < 3600 || input.interval > 31536000 * 10 {
+            return Err(String::from_str(env, "Interval out of bounds"));
+        }
+
+        // Validate recurrence frequency
+        if input.recurrence_frequency < 86400 || input.recurrence_frequency > 31536000 {
+            return Err(String::from_str(env, "Frequency out of bounds"));
+        }
+
+        Ok(())
+    }
+
+    /// Validates PayrollTemplate structure
+    pub fn validate_template(template: &PayrollTemplate) -> Result<(), String> {
+        // Name validation
+        if template.name.len() == 0 || template.name.len() > 100 {
+            return Err(String::from_str(
+                &template.name.env(),
+                "Invalid template name length",
+            ));
+        }
+
+        // Description validation
+        if template.description.len() > 500 {
+            return Err(String::from_str(
+                &template.description.env(),
+                "Description too long",
+            ));
+        }
+
+        // Amount validation
+        if template.amount <= 0 || template.amount > (i128::MAX / 1000) {
+            return Err(String::from_str(&template.name.env(), "Invalid amount"));
+        }
+
+        // Interval validation
+        if template.interval < 3600 || template.interval > 31536000 * 10 {
+            return Err(String::from_str(&template.name.env(), "Invalid interval"));
+        }
+
+        // Frequency validation
+        if template.recurrence_frequency < 86400 || template.recurrence_frequency > 31536000 {
+            return Err(String::from_str(&template.name.env(), "Invalid frequency"));
+        }
+
+        Ok(())
+    }
+
+    /// Validates ScheduleFrequency enum
+    pub fn validate_schedule_frequency(frequency: &ScheduleFrequency) -> Result<(), String> {
+        match frequency {
+            ScheduleFrequency::Custom(seconds) => {
+                if *seconds < 3600 || *seconds > 31536000 {
+                    return Err(String::from_str(
+                        &soroban_sdk::Env::default(),
+                        "Custom frequency out of bounds",
+                    ));
+                }
+            }
+            _ => {} // Other variants are pre-validated
+        }
+        Ok(())
+    }
+
+    /// Validates RuleCondition structure
+    pub fn validate_rule_condition(condition: &RuleCondition) -> Result<(), String> {
+        // Field name validation
+        if condition.field.len() == 0 || condition.field.len() > 50 {
+            return Err(String::from_str(
+                &condition.field.env(),
+                "Invalid field name",
+            ));
+        }
+
+        // Value validation
+        if condition.value.len() > 200 {
+            return Err(String::from_str(
+                &condition.value.env(),
+                "Condition value too long",
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Validates RuleAction structure
+    pub fn validate_rule_action(action: &RuleAction) -> Result<(), String> {
+        // Delay validation (max 30 days)
+        if action.delay_seconds > 2592000 {
+            return Err(String::from_str(
+                &soroban_sdk::Env::default(),
+                "Delay too long",
+            ));
+        }
+
+        // Retry count validation
+        if action.retry_count > 10 {
+            return Err(String::from_str(
+                &soroban_sdk::Env::default(),
+                "Too many retries",
+            ));
+        }
+
+        // Parameters validation
+        if action.parameters.len() > 20 {
+            return Err(String::from_str(
+                &soroban_sdk::Env::default(),
+                "Too many parameters",
+            ));
+        }
+
+        for param in action.parameters.iter() {
+            if param.len() > 100 {
+                return Err(String::from_str(&param.env(), "Parameter too long"));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validates EmployeeProfile structure
+    pub fn validate_employee_profile(profile: &EmployeeProfile) -> Result<(), String> {
+        // Job title validation
+        if profile.job_title.len() == 0 || profile.job_title.len() > 100 {
+            return Err(String::from_str(
+                &profile.job_title.env(),
+                "Invalid job title",
+            ));
+        }
+
+        // Employee ID validation
+        if profile.employee_id.len() == 0 || profile.employee_id.len() > 50 {
+            return Err(String::from_str(
+                &profile.employee_id.env(),
+                "Invalid employee ID",
+            ));
+        }
+
+        // Date validation
+        if let Some(term_date) = profile.termination_date {
+            if term_date <= profile.hire_date {
+                return Err(String::from_str(
+                    &profile.job_title.env(),
+                    "Invalid termination date",
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validates OnboardingTask/OffboardingTask structure
+    pub fn validate_task(
+        name: &String,
+        description: &String,
+        due_date: Option<u64>,
+        created_at: u64,
+    ) -> Result<(), String> {
+        // Name validation
+        if name.len() == 0 || name.len() > 100 {
+            return Err(String::from_str(&name.env(), "Invalid task name"));
+        }
+
+        // Description validation
+        if description.len() > 500 {
+            return Err(String::from_str(&description.env(), "Description too long"));
+        }
+
+        // Due date validation
+        if let Some(due) = due_date {
+            if due <= created_at {
+                return Err(String::from_str(&name.env(), "Due date must be in future"));
+            }
+            // Max 1 year in future
+            if due > created_at + 31536000 {
+                return Err(String::from_str(&name.env(), "Due date too far in future"));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validates SecuritySettings structure
+    pub fn validate_security_settings(settings: &SecuritySettings) -> Result<(), String> {
+        // Session timeout validation (1 hour to 30 days)
+        if settings.session_timeout < 3600 || settings.session_timeout > 2592000 {
+            return Err(String::from_str(
+                &soroban_sdk::Env::default(),
+                "Invalid session timeout",
+            ));
+        }
+
+        // Max login attempts validation
+        if settings.max_login_attempts < 1 || settings.max_login_attempts > 100 {
+            return Err(String::from_str(
+                &soroban_sdk::Env::default(),
+                "Invalid max login attempts",
+            ));
+        }
+
+        // Lockout duration validation (1 minute to 7 days)
+        if settings.lockout_duration < 60 || settings.lockout_duration > 604800 {
+            return Err(String::from_str(
+                &soroban_sdk::Env::default(),
+                "Invalid lockout duration",
+            ));
+        }
+
+        // Whitelist/blacklist size validation
+        if settings.ip_whitelist.len() > 1000 || settings.ip_blacklist.len() > 1000 {
+            return Err(String::from_str(
+                &soroban_sdk::Env::default(),
+                "IP list too large",
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Validates Role structure
+    pub fn validate_role(role: &Role) -> Result<(), String> {
+        // ID validation
+        if role.id.len() == 0 || role.id.len() > 50 {
+            return Err(String::from_str(&role.id.env(), "Invalid role ID"));
+        }
+
+        // Name validation
+        if role.name.len() == 0 || role.name.len() > 100 {
+            return Err(String::from_str(&role.name.env(), "Invalid role name"));
+        }
+
+        // Description validation
+        if role.description.len() > 500 {
+            return Err(String::from_str(
+                &role.description.env(),
+                "Description too long",
+            ));
+        }
+
+        // Permissions validation
+        if role.permissions.len() == 0 {
+            return Err(String::from_str(
+                &role.name.env(),
+                "Role must have at least one permission",
+            ));
+        }
+
+        if role.permissions.len() > 50 {
+            return Err(String::from_str(&role.name.env(), "Too many permissions"));
+        }
+
+        Ok(())
+    }
+
+    /// Validates CompactPayroll for u32 overflow issues
+    pub fn validate_compact_payroll_conversion(
+        interval: u64,
+        recurrence_frequency: u64,
+    ) -> Result<(), String> {
+        if interval > u32::MAX as u64 {
+            return Err(String::from_str(
+                &soroban_sdk::Env::default(),
+                "Interval too large for compact storage",
+            ));
+        }
+
+        if recurrence_frequency > u32::MAX as u64 {
+            return Err(String::from_str(
+                &soroban_sdk::Env::default(),
+                "Frequency too large for compact storage",
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+//-----------------------------------------------------------------------------
 // Data Structures
 //-----------------------------------------------------------------------------
 
@@ -1033,6 +1345,42 @@ impl LifecycleStorage {
     const TRANSFER_PREFIX: &'static str = "lc_transfer_";
     const COMPLIANCE_PREFIX: &'static str = "lc_comply_";
     const COUNTER_PREFIX: &'static str = "lc_counter_";
+
+    /// Validates employee profile before storage
+    pub fn validate_and_store_profile(
+        env: &Env,
+        employee: &Address,
+        profile: &EmployeeProfile,
+    ) -> Result<(), String> {
+        storage_validation::validate_employee_profile(profile)?;
+        Self::store_profile(env, employee, profile);
+        Ok(())
+    }
+
+    /// Validates onboarding workflow before storage
+    pub fn validate_and_store_onboarding(
+        env: &Env,
+        workflow_id: u64,
+        workflow: &OnboardingWorkflow,
+    ) -> Result<(), String> {
+        // Validate each task
+        for task in workflow.checklist.iter() {
+            storage_validation::validate_task(
+                &task.name,
+                &task.description,
+                task.due_date,
+                workflow.created_at,
+            )?;
+        }
+
+        // Validate expiration
+        if workflow.expires_at <= workflow.created_at {
+            return Err(String::from_str(env, "Invalid expiration date"));
+        }
+
+        Self::store_onboarding(env, workflow_id, workflow);
+        Ok(())
+    }
 
     /// Store employee profile using existing Employee key
     pub fn store_profile(env: &Env, employee: &Address, profile: &EmployeeProfile) {

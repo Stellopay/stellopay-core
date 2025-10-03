@@ -3,6 +3,368 @@ use soroban_sdk::{contracttype, Address, Env, Map, String, Symbol, Vec};
 //-----------------------------------------------------------------------------
 // Enterprise Features Data Structures
 //-----------------------------------------------------------------------------
+//-----------------------------------------------------------------------------
+// Enterprise Validation Module
+//-----------------------------------------------------------------------------
+
+pub mod enterprise_validation {
+    use super::*;
+    
+    /// Validates Department structure
+    pub fn validate_department(department: &Department) -> Result<(), EnterpriseError> {
+        // Name validation
+        if department.name.len() == 0 || department.name.len() > 100 {
+            return Err(EnterpriseError::InvalidDepartmentHierarchy);
+        }
+        
+        // Description validation
+        if department.description.len() > 500 {
+            return Err(EnterpriseError::InvalidDepartmentHierarchy);
+        }
+        
+        // Circular dependency check for parent department
+        if let Some(parent_id) = department.parent_department {
+            if parent_id == department.id {
+                return Err(EnterpriseError::InvalidDepartmentHierarchy);
+            }
+        }
+        
+        // Manager address validation
+        let zero_addr = Address::from_str(&department.name.env(), "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+        if department.manager == zero_addr {
+            return Err(EnterpriseError::InvalidDepartmentHierarchy);
+        }
+        
+        Ok(())
+    }
+    
+    /// Validates ApprovalWorkflow structure
+    pub fn validate_approval_workflow(workflow: &ApprovalWorkflow) -> Result<(), EnterpriseError> {
+        // Name validation
+        if workflow.name.len() == 0 || workflow.name.len() > 100 {
+            return Err(EnterpriseError::WorkflowNotFound);
+        }
+        
+        // Description validation
+        if workflow.description.len() > 500 {
+            return Err(EnterpriseError::WorkflowNotFound);
+        }
+        
+        // Steps validation
+        if workflow.steps.len() == 0 {
+            return Err(EnterpriseError::WorkflowStepNotFound);
+        }
+        
+        if workflow.steps.len() > 20 {
+            return Err(EnterpriseError::WorkflowStepNotFound);
+        }
+        
+        // Validate each step
+        for step in workflow.steps.iter() {
+            validate_approval_step(&step)?;
+        }
+        
+        Ok(())
+    }
+    
+    /// Validates ApprovalStep structure
+    pub fn validate_approval_step(step: &ApprovalStep) -> Result<(), EnterpriseError> {
+        // Step number validation (should be sequential)
+        if step.step_number == 0 {
+            return Err(EnterpriseError::WorkflowStepNotFound);
+        }
+        
+        // Role validation
+        if step.approver_role.len() == 0 || step.approver_role.len() > 50 {
+            return Err(EnterpriseError::WorkflowStepNotFound);
+        }
+        
+        // Timeout validation (1 hour to 30 days)
+        if step.timeout_hours == 0 || step.timeout_hours > 720 {
+            return Err(EnterpriseError::ApprovalExpired);
+        }
+        
+        Ok(())
+    }
+    
+    /// Validates WebhookEndpoint structure
+      pub fn validate_webhook_endpoint(webhook: &WebhookEndpoint) -> Result<(), EnterpriseError> {
+        // ID validation
+        if webhook.id.len() == 0 || webhook.id.len() > 50 {
+            return Err(EnterpriseError::WebhookNotFound);
+        }
+        
+        // Name validation
+        if webhook.name.len() == 0 || webhook.name.len() > 100 {
+            return Err(EnterpriseError::WebhookNotFound);
+        }
+        
+        // URL validation (basic)
+        if webhook.url.len() < 10 || webhook.url.len() > 500 {
+            return Err(EnterpriseError::InvalidWebhookUrl);
+        }
+        
+        // URL must start with https:// (basic check without string conversion)
+        // Note: In production, you'd want more robust URL validation
+        // For now, we'll just check minimum length as a proxy
+        if webhook.url.len() < 8 {  // "https://" is 8 characters minimum
+            return Err(EnterpriseError::InvalidWebhookUrl);
+        }
+        
+        // Events validation
+        if webhook.events.len() == 0 || webhook.events.len() > 50 {
+            return Err(EnterpriseError::WebhookNotFound);
+        }
+        
+        // Headers validation
+        if webhook.headers.len() > 20 {
+            return Err(EnterpriseError::WebhookNotFound);
+        }
+        
+        Ok(())
+    }
+    
+    /// Validates PayrollModificationRequest structure
+    pub fn validate_modification_request(request: &PayrollModificationRequest) -> Result<(), EnterpriseError> {
+        // Addresses validation
+        let env = &request.reason.env();
+        let zero_addr = Address::from_str(env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+        
+        if request.employee == zero_addr || request.employer == zero_addr || request.requester == zero_addr {
+            return Err(EnterpriseError::InvalidModificationValues);
+        }
+        
+        // Reason validation
+        if request.reason.len() < 10 || request.reason.len() > 500 {
+            return Err(EnterpriseError::InvalidModificationValues);
+        }
+        
+        // Value validation
+        if request.current_value.len() == 0 || request.current_value.len() > 100 {
+            return Err(EnterpriseError::InvalidModificationValues);
+        }
+        
+        if request.proposed_value.len() == 0 || request.proposed_value.len() > 100 {
+            return Err(EnterpriseError::InvalidModificationValues);
+        }
+        
+        // Expiration validation
+        if request.expires_at <= request.created_at {
+            return Err(EnterpriseError::ModificationRequestExpired);
+        }
+        
+        // Maximum expiration period (1 year)
+        if request.expires_at > request.created_at + 31536000 {
+            return Err(EnterpriseError::ModificationTimeoutInvalid);
+        }
+        
+        Ok(())
+    }
+    
+    /// Validates Dispute structure
+    pub fn validate_dispute(dispute: &Dispute) -> Result<(), EnterpriseError> {
+        // Addresses validation
+        let env = &dispute.description.env();
+        let zero_addr = Address::from_str(env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+        
+        if dispute.employee == zero_addr || dispute.employer == zero_addr {
+            return Err(EnterpriseError::InvalidDisputeType);
+        }
+        
+        // Description validation
+        if dispute.description.len() < 10 || dispute.description.len() > 1000 {
+            return Err(EnterpriseError::InvalidDisputeType);
+        }
+        
+        // Evidence validation
+        if dispute.evidence.len() == 0 || dispute.evidence.len() > 10 {
+            return Err(EnterpriseError::InsufficientEvidence);
+        }
+        
+        for evidence in dispute.evidence.iter() {
+            if evidence.len() == 0 || evidence.len() > 500 {
+                return Err(EnterpriseError::InsufficientEvidence);
+            }
+        }
+        
+        // Amount validation if provided
+        if let Some(amount) = dispute.amount_involved {
+            if amount <= 0 || amount > (i128::MAX / 1000) {
+                return Err(EnterpriseError::InvalidDisputeType);
+            }
+        }
+        
+        // Expiration validation
+        if dispute.expires_at <= dispute.created_at {
+            return Err(EnterpriseError::DisputeExpired);
+        }
+        
+        // Maximum dispute duration (1 year)
+        if dispute.expires_at > dispute.created_at + 31536000 {
+            return Err(EnterpriseError::DisputeTimeoutInvalid);
+        }
+        
+        Ok(())
+    }
+    
+    /// Validates Escalation structure
+    pub fn validate_escalation(escalation: &Escalation) -> Result<(), EnterpriseError> {
+        // Reason validation
+        if escalation.reason.len() < 10 || escalation.reason.len() > 500 {
+            return Err(EnterpriseError::EscalationLevelInvalid);
+        }
+        
+        // Escalated by address validation
+        let env = &escalation.reason.env();
+        let zero_addr = Address::from_str(env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+        
+        if escalation.escalated_by == zero_addr {
+            return Err(EnterpriseError::EscalationLevelInvalid);
+        }
+        
+        // Timeout validation
+        if escalation.timeout_at <= escalation.escalated_at {
+            return Err(EnterpriseError::EscalationExpired);
+        }
+        
+        // Maximum escalation timeout (6 months)
+        if escalation.timeout_at > escalation.escalated_at + 15552000 {
+            return Err(EnterpriseError::EscalationExpired);
+        }
+        
+        Ok(())
+    }
+    
+    /// Validates Mediator structure
+    pub fn validate_mediator(mediator: &Mediator) -> Result<(), EnterpriseError> {
+        // Name validation
+        if mediator.name.len() == 0 || mediator.name.len() > 100 {
+            return Err(EnterpriseError::MediatorNotFound);
+        }
+        
+        // Address validation
+        let env = &mediator.name.env();
+        let zero_addr = Address::from_str(env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+        
+        if mediator.address == zero_addr {
+            return Err(EnterpriseError::MediatorNotFound);
+        }
+        
+        // Specialization validation
+        if mediator.specialization.len() == 0 || mediator.specialization.len() > 10 {
+            return Err(EnterpriseError::MediatorNotActive);
+        }
+        
+        for spec in mediator.specialization.iter() {
+            if spec.len() == 0 || spec.len() > 50 {
+                return Err(EnterpriseError::MediatorNotActive);
+            }
+        }
+        
+        // Success rate validation (0-100)
+        if mediator.success_rate > 100 {
+            return Err(EnterpriseError::MediatorNotActive);
+        }
+        
+        // Cases validation
+        if mediator.resolved_cases > mediator.total_cases {
+            return Err(EnterpriseError::MediatorNotActive);
+        }
+        
+        Ok(())
+    }
+    
+    /// Validates DisputeSettings structure
+    pub fn validate_dispute_settings(settings: &DisputeSettings) -> Result<(), EnterpriseError> {
+        // Auto escalation days validation (1-90 days)
+        if settings.auto_escalation_days == 0 || settings.auto_escalation_days > 90 {
+            return Err(EnterpriseError::DisputeTimeoutInvalid);
+        }
+        
+        // Mediation timeout validation (1-180 days)
+        if settings.mediation_timeout == 0 || settings.mediation_timeout > 180 {
+            return Err(EnterpriseError::DisputeTimeoutInvalid);
+        }
+        
+        // Arbitration timeout validation (1-365 days)
+        if settings.arbitration_timeout == 0 || settings.arbitration_timeout > 365 {
+            return Err(EnterpriseError::DisputeTimeoutInvalid);
+        }
+        
+        // Max escalation levels validation (1-10)
+        if settings.max_escalation_levels == 0 || settings.max_escalation_levels > 10 {
+            return Err(EnterpriseError::EscalationLevelInvalid);
+        }
+        
+        // Evidence count validation
+        if settings.evidence_required && settings.min_evidence_count == 0 {
+            return Err(EnterpriseError::InsufficientEvidence);
+        }
+        
+        if settings.min_evidence_count > 20 {
+            return Err(EnterpriseError::InsufficientEvidence);
+        }
+        
+        // Dispute timeout validation (1-365 days)
+        if settings.dispute_timeout == 0 || settings.dispute_timeout > 365 {
+            return Err(EnterpriseError::DisputeTimeoutInvalid);
+        }
+        
+        // Escalation cooldown validation (1-72 hours)
+        if settings.escalation_cooldown == 0 || settings.escalation_cooldown > 72 {
+            return Err(EnterpriseError::DisputeTimeoutInvalid);
+        }
+        
+        Ok(())
+    }
+    
+    /// Validates BackupSchedule structure
+    pub fn validate_backup_schedule(schedule: &BackupSchedule) -> Result<(), EnterpriseError> {
+        // Name validation
+        if schedule.name.len() == 0 || schedule.name.len() > 100 {
+            return Err(EnterpriseError::BackupScheduleNotFound);
+        }
+        
+        // Frequency validation by direct comparison
+        let env = &schedule.name.env();
+        let daily = String::from_str(env, "daily");
+        let weekly = String::from_str(env, "weekly");
+        let monthly = String::from_str(env, "monthly");
+        
+        if schedule.frequency != daily 
+            && schedule.frequency != weekly 
+            && schedule.frequency != monthly {
+            return Err(EnterpriseError::BackupScheduleConflict);
+        }
+        
+        // Retention days validation (1-730 days, i.e., 2 years max)
+        if schedule.retention_days == 0 || schedule.retention_days > 730 {
+            return Err(EnterpriseError::BackupScheduleConflict);
+        }
+        
+        Ok(())
+    }
+    
+    /// Validates ReportTemplate structure
+    pub fn validate_report_template(template: &ReportTemplate) -> Result<(), EnterpriseError> {
+        // Name validation
+        if template.name.len() == 0 || template.name.len() > 100 {
+            return Err(EnterpriseError::ReportNotFound);
+        }
+        
+        // Description validation
+        if template.description.len() > 500 {
+            return Err(EnterpriseError::ReportNotFound);
+        }
+        
+        // Query parameters validation
+        if template.query_parameters.len() > 50 {
+            return Err(EnterpriseError::ReportGenerationFailed);
+        }
+        
+        Ok(())
+    }
+}
 
 /// Department structure for organizational hierarchy
 #[contracttype]
