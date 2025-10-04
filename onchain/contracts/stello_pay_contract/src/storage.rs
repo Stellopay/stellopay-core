@@ -1245,38 +1245,321 @@ impl LifecycleStorage {
     }
 }
 
-impl LifecycleStorage {
-    /// Store and get employee profile via special balance slot key
-    pub fn store_profile(env: &Env, employee: &Address, profile: &EmployeeProfile) {
-        let k = Address::from_string(&String::from_str(env, "PROFILE"));
-        env.storage().persistent().set(&DataKey::Balance(employee.clone(), k), profile);
-    }
+//-----------------------------------------------------------------------------
+// Comprehensive Reporting Data Structures
+//-----------------------------------------------------------------------------
 
-    pub fn get_profile(env: &Env, employee: &Address) -> Option<EmployeeProfile> {
-        let k = Address::from_string(&String::from_str(env, "PROFILE"));
-        env.storage().persistent().get(&DataKey::Balance(employee.clone(), k))
-    }
+/// Report type enumeration for different kinds of reports
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReportType {
+    PayrollSummary,
+    PayrollDetailed,
+    ComplianceReport,
+    TaxReport,
+    AuditReport,
+    PerformanceReport,
+    CustomReport(String),
+}
 
-    /// Onboarding workflows stored under ExtendedDataKey::Rule(workflow_id)
-    pub fn store_onboarding(env: &Env, workflow_id: u64, wf: &OnboardingWorkflow) {
-        env.storage().persistent().set(&ExtendedDataKey::Rule(workflow_id), wf);
-    }
+/// Report format enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReportFormat {
+    Json,
+    Csv,
+    Pdf,
+    Html,
+    Xml,
+}
 
-    pub fn get_onboarding(env: &Env, workflow_id: u64) -> Option<OnboardingWorkflow> {
-        env.storage().persistent().get(&ExtendedDataKey::Rule(workflow_id))
-    }
+/// Report status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReportStatus {
+    Pending,
+    Generating,
+    Completed,
+    Failed,
+    Scheduled,
+    Distributed,
+}
 
-    /// Offboarding workflows stored under ExtendedDataKey::Recovery(workflow_id)
-    pub fn store_offboarding(env: &Env, workflow_id: u64, wf: &OffboardingWorkflow) {
-        env.storage().persistent().set(&ExtendedDataKey::Recovery(workflow_id), wf);
-    }
+/// Comprehensive report structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollReport {
+    pub id: u64,
+    pub name: String,
+    pub report_type: ReportType,
+    pub format: ReportFormat,
+    pub status: ReportStatus,
+    pub employer: Address,
+    pub period_start: u64,
+    pub period_end: u64,
+    pub filters: Map<String, String>,
+    pub data: Map<String, String>,
+    pub metadata: ReportMetadata,
+    pub created_at: u64,
+    pub completed_at: Option<u64>,
+    pub file_hash: Option<String>,
+    pub file_size: Option<u64>,
+}
 
-    pub fn get_offboarding(env: &Env, workflow_id: u64) -> Option<OffboardingWorkflow> {
-        env.storage().persistent().get(&ExtendedDataKey::Recovery(workflow_id))
-    }
+/// Report metadata structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportMetadata {
+    pub total_employees: u32,
+    pub total_amount: i128,
+    pub total_transactions: u32,
+    pub compliance_score: u32,
+    pub generation_time_ms: u64,
+    pub data_sources: Vec<String>,
+    pub filters_applied: Vec<String>,
+}
 
-    /// Employee transfers stored under ExtendedDataKey::Preset(transfer_id)
-    pub fn store_transfer(env: &Env, transfer_id: u64, tr: &EmployeeTransfer) {
-        env.storage().persistent().set(&ExtendedDataKey::Preset(transfer_id), tr);
-    }
+/// Tax calculation structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaxCalculation {
+    pub employee: Address,
+    pub employer: Address,
+    pub jurisdiction: String,
+    pub gross_amount: i128,
+    pub tax_type: TaxType,
+    pub tax_rate: u32, // Basis points (e.g., 2500 = 25%)
+    pub tax_amount: i128,
+    pub net_amount: i128,
+    pub calculation_date: u64,
+    pub tax_period: String,
+    pub deductions: Vec<TaxDeduction>,
+}
+
+/// Tax type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum TaxType {
+    IncomeTax,
+    SocialSecurity,
+    Medicare,
+    Unemployment,
+    StateIncomeTax,
+    LocalTax,
+    Custom(String),
+}
+
+/// Tax deduction structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaxDeduction {
+    pub deduction_type: String,
+    pub amount: i128,
+    pub description: String,
+}
+
+/// Report schedule structure for automated report generation
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportSchedule {
+    pub id: u64,
+    pub name: String,
+    pub report_type: ReportType,
+    pub employer: Address,
+    pub frequency: ScheduleFrequency,
+    pub recipients: Vec<String>, // Email addresses or webhook URLs
+    pub filters: Map<String, String>,
+    pub format: ReportFormat,
+    pub is_active: bool,
+    pub created_at: u64,
+    pub next_execution: u64,
+    pub last_execution: Option<u64>,
+    pub execution_count: u32,
+}
+
+/// Compliance alert structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComplianceAlert {
+    pub id: u64,
+    pub alert_type: ComplianceAlertType,
+    pub severity: AlertSeverity,
+    pub jurisdiction: String,
+    pub employee: Option<Address>,
+    pub employer: Address,
+    pub title: String,
+    pub description: String,
+    pub violation_details: Map<String, String>,
+    pub recommended_actions: Vec<String>,
+    pub created_at: u64,
+    pub due_date: Option<u64>,
+    pub resolved_at: Option<u64>,
+    pub resolved_by: Option<Address>,
+    pub status: AlertStatus,
+}
+
+/// Compliance alert type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ComplianceAlertType {
+    MinimumWageViolation,
+    OvertimeViolation,
+    TaxWithholdingIssue,
+    MissingDocumentation,
+    LatePayment,
+    ComplianceDeadline,
+    RegulatoryChange,
+    AuditRequired,
+    Custom(String),
+}
+
+/// Alert severity enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum AlertSeverity {
+    Info,
+    Warning,
+    AlertError,
+    Critical,
+}
+
+/// Alert status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum AlertStatus {
+    Active,
+    Acknowledged,
+    InProgress,
+    Resolved,
+    Dismissed,
+}
+
+/// Dashboard metrics structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DashboardMetrics {
+    pub employer: Address,
+    pub period_start: u64,
+    pub period_end: u64,
+    pub total_employees: u32,
+    pub active_employees: u32,
+    pub total_payroll_amount: i128,
+    pub total_tax_amount: i128,
+    pub compliance_score: u32,
+    pub pending_payments: u32,
+    pub overdue_payments: u32,
+    pub active_alerts: u32,
+    pub resolved_alerts: u32,
+    pub last_updated: u64,
+    pub jurisdiction_metrics: Map<String, JurisdictionMetrics>,
+}
+
+/// Jurisdiction-specific metrics
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct JurisdictionMetrics {
+    pub jurisdiction: String,
+    pub employee_count: u32,
+    pub payroll_amount: i128,
+    pub tax_amount: i128,
+    pub compliance_score: u32,
+    pub violations_count: u32,
+    pub last_audit_date: u64,
+}
+
+/// Audit trail entry for reporting
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportAuditEntry {
+    pub id: u64,
+    pub report_id: u64,
+    pub action: String,
+    pub actor: Address,
+    pub timestamp: u64,
+    pub details: Map<String, String>,
+    pub ip_address: Option<String>,
+}
+
+/// Report distribution record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportDistribution {
+    pub id: u64,
+    pub report_id: u64,
+    pub recipient: String,
+    pub distribution_method: DistributionMethod,
+    pub status: DistributionStatus,
+    pub sent_at: u64,
+    pub delivered_at: Option<u64>,
+    pub error_message: Option<String>,
+    pub retry_count: u32,
+}
+
+/// Distribution method enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DistributionMethod {
+    Email,
+    Webhook,
+    FileSystem,
+    Api,
+    Custom(String),
+}
+
+/// Distribution status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DistributionStatus {
+    Pending,
+    Sent,
+    Delivered,
+    Failed,
+    Retrying,
+}
+
+//-----------------------------------------------------------------------------
+// Extended Storage Keys for Reporting
+//-----------------------------------------------------------------------------
+
+/// Reporting-specific data keys
+#[contracttype]
+pub enum ReportingDataKey {
+    // Reports
+    Report(u64),                    // report_id -> PayrollReport
+    NextReportId,                   // Next available report ID
+    EmployerReports(Address),       // employer -> Vec<u64> (report IDs)
+    ReportsByType(ReportType),      // report_type -> Vec<u64> (report IDs)
+    ReportsByStatus(ReportStatus),  // status -> Vec<u64> (report IDs)
+    
+    // Tax calculations
+    TaxCalculation(Address, u64),   // (employee, period) -> TaxCalculation
+    EmployerTaxes(Address),         // employer -> Vec<(Address, u64)> (employee, period pairs)
+    TaxesByJurisdiction(String),    // jurisdiction -> Vec<(Address, u64)>
+    
+    // Report schedules
+    ReportSchedule(u64),            // schedule_id -> ReportSchedule
+    NextScheduleId,                 // Next available schedule ID
+    EmployerSchedules(Address),     // employer -> Vec<u64> (schedule IDs)
+    ActiveSchedules,                // Vec<u64> (active schedule IDs)
+    
+    // Compliance alerts
+    ComplianceAlert(u64),           // alert_id -> ComplianceAlert
+    NextAlertId,                    // Next available alert ID
+    EmployerAlerts(Address),        // employer -> Vec<u64> (alert IDs)
+    ActiveAlerts,                   // Vec<u64> (active alert IDs)
+    AlertsByType(ComplianceAlertType), // alert_type -> Vec<u64> (alert IDs)
+    
+    // Dashboard metrics
+    DashboardMetrics(Address),      // employer -> DashboardMetrics
+    GlobalMetrics,                  // Global system metrics
+    
+    // Audit trail
+    ReportAudit(u64),              // audit_id -> ReportAuditEntry
+    NextAuditId,                   // Next available audit ID
+    ReportAuditTrail(u64),         // report_id -> Vec<u64> (audit entry IDs)
+    
+    // Distribution
+    ReportDistribution(u64),        // distribution_id -> ReportDistribution
+    NextDistributionId,             // Next available distribution ID
+    ReportDistributions(u64),       // report_id -> Vec<u64> (distribution IDs)
 }
