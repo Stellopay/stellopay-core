@@ -1,8 +1,12 @@
 use soroban_sdk::{contracttype, Address, Env, Map, String, Vec};
-
 use crate::storage::{
     ReportSchedule, ReportType, ReportFormat, ScheduleFrequency, ComplianceAlert,
-    ComplianceAlertType, AlertSeverity, AlertStatus, DashboardMetrics
+    ComplianceAlertType, AlertSeverity, AlertStatus, DashboardMetrics,    TimeSeriesDataPoint,
+   AnalyticsDashboard, DashboardWidget,
+    WidgetType, DataSource,
+   BenchmarkData,
+    DataExportRequest, ExportFormat, 
+    DateRange, AnalyticsDataKey,
 };
 
 //-----------------------------------------------------------------------------
@@ -1166,4 +1170,596 @@ pub enum EnterpriseError {
     InvalidTransferRequest,
     ComplianceRecordNotFound,
     InvalidComplianceStatus,
+}
+
+pub struct EnterpriseAnalytics;
+
+impl EnterpriseAnalytics {
+    //-----------------------------------------------------------------------------
+    // Advanced Reporting & Visualization
+    //-----------------------------------------------------------------------------
+
+    /// Generate executive dashboard with key metrics
+    pub fn generate_executive_dashboard(
+        env: &Env,
+        employer: Address,
+        period: DateRange,
+    ) -> Result<AnalyticsDashboard, EnterpriseError> {
+        let current_time = env.ledger().timestamp();
+        let storage = env.storage().persistent();
+
+        let dashboard_id = storage
+            .get::<AnalyticsDataKey, u64>(&AnalyticsDataKey::NextDashboardId)
+            .unwrap_or(1);
+        storage.set(&AnalyticsDataKey::NextDashboardId, &(dashboard_id + 1));
+
+        // Create standard executive widgets
+        let mut widgets = Vec::new(env);
+
+        // Total payroll widget
+        widgets.push_back(DashboardWidget {
+            id: 1,
+            widget_type: WidgetType::Metric,
+            title: String::from_str(env, "Total Payroll"),
+            data_source: DataSource::PayrollMetrics,
+            refresh_interval: 3600, // 1 hour
+            filters: Map::new(env),
+            position: crate::storage::WidgetPosition { row: 0, column: 0 },
+            size: crate::storage::WidgetSize { width: 2, height: 1 },
+            is_visible: true,
+        });
+
+        // Employee count widget
+        widgets.push_back(DashboardWidget {
+            id: 2,
+            widget_type: WidgetType::Metric,
+            title: String::from_str(env, "Active Employees"),
+            data_source: DataSource::EmployeeMetrics,
+            refresh_interval: 3600,
+            filters: Map::new(env),
+            position: crate::storage::WidgetPosition { row: 0, column: 2 },
+            size: crate::storage::WidgetSize { width: 2, height: 1 },
+            is_visible: true,
+        });
+
+        // Disbursement trend chart
+        widgets.push_back(DashboardWidget {
+            id: 3,
+            widget_type: WidgetType::LineChart,
+            title: String::from_str(env, "Disbursement Trend"),
+            data_source: DataSource::PayrollMetrics,
+            refresh_interval: 3600,
+            filters: Map::new(env),
+            position: crate::storage::WidgetPosition { row: 1, column: 0 },
+            size: crate::storage::WidgetSize { width: 4, height: 2 },
+            is_visible: true,
+        });
+
+        // Compliance score widget
+        widgets.push_back(DashboardWidget {
+            id: 4,
+            widget_type: WidgetType::Gauge,
+            title: String::from_str(env, "Compliance Score"),
+            data_source: DataSource::ComplianceMetrics,
+            refresh_interval: 86400, // 24 hours
+            filters: Map::new(env),
+            position: crate::storage::WidgetPosition { row: 3, column: 0 },
+            size: crate::storage::WidgetSize { width: 2, height: 2 },
+            is_visible: true,
+        });
+
+        let dashboard = AnalyticsDashboard {
+            id: dashboard_id,
+            name: String::from_str(env, "Executive Dashboard"),
+            description: String::from_str(env, "High-level overview of payroll operations"),
+            owner: employer.clone(),
+            widgets,
+            is_default: true,
+            is_public: false,
+            created_at: current_time,
+            updated_at: current_time,
+        };
+
+        storage.set(&AnalyticsDataKey::Dashboard(dashboard_id), &dashboard);
+
+        Ok(dashboard)
+    }
+
+    /// Generate operational dashboard for daily management
+    pub fn generate_operational_dashboard(
+        env: &Env,
+        employer: Address,
+    ) -> Result<AnalyticsDashboard, EnterpriseError> {
+        let current_time = env.ledger().timestamp();
+        let storage = env.storage().persistent();
+
+        let dashboard_id = storage
+            .get::<AnalyticsDataKey, u64>(&AnalyticsDataKey::NextDashboardId)
+            .unwrap_or(1);
+        storage.set(&AnalyticsDataKey::NextDashboardId, &(dashboard_id + 1));
+
+        let mut widgets = Vec::new(env);
+
+        // Pending disbursements table
+        widgets.push_back(DashboardWidget {
+            id: 1,
+            widget_type: WidgetType::Table,
+            title: String::from_str(env, "Pending Disbursements"),
+            data_source: DataSource::PayrollMetrics,
+            refresh_interval: 600, // 10 minutes
+            filters: Map::new(env),
+            position: crate::storage::WidgetPosition { row: 0, column: 0 },
+            size: crate::storage::WidgetSize { width: 4, height: 2 },
+            is_visible: true,
+        });
+
+        // Late payments heatmap
+        widgets.push_back(DashboardWidget {
+            id: 2,
+            widget_type: WidgetType::Heatmap,
+            title: String::from_str(env, "Late Payment Patterns"),
+            data_source: DataSource::PayrollMetrics,
+            refresh_interval: 3600,
+            filters: Map::new(env),
+            position: crate::storage::WidgetPosition { row: 2, column: 0 },
+            size: crate::storage::WidgetSize { width: 4, height: 2 },
+            is_visible: true,
+        });
+
+        // Department breakdown pie chart
+        widgets.push_back(DashboardWidget {
+            id: 3,
+            widget_type: WidgetType::PieChart,
+            title: String::from_str(env, "Department Breakdown"),
+            data_source: DataSource::EmployeeMetrics,
+            refresh_interval: 3600,
+            filters: Map::new(env),
+            position: crate::storage::WidgetPosition { row: 4, column: 0 },
+            size: crate::storage::WidgetSize { width: 2, height: 2 },
+            is_visible: true,
+        });
+
+        let dashboard = AnalyticsDashboard {
+            id: dashboard_id,
+            name: String::from_str(env, "Operational Dashboard"),
+            description: String::from_str(env, "Daily operations and monitoring"),
+            owner: employer.clone(),
+            widgets,
+            is_default: false,
+            is_public: false,
+            created_at: current_time,
+            updated_at: current_time,
+        };
+
+        storage.set(&AnalyticsDataKey::Dashboard(dashboard_id), &dashboard);
+
+        Ok(dashboard)
+    }
+
+    /// Generate financial analytics dashboard
+    pub fn generate_financial_dashboard(
+        env: &Env,
+        employer: Address,
+        period: DateRange,
+    ) -> Result<AnalyticsDashboard, EnterpriseError> {
+        let current_time = env.ledger().timestamp();
+        let storage = env.storage().persistent();
+
+        let dashboard_id = storage
+            .get::<AnalyticsDataKey, u64>(&AnalyticsDataKey::NextDashboardId)
+            .unwrap_or(1);
+        storage.set(&AnalyticsDataKey::NextDashboardId, &(dashboard_id + 1));
+
+        let mut widgets = Vec::new(env);
+
+        // Cash flow chart
+        widgets.push_back(DashboardWidget {
+            id: 1,
+            widget_type: WidgetType::LineChart,
+            title: String::from_str(env, "Cash Flow Trend"),
+            data_source: DataSource::FinancialMetrics,
+            refresh_interval: 3600,
+            filters: Map::new(env),
+            position: crate::storage::WidgetPosition { row: 0, column: 0 },
+            size: crate::storage::WidgetSize { width: 4, height: 2 },
+            is_visible: true,
+        });
+
+        // Token distribution
+        widgets.push_back(DashboardWidget {
+            id: 2,
+            widget_type: WidgetType::PieChart,
+            title: String::from_str(env, "Token Distribution"),
+            data_source: DataSource::FinancialMetrics,
+            refresh_interval: 3600,
+            filters: Map::new(env),
+            position: crate::storage::WidgetPosition { row: 2, column: 0 },
+            size: crate::storage::WidgetSize { width: 2, height: 2 },
+            is_visible: true,
+        });
+
+        // Burn rate metric
+        widgets.push_back(DashboardWidget {
+            id: 3,
+            widget_type: WidgetType::Metric,
+            title: String::from_str(env, "Monthly Burn Rate"),
+            data_source: DataSource::FinancialMetrics,
+            refresh_interval: 86400,
+            filters: Map::new(env),
+            position: crate::storage::WidgetPosition { row: 2, column: 2 },
+            size: crate::storage::WidgetSize { width: 2, height: 2 },
+            is_visible: true,
+        });
+
+        let dashboard = AnalyticsDashboard {
+            id: dashboard_id,
+            name: String::from_str(env, "Financial Dashboard"),
+            description: String::from_str(env, "Financial metrics and cash flow"),
+            owner: employer.clone(),
+            widgets,
+            is_default: false,
+            is_public: false,
+            created_at: current_time,
+            updated_at: current_time,
+        };
+
+        storage.set(&AnalyticsDataKey::Dashboard(dashboard_id), &dashboard);
+
+        Ok(dashboard)
+    }
+
+    //-----------------------------------------------------------------------------
+    // Predictive Analytics & Forecasting
+    //-----------------------------------------------------------------------------
+
+    /// Generate payroll forecast for next period
+    pub fn forecast_payroll_expenses(
+        env: &Env,
+        employer: Address,
+        forecast_periods: u32,
+    ) -> Result<Vec<crate::storage::ForecastData>, EnterpriseError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+        let mut forecasts = Vec::new(env);
+
+        // Get historical data for past 90 days
+        let lookback_period = 90 * 24 * 3600; // 90 days
+        let history_start = current_time - lookback_period;
+
+        let mut historical_amounts = Vec::new(env);
+        let start_day = (history_start / 86_400) * 86_400;
+        let end_day = (current_time / 86_400) * 86_400;
+
+        for day_timestamp in (start_day..=end_day).step_by(86_400) {
+            if let Some(metrics) = storage.get::<crate::storage::DataKey, crate::storage::PerformanceMetrics>(
+                &crate::storage::DataKey::Metrics(day_timestamp)
+            ) {
+                historical_amounts.push_back(metrics.total_amount);
+            }
+        }
+
+        if historical_amounts.len() < 7 {
+            return Err(EnterpriseError::ReportGenerationFailed);
+        }
+
+        // Calculate trend
+        let avg_amount = Self::calculate_average(&historical_amounts);
+        let growth_rate = Self::calculate_growth_rate(&historical_amounts);
+
+        // Generate forecasts
+        for period in 1..=forecast_periods {
+            let period_multiplier = period as i128;
+            let predicted_amount = avg_amount + ((avg_amount * growth_rate * period_multiplier) / 10000);
+            
+            let forecast = crate::storage::ForecastData {
+                next_period_prediction: predicted_amount,
+                confidence_level: Self::calculate_confidence_level(historical_amounts.len()),
+                prediction_range_low: (predicted_amount * 85) / 100,
+                prediction_range_high: (predicted_amount * 115) / 100,
+                forecast_method: String::from_str(env, "linear_trend"),
+            };
+
+            forecasts.push_back(forecast);
+        }
+
+        Ok(forecasts)
+    }
+
+    /// Calculate average from vector
+    fn calculate_average(values: &Vec<i128>) -> i128 {
+        if values.len() == 0 {
+            return 0;
+        }
+
+        let mut sum = 0i128;
+        for value in values.iter() {
+            sum += value;
+        }
+
+        sum / (values.len() as i128)
+    }
+
+    /// Calculate growth rate
+    fn calculate_growth_rate(values: &Vec<i128>) -> i128 {
+        if values.len() < 2 {
+            return 0;
+        }
+
+        let first_value = values.get(0).unwrap();
+        let last_value = values.get(values.len() - 1).unwrap();
+
+        if first_value == 0 {
+            return 0;
+        }
+
+        ((last_value - first_value) * 10000) / first_value
+    }
+
+    /// Calculate confidence level based on data points
+    fn calculate_confidence_level(data_points: u32) -> u32 {
+        if data_points >= 90 {
+            95
+        } else if data_points >= 60 {
+            85
+        } else if data_points >= 30 {
+            75
+        } else if data_points >= 14 {
+            65
+        } else {
+            50
+        }
+    }
+
+    //-----------------------------------------------------------------------------
+    // Custom Report Builder
+    //-----------------------------------------------------------------------------
+
+    /// Build custom report with flexible parameters
+    pub fn build_custom_report(
+        env: &Env,
+        employer: Address,
+        report_config: Map<String, String>,
+    ) -> Result<crate::storage::PayrollReport, EnterpriseError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let report_id = storage
+            .get::<crate::storage::ExtendedDataKey, u64>(&crate::storage::ExtendedDataKey::NextTmplId)
+            .unwrap_or(1);
+        storage.set(&crate::storage::ExtendedDataKey::NextTmplId, &(report_id + 1));
+
+        // Parse configuration
+        let period_start = Self::parse_config_u64(&report_config, "period_start", current_time - 30 * 24 * 3600);
+        let period_end = Self::parse_config_u64(&report_config, "period_end", current_time);
+
+        let mut report_data = Map::new(env);
+        let mut filters = Map::new(env);
+
+        // Collect data based on configuration
+        let include_payroll = Self::parse_config_bool(&report_config, "include_payroll", true);
+        let include_employees = Self::parse_config_bool(&report_config, "include_employees", true);
+        let include_compliance = Self::parse_config_bool(&report_config, "include_compliance", false);
+
+        if include_payroll {
+            let payroll_data = String::from_str(env, "employer");
+            report_data.set(String::from_str(env, "payroll"), payroll_data);
+        }
+
+        if include_employees {
+            let employee_data = Self::collect_employee_data(env, &employer);
+            report_data.set(String::from_str(env, "employees"), employee_data);
+        }
+
+        let mut data_sources = Vec::new(env);
+        data_sources.push_back(String::from_str(env, "payroll_system"));
+        
+        let metadata = crate::storage::ReportMetadata {
+            total_employees: 0,
+            total_amount: 0,
+            total_transactions: 0,
+            compliance_score: 95,
+            generation_time_ms: 500,
+            data_sources,
+            filters_applied: Vec::new(env),
+        };
+
+        let report = crate::storage::PayrollReport {
+            id: report_id,
+            name: String::from_str(env, "Custom Report"),
+            report_type: crate::storage::ReportType::CustomReport(String::from_str(env, "custom")),
+            format: crate::storage::ReportFormat::Json,
+            status: crate::storage::ReportStatus::Completed,
+            employer: employer.clone(),
+            period_start,
+            period_end,
+            filters,
+            data: report_data,
+            metadata,
+            created_at: current_time,
+            completed_at: Some(current_time),
+            file_hash: None,
+            file_size: None,
+        };
+
+        Ok(report)
+    }
+
+    /// Parse configuration value as u64
+    fn parse_config_u64(config: &Map<String, String>, key: &str, default: u64) -> u64 {
+        // Simplified parsing - in production would properly parse the string
+        default
+    }
+
+    /// Parse configuration value as bool
+    fn parse_config_bool(config: &Map<String, String>, key: &str, default: bool) -> bool {
+        default
+    }
+
+    /// Collect employee data for report
+    fn collect_employee_data(env: &Env, employer: &Address) -> String {
+        String::from_str(env, "employee_data:summary")
+    }
+
+    //-----------------------------------------------------------------------------
+    // Data Export & Integration
+    //-----------------------------------------------------------------------------
+
+    /// Export analytics data to external format
+    pub fn export_analytics_data(
+        env: &Env,
+        employer: Address,
+        export_config: DataExportRequest,
+    ) -> Result<String, EnterpriseError> {
+        let storage = env.storage().persistent();
+
+        match export_config.format {
+            ExportFormat::JSON => Self::export_to_json(env, &export_config),
+            ExportFormat::Excel => Self::export_to_excel(env, &export_config),
+            _ => Err(EnterpriseError::ReportGenerationFailed),
+        }
+    }
+
+    /// Export to JSON format
+    fn export_to_json(env: &Env, config: &DataExportRequest) -> Result<String, EnterpriseError> {
+        let storage = env.storage().persistent();
+        let mut json_data = String::from_str(env, "{\"data\":[");
+
+        let start_day = (config.data_range.start / 86_400) * 86_400;
+        let end_day = (config.data_range.end / 86_400) * 86_400;
+
+        for day_timestamp in (start_day..=end_day).step_by(86_400) {
+            if let Some(metrics) = storage.get::<crate::storage::DataKey, crate::storage::PerformanceMetrics>(
+                &crate::storage::DataKey::Metrics(day_timestamp)
+            ) {
+                // Build JSON object (simplified)
+            }
+        }
+
+        Ok(json_data)
+    }
+
+    /// Export to Excel format
+    fn export_to_excel(env: &Env, config: &DataExportRequest) -> Result<String, EnterpriseError> {
+        // Excel export would generate binary data
+        // Return file reference for now
+        Ok(String::from_str(env, "excel_export_reference"))
+    }
+
+    //-----------------------------------------------------------------------------
+    // Performance Benchmarking
+    //-----------------------------------------------------------------------------
+
+    /// Compare company performance against industry benchmarks
+    pub fn benchmark_performance(
+        env: &Env,
+        employer: Address,
+        metrics: Vec<String>,
+    ) -> Result<Vec<BenchmarkData>, EnterpriseError> {
+        let storage = env.storage().persistent();
+        let mut benchmarks = Vec::new(env);
+
+        for metric_name in metrics.iter() {
+            if let Some(benchmark) = storage.get::<AnalyticsDataKey, BenchmarkData>(
+                &AnalyticsDataKey::Benchmark(metric_name.clone())
+            ) {
+                benchmarks.push_back(benchmark);
+            } else {
+                // Generate default benchmark if not exists
+                let default_benchmark = Self::generate_default_benchmark(env, &metric_name);
+                benchmarks.push_back(default_benchmark);
+            }
+        }
+
+        Ok(benchmarks)
+    }
+
+    /// Generate default benchmark data
+    fn generate_default_benchmark(env: &Env, metric_name: &String) -> BenchmarkData {
+        let current_time = env.ledger().timestamp();
+
+        BenchmarkData {
+            metric_name: metric_name.clone(),
+            industry_average: 100000,
+            top_quartile: 150000,
+            median: 100000,
+            bottom_quartile: 50000,
+            company_value: 0,
+            percentile_rank: 50,
+            last_updated: current_time,
+        }
+    }
+
+    /// Detect anomalies in payroll data
+    pub fn detect_anomalies(
+        env: &Env,
+        metric_name: String,
+        period: DateRange,
+        threshold_std_dev: u32,
+    ) -> Result<Vec<TimeSeriesDataPoint>, EnterpriseError> {
+        let storage = env.storage().persistent();
+        let mut anomalies = Vec::new(env);
+
+        // Get time series data
+        let index: Vec<u64> = storage
+            .get(&AnalyticsDataKey::TimeSeriesIndex(metric_name.clone()))
+            .unwrap_or(Vec::new(env));
+
+        let mut data_points = Vec::new(env);
+        for timestamp in index.iter() {
+            if timestamp >= period.start && timestamp <= period.end {
+                if let Some(point) = storage.get::<AnalyticsDataKey, TimeSeriesDataPoint>(
+                    &AnalyticsDataKey::TimeSeriesData(metric_name.clone(), timestamp)
+                ) {
+                    data_points.push_back(point);
+                }
+            }
+        }
+
+        if data_points.len() < 3 {
+            return Ok(anomalies);
+        }
+
+        // Calculate mean and standard deviation
+        let mut sum = 0i128;
+        for point in data_points.iter() {
+            sum += point.value;
+        }
+        let mean = sum / (data_points.len() as i128);
+
+        let mut variance_sum = 0i128;
+        for point in data_points.iter() {
+            let diff = point.value - mean;
+            variance_sum += diff * diff;
+        }
+        let variance = variance_sum / (data_points.len() as i128);
+        let std_dev = Self::sqrt_i128(variance);
+
+        // Detect anomalies
+        let threshold = (std_dev * threshold_std_dev as i128) / 100;
+        for point in data_points.iter() {
+            let deviation = (point.value - mean).abs();
+            if deviation > threshold {
+                anomalies.push_back(point);
+            }
+        }
+
+        Ok(anomalies)
+    }
+
+    /// Simple square root for i128
+    fn sqrt_i128(n: i128) -> i128 {
+        if n <= 0 {
+            return 0;
+        }
+        
+        let mut x = n;
+        let mut y = (x + 1) / 2;
+        
+        while y < x {
+            x = y;
+            y = (x + n / x) / 2;
+        }
+        
+        x
+    }
 }

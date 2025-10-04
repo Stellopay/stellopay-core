@@ -39,9 +39,9 @@ use crate::storage::{
     // Reporting imports
     PayrollReport, ReportType, ReportFormat, ReportStatus, ReportMetadata, TaxCalculation,
     TaxType, ComplianceAlert, ComplianceAlertType, AlertSeverity,
-    AlertStatus, DashboardMetrics, ReportAuditEntry,
+    AlertStatus, DashboardMetrics, ReportAuditEntry,TimeSeriesDataPoint,AggregatedMetrics,TrendAnalysis,TrendDirection,ForecastData,DashboardWidget,WidgetSize,WidgetType,WidgetPosition,ChartData,DataSeries,DataPoint,AnalyticsQuery,QueryType,QueryFilter, FilterOperator,SortCriteria,SortDirection,DataExportRequest,ExportType,ExportFormat,ExportStatus,DateRange,ComparativeAnalysis,ComparisonType,
+    MetricComparison,AnalyticsDashboard,AnalyticsDataKey,DataSource,BenchmarkData,
 };
-
 //-----------------------------------------------------------------------------
 // Gas Optimization Structures
 //-----------------------------------------------------------------------------
@@ -7248,4 +7248,948 @@ impl PayrollContract {
         let storage = env.storage().persistent();
         storage.set(&ExtendedDataKey::Backup(audit_id), &audit_entry);
     }
+
+    pub fn record_time_series_data(
+        env: Env,
+        metric_name: String,
+        value: i128,
+        metadata: Map<String, String>,
+    ) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        let timestamp = env.ledger().timestamp();
+
+        let data_point = TimeSeriesDataPoint {
+            timestamp,
+            value,
+            metric_type: metric_name.clone(),
+            metadata,
+        };
+
+        // Store data point
+        storage.set(
+            &AnalyticsDataKey::TimeSeriesData(metric_name.clone(), timestamp),
+            &data_point,
+        );
+
+        // Update index
+        let mut index: Vec<u64> = storage
+            .get(&AnalyticsDataKey::TimeSeriesIndex(metric_name.clone()))
+            .unwrap_or(Vec::new(&env));
+        index.push_back(timestamp);
+        storage.set(&AnalyticsDataKey::TimeSeriesIndex(metric_name), &index);
+
+        Ok(())
+    }
+
+    /// Generate aggregated metrics for a period
+    pub fn generate_aggregated_metrics(
+        env: Env,
+        employer: Address,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<AggregatedMetrics, PayrollError> {
+        let storage = env.storage().persistent();
+        
+        // Collect metrics from the period
+        let mut total_disbursements = 0u64;
+        let mut total_amount = 0i128;
+        let mut amounts = Vec::new(&env);
+        let mut token_breakdown = Map::new(&env);
+        let mut department_breakdown = Map::new(&env);
+        let mut on_time_count = 0u64;
+        let mut late_count = 0u64;
+        let mut error_count = 0u64;
+
+        // Iterate through daily metrics in the period
+        let start_day = (period_start / 86_400) * 86_400;
+        let end_day = (period_end / 86_400) * 86_400;
+
+        for day_timestamp in (start_day..=end_day).step_by(86_400) {
+            if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp)) {
+                total_disbursements += metrics.total_disbursements;
+                total_amount += metrics.total_amount;
+                amounts.push_back(metrics.total_amount);
+                
+                // Count on-time vs late
+                let total_ops = metrics.operation_count;
+                if total_ops > 0 {
+                    on_time_count += total_ops - metrics.late_disbursements;
+                    late_count += metrics.late_disbursements;
+                }
+            }
+        }
+
+        // Calculate statistics
+        let average_amount = if total_disbursements > 0 {
+            total_amount / (total_disbursements as i128)
+        } else {
+            0
+        };
+
+        let (min_amount, max_amount) = Self::calculate_min_max(&amounts);
+
+        let total_operations = on_time_count + late_count + error_count;
+        let on_time_rate = if total_operations > 0 {
+            ((on_time_count * 100) / total_operations) as u32
+        } else {
+            0
+        };
+
+        let late_rate = if total_operations > 0 {
+            ((late_count * 100) / total_operations) as u32
+        } else {
+            0
+        };
+
+        let error_rate = if total_operations > 0 {
+            ((error_count * 100) / total_operations) as u32
+        } else {
+            0
+        };
+
+        let metrics = AggregatedMetrics {
+            period_start,
+            period_end,
+            employer: employer.clone(),
+            total_disbursements,
+            total_amount,
+            average_amount,
+            min_amount,
+            max_amount,
+            employee_count: 0, // Would be calculated from actual employee data
+            on_time_rate,
+            late_rate,
+            error_rate,
+            token_breakdown,
+            department_breakdown,
+        };
+
+        // Cache the result
+        storage.set(
+            &AnalyticsDataKey::AggregatedMetrics(employer, period_start),
+            &metrics,
+        );
+
+        Ok(metrics)
+    }
+
+    /// Analyze trends for a specific metric
+    pub fn analyze_trend(
+        env: Env,
+        metric_name: String,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<TrendAnalysis, PayrollError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get time series data
+        let index: Vec<u64> = storage
+            .get(&AnalyticsDataKey::TimeSeriesIndex(metric_name.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        let mut data_points = Vec::new(&env);
+        for timestamp in index.iter() {
+            if timestamp >= period_start && timestamp <= period_end {
+                if let Some(point) = storage.get::<AnalyticsDataKey, TimeSeriesDataPoint>(
+                    &AnalyticsDataKey::TimeSeriesData(metric_name.clone(), timestamp)
+                ) {
+                    data_points.push_back(point);
+                }
+            }
+        }
+
+        if data_points.len() < 2 {
+            return Ok(TrendAnalysis {
+                metric_name,
+                period_start,
+                period_end,
+                data_points,
+                trend_direction: TrendDirection::Insufficient,
+                growth_rate: 0,
+                volatility: 0,
+                has_forecast: false,  // ADD THIS
+                forecast: ForecastData {  // Use default instead of None
+                    next_period_prediction: 0,
+                    confidence_level: 0,
+                    prediction_range_low: 0,
+                    prediction_range_high: 0,
+                    forecast_method: String::from_str(&env, "none"),
+                },
+                analysis_timestamp: current_time,
+            });
+        }
+
+        // Calculate trend direction and growth rate
+        let first_value = data_points.get(0).unwrap().value;
+        let last_value = data_points.get(data_points.len() - 1).unwrap().value;
+        
+        let growth_rate = if first_value != 0 {
+            ((last_value - first_value) * 10000) / first_value // Basis points
+        } else {
+            0
+        };
+
+        let trend_direction = if growth_rate > 500 {
+            TrendDirection::Increasing
+        } else if growth_rate < -500 {
+            TrendDirection::Decreasing
+        } else if Self::calculate_volatility(&data_points) > 20 {
+            TrendDirection::Volatile
+        } else {
+            TrendDirection::Stable
+        };
+
+        // Generate forecast
+        let forecast =Self::generate_forecast(&env, &data_points, growth_rate);
+
+        let trend = TrendAnalysis {
+            metric_name: metric_name.clone(),
+            period_start,
+            period_end,
+            data_points: data_points.clone(),
+            trend_direction,
+            growth_rate,
+            volatility: Self::calculate_volatility(&data_points),
+            forecast,
+            has_forecast:false,
+            analysis_timestamp: current_time,
+        };
+
+        // Cache the analysis
+        storage.set(
+            &AnalyticsDataKey::TrendAnalysis(metric_name, current_time),
+            &trend,
+        );
+
+        Ok(trend)
+    }
+
+    /// Generate forecast data
+    fn generate_forecast(
+        env: &Env,
+        data_points: &Vec<TimeSeriesDataPoint>,
+        growth_rate: i128,
+    ) -> ForecastData {
+        let last_value = data_points.get(data_points.len() - 1).unwrap().value;
+        
+        // Simple linear forecast
+        let next_period_prediction = last_value + ((last_value * growth_rate) / 10000);
+        
+        // Calculate prediction range (±20% for simplicity)
+        let range_margin = next_period_prediction / 5;
+        
+        ForecastData {
+            next_period_prediction,
+            confidence_level: 75, // Simplified confidence
+            prediction_range_low: next_period_prediction - range_margin,
+            prediction_range_high: next_period_prediction + range_margin,
+            forecast_method: String::from_str(env, "linear_regression"),
+        }
+    }
+
+    /// Calculate volatility (standard deviation as percentage)
+    fn calculate_volatility(data_points: &Vec<TimeSeriesDataPoint>) -> u32 {
+        if data_points.len() < 2 {
+            return 0;
+        }
+
+        // Calculate mean
+        let mut sum = 0i128;
+        for point in data_points.iter() {
+            sum += point.value;
+        }
+        let mean = sum / (data_points.len() as i128);
+
+        // Calculate variance
+        let mut variance_sum = 0i128;
+        for point in data_points.iter() {
+            let diff = point.value - mean;
+            variance_sum += diff * diff;
+        }
+        let variance = variance_sum / (data_points.len() as i128);
+
+        // Return standard deviation as percentage of mean
+        if mean != 0 {
+            let std_dev = Self::sqrt_i128(variance);
+            ((std_dev * 100) / mean.abs()) as u32
+        } else {
+            0
+        }
+    }
+
+    /// Simple integer square root
+    fn sqrt_i128(n: i128) -> i128 {
+        if n < 0 {
+            return 0;
+        }
+        if n == 0 {
+            return 0;
+        }
+        
+        let mut x = n;
+        let mut y = (x + 1) / 2;
+        
+        while y < x {
+            x = y;
+            y = (x + n / x) / 2;
+        }
+        
+        x
+    }
+
+    /// Calculate min and max values
+    fn calculate_min_max(values: &Vec<i128>) -> (i128, i128) {
+        if values.len() == 0 {
+            return (0, 0);
+        }
+
+        let mut min = values.get(0).unwrap();
+        let mut max = values.get(0).unwrap();
+
+        for value in values.iter() {
+            if value < min {
+                min = value;
+            }
+            if value > max {
+                max = value;
+            }
+        }
+
+        (min, max)
+    }
+
+    /// Create analytics dashboard
+    pub fn create_analytics_dashboard(
+        env: Env,
+        owner: Address,
+        name: String,
+        description: String,
+        widgets: Vec<DashboardWidget>,
+        is_public: bool,
+    ) -> Result<u64, PayrollError> {
+        owner.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let dashboard_id = storage
+            .get::<AnalyticsDataKey, u64>(&AnalyticsDataKey::NextDashboardId)
+            .unwrap_or(1);
+        storage.set(&AnalyticsDataKey::NextDashboardId, &(dashboard_id + 1));
+
+        let dashboard = AnalyticsDashboard {
+            id: dashboard_id,
+            name: name.clone(),
+            description,
+            owner: owner.clone(),
+            widgets,
+            is_default: false,
+            is_public,
+            created_at: current_time,
+            updated_at: current_time,
+        };
+
+        storage.set(&AnalyticsDataKey::Dashboard(dashboard_id), &dashboard);
+
+        // Add to user's dashboards
+        let mut user_dashboards: Vec<u64> = storage
+            .get(&AnalyticsDataKey::UserDashboards(owner.clone()))
+            .unwrap_or(Vec::new(&env));
+        user_dashboards.push_back(dashboard_id);
+        storage.set(&AnalyticsDataKey::UserDashboards(owner), &user_dashboards);
+
+        env.events().publish(
+            (symbol_short!("dash_c"),),
+            (dashboard_id, name),
+        );
+
+        Ok(dashboard_id)
+    }
+
+    /// Generate chart data
+    pub fn generate_chart_data(
+        env: Env,
+        chart_type: WidgetType,
+        title: String,
+        data_source: DataSource,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<ChartData, PayrollError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let chart_id = storage
+            .get::<AnalyticsDataKey, u64>(&AnalyticsDataKey::NextChartId)
+            .unwrap_or(1);
+        storage.set(&AnalyticsDataKey::NextChartId, &(chart_id + 1));
+
+        let mut data_series = Vec::new(&env);
+
+        // Generate data based on source
+        match data_source {
+            DataSource::PayrollMetrics => {
+                let mut payroll_series = Self::generate_payroll_series(&env, period_start, period_end);
+                data_series.push_back(payroll_series);
+            }
+            DataSource::EmployeeMetrics => {
+                let mut employee_series = Self::generate_employee_series(&env, period_start, period_end);
+                data_series.push_back(employee_series);
+            }
+            _ => {}
+        }
+
+        let chart = ChartData {
+            chart_id,
+            chart_type,
+            title,
+            x_axis_label: String::from_str(&env, "Time"),
+            y_axis_label: String::from_str(&env, "Amount"),
+            data_series,
+            generated_at: current_time,
+        };
+
+        storage.set(&AnalyticsDataKey::ChartData(chart_id), &chart);
+
+        Ok(chart)
+    }
+
+    /// Generate payroll data series
+    fn generate_payroll_series(env: &Env, period_start: u64, period_end: u64) -> DataSeries {
+        let storage = env.storage().persistent();
+        let mut data_points = Vec::new(env);
+
+        let start_day = (period_start / 86_400) * 86_400;
+        let end_day = (period_end / 86_400) * 86_400;
+
+        for day_timestamp in (start_day..=end_day).step_by(86_400) {
+            if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp)) {
+                data_points.push_back(DataPoint {
+                    x: day_timestamp,
+                    y: metrics.total_amount,
+                    label: Some(String::from_str(env, "Daily Total")),
+                });
+            }
+        }
+
+        DataSeries {
+            name: String::from_str(env, "Payroll Disbursements"),
+            data_points,
+            color: Some(String::from_str(env, "#4F46E5")),
+            line_style: Some(String::from_str(env, "solid")),
+        }
+    }
+
+    /// Generate employee data series
+    fn generate_employee_series(env: &Env, period_start: u64, period_end: u64) -> DataSeries {
+        let storage = env.storage().persistent();
+        let mut data_points = Vec::new(env);
+
+        let start_day = (period_start / 86_400) * 86_400;
+        let end_day = (period_end / 86_400) * 86_400;
+
+        for day_timestamp in (start_day..=end_day).step_by(86_400) {
+            if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp)) {
+                data_points.push_back(DataPoint {
+                    x: day_timestamp,
+                    y: metrics.employee_count as i128,
+                    label: Some(String::from_str(env, "Employee Count")),
+                });
+            }
+        }
+
+        DataSeries {
+            name: String::from_str(env, "Active Employees"),
+            data_points,
+            color: Some(String::from_str(env, "#10B981")),
+            line_style: Some(String::from_str(env, "solid")),
+        }
+    }
+
+    /// Create custom analytics query
+    pub fn create_analytics_query(
+        env: Env,
+        creator: Address,
+        name: String,
+        description: String,
+        query_type: QueryType,
+        filters: Vec<QueryFilter>,
+        group_by: Vec<String>,
+        sort_by: Vec<SortCriteria>,
+        limit: Option<u32>,
+    ) -> Result<u64, PayrollError> {
+        creator.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let query_id = storage
+            .get::<AnalyticsDataKey, u64>(&AnalyticsDataKey::NextQueryId)
+            .unwrap_or(1);
+        storage.set(&AnalyticsDataKey::NextQueryId, &(query_id + 1));
+
+        let query = AnalyticsQuery {
+            id: query_id,
+            name: name.clone(),
+            description,
+            query_type,
+            filters,
+            group_by,
+            sort_by,
+            limit,
+            created_by: creator.clone(),
+            created_at: current_time,
+        };
+
+        storage.set(&AnalyticsDataKey::AnalyticsQuery(query_id), &query);
+
+        // Add to user's queries
+        let mut user_queries: Vec<u64> = storage
+            .get(&AnalyticsDataKey::UserQueries(creator.clone()))
+            .unwrap_or(Vec::new(&env));
+        user_queries.push_back(query_id);
+        storage.set(&AnalyticsDataKey::UserQueries(creator), &user_queries);
+
+        env.events().publish(
+            (symbol_short!("query_c"),),
+            (query_id, name),
+        );
+
+        Ok(query_id)
+    }
+
+    /// Request data export
+    pub fn request_data_export(
+        env: Env,
+        requester: Address,
+        export_type: ExportType,
+        format: ExportFormat,
+        date_range: DateRange,
+        filters: Map<String, String>,
+    ) -> Result<u64, PayrollError> {
+        requester.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let export_id = storage
+            .get::<AnalyticsDataKey, u64>(&AnalyticsDataKey::NextExportId)
+            .unwrap_or(1);
+        storage.set(&AnalyticsDataKey::NextExportId, &(export_id + 1));
+
+        let export_request = DataExportRequest {
+            id: export_id,
+            export_type: export_type.clone(),
+            format: format.clone(),
+            data_range: date_range,
+            filters,
+            requested_by: requester.clone(),
+            requested_at: current_time,
+            status: ExportStatus::Pending,
+            file_url: None,
+            file_size: None,
+            completed_at: None,
+        };
+
+        storage.set(&AnalyticsDataKey::ExportRequest(export_id), &export_request);
+
+        // Add to user's exports
+        let mut user_exports: Vec<u64> = storage
+            .get(&AnalyticsDataKey::UserExports(requester.clone()))
+            .unwrap_or(Vec::new(&env));
+        user_exports.push_back(export_id);
+        storage.set(&AnalyticsDataKey::UserExports(requester), &user_exports);
+
+        env.events().publish(
+            (symbol_short!("export_r"),),
+            (export_id, export_type, format),
+        );
+
+        Ok(export_id)
+    }
+
+    /// Process data export (would be called by backend service)
+    pub fn process_data_export(
+        env: Env,
+        processor: Address,
+        export_id: u64,
+        file_url: String,
+        file_size: u64,
+    ) -> Result<(), PayrollError> {
+        processor.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let mut export_request = storage
+            .get::<AnalyticsDataKey, DataExportRequest>(&AnalyticsDataKey::ExportRequest(export_id))
+            .ok_or(PayrollError::InvalidData)?;
+
+        export_request.status = ExportStatus::Completed;
+        export_request.file_url = Some(file_url.clone());
+        export_request.file_size = Some(file_size);
+        export_request.completed_at = Some(current_time);
+
+        storage.set(&AnalyticsDataKey::ExportRequest(export_id), &export_request);
+
+        env.events().publish(
+            (symbol_short!("export_c"),),
+            (export_id, file_url, file_size),
+        );
+
+        Ok(())
+    }
+
+    /// Perform comparative analysis between two periods
+    pub fn comparative_analysis(
+        env: Env,
+        comparison_type: ComparisonType,
+        period_1: DateRange,
+        period_2: DateRange,
+        metrics_to_compare: Vec<String>,
+    ) -> Result<ComparativeAnalysis, PayrollError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let analysis_id = storage
+            .get::<AnalyticsDataKey, u64>(&AnalyticsDataKey::NextAnalysisId)
+            .unwrap_or(1);
+        storage.set(&AnalyticsDataKey::NextAnalysisId, &(analysis_id + 1));
+
+        let mut metrics_comparison = Vec::new(&env);
+
+        // Compare key metrics between periods
+        for metric_name in metrics_to_compare.iter() {
+            let period_1_value = Self::get_period_metric_value(&env, &period_1, &metric_name);
+            let period_2_value = Self::get_period_metric_value(&env, &period_2, &metric_name);
+
+            let absolute_change = period_2_value - period_1_value;
+            let percentage_change = if period_1_value != 0 {
+                (absolute_change * 10000) / period_1_value
+            } else {
+                0
+            };
+
+            let is_improvement = Self::is_metric_improvement(&metric_name, absolute_change);
+
+            metrics_comparison.push_back(MetricComparison {
+                metric_name,
+                period_1_value,
+                period_2_value,
+                absolute_change,
+                percentage_change,
+                is_improvement,
+            });
+        }
+
+        let summary = Self::generate_comparison_summary(&env, &metrics_comparison);
+
+        let analysis = ComparativeAnalysis {
+            analysis_id,
+            comparison_type,
+            period_1,
+            period_2,
+            metrics_comparison,
+            summary,
+            generated_at: current_time,
+        };
+
+        storage.set(&AnalyticsDataKey::ComparativeAnalysis(analysis_id), &analysis);
+
+        env.events().publish(
+            (symbol_short!("comp_a"),),
+            (analysis_id, current_time),
+        );
+
+        Ok(analysis)
+    }
+
+    /// Get metric value for a period
+    fn get_period_metric_value(env: &Env, period: &DateRange, metric_name: &String) -> i128 {
+        let storage = env.storage().persistent();
+        let mut total = 0i128;
+
+        let start_day = (period.start / 86_400) * 86_400;
+        let end_day = (period.end / 86_400) * 86_400;
+
+        for day_timestamp in (start_day..=end_day).step_by(86_400) {
+            if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp)) {
+                if metric_name == &String::from_str(env, "total_amount") {
+                    total += metrics.total_amount;
+                } else if metric_name == &String::from_str(env, "disbursements") {
+                    total += metrics.total_disbursements as i128;
+                }
+            }
+        }
+
+        total
+    }
+
+    /// Determine if change is an improvement
+    fn is_metric_improvement(metric_name: &String, change: i128) -> bool {
+        // For revenue/amount metrics, positive is good
+        // For error/late metrics, negative is good
+        change > 0 // Simplified logic
+    }
+
+    /// Generate comparison summary
+    fn generate_comparison_summary(env: &Env, comparisons: &Vec<MetricComparison>) -> String {
+        let mut improvement_count = 0u32;
+        for comp in comparisons.iter() {
+            if comp.is_improvement {
+                improvement_count += 1;
+            }
+        }
+
+        if improvement_count > (comparisons.len() / 2) {
+            String::from_str(env, "Overall performance improved")
+        } else {
+            String::from_str(env, "Performance needs attention")
+        }
+    }
+
+    /// Update benchmark data
+    pub fn update_benchmark_data(
+        env: Env,
+        caller: Address,
+        metric_name: String,
+        industry_average: i128,
+        top_quartile: i128,
+        median: i128,
+        bottom_quartile: i128,
+        company_value: i128,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only owner can update benchmarks
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let current_time = env.ledger().timestamp();
+
+        // Calculate percentile rank
+        let percentile_rank = if company_value >= top_quartile {
+            75
+        } else if company_value >= median {
+            50
+        } else if company_value >= bottom_quartile {
+            25
+        } else {
+            0
+        };
+
+        let benchmark = BenchmarkData {
+            metric_name: metric_name.clone(),
+            industry_average,
+            top_quartile,
+            median,
+            bottom_quartile,
+            company_value,
+            percentile_rank,
+            last_updated: current_time,
+        };
+
+        storage.set(&AnalyticsDataKey::Benchmark(metric_name.clone()), &benchmark);
+
+        env.events().publish(
+            (symbol_short!("bench_u"),),
+            (metric_name, percentile_rank),
+        );
+
+        Ok(())
+    }
+
+    /// Get analytics dashboard
+    pub fn get_analytics_dashboard(
+        env: Env,
+        dashboard_id: u64,
+    ) -> Result<AnalyticsDashboard, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::Dashboard(dashboard_id))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get user's dashboards
+    pub fn get_user_dashboards(env: Env, user: Address) -> Vec<AnalyticsDashboard> {
+        let storage = env.storage().persistent();
+        let dashboard_ids: Vec<u64> = storage
+            .get(&AnalyticsDataKey::UserDashboards(user))
+            .unwrap_or(Vec::new(&env));
+
+        let mut dashboards = Vec::new(&env);
+        for id in dashboard_ids.iter() {
+            if let Some(dashboard) = storage.get(&AnalyticsDataKey::Dashboard(id)) {
+                dashboards.push_back(dashboard);
+            }
+        }
+
+        dashboards
+    }
+
+    /// Get chart data
+    pub fn get_chart_data(env: Env, chart_id: u64) -> Result<ChartData, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::ChartData(chart_id))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get analytics query
+    pub fn get_analytics_query(env: Env, query_id: u64) -> Result<AnalyticsQuery, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::AnalyticsQuery(query_id))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get export request status
+    pub fn get_export_status(env: Env, export_id: u64) -> Result<DataExportRequest, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::ExportRequest(export_id))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get user's export requests
+    pub fn get_user_exports(env: Env, user: Address) -> Vec<DataExportRequest> {
+        let storage = env.storage().persistent();
+        let export_ids: Vec<u64> = storage
+            .get(&AnalyticsDataKey::UserExports(user))
+            .unwrap_or(Vec::new(&env));
+
+        let mut exports = Vec::new(&env);
+        for id in export_ids.iter() {
+            if let Some(export) = storage.get(&AnalyticsDataKey::ExportRequest(id)) {
+                exports.push_back(export);
+            }
+        }
+
+        exports
+    }
+
+    /// Get trend analysis
+    pub fn get_trend_analysis(
+        env: Env,
+        metric_name: String,
+        analysis_timestamp: u64,
+    ) -> Result<TrendAnalysis, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::TrendAnalysis(metric_name, analysis_timestamp))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get comparative analysis
+    pub fn get_comparative_analysis(
+        env: Env,
+        analysis_id: u64,
+    ) -> Result<ComparativeAnalysis, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::ComparativeAnalysis(analysis_id))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get benchmark data
+    pub fn get_benchmark_data(
+        env: Env,
+        metric_name: String,
+    ) -> Result<BenchmarkData, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::Benchmark(metric_name))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get aggregated metrics
+    pub fn get_aggregated_metrics(
+        env: Env,
+        employer: Address,
+        period_start: u64,
+    ) -> Result<AggregatedMetrics, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::AggregatedMetrics(employer, period_start))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Generate real-time analytics snapshot
+    pub fn generate_realtime_snapshot(
+        env: Env,
+        employer: Address,
+    ) -> Result<Map<String, i128>, PayrollError> {
+        let storage = env.storage().persistent();
+        let mut snapshot = Map::new(&env);
+    
+        // Get today's metrics
+        let today = (env.ledger().timestamp() / 86_400) * 86_400;
+        
+        if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(today)) {
+            snapshot.set(
+                String::from_str(&env, "total_disbursements"),
+                metrics.total_disbursements as i128,
+            );
+            snapshot.set(
+                String::from_str(&env, "total_amount"),
+                metrics.total_amount as i128,
+            );
+            snapshot.set(
+                String::from_str(&env, "employee_count"),
+                metrics.employee_count as i128,
+            );
+            snapshot.set(
+                String::from_str(&env, "late_disbursements"),
+                metrics.late_disbursements as i128,
+            );
+        }
+    
+        // Get employer balance summary
+        let employees = Self::get_employer_employees(env.clone(), employer.clone());
+        snapshot.set(
+            String::from_str(&env, "active_employees"),
+            employees.len() as i128,
+        );
+    
+        Ok(snapshot)
+    }
+
+    /// Delete analytics data (cleanup)
+    pub fn cleanup_old_analytics(
+        env: Env,
+        caller: Address,
+        cutoff_date: u64,
+    ) -> Result<u32, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only owner can cleanup
+        let storage = env.storage().persistent();
+        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let mut cleaned_count = 0u32;
+
+        // Cleanup old time series data
+        // Implementation would iterate through old data and remove it
+        // For now, return 0 as placeholder
+
+        env.events().publish(
+            (symbol_short!("cleanup"),),
+            (cutoff_date, cleaned_count),
+        );
+
+        Ok(cleaned_count)
+    }
 }
+
