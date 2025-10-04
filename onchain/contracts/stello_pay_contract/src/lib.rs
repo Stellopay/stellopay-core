@@ -1,6 +1,7 @@
 #![no_std]
 
 mod events;
+mod governance;
 mod insurance;
 mod payroll;
 mod storage;
@@ -18,3 +19,6 @@ mod test;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod governance_test;
