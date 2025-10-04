@@ -1033,6 +1033,7 @@ pub enum ComplianceStatus {
 /// This avoids adding new variants to the DataKey enum which is already at size limit
 pub struct LifecycleStorage;
 
+#[allow(dead_code)]
 impl LifecycleStorage {
     // Storage prefixes for different lifecycle data types
     const PROFILE_PREFIX: &'static str = "lc_profile_";

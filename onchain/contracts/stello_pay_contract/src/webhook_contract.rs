@@ -3,9 +3,11 @@ use soroban_sdk::{contract, contractimpl, Address, Env, Map, String, Vec};
 use crate::webhooks::{WebhookEventType, WebhookRegistration, WebhookSystem, WebhookUpdate};
 
 #[contract]
+#[allow(dead_code)]
 pub struct WebhookContract;
 
 #[contractimpl]
+#[allow(dead_code)]
 impl WebhookContract {
     /// Register a webhook
     pub fn register_webhook(

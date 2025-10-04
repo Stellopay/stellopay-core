@@ -1,10 +1,5 @@
 use soroban_sdk::{contracttype, Address, Env, Map, String, Vec};
 
-use crate::storage::{
-    ReportSchedule, ReportType, ReportFormat, ScheduleFrequency, ComplianceAlert,
-    ComplianceAlertType, AlertSeverity, AlertStatus, DashboardMetrics
-};
-
 //-----------------------------------------------------------------------------
 // Enterprise Features Data Structures
 //-----------------------------------------------------------------------------
@@ -384,8 +379,10 @@ use crate::storage::{
 };
 
 /// HR Workflow Management System
+#[allow(dead_code)]
 pub struct HRWorkflowManager;
 
+#[allow(dead_code)]
 impl HRWorkflowManager {
     /// Create employee onboarding workflow
     pub fn create_onboarding_workflow(
@@ -894,227 +891,6 @@ impl HRWorkflowManager {
 
         Ok(())
     }
-
-    //-----------------------------------------------------------------------------
-    // Compliance Workflow Management
-    //-----------------------------------------------------------------------------
-
-    /// Create automated report schedule
-    pub fn create_report_schedule(
-        env: &Env,
-        employer: Address,
-        report_type: ReportType,
-        frequency: ScheduleFrequency,
-        recipients: Vec<String>,
-        format: ReportFormat,
-    ) -> Result<u64, EnterpriseError> {
-        let current_time = env.ledger().timestamp();
-        let schedule_id = LifecycleStorage::get_next_transfer_id(env); // Reuse counter
-
-        let next_execution = match frequency {
-            ScheduleFrequency::Daily => current_time + 24 * 3600,
-            ScheduleFrequency::Weekly => current_time + 7 * 24 * 3600,
-            ScheduleFrequency::Monthly => current_time + 30 * 24 * 3600,
-            ScheduleFrequency::Quarterly => current_time + 90 * 24 * 3600,
-            ScheduleFrequency::Yearly => current_time + 365 * 24 * 3600,
-            ScheduleFrequency::Custom(seconds) => current_time + seconds,
-            _ => current_time + 24 * 3600, // Default to daily
-        };
-
-        let schedule = ReportSchedule {
-            id: schedule_id,
-            name: String::from_str(env, "Automated Report Schedule"),
-            report_type: report_type.clone(),
-            employer: employer.clone(),
-            frequency: frequency.clone(),
-            recipients,
-            filters: Map::new(env),
-            format,
-            is_active: true,
-            created_at: current_time,
-            next_execution,
-            last_execution: None,
-            execution_count: 0,
-        };
-
-        // Store schedule using existing storage mechanism - simplified for now
-        // In a real implementation, we would have proper schedule storage
-
-        Ok(schedule_id)
-    }
-
-    /// Process compliance dashboard updates
-    pub fn update_compliance_dashboard(
-        env: &Env,
-        employer: Address,
-        period_start: u64,
-        period_end: u64,
-    ) -> Result<DashboardMetrics, EnterpriseError> {
-        let current_time = env.ledger().timestamp();
-
-        // Calculate compliance metrics
-        let mut jurisdiction_metrics = Map::new(env);
-        
-        // Add US jurisdiction metrics
-        let us_metrics = crate::storage::JurisdictionMetrics {
-            jurisdiction: String::from_str(env, "US"),
-            employee_count: 25,
-            payroll_amount: 500000,
-            tax_amount: 75000,
-            compliance_score: 96,
-            violations_count: 1,
-            last_audit_date: current_time - 30 * 24 * 3600, // 30 days ago
-        };
-        jurisdiction_metrics.set(String::from_str(env, "US"), us_metrics);
-
-        let dashboard_metrics = DashboardMetrics {
-            employer: employer.clone(),
-            period_start,
-            period_end,
-            total_employees: 50,
-            active_employees: 48,
-            total_payroll_amount: 1000000,
-            total_tax_amount: 150000,
-            compliance_score: 95,
-            pending_payments: 2,
-            overdue_payments: 0,
-            active_alerts: 3,
-            resolved_alerts: 12,
-            last_updated: current_time,
-            jurisdiction_metrics,
-        };
-
-        // Store dashboard metrics - simplified for now
-        // In a real implementation, we would have proper dashboard storage
-
-        Ok(dashboard_metrics)
-    }
-
-    /// Create compliance workflow for regulatory changes
-    pub fn create_regulatory_compliance_workflow(
-        env: &Env,
-        employer: Address,
-        jurisdiction: String,
-        regulation_type: String,
-        effective_date: u64,
-        description: String,
-    ) -> Result<u64, EnterpriseError> {
-        let current_time = env.ledger().timestamp();
-        let workflow_id = LifecycleStorage::get_next_onboarding_id(env);
-
-        // Create compliance alert for the regulatory change
-        let alert = ComplianceAlert {
-            id: workflow_id,
-            alert_type: ComplianceAlertType::RegulatoryChange,
-            severity: AlertSeverity::Warning,
-            jurisdiction: jurisdiction.clone(),
-            employee: None,
-            employer: employer.clone(),
-            title: String::from_str(env, "Regulatory Compliance Update Required"),
-            description: description.clone(),
-            violation_details: Map::new(env),
-            recommended_actions: {
-                let mut actions = Vec::new(env);
-                actions.push_back(String::from_str(env, "Review new regulation requirements"));
-                actions.push_back(String::from_str(env, "Update payroll processes"));
-                actions.push_back(String::from_str(env, "Train relevant staff"));
-                actions.push_back(String::from_str(env, "Implement compliance measures"));
-                actions
-            },
-            created_at: current_time,
-            due_date: Some(effective_date),
-            resolved_at: None,
-            resolved_by: None,
-            status: AlertStatus::Active,
-        };
-
-        // Store alert using existing mechanism - simplified for now
-        // In a real implementation, we would have proper alert storage
-
-        // Create workflow tasks
-        let mut checklist = Vec::new(env);
-        
-        checklist.push_back(crate::storage::OnboardingTask {
-            id: 1,
-            name: String::from_str(env, "Review regulatory changes"),
-            description: String::from_str(env, "Analyze impact of new regulations on payroll processes"),
-            required: true,
-            completed: false,
-            completed_at: None,
-            completed_by: None,
-            due_date: Some(effective_date - 14 * 24 * 3600), // 14 days before effective date
-        });
-
-        checklist.push_back(crate::storage::OnboardingTask {
-            id: 2,
-            name: String::from_str(env, "Update compliance procedures"),
-            description: String::from_str(env, "Modify existing procedures to meet new requirements"),
-            required: true,
-            completed: false,
-            completed_at: None,
-            completed_by: None,
-            due_date: Some(effective_date - 7 * 24 * 3600), // 7 days before effective date
-        });
-
-        checklist.push_back(crate::storage::OnboardingTask {
-            id: 3,
-            name: String::from_str(env, "Implement compliance measures"),
-            description: String::from_str(env, "Deploy updated procedures and systems"),
-            required: true,
-            completed: false,
-            completed_at: None,
-            completed_by: None,
-            due_date: Some(effective_date),
-        });
-
-        let workflow = crate::storage::OnboardingWorkflow {
-            id: workflow_id,
-            employee: employer.clone(), // Use employer as the responsible party
-            employer: employer.clone(),
-            status: crate::storage::WorkflowStatus::Pending,
-            checklist,
-            approvals: Vec::new(env),
-            created_at: current_time,
-            completed_at: None,
-            expires_at: effective_date + 30 * 24 * 3600, // 30 days after effective date
-        };
-
-        LifecycleStorage::store_onboarding(env, workflow_id, &workflow);
-
-        Ok(workflow_id)
-    }
-
-    /// Monitor and resolve compliance alerts
-    pub fn resolve_compliance_alert(
-        env: &Env,
-        alert_id: u64,
-        resolved_by: Address,
-        resolution_notes: String,
-    ) -> Result<(), EnterpriseError> {
-        let current_time = env.ledger().timestamp();
-
-        // In a real implementation, we would retrieve and update the actual alert
-        // For now, we'll create a resolution record
-        let resolution_record = crate::storage::ComplianceRecord {
-            employee: resolved_by.clone(),
-            compliance_type: String::from_str(env, "alert_resolution"),
-            status: crate::storage::ComplianceStatus::Completed,
-            due_date: current_time,
-            completed_date: Some(current_time),
-            notes: resolution_notes,
-            created_at: current_time,
-            updated_at: current_time,
-        };
-
-        LifecycleStorage::store_compliance(
-            env,
-            &resolved_by,
-            &String::from_str(env, "alert_resolution"),
-            &resolution_record
-        );
-
-        Ok(())
-    }
 }
 
 //-----------------------------------------------------------------------------
@@ -1122,6 +898,7 @@ impl HRWorkflowManager {
 //-----------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)]
 pub enum EnterpriseError {
     DepartmentNotFound,
     WorkflowNotFound,

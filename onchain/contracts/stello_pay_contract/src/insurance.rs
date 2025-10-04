@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use soroban_sdk::{contracterror, contracttype, symbol_short, Address, Env, String, Symbol, Vec};
 
 //-----------------------------------------------------------------------------
@@ -769,7 +770,7 @@ impl InsuranceSystem {
     fn calculate_risk_score(
         env: &Env,
         employee: &Address,
-        employer: &Address,
+        _employer: &Address,
     ) -> Result<u32, InsuranceError> {
         let storage = env.storage().persistent();
 
@@ -816,7 +817,7 @@ impl InsuranceSystem {
         let base_rate = 50u32;
 
         // Risk adjustment (higher risk = higher premium)
-        let risk_adjustment = (risk_score as u32 * 2) / 100; // 0-2% additional
+let risk_adjustment = (risk_score * 2) / 100; // 0-2% additional
 
         // Pool adjustment based on pool health
         let pool_health_factor = if pool.total_claims_paid > 0 {
