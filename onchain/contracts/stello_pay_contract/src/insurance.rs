@@ -769,7 +769,7 @@ impl InsuranceSystem {
     fn calculate_risk_score(
         env: &Env,
         employee: &Address,
-        employer: &Address,
+        _employer: &Address,
     ) -> Result<u32, InsuranceError> {
         let storage = env.storage().persistent();
 

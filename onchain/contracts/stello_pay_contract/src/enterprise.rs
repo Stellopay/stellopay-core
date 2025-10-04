@@ -581,7 +581,7 @@ impl HRWorkflowManager {
             workflow.employer,
             String::from_str(env, "InProgress"),
             completed_tasks,
-            workflow.checklist.len() as u32,
+            workflow.checklist.len(),
             current_time,
         );
 
