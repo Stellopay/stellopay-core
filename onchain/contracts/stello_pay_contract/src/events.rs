@@ -91,6 +91,31 @@ pub struct SalaryDisbursed {
     pub timestamp: u64,
 }
 
+pub fn emit_tax_withheld(
+    e: Env,
+    employer: Address,
+    employee: Address,
+    token: Address,
+    gross_amount: i128,
+    tax_amount: i128,
+    net_amount: i128,
+    jurisdiction: String,
+    timestamp: u64,
+) {
+    let topics = (TAX_WITHHELD,);
+    let event_data = TaxWithheldEvent {
+        employer,
+        employee,
+        token,
+        gross_amount,
+        tax_amount,
+        net_amount,
+        jurisdiction,
+        timestamp,
+    };
+    e.events().publish(topics, event_data);
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TaxWithheldEvent {

@@ -324,7 +324,7 @@ impl WebhookSystem {
         }
 
         // Basic URL validation - simplified for now
-        if url.len() == 0 {
+        if url.is_empty() {
             return Err(WebhookError::InvalidUrl);
         }
 

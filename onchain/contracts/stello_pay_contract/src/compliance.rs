@@ -1,3 +1,7 @@
+#![allow(clippy::too_many_arguments)]
+#![allow(unused_variables)]
+extern crate alloc;
+use alloc::string::ToString;
 use soroban_sdk::{
     contracttype, symbol_short, Address, Env, Symbol, String, Vec, Map, 
     contracterror, contractimpl, contract
@@ -30,6 +34,41 @@ pub enum ComplianceError {
     UnauthorizedComplianceOp = 7,
     /// Compliance upgrade failed
     ComplianceUpgradeFailed = 8,
+}
+
+// Non-contract inherent methods
+impl ComplianceSystem {
+    /// Add entry to audit trail (helper)
+    fn add_audit_entry(
+        env: &Env,
+        action: &str,
+        actor: &Address,
+        target: Option<Address>,
+        details: &Map<String, String>,
+    ) {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+        let entry_id = Self::generate_audit_entry_id(env, actor, current_time);
+
+        let entry = AuditEntry {
+            entry_id: entry_id.clone(),
+            action: String::from_str(env, action),
+            actor: actor.clone(),
+            target,
+            details: details.clone(),
+            timestamp: current_time,
+            block_number: env.ledger().sequence(),
+            transaction_hash: String::from_str(env, "tx_hash_placeholder"),
+        };
+
+        let key = DataKey::AuditEntry(entry_id.clone());
+        storage.set(&key, &entry);
+
+        let index_key = DataKey::AuditIndex(actor.clone());
+        let mut audit_entries: Vec<String> = storage.get(&index_key).unwrap_or(Vec::new(env));
+        audit_entries.push_back(entry_id);
+        storage.set(&index_key, &audit_entries);
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -267,14 +306,17 @@ impl ComplianceSystem {
         let storage = env.storage().persistent();
         let key = DataKey::JurisdictionConfig(jurisdiction.clone());
         
-        if let Some(mut config) = storage.get(&key) {
+        if let Some(mut config) = storage.get::<DataKey, JurisdictionConfig>(&key) {
             config.enabled = enabled;
             config.last_updated = env.ledger().timestamp();
             storage.set(&key, &config);
 
             // Add to audit trail
             let mut details = Map::new(&env);
-            details.set(&String::from_slice(&env, "enabled"), &enabled.to_string());
+            details.set(
+                String::from_str(&env, "enabled"),
+                bool_to_string(&env, enabled),
+            );
             Self::add_audit_entry(&env, "jurisdiction_toggled", &caller, None, &details);
         }
 
@@ -288,8 +330,8 @@ impl ComplianceSystem {
     /// Validate payroll compliance for a specific jurisdiction
     pub fn validate_payroll_compliance(
         env: Env,
-        employer: Address,
-        employee: Address,
+        _employer: Address,
+        _employee: Address,
         jurisdiction: Jurisdiction,
         payroll_amount: i128,
         hours_worked: Option<u32>,
@@ -297,13 +339,15 @@ impl ComplianceSystem {
         let storage = env.storage().persistent();
         let key = DataKey::JurisdictionConfig(jurisdiction.clone());
         
-        let config = match storage.get(&key) {
+        let config = match storage.get::<DataKey, JurisdictionConfig>(&key) {
             Some(config) if config.enabled => config,
             _ => {
+                let mut warn = Vec::new(&env);
+                warn.push_back(String::from_str(&env, "Jurisdiction not configured or disabled"));
                 return ComplianceValidation {
                     is_compliant: false,
                     violations: Vec::new(&env),
-                    warnings: vec![String::from_slice(&env, "Jurisdiction not configured or disabled")],
+                    warnings: warn,
                     timestamp: env.ledger().timestamp(),
                 };
             }
@@ -332,7 +376,7 @@ impl ComplianceSystem {
         }
 
         ComplianceValidation {
-            is_compliant: violations.len() == 0,
+            is_compliant: violations.is_empty(),
             violations,
             warnings,
             timestamp: current_time,
@@ -354,9 +398,9 @@ impl ComplianceSystem {
                     return Err(ComplianceViolation {
                         rule_type: rule.rule_type.clone(),
                         jurisdiction: rule.jurisdiction.clone(),
-                        violation_type: String::from_slice(env, "below_minimum_wage"),
+                        violation_type: String::from_str(env, "below_minimum_wage"),
                         severity: ViolationSeverity::High,
-                        description: String::from_slice(env, "Payroll amount below minimum wage requirement"),
+                        description: String::from_str(env, "Payroll amount below minimum wage requirement"),
                         timestamp: current_time,
                     });
                 }
@@ -368,9 +412,9 @@ impl ComplianceSystem {
                             return Err(ComplianceViolation {
                                 rule_type: rule.rule_type.clone(),
                                 jurisdiction: rule.jurisdiction.clone(),
-                                violation_type: String::from_slice(env, "exceeds_maximum_hours"),
+                                violation_type: String::from_str(env, "exceeds_maximum_hours"),
                                 severity: ViolationSeverity::Medium,
-                                description: String::from_slice(env, "Hours worked exceed maximum allowed"),
+                                description: String::from_str(env, "Hours worked exceed maximum allowed"),
                                 timestamp: current_time,
                             });
                         }
@@ -428,8 +472,11 @@ impl ComplianceSystem {
 
         // Add to audit trail
         let mut details = Map::new(&env);
-        details.set(&String::from_slice(&env, "report_id"), &report_id);
-        details.set(&String::from_slice(&env, "report_type"), &format!("{:?}", report_type));
+        details.set(String::from_str(&env, "report_id"), report_id.clone());
+        details.set(
+            String::from_str(&env, "report_type"),
+            report_type_to_string(&env, &report_type),
+        );
         Self::add_audit_entry(&env, "regulatory_report_generated", &caller, None, &details);
 
         Ok(report)
@@ -447,13 +494,13 @@ impl ComplianceSystem {
         let storage = env.storage().persistent();
         let key = DataKey::RegulatoryReport(report_id.clone());
         
-        if let Some(mut report) = storage.get(&key) {
+        if let Some(mut report) = storage.get::<DataKey, RegulatoryReport>(&key) {
             report.status = ReportStatus::Submitted;
             storage.set(&key, &report);
 
             // Add to audit trail
             let mut details = Map::new(&env);
-            details.set(&String::from_slice(&env, "report_id"), &report_id);
+            details.set(String::from_str(&env, "report_id"), report_id.clone());
             Self::add_audit_entry(&env, "regulatory_report_submitted", &caller, None, &details);
         }
 
@@ -530,7 +577,7 @@ impl ComplianceSystem {
         if metrics.compliance_score < LOW_COMPLIANCE_THRESHOLD {
             // Emit low compliance alert
             env.events().publish(
-                (symbol_short!("low_compliance"),),
+                (symbol_short!("low_comp"),),
                 (metrics.jurisdiction.clone(), metrics.compliance_score),
             );
         }
@@ -538,7 +585,7 @@ impl ComplianceSystem {
         if metrics.violations_count > HIGH_VIOLATION_THRESHOLD {
             // Emit high violation alert
             env.events().publish(
-                (symbol_short!("high_violations"),),
+                (symbol_short!("high_viol"),),
                 (metrics.jurisdiction.clone(), metrics.violations_count),
             );
         }
@@ -550,40 +597,7 @@ impl ComplianceSystem {
     // Audit Trail
     //-----------------------------------------------------------------------------
 
-    /// Add entry to audit trail
-    pub fn add_audit_entry(
-        env: &Env,
-        action: &str,
-        actor: &Address,
-        target: Option<Address>,
-        details: &Map<String, String>,
-    ) {
-        let storage = env.storage().persistent();
-        let current_time = env.ledger().timestamp();
-        let entry_id = Self::generate_audit_entry_id(env, actor, current_time);
-
-        let entry = AuditEntry {
-            entry_id: entry_id.clone(),
-            action: String::from_slice(env, action),
-            actor: actor.clone(),
-            target,
-            details: details.clone(),
-            timestamp: current_time,
-            block_number: env.ledger().sequence(),
-            transaction_hash: String::from_slice(env, "tx_hash_placeholder"), // In real implementation, get from env
-        };
-
-        // Store audit entry
-        let key = DataKey::AuditEntry(entry_id);
-        storage.set(&key, &entry);
-
-        // Add to audit index for efficient querying
-        let index_key = DataKey::AuditIndex(actor.clone());
-        let mut audit_entries: Vec<String> = storage.get(&index_key).unwrap_or(Vec::new(env));
-        audit_entries.push_back(entry_id);
-        storage.set(&index_key, &audit_entries);
-    }
-
+    /// Add entry to audit trail (moved to non-contract impl below)
     /// Get audit entries for an address
     pub fn get_audit_entries(env: Env, address: Address) -> Vec<AuditEntry> {
         let storage = env.storage().persistent();
@@ -592,7 +606,7 @@ impl ComplianceSystem {
         if let Some(entry_ids) = storage.get::<DataKey, Vec<String>>(&index_key) {
             let mut entries = Vec::new(&env);
             for entry_id in entry_ids.iter() {
-                let key = DataKey::AuditEntry(entry_id);
+                let key = DataKey::AuditEntry(entry_id.clone());
                 if let Some(entry) = storage.get(&key) {
                     entries.push_back(entry);
                 }
@@ -622,133 +636,58 @@ impl ComplianceSystem {
     ) -> Result<(), ComplianceError> {
         caller.require_auth();
         Self::require_compliance_authorized(&env, &caller)?;
-
         let storage = env.storage().persistent();
         storage.set(&DataKey::ComplianceSettings, &settings);
 
         // Add to audit trail
-        let mut details = Map::new(&env);
-        details.set(&String::from_slice(&env, "audit_trail_enabled"), &settings.audit_trail_enabled.to_string());
-        details.set(&String::from_slice(&env, "monitoring_enabled"), &settings.monitoring_enabled.to_string());
+            let mut details = Map::new(&env);
+            details.set(
+                String::from_str(&env, "audit_trail_enabled"),
+                bool_to_string(&env, settings.audit_trail_enabled),
+            );
+            details.set(
+                String::from_str(&env, "monitoring_enabled"),
+                bool_to_string(&env, settings.monitoring_enabled),
+            );
         Self::add_audit_entry(&env, "compliance_settings_updated", &caller, None, &details);
 
         Ok(())
     }
 
-    /// Get global compliance settings
-    pub fn get_compliance_settings(env: Env) -> Option<ComplianceSettings> {
-        let storage = env.storage().persistent();
-        storage.get(&DataKey::ComplianceSettings)
+fn u64_to_string(env: &Env, v: u64) -> String {
+    String::from_str(env, &v.to_string())
+}
+
+#[allow(dead_code)]
+fn i128_to_string(env: &Env, v: i128) -> String {
+    String::from_str(env, &v.to_string())
+}
+
+fn jurisdiction_to_string(env: &Env, j: &Jurisdiction) -> String {
+    match j {
+        Jurisdiction::US => String::from_str(env, "US"),
+        Jurisdiction::EU => String::from_str(env, "EU"),
+        Jurisdiction::UK => String::from_str(env, "UK"),
+        Jurisdiction::CA => String::from_str(env, "CA"),
+        Jurisdiction::AU => String::from_str(env, "AU"),
+        Jurisdiction::SG => String::from_str(env, "SG"),
+        Jurisdiction::JP => String::from_str(env, "JP"),
+        Jurisdiction::IN => String::from_str(env, "IN"),
+        Jurisdiction::BR => String::from_str(env, "BR"),
+        Jurisdiction::MX => String::from_str(env, "MX"),
+        Jurisdiction::Custom(s) => s.clone(),
     }
+}
 
-    //-----------------------------------------------------------------------------
-    // Helper Functions
-    //-----------------------------------------------------------------------------
-
-    /// Check if caller is authorized for compliance operations
-    fn require_compliance_authorized(env: &Env, caller: &Address) -> Result<(), ComplianceError> {
-        let storage = env.storage().persistent();
-        
-        // Check if caller is contract owner
-        if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
-            if caller == &owner {
-                return Ok(());
-            }
-        }
-
-        // Check if caller is compliance officer
-        if let Some(settings) = storage.get::<DataKey, ComplianceSettings>(&DataKey::ComplianceSettings) {
-            if let Some(officer) = settings.compliance_officer {
-                if caller == &officer {
-                    return Ok(());
-                }
-            }
-        }
-
-        Err(ComplianceError::UnauthorizedComplianceOp)
+fn report_type_to_string(env: &Env, r: &ReportType) -> String {
+    match r {
+        ReportType::PayrollTax => String::from_str(env, "PayrollTax"),
+        ReportType::EmploymentTax => String::from_str(env, "EmploymentTax"),
+        ReportType::SocialSecurity => String::from_str(env, "SocialSecurity"),
+        ReportType::Unemployment => String::from_str(env, "Unemployment"),
+        ReportType::WorkersComp => String::from_str(env, "WorkersComp"),
+        ReportType::HealthInsurance => String::from_str(env, "HealthInsurance"),
+        ReportType::Pension => String::from_str(env, "Pension"),
+        ReportType::Custom(s) => s.clone(),
     }
-
-    /// Generate unique report ID
-    fn generate_report_id(
-        env: &Env,
-        jurisdiction: &Jurisdiction,
-        report_type: &ReportType,
-        period_start: u64,
-    ) -> String {
-        let timestamp = env.ledger().timestamp();
-        format!("{}_{:?}_{}_{}", jurisdiction, report_type, period_start, timestamp)
-    }
-
-    /// Generate unique audit entry ID
-    fn generate_audit_entry_id(env: &Env, actor: &Address, timestamp: u64) -> String {
-        format!("audit_{}_{}_{}", actor, timestamp, env.ledger().sequence())
-    }
-
-    /// Collect data for regulatory report
-    fn collect_report_data(
-        env: &Env,
-        jurisdiction: &Jurisdiction,
-        report_type: &ReportType,
-        period_start: u64,
-        period_end: u64,
-    ) -> Result<Map<String, String>, ComplianceError> {
-        let mut data = Map::new(env);
-        
-        // This is a simplified implementation
-        // In a real system, this would collect actual payroll and compliance data
-        data.set(&String::from_slice(env, "period_start"), &period_start.to_string());
-        data.set(&String::from_slice(env, "period_end"), &period_end.to_string());
-        data.set(&String::from_slice(env, "jurisdiction"), &format!("{:?}", jurisdiction));
-        data.set(&String::from_slice(env, "report_type"), &format!("{:?}", report_type));
-        data.set(&String::from_slice(env, "generated_at"), &env.ledger().timestamp().to_string());
-
-        Ok(data)
-    }
-
-    //-----------------------------------------------------------------------------
-    // Compliance Upgrade Mechanism
-    //-----------------------------------------------------------------------------
-
-    /// Upgrade compliance rules for a jurisdiction
-    pub fn upgrade_compliance_rules(
-        env: Env,
-        caller: Address,
-        jurisdiction: Jurisdiction,
-        new_rules: Vec<ComplianceRule>,
-    ) -> Result<(), ComplianceError> {
-        caller.require_auth();
-        Self::require_compliance_authorized(&env, &caller)?;
-
-        let storage = env.storage().persistent();
-        let key = DataKey::JurisdictionConfig(jurisdiction.clone());
-        
-        if let Some(mut config) = storage.get(&key) {
-            config.rules = new_rules;
-            config.last_updated = env.ledger().timestamp();
-            storage.set(&key, &config);
-
-            // Add to audit trail
-            let mut details = Map::new(&env);
-            details.set(&String::from_slice(&env, "jurisdiction"), &format!("{:?}", jurisdiction));
-            Self::add_audit_entry(&env, "compliance_rules_upgraded", &caller, None, &details);
-        } else {
-            return Err(ComplianceError::ComplianceUpgradeFailed);
-        }
-
-        Ok(())
-    }
-
-    /// Get all supported jurisdictions
-    pub fn get_supported_jurisdictions(env: Env) -> Vec<Jurisdiction> {
-        let storage = env.storage().persistent();
-        let mut jurisdictions = Vec::new(&env);
-        
-        // This would iterate through all jurisdiction configs
-        // For now, return a default list
-        jurisdictions.push_back(Jurisdiction::US);
-        jurisdictions.push_back(Jurisdiction::EU);
-        jurisdictions.push_back(Jurisdiction::UK);
-        
-        jurisdictions
-    }
-} 
+}

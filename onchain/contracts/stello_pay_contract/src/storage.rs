@@ -1244,3 +1244,39 @@ impl LifecycleStorage {
             .get(&DataKey::Balance(employee.clone(), payment_key))
     }
 }
+
+impl LifecycleStorage {
+    /// Store and get employee profile via special balance slot key
+    pub fn store_profile(env: &Env, employee: &Address, profile: &EmployeeProfile) {
+        let k = Address::from_string(&String::from_str(env, "PROFILE"));
+        env.storage().persistent().set(&DataKey::Balance(employee.clone(), k), profile);
+    }
+
+    pub fn get_profile(env: &Env, employee: &Address) -> Option<EmployeeProfile> {
+        let k = Address::from_string(&String::from_str(env, "PROFILE"));
+        env.storage().persistent().get(&DataKey::Balance(employee.clone(), k))
+    }
+
+    /// Onboarding workflows stored under ExtendedDataKey::Rule(workflow_id)
+    pub fn store_onboarding(env: &Env, workflow_id: u64, wf: &OnboardingWorkflow) {
+        env.storage().persistent().set(&ExtendedDataKey::Rule(workflow_id), wf);
+    }
+
+    pub fn get_onboarding(env: &Env, workflow_id: u64) -> Option<OnboardingWorkflow> {
+        env.storage().persistent().get(&ExtendedDataKey::Rule(workflow_id))
+    }
+
+    /// Offboarding workflows stored under ExtendedDataKey::Recovery(workflow_id)
+    pub fn store_offboarding(env: &Env, workflow_id: u64, wf: &OffboardingWorkflow) {
+        env.storage().persistent().set(&ExtendedDataKey::Recovery(workflow_id), wf);
+    }
+
+    pub fn get_offboarding(env: &Env, workflow_id: u64) -> Option<OffboardingWorkflow> {
+        env.storage().persistent().get(&ExtendedDataKey::Recovery(workflow_id))
+    }
+
+    /// Employee transfers stored under ExtendedDataKey::Preset(transfer_id)
+    pub fn store_transfer(env: &Env, transfer_id: u64, tr: &EmployeeTransfer) {
+        env.storage().persistent().set(&ExtendedDataKey::Preset(transfer_id), tr);
+    }
+}

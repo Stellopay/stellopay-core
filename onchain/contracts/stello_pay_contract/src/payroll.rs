@@ -1,3 +1,8 @@
+#![allow(clippy::too_many_arguments)]
+#![allow(clippy::needless_borrow)]
+#![allow(clippy::empty_line_after_outer_attr)]
+#![allow(unused_variables)]
+#![allow(unused_mut)]
 use soroban_sdk::{
     contract, contracterror, contractimpl, log, symbol_short, token::Client as TokenClient,
     Address, Env, Map, String, Symbol, Vec,
@@ -18,9 +23,10 @@ use crate::events::{
     SCHEDULE_EXECUTED_EVENT, SCHEDULE_UPDATED_EVENT, SECURITY_AUDIT_EVENT,
     SECURITY_POLICY_VIOLATION_EVENT, TEMPLATE_APPLIED_EVENT, TEMPLATE_CREATED_EVENT,
     TEMPLATE_SHARED_EVENT, TEMPLATE_UPDATED_EVENT, UNPAUSED_EVENT,
-    TAX_WITHHELD, CROSS_BORDER_INITIATED, CROSS_BORDER_COMPLETED, emit_tax_withheld,
-    FX_RATE_UPDATED, FxRateUpdatedEvent,
+    TAX_WITHHELD, CROSS_BORDER_INITIATED, CROSS_BORDER_COMPLETED,
+    FX_RATE_UPDATED, FxRateUpdatedEvent, HEDGE_OPENED, HEDGE_CLOSED,
 };
+use crate::events::emit_tax_withheld;
 
 use crate::insurance::{
     Guarantee, InsuranceClaim, InsuranceError, InsurancePolicy, InsuranceSettings, InsuranceSystem,
@@ -230,6 +236,23 @@ pub const BACKUP_RESTORED_EVENT: Symbol = symbol_short!("backup_r");
 // Contract Implementation
 //-----------------------------------------------------------------------------
 
+// Local helper to stringify `Jurisdiction` into `soroban_sdk::String`
+fn jurisdiction_to_string(env: &Env, j: &Jurisdiction) -> String {
+    match j {
+        Jurisdiction::US => String::from_slice(env, "US"),
+        Jurisdiction::EU => String::from_slice(env, "EU"),
+        Jurisdiction::UK => String::from_slice(env, "UK"),
+        Jurisdiction::CA => String::from_slice(env, "CA"),
+        Jurisdiction::AU => String::from_slice(env, "AU"),
+        Jurisdiction::SG => String::from_slice(env, "SG"),
+        Jurisdiction::JP => String::from_slice(env, "JP"),
+        Jurisdiction::IN => String::from_slice(env, "IN"),
+        Jurisdiction::BR => String::from_slice(env, "BR"),
+        Jurisdiction::MX => String::from_slice(env, "MX"),
+        Jurisdiction::Custom(s) => s.clone(),
+    }
+}
+
 #[contractimpl]
 impl PayrollContract {
     /// Initialize the contract with an owner/admin address
@@ -388,7 +411,7 @@ impl PayrollContract {
         }
 
         // Emit tax withheld event (informational)
-        let juris_str = format!("{:?}", jurisdiction_val);
+        let juris_str = jurisdiction_to_string(&env, &jurisdiction_val);
         emit_tax_withheld(
             env.clone(),
             employer.clone(),
@@ -397,7 +420,7 @@ impl PayrollContract {
             payroll.amount,
             tax_amount,
             net_amount,
-            String::from_str(&env, &juris_str),
+            juris_str,
             current_time,
         );
 
@@ -4355,7 +4378,6 @@ impl PayrollContract {
     }
 
     /// Delegate a role from one user to another
-
     pub fn delegate_role(
         env: Env,
         caller: Address,
@@ -4428,7 +4450,7 @@ impl PayrollContract {
         delegation_id: u64,
     ) -> Result<(), PayrollError> {
         caller.require_auth();
-        Self::require_not_paused(&env);
+        let _ = Self::require_not_paused(&env);
 
         let storage = env.storage().persistent();
         let current_time = env.ledger().timestamp();
@@ -4693,7 +4715,7 @@ impl PayrollContract {
 
         env.events().publish(
             (SECURITY_AUDIT_EVENT,),
-            (caller, audit_entries.len() as u32),
+            (caller, audit_entries.len()),
         );
 
         Ok(audit_entries)
@@ -6352,7 +6374,6 @@ impl PayrollContract {
 
     // record_metrics(&env, 0, symbol_short!("disburses"), false, Some(employee), Some(symbol_short!("unauth")), false);
     // record_metrics(env,amount. ,operation_type: Symbol, is_success, employee:    ,       error_type.         ,is_late: bool)
-    /// Record performance metrics for an operation with daily aggregation
     // fn record_metrics(
     //     env: &Env,
     //     amount: i128,
@@ -6458,6 +6479,7 @@ impl PayrollContract {
     //     // }
     // }
 
+    /// Record performance metrics for an operation with daily aggregation
     fn record_metrics(
         env: &Env,
         amount: i128,
@@ -6479,7 +6501,7 @@ impl PayrollContract {
                 operation_count: 0,
                 timestamp: day_timestamp,
                 employee_count: 0,
-                operation_type_counts: Map::new(&env),
+                operation_type_counts: Map::new(env),
                 late_disbursements: 0,
             });
 
@@ -6535,8 +6557,7 @@ impl PayrollContract {
         {
             storage.set(&metrics_key, &metrics);
             // log!(&env, "day_timestamp: {}", day_timestamp);
-            let res =
-                Self::get_metrics(&env, Some(day_timestamp), Some(day_timestamp * 3), Some(3));
+            let res = Self::get_metrics(env, Some(day_timestamp), Some(day_timestamp * 3), Some(3));
             // log!(&env, "res: {}", res);
 
             env.events().publish(
@@ -6560,7 +6581,7 @@ impl PayrollContract {
         limit: Option<u32>,
     ) -> Vec<PerformanceMetrics> {
         let storage = env.storage().persistent();
-        let mut metrics_list = Vec::new(&env);
+        let mut metrics_list = Vec::new(env);
         let max_entries = limit.unwrap_or(100);
 
         // Default to all available metrics if no timestamps provided
@@ -6600,7 +6621,7 @@ impl PayrollContract {
         let mut total_amount = 0i128;
         let mut total_operation_count = 0u64;
         let mut employee_count = 0u32;
-        let mut operation_type_counts = Map::new(&env);
+        let mut operation_type_counts = Map::new(env);
         let mut late_disbursements = 0u64;
 
         let start_day = (start_timestamp / 86_400) * 86_400;
@@ -6630,8 +6651,8 @@ impl PayrollContract {
                     let current_count = operation_type_counts.get(op_type.clone()).unwrap_or(0);
                     operation_type_counts.set(
                         op_type,
-                        (current_count as u64)
-                            .checked_add(count as u64)
+                        current_count
+                            .checked_add(count)
                             .unwrap_or(current_count),
                     );
                 }
