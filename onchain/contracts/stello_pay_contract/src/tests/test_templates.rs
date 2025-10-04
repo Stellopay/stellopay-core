@@ -1,10 +1,7 @@
 #![cfg(test)]
 
 use crate::payroll::{PayrollContractClient, PayrollError};
-use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env, String,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 fn setup_contract(env: &Env) -> (Address, PayrollContractClient) {
     let contract_id = env.register(crate::payroll::PayrollContract, ());
@@ -17,14 +14,14 @@ fn setup_contract(env: &Env) -> (Address, PayrollContractClient) {
 fn test_create_template_success() {
     let env = Env::default();
     let (_, client) = setup_contract(&env);
-    
+
     let employer = Address::generate(&env);
     let token = Address::generate(&env);
-    
+
     env.mock_all_auths();
 
     client.initialize(&employer);
-    
+
     let template_id = client.create_template(
         &employer,
         &String::from_str(&env, "Test Template"),
@@ -37,11 +34,14 @@ fn test_create_template_success() {
     );
 
     assert_eq!(template_id, 1);
-    
+
     // Verify template was created
     let template = client.get_template(&template_id);
     assert_eq!(template.name, String::from_str(&env, "Test Template"));
-    assert_eq!(template.description, String::from_str(&env, "Test Description"));
+    assert_eq!(
+        template.description,
+        String::from_str(&env, "Test Description")
+    );
     assert_eq!(template.employer, employer);
     assert_eq!(template.amount, 1000i128);
     assert_eq!(template.usage_count, 0);
@@ -51,14 +51,14 @@ fn test_create_template_success() {
 fn test_create_template_validation_errors() {
     let env = Env::default();
     let (_, client) = setup_contract(&env);
-    
+
     let employer = Address::generate(&env);
     let token = Address::generate(&env);
-    
+
     env.mock_all_auths();
 
     client.initialize(&employer);
-    
+
     // Test empty name
     let result = client.try_create_template(
         &employer,
@@ -71,7 +71,7 @@ fn test_create_template_validation_errors() {
         &false,
     );
     assert_eq!(result, Err(Ok(PayrollError::InvalidTemplateName)));
-    
+
     // Test zero amount
     let result = client.try_create_template(
         &employer,
@@ -91,14 +91,14 @@ fn test_create_template_validation_errors() {
 fn test_get_template_success() {
     let env = Env::default();
     let (_, client) = setup_contract(&env);
-    
+
     let employer = Address::generate(&env);
     let token = Address::generate(&env);
-    
+
     env.mock_all_auths();
 
     client.initialize(&employer);
-    
+
     let template_id = client.create_template(
         &employer,
         &String::from_str(&env, "Test Template"),
@@ -119,7 +119,7 @@ fn test_get_template_success() {
 fn test_get_template_not_found() {
     let env = Env::default();
     let (_, client) = setup_contract(&env);
-    
+
     let result = client.try_get_template(&999u64);
     assert_eq!(result, Err(Ok(PayrollError::TemplateNotFound)));
 }
@@ -129,15 +129,15 @@ fn test_get_template_not_found() {
 fn test_apply_template_success() {
     let env = Env::default();
     let (_, client) = setup_contract(&env);
-    
+
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
     let token = Address::generate(&env);
-    
+
     env.mock_all_auths();
 
     client.initialize(&employer);
-    
+
     let template_id = client.create_template(
         &employer,
         &String::from_str(&env, "Test Template"),
@@ -150,7 +150,7 @@ fn test_apply_template_success() {
     );
 
     client.apply_template(&employer, &template_id, &employee);
-    
+
     // Verify template usage count increased (this confirms the template was applied)
     let updated_template = client.get_template(&template_id);
     assert_eq!(updated_template.usage_count, 1);
@@ -160,14 +160,14 @@ fn test_apply_template_success() {
 fn test_apply_template_not_found() {
     let env = Env::default();
     let (_, client) = setup_contract(&env);
-    
+
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
-    
+
     env.mock_all_auths();
 
     client.initialize(&employer);
-    
+
     let result = client.try_apply_template(&employer, &999u64, &employee);
     assert_eq!(result, Err(Ok(PayrollError::TemplateNotFound)));
 }
@@ -176,16 +176,16 @@ fn test_apply_template_not_found() {
 fn test_apply_template_not_public() {
     let env = Env::default();
     let (_, client) = setup_contract(&env);
-    
+
     let employer1 = Address::generate(&env);
     let employer2 = Address::generate(&env);
     let employee = Address::generate(&env);
     let token = Address::generate(&env);
-    
+
     env.mock_all_auths();
 
     client.initialize(&employer1);
-    
+
     let template_id = client.create_template(
         &employer1,
         &String::from_str(&env, "Private Template"),
@@ -196,7 +196,7 @@ fn test_apply_template_not_public() {
         &2592000u64,
         &false,
     );
-    
+
     let result = client.try_apply_template(&employer2, &template_id, &employee);
     assert_eq!(result, Err(Ok(PayrollError::TemplateNotPublic)));
 }
@@ -206,14 +206,14 @@ fn test_apply_template_not_public() {
 fn test_update_template_success() {
     let env = Env::default();
     let (_, client) = setup_contract(&env);
-    
+
     let employer = Address::generate(&env);
     let token = Address::generate(&env);
-    
+
     env.mock_all_auths();
 
     client.initialize(&employer);
-    
+
     let template_id = client.create_template(
         &employer,
         &String::from_str(&env, "Original Name"),
@@ -235,25 +235,31 @@ fn test_update_template_success() {
         &None,
         &None,
     );
-    
+
     let updated_template = client.get_template(&template_id);
-    assert_eq!(updated_template.name, String::from_str(&env, "Updated Name"));
-    assert_eq!(updated_template.description, String::from_str(&env, "Updated Description"));
+    assert_eq!(
+        updated_template.name,
+        String::from_str(&env, "Updated Name")
+    );
+    assert_eq!(
+        updated_template.description,
+        String::from_str(&env, "Updated Description")
+    );
 }
 
 #[test]
 fn test_update_template_unauthorized() {
     let env = Env::default();
     let (_, client) = setup_contract(&env);
-    
+
     let employer1 = Address::generate(&env);
     let employer2 = Address::generate(&env);
     let token = Address::generate(&env);
-    
+
     env.mock_all_auths();
 
     client.initialize(&employer1);
-    
+
     let template_id = client.create_template(
         &employer1,
         &String::from_str(&env, "Template"),
@@ -264,7 +270,7 @@ fn test_update_template_unauthorized() {
         &2592000u64,
         &false,
     );
-    
+
     let result = client.try_update_template(
         &employer2,
         &template_id,
@@ -282,14 +288,14 @@ fn test_update_template_unauthorized() {
 fn test_get_employer_templates() {
     let env = Env::default();
     let (_, client) = setup_contract(&env);
-    
+
     let employer = Address::generate(&env);
     let token = Address::generate(&env);
-    
+
     env.mock_all_auths();
 
     client.initialize(&employer);
-    
+
     let template_id1 = client.create_template(
         &employer,
         &String::from_str(&env, "Template 1"),
@@ -322,14 +328,14 @@ fn test_get_employer_templates() {
 fn test_get_public_templates() {
     let env = Env::default();
     let (_, client) = setup_contract(&env);
-    
+
     let employer = Address::generate(&env);
     let token = Address::generate(&env);
-    
+
     env.mock_all_auths();
 
     client.initialize(&employer);
-    
+
     let template_id = client.create_template(
         &employer,
         &String::from_str(&env, "Public Template"),
@@ -352,15 +358,15 @@ fn test_get_public_templates() {
 fn test_share_template_success() {
     let env = Env::default();
     let (_, client) = setup_contract(&env);
-    
+
     let employer1 = Address::generate(&env);
     let employer2 = Address::generate(&env);
     let token = Address::generate(&env);
-    
+
     env.mock_all_auths();
 
     client.initialize(&employer1);
-    
+
     let template_id = client.create_template(
         &employer1,
         &String::from_str(&env, "Shareable Template"),
@@ -373,7 +379,7 @@ fn test_share_template_success() {
     );
 
     client.share_template(&employer1, &template_id, &employer2);
-    
+
     // Verify template is now accessible by employer2
     let template = client.get_template(&template_id);
     assert_eq!(template.employer, employer1);

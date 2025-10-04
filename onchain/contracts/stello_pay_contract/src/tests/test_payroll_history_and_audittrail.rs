@@ -982,11 +982,6 @@ fn test_audit_trail_with_future_timestamps() {
     // Get audit trail with future timestamps
     let future_start = next_timestamp + 1000000;
     let future_end = next_timestamp + 2000000;
-    let entries = client.get_audit_trail(
-        &employee,
-        &Some(future_start),
-        &Some(future_end),
-        &None,
-    );
+    let entries = client.get_audit_trail(&employee, &Some(future_start), &Some(future_end), &None);
     assert_eq!(entries.len(), 0);
 }

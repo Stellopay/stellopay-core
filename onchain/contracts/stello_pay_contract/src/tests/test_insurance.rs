@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
-use soroban_sdk::{vec, Address, Env, IntoVal, String};
+use soroban_sdk::{Address, Env, String};
 
 use crate::insurance::{ClaimStatus, InsurancePolicy, InsuranceSettings, InsuranceSystem};
 use crate::payroll::PayrollContract;
@@ -94,7 +94,10 @@ fn test_pay_premium_happy_path_and_due_enforcement() {
     let res = as_contract(&env, &contract_id, || {
         InsuranceSystem::pay_premium(&env, &employer, &employee, policy.premium_amount)
     });
-    assert!(matches!(res, Err(crate::insurance::InsuranceError::InsurancePeriodNotStarted)));
+    assert!(matches!(
+        res,
+        Err(crate::insurance::InsuranceError::InsurancePeriodNotStarted)
+    ));
 
     // Advance time to due
     let next_timestamp = env.ledger().timestamp() + premium_frequency + 1;
@@ -113,7 +116,10 @@ fn test_pay_premium_happy_path_and_due_enforcement() {
     let res = as_contract(&env, &contract_id, || {
         InsuranceSystem::pay_premium(&env, &employer, &employee, policy.premium_amount - 1)
     });
-    assert!(matches!(res, Err(crate::insurance::InsuranceError::InsufficientPremiumPayment)));
+    assert!(matches!(
+        res,
+        Err(crate::insurance::InsuranceError::InsufficientPremiumPayment)
+    ));
 
     // Pay exact amount
     as_contract(&env, &contract_id, || {
@@ -218,7 +224,10 @@ fn test_file_claim_out_of_coverage_and_expired_period() {
             None,
         )
     });
-    assert!(matches!(res, Err(crate::insurance::InsuranceError::ClaimExceedsCoverage)));
+    assert!(matches!(
+        res,
+        Err(crate::insurance::InsuranceError::ClaimExceedsCoverage)
+    ));
 
     // Move time beyond policy end -> expired
     let expired_time = policy.end_timestamp + 1;
@@ -241,7 +250,10 @@ fn test_file_claim_out_of_coverage_and_expired_period() {
             None,
         )
     });
-    assert!(matches!(res, Err(crate::insurance::InsuranceError::InsurancePeriodExpired)));
+    assert!(matches!(
+        res,
+        Err(crate::insurance::InsuranceError::InsurancePeriodExpired)
+    ));
 }
 
 #[test]
@@ -254,14 +266,23 @@ fn test_policy_update_changes_premium_and_rate() {
     let freq = 86_400u64;
     let coverage = 50_000i128;
     let policy1 = as_contract(&env, &contract_id, || {
-        InsuranceSystem::create_or_update_insurance_policy(&env, &employer, &employee, &token, coverage, freq)
+        InsuranceSystem::create_or_update_insurance_policy(
+            &env, &employer, &employee, &token, coverage, freq,
+        )
     })
     .unwrap();
 
     // Update with higher coverage should increase premium amount (most cases)
     let higher_coverage = 150_000i128;
     let policy2 = as_contract(&env, &contract_id, || {
-        InsuranceSystem::create_or_update_insurance_policy(&env, &employer, &employee, &token, higher_coverage, freq)
+        InsuranceSystem::create_or_update_insurance_policy(
+            &env,
+            &employer,
+            &employee,
+            &token,
+            higher_coverage,
+            freq,
+        )
     })
     .unwrap();
     assert_eq!(policy2.coverage_amount, higher_coverage);
@@ -278,7 +299,10 @@ fn test_payout_fails_when_pool_insufficient() {
     let freq = 86_400u64;
     let coverage = 20_000i128;
     as_contract(&env, &contract_id, || {
-        InsuranceSystem::create_or_update_insurance_policy(&env, &employer, &employee, &token, coverage, freq).unwrap()
+        InsuranceSystem::create_or_update_insurance_policy(
+            &env, &employer, &employee, &token, coverage, freq,
+        )
+        .unwrap()
     });
 
     let claim_id = as_contract(&env, &contract_id, || {
@@ -302,7 +326,10 @@ fn test_payout_fails_when_pool_insufficient() {
     let res = as_contract(&env, &contract_id, || {
         InsuranceSystem::pay_claim(&env, claim_id)
     });
-    assert!(matches!(res, Err(crate::insurance::InsuranceError::InsufficientPoolFunds)));
+    assert!(matches!(
+        res,
+        Err(crate::insurance::InsuranceError::InsufficientPoolFunds)
+    ));
 }
 
 #[test]
@@ -322,7 +349,10 @@ fn test_guarantee_issue_and_repay_flow() {
     let res = as_contract(&env, &contract_id, || {
         InsuranceSystem::issue_guarantee(&env, &employer, &token, 1_000, 500, 86_400)
     });
-    assert!(matches!(res, Err(crate::insurance::InsuranceError::InsufficientPoolFunds)));
+    assert!(matches!(
+        res,
+        Err(crate::insurance::InsuranceError::InsufficientPoolFunds)
+    ));
 }
 
 #[test]
@@ -364,23 +394,37 @@ fn test_invalid_inputs_and_errors() {
 
     // Invalid coverage
     let bad = as_contract(&env, &contract_id, || {
-        InsuranceSystem::create_or_update_insurance_policy(&env, &employer, &employee, &token, 0, 86_400)
+        InsuranceSystem::create_or_update_insurance_policy(
+            &env, &employer, &employee, &token, 0, 86_400,
+        )
     });
-    assert!(matches!(bad, Err(crate::insurance::InsuranceError::InvalidPremiumCalculation)));
+    assert!(matches!(
+        bad,
+        Err(crate::insurance::InsuranceError::InvalidPremiumCalculation)
+    ));
 
     // Invalid frequency
     let bad = as_contract(&env, &contract_id, || {
-        InsuranceSystem::create_or_update_insurance_policy(&env, &employer, &employee, &token, 10_000, 0)
+        InsuranceSystem::create_or_update_insurance_policy(
+            &env, &employer, &employee, &token, 10_000, 0,
+        )
     });
-    assert!(matches!(bad, Err(crate::insurance::InsuranceError::InvalidPremiumCalculation)));
+    assert!(matches!(
+        bad,
+        Err(crate::insurance::InsuranceError::InvalidPremiumCalculation)
+    ));
 
     // Approve constraints
     // First create valid policy and claim
     let _ = as_contract(&env, &contract_id, || {
-        InsuranceSystem::create_or_update_insurance_policy(&env, &employer, &employee, &token, 10_000, 86_400).unwrap()
+        InsuranceSystem::create_or_update_insurance_policy(
+            &env, &employer, &employee, &token, 10_000, 86_400,
+        )
+        .unwrap()
     });
     let claim_id = as_contract(&env, &contract_id, || {
-        InsuranceSystem::file_claim(&env, &employee, 5_000, String::from_str(&env, "ok"), None).unwrap()
+        InsuranceSystem::file_claim(&env, &employee, 5_000, String::from_str(&env, "ok"), None)
+            .unwrap()
     });
     let approver = Address::generate(&env);
 
@@ -388,7 +432,8 @@ fn test_invalid_inputs_and_errors() {
     let res = as_contract(&env, &contract_id, || {
         InsuranceSystem::approve_claim(&env, &approver, claim_id, 6_000)
     });
-    assert!(matches!(res, Err(crate::insurance::InsuranceError::InvalidPremiumCalculation)));
+    assert!(matches!(
+        res,
+        Err(crate::insurance::InsuranceError::InvalidPremiumCalculation)
+    ));
 }
-
-
