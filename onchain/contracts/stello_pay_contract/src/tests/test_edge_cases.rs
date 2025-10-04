@@ -34,7 +34,7 @@ fn test_maximum_amount_values() {
 
     env.mock_all_auths();
     client.initialize(&employer);
-    
+
     // This should work without overflow
     client.create_or_update_escrow(
         &employer,
@@ -66,7 +66,7 @@ fn test_minimum_valid_values() {
 
     env.mock_all_auths();
     client.initialize(&employer);
-    
+
     client.create_or_update_escrow(
         &employer,
         &employee,
@@ -96,15 +96,8 @@ fn test_zero_amount_fails() {
 
     env.mock_all_auths();
     client.initialize(&employer);
-    
-    client.create_or_update_escrow(
-        &employer,
-        &employee,
-        &token,
-        &0i128,
-        &86400u64,
-        &2592000u64,
-    );
+
+    client.create_or_update_escrow(&employer, &employee, &token, &0i128, &86400u64, &2592000u64);
 }
 
 #[test]
@@ -120,15 +113,8 @@ fn test_zero_interval_fails() {
 
     env.mock_all_auths();
     client.initialize(&employer);
-    
-    client.create_or_update_escrow(
-        &employer,
-        &employee,
-        &token,
-        &1000i128,
-        &0u64,
-        &2592000u64,
-    );
+
+    client.create_or_update_escrow(&employer, &employee, &token, &1000i128, &0u64, &2592000u64);
 }
 
 #[test]
@@ -144,15 +130,8 @@ fn test_zero_recurrence_frequency_fails() {
 
     env.mock_all_auths();
     client.initialize(&employer);
-    
-    client.create_or_update_escrow(
-        &employer,
-        &employee,
-        &token,
-        &1000i128,
-        &86400u64,
-        &0u64,
-    );
+
+    client.create_or_update_escrow(&employer, &employee, &token, &1000i128, &86400u64, &0u64);
 }
 
 // Test negative amount (should fail)
@@ -169,7 +148,7 @@ fn test_negative_amount_fails() {
 
     env.mock_all_auths();
     client.initialize(&employer);
-    
+
     client.create_or_update_escrow(
         &employer,
         &employee,
@@ -190,7 +169,7 @@ fn test_double_initialization_fails() {
 
     let employer = Address::generate(&env);
     env.mock_all_auths();
-    
+
     client.initialize(&employer);
     client.initialize(&employer); // This should panic
 }
@@ -213,7 +192,7 @@ fn test_disburse_when_paused_fails() {
     token_admin.mint(&employer, &10000);
     client.initialize(&employer);
     client.deposit_tokens(&employer, &token_address, &5000i128);
-    
+
     // Create escrow first
     client.create_or_update_escrow(
         &employer,
@@ -223,10 +202,10 @@ fn test_disburse_when_paused_fails() {
         &86400u64,
         &2592000u64,
     );
-    
+
     // Pause contract
     client.pause(&employer);
-    
+
     // Advance time
     let next_timestamp = env.ledger().timestamp() + 2592000u64 + 1;
     env.ledger().set(LedgerInfo {
@@ -239,7 +218,7 @@ fn test_disburse_when_paused_fails() {
         min_temp_entry_ttl: 16,
         max_entry_ttl: 6312000,
     });
-    
+
     client.disburse_salary(&employer, &employee);
 }
 
@@ -258,7 +237,7 @@ fn test_exact_timestamp_boundary() {
     token_admin.mint(&employer, &10000);
     client.initialize(&employer);
     client.deposit_tokens(&employer, &token_address, &5000i128);
-    
+
     client.create_or_update_escrow(
         &employer,
         &employee,
@@ -270,7 +249,7 @@ fn test_exact_timestamp_boundary() {
 
     let payroll = client.get_payroll(&employee).unwrap();
     let exact_next_payout = payroll.next_payout_timestamp;
-    
+
     // Set time to exactly the next payout timestamp
     env.ledger().set(LedgerInfo {
         timestamp: exact_next_payout,
@@ -282,10 +261,10 @@ fn test_exact_timestamp_boundary() {
         min_temp_entry_ttl: 16,
         max_entry_ttl: 6312000,
     });
-    
+
     // This should work at exact boundary
     client.disburse_salary(&employer, &employee);
-    
+
     let token_client = TokenClient::new(&env, &token_address);
     let employee_balance = token_client.balance(&employee);
     assert_eq!(employee_balance, 1000);
@@ -307,7 +286,7 @@ fn test_one_second_before_payout_fails() {
     token_admin.mint(&employer, &10000);
     client.initialize(&employer);
     client.deposit_tokens(&employer, &token_address, &5000i128);
-    
+
     client.create_or_update_escrow(
         &employer,
         &employee,
@@ -319,7 +298,7 @@ fn test_one_second_before_payout_fails() {
 
     let payroll = client.get_payroll(&employee).unwrap();
     let one_second_before = payroll.next_payout_timestamp - 1;
-    
+
     env.ledger().set(LedgerInfo {
         timestamp: one_second_before,
         protocol_version: 22,
@@ -330,7 +309,7 @@ fn test_one_second_before_payout_fails() {
         min_temp_entry_ttl: 16,
         max_entry_ttl: 6312000,
     });
-    
+
     client.disburse_salary(&employer, &employee);
 }
 
@@ -347,10 +326,10 @@ fn test_very_large_recurrence_frequency() {
 
     // 100 years in seconds
     let large_recurrence = 100 * 365 * 24 * 60 * 60u64;
-    
+
     env.mock_all_auths();
     client.initialize(&employer);
-    
+
     client.create_or_update_escrow(
         &employer,
         &employee,
@@ -380,7 +359,7 @@ fn test_same_employee_different_employers_fails() {
 
     env.mock_all_auths();
     client.initialize(&employer1);
-    
+
     // Create escrow with first employer
     client.create_or_update_escrow(
         &employer1,
@@ -390,7 +369,7 @@ fn test_same_employee_different_employers_fails() {
         &86400u64,
         &2592000u64,
     );
-    
+
     // Try to create escrow with second employer (should fail - unauthorized)
     client.create_or_update_escrow(
         &employer2,
@@ -414,7 +393,7 @@ fn test_deposit_zero_amount_fails() {
     let employer = Address::generate(&env);
     env.mock_all_auths();
     client.initialize(&employer);
-    
+
     client.deposit_tokens(&employer, &token_address, &0i128);
 }
 
@@ -430,6 +409,6 @@ fn test_deposit_negative_amount_fails() {
     let employer = Address::generate(&env);
     env.mock_all_auths();
     client.initialize(&employer);
-    
+
     client.deposit_tokens(&employer, &token_address, &-1000i128);
 }
