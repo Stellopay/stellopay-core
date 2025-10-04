@@ -1201,12 +1201,139 @@ impl LifecycleStorage {
         );
     }
 
+    pub fn get_employee_offboarding_id(env: &Env, employee: &Address) -> Option<u64> {
+        let link_token = Address::from_string(&String::from_str(env, "OFFBOARD"));
+        env.storage()
+            .persistent()
+            .get::<DataKey, i128>(&DataKey::Balance(employee.clone(), link_token))
+            .map(|id| id as u64)
+    }
+
+    /// Store final payment separately to avoid serialization issues
+    pub fn store_final_payment(env: &Env, employee: &Address, final_payment: &FinalPayment) {
+        let payment_key = Address::from_string(&String::from_str(env, "FINALPAY"));
+        env.storage().persistent().set(
+            &DataKey::Balance(employee.clone(), payment_key),
+            final_payment,
+        );
+    }
+
     /// Get final payment
     pub fn get_final_payment(env: &Env, employee: &Address) -> Option<FinalPayment> {
         let payment_key = Address::from_string(&String::from_str(env, "FINALPAY"));
         env.storage()
             .persistent()
             .get(&DataKey::Balance(employee.clone(), payment_key))
+    }
+
+    //-----------------------------------------------------------------------------
+    // Backup Helper Functions for storage.rs
+    //-----------------------------------------------------------------------------
+
+    /// Store backup using ExtendedDataKey
+    pub fn store_backup_rs(env: &Env, backup: &PayrollBackup) {
+        env.storage()
+            .persistent()
+            .set(&ExtendedDataKey::Backup(backup.id), backup);
+    }
+
+    /// Get backup from storage
+    pub fn get_backup_rs(env: &Env, backup_id: u64) -> Option<PayrollBackup> {
+        env.storage()
+            .persistent()
+            .get(&ExtendedDataKey::Backup(backup_id))
+    }
+
+    /// Store backup data
+    pub fn store_backup_data_rs(env: &Env, backup_id: u64, backup_data: &BackupData) {
+        env.storage()
+            .persistent()
+            .set(&ExtendedDataKey::BackupData(backup_id), backup_data);
+    }
+
+    /// Get backup data from storage
+    pub fn get_backup_data_rs(env: &Env, backup_id: u64) -> Option<BackupData> {
+        env.storage()
+            .persistent()
+            .get(&ExtendedDataKey::BackupData(backup_id))
+    }
+
+    /// Store recovery point
+    pub fn store_recovery_point_rs(env: &Env, recovery_point: &RecoveryPoint) {
+        env.storage()
+            .persistent()
+            .set(&ExtendedDataKey::Recovery(recovery_point.id), recovery_point);
+    }
+
+    /// Get recovery point from storage
+    pub fn get_recovery_point_rs(env: &Env, recovery_id: u64) -> Option<RecoveryPoint> {
+        env.storage()
+            .persistent()
+            .get(&ExtendedDataKey::Recovery(recovery_id))
+    }
+
+    /// Get next backup ID using ExtendedDataKey
+    pub fn get_next_backup_id_rs(env: &Env) -> u64 {
+        let current_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&ExtendedDataKey::NextBackupId)
+            .unwrap_or(1);
+        env.storage()
+            .persistent()
+            .set(&ExtendedDataKey::NextBackupId, &(current_id + 1));
+        current_id
+    }
+
+    /// Get next recovery ID using ExtendedDataKey
+    pub fn get_next_recovery_id_rs(env: &Env) -> u64 {
+        let current_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&ExtendedDataKey::NextRecoveryId)
+            .unwrap_or(1);
+        env.storage()
+            .persistent()
+            .set(&ExtendedDataKey::NextRecoveryId, &(current_id + 1));
+        current_id
+    }
+
+    /// Get all backups for an employer
+    pub fn get_employer_backups_rs(env: &Env, employer: &Address) -> Vec<u64> {
+        env.storage()
+            .persistent()
+            .get(&ExtendedDataKey::EmpBackups(employer.clone()))
+            .unwrap_or(Vec::new(env))
+    }
+
+    /// Add backup to employer's backup list
+    pub fn add_backup_to_employer_rs(env: &Env, employer: &Address, backup_id: u64) {
+        let mut employer_backups = Self::get_employer_backups_rs(env, employer);
+        employer_backups.push_back(backup_id);
+        env.storage()
+            .persistent()
+            .set(&ExtendedDataKey::EmpBackups(employer.clone()), &employer_backups);
+    }
+
+    /// Validate backup data integrity
+    pub fn validate_backup_integrity_rs(env: &Env, backup_data: &BackupData) -> bool {
+        // Basic integrity check - ensure required fields are present
+        !backup_data.payroll_data.is_empty() ||
+        !backup_data.template_data.is_empty() ||
+        !backup_data.preset_data.is_empty() ||
+        !backup_data.insurance_data.is_empty()
+    }
+
+    /// Calculate backup storage size in bytes
+    pub fn calculate_backup_storage_size_rs(backup_data: &BackupData) -> u64 {
+        // Estimate storage size based on data content
+        let payroll_size = backup_data.payroll_data.len() * 200; // ~200 bytes per payroll record
+        let template_size = backup_data.template_data.len() * 150; // ~150 bytes per template
+        let preset_size = backup_data.preset_data.len() * 100; // ~100 bytes per preset
+        let insurance_size = backup_data.insurance_data.len() * 180; // ~180 bytes per policy
+        let metadata_size = 100; // Metadata overhead
+
+        (payroll_size + template_size + preset_size + insurance_size + metadata_size) as u64
     }
 }
 
