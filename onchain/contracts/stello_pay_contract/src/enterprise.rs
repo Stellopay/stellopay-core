@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Env, Map, String, Symbol, Vec};
+use soroban_sdk::{contracttype, Address, Env, Map, String, Vec};
 
 //-----------------------------------------------------------------------------
 // Enterprise Features Data Structures
@@ -379,8 +379,10 @@ use crate::storage::{
 };
 
 /// HR Workflow Management System
+#[allow(dead_code)]
 pub struct HRWorkflowManager;
 
+#[allow(dead_code)]
 impl HRWorkflowManager {
     /// Create employee onboarding workflow
     pub fn create_onboarding_workflow(
@@ -896,6 +898,7 @@ impl HRWorkflowManager {
 //-----------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)]
 pub enum EnterpriseError {
     DepartmentNotFound,
     WorkflowNotFound,

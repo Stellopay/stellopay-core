@@ -1,8 +1,9 @@
+#![allow(dead_code)]
 //-----------------------------------------------------------------------------
 // Events
 //-----------------------------------------------------------------------------
 
-use soroban_sdk::{contracttype, symbol_short, Address, Env, String, Symbol};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Map, String, Symbol};
 
 /// Event emitted when contract is paused
 pub const PAUSED_EVENT: Symbol = symbol_short!("paused");
@@ -440,6 +441,7 @@ pub fn emit_employee_offboarded(
     e.events().publish(topics, event_data);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn emit_employee_transferred(
     e: Env,
     employee: Address,
@@ -484,6 +486,7 @@ pub fn emit_employee_status_changed(
     e.events().publish(topics, event_data);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn emit_onboarding_workflow_event(
     e: Env,
     workflow_id: u64,
@@ -507,6 +510,7 @@ pub fn emit_onboarding_workflow_event(
     e.events().publish(topics, event_data);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn emit_offboarding_workflow_event(
     e: Env,
     workflow_id: u64,
@@ -532,6 +536,7 @@ pub fn emit_offboarding_workflow_event(
     e.events().publish(topics, event_data);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn emit_final_payment_processed(
     e: Env,
     employee: Address,
@@ -576,6 +581,7 @@ pub fn emit_compliance_updated(
     e.events().publish(topics, event_data);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn emit_workflow_approved(
     e: Env,
     workflow_id: u64,
