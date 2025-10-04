@@ -1047,10 +1047,10 @@ pub struct AggregatedMetrics {
     pub min_amount: i128,
     pub max_amount: i128,
     pub employee_count: u32,
-    pub on_time_rate: u32, // Percentage
-    pub late_rate: u32, // Percentage
-    pub error_rate: u32, // Percentage
-    pub token_breakdown: Map<Address, i128>, // Token -> Total amount
+    pub on_time_rate: u32,                    // Percentage
+    pub late_rate: u32,                       // Percentage
+    pub error_rate: u32,                      // Percentage
+    pub token_breakdown: Map<Address, i128>,  // Token -> Total amount
     pub department_breakdown: Map<u64, i128>, // Department ID -> Total amount
 }
 
@@ -1063,9 +1063,9 @@ pub struct TrendAnalysis {
     pub period_end: u64,
     pub data_points: Vec<TimeSeriesDataPoint>,
     pub trend_direction: TrendDirection,
-    pub growth_rate: i128, // Basis points (100 = 1%)
-    pub volatility: u32, // Standard deviation as percentage
-    pub has_forecast: bool, // Indicate if forecast is present
+    pub growth_rate: i128,      // Basis points (100 = 1%)
+    pub volatility: u32,        // Standard deviation as percentage
+    pub has_forecast: bool,     // Indicate if forecast is present
     pub forecast: ForecastData, // Always include, use default/empty values when not needed
     pub analysis_timestamp: u64,
 }
@@ -1376,40 +1376,40 @@ pub struct BenchmarkData {
 pub enum AnalyticsDataKey {
     // Time series data
     TimeSeriesData(String, u64), // (metric_name, timestamp) -> TimeSeriesDataPoint
-    TimeSeriesIndex(String), // metric_name -> Vec<u64> (timestamps)
-    
+    TimeSeriesIndex(String),     // metric_name -> Vec<u64> (timestamps)
+
     // Aggregated metrics
     AggregatedMetrics(Address, u64), // (employer, period_start) -> AggregatedMetrics
-    
+
     // Trend analysis
     TrendAnalysis(String, u64), // (metric_name, analysis_timestamp) -> TrendAnalysis
-    
+
     // Dashboards
     Dashboard(u64), // dashboard_id -> AnalyticsDashboard
     NextDashboardId,
     UserDashboards(Address), // user -> Vec<u64> (dashboard IDs)
-    
+
     // Charts
     ChartData(u64), // chart_id -> ChartData
     NextChartId,
-    
+
     // Custom queries
     AnalyticsQuery(u64), // query_id -> AnalyticsQuery
     NextQueryId,
     UserQueries(Address), // user -> Vec<u64> (query IDs)
-    
+
     // Data exports
     ExportRequest(u64), // export_id -> DataExportRequest
     NextExportId,
     UserExports(Address), // user -> Vec<u64> (export IDs)
-    
+
     // Comparative analysis
     ComparativeAnalysis(u64), // analysis_id -> ComparativeAnalysis
     NextAnalysisId,
-    
+
     // Benchmarks
     Benchmark(String), // metric_name -> BenchmarkData
-    
+
     // Analytics cache
     AnalyticsCache(String), // cache_key -> cached data
 }
@@ -1898,41 +1898,41 @@ pub enum DistributionStatus {
 #[contracttype]
 pub enum ReportingDataKey {
     // Reports
-    Report(u64),                    // report_id -> PayrollReport
-    NextReportId,                   // Next available report ID
-    EmployerReports(Address),       // employer -> Vec<u64> (report IDs)
-    ReportsByType(ReportType),      // report_type -> Vec<u64> (report IDs)
-    ReportsByStatus(ReportStatus),  // status -> Vec<u64> (report IDs)
-    
+    Report(u64),                   // report_id -> PayrollReport
+    NextReportId,                  // Next available report ID
+    EmployerReports(Address),      // employer -> Vec<u64> (report IDs)
+    ReportsByType(ReportType),     // report_type -> Vec<u64> (report IDs)
+    ReportsByStatus(ReportStatus), // status -> Vec<u64> (report IDs)
+
     // Tax calculations
-    TaxCalculation(Address, u64),   // (employee, period) -> TaxCalculation
-    EmployerTaxes(Address),         // employer -> Vec<(Address, u64)> (employee, period pairs)
-    TaxesByJurisdiction(String),    // jurisdiction -> Vec<(Address, u64)>
-    
+    TaxCalculation(Address, u64), // (employee, period) -> TaxCalculation
+    EmployerTaxes(Address),       // employer -> Vec<(Address, u64)> (employee, period pairs)
+    TaxesByJurisdiction(String),  // jurisdiction -> Vec<(Address, u64)>
+
     // Report schedules
-    ReportSchedule(u64),            // schedule_id -> ReportSchedule
-    NextScheduleId,                 // Next available schedule ID
-    EmployerSchedules(Address),     // employer -> Vec<u64> (schedule IDs)
-    ActiveSchedules,                // Vec<u64> (active schedule IDs)
-    
+    ReportSchedule(u64),        // schedule_id -> ReportSchedule
+    NextScheduleId,             // Next available schedule ID
+    EmployerSchedules(Address), // employer -> Vec<u64> (schedule IDs)
+    ActiveSchedules,            // Vec<u64> (active schedule IDs)
+
     // Compliance alerts
-    ComplianceAlert(u64),           // alert_id -> ComplianceAlert
-    NextAlertId,                    // Next available alert ID
-    EmployerAlerts(Address),        // employer -> Vec<u64> (alert IDs)
-    ActiveAlerts,                   // Vec<u64> (active alert IDs)
+    ComplianceAlert(u64),              // alert_id -> ComplianceAlert
+    NextAlertId,                       // Next available alert ID
+    EmployerAlerts(Address),           // employer -> Vec<u64> (alert IDs)
+    ActiveAlerts,                      // Vec<u64> (active alert IDs)
     AlertsByType(ComplianceAlertType), // alert_type -> Vec<u64> (alert IDs)
-    
+
     // Dashboard metrics
-    DashboardMetrics(Address),      // employer -> DashboardMetrics
-    GlobalMetrics,                  // Global system metrics
-    
+    DashboardMetrics(Address), // employer -> DashboardMetrics
+    GlobalMetrics,             // Global system metrics
+
     // Audit trail
-    ReportAudit(u64),              // audit_id -> ReportAuditEntry
-    NextAuditId,                   // Next available audit ID
-    ReportAuditTrail(u64),         // report_id -> Vec<u64> (audit entry IDs)
-    
+    ReportAudit(u64),      // audit_id -> ReportAuditEntry
+    NextAuditId,           // Next available audit ID
+    ReportAuditTrail(u64), // report_id -> Vec<u64> (audit entry IDs)
+
     // Distribution
-    ReportDistribution(u64),        // distribution_id -> ReportDistribution
-    NextDistributionId,             // Next available distribution ID
-    ReportDistributions(u64),       // report_id -> Vec<u64> (distribution IDs)
+    ReportDistribution(u64),  // distribution_id -> ReportDistribution
+    NextDistributionId,       // Next available distribution ID
+    ReportDistributions(u64), // report_id -> Vec<u64> (distribution IDs)
 }

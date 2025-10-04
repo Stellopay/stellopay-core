@@ -1,12 +1,12 @@
 use soroban_sdk::{
-    contract, contracterror, contractimpl, symbol_short, token::Client as TokenClient,
-    Address, Env, Map, String, Symbol, Vec,
+    contract, contracterror, contractimpl, symbol_short, token::Client as TokenClient, Address,
+    Env, Map, String, Symbol, Vec,
 };
 
 use crate::enterprise::{
-    self, Approval, ApprovalStep, ApprovalWorkflow, BackupSchedule, Department,
-    Dispute, DisputePriority, DisputeSettings, DisputeStatus, DisputeType, EnterpriseDataKey,
-    Escalation, EscalationLevel, Mediator, PayrollModificationRequest, PayrollModificationStatus,
+    self, Approval, ApprovalStep, ApprovalWorkflow, BackupSchedule, Department, Dispute,
+    DisputePriority, DisputeSettings, DisputeStatus, DisputeType, EnterpriseDataKey, Escalation,
+    EscalationLevel, Mediator, PayrollModificationRequest, PayrollModificationStatus,
     PayrollModificationType, ReportTemplate, WebhookEndpoint,
 };
 
@@ -25,22 +25,101 @@ use crate::insurance::{
 };
 
 use crate::storage::{
-    ActionType, AutomationRule, BackupData, BackupMetadata, BackupStatus, BackupType,
-    CompactPayroll, CompactPayrollHistoryEntry, ComplianceRecord, ComplianceStatus,
-    DataKey, EmployeeProfile, EmployeeStatus, EmployeeTransfer, ExtendedDataKey,
-    FinalPayment, LifecycleStorage, OffboardingTask, OffboardingWorkflow,
-    OnboardingTask, OnboardingWorkflow, Payroll, PayrollBackup, PayrollInput, PayrollSchedule,
-    PayrollTemplate, PerformanceMetrics, Permission, PermissionAuditEntry,
-    RecoveryMetadata, RecoveryPoint, RecoveryStatus, RecoveryType, Role, RoleDataKey,
-    RoleDelegation, RoleDetails, RuleAction, RuleCondition, RuleType, ScheduleFrequency,
-    ScheduleMetadata, ScheduleType, SecurityAuditEntry, SecurityAuditResult, SecuritySettings,
-    TempRoleAssignment, TemplatePreset, UserRoleAssignment, UserRolesResponse,
-    WorkflowStatus,
+    ActionType,
+    AggregatedMetrics,
+    AlertSeverity,
+    AlertStatus,
+    AnalyticsDashboard,
+    AnalyticsDataKey,
+    AnalyticsQuery,
+    AutomationRule,
+    BackupData,
+    BackupMetadata,
+    BackupStatus,
+    BackupType,
+    BenchmarkData,
+    ChartData,
+    CompactPayroll,
+    CompactPayrollHistoryEntry,
+    ComparativeAnalysis,
+    ComparisonType,
+    ComplianceAlert,
+    ComplianceAlertType,
+    ComplianceRecord,
+    ComplianceStatus,
+    DashboardMetrics,
+    DashboardWidget,
+    DataExportRequest,
+    DataKey,
+    DataPoint,
+    DataSeries,
+    DataSource,
+    DateRange,
+    EmployeeProfile,
+    EmployeeStatus,
+    EmployeeTransfer,
+    ExportFormat,
+    ExportStatus,
+    ExportType,
+    ExtendedDataKey,
+    FilterOperator,
+    FinalPayment,
+    ForecastData,
+    LifecycleStorage,
+    MetricComparison,
+    OffboardingTask,
+    OffboardingWorkflow,
+    OnboardingTask,
+    OnboardingWorkflow,
+    Payroll,
+    PayrollBackup,
+    PayrollInput,
     // Reporting imports
-    PayrollReport, ReportType, ReportFormat, ReportStatus, ReportMetadata, TaxCalculation,
-    TaxType, ComplianceAlert, ComplianceAlertType, AlertSeverity,
-    AlertStatus, DashboardMetrics, ReportAuditEntry,TimeSeriesDataPoint,AggregatedMetrics,TrendAnalysis,TrendDirection,ForecastData,DashboardWidget,WidgetSize,WidgetType,WidgetPosition,ChartData,DataSeries,DataPoint,AnalyticsQuery,QueryType,QueryFilter, FilterOperator,SortCriteria,SortDirection,DataExportRequest,ExportType,ExportFormat,ExportStatus,DateRange,ComparativeAnalysis,ComparisonType,
-    MetricComparison,AnalyticsDashboard,AnalyticsDataKey,DataSource,BenchmarkData,
+    PayrollReport,
+    PayrollSchedule,
+    PayrollTemplate,
+    PerformanceMetrics,
+    Permission,
+    PermissionAuditEntry,
+    QueryFilter,
+    QueryType,
+    RecoveryMetadata,
+    RecoveryPoint,
+    RecoveryStatus,
+    RecoveryType,
+    ReportAuditEntry,
+    ReportFormat,
+    ReportMetadata,
+    ReportStatus,
+    ReportType,
+    Role,
+    RoleDataKey,
+    RoleDelegation,
+    RoleDetails,
+    RuleAction,
+    RuleCondition,
+    RuleType,
+    ScheduleFrequency,
+    ScheduleMetadata,
+    ScheduleType,
+    SecurityAuditEntry,
+    SecurityAuditResult,
+    SecuritySettings,
+    SortCriteria,
+    SortDirection,
+    TaxCalculation,
+    TaxType,
+    TempRoleAssignment,
+    TemplatePreset,
+    TimeSeriesDataPoint,
+    TrendAnalysis,
+    TrendDirection,
+    UserRoleAssignment,
+    UserRolesResponse,
+    WidgetPosition,
+    WidgetSize,
+    WidgetType,
+    WorkflowStatus,
 };
 //-----------------------------------------------------------------------------
 // Gas Optimization Structures
@@ -6966,17 +7045,26 @@ impl PayrollContract {
         let mut total_transactions = 0u32;
 
         let mut report_data = Map::new(&env);
-        report_data.set(String::from_str(&env, "period_start"), String::from_str(&env, "1640995200"));
-        report_data.set(String::from_str(&env, "period_end"), String::from_str(&env, "1643673600"));
-        report_data.set(String::from_str(&env, "employer"), String::from_str(&env, "employer_address"));
+        report_data.set(
+            String::from_str(&env, "period_start"),
+            String::from_str(&env, "1640995200"),
+        );
+        report_data.set(
+            String::from_str(&env, "period_end"),
+            String::from_str(&env, "1643673600"),
+        );
+        report_data.set(
+            String::from_str(&env, "employer"),
+            String::from_str(&env, "employer_address"),
+        );
 
         // Calculate summary metrics
         let mut data_sources = Vec::new(&env);
         data_sources.push_back(String::from_str(&env, "payroll_data"));
-        
+
         let mut filters_applied = Vec::new(&env);
         filters_applied.push_back(String::from_str(&env, "period_filter"));
-        
+
         let metadata = ReportMetadata {
             total_employees,
             total_amount,
@@ -7029,7 +7117,7 @@ impl PayrollContract {
 
         let mut report_data = Map::new(&env);
         let mut filters = Map::new(&env);
-        
+
         if let Some(employee) = employee_filter {
             filters.set(String::from_str(&env, "employee"), employee.to_string());
         }
@@ -7037,11 +7125,11 @@ impl PayrollContract {
         let mut data_sources = Vec::new(&env);
         data_sources.push_back(String::from_str(&env, "payroll_data"));
         data_sources.push_back(String::from_str(&env, "audit_trail"));
-        
+
         let mut filters_applied = Vec::new(&env);
         filters_applied.push_back(String::from_str(&env, "period_filter"));
         filters_applied.push_back(String::from_str(&env, "employee_filter"));
-        
+
         let metadata = ReportMetadata {
             total_employees: 0,
             total_amount: 0,
@@ -7215,9 +7303,17 @@ impl PayrollContract {
         storage.set(&ExtendedDataKey::Template(report.id), report);
     }
 
-    fn store_tax_calculation(env: &Env, employee: &Address, period: u64, tax_calc: &TaxCalculation) {
+    fn store_tax_calculation(
+        env: &Env,
+        employee: &Address,
+        period: u64,
+        tax_calc: &TaxCalculation,
+    ) {
         let storage = env.storage().persistent();
-        let key = DataKey::Balance(employee.clone(), Address::from_string(&String::from_str(env, "TAX")));
+        let key = DataKey::Balance(
+            employee.clone(),
+            Address::from_string(&String::from_str(env, "TAX")),
+        );
         storage.set(&key, tax_calc);
     }
 
@@ -7234,7 +7330,7 @@ impl PayrollContract {
     fn add_report_audit(env: &Env, report_id: u64, action: &str, actor: &Address) {
         let current_time = env.ledger().timestamp();
         let audit_id = Self::get_next_report_id(env);
-        
+
         let audit_entry = ReportAuditEntry {
             id: audit_id,
             report_id,
@@ -7289,7 +7385,7 @@ impl PayrollContract {
         period_end: u64,
     ) -> Result<AggregatedMetrics, PayrollError> {
         let storage = env.storage().persistent();
-        
+
         // Collect metrics from the period
         let mut total_disbursements = 0u64;
         let mut total_amount = 0i128;
@@ -7305,11 +7401,13 @@ impl PayrollContract {
         let end_day = (period_end / 86_400) * 86_400;
 
         for day_timestamp in (start_day..=end_day).step_by(86_400) {
-            if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp)) {
+            if let Some(metrics) =
+                storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp))
+            {
                 total_disbursements += metrics.total_disbursements;
                 total_amount += metrics.total_amount;
                 amounts.push_back(metrics.total_amount);
-                
+
                 // Count on-time vs late
                 let total_ops = metrics.operation_count;
                 if total_ops > 0 {
@@ -7392,7 +7490,7 @@ impl PayrollContract {
         for timestamp in index.iter() {
             if timestamp >= period_start && timestamp <= period_end {
                 if let Some(point) = storage.get::<AnalyticsDataKey, TimeSeriesDataPoint>(
-                    &AnalyticsDataKey::TimeSeriesData(metric_name.clone(), timestamp)
+                    &AnalyticsDataKey::TimeSeriesData(metric_name.clone(), timestamp),
                 ) {
                     data_points.push_back(point);
                 }
@@ -7408,8 +7506,9 @@ impl PayrollContract {
                 trend_direction: TrendDirection::Insufficient,
                 growth_rate: 0,
                 volatility: 0,
-                has_forecast: false,  // ADD THIS
-                forecast: ForecastData {  // Use default instead of None
+                has_forecast: false, // ADD THIS
+                forecast: ForecastData {
+                    // Use default instead of None
                     next_period_prediction: 0,
                     confidence_level: 0,
                     prediction_range_low: 0,
@@ -7423,7 +7522,7 @@ impl PayrollContract {
         // Calculate trend direction and growth rate
         let first_value = data_points.get(0).unwrap().value;
         let last_value = data_points.get(data_points.len() - 1).unwrap().value;
-        
+
         let growth_rate = if first_value != 0 {
             ((last_value - first_value) * 10000) / first_value // Basis points
         } else {
@@ -7441,7 +7540,7 @@ impl PayrollContract {
         };
 
         // Generate forecast
-        let forecast =Self::generate_forecast(&env, &data_points, growth_rate);
+        let forecast = Self::generate_forecast(&env, &data_points, growth_rate);
 
         let trend = TrendAnalysis {
             metric_name: metric_name.clone(),
@@ -7452,7 +7551,7 @@ impl PayrollContract {
             growth_rate,
             volatility: Self::calculate_volatility(&data_points),
             forecast,
-            has_forecast:false,
+            has_forecast: false,
             analysis_timestamp: current_time,
         };
 
@@ -7472,13 +7571,13 @@ impl PayrollContract {
         growth_rate: i128,
     ) -> ForecastData {
         let last_value = data_points.get(data_points.len() - 1).unwrap().value;
-        
+
         // Simple linear forecast
         let next_period_prediction = last_value + ((last_value * growth_rate) / 10000);
-        
+
         // Calculate prediction range (±20% for simplicity)
         let range_margin = next_period_prediction / 5;
-        
+
         ForecastData {
             next_period_prediction,
             confidence_level: 75, // Simplified confidence
@@ -7526,15 +7625,15 @@ impl PayrollContract {
         if n == 0 {
             return 0;
         }
-        
+
         let mut x = n;
         let mut y = (x + 1) / 2;
-        
+
         while y < x {
             x = y;
             y = (x + n / x) / 2;
         }
-        
+
         x
     }
 
@@ -7600,10 +7699,8 @@ impl PayrollContract {
         user_dashboards.push_back(dashboard_id);
         storage.set(&AnalyticsDataKey::UserDashboards(owner), &user_dashboards);
 
-        env.events().publish(
-            (symbol_short!("dash_c"),),
-            (dashboard_id, name),
-        );
+        env.events()
+            .publish((symbol_short!("dash_c"),), (dashboard_id, name));
 
         Ok(dashboard_id)
     }
@@ -7630,11 +7727,13 @@ impl PayrollContract {
         // Generate data based on source
         match data_source {
             DataSource::PayrollMetrics => {
-                let mut payroll_series = Self::generate_payroll_series(&env, period_start, period_end);
+                let mut payroll_series =
+                    Self::generate_payroll_series(&env, period_start, period_end);
                 data_series.push_back(payroll_series);
             }
             DataSource::EmployeeMetrics => {
-                let mut employee_series = Self::generate_employee_series(&env, period_start, period_end);
+                let mut employee_series =
+                    Self::generate_employee_series(&env, period_start, period_end);
                 data_series.push_back(employee_series);
             }
             _ => {}
@@ -7664,7 +7763,9 @@ impl PayrollContract {
         let end_day = (period_end / 86_400) * 86_400;
 
         for day_timestamp in (start_day..=end_day).step_by(86_400) {
-            if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp)) {
+            if let Some(metrics) =
+                storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp))
+            {
                 data_points.push_back(DataPoint {
                     x: day_timestamp,
                     y: metrics.total_amount,
@@ -7690,7 +7791,9 @@ impl PayrollContract {
         let end_day = (period_end / 86_400) * 86_400;
 
         for day_timestamp in (start_day..=end_day).step_by(86_400) {
-            if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp)) {
+            if let Some(metrics) =
+                storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp))
+            {
                 data_points.push_back(DataPoint {
                     x: day_timestamp,
                     y: metrics.employee_count as i128,
@@ -7752,10 +7855,8 @@ impl PayrollContract {
         user_queries.push_back(query_id);
         storage.set(&AnalyticsDataKey::UserQueries(creator), &user_queries);
 
-        env.events().publish(
-            (symbol_short!("query_c"),),
-            (query_id, name),
-        );
+        env.events()
+            .publish((symbol_short!("query_c"),), (query_id, name));
 
         Ok(query_id)
     }
@@ -7898,12 +7999,13 @@ impl PayrollContract {
             generated_at: current_time,
         };
 
-        storage.set(&AnalyticsDataKey::ComparativeAnalysis(analysis_id), &analysis);
-
-        env.events().publish(
-            (symbol_short!("comp_a"),),
-            (analysis_id, current_time),
+        storage.set(
+            &AnalyticsDataKey::ComparativeAnalysis(analysis_id),
+            &analysis,
         );
+
+        env.events()
+            .publish((symbol_short!("comp_a"),), (analysis_id, current_time));
 
         Ok(analysis)
     }
@@ -7917,7 +8019,9 @@ impl PayrollContract {
         let end_day = (period.end / 86_400) * 86_400;
 
         for day_timestamp in (start_day..=end_day).step_by(86_400) {
-            if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp)) {
+            if let Some(metrics) =
+                storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp))
+            {
                 if metric_name == &String::from_str(env, "total_amount") {
                     total += metrics.total_amount;
                 } else if metric_name == &String::from_str(env, "disbursements") {
@@ -7968,7 +8072,9 @@ impl PayrollContract {
 
         // Only owner can update benchmarks
         let storage = env.storage().persistent();
-        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+        let owner = storage
+            .get::<DataKey, Address>(&DataKey::Owner)
+            .ok_or(PayrollError::Unauthorized)?;
         if caller != owner {
             return Err(PayrollError::Unauthorized);
         }
@@ -7997,12 +8103,13 @@ impl PayrollContract {
             last_updated: current_time,
         };
 
-        storage.set(&AnalyticsDataKey::Benchmark(metric_name.clone()), &benchmark);
-
-        env.events().publish(
-            (symbol_short!("bench_u"),),
-            (metric_name, percentile_rank),
+        storage.set(
+            &AnalyticsDataKey::Benchmark(metric_name.clone()),
+            &benchmark,
         );
+
+        env.events()
+            .publish((symbol_short!("bench_u"),), (metric_name, percentile_rank));
 
         Ok(())
     }
@@ -8084,7 +8191,10 @@ impl PayrollContract {
     ) -> Result<TrendAnalysis, PayrollError> {
         let storage = env.storage().persistent();
         storage
-            .get(&AnalyticsDataKey::TrendAnalysis(metric_name, analysis_timestamp))
+            .get(&AnalyticsDataKey::TrendAnalysis(
+                metric_name,
+                analysis_timestamp,
+            ))
             .ok_or(PayrollError::InvalidData)
     }
 
@@ -8129,11 +8239,12 @@ impl PayrollContract {
     ) -> Result<Map<String, i128>, PayrollError> {
         let storage = env.storage().persistent();
         let mut snapshot = Map::new(&env);
-    
+
         // Get today's metrics
         let today = (env.ledger().timestamp() / 86_400) * 86_400;
-        
-        if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(today)) {
+
+        if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(today))
+        {
             snapshot.set(
                 String::from_str(&env, "total_disbursements"),
                 metrics.total_disbursements as i128,
@@ -8151,14 +8262,14 @@ impl PayrollContract {
                 metrics.late_disbursements as i128,
             );
         }
-    
+
         // Get employer balance summary
         let employees = Self::get_employer_employees(env.clone(), employer.clone());
         snapshot.set(
             String::from_str(&env, "active_employees"),
             employees.len() as i128,
         );
-    
+
         Ok(snapshot)
     }
 
@@ -8173,7 +8284,9 @@ impl PayrollContract {
 
         // Only owner can cleanup
         let storage = env.storage().persistent();
-        let owner = storage.get::<DataKey, Address>(&DataKey::Owner).ok_or(PayrollError::Unauthorized)?;
+        let owner = storage
+            .get::<DataKey, Address>(&DataKey::Owner)
+            .ok_or(PayrollError::Unauthorized)?;
         if caller != owner {
             return Err(PayrollError::Unauthorized);
         }
@@ -8184,12 +8297,9 @@ impl PayrollContract {
         // Implementation would iterate through old data and remove it
         // For now, return 0 as placeholder
 
-        env.events().publish(
-            (symbol_short!("cleanup"),),
-            (cutoff_date, cleaned_count),
-        );
+        env.events()
+            .publish((symbol_short!("cleanup"),), (cutoff_date, cleaned_count));
 
         Ok(cleaned_count)
     }
 }
-

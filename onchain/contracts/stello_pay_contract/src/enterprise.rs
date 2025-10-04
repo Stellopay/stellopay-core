@@ -1,13 +1,10 @@
-use soroban_sdk::{contracttype, Address, Env, Map, String, Vec};
 use crate::storage::{
-    ReportSchedule, ReportType, ReportFormat, ScheduleFrequency, ComplianceAlert,
-    ComplianceAlertType, AlertSeverity, AlertStatus, DashboardMetrics,    TimeSeriesDataPoint,
-   AnalyticsDashboard, DashboardWidget,
-    WidgetType, DataSource,
-   BenchmarkData,
-    DataExportRequest, ExportFormat, 
-    DateRange, AnalyticsDataKey,
+    AlertSeverity, AlertStatus, AnalyticsDashboard, AnalyticsDataKey, BenchmarkData,
+    ComplianceAlert, ComplianceAlertType, DashboardMetrics, DashboardWidget, DataExportRequest,
+    DataSource, DateRange, ExportFormat, ReportFormat, ReportSchedule, ReportType,
+    ScheduleFrequency, TimeSeriesDataPoint, WidgetType,
 };
+use soroban_sdk::{contracttype, Address, Env, Map, String, Vec};
 
 //-----------------------------------------------------------------------------
 // Enterprise Features Data Structures
@@ -958,7 +955,7 @@ impl HRWorkflowManager {
 
         // Calculate compliance metrics
         let mut jurisdiction_metrics = Map::new(env);
-        
+
         // Add US jurisdiction metrics
         let us_metrics = crate::storage::JurisdictionMetrics {
             jurisdiction: String::from_str(env, "US"),
@@ -1037,11 +1034,14 @@ impl HRWorkflowManager {
 
         // Create workflow tasks
         let mut checklist = Vec::new(env);
-        
+
         checklist.push_back(crate::storage::OnboardingTask {
             id: 1,
             name: String::from_str(env, "Review regulatory changes"),
-            description: String::from_str(env, "Analyze impact of new regulations on payroll processes"),
+            description: String::from_str(
+                env,
+                "Analyze impact of new regulations on payroll processes",
+            ),
             required: true,
             completed: false,
             completed_at: None,
@@ -1052,7 +1052,10 @@ impl HRWorkflowManager {
         checklist.push_back(crate::storage::OnboardingTask {
             id: 2,
             name: String::from_str(env, "Update compliance procedures"),
-            description: String::from_str(env, "Modify existing procedures to meet new requirements"),
+            description: String::from_str(
+                env,
+                "Modify existing procedures to meet new requirements",
+            ),
             required: true,
             completed: false,
             completed_at: None,
@@ -1114,7 +1117,7 @@ impl HRWorkflowManager {
             env,
             &resolved_by,
             &String::from_str(env, "alert_resolution"),
-            &resolution_record
+            &resolution_record,
         );
 
         Ok(())
@@ -1205,7 +1208,10 @@ impl EnterpriseAnalytics {
             refresh_interval: 3600, // 1 hour
             filters: Map::new(env),
             position: crate::storage::WidgetPosition { row: 0, column: 0 },
-            size: crate::storage::WidgetSize { width: 2, height: 1 },
+            size: crate::storage::WidgetSize {
+                width: 2,
+                height: 1,
+            },
             is_visible: true,
         });
 
@@ -1218,7 +1224,10 @@ impl EnterpriseAnalytics {
             refresh_interval: 3600,
             filters: Map::new(env),
             position: crate::storage::WidgetPosition { row: 0, column: 2 },
-            size: crate::storage::WidgetSize { width: 2, height: 1 },
+            size: crate::storage::WidgetSize {
+                width: 2,
+                height: 1,
+            },
             is_visible: true,
         });
 
@@ -1231,7 +1240,10 @@ impl EnterpriseAnalytics {
             refresh_interval: 3600,
             filters: Map::new(env),
             position: crate::storage::WidgetPosition { row: 1, column: 0 },
-            size: crate::storage::WidgetSize { width: 4, height: 2 },
+            size: crate::storage::WidgetSize {
+                width: 4,
+                height: 2,
+            },
             is_visible: true,
         });
 
@@ -1244,7 +1256,10 @@ impl EnterpriseAnalytics {
             refresh_interval: 86400, // 24 hours
             filters: Map::new(env),
             position: crate::storage::WidgetPosition { row: 3, column: 0 },
-            size: crate::storage::WidgetSize { width: 2, height: 2 },
+            size: crate::storage::WidgetSize {
+                width: 2,
+                height: 2,
+            },
             is_visible: true,
         });
 
@@ -1289,7 +1304,10 @@ impl EnterpriseAnalytics {
             refresh_interval: 600, // 10 minutes
             filters: Map::new(env),
             position: crate::storage::WidgetPosition { row: 0, column: 0 },
-            size: crate::storage::WidgetSize { width: 4, height: 2 },
+            size: crate::storage::WidgetSize {
+                width: 4,
+                height: 2,
+            },
             is_visible: true,
         });
 
@@ -1302,7 +1320,10 @@ impl EnterpriseAnalytics {
             refresh_interval: 3600,
             filters: Map::new(env),
             position: crate::storage::WidgetPosition { row: 2, column: 0 },
-            size: crate::storage::WidgetSize { width: 4, height: 2 },
+            size: crate::storage::WidgetSize {
+                width: 4,
+                height: 2,
+            },
             is_visible: true,
         });
 
@@ -1315,7 +1336,10 @@ impl EnterpriseAnalytics {
             refresh_interval: 3600,
             filters: Map::new(env),
             position: crate::storage::WidgetPosition { row: 4, column: 0 },
-            size: crate::storage::WidgetSize { width: 2, height: 2 },
+            size: crate::storage::WidgetSize {
+                width: 2,
+                height: 2,
+            },
             is_visible: true,
         });
 
@@ -1361,7 +1385,10 @@ impl EnterpriseAnalytics {
             refresh_interval: 3600,
             filters: Map::new(env),
             position: crate::storage::WidgetPosition { row: 0, column: 0 },
-            size: crate::storage::WidgetSize { width: 4, height: 2 },
+            size: crate::storage::WidgetSize {
+                width: 4,
+                height: 2,
+            },
             is_visible: true,
         });
 
@@ -1374,7 +1401,10 @@ impl EnterpriseAnalytics {
             refresh_interval: 3600,
             filters: Map::new(env),
             position: crate::storage::WidgetPosition { row: 2, column: 0 },
-            size: crate::storage::WidgetSize { width: 2, height: 2 },
+            size: crate::storage::WidgetSize {
+                width: 2,
+                height: 2,
+            },
             is_visible: true,
         });
 
@@ -1387,7 +1417,10 @@ impl EnterpriseAnalytics {
             refresh_interval: 86400,
             filters: Map::new(env),
             position: crate::storage::WidgetPosition { row: 2, column: 2 },
-            size: crate::storage::WidgetSize { width: 2, height: 2 },
+            size: crate::storage::WidgetSize {
+                width: 2,
+                height: 2,
+            },
             is_visible: true,
         });
 
@@ -1431,9 +1464,11 @@ impl EnterpriseAnalytics {
         let end_day = (current_time / 86_400) * 86_400;
 
         for day_timestamp in (start_day..=end_day).step_by(86_400) {
-            if let Some(metrics) = storage.get::<crate::storage::DataKey, crate::storage::PerformanceMetrics>(
-                &crate::storage::DataKey::Metrics(day_timestamp)
-            ) {
+            if let Some(metrics) = storage
+                .get::<crate::storage::DataKey, crate::storage::PerformanceMetrics>(
+                    &crate::storage::DataKey::Metrics(day_timestamp),
+                )
+            {
                 historical_amounts.push_back(metrics.total_amount);
             }
         }
@@ -1449,8 +1484,9 @@ impl EnterpriseAnalytics {
         // Generate forecasts
         for period in 1..=forecast_periods {
             let period_multiplier = period as i128;
-            let predicted_amount = avg_amount + ((avg_amount * growth_rate * period_multiplier) / 10000);
-            
+            let predicted_amount =
+                avg_amount + ((avg_amount * growth_rate * period_multiplier) / 10000);
+
             let forecast = crate::storage::ForecastData {
                 next_period_prediction: predicted_amount,
                 confidence_level: Self::calculate_confidence_level(historical_amounts.len()),
@@ -1524,12 +1560,21 @@ impl EnterpriseAnalytics {
         let current_time = env.ledger().timestamp();
 
         let report_id = storage
-            .get::<crate::storage::ExtendedDataKey, u64>(&crate::storage::ExtendedDataKey::NextTmplId)
+            .get::<crate::storage::ExtendedDataKey, u64>(
+                &crate::storage::ExtendedDataKey::NextTmplId,
+            )
             .unwrap_or(1);
-        storage.set(&crate::storage::ExtendedDataKey::NextTmplId, &(report_id + 1));
+        storage.set(
+            &crate::storage::ExtendedDataKey::NextTmplId,
+            &(report_id + 1),
+        );
 
         // Parse configuration
-        let period_start = Self::parse_config_u64(&report_config, "period_start", current_time - 30 * 24 * 3600);
+        let period_start = Self::parse_config_u64(
+            &report_config,
+            "period_start",
+            current_time - 30 * 24 * 3600,
+        );
         let period_end = Self::parse_config_u64(&report_config, "period_end", current_time);
 
         let mut report_data = Map::new(env);
@@ -1538,7 +1583,8 @@ impl EnterpriseAnalytics {
         // Collect data based on configuration
         let include_payroll = Self::parse_config_bool(&report_config, "include_payroll", true);
         let include_employees = Self::parse_config_bool(&report_config, "include_employees", true);
-        let include_compliance = Self::parse_config_bool(&report_config, "include_compliance", false);
+        let include_compliance =
+            Self::parse_config_bool(&report_config, "include_compliance", false);
 
         if include_payroll {
             let payroll_data = String::from_str(env, "employer");
@@ -1552,7 +1598,7 @@ impl EnterpriseAnalytics {
 
         let mut data_sources = Vec::new(env);
         data_sources.push_back(String::from_str(env, "payroll_system"));
-        
+
         let metadata = crate::storage::ReportMetadata {
             total_employees: 0,
             total_amount: 0,
@@ -1628,9 +1674,11 @@ impl EnterpriseAnalytics {
         let end_day = (config.data_range.end / 86_400) * 86_400;
 
         for day_timestamp in (start_day..=end_day).step_by(86_400) {
-            if let Some(metrics) = storage.get::<crate::storage::DataKey, crate::storage::PerformanceMetrics>(
-                &crate::storage::DataKey::Metrics(day_timestamp)
-            ) {
+            if let Some(metrics) = storage
+                .get::<crate::storage::DataKey, crate::storage::PerformanceMetrics>(
+                    &crate::storage::DataKey::Metrics(day_timestamp),
+                )
+            {
                 // Build JSON object (simplified)
             }
         }
@@ -1660,7 +1708,7 @@ impl EnterpriseAnalytics {
 
         for metric_name in metrics.iter() {
             if let Some(benchmark) = storage.get::<AnalyticsDataKey, BenchmarkData>(
-                &AnalyticsDataKey::Benchmark(metric_name.clone())
+                &AnalyticsDataKey::Benchmark(metric_name.clone()),
             ) {
                 benchmarks.push_back(benchmark);
             } else {
@@ -1708,7 +1756,7 @@ impl EnterpriseAnalytics {
         for timestamp in index.iter() {
             if timestamp >= period.start && timestamp <= period.end {
                 if let Some(point) = storage.get::<AnalyticsDataKey, TimeSeriesDataPoint>(
-                    &AnalyticsDataKey::TimeSeriesData(metric_name.clone(), timestamp)
+                    &AnalyticsDataKey::TimeSeriesData(metric_name.clone(), timestamp),
                 ) {
                     data_points.push_back(point);
                 }
@@ -1751,15 +1799,15 @@ impl EnterpriseAnalytics {
         if n <= 0 {
             return 0;
         }
-        
+
         let mut x = n;
         let mut y = (x + 1) / 2;
-        
+
         while y < x {
             x = y;
             y = (x + n / x) / 2;
         }
-        
+
         x
     }
 }
