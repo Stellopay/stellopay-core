@@ -1,5 +1,6 @@
 mod test_backup;
 mod test_create_or_update_escrow;
+mod test_edge_cases;
 mod test_employer_deposit_base_salary;
 mod test_insurance;
 mod test_pause_and_resume_employee;
@@ -8,9 +9,9 @@ mod test_payroll;
 mod test_payroll_history_and_audittrail;
 mod test_recurring_payments;
 mod test_security;
-mod test_webhooks_simple;
 mod test_templates;
+mod test_webhooks_simple;
 mod test_webhooks_standalone;
-mod test_edge_cases;
 mod test_scheduling;
 mod test_reporting_compliance;
+

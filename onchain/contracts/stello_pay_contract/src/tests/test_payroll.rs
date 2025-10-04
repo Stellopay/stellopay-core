@@ -791,7 +791,7 @@ fn test_disburse_salary_nonexistent_employee() {
 
     env.mock_all_auths();
     client.initialize(&employer);
-    
+
     // Try to disburse salary for non-existent employee
     client.disburse_salary(&employer, &nonexistent_employee);
 }
@@ -806,7 +806,7 @@ fn test_employee_withdraw_nonexistent_employee() {
     let nonexistent_employee = Address::generate(&env);
 
     env.mock_all_auths();
-    
+
     // Try to withdraw for non-existent employee
     client.employee_withdraw(&nonexistent_employee);
 }
@@ -821,7 +821,7 @@ fn test_get_balance_nonexistent_employer() {
     let token = Address::generate(&env);
 
     env.mock_all_auths();
-    
+
     // Should return 0 for non-existent employer
     let balance = client.get_employer_balance(&nonexistent_employer, &token);
     assert_eq!(balance, 0);
@@ -838,7 +838,7 @@ fn test_get_balance_nonexistent_token() {
 
     env.mock_all_auths();
     client.initialize(&employer);
-    
+
     // Should return 0 for non-existent token
     let balance = client.get_employer_balance(&employer, &nonexistent_token);
     assert_eq!(balance, 0);
@@ -861,7 +861,7 @@ fn test_very_small_amounts() {
 
     env.mock_all_auths();
     client.initialize(&employer);
-    
+
     client.create_or_update_escrow(
         &employer,
         &employee,
@@ -892,7 +892,7 @@ fn test_very_short_intervals() {
 
     env.mock_all_auths();
     client.initialize(&employer);
-    
+
     client.create_or_update_escrow(
         &employer,
         &employee,

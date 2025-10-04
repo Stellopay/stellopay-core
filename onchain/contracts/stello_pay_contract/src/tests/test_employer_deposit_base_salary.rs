@@ -570,7 +570,7 @@ mod tests {
 
         // Try to deposit as unauthorized user - this should work since deposit_tokens doesn't check authorization
         client.deposit_tokens(&unauthorized, &token_address, &1000i128);
-        
+
         // Verify the deposit worked
         let balance = client.get_employer_balance(&unauthorized, &token_address);
         assert_eq!(balance, 1000);

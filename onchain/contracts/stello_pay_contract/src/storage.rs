@@ -852,7 +852,15 @@ pub enum DataKey {
     // Admin
     Owner,
     Paused,
-
+    TokenPair(Address),
+    ConversionRate(Address),
+    SwapFee,
+    SwapRequest(String),       // request id
+    SwapResult(String),        // request id
+    SwapHistoryEntry(String),  // entry id
+    SwapHistoryIndex(Address), // indexed by employer (or employee)
+    TokenSwapSettings,
+    // DexConfig(String),
     SupportedToken(Address),
     TokenMetadata(Address),
 

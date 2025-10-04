@@ -1,10 +1,11 @@
 use soroban_sdk::{
-    contracttype, symbol_short, Address, Env, Symbol, String, Vec, Map, 
-    contracterror, contractimpl, contract, token::Client as TokenClient
+    contract, contracterror, contractimpl, contracttype, symbol_short,
+    token::Client as TokenClient, vec, Address, Bytes, Env, Map, String, Symbol, Vec,
 };
 
-use crate::storage::DataKey;
 use crate::events::*;
+use crate::storage::DataKey;
+use crate::utils::{append_u64, MAX_ID_LEN};
 
 //-----------------------------------------------------------------------------
 // Token Swap Errors
@@ -179,11 +180,7 @@ impl TokenSwapSystem {
     }
 
     /// Get token pair configuration
-    pub fn get_token_pair(
-        env: Env,
-        token_a: Address,
-        token_b: Address,
-    ) -> Option<TokenPair> {
+    pub fn get_token_pair(env: Env, token_a: Address, token_b: Address) -> Option<TokenPair> {
         let storage = env.storage().persistent();
         let pair_key = Self::generate_token_pair_key(&token_a, &token_b);
         storage.get(&DataKey::TokenPair(pair_key))
@@ -208,7 +205,9 @@ impl TokenSwapSystem {
 
         let storage = env.storage().persistent();
         let pair_key = Self::generate_token_pair_key(&token_a, &token_b);
-        
+        // Clone `pair_key` to avoid moving it
+        let pair_key_clone = pair_key.clone();
+
         if let Some(token_pair) = storage.get(&DataKey::TokenPair(pair_key)) {
             let conversion_rate = ConversionRate {
                 token_pair,
@@ -218,7 +217,7 @@ impl TokenSwapSystem {
                 source,
             };
 
-            storage.set(&DataKey::ConversionRate(pair_key), &conversion_rate);
+            storage.set(&DataKey::ConversionRate(pair_key_clone), &conversion_rate);
         }
 
         Ok(())
@@ -242,11 +241,13 @@ impl TokenSwapSystem {
         output_token: Address,
         input_amount: i128,
     ) -> Result<i128, TokenSwapError> {
-        let conversion_rate = Self::get_conversion_rate(env.clone(), input_token.clone(), output_token.clone())
-            .ok_or(TokenSwapError::InvalidConversionRate)?;
+        let conversion_rate =
+            Self::get_conversion_rate(env.clone(), input_token.clone(), output_token.clone())
+                .ok_or(TokenSwapError::InvalidConversionRate)?;
 
-        let output_amount = (input_amount * conversion_rate.rate) / (10i128.pow(conversion_rate.precision));
-        
+        let output_amount =
+            (input_amount * conversion_rate.rate) / (10i128.pow(conversion_rate.precision));
+
         if output_amount <= 0 {
             return Err(TokenSwapError::InvalidConversionRate);
         }
@@ -255,11 +256,7 @@ impl TokenSwapSystem {
     }
 
     /// Set swap fee configuration
-    pub fn set_swap_fee(
-        env: Env,
-        caller: Address,
-        fee: SwapFee,
-    ) -> Result<(), TokenSwapError> {
+    pub fn set_swap_fee(env: Env, caller: Address, fee: SwapFee) -> Result<(), TokenSwapError> {
         caller.require_auth();
         Self::require_swap_authorized(&env, &caller)?;
 
@@ -276,12 +273,9 @@ impl TokenSwapSystem {
     }
 
     /// Calculate swap fee for a given amount
-    pub fn calculate_swap_fee(
-        env: Env,
-        amount: i128,
-    ) -> Result<i128, TokenSwapError> {
-        let fee_config = Self::get_swap_fee(env.clone())
-            .ok_or(TokenSwapError::SwapFeeCalculationFailed)?;
+    pub fn calculate_swap_fee(env: Env, amount: i128) -> Result<i128, TokenSwapError> {
+        let fee_config =
+            Self::get_swap_fee(env.clone()).ok_or(TokenSwapError::SwapFeeCalculationFailed)?;
 
         if !fee_config.is_active {
             return Ok(0);
@@ -317,15 +311,16 @@ impl TokenSwapSystem {
             return Err(TokenSwapError::InvalidSwapParams);
         }
 
-        let token_pair = Self::get_token_pair(env.clone(), input_token.clone(), output_token.clone())
-            .ok_or(TokenSwapError::TokenNotSupported)?;
+        let token_pair =
+            Self::get_token_pair(env.clone(), input_token.clone(), output_token.clone())
+                .ok_or(TokenSwapError::TokenNotSupported)?;
 
         if !token_pair.is_active {
             return Err(TokenSwapError::TokenNotSupported);
         }
 
-        let settings = Self::get_token_swap_settings(env.clone())
-            .ok_or(TokenSwapError::InvalidSwapParams)?;
+        let settings =
+            Self::get_token_swap_settings(env.clone()).ok_or(TokenSwapError::InvalidSwapParams)?;
 
         if !settings.enabled {
             return Err(TokenSwapError::InvalidSwapParams);
@@ -374,8 +369,9 @@ impl TokenSwapSystem {
 
         let storage = env.storage().persistent();
         let request_key = DataKey::SwapRequest(request_id.clone());
-        
-        let mut request = storage.get(&request_key)
+
+        let mut request: SwapRequest = storage
+            .get(&request_key)
             .ok_or(TokenSwapError::InvalidSwapParams)?;
 
         if request.status != SwapStatus::Pending {
@@ -414,19 +410,22 @@ impl TokenSwapSystem {
                 Self::add_swap_history_entry(&env, &request, output_amount, fee_amount);
 
                 env.events().publish(
-                    (symbol_short!("swap_completed"),),
-                    (request_id, request.employer, request.employee, output_amount),
+                    (symbol_short!("completed"),),
+                    (
+                        request_id.clone(),
+                        request.employer,
+                        request.employee,
+                        output_amount,
+                    ),
                 );
             }
             Err(error) => {
-                result.error_message = Some(String::from_slice(&env, &format!("{:?}", error)));
+                result.error_message = Some(String::from_slice(&env, "Swap execution failed"));
                 request.status = SwapStatus::Failed;
                 storage.set(&request_key, &request);
 
-                env.events().publish(
-                    (symbol_short!("swap_failed"),),
-                    (request_id, format!("{:?}", error)),
-                );
+                env.events()
+                    .publish((symbol_short!("failed"),), (request_id.clone(), error));
             }
         }
 
@@ -455,16 +454,16 @@ impl TokenSwapSystem {
     ) -> Vec<SwapHistoryEntry> {
         let storage = env.storage().persistent();
         let index_key = DataKey::SwapHistoryIndex(address);
-        
+
         if let Some(entry_ids) = storage.get::<DataKey, Vec<String>>(&index_key) {
             let mut entries = Vec::new(&env);
             let max_limit = limit.unwrap_or(50).min(100);
-            
+
             for (i, entry_id) in entry_ids.iter().enumerate() {
                 if i >= max_limit as usize {
                     break;
                 }
-                
+
                 let key = DataKey::SwapHistoryEntry(entry_id);
                 if let Some(entry) = storage.get(&key) {
                     entries.push_back(entry);
@@ -503,7 +502,7 @@ impl TokenSwapSystem {
 
     fn require_swap_authorized(env: &Env, caller: &Address) -> Result<(), TokenSwapError> {
         let storage = env.storage().persistent();
-        
+
         if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
             if caller == &owner {
                 return Ok(());
@@ -522,9 +521,49 @@ impl TokenSwapSystem {
     }
 
     fn generate_swap_request_id(env: &Env, employer: &Address, employee: &Address) -> String {
+        let emp_s = employer.to_string();
+        let emp2_s = employee.to_string();
         let timestamp = env.ledger().timestamp();
         let sequence = env.ledger().sequence();
-        format!("swap_{}_{}_{}_{}", employer, employee, timestamp, sequence)
+
+        let mut buf: [u8; MAX_ID_LEN] = [0u8; MAX_ID_LEN];
+        let mut off: usize = 0;
+
+        // "swap_"
+        let prefix = b"swap_";
+        buf[off..off + prefix.len()].copy_from_slice(prefix);
+        off += prefix.len();
+
+        // employer
+        let emp_len = emp_s.len() as usize;
+        emp_s.copy_into_slice(&mut buf[off..off + emp_len]);
+        off += emp_len;
+
+        // "_"
+        buf[off] = b'_';
+        off += 1;
+
+        // employee
+        let emp2_len = emp2_s.len() as usize;
+        emp2_s.copy_into_slice(&mut buf[off..off + emp2_len]);
+        off += emp2_len;
+
+        // "_"
+        buf[off] = b'_';
+        off += 1;
+
+        // timestamp
+        append_u64(timestamp, &mut buf, &mut off);
+
+        // "_"
+        buf[off] = b'_';
+        off += 1;
+
+        // sequence
+        append_u64(sequence as u64, &mut buf, &mut off);
+
+        // now construct Soroban String
+        String::from_bytes(env, &buf[..off])
     }
 
     fn add_swap_history_entry(
@@ -535,10 +574,33 @@ impl TokenSwapSystem {
     ) {
         let storage = env.storage().persistent();
         let current_time = env.ledger().timestamp();
-        let entry_id = format!("swap_hist_{}_{}", request.request_id, current_time);
+        // request.request_id is already a soroban_sdk::String
+        let req_id = &request.request_id;
 
+        let mut buf: [u8; MAX_ID_LEN] = [0u8; MAX_ID_LEN];
+        let mut off: usize = 0;
+
+        // prefix "swap_hist_"
+        let prefix = b"swap_hist_";
+        buf[off..off + prefix.len()].copy_from_slice(prefix);
+        off += prefix.len();
+
+        // request_id
+        let req_len = req_id.len() as usize;
+        req_id.copy_into_slice(&mut buf[off..off + req_len]);
+        off += req_len;
+
+        // "_"
+        buf[off] = b'_';
+        off += 1;
+
+        // timestamp
+        append_u64(current_time, &mut buf, &mut off);
+
+        // Final entry_id
+        let entry_id = String::from_bytes(env, &buf[..off]);
         let entry = SwapHistoryEntry {
-            entry_id: String::from_slice(env, &entry_id),
+            entry_id: entry_id.clone(),
             request_id: request.request_id.clone(),
             employer: request.employer.clone(),
             employee: request.employee.clone(),
@@ -558,7 +620,7 @@ impl TokenSwapSystem {
 
         let index_key = DataKey::SwapHistoryIndex(request.employer.clone());
         let mut history_entries: Vec<String> = storage.get(&index_key).unwrap_or(Vec::new(env));
-        history_entries.push_back(String::from_slice(env, &entry_id));
+        history_entries.push_back(entry_id.clone());
         storage.set(&index_key, &history_entries);
     }
 
@@ -575,13 +637,13 @@ impl TokenSwapSystem {
             net_input_amount,
         )?;
 
-        let min_output = request.expected_output_amount - 
-            (request.expected_output_amount * request.slippage_tolerance as i128) / 10000;
-        
+        let min_output = request.expected_output_amount
+            - (request.expected_output_amount * request.slippage_tolerance as i128) / 10000;
+
         if output_amount < min_output {
             return Err(TokenSwapError::SlippageExceeded);
         }
 
         Ok(output_amount)
     }
-} 
+}
