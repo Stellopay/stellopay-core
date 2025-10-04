@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use soroban_sdk::testutils::{Address as _, Ledger, LedgerInfo};
-use soroban_sdk::{vec, Address, Env, IntoVal, String};
+use soroban_sdk::{Address, Env, String};
 
 use crate::insurance::{ClaimStatus, InsurancePolicy, InsuranceSettings, InsuranceSystem};
 use crate::payroll::PayrollContract;
