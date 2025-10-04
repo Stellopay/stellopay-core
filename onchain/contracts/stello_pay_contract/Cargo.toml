@@ -11,5 +11,10 @@ doctest = false
 [dependencies]
 soroban-sdk = { workspace = true }
 
+# For backup encryption and hashing (Soroban-compatible)
+sha2 = { version = "0.10", default-features = false }
+aes-gcm = { version = "0.10", default-features = false }
+base64 = { version = "0.21", default-features = false }
+
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
