@@ -121,6 +121,7 @@ impl From<soroban_sdk::Error> for WebhookError {
 
 pub struct WebhookSystem;
 
+#[allow(dead_code)]
 impl WebhookSystem {
     /// Register a new webhook
     pub fn register_webhook(
@@ -398,7 +399,7 @@ impl WebhookSystem {
     }
 
     fn remove_owner_webhook(env: &Env, owner: &Address, webhook_id: u64) {
-        let mut webhooks = Self::get_owner_webhooks(env, owner);
+        let webhooks = Self::get_owner_webhooks(env, owner);
 
         // Remove webhook_id from the vector
         let mut new_webhooks = Vec::new(env);
