@@ -941,6 +941,12 @@ pub enum DataKey {
 
     // Security - MINIMAL SET
     SecuritySettings, // Global security settings
+
+    // Governance - CORE FUNCTIONALITY
+    GovernanceEnabled, // bool - whether governance is active
+    GovernanceToken,   // Address - governance token contract
+    GovernanceConfig,  // GovernanceConfig struct
+    CommunityTreasury, // CommunityTreasury struct
 }
 
 // Extended functionality keys - separate enum to avoid size limits
@@ -1016,6 +1022,9 @@ pub enum RoleDataKey {
     // --- Auditing ---
     Audit(u64),  // audit_id -> PermissionAuditEntry
     NextAuditId, // counter for audits
+
+    // --- Governance ---
+    NextGovernanceProposalId, // counter for governance proposals
 }
 
 //-----------------------------------------------------------------------------

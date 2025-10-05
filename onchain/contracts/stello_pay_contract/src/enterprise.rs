@@ -944,3 +944,523 @@ pub enum EnterpriseError {
     ComplianceRecordNotFound,
     InvalidComplianceStatus,
 }
+//-----------------------------------------------------------------------------
+// DAO (Decentralized Autonomous Organization) Features
+//-----------------------------------------------------------------------------
+
+/// DAO configuration for enterprise governance
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DAOConfig {
+    pub name: String,
+    pub description: String,
+    pub governance_token: Address,
+    pub voting_power_source: VotingPowerSource,
+    pub min_proposal_threshold: i128,
+    pub voting_delay: u64,
+    pub voting_period: u64,
+    pub execution_delay: u64,
+    pub quorum_threshold: u64,   // Percentage * 100
+    pub approval_threshold: u64, // Percentage * 100
+    pub treasury_manager: Address,
+    pub is_active: bool,
+    pub created_at: u64,
+}
+
+/// Source of voting power for DAO members
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum VotingPowerSource {
+    TokenBalance,   // Based on governance token balance
+    StakedTokens,   // Based on staked governance tokens
+    EmployeeStatus, // Based on employee status in payroll
+    Hybrid,         // Combination of multiple sources
+    Custom(String), // Custom voting power calculation
+}
+
+/// DAO member information
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DAOMember {
+    pub address: Address,
+    pub member_type: DAOMemberType,
+    pub voting_power: u64,
+    pub joined_at: u64,
+    pub last_activity: u64,
+    pub proposals_created: u32,
+    pub votes_cast: u32,
+    pub is_active: bool,
+}
+
+/// Types of DAO members
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DAOMemberType {
+    Founder,     // Original DAO founder
+    Employee,    // Company employee
+    TokenHolder, // Governance token holder
+    Contributor, // External contributor
+    Advisor,     // Advisory member
+    Community,   // Community member
+}
+
+/// DAO proposal with enterprise-specific features
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DAOProposal {
+    pub id: u64,
+    pub title: String,
+    pub description: String,
+    pub proposer: Address,
+    pub proposal_category: DAOProposalCategory,
+    pub target_contracts: Vec<Address>,
+    pub call_data: Vec<String>,
+    pub funding_request: Option<FundingRequest>,
+    pub voting_start: u64,
+    pub voting_end: u64,
+    pub execution_delay: u64,
+    pub min_quorum: u64,
+    pub approval_threshold: u64,
+    pub status: crate::governance::ProposalStatus,
+    pub tags: Vec<String>,
+    pub attachments: Vec<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// Categories of DAO proposals
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DAOProposalCategory {
+    Governance,     // Governance parameter changes
+    Treasury,       // Treasury management
+    Payroll,        // Payroll system changes
+    Hiring,         // Hiring decisions
+    Compensation,   // Compensation changes
+    Benefits,       // Employee benefits
+    Operations,     // Operational decisions
+    Strategic,      // Strategic decisions
+    Emergency,      // Emergency proposals
+    Community,      // Community initiatives
+    Partnership,    // Partnership proposals
+    Custom(String), // Custom category
+}
+
+/// Funding request within a DAO proposal
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FundingRequest {
+    pub amount: i128,
+    pub token: Address,
+    pub recipient: Address,
+    pub purpose: String,
+    pub milestones: Vec<FundingMilestone>,
+    pub budget_breakdown: Map<String, i128>,
+    pub expected_duration: u64,
+    pub success_metrics: Vec<String>,
+}
+
+/// Funding milestone for tracking progress
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FundingMilestone {
+    pub id: u32,
+    pub title: String,
+    pub description: String,
+    pub amount: i128,
+    pub due_date: u64,
+    pub completion_criteria: Vec<String>,
+    pub deliverables: Vec<String>,
+    pub status: MilestoneStatus,
+    pub completed_at: Option<u64>,
+    pub evidence_links: Vec<String>,
+}
+
+/// Status of funding milestones
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum MilestoneStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Delayed,
+    Cancelled,
+}
+
+/// DAO committee for specialized governance
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DAOCommittee {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    pub purpose: String,
+    pub members: Vec<Address>,
+    pub chair: Address,
+    pub authority_scope: Vec<CommitteeAuthority>,
+    pub meeting_frequency: u64,
+    pub quorum_requirement: u32,
+    pub is_active: bool,
+    pub created_at: u64,
+    pub last_meeting: Option<u64>,
+}
+
+/// Authority scope for DAO committees
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum CommitteeAuthority {
+    PayrollApproval,     // Approve payroll changes
+    HiringDecisions,     // Make hiring decisions
+    BudgetAllocation,    // Allocate budget
+    PolicyCreation,      // Create policies
+    DisputeResolution,   // Resolve disputes
+    TreasuryManagement,  // Manage treasury
+    PartnershipApproval, // Approve partnerships
+    EmergencyResponse,   // Handle emergencies
+    Custom(String),      // Custom authority
+}
+
+/// DAO voting delegation with enterprise features
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EnterpriseVotingDelegation {
+    pub delegator: Address,
+    pub delegate: Address,
+    pub delegation_scope: DelegationScope,
+    pub voting_power: u64,
+    pub delegated_at: u64,
+    pub expires_at: Option<u64>,
+    pub conditions: Vec<DelegationCondition>,
+    pub is_revocable: bool,
+    pub is_active: bool,
+}
+
+/// Scope of voting delegation
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DelegationScope {
+    All,                           // All proposals
+    Category(DAOProposalCategory), // Specific category
+    Committee(u64),                // Specific committee
+    Amount(i128),                  // Up to certain amount
+    Duration(u64),                 // For specific duration
+    Custom(String),                // Custom scope
+}
+
+/// Conditions for delegation
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DelegationCondition {
+    pub condition_type: ConditionType,
+    pub value: String,
+    pub operator: String,
+}
+
+/// Types of delegation conditions
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConditionType {
+    ProposalAmount,   // Based on proposal amount
+    ProposalCategory, // Based on proposal category
+    VotingPower,      // Based on voting power
+    TimeOfDay,        // Based on time of day
+    Custom(String),   // Custom condition
+}
+
+/// DAO treasury with advanced features
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DAOTreasury {
+    pub total_value: i128,
+    pub token_balances: Map<Address, i128>,
+    pub reserved_funds: Map<String, i128>, // purpose -> amount
+    pub investment_portfolio: Vec<Investment>,
+    pub spending_limits: Map<DAOProposalCategory, i128>,
+    pub monthly_budget: i128,
+    pub spent_this_month: i128,
+    pub budget_period_start: u64,
+    pub treasury_managers: Vec<Address>,
+    pub last_updated: u64,
+}
+
+/// Investment in DAO treasury
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Investment {
+    pub id: u64,
+    pub investment_type: InvestmentType,
+    pub token: Address,
+    pub amount: i128,
+    pub purchase_price: i128,
+    pub current_value: i128,
+    pub yield_rate: u32, // Percentage * 100
+    pub maturity_date: Option<u64>,
+    pub is_liquid: bool,
+    pub created_at: u64,
+}
+
+/// Types of investments
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum InvestmentType {
+    Staking,            // Token staking
+    LiquidityProvision, // LP tokens
+    Bonds,              // Bond investments
+    RealEstate,         // Real estate tokens
+    Commodities,        // Commodity tokens
+    Custom(String),     // Custom investment
+}
+
+/// DAO governance metrics and analytics
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DAOMetrics {
+    pub total_members: u32,
+    pub active_members: u32,
+    pub total_proposals: u64,
+    pub passed_proposals: u64,
+    pub failed_proposals: u64,
+    pub average_participation: u64, // Percentage * 100
+    pub treasury_growth_rate: i32,  // Percentage * 100 (can be negative)
+    pub member_satisfaction: u32,   // Percentage * 100
+    pub governance_efficiency: u32, // Percentage * 100
+    pub last_calculated: u64,
+}
+
+//-----------------------------------------------------------------------------
+// DAO Storage Keys
+//-----------------------------------------------------------------------------
+
+#[contracttype]
+pub enum DAODataKey {
+    // Core DAO configuration
+    DAOConfig,          // DAO configuration
+    DAOMember(Address), // member_address -> DAOMember
+    AllDAOMembers,      // Vec<Address> (all member addresses)
+    ActiveDAOMembers,   // Vec<Address> (active member addresses)
+
+    // DAO proposals
+    DAOProposal(u64),                         // proposal_id -> DAOProposal
+    NextDAOProposalId,                        // Next available DAO proposal ID
+    ProposalsByCategory(DAOProposalCategory), // category -> Vec<u64>
+    MemberProposals(Address),                 // member -> Vec<u64> (proposal IDs)
+
+    // Committees
+    DAOCommittee(u64),         // committee_id -> DAOCommittee
+    NextCommitteeId,           // Next available committee ID
+    MemberCommittees(Address), // member -> Vec<u64> (committee IDs)
+    CommitteeProposals(u64),   // committee_id -> Vec<u64> (proposal IDs)
+
+    // Advanced delegation
+    EnterpriseVotingDelegation(Address), // delegator -> EnterpriseVotingDelegation
+    DelegationsByScope(DelegationScope), // scope -> Vec<Address> (delegators)
+
+    // Treasury management
+    DAOTreasury,          // DAO treasury information
+    Investment(u64),      // investment_id -> Investment
+    NextInvestmentId,     // Next available investment ID
+    TreasuryTransactions, // Vec<(u64, String, i128)> (timestamp, type, amount)
+
+    // Metrics and analytics
+    DAOMetrics,             // DAO metrics
+    MemberMetrics(Address), // member -> individual metrics
+    ProposalMetrics(u64),   // proposal_id -> proposal metrics
+
+    // Funding and milestones
+    FundingRequest(u64),        // proposal_id -> FundingRequest
+    FundingMilestone(u64, u32), // (proposal_id, milestone_id) -> FundingMilestone
+    CompletedMilestones(u64),   // proposal_id -> Vec<u32> (completed milestone IDs)
+}
+
+//-----------------------------------------------------------------------------
+// DAO Management System
+//-----------------------------------------------------------------------------
+
+pub struct DAOManager;
+
+impl DAOManager {
+    /// Initialize DAO for enterprise
+    pub fn initialize_dao(
+        env: &Env,
+        name: String,
+        description: String,
+        governance_token: Address,
+        treasury_manager: Address,
+        initial_config: DAOConfig,
+    ) -> Result<(), EnterpriseError> {
+        let storage = env.storage().persistent();
+
+        // Check if DAO is already initialized
+        if storage.has(&DAODataKey::DAOConfig) {
+            return Err(EnterpriseError::InvalidDepartmentHierarchy); // Reuse error
+        }
+
+        let mut config = initial_config;
+        config.name = name;
+        config.description = description;
+        config.governance_token = governance_token;
+        config.treasury_manager = treasury_manager.clone();
+        config.created_at = env.ledger().timestamp();
+        config.is_active = true;
+
+        storage.set(&DAODataKey::DAOConfig, &config);
+        storage.set(&DAODataKey::NextDAOProposalId, &1u64);
+        storage.set(&DAODataKey::NextCommitteeId, &1u64);
+        storage.set(&DAODataKey::NextInvestmentId, &1u64);
+
+        // Initialize empty collections
+        storage.set(&DAODataKey::AllDAOMembers, &Vec::<Address>::new(env));
+        storage.set(&DAODataKey::ActiveDAOMembers, &Vec::<Address>::new(env));
+
+        // Initialize treasury
+        let treasury = DAOTreasury {
+            total_value: 0,
+            token_balances: Map::new(env),
+            reserved_funds: Map::new(env),
+            investment_portfolio: Vec::new(env),
+            spending_limits: Map::new(env),
+            monthly_budget: 0,
+            spent_this_month: 0,
+            budget_period_start: env.ledger().timestamp(),
+            treasury_managers: {
+                let mut managers = Vec::new(env);
+                managers.push_back(treasury_manager);
+                managers
+            },
+            last_updated: env.ledger().timestamp(),
+        };
+
+        storage.set(&DAODataKey::DAOTreasury, &treasury);
+
+        // Initialize metrics
+        let metrics = DAOMetrics {
+            total_members: 0,
+            active_members: 0,
+            total_proposals: 0,
+            passed_proposals: 0,
+            failed_proposals: 0,
+            average_participation: 0,
+            treasury_growth_rate: 0,
+            member_satisfaction: 0,
+            governance_efficiency: 0,
+            last_calculated: env.ledger().timestamp(),
+        };
+
+        storage.set(&DAODataKey::DAOMetrics, &metrics);
+
+        Ok(())
+    }
+
+    /// Add member to DAO
+    pub fn add_dao_member(
+        env: &Env,
+        member_address: Address,
+        member_type: DAOMemberType,
+        voting_power: u64,
+    ) -> Result<(), EnterpriseError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let member = DAOMember {
+            address: member_address.clone(),
+            member_type,
+            voting_power,
+            joined_at: current_time,
+            last_activity: current_time,
+            proposals_created: 0,
+            votes_cast: 0,
+            is_active: true,
+        };
+
+        storage.set(&DAODataKey::DAOMember(member_address.clone()), &member);
+
+        // Update member lists
+        let mut all_members: Vec<Address> = storage
+            .get(&DAODataKey::AllDAOMembers)
+            .unwrap_or(Vec::new(env));
+        all_members.push_back(member_address.clone());
+        storage.set(&DAODataKey::AllDAOMembers, &all_members);
+
+        let mut active_members: Vec<Address> = storage
+            .get(&DAODataKey::ActiveDAOMembers)
+            .unwrap_or(Vec::new(env));
+        active_members.push_back(member_address);
+        storage.set(&DAODataKey::ActiveDAOMembers, &active_members);
+
+        // Update metrics
+        if let Some(mut metrics) = storage.get::<DAODataKey, DAOMetrics>(&DAODataKey::DAOMetrics) {
+            metrics.total_members += 1;
+            metrics.active_members += 1;
+            metrics.last_calculated = current_time;
+            storage.set(&DAODataKey::DAOMetrics, &metrics);
+        }
+
+        Ok(())
+    }
+
+    /// Create DAO committee
+    pub fn create_committee(
+        env: &Env,
+        name: String,
+        description: String,
+        purpose: String,
+        chair: Address,
+        members: Vec<Address>,
+        authority_scope: Vec<CommitteeAuthority>,
+    ) -> Result<u64, EnterpriseError> {
+        let storage = env.storage().persistent();
+        let committee_id = storage.get(&DAODataKey::NextCommitteeId).unwrap_or(1u64);
+        let current_time = env.ledger().timestamp();
+
+        let committee = DAOCommittee {
+            id: committee_id,
+            name,
+            description,
+            purpose,
+            members: members.clone(),
+            chair: chair.clone(),
+            authority_scope,
+            meeting_frequency: 7 * 24 * 3600, // Weekly by default
+            quorum_requirement: (members.len() as u32 + 1) / 2, // Simple majority
+            is_active: true,
+            created_at: current_time,
+            last_meeting: None,
+        };
+
+        storage.set(&DAODataKey::DAOCommittee(committee_id), &committee);
+        storage.set(&DAODataKey::NextCommitteeId, &(committee_id + 1));
+
+        // Update member committee associations
+        for member in members {
+            let mut member_committees: Vec<u64> = storage
+                .get(&DAODataKey::MemberCommittees(member.clone()))
+                .unwrap_or(Vec::new(env));
+            member_committees.push_back(committee_id);
+            storage.set(&DAODataKey::MemberCommittees(member), &member_committees);
+        }
+
+        Ok(committee_id)
+    }
+
+    /// Get DAO configuration
+    pub fn get_dao_config(env: &Env) -> Option<DAOConfig> {
+        env.storage().persistent().get(&DAODataKey::DAOConfig)
+    }
+
+    /// Get DAO member information
+    pub fn get_dao_member(env: &Env, member_address: &Address) -> Option<DAOMember> {
+        env.storage()
+            .persistent()
+            .get(&DAODataKey::DAOMember(member_address.clone()))
+    }
+
+    /// Get DAO treasury information
+    pub fn get_dao_treasury(env: &Env) -> Option<DAOTreasury> {
+        env.storage().persistent().get(&DAODataKey::DAOTreasury)
+    }
+
+    /// Get DAO metrics
+    pub fn get_dao_metrics(env: &Env) -> Option<DAOMetrics> {
+        env.storage().persistent().get(&DAODataKey::DAOMetrics)
+    }
+}

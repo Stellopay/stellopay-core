@@ -35,6 +35,14 @@ use crate::insurance::{
     Guarantee, InsuranceClaim, InsuranceError, InsurancePolicy, InsuranceSettings, InsuranceSystem,
 };
 
+use crate::governance::{
+    CommunityTreasury, GovernanceConfig, GovernanceError, GovernanceParameter, GovernanceStats,
+    GovernanceSystem, GovernanceToken, Proposal, ProposalStatus, ProposalType,
+    TreasurySpendProposal, Vote, VoteType, VotingDelegation, VotingResults,
+    PARAMETER_UPDATED_EVENT, PROPOSAL_CREATED_EVENT, PROPOSAL_EXECUTED_EVENT,
+    TOKENS_DISTRIBUTED_EVENT, TREASURY_SPEND_EVENT, VOTE_CAST_EVENT, VOTING_DELEGATED_EVENT,
+};
+
 use crate::storage::{
     ActionType, AlertSeverity, AlertStatus, AutomationRule, BackupData, BackupMetadata,
     BackupStatus, BackupType, CompactPayroll, CompactPayrollHistoryEntry, ComplianceAlert,
@@ -192,6 +200,22 @@ pub enum PayrollError {
     InvalidTimeRange = 49,
     /// Delegation time expired
     DelegationExpired = 50,
+    /// Governance not initialized
+    GovernanceNotInitialized = 51,
+    /// Proposal not found
+    ProposalNotFound = 52,
+    /// Voting not active
+    VotingNotActive = 53,
+    /// Already voted
+    AlreadyVoted = 54,
+    /// Insufficient voting power
+    InsufficientVotingPower = 55,
+    /// Proposal execution failed
+    ProposalExecutionFailed = 56,
+    /// Treasury operation failed
+    TreasuryOperationFailed = 57,
+    /// Invalid governance parameter
+    InvalidGovernanceParameter = 58,
 }
 
 //-----------------------------------------------------------------------------
@@ -8499,4 +8523,537 @@ impl PayrollContract {
         let storage = env.storage().persistent();
         storage.set(&ExtendedDataKey::Backup(audit_id), &audit_entry);
     }
+}
+//-----------------------------------------------------------------------------
+// Governance Functions
+//-----------------------------------------------------------------------------
+
+/// Initialize governance system
+pub fn initialize_governance(
+    env: Env,
+    caller: Address,
+    governance_token: Address,
+    voting_delay: u64,
+    voting_period: u64,
+    execution_delay: u64,
+    proposal_threshold: i128,
+    quorum_threshold: u64,
+    approval_threshold: u64,
+) -> Result<(), PayrollError> {
+    caller.require_auth();
+    Self::require_not_paused(&env)?;
+
+    // Only owner can initialize governance
+    let storage = env.storage().persistent();
+    let owner = storage
+        .get::<DataKey, Address>(&DataKey::Owner)
+        .ok_or(PayrollError::Unauthorized)?;
+
+    if caller != owner {
+        return Err(PayrollError::Unauthorized);
+    }
+
+    // Check if governance is already initialized
+    if storage.has(&DataKey::GovernanceEnabled) {
+        return Err(PayrollError::GovernanceNotInitialized);
+    }
+
+    let config = GovernanceConfig {
+        voting_delay,
+        voting_period,
+        execution_delay,
+        proposal_threshold,
+        quorum_threshold,
+        approval_threshold,
+        emergency_quorum: quorum_threshold / 2, // Lower quorum for emergencies
+        emergency_threshold: approval_threshold - 10, // Lower threshold for emergencies
+        max_operations_per_proposal: 10,
+        guardian: Some(owner.clone()),
+        timelock_enabled: true,
+    };
+
+    let treasury = CommunityTreasury {
+        total_value: 0,
+        token_balances: Map::new(&env),
+        reserved_funds: 0,
+        last_updated: env.ledger().timestamp(),
+    };
+
+    // Initialize governance system
+    GovernanceSystem::initialize(&env, governance_token.clone(), config, treasury)
+        .map_err(|_| PayrollError::GovernanceNotInitialized)?;
+
+    // Mark governance as enabled
+    storage.set(&DataKey::GovernanceEnabled, &true);
+    storage.set(&DataKey::GovernanceToken, &governance_token);
+
+    env.events().publish(
+        (symbol_short!("gov_init"),),
+        (governance_token, proposal_threshold, quorum_threshold),
+    );
+
+    Ok(())
+}
+
+/// Create a governance proposal
+pub fn create_proposal(
+    env: Env,
+    proposer: Address,
+    title: String,
+    description: String,
+    proposal_type: ProposalType,
+    target_contract: Option<Address>,
+    call_data: Option<String>,
+    execution_delay: Option<u64>,
+) -> Result<u64, PayrollError> {
+    proposer.require_auth();
+    Self::require_not_paused(&env)?;
+
+    let storage = env.storage().persistent();
+
+    // Check if governance is enabled
+    if !storage.get(&DataKey::GovernanceEnabled).unwrap_or(false) {
+        return Err(PayrollError::GovernanceNotInitialized);
+    }
+
+    let config =
+        GovernanceSystem::get_config(&env).ok_or(PayrollError::GovernanceNotInitialized)?;
+
+    let gov_token = GovernanceSystem::get_governance_token(&env)
+        .ok_or(PayrollError::GovernanceNotInitialized)?;
+
+    // Check if proposer has enough tokens
+    let proposer_balance = Self::get_token_balance(&env, &proposer, &gov_token.token_address);
+    if proposer_balance < config.proposal_threshold {
+        return Err(PayrollError::InsufficientVotingPower);
+    }
+
+    let current_time = env.ledger().timestamp();
+    let proposal_id = storage
+        .get(&RoleDataKey::NextGovernanceProposalId)
+        .unwrap_or(1u64);
+
+    let proposal = Proposal {
+        id: proposal_id,
+        title: title.clone(),
+        description: description.clone(),
+        proposer: proposer.clone(),
+        proposal_type: proposal_type.clone(),
+        target_contract,
+        call_data,
+        voting_start: current_time + config.voting_delay,
+        voting_end: current_time + config.voting_delay + config.voting_period,
+        execution_delay: execution_delay.unwrap_or(config.execution_delay),
+        min_quorum: config.quorum_threshold,
+        approval_threshold: config.approval_threshold,
+        status: ProposalStatus::Draft,
+        created_at: current_time,
+        executed_at: None,
+        cancelled_at: None,
+    };
+
+    // Store proposal using ExtendedDataKey with offset to avoid conflicts
+    storage.set(&ExtendedDataKey::Template(proposal_id + 5000000), &proposal);
+    storage.set(&ExtendedDataKey::NextTmplId, &(proposal_id + 1));
+
+    // Update proposer's proposals list using RoleDataKey
+    let mut proposer_proposals: Vec<u64> = storage
+        .get(&RoleDataKey::UserRole(proposer.clone()))
+        .unwrap_or(Vec::new(&env));
+    proposer_proposals.push_back(proposal_id);
+    storage.set(
+        &RoleDataKey::UserRole(proposer.clone()),
+        &proposer_proposals,
+    );
+
+    // Add to active proposals when voting starts using ExtendedDataKey
+    if current_time >= proposal.voting_start {
+        let mut active_proposals: Vec<u64> = storage
+            .get(&ExtendedDataKey::ActivePresets)
+            .unwrap_or(Vec::new(&env));
+        active_proposals.push_back(proposal_id);
+        storage.set(&ExtendedDataKey::ActivePresets, &active_proposals);
+    }
+
+    // Update governance stats
+    if let Some(mut stats) = GovernanceSystem::get_stats(&env) {
+        stats.total_proposals += 1;
+        if current_time >= proposal.voting_start {
+            stats.active_proposals += 1;
+        }
+        stats.last_updated = current_time;
+        storage.set(&DataKey::GovernanceConfig, &stats);
+    }
+
+    env.events().publish(
+        (PROPOSAL_CREATED_EVENT,),
+        (proposal_id, proposer, title, current_time),
+    );
+
+    Ok(proposal_id)
+}
+
+/// Cast a vote on a proposal
+pub fn cast_vote(
+    env: Env,
+    voter: Address,
+    proposal_id: u64,
+    support: VoteType,
+    reason: Option<String>,
+) -> Result<(), PayrollError> {
+    voter.require_auth();
+    Self::require_not_paused(&env)?;
+
+    let storage = env.storage().persistent();
+
+    // Check if governance is enabled
+    if !storage.get(&DataKey::GovernanceEnabled).unwrap_or(false) {
+        return Err(PayrollError::GovernanceNotInitialized);
+    }
+
+    let proposal = storage
+        .get::<ExtendedDataKey, Proposal>(&ExtendedDataKey::Template(proposal_id + 5000000))
+        .ok_or(PayrollError::ProposalNotFound)?;
+
+    let current_time = env.ledger().timestamp();
+
+    // Check if voting is active
+    if current_time < proposal.voting_start || current_time > proposal.voting_end {
+        return Err(PayrollError::VotingNotActive);
+    }
+
+    // Check if already voted using a simple approach with Balance key
+    let vote_key = DataKey::Balance(
+        voter.clone(),
+        Address::from_string(&String::from_str(&env, "VOTE")),
+    );
+    if storage.get::<DataKey, i128>(&vote_key).unwrap_or(0) == proposal_id as i128 {
+        return Err(PayrollError::AlreadyVoted);
+    }
+
+    // Calculate voting power
+    let gov_token = GovernanceSystem::get_governance_token(&env)
+        .ok_or(PayrollError::GovernanceNotInitialized)?;
+
+    let token_balance = Self::get_token_balance(&env, &voter, &gov_token.token_address);
+    let voting_power = (token_balance as u64 * gov_token.voting_power_multiplier as u64) / 100;
+
+    if voting_power == 0 {
+        return Err(PayrollError::InsufficientVotingPower);
+    }
+
+    // Create vote record
+    let vote = Vote {
+        voter: voter.clone(),
+        proposal_id,
+        support: support.clone(),
+        voting_power,
+        reason: reason.clone(),
+        timestamp: current_time,
+    };
+
+    // Store vote using Balance key approach
+    storage.set(&vote_key, &(proposal_id as i128));
+    // Store vote details using AuditTrail
+    storage.set(&DataKey::AuditTrail(voter.clone()), &vote);
+
+    // Update voting results using ExtendedDataKey
+    let mut results = storage
+        .get::<ExtendedDataKey, VotingResults>(&ExtendedDataKey::Preset(proposal_id + 6000000))
+        .unwrap_or(VotingResults {
+            proposal_id,
+            total_votes: 0,
+            votes_for: 0,
+            votes_against: 0,
+            votes_abstain: 0,
+            total_voting_power: 0,
+            participation_rate: 0,
+            approval_rate: 0,
+            quorum_reached: false,
+            threshold_met: false,
+        });
+
+    results.total_votes += 1;
+    results.total_voting_power += voting_power;
+
+    match support {
+        VoteType::For => results.votes_for += voting_power,
+        VoteType::Against => results.votes_against += voting_power,
+        VoteType::Abstain => results.votes_abstain += voting_power,
+    }
+
+    // Calculate participation and approval rates
+    let total_supply = gov_token.total_supply as u64;
+    results.participation_rate = (results.total_voting_power * 10000) / total_supply; // Basis points
+
+    if results.votes_for + results.votes_against > 0 {
+        results.approval_rate =
+            (results.votes_for * 10000) / (results.votes_for + results.votes_against);
+    }
+
+    results.quorum_reached = results.participation_rate >= (proposal.min_quorum * 100);
+    results.threshold_met = results.approval_rate >= (proposal.approval_threshold * 100);
+
+    storage.set(&ExtendedDataKey::Preset(proposal_id + 6000000), &results);
+
+    // Update voter history using RoleDataKey
+    let mut voter_history: Vec<u64> = storage
+        .get(&RoleDataKey::UserRole(voter.clone()))
+        .unwrap_or(Vec::new(&env));
+    voter_history.push_back(proposal_id);
+    storage.set(&RoleDataKey::UserRole(voter.clone()), &voter_history);
+
+    env.events().publish(
+        (VOTE_CAST_EVENT,),
+        (proposal_id, voter, support, voting_power, current_time),
+    );
+
+    Ok(())
+}
+
+/// Execute a proposal that has passed
+pub fn execute_proposal(env: Env, executor: Address, proposal_id: u64) -> Result<(), PayrollError> {
+    executor.require_auth();
+    Self::require_not_paused(&env)?;
+
+    let storage = env.storage().persistent();
+
+    // Check if governance is enabled
+    if !storage.get(&DataKey::GovernanceEnabled).unwrap_or(false) {
+        return Err(PayrollError::GovernanceNotInitialized);
+    }
+
+    let mut proposal = storage
+        .get::<ExtendedDataKey, Proposal>(&ExtendedDataKey::Template(proposal_id + 5000000))
+        .ok_or(PayrollError::ProposalNotFound)?;
+
+    let current_time = env.ledger().timestamp();
+
+    // Check if proposal can be executed
+    if proposal.status != ProposalStatus::Succeeded {
+        return Err(PayrollError::ProposalExecutionFailed);
+    }
+
+    // Check if execution delay has passed
+    if current_time < proposal.voting_end + proposal.execution_delay {
+        return Err(PayrollError::ProposalExecutionFailed);
+    }
+
+    // Get voting results
+    let results = storage
+        .get::<ExtendedDataKey, VotingResults>(&ExtendedDataKey::Preset(proposal_id + 6000000))
+        .ok_or(PayrollError::ProposalNotFound)?;
+
+    // Verify quorum and threshold
+    if !results.quorum_reached || !results.threshold_met {
+        return Err(PayrollError::ProposalExecutionFailed);
+    }
+
+    // Execute based on proposal type
+    match proposal.proposal_type {
+        ProposalType::ParameterUpdate => {
+            Self::execute_parameter_update(&env, &proposal)?;
+        }
+        ProposalType::TreasurySpend => {
+            Self::execute_treasury_spend(&env, &proposal)?;
+        }
+        ProposalType::TokenDistribution => {
+            Self::execute_token_distribution(&env, &proposal)?;
+        }
+        _ => {
+            // For other types, mark as executed but don't perform action
+            // This allows for governance decisions that don't require on-chain execution
+        }
+    }
+
+    // Update proposal status
+    proposal.status = ProposalStatus::Executed;
+    proposal.executed_at = Some(current_time);
+    storage.set(&ExtendedDataKey::Template(proposal_id + 5000000), &proposal);
+
+    // Update governance stats
+    if let Some(mut stats) = GovernanceSystem::get_stats(&env) {
+        stats.executed_proposals += 1;
+        stats.active_proposals = stats.active_proposals.saturating_sub(1);
+        stats.last_updated = current_time;
+        storage.set(&DataKey::GovernanceConfig, &stats);
+    }
+
+    env.events().publish(
+        (PROPOSAL_EXECUTED_EVENT,),
+        (proposal_id, executor, current_time),
+    );
+
+    Ok(())
+}
+
+/// Delegate voting power to another address
+pub fn delegate_voting_power(
+    env: Env,
+    delegator: Address,
+    delegate: Address,
+    expires_at: Option<u64>,
+) -> Result<(), PayrollError> {
+    delegator.require_auth();
+    Self::require_not_paused(&env)?;
+
+    let storage = env.storage().persistent();
+
+    // Check if governance is enabled
+    if !storage.get(&DataKey::GovernanceEnabled).unwrap_or(false) {
+        return Err(PayrollError::GovernanceNotInitialized);
+    }
+
+    // Cannot delegate to self
+    if delegator == delegate {
+        return Err(PayrollError::InvalidGovernanceParameter);
+    }
+
+    let gov_token = GovernanceSystem::get_governance_token(&env)
+        .ok_or(PayrollError::GovernanceNotInitialized)?;
+
+    let token_balance = Self::get_token_balance(&env, &delegator, &gov_token.token_address);
+    let voting_power = (token_balance as u64 * gov_token.voting_power_multiplier as u64) / 100;
+
+    let current_time = env.ledger().timestamp();
+
+    let delegation = VotingDelegation {
+        delegator: delegator.clone(),
+        delegate: delegate.clone(),
+        voting_power,
+        delegated_at: current_time,
+        expires_at,
+        is_active: true,
+    };
+
+    storage.set(&RoleDataKey::Delegation(1), &delegation);
+
+    // Update delegate's voters list using RoleDataKey
+    let mut delegate_voters: Vec<Address> = storage
+        .get(&RoleDataKey::RoleMembers(String::from_str(
+            &env,
+            "delegates",
+        )))
+        .unwrap_or(Vec::new(&env));
+    delegate_voters.push_back(delegator.clone());
+    storage.set(
+        &RoleDataKey::RoleMembers(String::from_str(&env, "delegates")),
+        &delegate_voters,
+    );
+
+    env.events().publish(
+        (VOTING_DELEGATED_EVENT,),
+        (delegator, delegate, voting_power, current_time),
+    );
+
+    Ok(())
+}
+
+/// Get proposal information
+pub fn get_proposal(env: Env, proposal_id: u64) -> Option<Proposal> {
+    env.storage()
+        .persistent()
+        .get(&ExtendedDataKey::Template(proposal_id + 5000000))
+}
+
+/// Get voting results for a proposal
+pub fn get_voting_results(env: Env, proposal_id: u64) -> Option<VotingResults> {
+    env.storage()
+        .persistent()
+        .get(&ExtendedDataKey::Preset(proposal_id + 6000000))
+}
+
+/// Get governance configuration
+pub fn get_governance_config(env: Env) -> Option<GovernanceConfig> {
+    GovernanceSystem::get_config(&env)
+}
+
+/// Get community treasury information
+pub fn get_community_treasury(env: Env) -> Option<CommunityTreasury> {
+    GovernanceSystem::get_treasury(&env)
+}
+
+/// Get governance statistics
+pub fn get_governance_stats(env: Env) -> Option<GovernanceStats> {
+    GovernanceSystem::get_stats(&env)
+}
+
+//-----------------------------------------------------------------------------
+// Internal Governance Helper Functions
+//-----------------------------------------------------------------------------
+
+/// Execute parameter update proposal
+fn execute_parameter_update(env: &Env, proposal: &Proposal) -> Result<(), PayrollError> {
+    // Parse call data to extract parameter name and value
+    if let Some(call_data) = &proposal.call_data {
+        // Simple parsing - in production, use proper serialization
+        let parts: Vec<&str> = call_data.split(':').collect();
+        if parts.len() >= 2 {
+            let param_name = String::from_str(env, parts[0]);
+            let param_value = String::from_str(env, parts[1]);
+
+            let parameter = GovernanceParameter {
+                name: param_name.clone(),
+                current_value: param_value.clone(),
+                proposed_value: None,
+                parameter_type: crate::governance::ParameterType::String,
+                min_value: None,
+                max_value: None,
+                last_updated: env.ledger().timestamp(),
+                update_proposal_id: Some(proposal.id),
+            };
+
+            env.storage()
+                .persistent()
+                .set(&RoleDataKey::Role(param_name.clone()), &parameter);
+
+            env.events().publish(
+                (PARAMETER_UPDATED_EVENT,),
+                (param_name, param_value, env.ledger().timestamp()),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Execute treasury spend proposal
+fn execute_treasury_spend(env: &Env, proposal: &Proposal) -> Result<(), PayrollError> {
+    // Parse call data to extract recipient, token, and amount
+    if let Some(call_data) = &proposal.call_data {
+        // Simple parsing - in production, use proper serialization
+        let parts: Vec<&str> = call_data.split(':').collect();
+        if parts.len() >= 3 {
+            // For now, just emit event - actual treasury spending would require
+            // more complex implementation with token transfers
+            env.events().publish(
+                (TREASURY_SPEND_EVENT,),
+                (proposal.id, env.ledger().timestamp()),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Execute token distribution proposal
+fn execute_token_distribution(env: &Env, proposal: &Proposal) -> Result<(), PayrollError> {
+    // Parse call data to extract distribution details
+    if let Some(_call_data) = &proposal.call_data {
+        // For now, just emit event - actual token distribution would require
+        // integration with token contract
+        env.events().publish(
+            (TOKENS_DISTRIBUTED_EVENT,),
+            (proposal.id, env.ledger().timestamp()),
+        );
+    }
+    Ok(())
+}
+
+/// Get token balance for an address
+fn get_token_balance(env: &Env, address: &Address, token: &Address) -> i128 {
+    // This would typically call the token contract to get balance
+    // For now, return a placeholder value
+    env.storage()
+        .persistent()
+        .get(&DataKey::Balance(address.clone(), token.clone()))
+        .unwrap_or(0)
 }
