@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Env, Map, String, Symbol, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env, Map, String, Symbol, Vec};
 
 // Import insurance types for backup functionality
 use crate::insurance::InsurancePolicy;
@@ -282,6 +282,97 @@ pub struct ScheduleMetadata {
     pub max_retries: u32,
     pub success_rate: u32, // Success rate as percentage (0-100)
     pub average_execution_time: u64,
+}
+
+/// Holiday configuration for schedule handling
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HolidayConfig {
+    pub schedule_id: u64,
+    pub skip_weekends: bool,
+    pub holidays: Vec<u64>, // Holiday timestamps
+    pub weekend_handling: WeekendHandling,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// Weekend handling strategy
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum WeekendHandling {
+    Skip,           // Skip to next business day
+    ProcessEarly,   // Process on Friday
+    ProcessLate,    // Process on Monday
+}
+
+/// Payroll adjustment record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollAdjustment {
+    pub id: u64,
+    pub employee: Address,
+    pub adjustment_type: String,
+    pub amount: i128,
+    pub reason: String,
+    pub applied_by: Address,
+    pub applied_at: u64,
+    pub approved: bool,
+}
+
+/// Payroll forecast result
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollForecast {
+    pub period: u32,
+    pub start_date: u64,
+    pub end_date: u64,
+    pub estimated_amount: i128,
+    pub employee_count: u32,
+    pub confidence_level: u32, // 0-100
+}
+
+/// Compliance check result
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComplianceCheckResult {
+    pub check_id: u64,
+    pub employer: Address,
+    pub check_time: u64,
+    pub issues_found: Vec<ComplianceIssue>,
+    pub passed: bool,
+}
+
+/// Individual compliance issue
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComplianceIssue {
+    pub employee: Address,
+    pub issue_type: String,
+    pub severity: ComplianceSeverity,
+    pub description: String,
+}
+
+/// Compliance severity levels
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ComplianceSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+/// Optimization suggestion
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OptimizationSuggestion {
+    pub suggestion_id: u64,
+    pub employer: Address,
+    pub suggestion_type: String,
+    pub description: String,
+    pub potential_savings: i128,
+    pub priority: u32,
+    pub created_at: u64,
 }
 
 /// Automation rule structure for conditional triggers
@@ -638,7 +729,55 @@ pub struct SecuritySettings {
     pub rate_limiting_enabled: bool,
     pub security_policies_enabled: bool,
     pub emergency_mode: bool,
+    pub large_disbursement_threshold: i128,
     pub last_updated: u64,
+}
+
+/// Per-user MFA configuration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserMfaConfig {
+    pub user: Address,
+    pub is_enabled: bool,
+    pub secret: Bytes,
+    pub digits: u32,
+    pub period: u64,
+    pub last_verified_at: Option<u64>,
+    pub session_timeout_override: Option<u64>,
+    pub active_sessions: Vec<u64>,
+    pub emergency_bypass_enabled: bool,
+    pub emergency_code_hashes: Vec<BytesN<32>>,
+    pub emergency_bypass_last_used_at: Option<u64>,
+}
+
+/// MFA challenge record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MfaChallenge {
+    pub challenge_id: u64,
+    pub user: Address,
+    pub operation: Symbol,
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub attempts_remaining: u32,
+    pub requires_totp: bool,
+    pub emergency_bypass_allowed: bool,
+    pub session_scope: Vec<Symbol>,
+    pub resolved: bool,
+}
+
+/// MFA session record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MfaSession {
+    pub session_id: u64,
+    pub user: Address,
+    pub issued_for: Vec<Symbol>,
+    pub created_at: u64,
+    pub last_used_at: u64,
+    pub expires_at: u64,
+    pub emergency_bypass_used: bool,
+    pub challenge_id: u64,
 }
 
 /// Suspicious activity detection
@@ -833,6 +972,29 @@ pub enum ExtendedDataKey {
     Rule(u64),             // rule_id -> AutomationRule
     NextRuleId,            // Next available rule ID
     EmpRules(Address),     // employer -> Vec<u64> (rule IDs)
+    // Holiday and weekend handling
+    HolidayConfig(u64), // schedule_id -> HolidayConfig
+
+    // Payroll adjustments
+    Adjustment(u64),         // adjustment_id -> PayrollAdjustment
+    NextAdjustmentId,        // Next available adjustment ID
+    EmpAdjustments(Address), // employee -> Vec<u64> (adjustment IDs)
+
+    // Forecasting
+    Forecast(u64),     // forecast_id -> PayrollForecast
+    NextForecastId,    // Next available forecast ID
+
+    // Compliance
+    ComplianceCheck(u64),  // check_id -> ComplianceCheckResult
+    NextComplianceCheckId, // Next available check ID
+
+    // MFA and session management
+    UserMfaConfig(Address),   // user -> UserMfaConfig
+    UserMfaSessions(Address), // user -> Vec<u64>
+    MfaSession(u64),          // session_id -> MfaSession
+    MfaChallenge(u64),        // challenge_id -> MfaChallenge
+    NextMfaSessionId,         // counter for MFA session IDs
+    NextMfaChallengeId,       // counter for MFA challenge IDs
 }
 
 #[contracttype]
@@ -1433,6 +1595,7 @@ impl ForecastData {
 /// This avoids adding new variants to the DataKey enum which is already at size limit
 pub struct LifecycleStorage;
 
+#[allow(dead_code)]
 impl LifecycleStorage {
     // Storage prefixes for different lifecycle data types
     const PROFILE_PREFIX: &'static str = "lc_profile_";
