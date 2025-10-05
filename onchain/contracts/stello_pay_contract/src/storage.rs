@@ -284,6 +284,97 @@ pub struct ScheduleMetadata {
     pub average_execution_time: u64,
 }
 
+/// Holiday configuration for schedule handling
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HolidayConfig {
+    pub schedule_id: u64,
+    pub skip_weekends: bool,
+    pub holidays: Vec<u64>, // Holiday timestamps
+    pub weekend_handling: WeekendHandling,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// Weekend handling strategy
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum WeekendHandling {
+    Skip,           // Skip to next business day
+    ProcessEarly,   // Process on Friday
+    ProcessLate,    // Process on Monday
+}
+
+/// Payroll adjustment record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollAdjustment {
+    pub id: u64,
+    pub employee: Address,
+    pub adjustment_type: String,
+    pub amount: i128,
+    pub reason: String,
+    pub applied_by: Address,
+    pub applied_at: u64,
+    pub approved: bool,
+}
+
+/// Payroll forecast result
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollForecast {
+    pub period: u32,
+    pub start_date: u64,
+    pub end_date: u64,
+    pub estimated_amount: i128,
+    pub employee_count: u32,
+    pub confidence_level: u32, // 0-100
+}
+
+/// Compliance check result
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComplianceCheckResult {
+    pub check_id: u64,
+    pub employer: Address,
+    pub check_time: u64,
+    pub issues_found: Vec<ComplianceIssue>,
+    pub passed: bool,
+}
+
+/// Individual compliance issue
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComplianceIssue {
+    pub employee: Address,
+    pub issue_type: String,
+    pub severity: ComplianceSeverity,
+    pub description: String,
+}
+
+/// Compliance severity levels
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ComplianceSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+/// Optimization suggestion
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OptimizationSuggestion {
+    pub suggestion_id: u64,
+    pub employer: Address,
+    pub suggestion_type: String,
+    pub description: String,
+    pub potential_savings: i128,
+    pub priority: u32,
+    pub created_at: u64,
+}
+
 /// Automation rule structure for conditional triggers
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -761,7 +852,15 @@ pub enum DataKey {
     // Admin
     Owner,
     Paused,
-
+    TokenPair(Address),
+    ConversionRate(Address),
+    SwapFee,
+    SwapRequest(String),       // request id
+    SwapResult(String),        // request id
+    SwapHistoryEntry(String),  // entry id
+    SwapHistoryIndex(Address), // indexed by employer (or employee)
+    TokenSwapSettings,
+    // DexConfig(String),
     SupportedToken(Address),
     TokenMetadata(Address),
 
@@ -825,6 +924,23 @@ pub enum ExtendedDataKey {
     Rule(u64),             // rule_id -> AutomationRule
     NextRuleId,            // Next available rule ID
     EmpRules(Address),     // employer -> Vec<u64> (rule IDs)
+
+    // Holiday and weekend handling
+    HolidayConfig(u64),     // schedule_id -> HolidayConfig
+    
+    // Payroll adjustments
+    Adjustment(u64),         // adjustment_id -> PayrollAdjustment
+    NextAdjustmentId,        // Next available adjustment ID
+    EmpAdjustments(Address), // employee -> Vec<u64> (adjustment IDs)
+    
+    // Forecasting
+    Forecast(u64),           // forecast_id -> PayrollForecast
+    NextForecastId,          // Next available forecast ID
+    
+    // Compliance
+    ComplianceCheck(u64),    // check_id -> ComplianceCheckResult
+    NextComplianceCheckId,   // Next available check ID
+
 }
 
 #[contracttype]
@@ -1025,6 +1141,7 @@ pub enum ComplianceStatus {
 /// This avoids adding new variants to the DataKey enum which is already at size limit
 pub struct LifecycleStorage;
 
+#[allow(dead_code)]
 impl LifecycleStorage {
     // Storage prefixes for different lifecycle data types
     const PROFILE_PREFIX: &'static str = "lc_profile_";

@@ -1,10 +1,5 @@
 use soroban_sdk::{contracttype, Address, Env, Map, String, Vec, symbol_short};
 
-use crate::storage::{
-    ReportSchedule, ReportType, ReportFormat, ScheduleFrequency, ComplianceAlert,
-    ComplianceAlertType, AlertSeverity, AlertStatus, DashboardMetrics
-};
-
 //-----------------------------------------------------------------------------
 // Enterprise Features Data Structures
 //-----------------------------------------------------------------------------
@@ -384,8 +379,10 @@ use crate::storage::{
 };
 
 /// HR Workflow Management System
+#[allow(dead_code)]
 pub struct HRWorkflowManager;
 
+#[allow(dead_code)]
 impl HRWorkflowManager {
     /// Create employee onboarding workflow
     pub fn create_onboarding_workflow(
@@ -1453,6 +1450,7 @@ pub struct BackupHealthDashboard {
 //-----------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq)]
+#[allow(dead_code)]
 pub enum EnterpriseError {
     DepartmentNotFound,
     WorkflowNotFound,
