@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Env, Map, String, Symbol, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env, Map, String, Symbol, Vec};
 
 // Import insurance types for backup functionality
 use crate::insurance::InsurancePolicy;
@@ -729,7 +729,55 @@ pub struct SecuritySettings {
     pub rate_limiting_enabled: bool,
     pub security_policies_enabled: bool,
     pub emergency_mode: bool,
+    pub large_disbursement_threshold: i128,
     pub last_updated: u64,
+}
+
+/// Per-user MFA configuration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserMfaConfig {
+    pub user: Address,
+    pub is_enabled: bool,
+    pub secret: Bytes,
+    pub digits: u32,
+    pub period: u64,
+    pub last_verified_at: Option<u64>,
+    pub session_timeout_override: Option<u64>,
+    pub active_sessions: Vec<u64>,
+    pub emergency_bypass_enabled: bool,
+    pub emergency_code_hashes: Vec<BytesN<32>>,
+    pub emergency_bypass_last_used_at: Option<u64>,
+}
+
+/// MFA challenge record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MfaChallenge {
+    pub challenge_id: u64,
+    pub user: Address,
+    pub operation: Symbol,
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub attempts_remaining: u32,
+    pub requires_totp: bool,
+    pub emergency_bypass_allowed: bool,
+    pub session_scope: Vec<Symbol>,
+    pub resolved: bool,
+}
+
+/// MFA session record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MfaSession {
+    pub session_id: u64,
+    pub user: Address,
+    pub issued_for: Vec<Symbol>,
+    pub created_at: u64,
+    pub last_used_at: u64,
+    pub expires_at: u64,
+    pub emergency_bypass_used: bool,
+    pub challenge_id: u64,
 }
 
 /// Suspicious activity detection
@@ -924,23 +972,29 @@ pub enum ExtendedDataKey {
     Rule(u64),             // rule_id -> AutomationRule
     NextRuleId,            // Next available rule ID
     EmpRules(Address),     // employer -> Vec<u64> (rule IDs)
-
     // Holiday and weekend handling
-    HolidayConfig(u64),     // schedule_id -> HolidayConfig
-    
+    HolidayConfig(u64), // schedule_id -> HolidayConfig
+
     // Payroll adjustments
     Adjustment(u64),         // adjustment_id -> PayrollAdjustment
     NextAdjustmentId,        // Next available adjustment ID
     EmpAdjustments(Address), // employee -> Vec<u64> (adjustment IDs)
-    
-    // Forecasting
-    Forecast(u64),           // forecast_id -> PayrollForecast
-    NextForecastId,          // Next available forecast ID
-    
-    // Compliance
-    ComplianceCheck(u64),    // check_id -> ComplianceCheckResult
-    NextComplianceCheckId,   // Next available check ID
 
+    // Forecasting
+    Forecast(u64),     // forecast_id -> PayrollForecast
+    NextForecastId,    // Next available forecast ID
+
+    // Compliance
+    ComplianceCheck(u64),  // check_id -> ComplianceCheckResult
+    NextComplianceCheckId, // Next available check ID
+
+    // MFA and session management
+    UserMfaConfig(Address),   // user -> UserMfaConfig
+    UserMfaSessions(Address), // user -> Vec<u64>
+    MfaSession(u64),          // session_id -> MfaSession
+    MfaChallenge(u64),        // challenge_id -> MfaChallenge
+    NextMfaSessionId,         // counter for MFA session IDs
+    NextMfaChallengeId,       // counter for MFA challenge IDs
 }
 
 #[contracttype]

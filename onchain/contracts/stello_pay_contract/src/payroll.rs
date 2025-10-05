@@ -1,7 +1,16 @@
+extern crate alloc;
+
+use alloc::vec::Vec as StdVec;
+use core::cmp;
+use core::convert::TryInto;
+use hmac::{Hmac, Mac};
+use sha1::Sha1;
 use soroban_sdk::{
     contract, contracterror, contractimpl, symbol_short, token::Client as TokenClient,
-    Address, Env, Map, String, Symbol, Vec,
+    Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
 };
+
+type HmacSha1 = Hmac<Sha1>;
 
 use crate::enterprise::{
     self, Approval, ApprovalStep, ApprovalWorkflow, BackupSchedule, Department,
@@ -11,12 +20,14 @@ use crate::enterprise::{
 };
 
 use crate::events::{
-    emit_disburse, BACKUP_CREATED_EVENT, BACKUP_VERIFIED_EVENT, DEPOSIT_EVENT,
-    EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT, METRICS_UPDATED_EVENT, PAUSED_EVENT,
-    PRESET_CREATED_EVENT, RECOVERY_COMPLETED_EVENT, RECOVERY_STARTED_EVENT, ROLE_ASSIGNED_EVENT,
-    ROLE_REVOKED_EVENT, RULE_CREATED_EVENT, RULE_EXECUTED_EVENT, SCHEDULE_CREATED_EVENT,
-    SCHEDULE_EXECUTED_EVENT, SCHEDULE_UPDATED_EVENT, SECURITY_AUDIT_EVENT,
-    SECURITY_POLICY_VIOLATION_EVENT, TEMPLATE_APPLIED_EVENT, TEMPLATE_CREATED_EVENT,
+    emit_disburse, MfaChallengeEvent, MfaSessionEvent, MfaVerificationEvent, BACKUP_CREATED_EVENT,
+    BACKUP_VERIFIED_EVENT, DEPOSIT_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT,
+    METRICS_UPDATED_EVENT, MFA_CHALLENGE_EVENT, MFA_DISABLED_EVENT, MFA_EMERGENCY_EVENT,
+    MFA_ENABLED_EVENT, MFA_VERIFIED_EVENT, PAUSED_EVENT, PRESET_CREATED_EVENT,
+    RECOVERY_COMPLETED_EVENT, RECOVERY_STARTED_EVENT, ROLE_ASSIGNED_EVENT, ROLE_REVOKED_EVENT,
+    RULE_CREATED_EVENT, RULE_EXECUTED_EVENT, SCHEDULE_CREATED_EVENT, SCHEDULE_EXECUTED_EVENT,
+    SCHEDULE_UPDATED_EVENT, SECURITY_AUDIT_EVENT, SECURITY_POLICY_VIOLATION_EVENT,
+    SESSION_ENDED_EVENT, SESSION_STARTED_EVENT, TEMPLATE_APPLIED_EVENT, TEMPLATE_CREATED_EVENT,
     TEMPLATE_SHARED_EVENT, TEMPLATE_UPDATED_EVENT, UNPAUSED_EVENT,
 };
 
@@ -25,7 +36,23 @@ use crate::insurance::{
 };
 
 use crate::storage::{
-    ActionType, AlertSeverity, AlertStatus, AutomationRule, BackupData, BackupMetadata, BackupStatus, BackupType, CompactPayroll, CompactPayrollHistoryEntry, ComplianceAlert, ComplianceAlertType, ComplianceCheckResult, ComplianceIssue, ComplianceRecord, ComplianceSeverity, ComplianceStatus, ConditionOperator, DashboardMetrics, DataKey, EmployeeProfile, EmployeeStatus, EmployeeTransfer, ExtendedDataKey, FinalPayment, HolidayConfig, LifecycleStorage, LogicalOperator, OffboardingTask, OffboardingWorkflow, OnboardingTask, OnboardingWorkflow, Payroll, PayrollAdjustment, PayrollBackup, PayrollForecast, PayrollInput, PayrollReport, PayrollSchedule, PayrollTemplate, PerformanceMetrics, Permission, PermissionAuditEntry, RecoveryMetadata, RecoveryPoint, RecoveryStatus, RecoveryType, ReportAuditEntry, ReportFormat, ReportMetadata, ReportStatus, ReportType, Role, RoleDataKey, RoleDelegation, RoleDetails, RuleAction, RuleCondition, RuleType, ScheduleFrequency, ScheduleMetadata, ScheduleType, SecurityAuditEntry, SecurityAuditResult, SecuritySettings, TaxCalculation, TaxType, TempRoleAssignment, TemplatePreset, UserRoleAssignment, UserRolesResponse, WeekendHandling, WorkflowStatus
+    ActionType, AlertSeverity, AlertStatus, AutomationRule, BackupData, BackupMetadata,
+    BackupStatus, BackupType, CompactPayroll, CompactPayrollHistoryEntry, ComplianceAlert,
+    ComplianceAlertType, ComplianceCheckResult, ComplianceIssue, ComplianceRecord,
+    ComplianceSeverity, ComplianceStatus, ConditionOperator, DashboardMetrics, DataKey,
+    EmployeeProfile, EmployeeStatus, EmployeeTransfer, ExtendedDataKey, FinalPayment,
+    HolidayConfig, LifecycleStorage, LogicalOperator, MfaChallenge, MfaSession, OffboardingTask,
+    OffboardingWorkflow, OnboardingTask, OnboardingWorkflow, Payroll, PayrollAdjustment,
+    PayrollBackup, PayrollForecast, PayrollInput, PayrollReport, PayrollSchedule, PayrollTemplate,
+    PerformanceMetrics, Permission, PermissionAuditEntry, RateLimitConfig, RecoveryMetadata,
+    RecoveryPoint, RecoveryStatus, RecoveryType, ReportAuditEntry, ReportFormat, ReportMetadata,
+    ReportStatus, ReportType, Role, RoleDataKey, RoleDelegation, RoleDetails, RuleAction,
+    RuleCondition, RuleType, ScheduleFrequency, ScheduleMetadata, ScheduleType,
+    SecurityAuditEntry, SecurityAuditResult, SecurityPolicy, SecurityPolicyType, SecurityRule,
+    SecurityRuleAction, SecurityRuleOperator, SecuritySettings, SuspiciousActivity,
+    SuspiciousActivitySeverity, SuspiciousActivityType, TaxCalculation, TaxType, TempRoleAssignment,
+    TemplatePreset, UserMfaConfig, UserRole, UserRoleAssignment, UserRolesResponse,
+    WeekendHandling, WorkflowApproval, WorkflowStatus,
 };
 
 //-----------------------------------------------------------------------------
@@ -224,6 +251,15 @@ pub const ACCOUNT_LOCKED_EVENT: Symbol = symbol_short!("acc_lck");
 #[allow(dead_code)]
 pub const BACKUP_RESTORED_EVENT: Symbol = symbol_short!("backup_r");
 
+const MFA_SCOPE_ALL: Symbol = symbol_short!("mfa_all");
+const MFA_SCOPE_PAYROLL: Symbol = symbol_short!("payroll");
+const MFA_SCOPE_DISBURSE: Symbol = symbol_short!("disburs");
+const MFA_SCOPE_TRANSFER: Symbol = symbol_short!("transfr");
+const MFA_SCOPE_EMERGENCY: Symbol = symbol_short!("emer");
+const MFA_TOTP_ALLOWED_DRIFT: i64 = 1;
+const DEFAULT_MFA_CHALLENGE_ATTEMPTS: u32 = 5;
+const DEFAULT_LARGE_DISBURSEMENT_THRESHOLD: i128 = 100_000;
+
 //-----------------------------------------------------------------------------
 // Contract Implementation
 //-----------------------------------------------------------------------------
@@ -399,6 +435,10 @@ impl PayrollContract {
         Self::validate_payroll_input(amount, interval, recurrence_frequency)?;
 
         employer.require_auth();
+
+        if Self::is_mfa_required_for_operation(&env, &employer, MFA_SCOPE_PAYROLL, None) {
+            Self::ensure_active_mfa_session(&env, &employer, MFA_SCOPE_PAYROLL)?;
+        }
 
         // Get cached contract state to reduce storage reads
         let cache = Self::get_contract_cache(&env);
@@ -738,14 +778,15 @@ impl PayrollContract {
         }
 
         // Security: rate limit and suspicious activity checks for disbursement
-        // Rate limit check
         if let Err(_e) = Self::_check_rate_limit(&env, &caller, "disburse_salary") {
             let now = env.ledger().timestamp();
             let mut details = Map::new(&env);
-            details.set(String::from_str(&env, "operation"), String::from_str(&env, "disburse_salary"));
+            details.set(
+                String::from_str(&env, "operation"),
+                String::from_str(&env, "disburse_salary"),
+            );
             details.set(String::from_str(&env, "reason"), String::from_str(&env, "rate_limit"));
 
-            // Log audit entry for rate limit
             Self::_log_security_event(
                 &env,
                 &caller,
@@ -755,7 +796,6 @@ impl PayrollContract {
                 details.clone(),
             );
 
-            // Emit rate limit exceeded alert with placeholder limits (to be wired later)
             crate::events::emit_rate_limit_exceeded(
                 env.clone(),
                 caller.clone(),
@@ -769,13 +809,14 @@ impl PayrollContract {
             return Err(PayrollError::RateLimitExceeded);
         }
 
-        // Suspicious activity detection
         if let Err(_e) = Self::_detect_suspicious_activity(&env, &caller, "disburse_salary") {
             let now = env.ledger().timestamp();
             let mut details = Map::new(&env);
-            details.set(String::from_str(&env, "operation"), String::from_str(&env, "disburse_salary"));
+            details.set(
+                String::from_str(&env, "operation"),
+                String::from_str(&env, "disburse_salary"),
+            );
 
-            // Log audit entry for suspicious activity
             Self::_log_security_event(
                 &env,
                 &caller,
@@ -785,7 +826,6 @@ impl PayrollContract {
                 details.clone(),
             );
 
-            // Emit suspicious activity alert
             crate::events::emit_suspicious_activity(
                 env.clone(),
                 caller.clone(),
@@ -796,6 +836,15 @@ impl PayrollContract {
             );
 
             return Err(PayrollError::SuspiciousActivityDetected);
+        }
+
+        if Self::is_mfa_required_for_operation(
+            &env,
+            &caller,
+            MFA_SCOPE_DISBURSE,
+            Some(payroll.amount),
+        ) {
+            Self::ensure_active_mfa_session(&env, &caller, MFA_SCOPE_DISBURSE)?;
         }
 
         let current_time = env.ledger().timestamp();
@@ -927,6 +976,10 @@ impl PayrollContract {
         } else {
             // Should not happen if initialized
             return Err(PayrollError::Unauthorized);
+        }
+
+        if Self::is_mfa_required_for_operation(&env, &caller, MFA_SCOPE_TRANSFER, None) {
+            Self::ensure_active_mfa_session(&env, &caller, MFA_SCOPE_TRANSFER)?;
         }
 
         // Set new owner
@@ -1296,6 +1349,8 @@ impl PayrollContract {
         let batch_ctx = Self::create_batch_context(&env);
         let mut processed_employees = Vec::new(&env);
 
+        let mut mfa_checked = false;
+
         // Process each employee individually to avoid indexing issues
         for employee in employees.iter() {
             let payroll =
@@ -1304,6 +1359,18 @@ impl PayrollContract {
             // Only the employer can disburse salary
             if caller != payroll.employer {
                 return Err(PayrollError::Unauthorized);
+            }
+
+            if !mfa_checked
+                && Self::is_mfa_required_for_operation(
+                    &env,
+                    &caller,
+                    MFA_SCOPE_DISBURSE,
+                    Some(payroll.amount),
+                )
+            {
+                Self::ensure_active_mfa_session(&env, &caller, MFA_SCOPE_DISBURSE)?;
+                mfa_checked = true;
             }
 
             // Check if payroll is paused for this employee
@@ -4930,6 +4997,7 @@ impl PayrollContract {
         audit_logging_enabled: Option<bool>,
         rate_limiting_enabled: Option<bool>,
         security_policies_enabled: Option<bool>,
+        large_disbursement_threshold: Option<i128>,
     ) -> Result<(), PayrollError> {
         caller.require_auth();
         Self::require_not_paused(&env)?;
@@ -4951,6 +5019,7 @@ impl PayrollContract {
                 rate_limiting_enabled: true,
                 security_policies_enabled: true,
                 emergency_mode: false,
+                large_disbursement_threshold: DEFAULT_LARGE_DISBURSEMENT_THRESHOLD,
                 last_updated: current_time,
             });
 
@@ -4976,11 +5045,299 @@ impl PayrollContract {
         if let Some(policies) = security_policies_enabled {
             settings.security_policies_enabled = policies;
         }
+        if let Some(threshold) = large_disbursement_threshold {
+            settings.large_disbursement_threshold = threshold;
+        }
 
         settings.last_updated = current_time;
         storage.set(&DataKey::SecuritySettings, &settings);
 
         Ok(())
+    }
+
+    /// Enable multi-factor authentication for the caller
+    #[allow(clippy::too_many_arguments)]
+    pub fn enable_mfa(
+        env: Env,
+        caller: Address,
+        secret: Bytes,
+        digits: u32,
+        period: u64,
+        emergency_code_hashes: Vec<BytesN<32>>,
+        emergency_bypass_enabled: bool,
+        session_timeout_override: Option<u64>,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        if secret.is_empty() || period == 0 {
+            return Err(PayrollError::InvalidData);
+        }
+
+        if digits < 4 || digits > 8 {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Ensure any stale sessions are removed before enabling
+        Self::clear_user_sessions(&env, &caller);
+
+        let mut config =
+            Self::get_user_mfa_config(&env, &caller).unwrap_or_else(|| UserMfaConfig {
+                user: caller.clone(),
+                is_enabled: true,
+                secret: Bytes::new(&env),
+                digits,
+                period,
+                last_verified_at: None,
+                session_timeout_override,
+                active_sessions: Vec::<u64>::new(&env),
+                emergency_bypass_enabled: false,
+                emergency_code_hashes: Vec::new(&env),
+                emergency_bypass_last_used_at: None,
+            });
+
+        config.user = caller.clone();
+        config.is_enabled = true;
+        config.secret = secret;
+        config.digits = digits;
+        config.period = period;
+        config.last_verified_at = None;
+        config.session_timeout_override = session_timeout_override;
+        config.active_sessions = Vec::<u64>::new(&env);
+        config.emergency_bypass_enabled =
+            emergency_bypass_enabled && !emergency_code_hashes.is_empty();
+        config.emergency_code_hashes = emergency_code_hashes;
+        config.emergency_bypass_last_used_at = None;
+
+        Self::save_user_mfa_config(&env, &config);
+
+        env.events()
+            .publish((MFA_ENABLED_EVENT,), (caller, digits, period));
+
+        Ok(())
+    }
+
+    /// Disable multi-factor authentication for the caller and destroy active sessions
+    pub fn disable_mfa(env: Env, caller: Address) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        Self::clear_user_sessions(&env, &caller);
+
+        let mut config =
+            Self::get_user_mfa_config(&env, &caller).unwrap_or_else(|| UserMfaConfig {
+                user: caller.clone(),
+                is_enabled: false,
+                secret: Bytes::new(&env),
+                digits: 6,
+                period: 30,
+                last_verified_at: None,
+                session_timeout_override: None,
+                active_sessions: Vec::<u64>::new(&env),
+                emergency_bypass_enabled: false,
+                emergency_code_hashes: Vec::new(&env),
+                emergency_bypass_last_used_at: None,
+            });
+
+        config.user = caller.clone();
+        config.is_enabled = false;
+        config.secret = Bytes::new(&env);
+        config.digits = 6;
+        config.period = 30;
+        config.last_verified_at = None;
+        config.session_timeout_override = None;
+        config.active_sessions = Vec::<u64>::new(&env);
+        config.emergency_bypass_enabled = false;
+        config.emergency_code_hashes = Vec::new(&env);
+        config.emergency_bypass_last_used_at = None;
+
+        Self::save_user_mfa_config(&env, &config);
+
+        env.events().publish((MFA_DISABLED_EVENT,), caller);
+
+        Ok(())
+    }
+
+    /// Start an MFA challenge for the provided operation scope
+    pub fn begin_mfa_challenge(
+        env: Env,
+        caller: Address,
+        operation: Symbol,
+        emergency_bypass: bool,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        if !Self::is_supported_mfa_operation(operation.clone()) {
+            return Err(PayrollError::InvalidData);
+        }
+
+        let config = Self::get_user_mfa_config(&env, &caller).ok_or(PayrollError::MFARequired)?;
+        if !config.is_enabled {
+            return Err(PayrollError::MFARequired);
+        }
+
+        let emergency_allowed = emergency_bypass
+            && config.emergency_bypass_enabled
+            && !config.emergency_code_hashes.is_empty();
+
+        let current_time = env.ledger().timestamp();
+        let challenge_id = Self::next_mfa_challenge_id(&env);
+        let validity = cmp::max(config.period.saturating_mul(2), 120);
+        let expires_at = current_time.saturating_add(validity);
+        let session_scope = Self::scope_for_operation(&env, operation.clone());
+
+        let challenge = MfaChallenge {
+            challenge_id,
+            user: caller.clone(),
+            operation: operation.clone(),
+            issued_at: current_time,
+            expires_at,
+            attempts_remaining: DEFAULT_MFA_CHALLENGE_ATTEMPTS,
+            requires_totp: !emergency_allowed,
+            emergency_bypass_allowed: emergency_allowed,
+            session_scope: session_scope.clone(),
+            resolved: false,
+        };
+
+        let storage = env.storage().persistent();
+        storage.set(&ExtendedDataKey::MfaChallenge(challenge_id), &challenge);
+
+        let challenge_event = MfaChallengeEvent {
+            user: caller.clone(),
+            challenge_id,
+            operation,
+            expires_at,
+        };
+        env.events()
+            .publish((MFA_CHALLENGE_EVENT,), challenge_event);
+
+        Ok(challenge_id)
+    }
+
+    /// Complete an MFA challenge using either TOTP or an emergency bypass code
+    pub fn complete_mfa_challenge(
+        env: Env,
+        caller: Address,
+        challenge_id: u64,
+        totp_code: Option<u32>,
+        emergency_code_hash: Option<BytesN<32>>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let mut config =
+            Self::get_user_mfa_config(&env, &caller).ok_or(PayrollError::MFARequired)?;
+        if !config.is_enabled {
+            return Err(PayrollError::MFARequired);
+        }
+
+        let storage = env.storage().persistent();
+        let mut challenge = storage
+            .get::<ExtendedDataKey, MfaChallenge>(&ExtendedDataKey::MfaChallenge(challenge_id))
+            .ok_or(PayrollError::SecurityTokenInvalid)?;
+
+        if challenge.user != caller {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        if challenge.resolved {
+            return Err(PayrollError::SecurityTokenInvalid);
+        }
+
+        let current_time = env.ledger().timestamp();
+        if current_time > challenge.expires_at {
+            challenge.resolved = true;
+            storage.set(&ExtendedDataKey::MfaChallenge(challenge_id), &challenge);
+            return Err(PayrollError::SecurityTokenInvalid);
+        }
+
+        if challenge.attempts_remaining == 0 {
+            challenge.resolved = true;
+            storage.set(&ExtendedDataKey::MfaChallenge(challenge_id), &challenge);
+            return Err(PayrollError::SecurityTokenInvalid);
+        }
+
+        let mut emergency_used = false;
+        let totp_valid = if let Some(code) = totp_code {
+            Self::verify_totp(&config, code, current_time)?
+        } else {
+            false
+        };
+
+        if challenge.requires_totp {
+            if !totp_valid {
+                challenge.attempts_remaining = challenge.attempts_remaining.saturating_sub(1);
+                storage.set(&ExtendedDataKey::MfaChallenge(challenge_id), &challenge);
+                return Err(PayrollError::SecurityTokenInvalid);
+            }
+            config.last_verified_at = Some(current_time);
+        } else if totp_valid {
+            config.last_verified_at = Some(current_time);
+        } else {
+            let hash = emergency_code_hash.ok_or(PayrollError::SecurityTokenInvalid)?;
+            if !Self::consume_emergency_code(&env, &mut config, &hash) {
+                challenge.attempts_remaining = challenge.attempts_remaining.saturating_sub(1);
+                storage.set(&ExtendedDataKey::MfaChallenge(challenge_id), &challenge);
+                return Err(PayrollError::SecurityTokenInvalid);
+            }
+            emergency_used = true;
+            config.emergency_bypass_last_used_at = Some(current_time);
+        }
+
+        challenge.resolved = true;
+        challenge.attempts_remaining = 0;
+        storage.set(&ExtendedDataKey::MfaChallenge(challenge_id), &challenge);
+
+        let session_id = Self::next_mfa_session_id(&env);
+        let session_timeout = config
+            .session_timeout_override
+            .unwrap_or_else(|| Self::resolve_default_session_timeout(&env));
+        let expires_at = current_time.saturating_add(session_timeout);
+
+        let mut issued_scope = challenge.session_scope.clone();
+        if emergency_used {
+            issued_scope.push_back(MFA_SCOPE_EMERGENCY);
+        }
+
+        let session = MfaSession {
+            session_id,
+            user: caller.clone(),
+            issued_for: issued_scope.clone(),
+            created_at: current_time,
+            last_used_at: current_time,
+            expires_at,
+            emergency_bypass_used: emergency_used,
+            challenge_id,
+        };
+
+        storage.set(&ExtendedDataKey::MfaSession(session_id), &session);
+
+        config.active_sessions.push_back(session_id);
+        Self::save_user_mfa_config(&env, &config);
+
+        let verification_event = MfaVerificationEvent {
+            user: caller.clone(),
+            challenge_id,
+            session_id,
+            operation: challenge.operation,
+            emergency_bypass: emergency_used,
+        };
+        env.events()
+            .publish((MFA_VERIFIED_EVENT,), verification_event);
+
+        let session_event = MfaSessionEvent {
+            user: caller,
+            session_id,
+            created_at: current_time,
+            expires_at,
+            operations: issued_scope,
+            emergency_bypass: emergency_used,
+        };
+        env.events()
+            .publish((SESSION_STARTED_EVENT,), session_event);
+
+        Ok(session_id)
     }
 
     /// Get security settings
@@ -5044,6 +5401,311 @@ impl PayrollContract {
     //-----------------------------------------------------------------------------
     // Internal Security Helper Functions
     //-----------------------------------------------------------------------------
+
+    fn get_user_mfa_config(env: &Env, user: &Address) -> Option<UserMfaConfig> {
+        env.storage()
+            .persistent()
+            .get(&ExtendedDataKey::UserMfaConfig(user.clone()))
+    }
+
+    fn save_user_mfa_config(env: &Env, config: &UserMfaConfig) {
+        let storage = env.storage().persistent();
+        storage.set(&ExtendedDataKey::UserMfaConfig(config.user.clone()), config);
+        storage.set(
+            &ExtendedDataKey::UserMfaSessions(config.user.clone()),
+            &config.active_sessions,
+        );
+    }
+
+    fn clear_user_sessions(env: &Env, user: &Address) {
+        let storage = env.storage().persistent();
+        let mut updated = storage
+            .get::<ExtendedDataKey, UserMfaConfig>(&ExtendedDataKey::UserMfaConfig(user.clone()));
+
+        if let Some(mut config) = updated {
+            for session_id in config.active_sessions.iter() {
+                let key = ExtendedDataKey::MfaSession(session_id);
+                if let Some(session) = storage.get::<ExtendedDataKey, MfaSession>(&key) {
+                    let event = MfaSessionEvent {
+                        user: session.user.clone(),
+                        session_id,
+                        created_at: session.created_at,
+                        expires_at: session.expires_at,
+                        operations: session.issued_for.clone(),
+                        emergency_bypass: session.emergency_bypass_used,
+                    };
+                    env.events().publish((SESSION_ENDED_EVENT,), event);
+                    storage.remove(&key);
+                } else {
+                    storage.remove(&key);
+                }
+            }
+
+            config.active_sessions = Vec::<u64>::new(env);
+            Self::save_user_mfa_config(env, &config);
+        } else {
+            storage.remove(&ExtendedDataKey::UserMfaSessions(user.clone()));
+        }
+    }
+
+    fn resolve_default_session_timeout(env: &Env) -> u64 {
+        env.storage()
+            .persistent()
+            .get::<DataKey, SecuritySettings>(&DataKey::SecuritySettings)
+            .map(|settings| settings.session_timeout)
+            .unwrap_or(3600)
+    }
+
+    fn next_mfa_session_id(env: &Env) -> u64 {
+        let storage = env.storage().persistent();
+        let next = storage
+            .get::<ExtendedDataKey, u64>(&ExtendedDataKey::NextMfaSessionId)
+            .unwrap_or(1);
+        storage.set(&ExtendedDataKey::NextMfaSessionId, &(next + 1));
+        next
+    }
+
+    fn next_mfa_challenge_id(env: &Env) -> u64 {
+        let storage = env.storage().persistent();
+        let next = storage
+            .get::<ExtendedDataKey, u64>(&ExtendedDataKey::NextMfaChallengeId)
+            .unwrap_or(1);
+        storage.set(&ExtendedDataKey::NextMfaChallengeId, &(next + 1));
+        next
+    }
+
+    fn scope_for_operation(env: &Env, operation: Symbol) -> Vec<Symbol> {
+        let mut scope = Vec::new(env);
+        scope.push_back(operation.clone());
+        if operation != MFA_SCOPE_ALL {
+            scope.push_back(MFA_SCOPE_ALL);
+        }
+        scope
+    }
+
+    fn is_supported_mfa_operation(operation: Symbol) -> bool {
+        operation == MFA_SCOPE_PAYROLL
+            || operation == MFA_SCOPE_DISBURSE
+            || operation == MFA_SCOPE_TRANSFER
+            || operation == MFA_SCOPE_EMERGENCY
+    }
+
+    fn consume_emergency_code(env: &Env, config: &mut UserMfaConfig, hash: &BytesN<32>) -> bool {
+        let mut remaining = Vec::new(env);
+        let mut consumed = false;
+        for entry in config.emergency_code_hashes.iter() {
+            if !consumed && entry == hash.clone() {
+                consumed = true;
+                continue;
+            }
+            remaining.push_back(entry.clone());
+        }
+
+        if consumed {
+            config.emergency_code_hashes = remaining;
+        }
+
+        consumed
+    }
+
+    fn bytes_to_std(bytes: &Bytes) -> StdVec<u8> {
+        let mut result = StdVec::with_capacity(bytes.len() as usize);
+        for byte in bytes.iter() {
+            result.push(byte);
+        }
+        result
+    }
+
+    fn hotp(secret: &[u8], counter: u64, digits: u32) -> Result<u32, PayrollError> {
+        let mut mac = HmacSha1::new_from_slice(secret).map_err(|_| PayrollError::InvalidData)?;
+        mac.update(&counter.to_be_bytes());
+
+        let code_bytes = mac.finalize().into_bytes();
+        let offset = (code_bytes[code_bytes.len() - 1] & 0x0f) as usize;
+
+        if offset + 3 >= code_bytes.len() {
+            return Err(PayrollError::InvalidData);
+        }
+
+        let binary = ((code_bytes[offset] & 0x7f) as u32) << 24
+            | (code_bytes[offset + 1] as u32) << 16
+            | (code_bytes[offset + 2] as u32) << 8
+            | (code_bytes[offset + 3] as u32);
+
+        let modulus = 10u32.saturating_pow(digits);
+        if modulus == 0 {
+            return Err(PayrollError::InvalidData);
+        }
+
+        Ok(binary % modulus)
+    }
+
+    fn verify_totp(
+        config: &UserMfaConfig,
+        code: u32,
+        timestamp: u64,
+    ) -> Result<bool, PayrollError> {
+        if config.secret.is_empty() || config.period == 0 {
+            return Ok(false);
+        }
+
+        let secret_bytes = Self::bytes_to_std(&config.secret);
+        let digits = config.digits;
+        let period = config.period;
+        let base_counter = (timestamp / period) as i64;
+
+        for drift in -MFA_TOTP_ALLOWED_DRIFT..=MFA_TOTP_ALLOWED_DRIFT {
+            let candidate_counter = base_counter + drift;
+            if candidate_counter < 0 {
+                continue;
+            }
+
+            let expected = Self::hotp(secret_bytes.as_slice(), candidate_counter as u64, digits)?;
+            if expected == code {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn session_allows_operation(session: &MfaSession, operation: Symbol) -> bool {
+        if operation == MFA_SCOPE_ALL {
+            return true;
+        }
+
+        for scope in session.issued_for.iter() {
+            if scope == operation || scope == MFA_SCOPE_ALL {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn ensure_active_mfa_session(
+        env: &Env,
+        user: &Address,
+        operation: Symbol,
+    ) -> Result<(), PayrollError> {
+        let mut config = match Self::get_user_mfa_config(env, user) {
+            Some(cfg) if cfg.is_enabled => cfg,
+            Some(_) => return Err(PayrollError::MFARequired),
+            None => return Err(PayrollError::MFARequired),
+        };
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+        let mut active = Vec::<u64>::new(env);
+        let mut allowed = false;
+
+        for session_id in config.active_sessions.iter() {
+            let key = ExtendedDataKey::MfaSession(session_id);
+            if let Some(mut session) = storage.get::<ExtendedDataKey, MfaSession>(&key) {
+                if session.expires_at <= current_time {
+                    let event = MfaSessionEvent {
+                        user: session.user.clone(),
+                        session_id,
+                        created_at: session.created_at,
+                        expires_at: session.expires_at,
+                        operations: session.issued_for.clone(),
+                        emergency_bypass: session.emergency_bypass_used,
+                    };
+                    env.events().publish((SESSION_ENDED_EVENT,), event);
+                    storage.remove(&key);
+                    continue;
+                }
+
+                if Self::session_allows_operation(&session, operation.clone()) {
+                    allowed = true;
+                    session.last_used_at = current_time;
+                    storage.set(&key, &session);
+                }
+
+                active.push_back(session_id);
+            } else {
+                storage.remove(&key);
+            }
+        }
+
+        config.active_sessions = active;
+        Self::save_user_mfa_config(env, &config);
+
+        if allowed {
+            Ok(())
+        } else {
+            Err(PayrollError::MFARequired)
+        }
+    }
+
+    fn is_large_disbursement(amount: i128, threshold: i128) -> bool {
+        threshold > 0 && amount >= threshold
+    }
+
+    fn is_mfa_required_for_operation(
+        env: &Env,
+        user: &Address,
+        operation: Symbol,
+        amount: Option<i128>,
+    ) -> bool {
+        let settings = env
+            .storage()
+            .persistent()
+            .get::<DataKey, SecuritySettings>(&DataKey::SecuritySettings);
+
+        if let Some(cfg) = Self::get_user_mfa_config(env, user) {
+            if cfg.is_enabled {
+                return true;
+            }
+
+            if operation == MFA_SCOPE_DISBURSE {
+                if let Some(value) = amount {
+                    let threshold = settings
+                        .as_ref()
+                        .map(|s| s.large_disbursement_threshold)
+                        .unwrap_or(DEFAULT_LARGE_DISBURSEMENT_THRESHOLD);
+                    if Self::is_large_disbursement(value, threshold) {
+                        return true;
+                    }
+                }
+            }
+
+            if let Some(settings_ref) = settings.as_ref() {
+                if settings_ref.mfa_required
+                    && (operation == MFA_SCOPE_PAYROLL || operation == MFA_SCOPE_TRANSFER)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if let Some(settings_val) = settings {
+            if settings_val.mfa_required
+                && (operation == MFA_SCOPE_PAYROLL || operation == MFA_SCOPE_TRANSFER)
+            {
+                return true;
+            }
+
+            if operation == MFA_SCOPE_DISBURSE {
+                if let Some(value) = amount {
+                    if Self::is_large_disbursement(value, settings_val.large_disbursement_threshold)
+                    {
+                        return true;
+                    }
+                }
+            }
+        } else if operation == MFA_SCOPE_DISBURSE {
+            if let Some(value) = amount {
+                if Self::is_large_disbursement(value, DEFAULT_LARGE_DISBURSEMENT_THRESHOLD) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
 
     /// Require security permission for operation
     fn _require_security_permission(
