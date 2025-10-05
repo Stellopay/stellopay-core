@@ -25,21 +25,7 @@ use crate::insurance::{
 };
 
 use crate::storage::{
-    ActionType, AutomationRule, BackupData, BackupMetadata, BackupStatus, BackupType,
-    CompactPayroll, CompactPayrollHistoryEntry, ComplianceRecord, ComplianceStatus,
-    DataKey, EmployeeProfile, EmployeeStatus, EmployeeTransfer, ExtendedDataKey,
-    FinalPayment, LifecycleStorage, OffboardingTask, OffboardingWorkflow,
-    OnboardingTask, OnboardingWorkflow, Payroll, PayrollBackup, PayrollInput, PayrollSchedule,
-    PayrollTemplate, PerformanceMetrics, Permission, PermissionAuditEntry,
-    RecoveryMetadata, RecoveryPoint, RecoveryStatus, RecoveryType, Role, RoleDataKey,
-    RoleDelegation, RoleDetails, RuleAction, RuleCondition, RuleType, ScheduleFrequency,
-    ScheduleMetadata, ScheduleType, SecurityAuditEntry, SecurityAuditResult, SecuritySettings,
-    TempRoleAssignment, TemplatePreset, UserRoleAssignment, UserRolesResponse,
-    WorkflowStatus,
-    // Reporting imports
-    PayrollReport, ReportType, ReportFormat, ReportStatus, ReportMetadata, TaxCalculation,
-    TaxType, ComplianceAlert, ComplianceAlertType, AlertSeverity,
-    AlertStatus, DashboardMetrics, ReportAuditEntry,
+    ActionType, AlertSeverity, AlertStatus, AutomationRule, BackupData, BackupMetadata, BackupStatus, BackupType, CompactPayroll, CompactPayrollHistoryEntry, ComplianceAlert, ComplianceAlertType, ComplianceCheckResult, ComplianceIssue, ComplianceRecord, ComplianceSeverity, ComplianceStatus, ConditionOperator, DashboardMetrics, DataKey, EmployeeProfile, EmployeeStatus, EmployeeTransfer, ExtendedDataKey, FinalPayment, HolidayConfig, LifecycleStorage, LogicalOperator, OffboardingTask, OffboardingWorkflow, OnboardingTask, OnboardingWorkflow, Payroll, PayrollAdjustment, PayrollBackup, PayrollForecast, PayrollInput, PayrollReport, PayrollSchedule, PayrollTemplate, PerformanceMetrics, Permission, PermissionAuditEntry, RecoveryMetadata, RecoveryPoint, RecoveryStatus, RecoveryType, ReportAuditEntry, ReportFormat, ReportMetadata, ReportStatus, ReportType, Role, RoleDataKey, RoleDelegation, RoleDetails, RuleAction, RuleCondition, RuleType, ScheduleFrequency, ScheduleMetadata, ScheduleType, SecurityAuditEntry, SecurityAuditResult, SecuritySettings, TaxCalculation, TaxType, TempRoleAssignment, TemplatePreset, UserRoleAssignment, UserRolesResponse, WeekendHandling, WorkflowStatus
 };
 
 //-----------------------------------------------------------------------------
@@ -3746,6 +3732,532 @@ impl PayrollContract {
         Vec::new(&env)
     }
 
+    //-----------------------------------------------------------------------------
+    // Advanced Scheduling and Automation Functions
+    //-----------------------------------------------------------------------------
+
+    /// Create a flexible schedule with holiday handling
+    pub fn create_flexible_schedule(
+        env: Env,
+        caller: Address,
+        name: String,
+        description: String,
+        schedule_type: ScheduleType,
+        frequency: ScheduleFrequency,
+        start_date: u64,
+        end_date: Option<u64>,
+        skip_weekends: bool,
+        skip_holidays: Vec<u64>,
+        weekend_handling: WeekendHandling,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        if name.len() == 0 || name.len() > 100 {
+            return Err(PayrollError::InvalidTemplateName);
+        }
+
+        let current_time = env.ledger().timestamp();
+        if start_date < current_time {
+            return Err(PayrollError::ScheduleValidationFailed);
+        }
+
+        let storage = env.storage().persistent();
+        let next_id = storage.get(&ExtendedDataKey::NextSchedId).unwrap_or(0) + 1;
+        storage.set(&ExtendedDataKey::NextSchedId, &next_id);
+
+        // Calculate next execution time considering holidays and weekends
+        let next_execution = Self::_calculate_next_valid_execution(
+            &env,
+            &frequency,
+            start_date,
+            skip_weekends,
+            &skip_holidays,
+            &weekend_handling,
+        );
+
+        let metadata = ScheduleMetadata {
+            total_employees: 0,
+            total_amount: 0,
+            token_address: Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"),
+            priority: 1,
+            retry_count: 0,
+            max_retries: 3,
+            success_rate: 0,
+            average_execution_time: 0,
+        };
+
+        let schedule = PayrollSchedule {
+            id: next_id,
+            name: name.clone(),
+            description,
+            employer: caller.clone(),
+            schedule_type: schedule_type.clone(),
+            frequency: frequency.clone(),
+            start_date,
+            end_date,
+            next_execution,
+            is_active: true,
+            created_at: current_time,
+            updated_at: current_time,
+            execution_count: 0,
+            last_execution: None,
+            metadata,
+        };
+
+        storage.set(&ExtendedDataKey::Schedule(next_id), &schedule);
+
+        // Store holiday configuration
+        let holiday_config = HolidayConfig {
+            schedule_id: next_id,
+            skip_weekends,
+            holidays: skip_holidays.clone(),
+            weekend_handling: weekend_handling.clone(),
+            created_at: current_time,
+            updated_at: current_time,
+        };
+        storage.set(&ExtendedDataKey::HolidayConfig(next_id), &holiday_config);
+
+        let mut employer_schedules: Vec<u64> = storage
+            .get(&ExtendedDataKey::EmpSchedules(caller.clone()))
+            .unwrap_or(Vec::new(&env));
+        employer_schedules.push_back(next_id);
+        storage.set(&ExtendedDataKey::EmpSchedules(caller), &employer_schedules);
+
+        env.events().publish((SCHEDULE_CREATED_EVENT,), (next_id, name, skip_weekends));
+
+        Ok(next_id)
+    }
+
+    /// Get holiday configuration for a schedule
+    pub fn get_holiday_config(env: Env, schedule_id: u64) -> Result<HolidayConfig, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&ExtendedDataKey::HolidayConfig(schedule_id))
+            .ok_or(PayrollError::ScheduleNotFound)
+    }
+
+    /// Update holiday configuration
+    pub fn update_holiday_config(
+        env: Env,
+        caller: Address,
+        schedule_id: u64,
+        skip_weekends: bool,
+        holidays: Vec<u64>,
+        weekend_handling: WeekendHandling,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        
+        // Verify schedule ownership
+        let schedule: PayrollSchedule = storage
+            .get(&ExtendedDataKey::Schedule(schedule_id))
+            .ok_or(PayrollError::ScheduleNotFound)?;
+        
+        if schedule.employer != caller {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let mut config: HolidayConfig = storage
+            .get(&ExtendedDataKey::HolidayConfig(schedule_id))
+            .ok_or(PayrollError::ScheduleNotFound)?;
+
+        config.skip_weekends = skip_weekends;
+        config.holidays = holidays;
+        config.weekend_handling = weekend_handling;
+        config.updated_at = env.ledger().timestamp();
+
+        storage.set(&ExtendedDataKey::HolidayConfig(schedule_id), &config);
+
+        Ok(())
+    }
+
+    /// Create conditional payroll trigger (performance/milestone based)
+    pub fn create_conditional_trigger(
+        env: Env,
+        caller: Address,
+        name: String,
+        description: String,
+        trigger_type: String,
+        conditions: Vec<RuleCondition>,
+        actions: Vec<RuleAction>,
+        threshold_value: i128,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        if name.len() == 0 || conditions.len() == 0 {
+            return Err(PayrollError::InvalidAutomationRule);
+        }
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+        let next_id = storage.get(&ExtendedDataKey::NextRuleId).unwrap_or(0) + 1;
+        storage.set(&ExtendedDataKey::NextRuleId, &next_id);
+
+        let rule = AutomationRule {
+            id: next_id,
+            name: name.clone(),
+            description,
+            employer: caller.clone(),
+            rule_type: RuleType::Custom,
+            conditions,
+            actions,
+            is_active: true,
+            created_at: current_time,
+            updated_at: current_time,
+            execution_count: 0,
+            last_execution: None,
+            priority: 1,
+        };
+
+        storage.set(&ExtendedDataKey::Rule(next_id), &rule);
+
+        let mut employer_rules: Vec<u64> = storage
+            .get(&ExtendedDataKey::EmpRules(caller.clone()))
+            .unwrap_or(Vec::new(&env));
+        employer_rules.push_back(next_id);
+        storage.set(&ExtendedDataKey::EmpRules(caller), &employer_rules);
+
+        env.events().publish((RULE_CREATED_EVENT,), (next_id, name, trigger_type, threshold_value));
+
+        Ok(next_id)
+    }
+
+    /// Apply automated payroll adjustment
+    pub fn apply_automated_adjustment(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        adjustment_type: String,
+        adjustment_amount: i128,
+        reason: String,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let mut payroll = Self::_get_payroll(&env, &employee)
+            .ok_or(PayrollError::PayrollNotFound)?;
+
+        if payroll.employer != caller {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+        
+        // Get next adjustment ID
+        let adjustment_id = storage.get(&ExtendedDataKey::NextAdjustmentId).unwrap_or(0) + 1;
+        storage.set(&ExtendedDataKey::NextAdjustmentId, &adjustment_id);
+
+        // Calculate new amount
+        let new_amount = if adjustment_amount > 0 {
+            payroll.amount + adjustment_amount
+        } else {
+            if payroll.amount + adjustment_amount < 0 {
+                return Err(PayrollError::InvalidData);
+            }
+            payroll.amount + adjustment_amount
+        };
+
+        // Create adjustment record
+        let adjustment = PayrollAdjustment {
+            id: adjustment_id,
+            employee: employee.clone(),
+            adjustment_type: adjustment_type.clone(),
+            amount: adjustment_amount,
+            reason: reason.clone(),
+            applied_by: caller.clone(),
+            applied_at: current_time,
+            approved: true,
+        };
+
+        storage.set(&ExtendedDataKey::Adjustment(adjustment_id), &adjustment);
+
+        // Track employee adjustments
+        let mut emp_adjustments: Vec<u64> = storage
+            .get(&ExtendedDataKey::EmpAdjustments(employee.clone()))
+            .unwrap_or(Vec::new(&env));
+        emp_adjustments.push_back(adjustment_id);
+        storage.set(&ExtendedDataKey::EmpAdjustments(employee.clone()), &emp_adjustments);
+
+        // Apply adjustment to payroll
+        payroll.amount = new_amount;
+        let compact = Self::to_compact_payroll(&payroll);
+        storage.set(&DataKey::Payroll(employee.clone()), &compact);
+
+        Self::record_history(&env, &employee, &compact, symbol_short!("adjusted"));
+
+        env.events().publish(
+            (symbol_short!("adj_app"),),
+            (employee, adjustment_type, adjustment_amount, reason),
+        );
+
+        Ok(adjustment_id)
+    }
+
+    /// Get adjustment history for an employee
+    pub fn get_employee_adjustments(env: Env, employee: Address) -> Vec<PayrollAdjustment> {
+        let storage = env.storage().persistent();
+        let adjustment_ids: Vec<u64> = storage
+            .get(&ExtendedDataKey::EmpAdjustments(employee))
+            .unwrap_or(Vec::new(&env));
+        
+        let mut adjustments = Vec::new(&env);
+        for id in adjustment_ids.iter() {
+            if let Some(adjustment) = storage.get(&ExtendedDataKey::Adjustment(id)) {
+                adjustments.push_back(adjustment);
+            }
+        }
+        
+        adjustments
+    }
+
+    /// Generate payroll forecast for upcoming periods
+    pub fn forecast_payroll(
+        env: Env,
+        employer: Address,
+        periods: u32,
+        frequency_days: u32,
+    ) -> Result<Vec<PayrollForecast>, PayrollError> {
+        let storage = env.storage().persistent();
+        let employees = Self::get_employer_employees(env.clone(), employer.clone());
+        let current_time = env.ledger().timestamp();
+        
+        let mut forecasts = Vec::new(&env);
+        let forecast_id_start = storage.get(&ExtendedDataKey::NextForecastId).unwrap_or(0);
+        
+        for period in 0..periods {
+            let mut period_total: i128 = 0;
+            let mut active_employees = 0u32;
+            
+            let period_start = current_time + ((period * frequency_days) as u64 * 86400);
+            let period_end = period_start + (frequency_days as u64 * 86400);
+            
+            for employee in employees.iter() {
+                if let Some(payroll) = Self::_get_payroll(&env, &employee) {
+                    if payroll.employer == employer && !payroll.is_paused {
+                        period_total += payroll.amount;
+                        active_employees += 1;
+                    }
+                }
+            }
+            
+            let forecast = PayrollForecast {
+                period: period + 1,
+                start_date: period_start,
+                end_date: period_end,
+                estimated_amount: period_total,
+                employee_count: active_employees,
+                confidence_level: 85, // Base confidence level
+            };
+            
+            let forecast_id = forecast_id_start + 1 + (period as u64);
+            storage.set(&ExtendedDataKey::Forecast(forecast_id), &forecast);
+            forecasts.push_back(forecast);
+        }
+        
+        storage.set(&ExtendedDataKey::NextForecastId, &(forecast_id_start + periods as u64));
+        
+        env.events().publish(
+            (symbol_short!("forecast"),),
+            (employer, periods, current_time),
+        );
+        
+        Ok(forecasts)
+    }
+
+    /// Get stored forecast
+    pub fn get_forecast(env: Env, forecast_id: u64) -> Result<PayrollForecast, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&ExtendedDataKey::Forecast(forecast_id))
+            .ok_or(PayrollError::PayrollNotFound)
+    }
+
+    /// Run automated compliance checks
+    pub fn run_compliance_checks(
+        env: Env,
+        caller: Address,
+    ) -> Result<ComplianceCheckResult, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let employees = Self::get_employer_employees(env.clone(), caller.clone());
+        let current_time = env.ledger().timestamp();
+        
+        let check_id = storage.get(&ExtendedDataKey::NextComplianceCheckId).unwrap_or(0) + 1;
+        storage.set(&ExtendedDataKey::NextComplianceCheckId, &check_id);
+        
+        let mut issues = Vec::new(&env);
+        
+        for employee in employees.iter() {
+            if let Some(payroll) = Self::_get_payroll(&env, &employee) {
+                // Check if payroll is overdue
+                if current_time > payroll.next_payout_timestamp + 86400 {
+                    let issue = ComplianceIssue {
+                        employee: employee.clone(),
+                        issue_type: String::from_str(&env, "overdue_payment"),
+                        severity: ComplianceSeverity::High,
+                        description: String::from_str(&env, "Payment overdue by more than 1 day"),
+                    };
+                    issues.push_back(issue);
+                }
+                
+                // Check minimum amount compliance
+                if payroll.amount < 1000 {
+                    let issue = ComplianceIssue {
+                        employee: employee.clone(),
+                        issue_type: String::from_str(&env, "below_minimum"),
+                        severity: ComplianceSeverity::Medium,
+                        description: String::from_str(&env, "Amount below minimum threshold"),
+                    };
+                    issues.push_back(issue);
+                }
+                
+                // Check interval compliance
+                if payroll.interval < 86400 {
+                    let issue = ComplianceIssue {
+                        employee: employee.clone(),
+                        issue_type: String::from_str(&env, "invalid_interval"),
+                        severity: ComplianceSeverity::Low,
+                        description: String::from_str(&env, "Interval less than 1 day"),
+                    };
+                    issues.push_back(issue);
+                }
+            }
+        }
+        
+        let result = ComplianceCheckResult {
+            check_id,
+            employer: caller.clone(),
+            check_time: current_time,
+            issues_found: issues.clone(),
+            passed: issues.len() == 0,
+        };
+        
+        storage.set(&ExtendedDataKey::ComplianceCheck(check_id), &result);
+        
+        env.events().publish(
+            (symbol_short!("comp_chk"),),
+            (caller, check_id, issues.len() as u32, result.passed),
+        );
+        
+        Ok(result)
+    }
+
+    /// Get compliance check results
+    pub fn get_compliance_check(env: Env, check_id: u64) -> Result<ComplianceCheckResult, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&ExtendedDataKey::ComplianceCheck(check_id))
+            .ok_or(PayrollError::PayrollNotFound)
+    }
+
+    //-----------------------------------------------------------------------------
+    // Internal Helper Functions
+    //-----------------------------------------------------------------------------
+
+    /// Calculate next valid execution considering holidays and weekends
+    fn _calculate_next_valid_execution(
+        env: &Env,
+        frequency: &ScheduleFrequency,
+        current_time: u64,
+        skip_weekends: bool,
+        skip_holidays: &Vec<u64>,
+        weekend_handling: &WeekendHandling,
+    ) -> u64 {
+        let mut next_time = Self::_calculate_next_execution(env, frequency, current_time);
+        
+        // Handle weekends
+        if skip_weekends {
+            let day_of_week = ((next_time / 86400) + 4) % 7; // Adjust for epoch
+            
+            match weekend_handling {
+                WeekendHandling::Skip | WeekendHandling::ProcessLate => {
+                    // If Saturday (6) or Sunday (0), move to Monday
+                    if day_of_week == 6 {
+                        next_time += 2 * 86400; // Saturday to Monday
+                    } else if day_of_week == 0 {
+                        next_time += 86400; // Sunday to Monday
+                    }
+                },
+                WeekendHandling::ProcessEarly => {
+                    // If Saturday or Sunday, move to Friday
+                    if day_of_week == 6 {
+                        next_time -= 86400; // Saturday to Friday
+                    } else if day_of_week == 0 {
+                        next_time -= 2 * 86400; // Sunday to Friday
+                    }
+                },
+            }
+        }
+        
+        // Handle holidays
+        for holiday in skip_holidays.iter() {
+            let holiday_day = (holiday / 86400) * 86400;
+            let next_day = (next_time / 86400) * 86400;
+            
+            if holiday_day == next_day {
+                next_time += 86400; // Move to next day
+            }
+        }
+        
+        next_time
+    }
+
+    /// Evaluate complex conditions for automation rules
+    fn _evaluate_complex_conditions(
+        env: &Env,
+        conditions: &Vec<RuleCondition>,
+        employee: &Address,
+    ) -> Result<bool, PayrollError> {
+        if conditions.len() == 0 {
+            return Ok(true);
+        }
+        
+        let payroll = Self::_get_payroll(env, employee);
+        let mut result = true;
+        
+        for condition in conditions.iter() {
+            let field_value = if let Some(ref p) = payroll {
+                if condition.field == String::from_str(env, "amount") {
+                    Some(p.amount)
+                } else if condition.field == String::from_str(env, "interval") {
+                    Some(p.interval as i128)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            
+            if let Some(value) = field_value {
+                // Parse threshold from string
+                let threshold: i128 = 1000; // Default threshold
+                
+                let condition_met = match condition.operator {
+                    ConditionOperator::GreaterThan => value > threshold,
+                    ConditionOperator::LessThan => value < threshold,
+                    ConditionOperator::Equals => value == threshold,
+                    ConditionOperator::GreaterThanOrEqual => value >= threshold,
+                    ConditionOperator::LessThanOrEqual => value <= threshold,
+                    _ => false,
+                };
+                
+                result = match condition.logical_operator {
+                    LogicalOperator::And => result && condition_met,
+                    LogicalOperator::Or => result || condition_met,
+                    LogicalOperator::Not => result && !condition_met,
+                };
+            }
+        }
+        
+        Ok(result)
+    }
     //-----------------------------------------------------------------------------
     // Internal Helper Functions for Scheduling and Automation
     //-----------------------------------------------------------------------------
