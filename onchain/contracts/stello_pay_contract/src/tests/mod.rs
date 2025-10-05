@@ -3,6 +3,7 @@ mod test_create_or_update_escrow;
 mod test_edge_cases;
 mod test_employer_deposit_base_salary;
 mod test_insurance;
+mod test_mfa;
 mod test_pause_and_resume_employee;
 mod test_pause_and_unpause;
 mod test_payroll;
@@ -14,4 +15,3 @@ mod test_webhooks_simple;
 mod test_webhooks_standalone;
 mod test_scheduling;
 mod test_reporting_compliance;
-
