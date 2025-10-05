@@ -300,9 +300,9 @@ pub struct HolidayConfig {
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub enum WeekendHandling {
-    Skip,           // Skip to next business day
-    ProcessEarly,   // Process on Friday
-    ProcessLate,    // Process on Monday
+    Skip,         // Skip to next business day
+    ProcessEarly, // Process on Friday
+    ProcessLate,  // Process on Monday
 }
 
 /// Payroll adjustment record
@@ -981,8 +981,8 @@ pub enum ExtendedDataKey {
     EmpAdjustments(Address), // employee -> Vec<u64> (adjustment IDs)
 
     // Forecasting
-    Forecast(u64),     // forecast_id -> PayrollForecast
-    NextForecastId,    // Next available forecast ID
+    Forecast(u64),  // forecast_id -> PayrollForecast
+    NextForecastId, // Next available forecast ID
 
     // Compliance
     ComplianceCheck(u64),  // check_id -> ComplianceCheckResult

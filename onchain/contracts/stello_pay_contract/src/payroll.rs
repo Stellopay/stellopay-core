@@ -6,8 +6,8 @@ use core::convert::TryInto;
 use hmac::{Hmac, Mac};
 use sha1::Sha1;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, symbol_short, token::Client as TokenClient,
-    Address, Bytes, BytesN, Env, Map, String, Symbol, Vec,
+    contract, contracterror, contractimpl, symbol_short, token::Client as TokenClient, Address,
+    Bytes, BytesN, Env, Map, String, Symbol, Vec,
 };
 
 type HmacSha1 = Hmac<Sha1>;
@@ -56,8 +56,12 @@ use crate::storage::{
     ComparisonType,
     ComplianceAlert,
     ComplianceAlertType,
+    ComplianceCheckResult,
+    ComplianceIssue,
     ComplianceRecord,
+    ComplianceSeverity,
     ComplianceStatus,
+    ConditionOperator,
     DashboardMetrics,
     DashboardWidget,
     DataExportRequest,
@@ -76,14 +80,20 @@ use crate::storage::{
     FilterOperator,
     FinalPayment,
     ForecastData,
+    HolidayConfig,
     LifecycleStorage,
+    LogicalOperator,
     MetricComparison,
+    MfaChallenge,
+    MfaSession,
     OffboardingTask,
     OffboardingWorkflow,
     OnboardingTask,
     OnboardingWorkflow,
     Payroll,
+    PayrollAdjustment,
     PayrollBackup,
+    PayrollForecast,
     PayrollInput,
     // Reporting imports
     PayrollReport,
@@ -125,8 +135,10 @@ use crate::storage::{
     TimeSeriesDataPoint,
     TrendAnalysis,
     TrendDirection,
+    UserMfaConfig,
     UserRoleAssignment,
     UserRolesResponse,
+    WeekendHandling,
     WidgetPosition,
     WidgetSize,
     WidgetType,
@@ -523,9 +535,7 @@ impl PayrollContract {
 
         // Check authorization with cached data
         let existing_payroll = Self::_get_payroll(&env, &employee);
-        let is_owner = cache
-            .owner
-            .as_ref() == Some(&employer);
+        let is_owner = cache.owner.as_ref() == Some(&employer);
 
         if let Some(ref existing) = existing_payroll {
             // For updates, only the contract owner or the existing payroll's employer can call
@@ -862,7 +872,10 @@ impl PayrollContract {
                 String::from_str(&env, "operation"),
                 String::from_str(&env, "disburse_salary"),
             );
-            details.set(String::from_str(&env, "reason"), String::from_str(&env, "rate_limit"));
+            details.set(
+                String::from_str(&env, "reason"),
+                String::from_str(&env, "rate_limit"),
+            );
 
             Self::_log_security_event(
                 &env,
@@ -1305,10 +1318,7 @@ impl PayrollContract {
         // Create optimized batch context
         let batch_ctx = Self::create_batch_context(&env);
         let storage = env.storage().persistent();
-        let is_owner = batch_ctx
-            .cache
-            .owner
-            .as_ref() == Some(&employer);
+        let is_owner = batch_ctx.cache.owner.as_ref() == Some(&employer);
 
         let mut created_payrolls = Vec::new(&env);
         let mut supported_tokens = Vec::new(&env);
@@ -3923,7 +3933,10 @@ impl PayrollContract {
         let metadata = ScheduleMetadata {
             total_employees: 0,
             total_amount: 0,
-            token_address: Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"),
+            token_address: Address::from_str(
+                &env,
+                "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+            ),
             priority: 1,
             retry_count: 0,
             max_retries: 3,
@@ -3968,7 +3981,8 @@ impl PayrollContract {
         employer_schedules.push_back(next_id);
         storage.set(&ExtendedDataKey::EmpSchedules(caller), &employer_schedules);
 
-        env.events().publish((SCHEDULE_CREATED_EVENT,), (next_id, name, skip_weekends));
+        env.events()
+            .publish((SCHEDULE_CREATED_EVENT,), (next_id, name, skip_weekends));
 
         Ok(next_id)
     }
@@ -3994,12 +4008,12 @@ impl PayrollContract {
         Self::require_not_paused(&env)?;
 
         let storage = env.storage().persistent();
-        
+
         // Verify schedule ownership
         let schedule: PayrollSchedule = storage
             .get(&ExtendedDataKey::Schedule(schedule_id))
             .ok_or(PayrollError::ScheduleNotFound)?;
-        
+
         if schedule.employer != caller {
             return Err(PayrollError::Unauthorized);
         }
@@ -4065,7 +4079,10 @@ impl PayrollContract {
         employer_rules.push_back(next_id);
         storage.set(&ExtendedDataKey::EmpRules(caller), &employer_rules);
 
-        env.events().publish((RULE_CREATED_EVENT,), (next_id, name, trigger_type, threshold_value));
+        env.events().publish(
+            (RULE_CREATED_EVENT,),
+            (next_id, name, trigger_type, threshold_value),
+        );
 
         Ok(next_id)
     }
@@ -4082,8 +4099,8 @@ impl PayrollContract {
         caller.require_auth();
         Self::require_not_paused(&env)?;
 
-        let mut payroll = Self::_get_payroll(&env, &employee)
-            .ok_or(PayrollError::PayrollNotFound)?;
+        let mut payroll =
+            Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
 
         if payroll.employer != caller {
             return Err(PayrollError::Unauthorized);
@@ -4091,7 +4108,7 @@ impl PayrollContract {
 
         let storage = env.storage().persistent();
         let current_time = env.ledger().timestamp();
-        
+
         // Get next adjustment ID
         let adjustment_id = storage.get(&ExtendedDataKey::NextAdjustmentId).unwrap_or(0) + 1;
         storage.set(&ExtendedDataKey::NextAdjustmentId, &adjustment_id);
@@ -4125,7 +4142,10 @@ impl PayrollContract {
             .get(&ExtendedDataKey::EmpAdjustments(employee.clone()))
             .unwrap_or(Vec::new(&env));
         emp_adjustments.push_back(adjustment_id);
-        storage.set(&ExtendedDataKey::EmpAdjustments(employee.clone()), &emp_adjustments);
+        storage.set(
+            &ExtendedDataKey::EmpAdjustments(employee.clone()),
+            &emp_adjustments,
+        );
 
         // Apply adjustment to payroll
         payroll.amount = new_amount;
@@ -4148,14 +4168,14 @@ impl PayrollContract {
         let adjustment_ids: Vec<u64> = storage
             .get(&ExtendedDataKey::EmpAdjustments(employee))
             .unwrap_or(Vec::new(&env));
-        
+
         let mut adjustments = Vec::new(&env);
         for id in adjustment_ids.iter() {
             if let Some(adjustment) = storage.get(&ExtendedDataKey::Adjustment(id)) {
                 adjustments.push_back(adjustment);
             }
         }
-        
+
         adjustments
     }
 
@@ -4169,17 +4189,17 @@ impl PayrollContract {
         let storage = env.storage().persistent();
         let employees = Self::get_employer_employees(env.clone(), employer.clone());
         let current_time = env.ledger().timestamp();
-        
+
         let mut forecasts = Vec::new(&env);
         let forecast_id_start = storage.get(&ExtendedDataKey::NextForecastId).unwrap_or(0);
-        
+
         for period in 0..periods {
             let mut period_total: i128 = 0;
             let mut active_employees = 0u32;
-            
+
             let period_start = current_time + ((period * frequency_days) as u64 * 86400);
             let period_end = period_start + (frequency_days as u64 * 86400);
-            
+
             for employee in employees.iter() {
                 if let Some(payroll) = Self::_get_payroll(&env, &employee) {
                     if payroll.employer == employer && !payroll.is_paused {
@@ -4188,7 +4208,7 @@ impl PayrollContract {
                     }
                 }
             }
-            
+
             let forecast = PayrollForecast {
                 period: period + 1,
                 start_date: period_start,
@@ -4197,19 +4217,22 @@ impl PayrollContract {
                 employee_count: active_employees,
                 confidence_level: 85, // Base confidence level
             };
-            
+
             let forecast_id = forecast_id_start + 1 + (period as u64);
             storage.set(&ExtendedDataKey::Forecast(forecast_id), &forecast);
             forecasts.push_back(forecast);
         }
-        
-        storage.set(&ExtendedDataKey::NextForecastId, &(forecast_id_start + periods as u64));
-        
+
+        storage.set(
+            &ExtendedDataKey::NextForecastId,
+            &(forecast_id_start + periods as u64),
+        );
+
         env.events().publish(
             (symbol_short!("forecast"),),
             (employer, periods, current_time),
         );
-        
+
         Ok(forecasts)
     }
 
@@ -4232,12 +4255,15 @@ impl PayrollContract {
         let storage = env.storage().persistent();
         let employees = Self::get_employer_employees(env.clone(), caller.clone());
         let current_time = env.ledger().timestamp();
-        
-        let check_id = storage.get(&ExtendedDataKey::NextComplianceCheckId).unwrap_or(0) + 1;
+
+        let check_id = storage
+            .get(&ExtendedDataKey::NextComplianceCheckId)
+            .unwrap_or(0)
+            + 1;
         storage.set(&ExtendedDataKey::NextComplianceCheckId, &check_id);
-        
+
         let mut issues = Vec::new(&env);
-        
+
         for employee in employees.iter() {
             if let Some(payroll) = Self::_get_payroll(&env, &employee) {
                 // Check if payroll is overdue
@@ -4250,7 +4276,7 @@ impl PayrollContract {
                     };
                     issues.push_back(issue);
                 }
-                
+
                 // Check minimum amount compliance
                 if payroll.amount < 1000 {
                     let issue = ComplianceIssue {
@@ -4261,7 +4287,7 @@ impl PayrollContract {
                     };
                     issues.push_back(issue);
                 }
-                
+
                 // Check interval compliance
                 if payroll.interval < 86400 {
                     let issue = ComplianceIssue {
@@ -4274,7 +4300,7 @@ impl PayrollContract {
                 }
             }
         }
-        
+
         let result = ComplianceCheckResult {
             check_id,
             employer: caller.clone(),
@@ -4282,19 +4308,22 @@ impl PayrollContract {
             issues_found: issues.clone(),
             passed: issues.len() == 0,
         };
-        
+
         storage.set(&ExtendedDataKey::ComplianceCheck(check_id), &result);
-        
+
         env.events().publish(
             (symbol_short!("comp_chk"),),
             (caller, check_id, issues.len() as u32, result.passed),
         );
-        
+
         Ok(result)
     }
 
     /// Get compliance check results
-    pub fn get_compliance_check(env: Env, check_id: u64) -> Result<ComplianceCheckResult, PayrollError> {
+    pub fn get_compliance_check(
+        env: Env,
+        check_id: u64,
+    ) -> Result<ComplianceCheckResult, PayrollError> {
         let storage = env.storage().persistent();
         storage
             .get(&ExtendedDataKey::ComplianceCheck(check_id))
@@ -4315,11 +4344,11 @@ impl PayrollContract {
         weekend_handling: &WeekendHandling,
     ) -> u64 {
         let mut next_time = Self::_calculate_next_execution(env, frequency, current_time);
-        
+
         // Handle weekends
         if skip_weekends {
             let day_of_week = ((next_time / 86400) + 4) % 7; // Adjust for epoch
-            
+
             match weekend_handling {
                 WeekendHandling::Skip | WeekendHandling::ProcessLate => {
                     // If Saturday (6) or Sunday (0), move to Monday
@@ -4328,7 +4357,7 @@ impl PayrollContract {
                     } else if day_of_week == 0 {
                         next_time += 86400; // Sunday to Monday
                     }
-                },
+                }
                 WeekendHandling::ProcessEarly => {
                     // If Saturday or Sunday, move to Friday
                     if day_of_week == 6 {
@@ -4336,20 +4365,20 @@ impl PayrollContract {
                     } else if day_of_week == 0 {
                         next_time -= 2 * 86400; // Sunday to Friday
                     }
-                },
+                }
             }
         }
-        
+
         // Handle holidays
         for holiday in skip_holidays.iter() {
             let holiday_day = (holiday / 86400) * 86400;
             let next_day = (next_time / 86400) * 86400;
-            
+
             if holiday_day == next_day {
                 next_time += 86400; // Move to next day
             }
         }
-        
+
         next_time
     }
 
@@ -4362,10 +4391,10 @@ impl PayrollContract {
         if conditions.len() == 0 {
             return Ok(true);
         }
-        
+
         let payroll = Self::_get_payroll(env, employee);
         let mut result = true;
-        
+
         for condition in conditions.iter() {
             let field_value = if let Some(ref p) = payroll {
                 if condition.field == String::from_str(env, "amount") {
@@ -4378,11 +4407,11 @@ impl PayrollContract {
             } else {
                 None
             };
-            
+
             if let Some(value) = field_value {
                 // Parse threshold from string
                 let threshold: i128 = 1000; // Default threshold
-                
+
                 let condition_met = match condition.operator {
                     ConditionOperator::GreaterThan => value > threshold,
                     ConditionOperator::LessThan => value < threshold,
@@ -4391,7 +4420,7 @@ impl PayrollContract {
                     ConditionOperator::LessThanOrEqual => value <= threshold,
                     _ => false,
                 };
-                
+
                 result = match condition.logical_operator {
                     LogicalOperator::And => result && condition_met,
                     LogicalOperator::Or => result || condition_met,
@@ -4399,7 +4428,7 @@ impl PayrollContract {
                 };
             }
         }
-        
+
         Ok(result)
     }
     //-----------------------------------------------------------------------------
@@ -5435,10 +5464,8 @@ impl PayrollContract {
         // For now, return an empty vector
         let audit_entries = Vec::new(&env);
 
-        env.events().publish(
-            (SECURITY_AUDIT_EVENT,),
-            (caller, audit_entries.len()),
-        );
+        env.events()
+            .publish((SECURITY_AUDIT_EVENT,), (caller, audit_entries.len()));
 
         Ok(audit_entries)
     }
@@ -5839,7 +5866,11 @@ impl PayrollContract {
     }
 
     /// Check rate limiting
-    fn _check_rate_limit(_env: &Env, _user: &Address, _operation: &str) -> Result<(), PayrollError> {
+    fn _check_rate_limit(
+        _env: &Env,
+        _user: &Address,
+        _operation: &str,
+    ) -> Result<(), PayrollError> {
         // Simplified rate limiting check
         // In a real implementation, this would check actual rate limits
         Ok(())

@@ -84,7 +84,6 @@ pub const COMPLIANCE_UPDATED: Symbol = symbol_short!("cmp_upd");
 pub const WORKFLOW_APPROVED: Symbol = symbol_short!("wf_app");
 pub const TASK_COMPLETED: Symbol = symbol_short!("tsk_cmp");
 
-
 /// Event emitted when compliance check completes
 pub const COMPLIANCE_CHECK_EVENT: Symbol = symbol_short!("comp_chk");
 
@@ -96,7 +95,6 @@ pub const FORECAST_EVENT: Symbol = symbol_short!("forecast");
 
 /// Event emitted when holiday config is updated
 pub const HOLIDAY_CONFIG_EVENT: Symbol = symbol_short!("hol_cfg");
-
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
