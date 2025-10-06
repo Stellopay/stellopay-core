@@ -2,8 +2,8 @@
 
 use crate::payroll::{PayrollContract, PayrollContractClient};
 use crate::storage::{
-    ActionType, ConditionOperator, LogicalOperator, RuleAction, RuleCondition, 
-    ScheduleFrequency, ScheduleType, WeekendHandling,
+    ActionType, ConditionOperator, LogicalOperator, RuleAction, RuleCondition, ScheduleFrequency,
+    ScheduleType, WeekendHandling,
 };
 use soroban_sdk::token::{StellarAssetClient as TokenAdmin, TokenClient};
 use soroban_sdk::{
@@ -29,13 +29,13 @@ fn test_create_flexible_schedule_success() {
     let employer = Address::generate(&env);
     let name = String::from_str(&env, "Monthly Payroll");
     let description = String::from_str(&env, "Regular monthly payments");
-    
+
     env.mock_all_auths();
     client.initialize(&employer);
 
     let start_date = env.ledger().timestamp() + 86400;
     let holidays = vec![&env];
-    
+
     let schedule_id = client.create_flexible_schedule(
         &employer,
         &name,
@@ -62,13 +62,13 @@ fn test_holiday_config_management() {
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
-    
+
     env.mock_all_auths();
     client.initialize(&employer);
 
     let start_date = env.ledger().timestamp() + 86400;
     let holidays = vec![&env, start_date + 172800];
-    
+
     let schedule_id = client.create_flexible_schedule(
         &employer,
         &String::from_str(&env, "Test"),
@@ -94,12 +94,12 @@ fn test_update_holiday_config() {
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
-    
+
     env.mock_all_auths();
     client.initialize(&employer);
 
     let start_date = env.ledger().timestamp() + 86400;
-    
+
     let schedule_id = client.create_flexible_schedule(
         &employer,
         &String::from_str(&env, "Test"),
@@ -114,7 +114,7 @@ fn test_update_holiday_config() {
     );
 
     let new_holidays = vec![&env, start_date + 86400, start_date + 172800];
-    
+
     client.update_holiday_config(
         &employer,
         &schedule_id,
@@ -137,12 +137,12 @@ fn test_update_holiday_config_unauthorized() {
 
     let employer = Address::generate(&env);
     let unauthorized = Address::generate(&env);
-    
+
     env.mock_all_auths();
     client.initialize(&employer);
 
     let start_date = env.ledger().timestamp() + 86400;
-    
+
     let schedule_id = client.create_flexible_schedule(
         &employer,
         &String::from_str(&env, "Test"),
@@ -172,7 +172,7 @@ fn test_create_conditional_trigger() {
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
-    
+
     env.mock_all_auths();
     client.initialize(&employer);
 
@@ -182,7 +182,7 @@ fn test_create_conditional_trigger() {
         value: String::from_str(&env, "1000"),
         logical_operator: LogicalOperator::And,
     };
-    
+
     let action = RuleAction {
         action_type: ActionType::DisburseSalary,
         parameters: vec![&env],
@@ -192,7 +192,7 @@ fn test_create_conditional_trigger() {
 
     let conditions = vec![&env, condition];
     let actions = vec![&env, action];
-    
+
     let rule_id = client.create_conditional_trigger(
         &employer,
         &String::from_str(&env, "Performance Bonus"),
@@ -217,13 +217,13 @@ fn test_create_trigger_empty_conditions() {
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
-    
+
     env.mock_all_auths();
     client.initialize(&employer);
 
     let conditions = vec![&env]; // Empty
     let actions = vec![&env];
-    
+
     client.create_conditional_trigger(
         &employer,
         &String::from_str(&env, "Test"),
@@ -558,7 +558,7 @@ fn test_forecast_with_no_employees() {
 
     let forecasts = client.forecast_payroll(&employer, &3u32, &30u32);
     assert_eq!(forecasts.len(), 3);
-    
+
     for forecast in forecasts.iter() {
         assert_eq!(forecast.estimated_amount, 0i128);
         assert_eq!(forecast.employee_count, 0);
@@ -608,13 +608,13 @@ fn test_schedule_with_end_date() {
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
-    
+
     env.mock_all_auths();
     client.initialize(&employer);
 
     let start_date = env.ledger().timestamp() + 86400;
     let end_date = start_date + (30 * 86400);
-    
+
     let schedule_id = client.create_flexible_schedule(
         &employer,
         &String::from_str(&env, "Limited Schedule"),
@@ -655,7 +655,7 @@ fn test_get_forecast_by_id() {
     );
 
     client.forecast_payroll(&employer, &2u32, &30u32);
-    
+
     let forecast = client.get_forecast(&1);
     assert_eq!(forecast.period, 1);
 }
@@ -684,7 +684,7 @@ fn test_get_compliance_check_by_id() {
 
     let result = client.run_compliance_checks(&employer);
     let check_id = result.check_id;
-    
+
     let retrieved = client.get_compliance_check(&check_id);
     assert_eq!(retrieved.check_id, check_id);
 }

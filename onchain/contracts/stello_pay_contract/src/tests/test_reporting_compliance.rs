@@ -1,13 +1,8 @@
 #![cfg(test)]
 
 use crate::payroll::{PayrollContract, PayrollContractClient};
-use crate::storage::{
-    ReportType, ReportFormat, TaxType, ComplianceAlertType, AlertSeverity
-};
-use soroban_sdk::{
-    testutils::{Address as _},
-    Address, Env, String,
-};
+use crate::storage::{AlertSeverity, ComplianceAlertType, ReportFormat, ReportType, TaxType};
+use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 //-----------------------------------------------------------------------------
 // Test Setup Helpers

@@ -817,7 +817,7 @@ impl InsuranceSystem {
         let base_rate = 50u32;
 
         // Risk adjustment (higher risk = higher premium)
-let risk_adjustment = (risk_score * 2) / 100; // 0-2% additional
+        let risk_adjustment = (risk_score * 2) / 100; // 0-2% additional
 
         // Pool adjustment based on pool health
         let pool_health_factor = if pool.total_claims_paid > 0 {
