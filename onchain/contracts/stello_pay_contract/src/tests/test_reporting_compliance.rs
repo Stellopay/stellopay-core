@@ -80,6 +80,9 @@ fn test_basic_functionality() {
     assert!(true); // Simple test that passes
 }
 
+// Note: Compliance system is currently excluded from the main lib; tests targeting it are
+// intentionally omitted here to avoid module import errors.
+
 #[test]
 fn test_tax_calculation_logic() {
     let env = create_test_env();
