@@ -469,6 +469,7 @@ pub fn emit_employee_onboarded(
     e.events().publish(topics, event_data);
 }
 
+
 pub fn emit_employee_offboarded(
     e: Env,
     employee: Address,
@@ -489,6 +490,7 @@ pub fn emit_employee_offboarded(
     };
     e.events().publish(topics, event_data);
 }
+
 
 #[allow(clippy::too_many_arguments)]
 pub fn emit_employee_transferred(
@@ -514,6 +516,7 @@ pub fn emit_employee_transferred(
     e.events().publish(topics, event_data);
 }
 
+
 pub fn emit_employee_status_changed(
     e: Env,
     employee: Address,
@@ -534,6 +537,7 @@ pub fn emit_employee_status_changed(
     };
     e.events().publish(topics, event_data);
 }
+
 
 #[allow(clippy::too_many_arguments)]
 pub fn emit_onboarding_workflow_event(
@@ -558,6 +562,7 @@ pub fn emit_onboarding_workflow_event(
     };
     e.events().publish(topics, event_data);
 }
+
 
 #[allow(clippy::too_many_arguments)]
 pub fn emit_offboarding_workflow_event(
@@ -585,6 +590,7 @@ pub fn emit_offboarding_workflow_event(
     e.events().publish(topics, event_data);
 }
 
+
 #[allow(clippy::too_many_arguments)]
 pub fn emit_final_payment_processed(
     e: Env,
@@ -609,6 +615,7 @@ pub fn emit_final_payment_processed(
     e.events().publish(topics, event_data);
 }
 
+
 pub fn emit_compliance_updated(
     e: Env,
     employee: Address,
@@ -629,6 +636,7 @@ pub fn emit_compliance_updated(
     };
     e.events().publish(topics, event_data);
 }
+
 
 #[allow(clippy::too_many_arguments)]
 pub fn emit_workflow_approved(
@@ -654,6 +662,7 @@ pub fn emit_workflow_approved(
     e.events().publish(topics, event_data);
 }
 
+
 pub fn emit_task_completed(
     e: Env,
     workflow_id: u64,
@@ -672,6 +681,7 @@ pub fn emit_task_completed(
     };
     e.events().publish(topics, event_data);
 }
+
 
 // Security Alert Emitters
 pub fn emit_suspicious_activity(
@@ -692,6 +702,7 @@ pub fn emit_suspicious_activity(
     };
     e.events().publish(topics, event_data);
 }
+
 
 pub fn emit_rate_limit_exceeded(
     e: Env,
@@ -714,6 +725,7 @@ pub fn emit_rate_limit_exceeded(
     e.events().publish(topics, event_data);
 }
 
+
 pub fn emit_access_denied(
     e: Env,
     user: Address,
@@ -733,6 +745,7 @@ pub fn emit_access_denied(
     e.events().publish(topics, event_data);
 }
 
+
 pub fn emit_account_locked(
     e: Env,
     user: Address,
@@ -749,3 +762,12 @@ pub fn emit_account_locked(
     };
     e.events().publish(topics, event_data);
 }
+
+
+// Error Recovery and Circuit Breaker Events
+pub const RETRY_CONFIG_EVENT: Symbol = symbol_short!("retry_cfg");
+pub const CIRCUIT_BREAKER_EVENT: Symbol = symbol_short!("cb_state");
+pub const HEALTH_CHECK_EVENT: Symbol = symbol_short!("health");
+pub const ERROR_WORKFLOW_EVENT: Symbol = symbol_short!("workflow");
+pub const RECOVERY_STEP_EVENT: Symbol = symbol_short!("step");
+pub const ERROR_SETTINGS_EVENT: Symbol = symbol_short!("err_set");

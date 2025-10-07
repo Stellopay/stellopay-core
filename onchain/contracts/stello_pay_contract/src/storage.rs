@@ -995,6 +995,15 @@ pub enum ExtendedDataKey {
     MfaChallenge(u64),        // challenge_id -> MfaChallenge
     NextMfaSessionId,         // counter for MFA session IDs
     NextMfaChallengeId,       // counter for MFA challenge IDs
+
+    // Error Recovery and Circuit Breaker
+    RetryConfig(u64),         // retry_id -> RetryConfig
+    CircuitBreakerState(String), // service_id -> CircuitBreakerState
+    HealthCheck(String),         // service_id -> HealthCheck
+    ErrorRecoveryWorkflow(u64), // workflow_id -> ErrorRecoveryWorkflow
+    NextRetryId,              // counter for retry config IDs
+    NextWorkflowId,           // counter for workflow IDs
+    GlobalErrorSettings,      // global error recovery settings
 }
 
 #[contracttype]
@@ -1092,6 +1101,9 @@ pub enum WorkflowStatus {
     Completed,
     Cancelled,
     Expired,
+    Active,
+    Failed,
+    Paused,
 }
 
 /// Onboarding task structure
@@ -2098,4 +2110,152 @@ pub enum ReportingDataKey {
     ReportDistribution(u64),  // distribution_id -> ReportDistribution
     NextDistributionId,       // Next available distribution ID
     ReportDistributions(u64), // report_id -> Vec<u64> (distribution IDs)
+    
+    // Error Recovery and Circuit Breaker Data Keys
+    RetryConfig(u64), // retry_id -> RetryConfig
+    CircuitBreakerState(String), // service_name -> CircuitBreakerState
+    HealthCheck(String), // service_name -> HealthCheck
+    ErrorRecoveryWorkflow(u64), // workflow_id -> ErrorRecoveryWorkflow
+    NextRetryId, // Next retry configuration ID
+    NextWorkflowId, // Next error recovery workflow ID
+    GlobalErrorSettings, // Global error recovery settings
+}
+
+//-----------------------------------------------------------------------------
+// Error Recovery and Circuit Breaker Data Structures
+//-----------------------------------------------------------------------------
+
+/// Retry configuration for operations
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RetryConfig {
+    pub max_attempts: u32,
+    pub base_delay: u64, // Base delay in milliseconds
+    pub max_delay: u64, // Maximum delay in milliseconds
+    pub backoff_multiplier: u64, // Exponential backoff multiplier (e.g., 2 for doubling)
+    pub jitter: bool, // Whether to add random jitter to delays
+    pub retryable_errors: Vec<String>, // List of retryable error types
+}
+
+/// Circuit breaker state for external services
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum CircuitBreakerState {
+    Closed, // Normal operation
+    Open, // Circuit is open, requests are blocked
+    HalfOpen, // Testing if service has recovered
+}
+
+/// Circuit breaker configuration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct CircuitBreakerConfig {
+    pub failure_threshold: u32, // Number of failures before opening circuit
+    pub recovery_timeout: u64, // Time in milliseconds before attempting recovery
+    pub success_threshold: u32, // Number of successes needed to close circuit
+    pub timeout: u64, // Request timeout in milliseconds
+}
+
+/// Health check configuration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HealthCheck {
+    pub service_name: String,
+    pub last_check_time: u64,
+    pub status: HealthStatus,
+    pub response_time: u64, // Response time in milliseconds
+    pub error_count: u32,
+    pub success_count: u32,
+    pub consecutive_failures: u32,
+    pub last_error: Option<String>,
+}
+
+/// Health status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum HealthStatus {
+    Healthy,
+    Degraded,
+    Unhealthy,
+    Unknown,
+}
+
+/// Error recovery workflow
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ErrorRecoveryWorkflow {
+    pub workflow_id: u64,
+    pub operation_type: String,
+    pub error_type: String,
+    pub recovery_steps: Vec<RecoveryStep>,
+    pub current_step: u32,
+    pub status: WorkflowStatus,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub retry_count: u32,
+    pub max_retries: u32,
+}
+
+/// Recovery step in error recovery workflow
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecoveryStep {
+    pub step_id: u32,
+    pub step_type: RecoveryStepType,
+    pub description: String,
+    pub parameters: Map<String, String>,
+    pub status: StepStatus,
+    pub executed_at: Option<u64>,
+    pub error_message: Option<String>,
+}
+
+/// Recovery step type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecoveryStepType {
+    Retry,
+    Fallback,
+    Rollback,
+    Notification,
+    Escalation,
+    Custom(String),
+}
+
+/// Step status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum StepStatus {
+    Pending,
+    InProgress,
+    Completed,
+    Failed,
+    Skipped,
+}
+
+
+/// Graceful degradation configuration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GracefulDegradationConfig {
+    pub feature_name: String,
+    pub is_critical: bool,
+    pub fallback_enabled: bool,
+    pub fallback_message: String,
+    pub degradation_threshold: u32, // Number of failures before degradation
+    pub recovery_threshold: u32, // Number of successes before recovery
+}
+
+/// Global error recovery settings
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlobalErrorSettings {
+    pub retry_enabled: bool,
+    pub circuit_breaker_enabled: bool,
+    pub health_check_enabled: bool,
+    pub graceful_degradation_enabled: bool,
+    pub default_max_retries: u32,
+    pub default_timeout: u64,
+    pub global_circuit_breaker_config: CircuitBreakerConfig,
+    pub notification_enabled: bool,
+    pub escalation_enabled: bool,
 }
