@@ -143,6 +143,13 @@ use crate::storage::{
     WidgetSize,
     WidgetType,
     WorkflowStatus,
+    // Rate limiting types
+    AdvancedRateLimitConfig,
+    GlobalRateLimitSettings,
+    IPRateLimitConfig,
+    RateLimitViolation,
+    RateLimitViolationType,
+    ViolationSeverity,
 };
 //-----------------------------------------------------------------------------
 // Gas Optimization Structures
@@ -520,10 +527,15 @@ impl PayrollContract {
         interval: u64,
         recurrence_frequency: u64,
     ) -> Result<Payroll, PayrollError> {
+        employer.require_auth();
+
+        // Check rate limiting for create/update operation
+        if Self::check_rate_limit(env.clone(), employer.clone(), String::from_str(&env, "create_or_update_escrow"), None)? {
+            return Err(PayrollError::RateLimitExceeded);
+        }
+
         // Optimized validation with early returns
         Self::validate_payroll_input(amount, interval, recurrence_frequency)?;
-
-        employer.require_auth();
 
         if Self::is_mfa_required_for_operation(&env, &employer, MFA_SCOPE_PAYROLL, None) {
             Self::ensure_active_mfa_session(&env, &employer, MFA_SCOPE_PAYROLL)?;
@@ -811,6 +823,11 @@ impl PayrollContract {
         employee: Address,
     ) -> Result<(), PayrollError> {
         caller.require_auth();
+
+        // Check rate limiting for disburse operation
+        if Self::check_rate_limit(env.clone(), caller.clone(), String::from_str(&env, "disburse_salary"), None)? {
+            return Err(PayrollError::RateLimitExceeded);
+        }
 
         // Get cached contract state
         let cache = Self::get_contract_cache(&env);
@@ -1818,6 +1835,11 @@ impl PayrollContract {
         employee: Address,
     ) -> Result<(), PayrollError> {
         caller.require_auth();
+
+        // Check rate limiting for pause operation
+        if Self::check_rate_limit(env.clone(), caller.clone(), String::from_str(&env, "pause_employee"), None)? {
+            return Err(PayrollError::RateLimitExceeded);
+        }
 
         let storage = env.storage().persistent();
         let cache = Self::get_contract_cache(&env);
@@ -9581,5 +9603,396 @@ impl PayrollContract {
             .publish((symbol_short!("cleanup"),), (cutoff_date, cleaned_count));
 
         Ok(cleaned_count)
+    }
+
+    //-----------------------------------------------------------------------------
+    // Advanced Rate Limiting and DDoS Protection Functions
+    //-----------------------------------------------------------------------------
+
+    /// Check if user is rate limited for a specific operation
+    pub fn check_rate_limit(
+        env: Env,
+        user: Address,
+        operation: String,
+        ip_address: Option<String>,
+    ) -> Result<bool, PayrollError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get global rate limiting settings
+        let global_settings = storage
+            .get::<DataKey, GlobalRateLimitSettings>(&DataKey::GlobalRateLimitSettings)
+            .unwrap_or(GlobalRateLimitSettings {
+                enabled: true,
+                default_user_rate_limit: 100,
+                default_ip_rate_limit: 1000,
+                default_time_window: 3600, // 1 hour
+                max_violations_before_block: 5,
+                block_duration: 3600, // 1 hour
+                exponential_backoff_enabled: true,
+                adaptive_rate_limiting_enabled: true,
+                suspicious_activity_threshold: 80,
+                trust_score_decay_rate: 5,
+                last_updated: current_time,
+            });
+
+        if !global_settings.enabled {
+            return Ok(false); // Rate limiting disabled
+        }
+
+        // Check user rate limit
+        if let Some(mut user_config) = storage.get::<DataKey, AdvancedRateLimitConfig>(
+            &DataKey::AdvancedRateLimit(user.clone(), operation.clone()),
+        ) {
+            // Reset counter if time window has passed
+            if current_time >= user_config.reset_time {
+                user_config.current_count = 0;
+                user_config.reset_time = current_time + user_config.time_window;
+            }
+
+            // Check if user is blocked
+            if user_config.is_blocked {
+                if let Some(block_until) = user_config.block_until {
+                    if current_time < block_until {
+                        return Ok(true); // Still blocked
+                    } else {
+                        // Unblock user
+                        user_config.is_blocked = false;
+                        user_config.block_until = None;
+                    }
+                }
+            }
+
+            // Check exponential backoff
+            if let Some(backoff_until) = user_config.exponential_backoff_until {
+                if current_time < backoff_until {
+                    return Ok(true); // Still in backoff
+                } else {
+                    user_config.exponential_backoff_until = None;
+                }
+            }
+
+            // Check rate limit
+            if user_config.current_count >= user_config.current_max_requests {
+                // Rate limit exceeded - record violation
+                Self::record_rate_limit_violation(
+                    env.clone(),
+                    user.clone(),
+                    ip_address.clone(),
+                    operation.clone(),
+                    RateLimitViolationType::UserRateLimit,
+                    ViolationSeverity::Medium,
+                )?;
+
+                // Apply exponential backoff if enabled
+                if global_settings.exponential_backoff_enabled {
+                    let backoff_duration = 2_u64.pow(user_config.violation_count.min(10));
+                    user_config.exponential_backoff_until = Some(current_time + backoff_duration);
+                }
+
+                // Increase violation count and adjust adaptive factor
+                user_config.violation_count += 1;
+                if global_settings.adaptive_rate_limiting_enabled {
+                    user_config.adaptive_factor = (user_config.adaptive_factor * 80) / 100; // Reduce by 20%
+                    user_config.current_max_requests = (user_config.base_max_requests * user_config.adaptive_factor) / 100;
+                }
+
+                // Block user if too many violations
+                if user_config.violation_count >= global_settings.max_violations_before_block {
+                    user_config.is_blocked = true;
+                    user_config.block_until = Some(current_time + global_settings.block_duration);
+                }
+
+                // Update trust score
+                user_config.trust_score = user_config.trust_score.saturating_sub(10);
+
+                storage.set(
+                    &DataKey::AdvancedRateLimit(user.clone(), operation.clone()),
+                    &user_config,
+                );
+
+                return Ok(true); // Rate limited
+            }
+
+            // Increment counter
+            user_config.current_count += 1;
+            storage.set(
+                &DataKey::AdvancedRateLimit(user.clone(), operation.clone()),
+                &user_config,
+            );
+        } else {
+            // Create new rate limit config for user
+            let new_config = AdvancedRateLimitConfig {
+                user: user.clone(),
+                operation: operation.clone(),
+                base_max_requests: global_settings.default_user_rate_limit,
+                current_max_requests: global_settings.default_user_rate_limit,
+                time_window: global_settings.default_time_window,
+                current_count: 1,
+                reset_time: current_time + global_settings.default_time_window,
+                is_blocked: false,
+                block_until: None,
+                violation_count: 0,
+                last_violation_time: None,
+                adaptive_factor: 100, // 1.0x
+                exponential_backoff_until: None,
+                trust_score: 50, // Start with neutral trust score
+            };
+            storage.set(
+                &DataKey::AdvancedRateLimit(user.clone(), operation.clone()),
+                &new_config,
+            );
+        }
+
+        // Check IP rate limit if IP address provided
+        if let Some(ip) = ip_address {
+            if let Some(mut ip_config) = storage.get::<DataKey, IPRateLimitConfig>(&DataKey::IPRateLimit(ip.clone())) {
+                // Reset counter if time window has passed
+                if current_time >= ip_config.reset_time {
+                    ip_config.current_count = 0;
+                    ip_config.reset_time = current_time + ip_config.time_window;
+                }
+
+                // Check if IP is blocked
+                if ip_config.is_blocked {
+                    if let Some(block_until) = ip_config.block_until {
+                        if current_time < block_until {
+                            return Ok(true); // Still blocked
+                        } else {
+                            ip_config.is_blocked = false;
+                            ip_config.block_until = None;
+                        }
+                    }
+                }
+
+                // Check rate limit
+                if ip_config.current_count >= ip_config.max_requests {
+                    // Record IP violation
+                    Self::record_rate_limit_violation(
+                        env.clone(),
+                        user.clone(),
+                        Some(ip.clone()),
+                        operation.clone(),
+                        RateLimitViolationType::IPRateLimit,
+                        ViolationSeverity::High,
+                    )?;
+
+                    // Block IP if too many violations
+                    ip_config.violation_count += 1;
+                    if ip_config.violation_count >= global_settings.max_violations_before_block {
+                        ip_config.is_blocked = true;
+                        ip_config.block_until = Some(current_time + global_settings.block_duration);
+                    }
+
+                    storage.set(&DataKey::IPRateLimit(ip.clone()), &ip_config);
+                    return Ok(true); // Rate limited
+                }
+
+                // Increment counter
+                ip_config.current_count += 1;
+                ip_config.last_activity_time = current_time;
+                storage.set(&DataKey::IPRateLimit(ip.clone()), &ip_config);
+            } else {
+                // Create new IP rate limit config
+                let new_ip_config = IPRateLimitConfig {
+                    ip_address: ip.clone(),
+                    max_requests: global_settings.default_ip_rate_limit,
+                    time_window: global_settings.default_time_window,
+                    current_count: 1,
+                    reset_time: current_time + global_settings.default_time_window,
+                    is_blocked: false,
+                    block_until: None,
+                    violation_count: 0,
+                    suspicious_activity_score: 0,
+                    last_activity_time: current_time,
+                };
+                storage.set(&DataKey::IPRateLimit(ip.clone()), &new_ip_config);
+            }
+        }
+
+        Ok(false) // Not rate limited
+    }
+
+    /// Record a rate limit violation
+    fn record_rate_limit_violation(
+        env: Env,
+        user: Address,
+        ip_address: Option<String>,
+        operation: String,
+        violation_type: RateLimitViolationType,
+        severity: ViolationSeverity,
+    ) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next violation ID
+        let violation_id = storage
+            .get::<DataKey, u64>(&DataKey::NextRateLimitViolationId)
+            .unwrap_or(1);
+        storage.set(&DataKey::NextRateLimitViolationId, &(violation_id + 1));
+
+        // Create violation record
+        let mut details = Map::new(&env);
+        details.set(String::from_str(&env, "timestamp"), String::from_str(&env, "timestamp_value"));
+        details.set(String::from_str(&env, "operation"), operation.clone());
+
+        let violation = RateLimitViolation {
+            id: violation_id,
+            user: user.clone(),
+            ip_address: ip_address.clone(),
+            operation,
+            violation_type,
+            timestamp: current_time,
+            details,
+            severity,
+            resolved: false,
+            resolved_at: None,
+        };
+
+        // Store violation
+        storage.set(&DataKey::RateLimitViolation(violation_id), &violation);
+
+        // Add to user violations list
+        let mut user_violations = storage
+            .get::<DataKey, Vec<u64>>(&DataKey::UserRateLimitViolations(user.clone()))
+            .unwrap_or(Vec::new(&env));
+        user_violations.push_back(violation_id);
+        storage.set(&DataKey::UserRateLimitViolations(user.clone()), &user_violations);
+
+        // Add to IP violations list if IP provided
+        if let Some(ip) = ip_address {
+            let mut ip_violations = storage
+                .get::<DataKey, Vec<u64>>(&DataKey::IPRateLimitViolations(ip.clone()))
+                .unwrap_or(Vec::new(&env));
+            ip_violations.push_back(violation_id);
+            storage.set(&DataKey::IPRateLimitViolations(ip.clone()), &ip_violations);
+        }
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("rate_viol"),),
+            (user, violation_id, current_time),
+        );
+
+        Ok(())
+    }
+
+    /// Get rate limit status for a user and operation
+    pub fn get_rate_limit_status(
+        env: Env,
+        user: Address,
+        operation: String,
+    ) -> Result<AdvancedRateLimitConfig, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get::<DataKey, AdvancedRateLimitConfig>(&DataKey::AdvancedRateLimit(user, operation))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get IP rate limit status
+    pub fn get_ip_rate_limit_status(
+        env: Env,
+        ip_address: String,
+    ) -> Result<IPRateLimitConfig, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get::<DataKey, IPRateLimitConfig>(&DataKey::IPRateLimit(ip_address))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Update global rate limiting settings (admin only)
+    pub fn update_rate_settings(
+        env: Env,
+        caller: Address,
+        settings: GlobalRateLimitSettings,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only owner can update settings
+        let storage = env.storage().persistent();
+        let owner = storage
+            .get::<DataKey, Address>(&DataKey::Owner)
+            .ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let mut updated_settings = settings;
+        updated_settings.last_updated = env.ledger().timestamp();
+        storage.set(&DataKey::GlobalRateLimitSettings, &updated_settings);
+
+        env.events().publish(
+            (symbol_short!("rate_set"),),
+            (caller, updated_settings.last_updated),
+        );
+
+        Ok(())
+    }
+
+    /// Reset user rate limit (admin only)
+    pub fn reset_user_rate_limit(
+        env: Env,
+        caller: Address,
+        user: Address,
+        operation: String,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only owner can reset rate limits
+        let storage = env.storage().persistent();
+        let owner = storage
+            .get::<DataKey, Address>(&DataKey::Owner)
+            .ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let storage = env.storage().persistent();
+        if let Some(mut config) = storage.get::<DataKey, AdvancedRateLimitConfig>(
+            &DataKey::AdvancedRateLimit(user.clone(), operation.clone()),
+        ) {
+            config.current_count = 0;
+            config.is_blocked = false;
+            config.block_until = None;
+            config.exponential_backoff_until = None;
+            config.violation_count = 0;
+            config.adaptive_factor = 100;
+            config.trust_score = 50;
+            config.reset_time = env.ledger().timestamp() + config.time_window;
+
+            storage.set(
+                &DataKey::AdvancedRateLimit(user.clone(), operation.clone()),
+                &config,
+            );
+
+            env.events().publish(
+                (symbol_short!("rate_rst"),),
+                (caller, user, operation),
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Get rate limit violations for a user
+    pub fn get_user_rate_limit_violations(
+        env: Env,
+        user: Address,
+    ) -> Result<Vec<RateLimitViolation>, PayrollError> {
+        let storage = env.storage().persistent();
+        let violation_ids = storage
+            .get::<DataKey, Vec<u64>>(&DataKey::UserRateLimitViolations(user))
+            .unwrap_or(Vec::new(&env));
+
+        let mut violations = Vec::new(&env);
+        for id in violation_ids.iter() {
+            if let Some(violation) = storage.get::<DataKey, RateLimitViolation>(&DataKey::RateLimitViolation(id)) {
+                violations.push_back(violation);
+            }
+        }
+
+        Ok(violations)
     }
 }

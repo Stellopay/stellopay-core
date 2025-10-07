@@ -715,6 +715,97 @@ pub struct RateLimitConfig {
     pub block_until: Option<u64>,
 }
 
+/// Advanced rate limiting configuration with adaptive behavior
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdvancedRateLimitConfig {
+    pub user: Address,
+    pub operation: String,
+    pub base_max_requests: u32,
+    pub current_max_requests: u32,
+    pub time_window: u64,
+    pub current_count: u32,
+    pub reset_time: u64,
+    pub is_blocked: bool,
+    pub block_until: Option<u64>,
+    pub violation_count: u32,
+    pub last_violation_time: Option<u64>,
+    pub adaptive_factor: u32, // Multiplier for adaptive rate limiting (100 = 1.0x)
+    pub exponential_backoff_until: Option<u64>,
+    pub trust_score: u32, // 0-100, higher is more trusted
+}
+
+/// IP-based rate limiting configuration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct IPRateLimitConfig {
+    pub ip_address: String,
+    pub max_requests: u32,
+    pub time_window: u64,
+    pub current_count: u32,
+    pub reset_time: u64,
+    pub is_blocked: bool,
+    pub block_until: Option<u64>,
+    pub violation_count: u32,
+    pub suspicious_activity_score: u32, // 0-100
+    pub last_activity_time: u64,
+}
+
+/// Rate limiting violation record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RateLimitViolation {
+    pub id: u64,
+    pub user: Address,
+    pub ip_address: Option<String>,
+    pub operation: String,
+    pub violation_type: RateLimitViolationType,
+    pub timestamp: u64,
+    pub details: Map<String, String>,
+    pub severity: ViolationSeverity,
+    pub resolved: bool,
+    pub resolved_at: Option<u64>,
+}
+
+/// Rate limiting violation type
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum RateLimitViolationType {
+    UserRateLimit,
+    IPRateLimit,
+    OperationRateLimit,
+    AdaptiveRateLimit,
+    ExponentialBackoff,
+    SuspiciousActivity,
+}
+
+/// Violation severity levels
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ViolationSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+/// Global rate limiting settings
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlobalRateLimitSettings {
+    pub enabled: bool,
+    pub default_user_rate_limit: u32,
+    pub default_ip_rate_limit: u32,
+    pub default_time_window: u64,
+    pub max_violations_before_block: u32,
+    pub block_duration: u64,
+    pub exponential_backoff_enabled: bool,
+    pub adaptive_rate_limiting_enabled: bool,
+    pub suspicious_activity_threshold: u32,
+    pub trust_score_decay_rate: u32, // Per day
+    pub last_updated: u64,
+}
+
 /// Security settings structure
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -941,6 +1032,15 @@ pub enum DataKey {
 
     // Security - MINIMAL SET
     SecuritySettings, // Global security settings
+    
+    // Rate Limiting - Advanced DDoS Protection
+    AdvancedRateLimit(Address, String), // (user, operation) -> AdvancedRateLimitConfig
+    IPRateLimit(String), // ip_address -> IPRateLimitConfig
+    RateLimitViolation(u64), // violation_id -> RateLimitViolation
+    NextRateLimitViolationId, // Counter for violation IDs
+    UserRateLimitViolations(Address), // user -> Vec<u64> (violation IDs)
+    IPRateLimitViolations(String), // ip_address -> Vec<u64> (violation IDs)
+    GlobalRateLimitSettings, // Global rate limiting settings
 }
 
 // Extended functionality keys - separate enum to avoid size limits
