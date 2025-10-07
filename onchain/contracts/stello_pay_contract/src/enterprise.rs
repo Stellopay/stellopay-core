@@ -1,7 +1,7 @@
 use crate::storage::{
     AlertSeverity, AlertStatus, AnalyticsDashboard, AnalyticsDataKey, BenchmarkData,
     ComplianceAlert, ComplianceAlertType, DashboardMetrics, DashboardWidget, DataExportRequest,
-    DataSource, DateRange, ExportFormat, ReportFormat, ReportSchedule, ReportType,
+    DataSource, DateRange, ExportFormat, MonitoringAlertStatus, ReportFormat, ReportSchedule, ReportType,
     ScheduleFrequency, TimeSeriesDataPoint, WidgetType,
 };
 use soroban_sdk::{contracttype, Address, Env, Map, String, Vec};
@@ -1028,7 +1028,7 @@ impl HRWorkflowManager {
             due_date: Some(effective_date),
             resolved_at: None,
             resolved_by: None,
-            status: AlertStatus::Active,
+            status: MonitoringAlertStatus::Active,
         };
 
         // Store alert using existing mechanism - simplified for now

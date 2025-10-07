@@ -819,6 +819,215 @@ pub enum SuspiciousActivitySeverity {
     Critical,
 }
 
+//-----------------------------------------------------------------------------
+// Advanced Audit Logging and Monitoring Structures
+//-----------------------------------------------------------------------------
+
+/// Comprehensive audit log entry
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdvancedAuditEntry {
+    pub id: u64,
+    pub timestamp: u64,
+    pub actor: Address,
+    pub action: String,
+    pub resource: String,
+    pub resource_id: Option<String>,
+    pub result: AuditResult,
+    pub details: Map<String, String>,
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+    pub session_id: Option<String>,
+    pub correlation_id: Option<String>,
+    pub severity: AuditSeverity,
+    pub category: AuditCategory,
+    pub tags: Vec<String>,
+    pub metadata: Map<String, String>,
+}
+
+/// Audit result enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum AuditResult {
+    Success,
+    Failure,
+    Denied,
+    AuditError,
+    Warning,
+    Info,
+}
+
+/// Audit severity levels
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum AuditSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+/// Audit categories for classification
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum AuditCategory {
+    Authentication,
+    Authorization,
+    DataAccess,
+    DataModification,
+    SystemOperation,
+    SecurityEvent,
+    Compliance,
+    Performance,
+    AuditError,
+    Custom(String),
+}
+
+/// Security event correlation record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SecurityEventCorrelation {
+    pub id: u64,
+    pub event_ids: Vec<u64>,
+    pub correlation_type: CorrelationType,
+    pub severity: AuditSeverity,
+    pub pattern: String,
+    pub confidence: u32, // 0-100
+    pub created_at: u64,
+    pub resolved: bool,
+    pub resolved_at: Option<u64>,
+    pub resolved_by: Option<Address>,
+    pub details: Map<String, String>,
+}
+
+/// Correlation type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum CorrelationType {
+    SuspiciousActivity,
+    AttackPattern,
+    DataBreach,
+    PrivilegeEscalation,
+    UnauthorizedAccess,
+    SystemAnomaly,
+    ComplianceViolation,
+    Custom(String),
+}
+
+/// Real-time monitoring alert
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MonitoringAlert {
+    pub id: u64,
+    pub alert_type: AlertType,
+    pub severity: AuditSeverity,
+    pub title: String,
+    pub description: String,
+    pub triggered_at: u64,
+    pub resolved_at: Option<u64>,
+    pub resolved_by: Option<Address>,
+    pub status: MonitoringAlertStatus,
+    pub source: String,
+    pub metrics: Map<String, i128>,
+    pub threshold: i128,
+    pub current_value: i128,
+    pub escalation_level: u32,
+    pub notification_sent: bool,
+}
+
+/// Alert type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum AlertType {
+    RateLimitExceeded,
+    UnusualActivity,
+    SystemError,
+    PerformanceDegradation,
+    SecurityThreat,
+    ComplianceViolation,
+    DataIntegrity,
+    Custom(String),
+}
+
+/// Monitoring alert status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum MonitoringAlertStatus {
+    Active,
+    Acknowledged,
+    Resolved,
+    Escalated,
+    Suppressed,
+}
+
+/// Audit data retention policy
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuditRetentionPolicy {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    pub category: AuditCategory,
+    pub retention_days: u32,
+    pub archive_after_days: u32,
+    pub delete_after_days: u32,
+    pub is_active: bool,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// Tamper-proof audit log entry
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TamperProofAuditEntry {
+    pub entry: AdvancedAuditEntry,
+    pub hash: String,
+    pub previous_hash: Option<String>,
+    pub block_hash: String,
+    pub merkle_root: String,
+    pub signature: String,
+    pub verified: bool,
+    pub verification_timestamp: u64,
+}
+
+/// Audit log summary for reporting
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuditLogSummary {
+    pub period_start: u64,
+    pub period_end: u64,
+    pub total_entries: u64,
+    pub success_count: u64,
+    pub failure_count: u64,
+    pub error_count: u64,
+    pub warning_count: u64,
+    pub critical_count: u64,
+    pub unique_actors: u32,
+    pub unique_resources: u32,
+    pub top_actions: Map<String, u64>,
+    pub top_actors: Map<Address, u64>,
+    pub category_breakdown: Map<String, u64>,
+    pub generated_at: u64,
+}
+
+/// Global audit settings
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlobalAuditSettings {
+    pub enabled: bool,
+    pub log_all_operations: bool,
+    pub log_failed_operations: bool,
+    pub log_successful_operations: bool,
+    pub real_time_monitoring: bool,
+    pub event_correlation_enabled: bool,
+    pub tamper_proof_logging: bool,
+    pub retention_policies_enabled: bool,
+    pub default_retention_days: u32,
+    pub max_audit_entries: u64,
+    pub alert_thresholds: Map<String, i128>,
+    pub last_updated: u64,
+}
+
 // Role delegation record: from -> to for a role, optional expiry
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -941,6 +1150,20 @@ pub enum DataKey {
 
     // Security - MINIMAL SET
     SecuritySettings, // Global security settings
+    
+    // Advanced Audit Logging and Monitoring
+    AdvancedAuditEntry(u64), // audit_id -> AdvancedAuditEntry
+    NextAuditId, // Counter for audit IDs
+    TamperProofAuditEntry(u64), // audit_id -> TamperProofAuditEntry
+    SecurityEventCorrelation(u64), // correlation_id -> SecurityEventCorrelation
+    NextCorrelationId, // Counter for correlation IDs
+    MonitoringAlert(u64), // alert_id -> MonitoringAlert
+    NextAlertId, // Counter for alert IDs
+    AuditRetentionPolicy(u64), // policy_id -> AuditRetentionPolicy
+    NextRetentionPolicyId, // Counter for retention policy IDs
+    AuditLogSummary(u64), // summary_id -> AuditLogSummary
+    NextSummaryId, // Counter for summary IDs
+    GlobalAuditSettings, // Global audit settings
 }
 
 // Extended functionality keys - separate enum to avoid size limits
@@ -1931,7 +2154,7 @@ pub struct ComplianceAlert {
     pub due_date: Option<u64>,
     pub resolved_at: Option<u64>,
     pub resolved_by: Option<Address>,
-    pub status: AlertStatus,
+    pub status: MonitoringAlertStatus,
 }
 
 /// Compliance alert type enumeration
