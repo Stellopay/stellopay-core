@@ -143,6 +143,10 @@ use crate::storage::{
     WidgetSize,
     WidgetType,
     WorkflowStatus,
+    // Error Recovery and Circuit Breaker types
+    RetryConfig, CircuitBreakerState, CircuitBreakerConfig, HealthCheck, HealthStatus,
+    ErrorRecoveryWorkflow, RecoveryStep, RecoveryStepType, StepStatus,
+    GracefulDegradationConfig, GlobalErrorSettings,
 };
 //-----------------------------------------------------------------------------
 // Gas Optimization Structures
@@ -9581,5 +9585,315 @@ impl PayrollContract {
             .publish((symbol_short!("cleanup"),), (cutoff_date, cleaned_count));
 
         Ok(cleaned_count)
+    }
+
+    //-----------------------------------------------------------------------------
+    // Error Recovery and Circuit Breaker Functions
+    //-----------------------------------------------------------------------------
+
+    /// Create a retry configuration for operations
+    pub fn create_retry_config(
+        env: Env,
+        caller: Address,
+        max_attempts: u32,
+        base_delay: u64,
+        max_delay: u64,
+        backoff_multiplier: u64,
+        jitter: bool,
+        retryable_errors: Vec<String>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let next_id = storage
+            .get(&ExtendedDataKey::NextRetryId)
+            .unwrap_or(1u64);
+
+        let retry_config = RetryConfig {
+            max_attempts,
+            base_delay,
+            max_delay,
+            backoff_multiplier,
+            jitter,
+            retryable_errors,
+        };
+
+        storage.set(&ExtendedDataKey::RetryConfig(next_id), &retry_config);
+        storage.set(&ExtendedDataKey::NextRetryId, &(next_id + 1));
+
+        env.events().publish(
+            (symbol_short!("retry_cfg"),),
+            (next_id, max_attempts, base_delay),
+        );
+
+        Ok(next_id)
+    }
+
+    /// Get retry configuration by ID
+    pub fn get_retry_config(env: Env, retry_id: u64) -> Option<RetryConfig> {
+        let storage = env.storage().persistent();
+        storage.get(&ExtendedDataKey::RetryConfig(retry_id)).unwrap_or(None)
+    }
+
+    /// Set circuit breaker state for a service
+    pub fn set_circuit_breaker_state(
+        env: Env,
+        caller: Address,
+        service_name: String,
+        state: CircuitBreakerState,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        storage.set(&ExtendedDataKey::CircuitBreakerState(service_name.clone()), &state);
+
+        env.events().publish(
+            (symbol_short!("cb_state"),),
+            (service_name, state),
+        );
+
+        Ok(())
+    }
+
+    /// Get circuit breaker state for a service
+    pub fn get_circuit_breaker_state(env: Env, service_name: String) -> Option<CircuitBreakerState> {
+        let storage = env.storage().persistent();
+        storage.get(&ExtendedDataKey::CircuitBreakerState(service_name)).unwrap_or(None)
+    }
+
+    /// Update health check for a service
+    pub fn update_health_check(
+        env: Env,
+        caller: Address,
+        service_name: String,
+        status: HealthStatus,
+        response_time: u64,
+        error_message: Option<String>,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let mut health_check = storage
+            .get(&ExtendedDataKey::HealthCheck(service_name.clone()))
+            .unwrap_or(None)
+            .unwrap_or(HealthCheck {
+                service_name: service_name.clone(),
+                last_check_time: current_time,
+                status: HealthStatus::Unknown,
+                response_time: 0,
+                error_count: 0,
+                success_count: 0,
+                consecutive_failures: 0,
+                last_error: None,
+            });
+
+        health_check.last_check_time = current_time;
+        health_check.status = status.clone();
+        health_check.response_time = response_time;
+
+        match status {
+            HealthStatus::Healthy => {
+                health_check.success_count += 1;
+                health_check.consecutive_failures = 0;
+            }
+            HealthStatus::Unhealthy | HealthStatus::Degraded => {
+                health_check.error_count += 1;
+                health_check.consecutive_failures += 1;
+                health_check.last_error = error_message;
+            }
+            _ => {}
+        }
+
+        storage.set(&ExtendedDataKey::HealthCheck(service_name.clone()), &health_check);
+
+        env.events().publish(
+            (symbol_short!("health"),),
+            (service_name, status, response_time),
+        );
+
+        Ok(())
+    }
+
+    /// Get health check for a service
+    pub fn get_health_check(env: Env, service_name: String) -> Option<HealthCheck> {
+        let storage = env.storage().persistent();
+        storage.get(&ExtendedDataKey::HealthCheck(service_name)).unwrap_or(None)
+    }
+
+    /// Create an error recovery workflow
+    pub fn create_error_recovery_workflow(
+        env: Env,
+        caller: Address,
+        operation_type: String,
+        error_type: String,
+        recovery_steps: Vec<RecoveryStep>,
+        max_retries: u32,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let next_id = storage
+            .get(&ExtendedDataKey::NextWorkflowId)
+            .unwrap_or(1u64);
+
+        let current_time = env.ledger().timestamp();
+
+        let workflow = ErrorRecoveryWorkflow {
+            workflow_id: next_id,
+            operation_type: operation_type.clone(),
+            error_type: error_type.clone(),
+            recovery_steps,
+            current_step: 0,
+            status: WorkflowStatus::Active,
+            created_at: current_time,
+            updated_at: current_time,
+            retry_count: 0,
+            max_retries,
+        };
+
+        storage.set(&ExtendedDataKey::ErrorRecoveryWorkflow(next_id), &workflow);
+        storage.set(&ExtendedDataKey::NextWorkflowId, &(next_id + 1));
+
+        env.events().publish(
+            (symbol_short!("workflow"),),
+            (next_id, operation_type, error_type),
+        );
+
+        Ok(next_id)
+    }
+
+    /// Execute the next step in an error recovery workflow
+    pub fn execute_recovery_step(
+        env: Env,
+        caller: Address,
+        workflow_id: u64,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+        let mut workflow: ErrorRecoveryWorkflow = storage
+            .get(&ExtendedDataKey::ErrorRecoveryWorkflow(workflow_id))
+            .unwrap_or(None)
+            .ok_or(PayrollError::InvalidData)?;
+
+        if workflow.status != WorkflowStatus::Active {
+            return Err(PayrollError::InvalidData);
+        }
+
+        if workflow.current_step >= workflow.recovery_steps.len() as u32 {
+            workflow.status = WorkflowStatus::Completed;
+            workflow.updated_at = env.ledger().timestamp();
+            storage.set(&ExtendedDataKey::ErrorRecoveryWorkflow(workflow_id), &workflow);
+
+            env.events().publish(
+                (symbol_short!("workflow"),),
+                (workflow_id, "completed"),
+            );
+
+            return Ok(());
+        }
+
+        let step_index = workflow.current_step as usize;
+        let mut step = workflow.recovery_steps.get(step_index as u32).unwrap().clone();
+        
+        step.status = StepStatus::InProgress;
+        step.executed_at = Some(env.ledger().timestamp());
+
+        // Simulate step execution (in real implementation, this would execute the actual recovery logic)
+        step.status = StepStatus::Completed;
+        workflow.current_step += 1;
+        workflow.updated_at = env.ledger().timestamp();
+
+        // Update the step in the workflow
+        let mut steps = workflow.recovery_steps.clone();
+        steps.set(step_index as u32, step);
+        workflow.recovery_steps = steps;
+
+        storage.set(&ExtendedDataKey::ErrorRecoveryWorkflow(workflow_id), &workflow);
+
+        env.events().publish(
+            (symbol_short!("step"),),
+            (workflow_id, workflow.current_step),
+        );
+
+        Ok(())
+    }
+
+    /// Get error recovery workflow by ID
+    pub fn get_error_recovery_workflow(env: Env, workflow_id: u64) -> Option<ErrorRecoveryWorkflow> {
+        let storage = env.storage().persistent();
+        storage.get(&ExtendedDataKey::ErrorRecoveryWorkflow(workflow_id)).unwrap_or(None)
+    }
+
+    /// Update global error recovery settings
+    pub fn update_error_settings(
+        env: Env,
+        caller: Address,
+        retry_enabled: bool,
+        circuit_breaker_enabled: bool,
+        health_check_enabled: bool,
+        graceful_degradation_enabled: bool,
+        default_max_retries: u32,
+        default_timeout: u64,
+        notification_enabled: bool,
+        escalation_enabled: bool,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+
+        let storage = env.storage().persistent();
+
+        let global_config = CircuitBreakerConfig {
+            failure_threshold: 5,
+            recovery_timeout: 60000, // 1 minute
+            success_threshold: 3,
+            timeout: default_timeout,
+        };
+
+        let settings = GlobalErrorSettings {
+            retry_enabled,
+            circuit_breaker_enabled,
+            health_check_enabled,
+            graceful_degradation_enabled,
+            default_max_retries,
+            default_timeout,
+            global_circuit_breaker_config: global_config,
+            notification_enabled,
+            escalation_enabled,
+        };
+
+        storage.set(&ExtendedDataKey::GlobalErrorSettings, &settings);
+
+        env.events().publish(
+            (symbol_short!("err_set"),),
+            (retry_enabled, circuit_breaker_enabled),
+        );
+
+        Ok(())
+    }
+
+    /// Get global error recovery settings
+    pub fn get_error_settings(env: Env) -> Option<GlobalErrorSettings> {
+        let storage = env.storage().persistent();
+        storage.get(&ExtendedDataKey::GlobalErrorSettings).unwrap_or(None)
+    }
+
+    /// Check if a service is healthy
+    pub fn is_service_healthy(env: Env, service_name: String) -> bool {
+        if let Some(health_check) = Self::get_health_check(env, service_name) {
+            matches!(health_check.status, HealthStatus::Healthy)
+        } else {
+            false
+        }
+    }
+
+    /// Check if circuit breaker allows requests
+    pub fn is_circuit_breaker_closed(env: Env, service_name: String) -> bool {
+        if let Some(state) = Self::get_circuit_breaker_state(env, service_name) {
+            matches!(state, CircuitBreakerState::Closed)
+        } else {
+            true // Default to allowing requests if no circuit breaker state
+        }
     }
 }
