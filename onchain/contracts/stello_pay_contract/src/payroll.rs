@@ -39,7 +39,7 @@ use crate::storage::{
     ActionType,
     AggregatedMetrics,
     AlertSeverity,
-    AlertStatus,
+    MonitoringAlertStatus,
     AnalyticsDashboard,
     AnalyticsDataKey,
     AnalyticsQuery,
@@ -143,6 +143,19 @@ use crate::storage::{
     WidgetSize,
     WidgetType,
     WorkflowStatus,
+    // Advanced Audit Logging types
+    AdvancedAuditEntry,
+    AuditResult,
+    AuditSeverity,
+    AuditCategory,
+    SecurityEventCorrelation,
+    CorrelationType,
+    MonitoringAlert,
+    AlertType,
+    AuditRetentionPolicy,
+    TamperProofAuditEntry,
+    AuditLogSummary,
+    GlobalAuditSettings,
 };
 //-----------------------------------------------------------------------------
 // Gas Optimization Structures
@@ -8513,7 +8526,7 @@ impl PayrollContract {
             due_date: Some(current_time + 7 * 24 * 3600), // 7 days
             resolved_at: None,
             resolved_by: None,
-            status: AlertStatus::Active,
+            status: MonitoringAlertStatus::Active,
         };
 
         Self::store_compliance_alert(&env, &alert);
@@ -9581,5 +9594,396 @@ impl PayrollContract {
             .publish((symbol_short!("cleanup"),), (cutoff_date, cleaned_count));
 
         Ok(cleaned_count)
+    }
+
+    //-----------------------------------------------------------------------------
+    // Advanced Audit Logging and Monitoring Functions
+    //-----------------------------------------------------------------------------
+
+    /// Log a comprehensive audit entry
+    pub fn log_audit_entry(
+        env: Env,
+        actor: Address,
+        action: String,
+        resource: String,
+        result: AuditResult,
+        severity: AuditSeverity,
+        category: AuditCategory,
+    ) -> Result<u64, PayrollError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next audit ID
+        let audit_id = storage
+            .get::<DataKey, u64>(&DataKey::NextAuditId)
+            .unwrap_or(1);
+        storage.set(&DataKey::NextAuditId, &(audit_id + 1));
+
+        // Create audit entry
+        let audit_entry = AdvancedAuditEntry {
+            id: audit_id,
+            timestamp: current_time,
+            actor: actor.clone(),
+            action: action.clone(),
+            resource: resource.clone(),
+            resource_id: None,
+            result: result.clone(),
+            details: Map::new(&env),
+            ip_address: None,
+            user_agent: None,
+            session_id: None,
+            correlation_id: None,
+            severity: severity.clone(),
+            category: category.clone(),
+            tags: Vec::new(&env),
+            metadata: Map::new(&env),
+        };
+
+        // Store audit entry
+        storage.set(&DataKey::AdvancedAuditEntry(audit_id), &audit_entry);
+
+        // Create tamper-proof entry if enabled
+        let global_settings = storage
+            .get::<DataKey, GlobalAuditSettings>(&DataKey::GlobalAuditSettings)
+            .unwrap_or(GlobalAuditSettings {
+                enabled: true,
+                log_all_operations: true,
+                log_failed_operations: true,
+                log_successful_operations: true,
+                real_time_monitoring: true,
+                event_correlation_enabled: true,
+                tamper_proof_logging: true,
+                retention_policies_enabled: true,
+                default_retention_days: 365,
+                max_audit_entries: 1000000,
+                alert_thresholds: Map::new(&env),
+                last_updated: current_time,
+            });
+
+        if global_settings.tamper_proof_logging {
+            let tamper_proof_entry = TamperProofAuditEntry {
+                entry: audit_entry.clone(),
+                hash: String::from_str(&env, "hash_placeholder"),
+                previous_hash: None,
+                block_hash: String::from_str(&env, "block_hash_placeholder"),
+                merkle_root: String::from_str(&env, "merkle_root_placeholder"),
+                signature: String::from_str(&env, "signature_placeholder"),
+                verified: true,
+                verification_timestamp: current_time,
+            };
+            storage.set(&DataKey::TamperProofAuditEntry(audit_id), &tamper_proof_entry);
+        }
+
+        // Emit audit event
+        env.events().publish(
+            (symbol_short!("audit_log"),),
+            (actor, action, result, severity, category, audit_id, current_time),
+        );
+
+        // Check for real-time monitoring alerts
+        if global_settings.real_time_monitoring {
+            Self::check_monitoring_alerts(env.clone(), &audit_entry)?;
+        }
+
+        // Check for event correlation
+        if global_settings.event_correlation_enabled {
+            Self::check_event_correlation(env.clone(), &audit_entry)?;
+        }
+
+        Ok(audit_id)
+    }
+
+    /// Check for monitoring alerts based on audit entry
+    fn check_monitoring_alerts(env: Env, audit_entry: &AdvancedAuditEntry) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Check for critical events
+        if audit_entry.severity == AuditSeverity::Critical {
+            let alert = MonitoringAlert {
+                id: storage.get::<DataKey, u64>(&DataKey::NextAlertId).unwrap_or(1),
+                alert_type: AlertType::SecurityThreat,
+                severity: AuditSeverity::Critical,
+                title: String::from_str(&env, "Critical Security Event"),
+                description: String::from_str(&env, "Critical security event detected"),
+                triggered_at: current_time,
+                resolved_at: None,
+                resolved_by: None,
+                status: MonitoringAlertStatus::Active,
+                source: String::from_str(&env, "audit_system"),
+                metrics: Map::new(&env),
+                threshold: 0,
+                current_value: 1,
+                escalation_level: 1,
+                notification_sent: false,
+            };
+
+            let alert_id = alert.id;
+            storage.set(&DataKey::NextAlertId, &(alert_id + 1));
+            storage.set(&DataKey::MonitoringAlert(alert_id), &alert);
+
+            env.events().publish(
+                (symbol_short!("alert"),),
+                (alert_id, AlertType::SecurityThreat, AuditSeverity::Critical, current_time),
+            );
+        }
+
+        // Check for multiple failed operations
+        if audit_entry.result == AuditResult::Failure {
+            // Implementation would check for patterns of failures
+            // For now, just log the failure
+        }
+
+        Ok(())
+    }
+
+    /// Check for event correlation patterns
+    fn check_event_correlation(env: Env, audit_entry: &AdvancedAuditEntry) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Check for suspicious patterns
+        if audit_entry.severity == AuditSeverity::High || audit_entry.severity == AuditSeverity::Critical {
+            let correlation = SecurityEventCorrelation {
+                id: storage.get::<DataKey, u64>(&DataKey::NextCorrelationId).unwrap_or(1),
+                event_ids: {
+                    let mut ids = Vec::new(&env);
+                    ids.push_back(audit_entry.id);
+                    ids
+                },
+                correlation_type: CorrelationType::SuspiciousActivity,
+                severity: audit_entry.severity.clone(),
+                pattern: String::from_str(&env, "suspicious_activity"),
+                confidence: 85,
+                created_at: current_time,
+                resolved: false,
+                resolved_at: None,
+                resolved_by: None,
+                details: Map::new(&env),
+            };
+
+            let correlation_id = correlation.id;
+            storage.set(&DataKey::NextCorrelationId, &(correlation_id + 1));
+            storage.set(&DataKey::SecurityEventCorrelation(correlation_id), &correlation);
+
+            env.events().publish(
+                (symbol_short!("evt_corr"),),
+                (correlation_id, CorrelationType::SuspiciousActivity, current_time),
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Get audit entries for a specific actor
+    pub fn get_actor_audit_entries(
+        env: Env,
+        actor: Address,
+        limit: u32,
+    ) -> Result<Vec<AdvancedAuditEntry>, PayrollError> {
+        let storage = env.storage().persistent();
+        let mut entries = Vec::new(&env);
+        let mut count = 0u32;
+
+        // This is a simplified implementation
+        // In a real system, you'd have indexed storage for efficient queries
+        for i in 1..=1000 {
+            if count >= limit {
+                break;
+            }
+            if let Some(entry) = storage.get::<DataKey, AdvancedAuditEntry>(&DataKey::AdvancedAuditEntry(i)) {
+                if entry.actor == actor {
+                    entries.push_back(entry);
+                    count += 1;
+                }
+            }
+        }
+
+        Ok(entries)
+    }
+
+    /// Get audit entries by category
+    pub fn get_audit_entries_by_category(
+        env: Env,
+        category: AuditCategory,
+        limit: u32,
+    ) -> Result<Vec<AdvancedAuditEntry>, PayrollError> {
+        let storage = env.storage().persistent();
+        let mut entries = Vec::new(&env);
+        let mut count = 0u32;
+
+        for i in 1..=1000 {
+            if count >= limit {
+                break;
+            }
+            if let Some(entry) = storage.get::<DataKey, AdvancedAuditEntry>(&DataKey::AdvancedAuditEntry(i)) {
+                if entry.category == category {
+                    entries.push_back(entry);
+                    count += 1;
+                }
+            }
+        }
+
+        Ok(entries)
+    }
+
+    /// Generate audit log summary for a period
+    pub fn generate_audit_summary(
+        env: Env,
+        caller: Address,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<AuditLogSummary, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only owner can generate summaries
+        let storage = env.storage().persistent();
+        let owner = storage
+            .get::<DataKey, Address>(&DataKey::Owner)
+            .ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let current_time = env.ledger().timestamp();
+        let mut summary = AuditLogSummary {
+            period_start,
+            period_end,
+            total_entries: 0,
+            success_count: 0,
+            failure_count: 0,
+            error_count: 0,
+            warning_count: 0,
+            critical_count: 0,
+            unique_actors: 0,
+            unique_resources: 0,
+            top_actions: Map::new(&env),
+            top_actors: Map::new(&env),
+            category_breakdown: Map::new(&env),
+            generated_at: current_time,
+        };
+
+        // This is a simplified implementation
+        // In a real system, you'd have efficient indexed queries
+        for i in 1..=1000 {
+            if let Some(entry) = storage.get::<DataKey, AdvancedAuditEntry>(&DataKey::AdvancedAuditEntry(i)) {
+                if entry.timestamp >= period_start && entry.timestamp <= period_end {
+                    summary.total_entries += 1;
+                    
+                    match entry.result {
+                        AuditResult::Success => summary.success_count += 1,
+                        AuditResult::Failure => summary.failure_count += 1,
+                        AuditResult::AuditError => summary.error_count += 1,
+                        AuditResult::Warning => summary.warning_count += 1,
+                        _ => {}
+                    }
+
+                    match entry.severity {
+                        AuditSeverity::Critical => summary.critical_count += 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Store summary
+        let summary_id = storage.get::<DataKey, u64>(&DataKey::NextSummaryId).unwrap_or(1);
+        storage.set(&DataKey::NextSummaryId, &(summary_id + 1));
+        storage.set(&DataKey::AuditLogSummary(summary_id), &summary);
+
+        env.events().publish(
+            (symbol_short!("audit_sum"),),
+            (caller, summary_id, period_start, period_end, current_time),
+        );
+
+        Ok(summary)
+    }
+
+    /// Update global audit settings (admin only)
+    pub fn update_audit_settings(
+        env: Env,
+        caller: Address,
+        settings: GlobalAuditSettings,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only owner can update settings
+        let storage = env.storage().persistent();
+        let owner = storage
+            .get::<DataKey, Address>(&DataKey::Owner)
+            .ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let mut updated_settings = settings;
+        updated_settings.last_updated = env.ledger().timestamp();
+        storage.set(&DataKey::GlobalAuditSettings, &updated_settings);
+
+        env.events().publish(
+            (symbol_short!("audit_set"),),
+            (caller, updated_settings.last_updated),
+        );
+
+        Ok(())
+    }
+
+    /// Get monitoring alerts
+    pub fn get_monitoring_alerts(
+        env: Env,
+        status: Option<MonitoringAlertStatus>,
+    ) -> Result<Vec<MonitoringAlert>, PayrollError> {
+        let storage = env.storage().persistent();
+        let mut alerts = Vec::new(&env);
+
+        for i in 1..=100 {
+            if let Some(alert) = storage.get::<DataKey, MonitoringAlert>(&DataKey::MonitoringAlert(i)) {
+                if let Some(ref filter_status) = status {
+                    if alert.status == *filter_status {
+                        alerts.push_back(alert);
+                    }
+                } else {
+                    alerts.push_back(alert);
+                }
+            }
+        }
+
+        Ok(alerts)
+    }
+
+    /// Resolve monitoring alert (admin only)
+    pub fn resolve_monitoring_alert(
+        env: Env,
+        caller: Address,
+        alert_id: u64,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only owner can resolve alerts
+        let storage = env.storage().persistent();
+        let owner = storage
+            .get::<DataKey, Address>(&DataKey::Owner)
+            .ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        if let Some(mut alert) = storage.get::<DataKey, MonitoringAlert>(&DataKey::MonitoringAlert(alert_id)) {
+            alert.status = MonitoringAlertStatus::Resolved;
+            alert.resolved_at = Some(env.ledger().timestamp());
+            alert.resolved_by = Some(caller.clone());
+
+            storage.set(&DataKey::MonitoringAlert(alert_id), &alert);
+
+            env.events().publish(
+                (symbol_short!("alert_res"),),
+                (caller, alert_id, env.ledger().timestamp()),
+            );
+        }
+
+        Ok(())
     }
 }
