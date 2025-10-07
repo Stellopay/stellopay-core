@@ -1,22 +1,33 @@
+extern crate alloc;
+
+use alloc::vec::Vec as StdVec;
+use core::cmp;
+use core::convert::TryInto;
+use hmac::{Hmac, Mac};
+use sha1::Sha1;
 use soroban_sdk::{
-    contract, contracterror, contractimpl, symbol_short, token::Client as TokenClient,
-    Address, Env, Map, String, Symbol, Vec,
+    contract, contracterror, contractimpl, symbol_short, token::Client as TokenClient, Address,
+    Bytes, BytesN, Env, Map, String, Symbol, Vec,
 };
 
+type HmacSha1 = Hmac<Sha1>;
+
 use crate::enterprise::{
-    self, Approval, ApprovalStep, ApprovalWorkflow, BackupSchedule, Department,
-    Dispute, DisputePriority, DisputeSettings, DisputeStatus, DisputeType, EnterpriseDataKey,
-    Escalation, EscalationLevel, Mediator, PayrollModificationRequest, PayrollModificationStatus,
+    self, Approval, ApprovalStep, ApprovalWorkflow, BackupSchedule, Department, Dispute,
+    DisputePriority, DisputeSettings, DisputeStatus, DisputeType, EnterpriseDataKey, Escalation,
+    EscalationLevel, Mediator, PayrollModificationRequest, PayrollModificationStatus,
     PayrollModificationType, ReportTemplate, WebhookEndpoint,
 };
 
 use crate::events::{
-    emit_disburse, BACKUP_CREATED_EVENT, BACKUP_VERIFIED_EVENT, DEPOSIT_EVENT,
-    EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT, METRICS_UPDATED_EVENT, PAUSED_EVENT,
-    PRESET_CREATED_EVENT, RECOVERY_COMPLETED_EVENT, RECOVERY_STARTED_EVENT, ROLE_ASSIGNED_EVENT,
-    ROLE_REVOKED_EVENT, RULE_CREATED_EVENT, RULE_EXECUTED_EVENT, SCHEDULE_CREATED_EVENT,
-    SCHEDULE_EXECUTED_EVENT, SCHEDULE_UPDATED_EVENT, SECURITY_AUDIT_EVENT,
-    SECURITY_POLICY_VIOLATION_EVENT, TEMPLATE_APPLIED_EVENT, TEMPLATE_CREATED_EVENT,
+    emit_disburse, MfaChallengeEvent, MfaSessionEvent, MfaVerificationEvent, BACKUP_CREATED_EVENT,
+    BACKUP_VERIFIED_EVENT, DEPOSIT_EVENT, EMPLOYEE_PAUSED_EVENT, EMPLOYEE_RESUMED_EVENT,
+    METRICS_UPDATED_EVENT, MFA_CHALLENGE_EVENT, MFA_DISABLED_EVENT, MFA_EMERGENCY_EVENT,
+    MFA_ENABLED_EVENT, MFA_VERIFIED_EVENT, PAUSED_EVENT, PRESET_CREATED_EVENT,
+    RECOVERY_COMPLETED_EVENT, RECOVERY_STARTED_EVENT, ROLE_ASSIGNED_EVENT, ROLE_REVOKED_EVENT,
+    RULE_CREATED_EVENT, RULE_EXECUTED_EVENT, SCHEDULE_CREATED_EVENT, SCHEDULE_EXECUTED_EVENT,
+    SCHEDULE_UPDATED_EVENT, SECURITY_AUDIT_EVENT, SECURITY_POLICY_VIOLATION_EVENT,
+    SESSION_ENDED_EVENT, SESSION_STARTED_EVENT, TEMPLATE_APPLIED_EVENT, TEMPLATE_CREATED_EVENT,
     TEMPLATE_SHARED_EVENT, TEMPLATE_UPDATED_EVENT, UNPAUSED_EVENT,
 };
 
@@ -25,9 +36,121 @@ use crate::insurance::{
 };
 
 use crate::storage::{
-    ActionType, AlertSeverity, AlertStatus, AutomationRule, BackupData, BackupMetadata, BackupStatus, BackupType, CompactPayroll, CompactPayrollHistoryEntry, ComplianceAlert, ComplianceAlertType, ComplianceCheckResult, ComplianceIssue, ComplianceRecord, ComplianceSeverity, ComplianceStatus, ConditionOperator, DashboardMetrics, DataKey, EmployeeProfile, EmployeeStatus, EmployeeTransfer, ExtendedDataKey, FinalPayment, HolidayConfig, LifecycleStorage, LogicalOperator, OffboardingTask, OffboardingWorkflow, OnboardingTask, OnboardingWorkflow, Payroll, PayrollAdjustment, PayrollBackup, PayrollForecast, PayrollInput, PayrollReport, PayrollSchedule, PayrollTemplate, PerformanceMetrics, Permission, PermissionAuditEntry, RecoveryMetadata, RecoveryPoint, RecoveryStatus, RecoveryType, ReportAuditEntry, ReportFormat, ReportMetadata, ReportStatus, ReportType, Role, RoleDataKey, RoleDelegation, RoleDetails, RuleAction, RuleCondition, RuleType, ScheduleFrequency, ScheduleMetadata, ScheduleType, SecurityAuditEntry, SecurityAuditResult, SecuritySettings, TaxCalculation, TaxType, TempRoleAssignment, TemplatePreset, UserRoleAssignment, UserRolesResponse, WeekendHandling, WorkflowStatus
+    ActionType,
+    AggregatedMetrics,
+    AlertSeverity,
+    AlertStatus,
+    AnalyticsDashboard,
+    AnalyticsDataKey,
+    AnalyticsQuery,
+    AutomationRule,
+    BackupData,
+    BackupMetadata,
+    BackupStatus,
+    BackupType,
+    BenchmarkData,
+    ChartData,
+    CompactPayroll,
+    CompactPayrollHistoryEntry,
+    ComparativeAnalysis,
+    ComparisonType,
+    ComplianceAlert,
+    ComplianceAlertType,
+    ComplianceCheckResult,
+    ComplianceIssue,
+    ComplianceRecord,
+    ComplianceSeverity,
+    ComplianceStatus,
+    ConditionOperator,
+    DashboardMetrics,
+    DashboardWidget,
+    DataExportRequest,
+    DataKey,
+    DataPoint,
+    DataSeries,
+    DataSource,
+    DateRange,
+    EmployeeProfile,
+    EmployeeStatus,
+    EmployeeTransfer,
+    ExportFormat,
+    ExportStatus,
+    ExportType,
+    ExtendedDataKey,
+    FilterOperator,
+    FinalPayment,
+    ForecastData,
+    HolidayConfig,
+    LifecycleStorage,
+    LogicalOperator,
+    MetricComparison,
+    MfaChallenge,
+    MfaSession,
+    OffboardingTask,
+    OffboardingWorkflow,
+    OnboardingTask,
+    OnboardingWorkflow,
+    Payroll,
+    PayrollAdjustment,
+    PayrollBackup,
+    PayrollForecast,
+    PayrollInput,
+    // Reporting imports
+    PayrollReport,
+    PayrollSchedule,
+    PayrollTemplate,
+    PerformanceMetrics,
+    Permission,
+    PermissionAuditEntry,
+    QueryFilter,
+    QueryType,
+    RecoveryMetadata,
+    RecoveryPoint,
+    RecoveryStatus,
+    RecoveryType,
+    ReportAuditEntry,
+    ReportFormat,
+    ReportMetadata,
+    ReportStatus,
+    ReportType,
+    Role,
+    RoleDataKey,
+    RoleDelegation,
+    RoleDetails,
+    RuleAction,
+    RuleCondition,
+    RuleType,
+    ScheduleFrequency,
+    ScheduleMetadata,
+    ScheduleType,
+    SecurityAuditEntry,
+    SecurityAuditResult,
+    SecuritySettings,
+    SortCriteria,
+    SortDirection,
+    TaxCalculation,
+    TaxType,
+    TempRoleAssignment,
+    TemplatePreset,
+    TimeSeriesDataPoint,
+    TrendAnalysis,
+    TrendDirection,
+    UserMfaConfig,
+    UserRoleAssignment,
+    UserRolesResponse,
+    WeekendHandling,
+    WidgetPosition,
+    WidgetSize,
+    WidgetType,
+    WorkflowStatus,
+    // Rate limiting types
+    AdvancedRateLimitConfig,
+    GlobalRateLimitSettings,
+    IPRateLimitConfig,
+    RateLimitViolation,
+    RateLimitViolationType,
+    ViolationSeverity,
 };
-
 //-----------------------------------------------------------------------------
 // Gas Optimization Structures
 //-----------------------------------------------------------------------------
@@ -224,6 +347,15 @@ pub const ACCOUNT_LOCKED_EVENT: Symbol = symbol_short!("acc_lck");
 #[allow(dead_code)]
 pub const BACKUP_RESTORED_EVENT: Symbol = symbol_short!("backup_r");
 
+const MFA_SCOPE_ALL: Symbol = symbol_short!("mfa_all");
+const MFA_SCOPE_PAYROLL: Symbol = symbol_short!("payroll");
+const MFA_SCOPE_DISBURSE: Symbol = symbol_short!("disburs");
+const MFA_SCOPE_TRANSFER: Symbol = symbol_short!("transfr");
+const MFA_SCOPE_EMERGENCY: Symbol = symbol_short!("emer");
+const MFA_TOTP_ALLOWED_DRIFT: i64 = 1;
+const DEFAULT_MFA_CHALLENGE_ATTEMPTS: u32 = 5;
+const DEFAULT_LARGE_DISBURSEMENT_THRESHOLD: i128 = 100_000;
+
 //-----------------------------------------------------------------------------
 // Contract Implementation
 //-----------------------------------------------------------------------------
@@ -395,10 +527,19 @@ impl PayrollContract {
         interval: u64,
         recurrence_frequency: u64,
     ) -> Result<Payroll, PayrollError> {
+        employer.require_auth();
+
+        // Check rate limiting for create/update operation
+        if Self::check_rate_limit(env.clone(), employer.clone(), String::from_str(&env, "create_or_update_escrow"), None)? {
+            return Err(PayrollError::RateLimitExceeded);
+        }
+
         // Optimized validation with early returns
         Self::validate_payroll_input(amount, interval, recurrence_frequency)?;
 
-        employer.require_auth();
+        if Self::is_mfa_required_for_operation(&env, &employer, MFA_SCOPE_PAYROLL, None) {
+            Self::ensure_active_mfa_session(&env, &employer, MFA_SCOPE_PAYROLL)?;
+        }
 
         // Get cached contract state to reduce storage reads
         let cache = Self::get_contract_cache(&env);
@@ -406,9 +547,7 @@ impl PayrollContract {
 
         // Check authorization with cached data
         let existing_payroll = Self::_get_payroll(&env, &employee);
-        let is_owner = cache
-            .owner
-            .as_ref() == Some(&employer);
+        let is_owner = cache.owner.as_ref() == Some(&employer);
 
         if let Some(ref existing) = existing_payroll {
             // For updates, only the contract owner or the existing payroll's employer can call
@@ -685,6 +824,11 @@ impl PayrollContract {
     ) -> Result<(), PayrollError> {
         caller.require_auth();
 
+        // Check rate limiting for disburse operation
+        if Self::check_rate_limit(env.clone(), caller.clone(), String::from_str(&env, "disburse_salary"), None)? {
+            return Err(PayrollError::RateLimitExceeded);
+        }
+
         // Get cached contract state
         let cache = Self::get_contract_cache(&env);
         if let Some(true) = cache.is_paused {
@@ -738,14 +882,18 @@ impl PayrollContract {
         }
 
         // Security: rate limit and suspicious activity checks for disbursement
-        // Rate limit check
         if let Err(_e) = Self::_check_rate_limit(&env, &caller, "disburse_salary") {
             let now = env.ledger().timestamp();
             let mut details = Map::new(&env);
-            details.set(String::from_str(&env, "operation"), String::from_str(&env, "disburse_salary"));
-            details.set(String::from_str(&env, "reason"), String::from_str(&env, "rate_limit"));
+            details.set(
+                String::from_str(&env, "operation"),
+                String::from_str(&env, "disburse_salary"),
+            );
+            details.set(
+                String::from_str(&env, "reason"),
+                String::from_str(&env, "rate_limit"),
+            );
 
-            // Log audit entry for rate limit
             Self::_log_security_event(
                 &env,
                 &caller,
@@ -755,7 +903,6 @@ impl PayrollContract {
                 details.clone(),
             );
 
-            // Emit rate limit exceeded alert with placeholder limits (to be wired later)
             crate::events::emit_rate_limit_exceeded(
                 env.clone(),
                 caller.clone(),
@@ -769,13 +916,14 @@ impl PayrollContract {
             return Err(PayrollError::RateLimitExceeded);
         }
 
-        // Suspicious activity detection
         if let Err(_e) = Self::_detect_suspicious_activity(&env, &caller, "disburse_salary") {
             let now = env.ledger().timestamp();
             let mut details = Map::new(&env);
-            details.set(String::from_str(&env, "operation"), String::from_str(&env, "disburse_salary"));
+            details.set(
+                String::from_str(&env, "operation"),
+                String::from_str(&env, "disburse_salary"),
+            );
 
-            // Log audit entry for suspicious activity
             Self::_log_security_event(
                 &env,
                 &caller,
@@ -785,7 +933,6 @@ impl PayrollContract {
                 details.clone(),
             );
 
-            // Emit suspicious activity alert
             crate::events::emit_suspicious_activity(
                 env.clone(),
                 caller.clone(),
@@ -796,6 +943,15 @@ impl PayrollContract {
             );
 
             return Err(PayrollError::SuspiciousActivityDetected);
+        }
+
+        if Self::is_mfa_required_for_operation(
+            &env,
+            &caller,
+            MFA_SCOPE_DISBURSE,
+            Some(payroll.amount),
+        ) {
+            Self::ensure_active_mfa_session(&env, &caller, MFA_SCOPE_DISBURSE)?;
         }
 
         let current_time = env.ledger().timestamp();
@@ -927,6 +1083,10 @@ impl PayrollContract {
         } else {
             // Should not happen if initialized
             return Err(PayrollError::Unauthorized);
+        }
+
+        if Self::is_mfa_required_for_operation(&env, &caller, MFA_SCOPE_TRANSFER, None) {
+            Self::ensure_active_mfa_session(&env, &caller, MFA_SCOPE_TRANSFER)?;
         }
 
         // Set new owner
@@ -1175,10 +1335,7 @@ impl PayrollContract {
         // Create optimized batch context
         let batch_ctx = Self::create_batch_context(&env);
         let storage = env.storage().persistent();
-        let is_owner = batch_ctx
-            .cache
-            .owner
-            .as_ref() == Some(&employer);
+        let is_owner = batch_ctx.cache.owner.as_ref() == Some(&employer);
 
         let mut created_payrolls = Vec::new(&env);
         let mut supported_tokens = Vec::new(&env);
@@ -1296,6 +1453,8 @@ impl PayrollContract {
         let batch_ctx = Self::create_batch_context(&env);
         let mut processed_employees = Vec::new(&env);
 
+        let mut mfa_checked = false;
+
         // Process each employee individually to avoid indexing issues
         for employee in employees.iter() {
             let payroll =
@@ -1304,6 +1463,18 @@ impl PayrollContract {
             // Only the employer can disburse salary
             if caller != payroll.employer {
                 return Err(PayrollError::Unauthorized);
+            }
+
+            if !mfa_checked
+                && Self::is_mfa_required_for_operation(
+                    &env,
+                    &caller,
+                    MFA_SCOPE_DISBURSE,
+                    Some(payroll.amount),
+                )
+            {
+                Self::ensure_active_mfa_session(&env, &caller, MFA_SCOPE_DISBURSE)?;
+                mfa_checked = true;
             }
 
             // Check if payroll is paused for this employee
@@ -1664,6 +1835,11 @@ impl PayrollContract {
         employee: Address,
     ) -> Result<(), PayrollError> {
         caller.require_auth();
+
+        // Check rate limiting for pause operation
+        if Self::check_rate_limit(env.clone(), caller.clone(), String::from_str(&env, "pause_employee"), None)? {
+            return Err(PayrollError::RateLimitExceeded);
+        }
 
         let storage = env.storage().persistent();
         let cache = Self::get_contract_cache(&env);
@@ -3779,7 +3955,10 @@ impl PayrollContract {
         let metadata = ScheduleMetadata {
             total_employees: 0,
             total_amount: 0,
-            token_address: Address::from_str(&env, "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"),
+            token_address: Address::from_str(
+                &env,
+                "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+            ),
             priority: 1,
             retry_count: 0,
             max_retries: 3,
@@ -3824,7 +4003,8 @@ impl PayrollContract {
         employer_schedules.push_back(next_id);
         storage.set(&ExtendedDataKey::EmpSchedules(caller), &employer_schedules);
 
-        env.events().publish((SCHEDULE_CREATED_EVENT,), (next_id, name, skip_weekends));
+        env.events()
+            .publish((SCHEDULE_CREATED_EVENT,), (next_id, name, skip_weekends));
 
         Ok(next_id)
     }
@@ -3850,12 +4030,12 @@ impl PayrollContract {
         Self::require_not_paused(&env)?;
 
         let storage = env.storage().persistent();
-        
+
         // Verify schedule ownership
         let schedule: PayrollSchedule = storage
             .get(&ExtendedDataKey::Schedule(schedule_id))
             .ok_or(PayrollError::ScheduleNotFound)?;
-        
+
         if schedule.employer != caller {
             return Err(PayrollError::Unauthorized);
         }
@@ -3921,7 +4101,10 @@ impl PayrollContract {
         employer_rules.push_back(next_id);
         storage.set(&ExtendedDataKey::EmpRules(caller), &employer_rules);
 
-        env.events().publish((RULE_CREATED_EVENT,), (next_id, name, trigger_type, threshold_value));
+        env.events().publish(
+            (RULE_CREATED_EVENT,),
+            (next_id, name, trigger_type, threshold_value),
+        );
 
         Ok(next_id)
     }
@@ -3938,8 +4121,8 @@ impl PayrollContract {
         caller.require_auth();
         Self::require_not_paused(&env)?;
 
-        let mut payroll = Self::_get_payroll(&env, &employee)
-            .ok_or(PayrollError::PayrollNotFound)?;
+        let mut payroll =
+            Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
 
         if payroll.employer != caller {
             return Err(PayrollError::Unauthorized);
@@ -3947,7 +4130,7 @@ impl PayrollContract {
 
         let storage = env.storage().persistent();
         let current_time = env.ledger().timestamp();
-        
+
         // Get next adjustment ID
         let adjustment_id = storage.get(&ExtendedDataKey::NextAdjustmentId).unwrap_or(0) + 1;
         storage.set(&ExtendedDataKey::NextAdjustmentId, &adjustment_id);
@@ -3981,7 +4164,10 @@ impl PayrollContract {
             .get(&ExtendedDataKey::EmpAdjustments(employee.clone()))
             .unwrap_or(Vec::new(&env));
         emp_adjustments.push_back(adjustment_id);
-        storage.set(&ExtendedDataKey::EmpAdjustments(employee.clone()), &emp_adjustments);
+        storage.set(
+            &ExtendedDataKey::EmpAdjustments(employee.clone()),
+            &emp_adjustments,
+        );
 
         // Apply adjustment to payroll
         payroll.amount = new_amount;
@@ -4004,14 +4190,14 @@ impl PayrollContract {
         let adjustment_ids: Vec<u64> = storage
             .get(&ExtendedDataKey::EmpAdjustments(employee))
             .unwrap_or(Vec::new(&env));
-        
+
         let mut adjustments = Vec::new(&env);
         for id in adjustment_ids.iter() {
             if let Some(adjustment) = storage.get(&ExtendedDataKey::Adjustment(id)) {
                 adjustments.push_back(adjustment);
             }
         }
-        
+
         adjustments
     }
 
@@ -4025,17 +4211,17 @@ impl PayrollContract {
         let storage = env.storage().persistent();
         let employees = Self::get_employer_employees(env.clone(), employer.clone());
         let current_time = env.ledger().timestamp();
-        
+
         let mut forecasts = Vec::new(&env);
         let forecast_id_start = storage.get(&ExtendedDataKey::NextForecastId).unwrap_or(0);
-        
+
         for period in 0..periods {
             let mut period_total: i128 = 0;
             let mut active_employees = 0u32;
-            
+
             let period_start = current_time + ((period * frequency_days) as u64 * 86400);
             let period_end = period_start + (frequency_days as u64 * 86400);
-            
+
             for employee in employees.iter() {
                 if let Some(payroll) = Self::_get_payroll(&env, &employee) {
                     if payroll.employer == employer && !payroll.is_paused {
@@ -4044,7 +4230,7 @@ impl PayrollContract {
                     }
                 }
             }
-            
+
             let forecast = PayrollForecast {
                 period: period + 1,
                 start_date: period_start,
@@ -4053,19 +4239,22 @@ impl PayrollContract {
                 employee_count: active_employees,
                 confidence_level: 85, // Base confidence level
             };
-            
+
             let forecast_id = forecast_id_start + 1 + (period as u64);
             storage.set(&ExtendedDataKey::Forecast(forecast_id), &forecast);
             forecasts.push_back(forecast);
         }
-        
-        storage.set(&ExtendedDataKey::NextForecastId, &(forecast_id_start + periods as u64));
-        
+
+        storage.set(
+            &ExtendedDataKey::NextForecastId,
+            &(forecast_id_start + periods as u64),
+        );
+
         env.events().publish(
             (symbol_short!("forecast"),),
             (employer, periods, current_time),
         );
-        
+
         Ok(forecasts)
     }
 
@@ -4088,12 +4277,15 @@ impl PayrollContract {
         let storage = env.storage().persistent();
         let employees = Self::get_employer_employees(env.clone(), caller.clone());
         let current_time = env.ledger().timestamp();
-        
-        let check_id = storage.get(&ExtendedDataKey::NextComplianceCheckId).unwrap_or(0) + 1;
+
+        let check_id = storage
+            .get(&ExtendedDataKey::NextComplianceCheckId)
+            .unwrap_or(0)
+            + 1;
         storage.set(&ExtendedDataKey::NextComplianceCheckId, &check_id);
-        
+
         let mut issues = Vec::new(&env);
-        
+
         for employee in employees.iter() {
             if let Some(payroll) = Self::_get_payroll(&env, &employee) {
                 // Check if payroll is overdue
@@ -4106,7 +4298,7 @@ impl PayrollContract {
                     };
                     issues.push_back(issue);
                 }
-                
+
                 // Check minimum amount compliance
                 if payroll.amount < 1000 {
                     let issue = ComplianceIssue {
@@ -4117,7 +4309,7 @@ impl PayrollContract {
                     };
                     issues.push_back(issue);
                 }
-                
+
                 // Check interval compliance
                 if payroll.interval < 86400 {
                     let issue = ComplianceIssue {
@@ -4130,7 +4322,7 @@ impl PayrollContract {
                 }
             }
         }
-        
+
         let result = ComplianceCheckResult {
             check_id,
             employer: caller.clone(),
@@ -4138,19 +4330,22 @@ impl PayrollContract {
             issues_found: issues.clone(),
             passed: issues.len() == 0,
         };
-        
+
         storage.set(&ExtendedDataKey::ComplianceCheck(check_id), &result);
-        
+
         env.events().publish(
             (symbol_short!("comp_chk"),),
             (caller, check_id, issues.len() as u32, result.passed),
         );
-        
+
         Ok(result)
     }
 
     /// Get compliance check results
-    pub fn get_compliance_check(env: Env, check_id: u64) -> Result<ComplianceCheckResult, PayrollError> {
+    pub fn get_compliance_check(
+        env: Env,
+        check_id: u64,
+    ) -> Result<ComplianceCheckResult, PayrollError> {
         let storage = env.storage().persistent();
         storage
             .get(&ExtendedDataKey::ComplianceCheck(check_id))
@@ -4171,11 +4366,11 @@ impl PayrollContract {
         weekend_handling: &WeekendHandling,
     ) -> u64 {
         let mut next_time = Self::_calculate_next_execution(env, frequency, current_time);
-        
+
         // Handle weekends
         if skip_weekends {
             let day_of_week = ((next_time / 86400) + 4) % 7; // Adjust for epoch
-            
+
             match weekend_handling {
                 WeekendHandling::Skip | WeekendHandling::ProcessLate => {
                     // If Saturday (6) or Sunday (0), move to Monday
@@ -4184,7 +4379,7 @@ impl PayrollContract {
                     } else if day_of_week == 0 {
                         next_time += 86400; // Sunday to Monday
                     }
-                },
+                }
                 WeekendHandling::ProcessEarly => {
                     // If Saturday or Sunday, move to Friday
                     if day_of_week == 6 {
@@ -4192,20 +4387,20 @@ impl PayrollContract {
                     } else if day_of_week == 0 {
                         next_time -= 2 * 86400; // Sunday to Friday
                     }
-                },
+                }
             }
         }
-        
+
         // Handle holidays
         for holiday in skip_holidays.iter() {
             let holiday_day = (holiday / 86400) * 86400;
             let next_day = (next_time / 86400) * 86400;
-            
+
             if holiday_day == next_day {
                 next_time += 86400; // Move to next day
             }
         }
-        
+
         next_time
     }
 
@@ -4218,10 +4413,10 @@ impl PayrollContract {
         if conditions.len() == 0 {
             return Ok(true);
         }
-        
+
         let payroll = Self::_get_payroll(env, employee);
         let mut result = true;
-        
+
         for condition in conditions.iter() {
             let field_value = if let Some(ref p) = payroll {
                 if condition.field == String::from_str(env, "amount") {
@@ -4234,11 +4429,11 @@ impl PayrollContract {
             } else {
                 None
             };
-            
+
             if let Some(value) = field_value {
                 // Parse threshold from string
                 let threshold: i128 = 1000; // Default threshold
-                
+
                 let condition_met = match condition.operator {
                     ConditionOperator::GreaterThan => value > threshold,
                     ConditionOperator::LessThan => value < threshold,
@@ -4247,7 +4442,7 @@ impl PayrollContract {
                     ConditionOperator::LessThanOrEqual => value <= threshold,
                     _ => false,
                 };
-                
+
                 result = match condition.logical_operator {
                     LogicalOperator::And => result && condition_met,
                     LogicalOperator::Or => result || condition_met,
@@ -4255,7 +4450,7 @@ impl PayrollContract {
                 };
             }
         }
-        
+
         Ok(result)
     }
     //-----------------------------------------------------------------------------
@@ -4930,6 +5125,7 @@ impl PayrollContract {
         audit_logging_enabled: Option<bool>,
         rate_limiting_enabled: Option<bool>,
         security_policies_enabled: Option<bool>,
+        large_disbursement_threshold: Option<i128>,
     ) -> Result<(), PayrollError> {
         caller.require_auth();
         Self::require_not_paused(&env)?;
@@ -4951,6 +5147,7 @@ impl PayrollContract {
                 rate_limiting_enabled: true,
                 security_policies_enabled: true,
                 emergency_mode: false,
+                large_disbursement_threshold: DEFAULT_LARGE_DISBURSEMENT_THRESHOLD,
                 last_updated: current_time,
             });
 
@@ -4976,11 +5173,299 @@ impl PayrollContract {
         if let Some(policies) = security_policies_enabled {
             settings.security_policies_enabled = policies;
         }
+        if let Some(threshold) = large_disbursement_threshold {
+            settings.large_disbursement_threshold = threshold;
+        }
 
         settings.last_updated = current_time;
         storage.set(&DataKey::SecuritySettings, &settings);
 
         Ok(())
+    }
+
+    /// Enable multi-factor authentication for the caller
+    #[allow(clippy::too_many_arguments)]
+    pub fn enable_mfa(
+        env: Env,
+        caller: Address,
+        secret: Bytes,
+        digits: u32,
+        period: u64,
+        emergency_code_hashes: Vec<BytesN<32>>,
+        emergency_bypass_enabled: bool,
+        session_timeout_override: Option<u64>,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        if secret.is_empty() || period == 0 {
+            return Err(PayrollError::InvalidData);
+        }
+
+        if digits < 4 || digits > 8 {
+            return Err(PayrollError::InvalidData);
+        }
+
+        // Ensure any stale sessions are removed before enabling
+        Self::clear_user_sessions(&env, &caller);
+
+        let mut config =
+            Self::get_user_mfa_config(&env, &caller).unwrap_or_else(|| UserMfaConfig {
+                user: caller.clone(),
+                is_enabled: true,
+                secret: Bytes::new(&env),
+                digits,
+                period,
+                last_verified_at: None,
+                session_timeout_override,
+                active_sessions: Vec::<u64>::new(&env),
+                emergency_bypass_enabled: false,
+                emergency_code_hashes: Vec::new(&env),
+                emergency_bypass_last_used_at: None,
+            });
+
+        config.user = caller.clone();
+        config.is_enabled = true;
+        config.secret = secret;
+        config.digits = digits;
+        config.period = period;
+        config.last_verified_at = None;
+        config.session_timeout_override = session_timeout_override;
+        config.active_sessions = Vec::<u64>::new(&env);
+        config.emergency_bypass_enabled =
+            emergency_bypass_enabled && !emergency_code_hashes.is_empty();
+        config.emergency_code_hashes = emergency_code_hashes;
+        config.emergency_bypass_last_used_at = None;
+
+        Self::save_user_mfa_config(&env, &config);
+
+        env.events()
+            .publish((MFA_ENABLED_EVENT,), (caller, digits, period));
+
+        Ok(())
+    }
+
+    /// Disable multi-factor authentication for the caller and destroy active sessions
+    pub fn disable_mfa(env: Env, caller: Address) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        Self::clear_user_sessions(&env, &caller);
+
+        let mut config =
+            Self::get_user_mfa_config(&env, &caller).unwrap_or_else(|| UserMfaConfig {
+                user: caller.clone(),
+                is_enabled: false,
+                secret: Bytes::new(&env),
+                digits: 6,
+                period: 30,
+                last_verified_at: None,
+                session_timeout_override: None,
+                active_sessions: Vec::<u64>::new(&env),
+                emergency_bypass_enabled: false,
+                emergency_code_hashes: Vec::new(&env),
+                emergency_bypass_last_used_at: None,
+            });
+
+        config.user = caller.clone();
+        config.is_enabled = false;
+        config.secret = Bytes::new(&env);
+        config.digits = 6;
+        config.period = 30;
+        config.last_verified_at = None;
+        config.session_timeout_override = None;
+        config.active_sessions = Vec::<u64>::new(&env);
+        config.emergency_bypass_enabled = false;
+        config.emergency_code_hashes = Vec::new(&env);
+        config.emergency_bypass_last_used_at = None;
+
+        Self::save_user_mfa_config(&env, &config);
+
+        env.events().publish((MFA_DISABLED_EVENT,), caller);
+
+        Ok(())
+    }
+
+    /// Start an MFA challenge for the provided operation scope
+    pub fn begin_mfa_challenge(
+        env: Env,
+        caller: Address,
+        operation: Symbol,
+        emergency_bypass: bool,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        if !Self::is_supported_mfa_operation(operation.clone()) {
+            return Err(PayrollError::InvalidData);
+        }
+
+        let config = Self::get_user_mfa_config(&env, &caller).ok_or(PayrollError::MFARequired)?;
+        if !config.is_enabled {
+            return Err(PayrollError::MFARequired);
+        }
+
+        let emergency_allowed = emergency_bypass
+            && config.emergency_bypass_enabled
+            && !config.emergency_code_hashes.is_empty();
+
+        let current_time = env.ledger().timestamp();
+        let challenge_id = Self::next_mfa_challenge_id(&env);
+        let validity = cmp::max(config.period.saturating_mul(2), 120);
+        let expires_at = current_time.saturating_add(validity);
+        let session_scope = Self::scope_for_operation(&env, operation.clone());
+
+        let challenge = MfaChallenge {
+            challenge_id,
+            user: caller.clone(),
+            operation: operation.clone(),
+            issued_at: current_time,
+            expires_at,
+            attempts_remaining: DEFAULT_MFA_CHALLENGE_ATTEMPTS,
+            requires_totp: !emergency_allowed,
+            emergency_bypass_allowed: emergency_allowed,
+            session_scope: session_scope.clone(),
+            resolved: false,
+        };
+
+        let storage = env.storage().persistent();
+        storage.set(&ExtendedDataKey::MfaChallenge(challenge_id), &challenge);
+
+        let challenge_event = MfaChallengeEvent {
+            user: caller.clone(),
+            challenge_id,
+            operation,
+            expires_at,
+        };
+        env.events()
+            .publish((MFA_CHALLENGE_EVENT,), challenge_event);
+
+        Ok(challenge_id)
+    }
+
+    /// Complete an MFA challenge using either TOTP or an emergency bypass code
+    pub fn complete_mfa_challenge(
+        env: Env,
+        caller: Address,
+        challenge_id: u64,
+        totp_code: Option<u32>,
+        emergency_code_hash: Option<BytesN<32>>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let mut config =
+            Self::get_user_mfa_config(&env, &caller).ok_or(PayrollError::MFARequired)?;
+        if !config.is_enabled {
+            return Err(PayrollError::MFARequired);
+        }
+
+        let storage = env.storage().persistent();
+        let mut challenge = storage
+            .get::<ExtendedDataKey, MfaChallenge>(&ExtendedDataKey::MfaChallenge(challenge_id))
+            .ok_or(PayrollError::SecurityTokenInvalid)?;
+
+        if challenge.user != caller {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        if challenge.resolved {
+            return Err(PayrollError::SecurityTokenInvalid);
+        }
+
+        let current_time = env.ledger().timestamp();
+        if current_time > challenge.expires_at {
+            challenge.resolved = true;
+            storage.set(&ExtendedDataKey::MfaChallenge(challenge_id), &challenge);
+            return Err(PayrollError::SecurityTokenInvalid);
+        }
+
+        if challenge.attempts_remaining == 0 {
+            challenge.resolved = true;
+            storage.set(&ExtendedDataKey::MfaChallenge(challenge_id), &challenge);
+            return Err(PayrollError::SecurityTokenInvalid);
+        }
+
+        let mut emergency_used = false;
+        let totp_valid = if let Some(code) = totp_code {
+            Self::verify_totp(&config, code, current_time)?
+        } else {
+            false
+        };
+
+        if challenge.requires_totp {
+            if !totp_valid {
+                challenge.attempts_remaining = challenge.attempts_remaining.saturating_sub(1);
+                storage.set(&ExtendedDataKey::MfaChallenge(challenge_id), &challenge);
+                return Err(PayrollError::SecurityTokenInvalid);
+            }
+            config.last_verified_at = Some(current_time);
+        } else if totp_valid {
+            config.last_verified_at = Some(current_time);
+        } else {
+            let hash = emergency_code_hash.ok_or(PayrollError::SecurityTokenInvalid)?;
+            if !Self::consume_emergency_code(&env, &mut config, &hash) {
+                challenge.attempts_remaining = challenge.attempts_remaining.saturating_sub(1);
+                storage.set(&ExtendedDataKey::MfaChallenge(challenge_id), &challenge);
+                return Err(PayrollError::SecurityTokenInvalid);
+            }
+            emergency_used = true;
+            config.emergency_bypass_last_used_at = Some(current_time);
+        }
+
+        challenge.resolved = true;
+        challenge.attempts_remaining = 0;
+        storage.set(&ExtendedDataKey::MfaChallenge(challenge_id), &challenge);
+
+        let session_id = Self::next_mfa_session_id(&env);
+        let session_timeout = config
+            .session_timeout_override
+            .unwrap_or_else(|| Self::resolve_default_session_timeout(&env));
+        let expires_at = current_time.saturating_add(session_timeout);
+
+        let mut issued_scope = challenge.session_scope.clone();
+        if emergency_used {
+            issued_scope.push_back(MFA_SCOPE_EMERGENCY);
+        }
+
+        let session = MfaSession {
+            session_id,
+            user: caller.clone(),
+            issued_for: issued_scope.clone(),
+            created_at: current_time,
+            last_used_at: current_time,
+            expires_at,
+            emergency_bypass_used: emergency_used,
+            challenge_id,
+        };
+
+        storage.set(&ExtendedDataKey::MfaSession(session_id), &session);
+
+        config.active_sessions.push_back(session_id);
+        Self::save_user_mfa_config(&env, &config);
+
+        let verification_event = MfaVerificationEvent {
+            user: caller.clone(),
+            challenge_id,
+            session_id,
+            operation: challenge.operation,
+            emergency_bypass: emergency_used,
+        };
+        env.events()
+            .publish((MFA_VERIFIED_EVENT,), verification_event);
+
+        let session_event = MfaSessionEvent {
+            user: caller,
+            session_id,
+            created_at: current_time,
+            expires_at,
+            operations: issued_scope,
+            emergency_bypass: emergency_used,
+        };
+        env.events()
+            .publish((SESSION_STARTED_EVENT,), session_event);
+
+        Ok(session_id)
     }
 
     /// Get security settings
@@ -5001,10 +5486,8 @@ impl PayrollContract {
         // For now, return an empty vector
         let audit_entries = Vec::new(&env);
 
-        env.events().publish(
-            (SECURITY_AUDIT_EVENT,),
-            (caller, audit_entries.len()),
-        );
+        env.events()
+            .publish((SECURITY_AUDIT_EVENT,), (caller, audit_entries.len()));
 
         Ok(audit_entries)
     }
@@ -5044,6 +5527,311 @@ impl PayrollContract {
     //-----------------------------------------------------------------------------
     // Internal Security Helper Functions
     //-----------------------------------------------------------------------------
+
+    fn get_user_mfa_config(env: &Env, user: &Address) -> Option<UserMfaConfig> {
+        env.storage()
+            .persistent()
+            .get(&ExtendedDataKey::UserMfaConfig(user.clone()))
+    }
+
+    fn save_user_mfa_config(env: &Env, config: &UserMfaConfig) {
+        let storage = env.storage().persistent();
+        storage.set(&ExtendedDataKey::UserMfaConfig(config.user.clone()), config);
+        storage.set(
+            &ExtendedDataKey::UserMfaSessions(config.user.clone()),
+            &config.active_sessions,
+        );
+    }
+
+    fn clear_user_sessions(env: &Env, user: &Address) {
+        let storage = env.storage().persistent();
+        let mut updated = storage
+            .get::<ExtendedDataKey, UserMfaConfig>(&ExtendedDataKey::UserMfaConfig(user.clone()));
+
+        if let Some(mut config) = updated {
+            for session_id in config.active_sessions.iter() {
+                let key = ExtendedDataKey::MfaSession(session_id);
+                if let Some(session) = storage.get::<ExtendedDataKey, MfaSession>(&key) {
+                    let event = MfaSessionEvent {
+                        user: session.user.clone(),
+                        session_id,
+                        created_at: session.created_at,
+                        expires_at: session.expires_at,
+                        operations: session.issued_for.clone(),
+                        emergency_bypass: session.emergency_bypass_used,
+                    };
+                    env.events().publish((SESSION_ENDED_EVENT,), event);
+                    storage.remove(&key);
+                } else {
+                    storage.remove(&key);
+                }
+            }
+
+            config.active_sessions = Vec::<u64>::new(env);
+            Self::save_user_mfa_config(env, &config);
+        } else {
+            storage.remove(&ExtendedDataKey::UserMfaSessions(user.clone()));
+        }
+    }
+
+    fn resolve_default_session_timeout(env: &Env) -> u64 {
+        env.storage()
+            .persistent()
+            .get::<DataKey, SecuritySettings>(&DataKey::SecuritySettings)
+            .map(|settings| settings.session_timeout)
+            .unwrap_or(3600)
+    }
+
+    fn next_mfa_session_id(env: &Env) -> u64 {
+        let storage = env.storage().persistent();
+        let next = storage
+            .get::<ExtendedDataKey, u64>(&ExtendedDataKey::NextMfaSessionId)
+            .unwrap_or(1);
+        storage.set(&ExtendedDataKey::NextMfaSessionId, &(next + 1));
+        next
+    }
+
+    fn next_mfa_challenge_id(env: &Env) -> u64 {
+        let storage = env.storage().persistent();
+        let next = storage
+            .get::<ExtendedDataKey, u64>(&ExtendedDataKey::NextMfaChallengeId)
+            .unwrap_or(1);
+        storage.set(&ExtendedDataKey::NextMfaChallengeId, &(next + 1));
+        next
+    }
+
+    fn scope_for_operation(env: &Env, operation: Symbol) -> Vec<Symbol> {
+        let mut scope = Vec::new(env);
+        scope.push_back(operation.clone());
+        if operation != MFA_SCOPE_ALL {
+            scope.push_back(MFA_SCOPE_ALL);
+        }
+        scope
+    }
+
+    fn is_supported_mfa_operation(operation: Symbol) -> bool {
+        operation == MFA_SCOPE_PAYROLL
+            || operation == MFA_SCOPE_DISBURSE
+            || operation == MFA_SCOPE_TRANSFER
+            || operation == MFA_SCOPE_EMERGENCY
+    }
+
+    fn consume_emergency_code(env: &Env, config: &mut UserMfaConfig, hash: &BytesN<32>) -> bool {
+        let mut remaining = Vec::new(env);
+        let mut consumed = false;
+        for entry in config.emergency_code_hashes.iter() {
+            if !consumed && entry == hash.clone() {
+                consumed = true;
+                continue;
+            }
+            remaining.push_back(entry.clone());
+        }
+
+        if consumed {
+            config.emergency_code_hashes = remaining;
+        }
+
+        consumed
+    }
+
+    fn bytes_to_std(bytes: &Bytes) -> StdVec<u8> {
+        let mut result = StdVec::with_capacity(bytes.len() as usize);
+        for byte in bytes.iter() {
+            result.push(byte);
+        }
+        result
+    }
+
+    fn hotp(secret: &[u8], counter: u64, digits: u32) -> Result<u32, PayrollError> {
+        let mut mac = HmacSha1::new_from_slice(secret).map_err(|_| PayrollError::InvalidData)?;
+        mac.update(&counter.to_be_bytes());
+
+        let code_bytes = mac.finalize().into_bytes();
+        let offset = (code_bytes[code_bytes.len() - 1] & 0x0f) as usize;
+
+        if offset + 3 >= code_bytes.len() {
+            return Err(PayrollError::InvalidData);
+        }
+
+        let binary = ((code_bytes[offset] & 0x7f) as u32) << 24
+            | (code_bytes[offset + 1] as u32) << 16
+            | (code_bytes[offset + 2] as u32) << 8
+            | (code_bytes[offset + 3] as u32);
+
+        let modulus = 10u32.saturating_pow(digits);
+        if modulus == 0 {
+            return Err(PayrollError::InvalidData);
+        }
+
+        Ok(binary % modulus)
+    }
+
+    fn verify_totp(
+        config: &UserMfaConfig,
+        code: u32,
+        timestamp: u64,
+    ) -> Result<bool, PayrollError> {
+        if config.secret.is_empty() || config.period == 0 {
+            return Ok(false);
+        }
+
+        let secret_bytes = Self::bytes_to_std(&config.secret);
+        let digits = config.digits;
+        let period = config.period;
+        let base_counter = (timestamp / period) as i64;
+
+        for drift in -MFA_TOTP_ALLOWED_DRIFT..=MFA_TOTP_ALLOWED_DRIFT {
+            let candidate_counter = base_counter + drift;
+            if candidate_counter < 0 {
+                continue;
+            }
+
+            let expected = Self::hotp(secret_bytes.as_slice(), candidate_counter as u64, digits)?;
+            if expected == code {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn session_allows_operation(session: &MfaSession, operation: Symbol) -> bool {
+        if operation == MFA_SCOPE_ALL {
+            return true;
+        }
+
+        for scope in session.issued_for.iter() {
+            if scope == operation || scope == MFA_SCOPE_ALL {
+                return true;
+            }
+        }
+
+        false
+    }
+
+    fn ensure_active_mfa_session(
+        env: &Env,
+        user: &Address,
+        operation: Symbol,
+    ) -> Result<(), PayrollError> {
+        let mut config = match Self::get_user_mfa_config(env, user) {
+            Some(cfg) if cfg.is_enabled => cfg,
+            Some(_) => return Err(PayrollError::MFARequired),
+            None => return Err(PayrollError::MFARequired),
+        };
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+        let mut active = Vec::<u64>::new(env);
+        let mut allowed = false;
+
+        for session_id in config.active_sessions.iter() {
+            let key = ExtendedDataKey::MfaSession(session_id);
+            if let Some(mut session) = storage.get::<ExtendedDataKey, MfaSession>(&key) {
+                if session.expires_at <= current_time {
+                    let event = MfaSessionEvent {
+                        user: session.user.clone(),
+                        session_id,
+                        created_at: session.created_at,
+                        expires_at: session.expires_at,
+                        operations: session.issued_for.clone(),
+                        emergency_bypass: session.emergency_bypass_used,
+                    };
+                    env.events().publish((SESSION_ENDED_EVENT,), event);
+                    storage.remove(&key);
+                    continue;
+                }
+
+                if Self::session_allows_operation(&session, operation.clone()) {
+                    allowed = true;
+                    session.last_used_at = current_time;
+                    storage.set(&key, &session);
+                }
+
+                active.push_back(session_id);
+            } else {
+                storage.remove(&key);
+            }
+        }
+
+        config.active_sessions = active;
+        Self::save_user_mfa_config(env, &config);
+
+        if allowed {
+            Ok(())
+        } else {
+            Err(PayrollError::MFARequired)
+        }
+    }
+
+    fn is_large_disbursement(amount: i128, threshold: i128) -> bool {
+        threshold > 0 && amount >= threshold
+    }
+
+    fn is_mfa_required_for_operation(
+        env: &Env,
+        user: &Address,
+        operation: Symbol,
+        amount: Option<i128>,
+    ) -> bool {
+        let settings = env
+            .storage()
+            .persistent()
+            .get::<DataKey, SecuritySettings>(&DataKey::SecuritySettings);
+
+        if let Some(cfg) = Self::get_user_mfa_config(env, user) {
+            if cfg.is_enabled {
+                return true;
+            }
+
+            if operation == MFA_SCOPE_DISBURSE {
+                if let Some(value) = amount {
+                    let threshold = settings
+                        .as_ref()
+                        .map(|s| s.large_disbursement_threshold)
+                        .unwrap_or(DEFAULT_LARGE_DISBURSEMENT_THRESHOLD);
+                    if Self::is_large_disbursement(value, threshold) {
+                        return true;
+                    }
+                }
+            }
+
+            if let Some(settings_ref) = settings.as_ref() {
+                if settings_ref.mfa_required
+                    && (operation == MFA_SCOPE_PAYROLL || operation == MFA_SCOPE_TRANSFER)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if let Some(settings_val) = settings {
+            if settings_val.mfa_required
+                && (operation == MFA_SCOPE_PAYROLL || operation == MFA_SCOPE_TRANSFER)
+            {
+                return true;
+            }
+
+            if operation == MFA_SCOPE_DISBURSE {
+                if let Some(value) = amount {
+                    if Self::is_large_disbursement(value, settings_val.large_disbursement_threshold)
+                    {
+                        return true;
+                    }
+                }
+            }
+        } else if operation == MFA_SCOPE_DISBURSE {
+            if let Some(value) = amount {
+                if Self::is_large_disbursement(value, DEFAULT_LARGE_DISBURSEMENT_THRESHOLD) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
 
     /// Require security permission for operation
     fn _require_security_permission(
@@ -5100,7 +5888,11 @@ impl PayrollContract {
     }
 
     /// Check rate limiting
-    fn _check_rate_limit(_env: &Env, _user: &Address, _operation: &str) -> Result<(), PayrollError> {
+    fn _check_rate_limit(
+        _env: &Env,
+        _user: &Address,
+        _operation: &str,
+    ) -> Result<(), PayrollError> {
         // Simplified rate limiting check
         // In a real implementation, this would check actual rate limits
         Ok(())
@@ -7555,17 +8347,26 @@ impl PayrollContract {
         let mut total_transactions = 0u32;
 
         let mut report_data = Map::new(&env);
-        report_data.set(String::from_str(&env, "period_start"), String::from_str(&env, "1640995200"));
-        report_data.set(String::from_str(&env, "period_end"), String::from_str(&env, "1643673600"));
-        report_data.set(String::from_str(&env, "employer"), String::from_str(&env, "employer_address"));
+        report_data.set(
+            String::from_str(&env, "period_start"),
+            String::from_str(&env, "1640995200"),
+        );
+        report_data.set(
+            String::from_str(&env, "period_end"),
+            String::from_str(&env, "1643673600"),
+        );
+        report_data.set(
+            String::from_str(&env, "employer"),
+            String::from_str(&env, "employer_address"),
+        );
 
         // Calculate summary metrics
         let mut data_sources = Vec::new(&env);
         data_sources.push_back(String::from_str(&env, "payroll_data"));
-        
+
         let mut filters_applied = Vec::new(&env);
         filters_applied.push_back(String::from_str(&env, "period_filter"));
-        
+
         let metadata = ReportMetadata {
             total_employees,
             total_amount,
@@ -7618,7 +8419,7 @@ impl PayrollContract {
 
         let mut report_data = Map::new(&env);
         let mut filters = Map::new(&env);
-        
+
         if let Some(employee) = employee_filter {
             filters.set(String::from_str(&env, "employee"), employee.to_string());
         }
@@ -7626,11 +8427,11 @@ impl PayrollContract {
         let mut data_sources = Vec::new(&env);
         data_sources.push_back(String::from_str(&env, "payroll_data"));
         data_sources.push_back(String::from_str(&env, "audit_trail"));
-        
+
         let mut filters_applied = Vec::new(&env);
         filters_applied.push_back(String::from_str(&env, "period_filter"));
         filters_applied.push_back(String::from_str(&env, "employee_filter"));
-        
+
         let metadata = ReportMetadata {
             total_employees: 0,
             total_amount: 0,
@@ -7804,9 +8605,17 @@ impl PayrollContract {
         storage.set(&ExtendedDataKey::Template(report.id), report);
     }
 
-    fn store_tax_calculation(env: &Env, employee: &Address, period: u64, tax_calc: &TaxCalculation) {
+    fn store_tax_calculation(
+        env: &Env,
+        employee: &Address,
+        period: u64,
+        tax_calc: &TaxCalculation,
+    ) {
         let storage = env.storage().persistent();
-        let key = DataKey::Balance(employee.clone(), Address::from_string(&String::from_str(env, "TAX")));
+        let key = DataKey::Balance(
+            employee.clone(),
+            Address::from_string(&String::from_str(env, "TAX")),
+        );
         storage.set(&key, tax_calc);
     }
 
@@ -8474,6 +9283,16 @@ impl PayrollContract {
             data_hash: String::from_str(&env, ""),
             size_bytes: 0,
             version: 2, // Version 2 for incremental
+        let audit_id = Self::get_next_report_id(env);
+
+        let audit_entry = ReportAuditEntry {
+            id: audit_id,
+            report_id,
+            action: String::from_str(env, action),
+            actor: actor.clone(),
+            timestamp: current_time,
+            details: Map::new(env),
+            ip_address: None,
         };
 
         // Encrypt incremental data if requested
@@ -8780,6 +9599,1355 @@ impl PayrollContract {
         )?;
 
         Ok(replication_id)
+    }
+
+    pub fn record_time_series_data(
+        env: Env,
+        metric_name: String,
+        value: i128,
+        metadata: Map<String, String>,
+    ) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        let timestamp = env.ledger().timestamp();
+
+        let data_point = TimeSeriesDataPoint {
+            timestamp,
+            value,
+            metric_type: metric_name.clone(),
+            metadata,
+        };
+
+        // Store data point
+        storage.set(
+            &AnalyticsDataKey::TimeSeriesData(metric_name.clone(), timestamp),
+            &data_point,
+        );
+
+        // Update index
+        let mut index: Vec<u64> = storage
+            .get(&AnalyticsDataKey::TimeSeriesIndex(metric_name.clone()))
+            .unwrap_or(Vec::new(&env));
+        index.push_back(timestamp);
+        storage.set(&AnalyticsDataKey::TimeSeriesIndex(metric_name), &index);
+
+        Ok(())
+    }
+
+    /// Generate aggregated metrics for a period
+    pub fn generate_aggregated_metrics(
+        env: Env,
+        employer: Address,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<AggregatedMetrics, PayrollError> {
+        let storage = env.storage().persistent();
+
+        // Collect metrics from the period
+        let mut total_disbursements = 0u64;
+        let mut total_amount = 0i128;
+        let mut amounts = Vec::new(&env);
+        let mut token_breakdown = Map::new(&env);
+        let mut department_breakdown = Map::new(&env);
+        let mut on_time_count = 0u64;
+        let mut late_count = 0u64;
+        let mut error_count = 0u64;
+
+        // Iterate through daily metrics in the period
+        let start_day = (period_start / 86_400) * 86_400;
+        let end_day = (period_end / 86_400) * 86_400;
+
+        for day_timestamp in (start_day..=end_day).step_by(86_400) {
+            if let Some(metrics) =
+                storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp))
+            {
+                total_disbursements += metrics.total_disbursements;
+                total_amount += metrics.total_amount;
+                amounts.push_back(metrics.total_amount);
+
+                // Count on-time vs late
+                let total_ops = metrics.operation_count;
+                if total_ops > 0 {
+                    on_time_count += total_ops - metrics.late_disbursements;
+                    late_count += metrics.late_disbursements;
+                }
+            }
+        }
+
+        // Calculate statistics
+        let average_amount = if total_disbursements > 0 {
+            total_amount / (total_disbursements as i128)
+        } else {
+            0
+        };
+
+        let (min_amount, max_amount) = Self::calculate_min_max(&amounts);
+
+        let total_operations = on_time_count + late_count + error_count;
+        let on_time_rate = if total_operations > 0 {
+            ((on_time_count * 100) / total_operations) as u32
+        } else {
+            0
+        };
+
+        let late_rate = if total_operations > 0 {
+            ((late_count * 100) / total_operations) as u32
+        } else {
+            0
+        };
+
+        let error_rate = if total_operations > 0 {
+            ((error_count * 100) / total_operations) as u32
+        } else {
+            0
+        };
+
+        let metrics = AggregatedMetrics {
+            period_start,
+            period_end,
+            employer: employer.clone(),
+            total_disbursements,
+            total_amount,
+            average_amount,
+            min_amount,
+            max_amount,
+            employee_count: 0, // Would be calculated from actual employee data
+            on_time_rate,
+            late_rate,
+            error_rate,
+            token_breakdown,
+            department_breakdown,
+        };
+
+        // Cache the result
+        storage.set(
+            &AnalyticsDataKey::AggregatedMetrics(employer, period_start),
+            &metrics,
+        );
+
+        Ok(metrics)
+    }
+
+    /// Analyze trends for a specific metric
+    pub fn analyze_trend(
+        env: Env,
+        metric_name: String,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<TrendAnalysis, PayrollError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get time series data
+        let index: Vec<u64> = storage
+            .get(&AnalyticsDataKey::TimeSeriesIndex(metric_name.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        let mut data_points = Vec::new(&env);
+        for timestamp in index.iter() {
+            if timestamp >= period_start && timestamp <= period_end {
+                if let Some(point) = storage.get::<AnalyticsDataKey, TimeSeriesDataPoint>(
+                    &AnalyticsDataKey::TimeSeriesData(metric_name.clone(), timestamp),
+                ) {
+                    data_points.push_back(point);
+                }
+            }
+        }
+
+        if data_points.len() < 2 {
+            return Ok(TrendAnalysis {
+                metric_name,
+                period_start,
+                period_end,
+                data_points,
+                trend_direction: TrendDirection::Insufficient,
+                growth_rate: 0,
+                volatility: 0,
+                has_forecast: false, // ADD THIS
+                forecast: ForecastData {
+                    // Use default instead of None
+                    next_period_prediction: 0,
+                    confidence_level: 0,
+                    prediction_range_low: 0,
+                    prediction_range_high: 0,
+                    forecast_method: String::from_str(&env, "none"),
+                },
+                analysis_timestamp: current_time,
+            });
+        }
+
+        // Calculate trend direction and growth rate
+        let first_value = data_points.get(0).unwrap().value;
+        let last_value = data_points.get(data_points.len() - 1).unwrap().value;
+
+        let growth_rate = if first_value != 0 {
+            ((last_value - first_value) * 10000) / first_value // Basis points
+        } else {
+            0
+        };
+
+        let trend_direction = if growth_rate > 500 {
+            TrendDirection::Increasing
+        } else if growth_rate < -500 {
+            TrendDirection::Decreasing
+        } else if Self::calculate_volatility(&data_points) > 20 {
+            TrendDirection::Volatile
+        } else {
+            TrendDirection::Stable
+        };
+
+        // Generate forecast
+        let forecast = Self::generate_forecast(&env, &data_points, growth_rate);
+
+        let trend = TrendAnalysis {
+            metric_name: metric_name.clone(),
+            period_start,
+            period_end,
+            data_points: data_points.clone(),
+            trend_direction,
+            growth_rate,
+            volatility: Self::calculate_volatility(&data_points),
+            forecast,
+            has_forecast: false,
+            analysis_timestamp: current_time,
+        };
+
+        // Cache the analysis
+        storage.set(
+            &AnalyticsDataKey::TrendAnalysis(metric_name, current_time),
+            &trend,
+        );
+
+        Ok(trend)
+    }
+
+    /// Generate forecast data
+    fn generate_forecast(
+        env: &Env,
+        data_points: &Vec<TimeSeriesDataPoint>,
+        growth_rate: i128,
+    ) -> ForecastData {
+        let last_value = data_points.get(data_points.len() - 1).unwrap().value;
+
+        // Simple linear forecast
+        let next_period_prediction = last_value + ((last_value * growth_rate) / 10000);
+
+        // Calculate prediction range (±20% for simplicity)
+        let range_margin = next_period_prediction / 5;
+
+        ForecastData {
+            next_period_prediction,
+            confidence_level: 75, // Simplified confidence
+            prediction_range_low: next_period_prediction - range_margin,
+            prediction_range_high: next_period_prediction + range_margin,
+            forecast_method: String::from_str(env, "linear_regression"),
+        }
+    }
+
+    /// Calculate volatility (standard deviation as percentage)
+    fn calculate_volatility(data_points: &Vec<TimeSeriesDataPoint>) -> u32 {
+        if data_points.len() < 2 {
+            return 0;
+        }
+
+        // Calculate mean
+        let mut sum = 0i128;
+        for point in data_points.iter() {
+            sum += point.value;
+        }
+        let mean = sum / (data_points.len() as i128);
+
+        // Calculate variance
+        let mut variance_sum = 0i128;
+        for point in data_points.iter() {
+            let diff = point.value - mean;
+            variance_sum += diff * diff;
+        }
+        let variance = variance_sum / (data_points.len() as i128);
+
+        // Return standard deviation as percentage of mean
+        if mean != 0 {
+            let std_dev = Self::sqrt_i128(variance);
+            ((std_dev * 100) / mean.abs()) as u32
+        } else {
+            0
+        }
+    }
+
+    /// Simple integer square root
+    fn sqrt_i128(n: i128) -> i128 {
+        if n < 0 {
+            return 0;
+        }
+        if n == 0 {
+            return 0;
+        }
+
+        let mut x = n;
+        let mut y = (x + 1) / 2;
+
+        while y < x {
+            x = y;
+            y = (x + n / x) / 2;
+        }
+
+        x
+    }
+
+    /// Calculate min and max values
+    fn calculate_min_max(values: &Vec<i128>) -> (i128, i128) {
+        if values.len() == 0 {
+            return (0, 0);
+        }
+
+        let mut min = values.get(0).unwrap();
+        let mut max = values.get(0).unwrap();
+
+        for value in values.iter() {
+            if value < min {
+                min = value;
+            }
+            if value > max {
+                max = value;
+            }
+        }
+
+        (min, max)
+    }
+
+    /// Create analytics dashboard
+    pub fn create_analytics_dashboard(
+        env: Env,
+        owner: Address,
+        name: String,
+        description: String,
+        widgets: Vec<DashboardWidget>,
+        is_public: bool,
+    ) -> Result<u64, PayrollError> {
+        owner.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let dashboard_id = storage
+            .get::<AnalyticsDataKey, u64>(&AnalyticsDataKey::NextDashboardId)
+            .unwrap_or(1);
+        storage.set(&AnalyticsDataKey::NextDashboardId, &(dashboard_id + 1));
+
+        let dashboard = AnalyticsDashboard {
+            id: dashboard_id,
+            name: name.clone(),
+            description,
+            owner: owner.clone(),
+            widgets,
+            is_default: false,
+            is_public,
+            created_at: current_time,
+            updated_at: current_time,
+        };
+
+        storage.set(&AnalyticsDataKey::Dashboard(dashboard_id), &dashboard);
+
+        // Add to user's dashboards
+        let mut user_dashboards: Vec<u64> = storage
+            .get(&AnalyticsDataKey::UserDashboards(owner.clone()))
+            .unwrap_or(Vec::new(&env));
+        user_dashboards.push_back(dashboard_id);
+        storage.set(&AnalyticsDataKey::UserDashboards(owner), &user_dashboards);
+
+        env.events()
+            .publish((symbol_short!("dash_c"),), (dashboard_id, name));
+
+        Ok(dashboard_id)
+    }
+
+    /// Generate chart data
+    pub fn generate_chart_data(
+        env: Env,
+        chart_type: WidgetType,
+        title: String,
+        data_source: DataSource,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<ChartData, PayrollError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let chart_id = storage
+            .get::<AnalyticsDataKey, u64>(&AnalyticsDataKey::NextChartId)
+            .unwrap_or(1);
+        storage.set(&AnalyticsDataKey::NextChartId, &(chart_id + 1));
+
+        let mut data_series = Vec::new(&env);
+
+        // Generate data based on source
+        match data_source {
+            DataSource::PayrollMetrics => {
+                let mut payroll_series =
+                    Self::generate_payroll_series(&env, period_start, period_end);
+                data_series.push_back(payroll_series);
+            }
+            DataSource::EmployeeMetrics => {
+                let mut employee_series =
+                    Self::generate_employee_series(&env, period_start, period_end);
+                data_series.push_back(employee_series);
+            }
+            _ => {}
+        }
+
+        let chart = ChartData {
+            chart_id,
+            chart_type,
+            title,
+            x_axis_label: String::from_str(&env, "Time"),
+            y_axis_label: String::from_str(&env, "Amount"),
+            data_series,
+            generated_at: current_time,
+        };
+
+        storage.set(&AnalyticsDataKey::ChartData(chart_id), &chart);
+
+        Ok(chart)
+    }
+
+    /// Generate payroll data series
+    fn generate_payroll_series(env: &Env, period_start: u64, period_end: u64) -> DataSeries {
+        let storage = env.storage().persistent();
+        let mut data_points = Vec::new(env);
+
+        let start_day = (period_start / 86_400) * 86_400;
+        let end_day = (period_end / 86_400) * 86_400;
+
+        for day_timestamp in (start_day..=end_day).step_by(86_400) {
+            if let Some(metrics) =
+                storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp))
+            {
+                data_points.push_back(DataPoint {
+                    x: day_timestamp,
+                    y: metrics.total_amount,
+                    label: Some(String::from_str(env, "Daily Total")),
+                });
+            }
+        }
+
+        DataSeries {
+            name: String::from_str(env, "Payroll Disbursements"),
+            data_points,
+            color: Some(String::from_str(env, "#4F46E5")),
+            line_style: Some(String::from_str(env, "solid")),
+        }
+    }
+
+    /// Generate employee data series
+    fn generate_employee_series(env: &Env, period_start: u64, period_end: u64) -> DataSeries {
+        let storage = env.storage().persistent();
+        let mut data_points = Vec::new(env);
+
+        let start_day = (period_start / 86_400) * 86_400;
+        let end_day = (period_end / 86_400) * 86_400;
+
+        for day_timestamp in (start_day..=end_day).step_by(86_400) {
+            if let Some(metrics) =
+                storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp))
+            {
+                data_points.push_back(DataPoint {
+                    x: day_timestamp,
+                    y: metrics.employee_count as i128,
+                    label: Some(String::from_str(env, "Employee Count")),
+                });
+            }
+        }
+
+        DataSeries {
+            name: String::from_str(env, "Active Employees"),
+            data_points,
+            color: Some(String::from_str(env, "#10B981")),
+            line_style: Some(String::from_str(env, "solid")),
+        }
+    }
+
+    /// Create custom analytics query
+    pub fn create_analytics_query(
+        env: Env,
+        creator: Address,
+        name: String,
+        description: String,
+        query_type: QueryType,
+        filters: Vec<QueryFilter>,
+        group_by: Vec<String>,
+        sort_by: Vec<SortCriteria>,
+        limit: Option<u32>,
+    ) -> Result<u64, PayrollError> {
+        creator.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let query_id = storage
+            .get::<AnalyticsDataKey, u64>(&AnalyticsDataKey::NextQueryId)
+            .unwrap_or(1);
+        storage.set(&AnalyticsDataKey::NextQueryId, &(query_id + 1));
+
+        let query = AnalyticsQuery {
+            id: query_id,
+            name: name.clone(),
+            description,
+            query_type,
+            filters,
+            group_by,
+            sort_by,
+            limit,
+            created_by: creator.clone(),
+            created_at: current_time,
+        };
+
+        storage.set(&AnalyticsDataKey::AnalyticsQuery(query_id), &query);
+
+        // Add to user's queries
+        let mut user_queries: Vec<u64> = storage
+            .get(&AnalyticsDataKey::UserQueries(creator.clone()))
+            .unwrap_or(Vec::new(&env));
+        user_queries.push_back(query_id);
+        storage.set(&AnalyticsDataKey::UserQueries(creator), &user_queries);
+
+        env.events()
+            .publish((symbol_short!("query_c"),), (query_id, name));
+
+        Ok(query_id)
+    }
+
+    /// Request data export
+    pub fn request_data_export(
+        env: Env,
+        requester: Address,
+        export_type: ExportType,
+        format: ExportFormat,
+        date_range: DateRange,
+        filters: Map<String, String>,
+    ) -> Result<u64, PayrollError> {
+        requester.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let export_id = storage
+            .get::<AnalyticsDataKey, u64>(&AnalyticsDataKey::NextExportId)
+            .unwrap_or(1);
+        storage.set(&AnalyticsDataKey::NextExportId, &(export_id + 1));
+
+        let export_request = DataExportRequest {
+            id: export_id,
+            export_type: export_type.clone(),
+            format: format.clone(),
+            data_range: date_range,
+            filters,
+            requested_by: requester.clone(),
+            requested_at: current_time,
+            status: ExportStatus::Pending,
+            file_url: None,
+            file_size: None,
+            completed_at: None,
+        };
+
+        storage.set(&AnalyticsDataKey::ExportRequest(export_id), &export_request);
+
+        // Add to user's exports
+        let mut user_exports: Vec<u64> = storage
+            .get(&AnalyticsDataKey::UserExports(requester.clone()))
+            .unwrap_or(Vec::new(&env));
+        user_exports.push_back(export_id);
+        storage.set(&AnalyticsDataKey::UserExports(requester), &user_exports);
+
+        env.events().publish(
+            (symbol_short!("export_r"),),
+            (export_id, export_type, format),
+        );
+
+        Ok(export_id)
+    }
+
+    /// Process data export (would be called by backend service)
+    pub fn process_data_export(
+        env: Env,
+        processor: Address,
+        export_id: u64,
+        file_url: String,
+        file_size: u64,
+    ) -> Result<(), PayrollError> {
+        processor.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let mut export_request = storage
+            .get::<AnalyticsDataKey, DataExportRequest>(&AnalyticsDataKey::ExportRequest(export_id))
+            .ok_or(PayrollError::InvalidData)?;
+
+        export_request.status = ExportStatus::Completed;
+        export_request.file_url = Some(file_url.clone());
+        export_request.file_size = Some(file_size);
+        export_request.completed_at = Some(current_time);
+
+        storage.set(&AnalyticsDataKey::ExportRequest(export_id), &export_request);
+
+        env.events().publish(
+            (symbol_short!("export_c"),),
+            (export_id, file_url, file_size),
+        );
+
+        Ok(())
+    }
+
+    /// Perform comparative analysis between two periods
+    pub fn comparative_analysis(
+        env: Env,
+        comparison_type: ComparisonType,
+        period_1: DateRange,
+        period_2: DateRange,
+        metrics_to_compare: Vec<String>,
+    ) -> Result<ComparativeAnalysis, PayrollError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        let analysis_id = storage
+            .get::<AnalyticsDataKey, u64>(&AnalyticsDataKey::NextAnalysisId)
+            .unwrap_or(1);
+        storage.set(&AnalyticsDataKey::NextAnalysisId, &(analysis_id + 1));
+
+        let mut metrics_comparison = Vec::new(&env);
+
+        // Compare key metrics between periods
+        for metric_name in metrics_to_compare.iter() {
+            let period_1_value = Self::get_period_metric_value(&env, &period_1, &metric_name);
+            let period_2_value = Self::get_period_metric_value(&env, &period_2, &metric_name);
+
+            let absolute_change = period_2_value - period_1_value;
+            let percentage_change = if period_1_value != 0 {
+                (absolute_change * 10000) / period_1_value
+            } else {
+                0
+            };
+
+            let is_improvement = Self::is_metric_improvement(&metric_name, absolute_change);
+
+            metrics_comparison.push_back(MetricComparison {
+                metric_name,
+                period_1_value,
+                period_2_value,
+                absolute_change,
+                percentage_change,
+                is_improvement,
+            });
+        }
+
+        let summary = Self::generate_comparison_summary(&env, &metrics_comparison);
+
+        let analysis = ComparativeAnalysis {
+            analysis_id,
+            comparison_type,
+            period_1,
+            period_2,
+            metrics_comparison,
+            summary,
+            generated_at: current_time,
+        };
+
+        storage.set(
+            &AnalyticsDataKey::ComparativeAnalysis(analysis_id),
+            &analysis,
+        );
+
+        env.events()
+            .publish((symbol_short!("comp_a"),), (analysis_id, current_time));
+
+        Ok(analysis)
+    }
+
+    /// Get metric value for a period
+    fn get_period_metric_value(env: &Env, period: &DateRange, metric_name: &String) -> i128 {
+        let storage = env.storage().persistent();
+        let mut total = 0i128;
+
+        let start_day = (period.start / 86_400) * 86_400;
+        let end_day = (period.end / 86_400) * 86_400;
+
+        for day_timestamp in (start_day..=end_day).step_by(86_400) {
+            if let Some(metrics) =
+                storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(day_timestamp))
+            {
+                if metric_name == &String::from_str(env, "total_amount") {
+                    total += metrics.total_amount;
+                } else if metric_name == &String::from_str(env, "disbursements") {
+                    total += metrics.total_disbursements as i128;
+                }
+            }
+        }
+
+        total
+    }
+
+    /// Determine if change is an improvement
+    fn is_metric_improvement(metric_name: &String, change: i128) -> bool {
+        // For revenue/amount metrics, positive is good
+        // For error/late metrics, negative is good
+        change > 0 // Simplified logic
+    }
+
+    /// Generate comparison summary
+    fn generate_comparison_summary(env: &Env, comparisons: &Vec<MetricComparison>) -> String {
+        let mut improvement_count = 0u32;
+        for comp in comparisons.iter() {
+            if comp.is_improvement {
+                improvement_count += 1;
+            }
+        }
+
+        if improvement_count > (comparisons.len() / 2) {
+            String::from_str(env, "Overall performance improved")
+        } else {
+            String::from_str(env, "Performance needs attention")
+        }
+    }
+
+    /// Update benchmark data
+    pub fn update_benchmark_data(
+        env: Env,
+        caller: Address,
+        metric_name: String,
+        industry_average: i128,
+        top_quartile: i128,
+        median: i128,
+        bottom_quartile: i128,
+        company_value: i128,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only owner can update benchmarks
+        let storage = env.storage().persistent();
+        let owner = storage
+            .get::<DataKey, Address>(&DataKey::Owner)
+            .ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let current_time = env.ledger().timestamp();
+
+        // Calculate percentile rank
+        let percentile_rank = if company_value >= top_quartile {
+            75
+        } else if company_value >= median {
+            50
+        } else if company_value >= bottom_quartile {
+            25
+        } else {
+            0
+        };
+
+        let benchmark = BenchmarkData {
+            metric_name: metric_name.clone(),
+            industry_average,
+            top_quartile,
+            median,
+            bottom_quartile,
+            company_value,
+            percentile_rank,
+            last_updated: current_time,
+        };
+
+        storage.set(
+            &AnalyticsDataKey::Benchmark(metric_name.clone()),
+            &benchmark,
+        );
+
+        env.events()
+            .publish((symbol_short!("bench_u"),), (metric_name, percentile_rank));
+
+        Ok(())
+    }
+
+    /// Get analytics dashboard
+    pub fn get_analytics_dashboard(
+        env: Env,
+        dashboard_id: u64,
+    ) -> Result<AnalyticsDashboard, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::Dashboard(dashboard_id))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get user's dashboards
+    pub fn get_user_dashboards(env: Env, user: Address) -> Vec<AnalyticsDashboard> {
+        let storage = env.storage().persistent();
+        let dashboard_ids: Vec<u64> = storage
+            .get(&AnalyticsDataKey::UserDashboards(user))
+            .unwrap_or(Vec::new(&env));
+
+        let mut dashboards = Vec::new(&env);
+        for id in dashboard_ids.iter() {
+            if let Some(dashboard) = storage.get(&AnalyticsDataKey::Dashboard(id)) {
+                dashboards.push_back(dashboard);
+            }
+        }
+
+        dashboards
+    }
+
+    /// Get chart data
+    pub fn get_chart_data(env: Env, chart_id: u64) -> Result<ChartData, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::ChartData(chart_id))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get analytics query
+    pub fn get_analytics_query(env: Env, query_id: u64) -> Result<AnalyticsQuery, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::AnalyticsQuery(query_id))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get export request status
+    pub fn get_export_status(env: Env, export_id: u64) -> Result<DataExportRequest, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::ExportRequest(export_id))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get user's export requests
+    pub fn get_user_exports(env: Env, user: Address) -> Vec<DataExportRequest> {
+        let storage = env.storage().persistent();
+        let export_ids: Vec<u64> = storage
+            .get(&AnalyticsDataKey::UserExports(user))
+            .unwrap_or(Vec::new(&env));
+
+        let mut exports = Vec::new(&env);
+        for id in export_ids.iter() {
+            if let Some(export) = storage.get(&AnalyticsDataKey::ExportRequest(id)) {
+                exports.push_back(export);
+            }
+        }
+
+        exports
+    }
+
+    /// Get trend analysis
+    pub fn get_trend_analysis(
+        env: Env,
+        metric_name: String,
+        analysis_timestamp: u64,
+    ) -> Result<TrendAnalysis, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::TrendAnalysis(
+                metric_name,
+                analysis_timestamp,
+            ))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get comparative analysis
+    pub fn get_comparative_analysis(
+        env: Env,
+        analysis_id: u64,
+    ) -> Result<ComparativeAnalysis, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::ComparativeAnalysis(analysis_id))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get benchmark data
+    pub fn get_benchmark_data(
+        env: Env,
+        metric_name: String,
+    ) -> Result<BenchmarkData, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::Benchmark(metric_name))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get aggregated metrics
+    pub fn get_aggregated_metrics(
+        env: Env,
+        employer: Address,
+        period_start: u64,
+    ) -> Result<AggregatedMetrics, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get(&AnalyticsDataKey::AggregatedMetrics(employer, period_start))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Generate real-time analytics snapshot
+    pub fn generate_realtime_snapshot(
+        env: Env,
+        employer: Address,
+    ) -> Result<Map<String, i128>, PayrollError> {
+        let storage = env.storage().persistent();
+        let mut snapshot = Map::new(&env);
+
+        // Get today's metrics
+        let today = (env.ledger().timestamp() / 86_400) * 86_400;
+
+        if let Some(metrics) = storage.get::<DataKey, PerformanceMetrics>(&DataKey::Metrics(today))
+        {
+            snapshot.set(
+                String::from_str(&env, "total_disbursements"),
+                metrics.total_disbursements as i128,
+            );
+            snapshot.set(
+                String::from_str(&env, "total_amount"),
+                metrics.total_amount as i128,
+            );
+            snapshot.set(
+                String::from_str(&env, "employee_count"),
+                metrics.employee_count as i128,
+            );
+            snapshot.set(
+                String::from_str(&env, "late_disbursements"),
+                metrics.late_disbursements as i128,
+            );
+        }
+
+        // Get employer balance summary
+        let employees = Self::get_employer_employees(env.clone(), employer.clone());
+        snapshot.set(
+            String::from_str(&env, "active_employees"),
+            employees.len() as i128,
+        );
+
+        Ok(snapshot)
+    }
+
+    /// Delete analytics data (cleanup)
+    pub fn cleanup_old_analytics(
+        env: Env,
+        caller: Address,
+        cutoff_date: u64,
+    ) -> Result<u32, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only owner can cleanup
+        let storage = env.storage().persistent();
+        let owner = storage
+            .get::<DataKey, Address>(&DataKey::Owner)
+            .ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let mut cleaned_count = 0u32;
+
+        // Cleanup old time series data
+        // Implementation would iterate through old data and remove it
+        // For now, return 0 as placeholder
+
+        env.events()
+            .publish((symbol_short!("cleanup"),), (cutoff_date, cleaned_count));
+
+        Ok(cleaned_count)
+    }
+
+    //-----------------------------------------------------------------------------
+    // Advanced Rate Limiting and DDoS Protection Functions
+    //-----------------------------------------------------------------------------
+
+    /// Check if user is rate limited for a specific operation
+    pub fn check_rate_limit(
+        env: Env,
+        user: Address,
+        operation: String,
+        ip_address: Option<String>,
+    ) -> Result<bool, PayrollError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get global rate limiting settings
+        let global_settings = storage
+            .get::<DataKey, GlobalRateLimitSettings>(&DataKey::GlobalRateLimitSettings)
+            .unwrap_or(GlobalRateLimitSettings {
+                enabled: true,
+                default_user_rate_limit: 100,
+                default_ip_rate_limit: 1000,
+                default_time_window: 3600, // 1 hour
+                max_violations_before_block: 5,
+                block_duration: 3600, // 1 hour
+                exponential_backoff_enabled: true,
+                adaptive_rate_limiting_enabled: true,
+                suspicious_activity_threshold: 80,
+                trust_score_decay_rate: 5,
+                last_updated: current_time,
+            });
+
+        if !global_settings.enabled {
+            return Ok(false); // Rate limiting disabled
+        }
+
+        // Check user rate limit
+        if let Some(mut user_config) = storage.get::<DataKey, AdvancedRateLimitConfig>(
+            &DataKey::AdvancedRateLimit(user.clone(), operation.clone()),
+        ) {
+            // Reset counter if time window has passed
+            if current_time >= user_config.reset_time {
+                user_config.current_count = 0;
+                user_config.reset_time = current_time + user_config.time_window;
+            }
+
+            // Check if user is blocked
+            if user_config.is_blocked {
+                if let Some(block_until) = user_config.block_until {
+                    if current_time < block_until {
+                        return Ok(true); // Still blocked
+                    } else {
+                        // Unblock user
+                        user_config.is_blocked = false;
+                        user_config.block_until = None;
+                    }
+                }
+            }
+
+            // Check exponential backoff
+            if let Some(backoff_until) = user_config.exponential_backoff_until {
+                if current_time < backoff_until {
+                    return Ok(true); // Still in backoff
+                } else {
+                    user_config.exponential_backoff_until = None;
+                }
+            }
+
+            // Check rate limit
+            if user_config.current_count >= user_config.current_max_requests {
+                // Rate limit exceeded - record violation
+                Self::record_rate_limit_violation(
+                    env.clone(),
+                    user.clone(),
+                    ip_address.clone(),
+                    operation.clone(),
+                    RateLimitViolationType::UserRateLimit,
+                    ViolationSeverity::Medium,
+                )?;
+
+                // Apply exponential backoff if enabled
+                if global_settings.exponential_backoff_enabled {
+                    let backoff_duration = 2_u64.pow(user_config.violation_count.min(10));
+                    user_config.exponential_backoff_until = Some(current_time + backoff_duration);
+                }
+
+                // Increase violation count and adjust adaptive factor
+                user_config.violation_count += 1;
+                if global_settings.adaptive_rate_limiting_enabled {
+                    user_config.adaptive_factor = (user_config.adaptive_factor * 80) / 100; // Reduce by 20%
+                    user_config.current_max_requests = (user_config.base_max_requests * user_config.adaptive_factor) / 100;
+                }
+
+                // Block user if too many violations
+                if user_config.violation_count >= global_settings.max_violations_before_block {
+                    user_config.is_blocked = true;
+                    user_config.block_until = Some(current_time + global_settings.block_duration);
+                }
+
+                // Update trust score
+                user_config.trust_score = user_config.trust_score.saturating_sub(10);
+
+                storage.set(
+                    &DataKey::AdvancedRateLimit(user.clone(), operation.clone()),
+                    &user_config,
+                );
+
+                return Ok(true); // Rate limited
+            }
+
+            // Increment counter
+            user_config.current_count += 1;
+            storage.set(
+                &DataKey::AdvancedRateLimit(user.clone(), operation.clone()),
+                &user_config,
+            );
+        } else {
+            // Create new rate limit config for user
+            let new_config = AdvancedRateLimitConfig {
+                user: user.clone(),
+                operation: operation.clone(),
+                base_max_requests: global_settings.default_user_rate_limit,
+                current_max_requests: global_settings.default_user_rate_limit,
+                time_window: global_settings.default_time_window,
+                current_count: 1,
+                reset_time: current_time + global_settings.default_time_window,
+                is_blocked: false,
+                block_until: None,
+                violation_count: 0,
+                last_violation_time: None,
+                adaptive_factor: 100, // 1.0x
+                exponential_backoff_until: None,
+                trust_score: 50, // Start with neutral trust score
+            };
+            storage.set(
+                &DataKey::AdvancedRateLimit(user.clone(), operation.clone()),
+                &new_config,
+            );
+        }
+
+        // Check IP rate limit if IP address provided
+        if let Some(ip) = ip_address {
+            if let Some(mut ip_config) = storage.get::<DataKey, IPRateLimitConfig>(&DataKey::IPRateLimit(ip.clone())) {
+                // Reset counter if time window has passed
+                if current_time >= ip_config.reset_time {
+                    ip_config.current_count = 0;
+                    ip_config.reset_time = current_time + ip_config.time_window;
+                }
+
+                // Check if IP is blocked
+                if ip_config.is_blocked {
+                    if let Some(block_until) = ip_config.block_until {
+                        if current_time < block_until {
+                            return Ok(true); // Still blocked
+                        } else {
+                            ip_config.is_blocked = false;
+                            ip_config.block_until = None;
+                        }
+                    }
+                }
+
+                // Check rate limit
+                if ip_config.current_count >= ip_config.max_requests {
+                    // Record IP violation
+                    Self::record_rate_limit_violation(
+                        env.clone(),
+                        user.clone(),
+                        Some(ip.clone()),
+                        operation.clone(),
+                        RateLimitViolationType::IPRateLimit,
+                        ViolationSeverity::High,
+                    )?;
+
+                    // Block IP if too many violations
+                    ip_config.violation_count += 1;
+                    if ip_config.violation_count >= global_settings.max_violations_before_block {
+                        ip_config.is_blocked = true;
+                        ip_config.block_until = Some(current_time + global_settings.block_duration);
+                    }
+
+                    storage.set(&DataKey::IPRateLimit(ip.clone()), &ip_config);
+                    return Ok(true); // Rate limited
+                }
+
+                // Increment counter
+                ip_config.current_count += 1;
+                ip_config.last_activity_time = current_time;
+                storage.set(&DataKey::IPRateLimit(ip.clone()), &ip_config);
+            } else {
+                // Create new IP rate limit config
+                let new_ip_config = IPRateLimitConfig {
+                    ip_address: ip.clone(),
+                    max_requests: global_settings.default_ip_rate_limit,
+                    time_window: global_settings.default_time_window,
+                    current_count: 1,
+                    reset_time: current_time + global_settings.default_time_window,
+                    is_blocked: false,
+                    block_until: None,
+                    violation_count: 0,
+                    suspicious_activity_score: 0,
+                    last_activity_time: current_time,
+                };
+                storage.set(&DataKey::IPRateLimit(ip.clone()), &new_ip_config);
+            }
+        }
+
+        Ok(false) // Not rate limited
+    }
+
+    /// Record a rate limit violation
+    fn record_rate_limit_violation(
+        env: Env,
+        user: Address,
+        ip_address: Option<String>,
+        operation: String,
+        violation_type: RateLimitViolationType,
+        severity: ViolationSeverity,
+    ) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+
+        // Get next violation ID
+        let violation_id = storage
+            .get::<DataKey, u64>(&DataKey::NextRateLimitViolationId)
+            .unwrap_or(1);
+        storage.set(&DataKey::NextRateLimitViolationId, &(violation_id + 1));
+
+        // Create violation record
+        let mut details = Map::new(&env);
+        details.set(String::from_str(&env, "timestamp"), String::from_str(&env, "timestamp_value"));
+        details.set(String::from_str(&env, "operation"), operation.clone());
+
+        let violation = RateLimitViolation {
+            id: violation_id,
+            user: user.clone(),
+            ip_address: ip_address.clone(),
+            operation,
+            violation_type,
+            timestamp: current_time,
+            details,
+            severity,
+            resolved: false,
+            resolved_at: None,
+        };
+
+        // Store violation
+        storage.set(&DataKey::RateLimitViolation(violation_id), &violation);
+
+        // Add to user violations list
+        let mut user_violations = storage
+            .get::<DataKey, Vec<u64>>(&DataKey::UserRateLimitViolations(user.clone()))
+            .unwrap_or(Vec::new(&env));
+        user_violations.push_back(violation_id);
+        storage.set(&DataKey::UserRateLimitViolations(user.clone()), &user_violations);
+
+        // Add to IP violations list if IP provided
+        if let Some(ip) = ip_address {
+            let mut ip_violations = storage
+                .get::<DataKey, Vec<u64>>(&DataKey::IPRateLimitViolations(ip.clone()))
+                .unwrap_or(Vec::new(&env));
+            ip_violations.push_back(violation_id);
+            storage.set(&DataKey::IPRateLimitViolations(ip.clone()), &ip_violations);
+        }
+
+        // Emit event
+        env.events().publish(
+            (symbol_short!("rate_viol"),),
+            (user, violation_id, current_time),
+        );
+
+        Ok(())
+    }
+
+    /// Get rate limit status for a user and operation
+    pub fn get_rate_limit_status(
+        env: Env,
+        user: Address,
+        operation: String,
+    ) -> Result<AdvancedRateLimitConfig, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get::<DataKey, AdvancedRateLimitConfig>(&DataKey::AdvancedRateLimit(user, operation))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Get IP rate limit status
+    pub fn get_ip_rate_limit_status(
+        env: Env,
+        ip_address: String,
+    ) -> Result<IPRateLimitConfig, PayrollError> {
+        let storage = env.storage().persistent();
+        storage
+            .get::<DataKey, IPRateLimitConfig>(&DataKey::IPRateLimit(ip_address))
+            .ok_or(PayrollError::InvalidData)
+    }
+
+    /// Update global rate limiting settings (admin only)
+    pub fn update_rate_settings(
+        env: Env,
+        caller: Address,
+        settings: GlobalRateLimitSettings,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only owner can update settings
+        let storage = env.storage().persistent();
+        let owner = storage
+            .get::<DataKey, Address>(&DataKey::Owner)
+            .ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let mut updated_settings = settings;
+        updated_settings.last_updated = env.ledger().timestamp();
+        storage.set(&DataKey::GlobalRateLimitSettings, &updated_settings);
+
+        env.events().publish(
+            (symbol_short!("rate_set"),),
+            (caller, updated_settings.last_updated),
+        );
+
+        Ok(())
+    }
+
+    /// Reset user rate limit (admin only)
+    pub fn reset_user_rate_limit(
+        env: Env,
+        caller: Address,
+        user: Address,
+        operation: String,
+    ) -> Result<(), PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        // Only owner can reset rate limits
+        let storage = env.storage().persistent();
+        let owner = storage
+            .get::<DataKey, Address>(&DataKey::Owner)
+            .ok_or(PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+
+        let storage = env.storage().persistent();
+        if let Some(mut config) = storage.get::<DataKey, AdvancedRateLimitConfig>(
+            &DataKey::AdvancedRateLimit(user.clone(), operation.clone()),
+        ) {
+            config.current_count = 0;
+            config.is_blocked = false;
+            config.block_until = None;
+            config.exponential_backoff_until = None;
+            config.violation_count = 0;
+            config.adaptive_factor = 100;
+            config.trust_score = 50;
+            config.reset_time = env.ledger().timestamp() + config.time_window;
+
+            storage.set(
+                &DataKey::AdvancedRateLimit(user.clone(), operation.clone()),
+                &config,
+            );
+
+            env.events().publish(
+                (symbol_short!("rate_rst"),),
+                (caller, user, operation),
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Get rate limit violations for a user
+    pub fn get_user_rate_limit_violations(
+        env: Env,
+        user: Address,
+    ) -> Result<Vec<RateLimitViolation>, PayrollError> {
+        let storage = env.storage().persistent();
+        let violation_ids = storage
+            .get::<DataKey, Vec<u64>>(&DataKey::UserRateLimitViolations(user))
+            .unwrap_or(Vec::new(&env));
+
+        let mut violations = Vec::new(&env);
+        for id in violation_ids.iter() {
+            if let Some(violation) = storage.get::<DataKey, RateLimitViolation>(&DataKey::RateLimitViolation(id)) {
+                violations.push_back(violation);
+            }
+        }
+
+        Ok(violations)
     }
 }
 }

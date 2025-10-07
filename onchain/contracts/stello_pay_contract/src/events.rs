@@ -3,7 +3,7 @@
 // Events
 //-----------------------------------------------------------------------------
 
-use soroban_sdk::{contracttype, symbol_short, Address, Env, Map, String, Symbol};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Map, String, Symbol, Vec};
 
 /// Event emitted when contract is paused
 pub const PAUSED_EVENT: Symbol = symbol_short!("paused");
@@ -60,8 +60,18 @@ pub const SECURITY_AUDIT_EVENT: Symbol = symbol_short!("sec_aud");
 pub const SECURITY_POLICY_VIOLATION_EVENT: Symbol = symbol_short!("sec_viol");
 pub const SUSPICIOUS_ACTIVITY_EVENT: Symbol = symbol_short!("susp_act");
 pub const RATE_LIMIT_EXCEEDED_EVENT: Symbol = symbol_short!("rate_lim");
+pub const RATE_LIMIT_VIOLATION_EVENT: Symbol = symbol_short!("rate_viol");
+pub const RATE_LIMIT_SETTINGS_UPDATED_EVENT: Symbol = symbol_short!("rate_set");
+pub const RATE_LIMIT_RESET_EVENT: Symbol = symbol_short!("rate_rst");
 pub const ACCESS_DENIED_EVENT: Symbol = symbol_short!("acc_den");
 pub const ACCOUNT_LOCKED_EVENT: Symbol = symbol_short!("acc_lck");
+pub const MFA_ENABLED_EVENT: Symbol = symbol_short!("mfa_on");
+pub const MFA_DISABLED_EVENT: Symbol = symbol_short!("mfa_off");
+pub const MFA_CHALLENGE_EVENT: Symbol = symbol_short!("mfa_ch");
+pub const MFA_VERIFIED_EVENT: Symbol = symbol_short!("mfa_ok");
+pub const MFA_EMERGENCY_EVENT: Symbol = symbol_short!("mfa_emg");
+pub const SESSION_STARTED_EVENT: Symbol = symbol_short!("sess_on");
+pub const SESSION_ENDED_EVENT: Symbol = symbol_short!("sess_off");
 
 // Employee Lifecycle Events
 pub const EMPLOYEE_ONBOARDED: Symbol = symbol_short!("emp_onb");
@@ -77,7 +87,6 @@ pub const COMPLIANCE_UPDATED: Symbol = symbol_short!("cmp_upd");
 pub const WORKFLOW_APPROVED: Symbol = symbol_short!("wf_app");
 pub const TASK_COMPLETED: Symbol = symbol_short!("tsk_cmp");
 
-
 /// Event emitted when compliance check completes
 pub const COMPLIANCE_CHECK_EVENT: Symbol = symbol_short!("comp_chk");
 
@@ -89,7 +98,6 @@ pub const FORECAST_EVENT: Symbol = symbol_short!("forecast");
 
 /// Event emitted when holiday config is updated
 pub const HOLIDAY_CONFIG_EVENT: Symbol = symbol_short!("hol_cfg");
-
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -108,6 +116,36 @@ pub struct EmployerWithdrawn {
     pub token: Address,
     pub amount: i128,
     pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MfaChallengeEvent {
+    pub user: Address,
+    pub challenge_id: u64,
+    pub operation: Symbol,
+    pub expires_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MfaVerificationEvent {
+    pub user: Address,
+    pub challenge_id: u64,
+    pub session_id: u64,
+    pub operation: Symbol,
+    pub emergency_bypass: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MfaSessionEvent {
+    pub user: Address,
+    pub session_id: u64,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub operations: Vec<Symbol>,
+    pub emergency_bypass: bool,
 }
 
 // Insurance event structures

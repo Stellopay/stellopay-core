@@ -649,6 +649,90 @@ impl ComplianceSystem {
         storage.get(&DataKey::ComplianceSettings)
     }
 
+    /// Set or update the compliance officer address (owner-only)
+    pub fn set_compliance_officer(
+        env: Env,
+        caller: Address,
+        officer: Address,
+    ) -> Result<(), ComplianceError> {
+        caller.require_auth();
+
+        // Only owner can assign officer
+        let storage = env.storage().persistent();
+        if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
+            if caller != owner {
+                return Err(ComplianceError::UnauthorizedComplianceOp);
+            }
+        } else {
+            return Err(ComplianceError::UnauthorizedComplianceOp);
+        }
+
+        // Update ComplianceSettings.compliance_officer, creating a default if missing
+        let mut settings = storage
+            .get::<DataKey, ComplianceSettings>(&DataKey::ComplianceSettings)
+            .unwrap_or(ComplianceSettings {
+                enabled_jurisdictions: Vec::new(&env),
+                audit_trail_enabled: true,
+                monitoring_enabled: true,
+                reporting_enabled: true,
+                compliance_officer: None,
+                last_updated: env.ledger().timestamp(),
+            });
+
+        settings.compliance_officer = Some(officer.clone());
+        settings.last_updated = env.ledger().timestamp();
+        storage.set(&DataKey::ComplianceSettings, &settings);
+
+        // Audit
+        let mut details = Map::new(&env);
+        details.set(&String::from_slice(&env, "action"), &String::from_slice(&env, "set_officer"));
+        Self::add_audit_entry(&env, "compliance_officer_updated", &caller, Some(officer), &details);
+        Ok(())
+    }
+
+    /// Return the list of enabled jurisdictions from global settings
+    pub fn list_enabled_jurisdictions(env: Env) -> Vec<Jurisdiction> {
+        let storage = env.storage().persistent();
+        if let Some(settings) = storage.get::<DataKey, ComplianceSettings>(&DataKey::ComplianceSettings) {
+            return settings.enabled_jurisdictions;
+        }
+        Vec::new(&env)
+    }
+
+    /// Provide a lightweight compliance summary for a jurisdiction
+    pub fn get_compliance_summary(
+        env: Env,
+        jurisdiction: Jurisdiction,
+    ) -> Map<String, String> {
+        let mut summary = Map::new(&env);
+
+        // Include metrics if available
+        if let Some(metrics) = Self::get_compliance_metrics(env.clone(), jurisdiction.clone()) {
+            summary.set(
+                &String::from_slice(&env, "compliance_score"),
+                &String::from_slice(&env, &metrics.compliance_score.to_string()),
+            );
+            summary.set(
+                &String::from_slice(&env, "violations_count"),
+                &String::from_slice(&env, &metrics.violations_count.to_string()),
+            );
+            summary.set(
+                &String::from_slice(&env, "total_employees"),
+                &String::from_slice(&env, &metrics.total_employees.to_string()),
+            );
+            summary.set(
+                &String::from_slice(&env, "last_audit_date"),
+                &String::from_slice(&env, &metrics.last_audit_date.to_string()),
+            );
+            summary.set(
+                &String::from_slice(&env, "next_audit_date"),
+                &String::from_slice(&env, &metrics.next_audit_date.to_string()),
+            );
+        }
+
+        summary
+    }
+
     //-----------------------------------------------------------------------------
     // Helper Functions
     //-----------------------------------------------------------------------------

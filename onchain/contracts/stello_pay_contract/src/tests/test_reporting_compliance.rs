@@ -1,13 +1,8 @@
 #![cfg(test)]
 
 use crate::payroll::{PayrollContract, PayrollContractClient};
-use crate::storage::{
-    ReportType, ReportFormat, TaxType, ComplianceAlertType, AlertSeverity
-};
-use soroban_sdk::{
-    testutils::{Address as _},
-    Address, Env, String,
-};
+use crate::storage::{AlertSeverity, ComplianceAlertType, ReportFormat, ReportType, TaxType};
+use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 //-----------------------------------------------------------------------------
 // Test Setup Helpers
@@ -84,6 +79,9 @@ fn test_basic_functionality() {
     // Test that the contract client can be created
     assert!(true); // Simple test that passes
 }
+
+// Note: Compliance system is currently excluded from the main lib; tests targeting it are
+// intentionally omitted here to avoid module import errors.
 
 #[test]
 fn test_tax_calculation_logic() {
