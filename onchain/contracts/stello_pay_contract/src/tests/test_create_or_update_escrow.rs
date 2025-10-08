@@ -429,7 +429,10 @@ fn test_update_escrow_same_parameters() {
     let updated_payroll = client.get_payroll(&employee).unwrap();
     assert_eq!(initial_payroll.amount, updated_payroll.amount);
     assert_eq!(initial_payroll.interval, updated_payroll.interval);
-    assert_eq!(initial_payroll.recurrence_frequency, updated_payroll.recurrence_frequency);
+    assert_eq!(
+        initial_payroll.recurrence_frequency,
+        updated_payroll.recurrence_frequency
+    );
 }
 
 #[test]
@@ -579,12 +582,7 @@ fn test_create_escrow_multiple_updates() {
 
     // Update recurrence
     client.create_or_update_escrow(
-        &employer,
-        &employee,
-        &token,
-        &2000i128,
-        &604800u64,
-        &604800u64, // 7 days
+        &employer, &employee, &token, &2000i128, &604800u64, &604800u64, // 7 days
     );
 
     let payroll = client.get_payroll(&employee).unwrap();

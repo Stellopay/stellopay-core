@@ -1,8 +1,9 @@
+#![allow(dead_code)]
 //-----------------------------------------------------------------------------
 // Events
 //-----------------------------------------------------------------------------
 
-use soroban_sdk::{contracttype, symbol_short, Address, Env, String, Symbol};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, Map, String, Symbol, Vec};
 
 /// Event emitted when contract is paused
 pub const PAUSED_EVENT: Symbol = symbol_short!("paused");
@@ -57,6 +58,20 @@ pub const ROLE_ASSIGNED_EVENT: Symbol = symbol_short!("role_a");
 pub const ROLE_REVOKED_EVENT: Symbol = symbol_short!("role_r");
 pub const SECURITY_AUDIT_EVENT: Symbol = symbol_short!("sec_aud");
 pub const SECURITY_POLICY_VIOLATION_EVENT: Symbol = symbol_short!("sec_viol");
+pub const SUSPICIOUS_ACTIVITY_EVENT: Symbol = symbol_short!("susp_act");
+pub const RATE_LIMIT_EXCEEDED_EVENT: Symbol = symbol_short!("rate_lim");
+pub const RATE_LIMIT_VIOLATION_EVENT: Symbol = symbol_short!("rate_viol");
+pub const RATE_LIMIT_SETTINGS_UPDATED_EVENT: Symbol = symbol_short!("rate_set");
+pub const RATE_LIMIT_RESET_EVENT: Symbol = symbol_short!("rate_rst");
+pub const ACCESS_DENIED_EVENT: Symbol = symbol_short!("acc_den");
+pub const ACCOUNT_LOCKED_EVENT: Symbol = symbol_short!("acc_lck");
+pub const MFA_ENABLED_EVENT: Symbol = symbol_short!("mfa_on");
+pub const MFA_DISABLED_EVENT: Symbol = symbol_short!("mfa_off");
+pub const MFA_CHALLENGE_EVENT: Symbol = symbol_short!("mfa_ch");
+pub const MFA_VERIFIED_EVENT: Symbol = symbol_short!("mfa_ok");
+pub const MFA_EMERGENCY_EVENT: Symbol = symbol_short!("mfa_emg");
+pub const SESSION_STARTED_EVENT: Symbol = symbol_short!("sess_on");
+pub const SESSION_ENDED_EVENT: Symbol = symbol_short!("sess_off");
 
 // Employee Lifecycle Events
 pub const EMPLOYEE_ONBOARDED: Symbol = symbol_short!("emp_onb");
@@ -71,6 +86,18 @@ pub const FINAL_PAYMENT_PROCESSED: Symbol = symbol_short!("fin_pay");
 pub const COMPLIANCE_UPDATED: Symbol = symbol_short!("cmp_upd");
 pub const WORKFLOW_APPROVED: Symbol = symbol_short!("wf_app");
 pub const TASK_COMPLETED: Symbol = symbol_short!("tsk_cmp");
+
+/// Event emitted when compliance check completes
+pub const COMPLIANCE_CHECK_EVENT: Symbol = symbol_short!("comp_chk");
+
+/// Event emitted when automated adjustment is applied
+pub const ADJUSTMENT_APPLIED_EVENT: Symbol = symbol_short!("adj_app");
+
+/// Event emitted when payroll forecast is generated
+pub const FORECAST_EVENT: Symbol = symbol_short!("forecast");
+
+/// Event emitted when holiday config is updated
+pub const HOLIDAY_CONFIG_EVENT: Symbol = symbol_short!("hol_cfg");
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -89,6 +116,36 @@ pub struct EmployerWithdrawn {
     pub token: Address,
     pub amount: i128,
     pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MfaChallengeEvent {
+    pub user: Address,
+    pub challenge_id: u64,
+    pub operation: Symbol,
+    pub expires_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MfaVerificationEvent {
+    pub user: Address,
+    pub challenge_id: u64,
+    pub session_id: u64,
+    pub operation: Symbol,
+    pub emergency_bypass: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MfaSessionEvent {
+    pub user: Address,
+    pub session_id: u64,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub operations: Vec<Symbol>,
+    pub emergency_bypass: bool,
 }
 
 // Insurance event structures
@@ -245,6 +302,47 @@ pub struct TaskCompleted {
     pub timestamp: u64,
 }
 
+// Security Alert Structures
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SuspiciousActivityAlert {
+    pub user: Address,
+    pub activity_type: String,
+    pub severity: String,
+    pub details: Map<String, String>,
+    pub detected_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RateLimitExceededAlert {
+    pub user: Address,
+    pub operation: String,
+    pub max_requests: u32,
+    pub time_window: u64,
+    pub current_count: u32,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccessDeniedAlert {
+    pub user: Address,
+    pub permission: String,
+    pub resource: String,
+    pub reason: String,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AccountLockedAlert {
+    pub user: Address,
+    pub reason: String,
+    pub lock_until: Option<u64>,
+    pub timestamp: u64,
+}
+
 pub fn emit_disburse(
     e: Env,
     employer: Address,
@@ -395,6 +493,7 @@ pub fn emit_employee_offboarded(
     e.events().publish(topics, event_data);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn emit_employee_transferred(
     e: Env,
     employee: Address,
@@ -439,6 +538,7 @@ pub fn emit_employee_status_changed(
     e.events().publish(topics, event_data);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn emit_onboarding_workflow_event(
     e: Env,
     workflow_id: u64,
@@ -462,6 +562,7 @@ pub fn emit_onboarding_workflow_event(
     e.events().publish(topics, event_data);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn emit_offboarding_workflow_event(
     e: Env,
     workflow_id: u64,
@@ -487,6 +588,7 @@ pub fn emit_offboarding_workflow_event(
     e.events().publish(topics, event_data);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn emit_final_payment_processed(
     e: Env,
     employee: Address,
@@ -531,6 +633,7 @@ pub fn emit_compliance_updated(
     e.events().publish(topics, event_data);
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn emit_workflow_approved(
     e: Env,
     workflow_id: u64,
@@ -568,6 +671,83 @@ pub fn emit_task_completed(
         task_id,
         task_name,
         completed_by,
+        timestamp,
+    };
+    e.events().publish(topics, event_data);
+}
+
+// Security Alert Emitters
+pub fn emit_suspicious_activity(
+    e: Env,
+    user: Address,
+    activity_type: String,
+    severity: String,
+    details: Map<String, String>,
+    detected_at: u64,
+) {
+    let topics = (SUSPICIOUS_ACTIVITY_EVENT,);
+    let event_data = SuspiciousActivityAlert {
+        user,
+        activity_type,
+        severity,
+        details,
+        detected_at,
+    };
+    e.events().publish(topics, event_data);
+}
+
+pub fn emit_rate_limit_exceeded(
+    e: Env,
+    user: Address,
+    operation: String,
+    max_requests: u32,
+    time_window: u64,
+    current_count: u32,
+    timestamp: u64,
+) {
+    let topics = (RATE_LIMIT_EXCEEDED_EVENT,);
+    let event_data = RateLimitExceededAlert {
+        user,
+        operation,
+        max_requests,
+        time_window,
+        current_count,
+        timestamp,
+    };
+    e.events().publish(topics, event_data);
+}
+
+pub fn emit_access_denied(
+    e: Env,
+    user: Address,
+    permission: String,
+    resource: String,
+    reason: String,
+    timestamp: u64,
+) {
+    let topics = (ACCESS_DENIED_EVENT,);
+    let event_data = AccessDeniedAlert {
+        user,
+        permission,
+        resource,
+        reason,
+        timestamp,
+    };
+    e.events().publish(topics, event_data);
+}
+
+pub fn emit_account_locked(
+    e: Env,
+    user: Address,
+    reason: String,
+    lock_until: Option<u64>,
+    timestamp: u64,
+) {
+    let topics = (ACCOUNT_LOCKED_EVENT,);
+    let event_data = AccountLockedAlert {
+        user,
+        reason,
+        lock_until,
         timestamp,
     };
     e.events().publish(topics, event_data);

@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Env, Map, String, Symbol, Vec};
+use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env, Map, String, Symbol, Vec};
 
 // Import insurance types for backup functionality
 use crate::insurance::InsurancePolicy;
@@ -596,6 +596,97 @@ pub struct ScheduleMetadata {
     pub average_execution_time: u64,
 }
 
+/// Holiday configuration for schedule handling
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct HolidayConfig {
+    pub schedule_id: u64,
+    pub skip_weekends: bool,
+    pub holidays: Vec<u64>, // Holiday timestamps
+    pub weekend_handling: WeekendHandling,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// Weekend handling strategy
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum WeekendHandling {
+    Skip,         // Skip to next business day
+    ProcessEarly, // Process on Friday
+    ProcessLate,  // Process on Monday
+}
+
+/// Payroll adjustment record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollAdjustment {
+    pub id: u64,
+    pub employee: Address,
+    pub adjustment_type: String,
+    pub amount: i128,
+    pub reason: String,
+    pub applied_by: Address,
+    pub applied_at: u64,
+    pub approved: bool,
+}
+
+/// Payroll forecast result
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollForecast {
+    pub period: u32,
+    pub start_date: u64,
+    pub end_date: u64,
+    pub estimated_amount: i128,
+    pub employee_count: u32,
+    pub confidence_level: u32, // 0-100
+}
+
+/// Compliance check result
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComplianceCheckResult {
+    pub check_id: u64,
+    pub employer: Address,
+    pub check_time: u64,
+    pub issues_found: Vec<ComplianceIssue>,
+    pub passed: bool,
+}
+
+/// Individual compliance issue
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComplianceIssue {
+    pub employee: Address,
+    pub issue_type: String,
+    pub severity: ComplianceSeverity,
+    pub description: String,
+}
+
+/// Compliance severity levels
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ComplianceSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+/// Optimization suggestion
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct OptimizationSuggestion {
+    pub suggestion_id: u64,
+    pub employer: Address,
+    pub suggestion_type: String,
+    pub description: String,
+    pub potential_savings: i128,
+    pub priority: u32,
+    pub created_at: u64,
+}
+
 /// Automation rule structure for conditional triggers
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -936,6 +1027,97 @@ pub struct RateLimitConfig {
     pub block_until: Option<u64>,
 }
 
+/// Advanced rate limiting configuration with adaptive behavior
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdvancedRateLimitConfig {
+    pub user: Address,
+    pub operation: String,
+    pub base_max_requests: u32,
+    pub current_max_requests: u32,
+    pub time_window: u64,
+    pub current_count: u32,
+    pub reset_time: u64,
+    pub is_blocked: bool,
+    pub block_until: Option<u64>,
+    pub violation_count: u32,
+    pub last_violation_time: Option<u64>,
+    pub adaptive_factor: u32, // Multiplier for adaptive rate limiting (100 = 1.0x)
+    pub exponential_backoff_until: Option<u64>,
+    pub trust_score: u32, // 0-100, higher is more trusted
+}
+
+/// IP-based rate limiting configuration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct IPRateLimitConfig {
+    pub ip_address: String,
+    pub max_requests: u32,
+    pub time_window: u64,
+    pub current_count: u32,
+    pub reset_time: u64,
+    pub is_blocked: bool,
+    pub block_until: Option<u64>,
+    pub violation_count: u32,
+    pub suspicious_activity_score: u32, // 0-100
+    pub last_activity_time: u64,
+}
+
+/// Rate limiting violation record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RateLimitViolation {
+    pub id: u64,
+    pub user: Address,
+    pub ip_address: Option<String>,
+    pub operation: String,
+    pub violation_type: RateLimitViolationType,
+    pub timestamp: u64,
+    pub details: Map<String, String>,
+    pub severity: ViolationSeverity,
+    pub resolved: bool,
+    pub resolved_at: Option<u64>,
+}
+
+/// Rate limiting violation type
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum RateLimitViolationType {
+    UserRateLimit,
+    IPRateLimit,
+    OperationRateLimit,
+    AdaptiveRateLimit,
+    ExponentialBackoff,
+    SuspiciousActivity,
+}
+
+/// Violation severity levels
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ViolationSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+/// Global rate limiting settings
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlobalRateLimitSettings {
+    pub enabled: bool,
+    pub default_user_rate_limit: u32,
+    pub default_ip_rate_limit: u32,
+    pub default_time_window: u64,
+    pub max_violations_before_block: u32,
+    pub block_duration: u64,
+    pub exponential_backoff_enabled: bool,
+    pub adaptive_rate_limiting_enabled: bool,
+    pub suspicious_activity_threshold: u32,
+    pub trust_score_decay_rate: u32, // Per day
+    pub last_updated: u64,
+}
+
 /// Security settings structure
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -950,7 +1132,55 @@ pub struct SecuritySettings {
     pub rate_limiting_enabled: bool,
     pub security_policies_enabled: bool,
     pub emergency_mode: bool,
+    pub large_disbursement_threshold: i128,
     pub last_updated: u64,
+}
+
+/// Per-user MFA configuration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserMfaConfig {
+    pub user: Address,
+    pub is_enabled: bool,
+    pub secret: Bytes,
+    pub digits: u32,
+    pub period: u64,
+    pub last_verified_at: Option<u64>,
+    pub session_timeout_override: Option<u64>,
+    pub active_sessions: Vec<u64>,
+    pub emergency_bypass_enabled: bool,
+    pub emergency_code_hashes: Vec<BytesN<32>>,
+    pub emergency_bypass_last_used_at: Option<u64>,
+}
+
+/// MFA challenge record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MfaChallenge {
+    pub challenge_id: u64,
+    pub user: Address,
+    pub operation: Symbol,
+    pub issued_at: u64,
+    pub expires_at: u64,
+    pub attempts_remaining: u32,
+    pub requires_totp: bool,
+    pub emergency_bypass_allowed: bool,
+    pub session_scope: Vec<Symbol>,
+    pub resolved: bool,
+}
+
+/// MFA session record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MfaSession {
+    pub session_id: u64,
+    pub user: Address,
+    pub issued_for: Vec<Symbol>,
+    pub created_at: u64,
+    pub last_used_at: u64,
+    pub expires_at: u64,
+    pub emergency_bypass_used: bool,
+    pub challenge_id: u64,
 }
 
 /// Suspicious activity detection
@@ -1073,7 +1303,15 @@ pub enum DataKey {
     // Admin
     Owner,
     Paused,
-
+    TokenPair(Address),
+    ConversionRate(Address),
+    SwapFee,
+    SwapRequest(String),       // request id
+    SwapResult(String),        // request id
+    SwapHistoryEntry(String),  // entry id
+    SwapHistoryIndex(Address), // indexed by employer (or employee)
+    TokenSwapSettings,
+    // DexConfig(String),
     SupportedToken(Address),
     TokenMetadata(Address),
 
@@ -1106,6 +1344,15 @@ pub enum DataKey {
 
     // Security - MINIMAL SET
     SecuritySettings, // Global security settings
+    
+    // Rate Limiting - Advanced DDoS Protection
+    AdvancedRateLimit(Address, String), // (user, operation) -> AdvancedRateLimitConfig
+    IPRateLimit(String), // ip_address -> IPRateLimitConfig
+    RateLimitViolation(u64), // violation_id -> RateLimitViolation
+    NextRateLimitViolationId, // Counter for violation IDs
+    UserRateLimitViolations(Address), // user -> Vec<u64> (violation IDs)
+    IPRateLimitViolations(String), // ip_address -> Vec<u64> (violation IDs)
+    GlobalRateLimitSettings, // Global rate limiting settings
 }
 
 // Extended functionality keys - separate enum to avoid size limits
@@ -1137,6 +1384,29 @@ pub enum ExtendedDataKey {
     Rule(u64),             // rule_id -> AutomationRule
     NextRuleId,            // Next available rule ID
     EmpRules(Address),     // employer -> Vec<u64> (rule IDs)
+    // Holiday and weekend handling
+    HolidayConfig(u64), // schedule_id -> HolidayConfig
+
+    // Payroll adjustments
+    Adjustment(u64),         // adjustment_id -> PayrollAdjustment
+    NextAdjustmentId,        // Next available adjustment ID
+    EmpAdjustments(Address), // employee -> Vec<u64> (adjustment IDs)
+
+    // Forecasting
+    Forecast(u64),  // forecast_id -> PayrollForecast
+    NextForecastId, // Next available forecast ID
+
+    // Compliance
+    ComplianceCheck(u64),  // check_id -> ComplianceCheckResult
+    NextComplianceCheckId, // Next available check ID
+
+    // MFA and session management
+    UserMfaConfig(Address),   // user -> UserMfaConfig
+    UserMfaSessions(Address), // user -> Vec<u64>
+    MfaSession(u64),          // session_id -> MfaSession
+    MfaChallenge(u64),        // challenge_id -> MfaChallenge
+    NextMfaSessionId,         // counter for MFA session IDs
+    NextMfaChallengeId,       // counter for MFA challenge IDs
 }
 
 #[contracttype]
@@ -1329,6 +1599,406 @@ pub enum ComplianceStatus {
     NotRequired,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimeSeriesDataPoint {
+    pub timestamp: u64,
+    pub value: i128,
+    pub metric_type: String,
+    pub metadata: Map<String, String>,
+}
+
+/// Aggregated metrics for a specific period
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AggregatedMetrics {
+    pub period_start: u64,
+    pub period_end: u64,
+    pub employer: Address,
+    pub total_disbursements: u64,
+    pub total_amount: i128,
+    pub average_amount: i128,
+    pub min_amount: i128,
+    pub max_amount: i128,
+    pub employee_count: u32,
+    pub on_time_rate: u32,                    // Percentage
+    pub late_rate: u32,                       // Percentage
+    pub error_rate: u32,                      // Percentage
+    pub token_breakdown: Map<Address, i128>,  // Token -> Total amount
+    pub department_breakdown: Map<u64, i128>, // Department ID -> Total amount
+}
+
+/// Trend analysis result
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrendAnalysis {
+    pub metric_name: String,
+    pub period_start: u64,
+    pub period_end: u64,
+    pub data_points: Vec<TimeSeriesDataPoint>,
+    pub trend_direction: TrendDirection,
+    pub growth_rate: i128,      // Basis points (100 = 1%)
+    pub volatility: u32,        // Standard deviation as percentage
+    pub has_forecast: bool,     // Indicate if forecast is present
+    pub forecast: ForecastData, // Always include, use default/empty values when not needed
+    pub analysis_timestamp: u64,
+}
+
+/// Trend direction enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum TrendDirection {
+    Increasing,
+    Decreasing,
+    Stable,
+    Volatile,
+    Insufficient, // Not enough data
+}
+
+/// Forecast data for predictions
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ForecastData {
+    pub next_period_prediction: i128,
+    pub confidence_level: u32, // Percentage
+    pub prediction_range_low: i128,
+    pub prediction_range_high: i128,
+    pub forecast_method: String,
+}
+
+/// Dashboard widget configuration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DashboardWidget {
+    pub id: u64,
+    pub widget_type: WidgetType,
+    pub title: String,
+    pub data_source: DataSource,
+    pub refresh_interval: u64, // Seconds
+    pub filters: Map<String, String>,
+    pub position: WidgetPosition,
+    pub size: WidgetSize,
+    pub is_visible: bool,
+}
+
+/// Widget type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum WidgetType {
+    LineChart,
+    BarChart,
+    PieChart,
+    Table,
+    Metric,
+    Heatmap,
+    Gauge,
+    Timeline,
+}
+
+/// Data source for widgets
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DataSource {
+    PayrollMetrics,
+    EmployeeMetrics,
+    ComplianceMetrics,
+    FinancialMetrics,
+    CustomQuery(String),
+}
+
+/// Widget position on dashboard
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct WidgetPosition {
+    pub row: u32,
+    pub column: u32,
+}
+
+/// Widget size
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct WidgetSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Chart data structure for visualization
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChartData {
+    pub chart_id: u64,
+    pub chart_type: WidgetType,
+    pub title: String,
+    pub x_axis_label: String,
+    pub y_axis_label: String,
+    pub data_series: Vec<DataSeries>,
+    pub generated_at: u64,
+}
+
+/// Data series for charts
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DataSeries {
+    pub name: String,
+    pub data_points: Vec<DataPoint>,
+    pub color: Option<String>,
+    pub line_style: Option<String>,
+}
+
+/// Individual data point for charts
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DataPoint {
+    pub x: u64, // Can be timestamp, category, etc.
+    pub y: i128,
+    pub label: Option<String>,
+}
+
+/// Custom query for analytics
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnalyticsQuery {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    pub query_type: QueryType,
+    pub filters: Vec<QueryFilter>,
+    pub group_by: Vec<String>,
+    pub sort_by: Vec<SortCriteria>,
+    pub limit: Option<u32>,
+    pub created_by: Address,
+    pub created_at: u64,
+}
+
+/// Query type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum QueryType {
+    Aggregate,
+    TimeSeries,
+    Comparative,
+    Distribution,
+    Custom,
+}
+
+/// Query filter
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct QueryFilter {
+    pub field: String,
+    pub operator: FilterOperator,
+    pub value: String,
+}
+
+/// Filter operator enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum FilterOperator {
+    Equals,
+    NotEquals,
+    GreaterThan,
+    LessThan,
+    Between,
+    In,
+    Contains,
+}
+
+/// Sort criteria
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct SortCriteria {
+    pub field: String,
+    pub direction: SortDirection,
+}
+
+/// Sort direction
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum SortDirection {
+    Ascending,
+    Descending,
+}
+
+/// Data export request
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DataExportRequest {
+    pub id: u64,
+    pub export_type: ExportType,
+    pub format: ExportFormat,
+    pub data_range: DateRange,
+    pub filters: Map<String, String>,
+    pub requested_by: Address,
+    pub requested_at: u64,
+    pub status: ExportStatus,
+    pub file_url: Option<String>,
+    pub file_size: Option<u64>,
+    pub completed_at: Option<u64>,
+}
+
+/// Export type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExportType {
+    PayrollData,
+    EmployeeData,
+    ComplianceData,
+    AuditTrail,
+    AnalyticsReport,
+    CustomQuery,
+}
+
+/// Export format enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExportFormat {
+    CSV,
+    JSON,
+    XML,
+    PDF,
+    Excel,
+}
+
+/// Export status
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExportStatus {
+    Pending,
+    Processing,
+    Completed,
+    Failed,
+    Expired,
+}
+
+/// Date range for queries
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DateRange {
+    pub start: u64,
+    pub end: u64,
+}
+
+/// Comparative analysis result
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComparativeAnalysis {
+    pub analysis_id: u64,
+    pub comparison_type: ComparisonType,
+    pub period_1: DateRange,
+    pub period_2: DateRange,
+    pub metrics_comparison: Vec<MetricComparison>,
+    pub summary: String,
+    pub generated_at: u64,
+}
+
+/// Comparison type
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ComparisonType {
+    PeriodOverPeriod,
+    YearOverYear,
+    MonthOverMonth,
+    Custom,
+}
+
+/// Metric comparison
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MetricComparison {
+    pub metric_name: String,
+    pub period_1_value: i128,
+    pub period_2_value: i128,
+    pub absolute_change: i128,
+    pub percentage_change: i128, // Basis points
+    pub is_improvement: bool,
+}
+
+/// Analytics dashboard configuration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct AnalyticsDashboard {
+    pub id: u64,
+    pub name: String,
+    pub description: String,
+    pub owner: Address,
+    pub widgets: Vec<DashboardWidget>,
+    pub is_default: bool,
+    pub is_public: bool,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// Benchmark data for comparisons
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BenchmarkData {
+    pub metric_name: String,
+    pub industry_average: i128,
+    pub top_quartile: i128,
+    pub median: i128,
+    pub bottom_quartile: i128,
+    pub company_value: i128,
+    pub percentile_rank: u32,
+    pub last_updated: u64,
+}
+
+//-----------------------------------------------------------------------------
+// Analytics Storage Keys
+//-----------------------------------------------------------------------------
+
+#[contracttype]
+pub enum AnalyticsDataKey {
+    // Time series data
+    TimeSeriesData(String, u64), // (metric_name, timestamp) -> TimeSeriesDataPoint
+    TimeSeriesIndex(String),     // metric_name -> Vec<u64> (timestamps)
+
+    // Aggregated metrics
+    AggregatedMetrics(Address, u64), // (employer, period_start) -> AggregatedMetrics
+
+    // Trend analysis
+    TrendAnalysis(String, u64), // (metric_name, analysis_timestamp) -> TrendAnalysis
+
+    // Dashboards
+    Dashboard(u64), // dashboard_id -> AnalyticsDashboard
+    NextDashboardId,
+    UserDashboards(Address), // user -> Vec<u64> (dashboard IDs)
+
+    // Charts
+    ChartData(u64), // chart_id -> ChartData
+    NextChartId,
+
+    // Custom queries
+    AnalyticsQuery(u64), // query_id -> AnalyticsQuery
+    NextQueryId,
+    UserQueries(Address), // user -> Vec<u64> (query IDs)
+
+    // Data exports
+    ExportRequest(u64), // export_id -> DataExportRequest
+    NextExportId,
+    UserExports(Address), // user -> Vec<u64> (export IDs)
+
+    // Comparative analysis
+    ComparativeAnalysis(u64), // analysis_id -> ComparativeAnalysis
+    NextAnalysisId,
+
+    // Benchmarks
+    Benchmark(String), // metric_name -> BenchmarkData
+
+    // Analytics cache
+    AnalyticsCache(String), // cache_key -> cached data
+}
+
+impl ForecastData {
+    pub fn empty(env: &Env) -> Self {
+        ForecastData {
+            next_period_prediction: 0,
+            confidence_level: 0,
+            prediction_range_low: 0,
+            prediction_range_high: 0,
+            forecast_method: String::from_str(env, "none"),
+        }
+    }
+}
 //-----------------------------------------------------------------------------
 // Lifecycle Storage Helper - Clever workaround for DataKey size limit
 //-----------------------------------------------------------------------------
@@ -1337,6 +2007,7 @@ pub enum ComplianceStatus {
 /// This avoids adding new variants to the DataKey enum which is already at size limit
 pub struct LifecycleStorage;
 
+#[allow(dead_code)]
 impl LifecycleStorage {
     // Storage prefixes for different lifecycle data types
     const PROFILE_PREFIX: &'static str = "lc_profile_";
@@ -1556,4 +2227,323 @@ impl LifecycleStorage {
             .persistent()
             .get(&DataKey::Balance(employee.clone(), payment_key))
     }
+}
+
+//-----------------------------------------------------------------------------
+// Comprehensive Reporting Data Structures
+//-----------------------------------------------------------------------------
+
+/// Report type enumeration for different kinds of reports
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReportType {
+    PayrollSummary,
+    PayrollDetailed,
+    ComplianceReport,
+    TaxReport,
+    AuditReport,
+    PerformanceReport,
+    CustomReport(String),
+}
+
+/// Report format enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReportFormat {
+    Json,
+    Csv,
+    Pdf,
+    Html,
+    Xml,
+}
+
+/// Report status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReportStatus {
+    Pending,
+    Generating,
+    Completed,
+    Failed,
+    Scheduled,
+    Distributed,
+}
+
+/// Comprehensive report structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollReport {
+    pub id: u64,
+    pub name: String,
+    pub report_type: ReportType,
+    pub format: ReportFormat,
+    pub status: ReportStatus,
+    pub employer: Address,
+    pub period_start: u64,
+    pub period_end: u64,
+    pub filters: Map<String, String>,
+    pub data: Map<String, String>,
+    pub metadata: ReportMetadata,
+    pub created_at: u64,
+    pub completed_at: Option<u64>,
+    pub file_hash: Option<String>,
+    pub file_size: Option<u64>,
+}
+
+/// Report metadata structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportMetadata {
+    pub total_employees: u32,
+    pub total_amount: i128,
+    pub total_transactions: u32,
+    pub compliance_score: u32,
+    pub generation_time_ms: u64,
+    pub data_sources: Vec<String>,
+    pub filters_applied: Vec<String>,
+}
+
+/// Tax calculation structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaxCalculation {
+    pub employee: Address,
+    pub employer: Address,
+    pub jurisdiction: String,
+    pub gross_amount: i128,
+    pub tax_type: TaxType,
+    pub tax_rate: u32, // Basis points (e.g., 2500 = 25%)
+    pub tax_amount: i128,
+    pub net_amount: i128,
+    pub calculation_date: u64,
+    pub tax_period: String,
+    pub deductions: Vec<TaxDeduction>,
+}
+
+/// Tax type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum TaxType {
+    IncomeTax,
+    SocialSecurity,
+    Medicare,
+    Unemployment,
+    StateIncomeTax,
+    LocalTax,
+    Custom(String),
+}
+
+/// Tax deduction structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaxDeduction {
+    pub deduction_type: String,
+    pub amount: i128,
+    pub description: String,
+}
+
+/// Report schedule structure for automated report generation
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportSchedule {
+    pub id: u64,
+    pub name: String,
+    pub report_type: ReportType,
+    pub employer: Address,
+    pub frequency: ScheduleFrequency,
+    pub recipients: Vec<String>, // Email addresses or webhook URLs
+    pub filters: Map<String, String>,
+    pub format: ReportFormat,
+    pub is_active: bool,
+    pub created_at: u64,
+    pub next_execution: u64,
+    pub last_execution: Option<u64>,
+    pub execution_count: u32,
+}
+
+/// Compliance alert structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ComplianceAlert {
+    pub id: u64,
+    pub alert_type: ComplianceAlertType,
+    pub severity: AlertSeverity,
+    pub jurisdiction: String,
+    pub employee: Option<Address>,
+    pub employer: Address,
+    pub title: String,
+    pub description: String,
+    pub violation_details: Map<String, String>,
+    pub recommended_actions: Vec<String>,
+    pub created_at: u64,
+    pub due_date: Option<u64>,
+    pub resolved_at: Option<u64>,
+    pub resolved_by: Option<Address>,
+    pub status: AlertStatus,
+}
+
+/// Compliance alert type enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum ComplianceAlertType {
+    MinimumWageViolation,
+    OvertimeViolation,
+    TaxWithholdingIssue,
+    MissingDocumentation,
+    LatePayment,
+    ComplianceDeadline,
+    RegulatoryChange,
+    AuditRequired,
+    Custom(String),
+}
+
+/// Alert severity enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum AlertSeverity {
+    Info,
+    Warning,
+    AlertError,
+    Critical,
+}
+
+/// Alert status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum AlertStatus {
+    Active,
+    Acknowledged,
+    InProgress,
+    Resolved,
+    Dismissed,
+}
+
+/// Dashboard metrics structure
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct DashboardMetrics {
+    pub employer: Address,
+    pub period_start: u64,
+    pub period_end: u64,
+    pub total_employees: u32,
+    pub active_employees: u32,
+    pub total_payroll_amount: i128,
+    pub total_tax_amount: i128,
+    pub compliance_score: u32,
+    pub pending_payments: u32,
+    pub overdue_payments: u32,
+    pub active_alerts: u32,
+    pub resolved_alerts: u32,
+    pub last_updated: u64,
+    pub jurisdiction_metrics: Map<String, JurisdictionMetrics>,
+}
+
+/// Jurisdiction-specific metrics
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct JurisdictionMetrics {
+    pub jurisdiction: String,
+    pub employee_count: u32,
+    pub payroll_amount: i128,
+    pub tax_amount: i128,
+    pub compliance_score: u32,
+    pub violations_count: u32,
+    pub last_audit_date: u64,
+}
+
+/// Audit trail entry for reporting
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportAuditEntry {
+    pub id: u64,
+    pub report_id: u64,
+    pub action: String,
+    pub actor: Address,
+    pub timestamp: u64,
+    pub details: Map<String, String>,
+    pub ip_address: Option<String>,
+}
+
+/// Report distribution record
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReportDistribution {
+    pub id: u64,
+    pub report_id: u64,
+    pub recipient: String,
+    pub distribution_method: DistributionMethod,
+    pub status: DistributionStatus,
+    pub sent_at: u64,
+    pub delivered_at: Option<u64>,
+    pub error_message: Option<String>,
+    pub retry_count: u32,
+}
+
+/// Distribution method enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DistributionMethod {
+    Email,
+    Webhook,
+    FileSystem,
+    Api,
+    Custom(String),
+}
+
+/// Distribution status enumeration
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum DistributionStatus {
+    Pending,
+    Sent,
+    Delivered,
+    Failed,
+    Retrying,
+}
+
+//-----------------------------------------------------------------------------
+// Extended Storage Keys for Reporting
+//-----------------------------------------------------------------------------
+
+/// Reporting-specific data keys
+#[contracttype]
+pub enum ReportingDataKey {
+    // Reports
+    Report(u64),                   // report_id -> PayrollReport
+    NextReportId,                  // Next available report ID
+    EmployerReports(Address),      // employer -> Vec<u64> (report IDs)
+    ReportsByType(ReportType),     // report_type -> Vec<u64> (report IDs)
+    ReportsByStatus(ReportStatus), // status -> Vec<u64> (report IDs)
+
+    // Tax calculations
+    TaxCalculation(Address, u64), // (employee, period) -> TaxCalculation
+    EmployerTaxes(Address),       // employer -> Vec<(Address, u64)> (employee, period pairs)
+    TaxesByJurisdiction(String),  // jurisdiction -> Vec<(Address, u64)>
+
+    // Report schedules
+    ReportSchedule(u64),        // schedule_id -> ReportSchedule
+    NextScheduleId,             // Next available schedule ID
+    EmployerSchedules(Address), // employer -> Vec<u64> (schedule IDs)
+    ActiveSchedules,            // Vec<u64> (active schedule IDs)
+
+    // Compliance alerts
+    ComplianceAlert(u64),              // alert_id -> ComplianceAlert
+    NextAlertId,                       // Next available alert ID
+    EmployerAlerts(Address),           // employer -> Vec<u64> (alert IDs)
+    ActiveAlerts,                      // Vec<u64> (active alert IDs)
+    AlertsByType(ComplianceAlertType), // alert_type -> Vec<u64> (alert IDs)
+
+    // Dashboard metrics
+    DashboardMetrics(Address), // employer -> DashboardMetrics
+    GlobalMetrics,             // Global system metrics
+
+    // Audit trail
+    ReportAudit(u64),      // audit_id -> ReportAuditEntry
+    NextAuditId,           // Next available audit ID
+    ReportAuditTrail(u64), // report_id -> Vec<u64> (audit entry IDs)
+
+    // Distribution
+    ReportDistribution(u64),  // distribution_id -> ReportDistribution
+    NextDistributionId,       // Next available distribution ID
+    ReportDistributions(u64), // report_id -> Vec<u64> (distribution IDs)
 }
