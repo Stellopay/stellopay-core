@@ -1331,7 +1331,11 @@ impl PayrollContract {
         if payroll_inputs.len() > MAX_BATCH_SIZE {
             return Err(PayrollError::InvalidData);
         }
-
+        for payroll_input in payroll_inputs.iter() {
+            validation::validate_address_not_zero(&env, &payroll_input.employee)?;
+            validation::validate_address_not_zero(&env, &payroll_input.token)?;
+            validation::validate_address_not_contract(&env, &payroll_input.employee)?;
+        }
         // Create optimized batch context
         let batch_ctx = Self::create_batch_context(&env);
         let storage = env.storage().persistent();
@@ -1923,16 +1927,14 @@ impl PayrollContract {
         interval: u64,
         recurrence_frequency: u64,
     ) -> Result<(), PayrollError> {
-        // Early return for invalid data to avoid unnecessary processing
-        if amount <= 0 {
-            return Err(PayrollError::InvalidData);
-        }
-        if interval == 0 {
-            return Err(PayrollError::InvalidData);
-        }
-        if recurrence_frequency == 0 {
-            return Err(PayrollError::InvalidRecurrenceFrequency);
-        }
+        // Validate amount
+        validation::validate_amount_bounds(amount)?;
+
+        // Validate interval
+        validation::validate_interval_bounds(interval)?;
+
+        // Validate recurrence frequency
+        validation::validate_frequency_bounds(recurrence_frequency)?;
         Ok(())
     }
 
@@ -3503,6 +3505,21 @@ impl PayrollContract {
         if let Some(end) = end_date {
             if end <= start_date {
                 return Err(PayrollError::ScheduleValidationFailed);
+            }
+        }
+        // Enhanced validation
+        validation::validate_address_not_zero(&env, &caller)?;
+        validation::validate_string(&name, 1, 100)?;
+        validation::validate_string(&description, 0, 500)?;
+        validation::validate_future_timestamp(&env, start_date, 60)?; // 60 second tolerance
+        
+        if let Some(end) = end_date {
+            if end <= start_date {
+                return Err(PayrollError::InvalidTimeRange);
+            }
+            // Validate end date is not too far in future (10 years max)
+            if end > start_date + (10 * 365 * 24 * 3600) {
+                return Err(PayrollError::InvalidTimeRange);
             }
         }
 
@@ -6252,6 +6269,15 @@ impl PayrollContract {
             return Err(PayrollError::InvalidData);
         }
 
+        // Validate each evidence string
+        for ev in evidence.iter() {
+            validation::validate_string(&ev, 1, 500)?;
+        }
+
+        // Validate amount if provided
+        if let Some(amt) = amount_involved {
+            validation::validate_amount_bounds(amt)?;
+        }
         // Get next dispute ID
         let next_id = storage.get(&EnterpriseDataKey::NextDisputeId).unwrap_or(0) + 1;
         storage.set(&EnterpriseDataKey::NextDisputeId, &next_id);
@@ -6806,6 +6832,14 @@ impl PayrollContract {
         let storage = env.storage().persistent();
         let current_time = env.ledger().timestamp();
 
+        // Enhanced validation
+        validation::validate_address_not_zero(&env, &requester)?;
+        validation::validate_address_not_zero(&env, &employee)?;
+        validation::validate_string(&reason, 10, 500)?;
+        validation::validate_string(&current_value, 1, 100)?;
+        validation::validate_string(&proposed_value, 1, 100)?;
+        validation::validate_timeout_duration(approval_timeout_days)?;
+        
         // Verify the payroll exists
         let payroll = Self::_get_payroll(&env, &employee).ok_or(PayrollError::PayrollNotFound)?;
 
