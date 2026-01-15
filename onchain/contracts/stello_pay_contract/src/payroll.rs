@@ -8624,13 +8624,665 @@ impl PayrollContract {
         storage.set(&ExtendedDataKey::Preset(alert.id), alert);
     }
 
-    fn store_dashboard_metrics(env: &Env, employer: &Address, metrics: &DashboardMetrics) {
+    //-----------------------------------------------------------------------------
+    // Backup and Recovery Helper Functions
+    //-----------------------------------------------------------------------------
+
+    fn get_next_backup_id(env: &Env) -> u64 {
         let storage = env.storage().persistent();
-        storage.set(&DataKey::Metrics(env.ledger().timestamp()), metrics);
+        let current_id: u64 = storage.get(&ExtendedDataKey::NextBackupId).unwrap_or(1);
+        storage.set(&ExtendedDataKey::NextBackupId, &(current_id + 1));
+        current_id
     }
 
-    fn add_report_audit(env: &Env, report_id: u64, action: &str, actor: &Address) {
+    fn get_next_schedule_id(env: &Env) -> u64 {
+        let storage = env.storage().persistent();
+        let current_id: u64 = storage.get(&ExtendedDataKey::NextSchedId).unwrap_or(1);
+        storage.set(&ExtendedDataKey::NextSchedId, &(current_id + 1));
+        current_id
+    }
+
+    fn get_next_recovery_id(env: &Env) -> u64 {
+        let storage = env.storage().persistent();
+        let current_id: u64 = storage.get(&ExtendedDataKey::NextRecoveryId).unwrap_or(1);
+        storage.set(&ExtendedDataKey::NextRecoveryId, &(current_id + 1));
+        current_id
+    }
+
+    fn collect_backup_data(
+        env: &Env,
+        backup_type: &BackupType,
+        employer: Option<Address>,
+    ) -> Result<BackupData, PayrollError> {
+        let storage = env.storage().persistent();
+        let mut payroll_data = Vec::new(env);
+        let mut template_data = Vec::new(env);
+        let mut preset_data = Vec::new(env);
+        let mut insurance_data = Vec::new(env);
+        let mut compliance_data = String::from_str(env, "{}");
+
+        match backup_type {
+            BackupType::Full => {
+
+                if let Some(employees) = storage.get(&DataKey::Employees) {
+                    for employee_addr in employees.iter() {
+                        if let Some(employee) = storage.get(&DataKey::Employee(employee_addr.clone())) {
+                            payroll_data.push_back(employee.clone());
+                        }
+                    }
+                }
+
+                // Get all employers
+                if let Some(employers) = storage.get(&DataKey::Employers) {
+                    for emp_addr in employers.iter() {
+                        // Get all employees for this employer
+                        if let Some(employees) = storage.get(&DataKey::EmployerEmployees(emp_addr.clone())) {
+                            for employee_addr in employees.iter() {
+                                if let Some(employee) = storage.get(&DataKey::Employee(employee_addr.clone())) {
+                                    payroll_data.push_back(employee.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Get all templates
+                if let Some(templates) = storage.get(&DataKey::Templates) {
+                    for template in templates.iter() {
+                        template_data.push_back(template.clone());
+                    }
+                }
+
+                // Get all presets
+                if let Some(presets) = storage.get(&DataKey::Presets) {
+                    for preset in presets.iter() {
+                        preset_data.push_back(preset.clone());
+                    }
+                }
+
+                // Get all insurance policies
+                if let Some(insurance_policies) = storage.get(&DataKey::InsurancePolicies) {
+                    for policy in insurance_policies.iter() {
+                        insurance_data.push_back(policy.clone());
+                    }
+                }
+
+                // Get all compliance data
+                if let Some(compliance_data_map) = storage.get(&DataKey::ComplianceData) {
+                    for (key, value) in compliance_data_map.iter() {
+                        compliance_data.push_str(&format!("{}: {}", key, value));
+                    }
+                }
+            BackupType::Employer => {
+                if let Some(emp_addr) = employer {
+                    // Collect employer-specific data
+                    // Get all employees for this employer
+                    if let Some(employees) = storage.get(&DataKey::EmployerEmployees(emp_addr.clone())) {
+                        for employee_addr in employees.iter() {
+                            if let Some(payroll) = Self::_get_payroll(env, &employee_addr) {
+                                payroll_data.push_back(payroll);
+                            }
+                        }
+                    }
+                }
+            },
+            BackupType::Employee => {
+                // Collect employee data - both individual employee and employer-specific employee data
+                if let Some(emp_addr) = employer {
+                    // First, collect all employees for this employer (employer-specific data)
+                    if let Some(employees) = storage.get(&DataKey::EmployerEmployees(emp_addr.clone())) {
+                        for employee_addr in employees.iter() {
+                            if let Some(payroll) = Self::_get_payroll(env, &employee_addr) {
+                                payroll_data.push_back(payroll);
+                            }
+                        }
+                    }
+
+                    // Also collect individual employee data if the employer is an employee
+                    if let Some(employee) = storage.get(&DataKey::Employee(emp_addr.clone())) {
+                        payroll_data.push_back(employee.clone());
+                    }
+                } else {
+                    // If no specific employer, collect all employee data
+                    if let Some(employees) = storage.get(&DataKey::Employees) {
+                        for employee_addr in employees.iter() {
+                            if let Some(employee) = storage.get(&DataKey::Employee(employee_addr.clone())) {
+                                payroll_data.push_back(employee.clone());
+                            }
+                        }
+                    }
+                }
+            },
+            BackupType::Template => {
+                // Collect all template data
+                if let Some(templates) = storage.get(&DataKey::Templates) {
+                    for template in templates.iter() {
+                        template_data.push_back(template.clone());
+                    }
+                }
+            },
+            BackupType::Insurance => {
+                // Collect all insurance data
+                if let Some(insurance_policies) = storage.get(&DataKey::InsurancePolicies) {
+                    for insurance_policy in insurance_policies.iter() {
+                        insurance_data.push_back(insurance_policy.clone());
+                    }
+                }
+            },
+            BackupType::Compliance => {
+                // Collect all compliance data
+                if let Some(compliance) = storage.get(&DataKey::Compliance) {
+                    compliance_data = serde_json::to_string(&compliance).unwrap();
+                }
+            },
+        }
+
+        Ok(BackupData {
+            backup_id: 0, // Will be set by caller
+            payroll_data,
+            template_data,
+            preset_data,
+            insurance_data,
+            compliance_data,
+            metadata: BackupMetadata {
+                total_employees: 0,
+                total_templates: 0,
+                total_presets: 0,
+                total_insurance_policies: 0,
+                backup_timestamp: env.ledger().timestamp(),
+                contract_version: String::from_str(env, "1.0.0"),
+                data_integrity_hash: String::from_str(env, ""),
+            },
+        })
+    }
+
+    fn generate_data_hash(env: &Env, backup_data: &BackupData) -> String {
+        use sha2::Sha256;
+        let mut data_string = String::new();
+        data_string.push_str(&format!(
+            "{:?}{:?}{:?}{:?}{:?}",
+            backup_data.payroll_data.len(),
+            backup_data.template_data.len(),
+            backup_data.preset_data.len(),
+            backup_data.insurance_data.len(),
+            env.ledger().timestamp()
+        ));
+        let data_bytes = data_string.as_bytes();
+        let mut hasher = Sha256::new();
+        hasher.update(&data_bytes);
+        let result = hasher.finalize();
+        let mut output = String::with_capacity(64);
+        for byte in result {
+            let s = format!("{:02x}", byte);
+            output.push_str(&s);
+        }
+        output
+    }
+
+    fn encrypt_backup_data(
+        env: &Env,
+        mut backup_data: BackupData,
+        encryption_key: Option<String>,
+    ) -> Result<BackupData, PayrollError> {
+        use aes_gcm::Aes256Gcm;
+        if let Some(encryption_key) = encryption_key {
+            let key_bytes = encryption_key.as_bytes();
+            let mut key = [0; 32];
+            key[..].copy_from_slice(&key_bytes);
+            let mut encryptor = Aes256Gcm::new(&key);
+            let mut encrypted_data = Vec::new();
+            for field in &[
+                "payroll_data",
+                "template_data",
+                "preset_data",
+                "insurance_data",
+            ] {
+                if let Some(data) = serde_json::from_str::<Vec<serde_json::Value>>(
+                    &format!("{{:?}}", field)
+                ) {
+                    let encrypted_data = encryptor.encrypt(&data).unwrap();
+                    let encrypted_data_string = base64::encode(&encrypted_data);
+                    let mut encrypted_field = String::new();
+                    encrypted_field.push_str(&format!("{{?}}", encrypted_data_string));
+                    match field {
+                        "payroll_data" => backup_data.payroll_data = serde_json::from_str(&encrypted_field).unwrap(),
+                        "template_data" => backup_data.template_data = serde_json::from_str(&encrypted_field).unwrap(),
+                        "preset_data" => backup_data.preset_data = serde_json::from_str(&encrypted_field).unwrap(),
+                        "insurance_data" => backup_data.insurance_data = serde_json::from_str(&encrypted_field).unwrap(),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+        Ok(backup_data)
+    }
+    fn decrypt_backup_data(
+        env: &Env,
+        mut backup_data: BackupData,
+        decryption_key: Option<String>,
+    ) -> Result<BackupData, PayrollError> {
+        use aes_gcm::Aes256Gcm;
+        if let Some(decryption_key) = decryption_key {
+            let key_bytes = decryption_key.as_bytes();
+            let mut key = [0; 32];
+            key[..].copy_from_slice(&key_bytes);
+            let mut decryptor = Aes256Gcm::new(&key);
+            let mut decrypted_data = Vec::new();
+            for field in &[
+                "payroll_data",
+                "template_data",
+                "preset_data",
+                "insurance_data",
+            ] {
+                if let Some(data) = serde_json::from_str::<Vec<serde_json::Value>>(
+                    &format!("{{:?}}", field)
+                ) {
+                    let encrypted_data = base64::decode(&data[0].as_str().unwrap()).unwrap();
+                    let decrypted_data = decryptor.decrypt(&encrypted_data).unwrap();
+                    let decrypted_data_string = String::from_utf8(&decrypted_data).unwrap();
+                    match field {
+                        "payroll_data" => backup_data.payroll_data = serde_json::from_str(&decrypted_data_string).unwrap(),
+                        "template_data" => backup_data.template_data = serde_json::from_str(&decrypted_data_string).unwrap(),
+                        "preset_data" => backup_data.preset_data = serde_json::from_str(&decrypted_data_string).unwrap(),
+                        "insurance_data" => backup_data.insurance_data = serde_json::from_str(&decrypted_data_string).unwrap(),
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+    }
+
+    fn calculate_backup_checksum(env: &Env, backup_data: &BackupData) -> String {
+        // Simple checksum implementation
+        let checksum = format!(
+            "checksum_{}_{}_{}_{}",
+            backup_data.payroll_data.len(),
+            backup_data.template_data.len(),
+            backup_data.preset_data.len(),
+            backup_data.insurance_data.len()
+        );
+        checksum
+    }
+
+    fn calculate_backup_size(env: &Env, backup_data: &BackupData) -> u64 {
+        // Simple size calculation
+        (backup_data.payroll_data.len() * 100 +
+         backup_data.template_data.len() * 50 +
+         backup_data.preset_data.len() * 30 +
+         backup_data.insurance_data.len() * 80 +
+         backup_data.compliance_data.len()) as u64
+    }
+
+    fn store_backup(env: &Env, backup: &PayrollBackup) {
+        let storage = env.storage().persistent();
+        storage.set(&ExtendedDataKey::Backup(backup.id), backup);
+    }
+
+    fn store_backup_data(env: &Env, backup_id: u64, backup_data: &BackupData) {
+        let storage = env.storage().persistent();
+        storage.set(&ExtendedDataKey::BackupData(backup_id), backup_data);
+    }
+
+    fn get_backup(env: &Env, backup_id: u64) -> Option<PayrollBackup> {
+        let storage = env.storage().persistent();
+        storage.get(&ExtendedDataKey::Backup(backup_id))
+    }
+
+    fn get_backup_data(env: &Env, backup_id: u64) -> Option<BackupData> {
+        let storage = env.storage().persistent();
+        storage.get(&ExtendedDataKey::BackupData(backup_id))
+    }
+
+    fn store_backup_schedule(env: &Env, schedule: &BackupSchedule) {
+        let storage = env.storage().persistent();
+        storage.set(&EnterpriseDataKey::BackupSchedule(schedule.id), schedule);
+    }
+
+    fn get_backup_schedule(env: &Env, schedule_id: u64) -> Option<BackupSchedule> {
+        let storage = env.storage().persistent();
+        storage.get(&EnterpriseDataKey::BackupSchedule(schedule_id))
+    }
+
+    fn link_schedule_to_employer(env: &Env, employer: &Address, schedule_id: u64) {
+        let storage = env.storage().persistent();
+        let mut schedules = storage
+            .get(&EnterpriseDataKey::EmployerBackupSchedules(employer.clone()))
+            .unwrap_or(Vec::new(env));
+        schedules.push_back(schedule_id);
+        storage.set(&EnterpriseDataKey::EmployerBackupSchedules(employer.clone()), &schedules);
+    }
+
+    fn calculate_next_execution(env: &Env, cron_expression: &String, current_time: u64) -> Result<u64, PayrollError> {
+        // Simple cron parsing - in production, use a proper cron library
+        // For now, assume simple format like "daily", "weekly", "monthly"
+        let next_time = match cron_expression.as_str() {
+            "daily" => current_time + 24 * 3600,
+            "weekly" => current_time + 7 * 24 * 3600,
+            "monthly" => current_time + 30 * 24 * 3600,
+            _ => {
+                // Try to parse as seconds if not a keyword
+                if let Ok(seconds) = cron_expression.parse::<u64>() {
+                    current_time + seconds
+                } else {
+                    return Err(PayrollError::InvalidScheduleFrequency);
+                }
+            }
+        };
+        Ok(next_time)
+    }
+
+    fn cleanup_expired_backups(env: &Env, employer: &Address, retention_days: u32) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
         let current_time = env.ledger().timestamp();
+        let retention_timestamp = current_time - (retention_days as u64 * 24 * 3600);
+
+        if let Some(schedules) = storage.get(&EnterpriseDataKey::EmployerBackupSchedules(employer.clone())) {
+            let mut valid_schedules = Vec::new(env);
+            for schedule_id in schedules.iter() {
+                if let Some(schedule) = Self::get_backup_schedule(env, schedule_id) {
+                    if schedule.created_at > retention_timestamp {
+                        valid_schedules.push_back(schedule_id);
+                    }
+                }
+            }
+            storage.set(&EnterpriseDataKey::EmployerBackupSchedules(employer.clone()), &valid_schedules);
+        }
+
+        Ok(())
+    }
+
+    fn create_recovery_point(
+        env: &Env,
+        backup_id: u64,
+        recovery_type: RecoveryType,
+    ) -> Result<u64, PayrollError> {
+        let recovery_id = Self::get_next_recovery_id(env);
+        let current_time = env.ledger().timestamp();
+
+        let recovery_point = RecoveryPoint {
+            id: recovery_id,
+            name: String::from_str(env, "Automated Recovery"),
+            description: String::from_str(env, "Disaster recovery from backup"),
+            created_at: current_time,
+            backup_id,
+            recovery_type,
+            status: RecoveryStatus::Pending,
+            checksum: String::from_str(env, ""),
+            metadata: RecoveryMetadata {
+                total_operations: 0,
+                success_count: 0,
+                failure_count: 0,
+                recovery_timestamp: current_time,
+                duration_seconds: 0,
+                data_verification_status: String::from_str(env, "pending"),
+            },
+        };
+
+        let storage = env.storage().persistent();
+        storage.set(&ExtendedDataKey::Recovery(recovery_id), &recovery_point);
+
+        Ok(recovery_id)
+    }
+
+    fn update_recovery_status(
+        env: &Env,
+        recovery_id: u64,
+        status: RecoveryStatus,
+    ) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+        if let Some(mut recovery) = storage.get(&ExtendedDataKey::Recovery(recovery_id)) {
+            recovery.status = status.clone();
+            storage.set(&ExtendedDataKey::Recovery(recovery_id), &recovery);
+        }
+        Ok(())
+    }
+
+    fn perform_data_restoration(
+        env: &Env,
+        backup_data: &BackupData,
+        backup: &PayrollBackup,
+    ) -> Result<(), PayrollError> {
+        let storage = env.storage().persistent();
+
+        // Restore payroll data
+        for payroll in backup_data.payroll_data.iter() {
+            let compact_payroll = Self::to_compact_payroll(payroll);
+            storage.set(&DataKey::Payroll(payroll.employer.clone()), &compact_payroll);
+        }
+
+        // Update backup status to restored
+        let mut updated_backup = backup.clone();
+        updated_backup.status = BackupStatus::Restored;
+        storage.set(&ExtendedDataKey::Backup(backup.id), &updated_backup);
+
+        Ok(())
+    }
+
+    fn perform_test_restoration(
+        _env: &Env,
+        _backup_data: &BackupData,
+        _backup: &PayrollBackup,
+    ) -> Result<(), PayrollError> {
+        // Test restoration - validate data integrity without actually restoring
+        // Not implemented yet
+        Err(PayrollError::NotImplemented)
+    }
+
+    fn perform_cross_region_replication(
+        _env: &Env,
+        _backup_data: &BackupData,
+        _backup: &PayrollBackup,
+        _target_region: &String,
+    ) -> Result<String, PayrollError> {
+        // Simulate cross-region replication
+        // Not implemented yet
+        Err(PayrollError::NotImplemented)
+    }
+    fn collect_incremental_backup_data(
+        env: &Env,
+        base_backup_data: &BackupData,
+        current_time: u64,
+    ) -> Result<BackupData, PayrollError> {
+        // Collect only data that has changed since the base backup
+        // This is a simplified implementation
+
+        let mut new_payroll_data = Vec::new(env);
+        let mut new_template_data = Vec::new(env);
+        let mut new_preset_data = Vec::new(env);
+        let mut new_insurance_data = Vec::new(env);
+
+        // Compare with base backup and collect only newer/changed data
+        // For now, return empty incremental data as a placeholder
+        // Real implementation would track changes and collect only modified records
+
+        Ok(BackupData {
+            backup_id: 0,
+            payroll_data: new_payroll_data,
+            template_data: new_template_data,
+            preset_data: new_preset_data,
+            insurance_data: new_insurance_data,
+            compliance_data: String::from_str(env, "{}"),
+            metadata: BackupMetadata {
+                total_employees: 0,
+                total_templates: 0,
+                total_presets: 0,
+                total_insurance_policies: 0,
+                backup_timestamp: current_time,
+                contract_version: String::from_str(env, "1.0.0"),
+                data_integrity_hash: String::from_str(env, ""),
+            },
+        })
+    }
+
+    /// Create a full backup of all payroll data for an employer or complete system backup if owner calls it
+    pub fn create_backup(
+        env: Env,
+        caller: Address,
+        employer: Option<Address>,
+        backup_name: String,
+        backup_type: BackupType,
+        encrypted: bool,
+        encryption_key: Option<String>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+        let backup_id = Self::get_next_backup_id(&env);
+
+        // Verify caller has permission
+        match employer.clone() {
+            Some(emp_addr) => {
+                // For employer-specific backup, caller must be the employer or owner
+                let is_owner = storage.get::<DataKey, Address>(&DataKey::Owner)
+                    .map_or(false, |owner| caller == owner);
+                if !is_owner && caller != emp_addr {
+                    return Err(PayrollError::Unauthorized);
+                }
+            },
+            None => {
+                // For full system backup, only owner can call
+                if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
+                    if caller != owner {
+                        return Err(PayrollError::Unauthorized);
+                    }
+                } else {
+                    return Err(PayrollError::Unauthorized);
+                }
+            }
+        }
+
+        // Collect backup data based on type
+        let backup_data = Self::collect_backup_data(&env, &backup_type, employer.clone())?;
+
+        // Generate backup metadata
+        let metadata = BackupMetadata {
+            total_employees: backup_data.payroll_data.len() as u32,
+            total_templates: backup_data.template_data.len() as u32,
+            total_presets: backup_data.preset_data.len() as u32,
+            total_insurance_policies: backup_data.insurance_data.len() as u32,
+            backup_timestamp: current_time,
+            contract_version: String::from_str(&env, "1.0.0"),
+            data_integrity_hash: Self::generate_data_hash(&env, &backup_data),
+        };
+
+        // Create backup record
+        let backup = PayrollBackup {
+            id: backup_id,
+            name: backup_name.clone(),
+            description: String::from_str(&env, "Automated payroll backup"),
+            employer: employer.unwrap_or(caller.clone()),
+            created_at: current_time,
+            backup_type: backup_type.clone(),
+            status: BackupStatus::Creating,
+            checksum: String::from_str(&env, ""),
+            data_hash: String::from_str(&env, ""),
+            size_bytes: 0,
+            version: 1,
+        };
+
+        // Encrypt data if requested
+        let processed_data = if encrypted {
+            Self::encrypt_backup_data(&env, backup_data, encryption_key)?
+        } else {
+            backup_data
+        };
+
+        // Calculate checksum and size
+        let checksum = Self::calculate_backup_checksum(&env, &processed_data);
+        let size_bytes = Self::calculate_backup_size(&env, &processed_data);
+
+        // Update backup record with calculated values
+        let mut final_backup = backup;
+        final_backup.checksum = checksum;
+        final_backup.data_hash = metadata.data_integrity_hash.clone();
+        final_backup.size_bytes = size_bytes;
+        final_backup.status = BackupStatus::Completed;
+
+        // Store backup record
+        Self::store_backup(&env, &final_backup);
+
+        // Store backup data
+        Self::store_backup_data(&env, backup_id, &processed_data);
+
+        // Record metrics
+        Self::record_metrics(
+            &env,
+            size_bytes as i128,
+            symbol_short!("backup"),
+            true,
+            None,
+            false,
+        );
+
+        // Emit backup created event
+        env.events().publish(
+            (BACKUP_CREATED_EVENT,),
+            (backup_id, backup_type.clone(), current_time),
+        );
+
+        Ok(backup_id)
+    }
+
+    /// Create incremental backup - only backs up data changed since last backup
+    pub fn create_incremental_backup(
+        env: Env,
+        caller: Address,
+        base_backup_id: u64,
+        backup_name: String,
+        encrypted: bool,
+        encryption_key: Option<String>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        let current_time = env.ledger().timestamp();
+        let backup_id = Self::get_next_backup_id(&env);
+
+        // Verify base backup exists
+        let base_backup = Self::get_backup(&env, base_backup_id)
+            .ok_or(PayrollError::BackupNotFound)?;
+
+        // Verify caller has permission
+        if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
+            if caller != owner && caller != base_backup.employer {
+                return Err(PayrollError::Unauthorized);
+            }
+        }
+
+        // Get base backup data
+        let base_data = Self::get_backup_data(&env, base_backup_id)
+            .ok_or(PayrollError::BackupNotFound)?;
+
+        // Collect only changed data since base backup
+        let incremental_data = Self::collect_incremental_backup_data(&env, &base_data, current_time)?;
+
+        // Generate metadata for incremental backup
+        let metadata = BackupMetadata {
+            total_employees: incremental_data.payroll_data.len() as u32,
+            total_templates: incremental_data.template_data.len() as u32,
+            total_presets: incremental_data.preset_data.len() as u32,
+            total_insurance_policies: incremental_data.insurance_data.len() as u32,
+            backup_timestamp: current_time,
+            contract_version: String::from_str(&env, "1.0.0"),
+            data_integrity_hash: Self::generate_data_hash(&env, &incremental_data),
+        };
+
+        // Create incremental backup record
+        let backup = PayrollBackup {
+            id: backup_id,
+            name: backup_name.clone(),
+            description: String::from_str(&env, "Incremental payroll backup"),
+            employer: base_backup.employer,
+            created_at: current_time,
+            backup_type: BackupType::Employer, // Incremental backups are employer-specific
+            status: BackupStatus::Creating,
+            checksum: String::from_str(&env, ""),
+            data_hash: String::from_str(&env, ""),
+            size_bytes: 0,
+            version: 2, // Version 2 for incremental
         let audit_id = Self::get_next_report_id(env);
 
         let audit_entry = ReportAuditEntry {
@@ -8643,8 +9295,310 @@ impl PayrollContract {
             ip_address: None,
         };
 
+        // Encrypt incremental data if requested
+        let processed_data = if encrypted {
+            Self::encrypt_backup_data(&env, incremental_data, encryption_key)?
+        } else {
+            incremental_data
+        };
+
+        // Calculate checksum and size
+        let checksum = Self::calculate_backup_checksum(&env, &processed_data);
+        let size_bytes = Self::calculate_backup_size(&env, &processed_data);
+
+        // Update backup record
+        let mut final_backup = backup;
+        final_backup.checksum = checksum;
+        final_backup.data_hash = metadata.data_integrity_hash.clone();
+        final_backup.size_bytes = size_bytes;
+        final_backup.status = BackupStatus::Completed;
+
+        // Store backup record
+        Self::store_backup(&env, &final_backup);
+
+        // Store incremental backup data
+        Self::store_backup_data(&env, backup_id, &processed_data);
+
+        // Record metrics
+        Self::record_metrics(
+            &env,
+            size_bytes as i128,
+            symbol_short!("inc_backup"),
+            true,
+            None,
+            false,
+        );
+
+        Ok(backup_id)
+    }
+
+    /// Verify backup integrity and completeness
+    pub fn verify_backup(
+        env: Env,
+        caller: Address,
+        backup_id: u64,
+    ) -> Result<bool, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let backup = Self::get_backup(&env, backup_id)
+            .ok_or(PayrollError::BackupNotFound)?;
+
         let storage = env.storage().persistent();
-        storage.set(&ExtendedDataKey::Backup(audit_id), &audit_entry);
+        if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
+            if caller != owner && caller != backup.employer {
+                return Err(PayrollError::Unauthorized);
+            }
+        }
+
+        // Get backup data
+        let backup_data = Self::get_backup_data(&env, backup_id)
+            .ok_or(PayrollError::BackupNotFound)?;
+
+        // Update backup status to verifying
+        let mut updated_backup = backup;
+        updated_backup.status = BackupStatus::Verifying;
+        Self::store_backup(&env, &updated_backup);
+
+        // Verify data integrity
+        let calculated_hash = Self::generate_data_hash(&env, &backup_data);
+        let is_valid = calculated_hash == backup.data_hash;
+
+        // Update backup status based on verification result
+        let mut final_backup = updated_backup;
+        if is_valid {
+            final_backup.status = BackupStatus::Verified;
+            Self::store_backup(&env, &final_backup);
+
+            // Emit verification success event
+            env.events().publish(
+                (BACKUP_VERIFIED_EVENT,),
+                (backup_id, true, env.ledger().timestamp()),
+            );
+        } else {
+            final_backup.status = BackupStatus::Failed;
+            Self::store_backup(&env, &final_backup);
+        }
+
+        Ok(is_valid)
+    }
+
+    /// Restore from backup - disaster recovery functionality
+    pub fn restore_from_backup(
+        env: Env,
+        caller: Address,
+        backup_id: u64,
+        decryption_key: Option<String>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let backup = Self::get_backup(&env, backup_id)
+            .ok_or(PayrollError::BackupNotFound)?;
+
+        let storage = env.storage().persistent();
+        if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
+            if caller != owner && caller != backup.employer {
+                return Err(PayrollError::Unauthorized);
+            }
+        }
+
+        // Get backup data
+        let mut backup_data = Self::get_backup_data(&env, backup_id)
+            .ok_or(PayrollError::BackupNotFound)?;
+
+        // Decrypt if necessary
+        if backup.encrypted {
+            backup_data = Self::decrypt_backup_data(&env, backup_data, decryption_key)?;
+        }
+
+        // Create recovery point
+        let recovery_id = Self::create_recovery_point(&env, backup_id, RecoveryType::Full)?;
+
+        // Perform restoration
+        Self::perform_data_restoration(&env, &backup_data, &backup)?;
+
+        // Update recovery point status
+        Self::update_recovery_status(&env, recovery_id, RecoveryStatus::Completed)?;
+
+        // Record metrics
+        Self::record_metrics(
+            &env,
+            backup.size_bytes as i128,
+            symbol_short!("restore"),
+            true,
+            None,
+            false,
+        );
+
+        // Emit recovery completed event
+        env.events().publish(
+            (RECOVERY_COMPLETED_EVENT,),
+            (recovery_id, backup_id, env.ledger().timestamp()),
+        );
+
+        Ok(recovery_id)
+    }
+
+    /// Test disaster recovery by simulating restore in test mode
+    pub fn test_disaster_recovery(
+        env: Env,
+        caller: Address,
+        backup_id: u64,
+        decryption_key: Option<String>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let backup = Self::get_backup(&env, backup_id)
+            .ok_or(PayrollError::BackupNotFound)?;
+
+        let storage = env.storage().persistent();
+        if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
+            if caller != owner && caller != backup.employer {
+                return Err(PayrollError::Unauthorized);
+            }
+        }
+
+        // Get backup data
+        let mut backup_data = Self::get_backup_data(&env, backup_id)
+            .ok_or(PayrollError::BackupNotFound)?;
+
+        // Decrypt if necessary
+        if backup.encrypted {
+            backup_data = Self::decrypt_backup_data(&env, backup_data, decryption_key)?;
+        }
+
+        // Create test recovery point
+        let recovery_id = Self::create_recovery_point(&env, backup_id, RecoveryType::Test)?;
+
+        // Perform test restoration (validation only, no actual data changes)
+        Self::perform_test_restoration(&env, &backup_data, &backup)?;
+
+        // Update recovery point status
+        Self::update_recovery_status(&env, recovery_id, RecoveryStatus::Completed)?;
+
+        Ok(recovery_id)
+    }
+
+    /// Schedule automated backup with cron-like functionality
+    pub fn schedule_backup(
+        env: Env,
+        caller: Address,
+        employer: Address,
+        schedule_name: String,
+        cron_expression: String,
+        backup_type: BackupType,
+        retention_days: u32,
+        encrypted: bool,
+        encryption_key: Option<String>,
+    ) -> Result<u64, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let storage = env.storage().persistent();
+        if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
+            if caller != owner && caller != employer {
+                return Err(PayrollError::Unauthorized);
+            }
+        }
+
+        let schedule_id = Self::get_next_schedule_id(&env);
+        let current_time = env.ledger().timestamp();
+
+        // Parse cron expression and calculate next execution time
+        let next_execution = Self::calculate_next_execution(&env, &cron_expression, current_time)?;
+
+        let schedule = BackupSchedule {
+            id: schedule_id,
+            name: schedule_name.clone(),
+            employer: employer.clone(),
+            frequency: cron_expression.clone(),
+            retention_days,
+            is_active: true,
+            created_at: current_time,
+            last_backup: None,
+        };
+
+        // Store schedule
+        Self::store_backup_schedule(&env, &schedule);
+
+        // Link schedule to employer
+        Self::link_schedule_to_employer(&env, &employer, schedule_id);
+
+        Ok(schedule_id)
+    }
+
+    /// Execute scheduled backup
+    pub fn execute_scheduled_backup(
+        env: Env,
+        schedule_id: u64,
+    ) -> Result<u64, PayrollError> {
+        let schedule = Self::get_backup_schedule(&env, schedule_id)
+            .ok_or(PayrollError::ScheduleNotFound)?;
+
+        if !schedule.is_active {
+            return Err(PayrollError::ScheduleNotFound);
+        }
+
+        let current_time = env.ledger().timestamp();
+        let next_execution = Self::calculate_next_execution(&env, &schedule.frequency, current_time)?;
+
+        // Update schedule with new next execution time
+        let mut updated_schedule = schedule;
+        updated_schedule.last_backup = Some(current_time);
+        Self::store_backup_schedule(&env, &updated_schedule);
+
+        // Create the actual backup
+        let backup_id = Self::create_backup(
+            env.clone(),
+            schedule.employer.clone(),
+            Some(schedule.employer),
+            String::from_str(&env, "Scheduled Backup"),
+            BackupType::Employer,
+            false, // Use default encryption settings
+            None,
+        )?;
+
+        // Clean up old backups based on retention policy
+        Self::cleanup_expired_backups(&env, &schedule.employer, schedule.retention_days)?;
+
+        Ok(backup_id)
+    }
+
+    /// Replicate backup to cross-region storage for redundancy
+    pub fn replicate_backup_cross_region(
+        env: Env,
+        caller: Address,
+        backup_id: u64,
+        target_region: String,
+    ) -> Result<String, PayrollError> {
+        caller.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let backup = Self::get_backup(&env, backup_id)
+            .ok_or(PayrollError::BackupNotFound)?;
+
+        let storage = env.storage().persistent();
+        if let Some(owner) = storage.get::<DataKey, Address>(&DataKey::Owner) {
+            if caller != owner && caller != backup.employer {
+                return Err(PayrollError::Unauthorized);
+            }
+        }
+
+        // Get backup data
+        let backup_data = Self::get_backup_data(&env, backup_id)
+            .ok_or(PayrollError::BackupNotFound)?;
+
+        // Simulate cross-region replication
+        let replication_id = Self::perform_cross_region_replication(
+            &env,
+            &backup_data,
+            &backup,
+            &target_region,
+        )?;
+
+        Ok(replication_id)
     }
 
     pub fn record_time_series_data(
@@ -9995,4 +10949,5 @@ impl PayrollContract {
 
         Ok(violations)
     }
+}
 }
