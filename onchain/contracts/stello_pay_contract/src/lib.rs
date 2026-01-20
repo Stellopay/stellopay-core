@@ -1,20 +1,19 @@
 #![no_std]
 
-mod events;
-mod insurance;
-mod payroll;
-mod storage;
-mod webhook_contract;
-mod webhooks;
-// take note: The following modules have compilation issues with current Soroban SDK
-// They need to be fixed to work with the current version
-// mod compliance;    // Issues: symbol_short! length limits, format! macro, unsupported types
-mod enterprise;
-mod token_swap; // Issues: format! macro, missing storage keys, deprecated methods
-mod utils;
+use soroban_sdk::{contract, contractimpl, Address, Env};
 
-#[cfg(test)]
-mod test;
+/// Minimal baseline Soroban contract.
+///
+/// Contributors will implement all business features from scratch on top of this.
+#[contract]
+pub struct PayrollContract;
 
-#[cfg(test)]
-mod tests;
+#[contractimpl]
+impl PayrollContract {
+    /// One-time initialization hook.
+    pub fn initialize(env: Env, owner: Address) {
+        owner.require_auth();
+        // Placeholder: store `owner` in persistent storage when implementing access control.
+        let _ = env;
+    }
+}
