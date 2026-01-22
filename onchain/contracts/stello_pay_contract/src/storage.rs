@@ -9,7 +9,6 @@ pub struct Milestone {
     pub claimed: bool,
 }
 
-
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PaymentType {
@@ -57,7 +56,7 @@ pub enum DataKey {
     Status(u128),
     /// Total amount: agreement_id -> i128
     TotalAmount(u128),
-    
+
     // Milestone-specific keys
     /// Number of milestones: agreement_id -> u32
     MilestoneCount(u128),

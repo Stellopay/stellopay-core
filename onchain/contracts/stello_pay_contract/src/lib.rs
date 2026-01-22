@@ -1,5 +1,5 @@
 #![no_std]
+mod events;
 mod payroll;
 mod storage;
-mod events;
 mod test_milestones;
