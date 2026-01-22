@@ -301,4 +301,84 @@ impl PayrollContract {
     pub fn get_employee_claimed_periods(env: Env, agreement_id: u128, employee_index: u32) -> u32 {
         payroll::get_employee_claimed_periods(&env, agreement_id, employee_index)
     }
+
+    /// Pauses an active agreement, preventing claims.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement to pause
+    ///
+    /// # State Transition
+    /// Active -> Paused
+    ///
+    /// # Requirements
+    /// - Agreement must be in Active status
+    /// - Caller must be the employer
+    ///
+    /// # Behavior
+    /// - Paused agreements cannot have claims processed
+    /// - Agreement state is preserved
+    /// - Can be resumed later or cancelled
+    pub fn pause_agreement(env: Env, agreement_id: u128) {
+        // Try new-style agreement first (payroll/escrow)
+        if payroll::get_agreement(&env, agreement_id).is_some() {
+            payroll::pause_agreement(&env, agreement_id);
+            return;
+        }
+
+        // Fall back to milestone-based agreement
+        payroll::pause_milestone_agreement(env, agreement_id);
+    }
+
+    /// Resumes a paused agreement, allowing claims again.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement to resume
+    ///
+    /// # State Transition
+    /// Paused -> Active
+    ///
+    /// # Requirements
+    /// - Agreement must be in Paused status
+    /// - Caller must be the employer
+    ///
+    /// # Behavior
+    /// - Agreement returns to Active status
+    /// - Claims can be processed again
+    /// - All agreement data is preserved
+    pub fn resume_agreement(env: Env, agreement_id: u128) {
+        // Try new-style agreement first (payroll/escrow)
+        if payroll::get_agreement(&env, agreement_id).is_some() {
+            payroll::resume_agreement(&env, agreement_id);
+            return;
+        }
+
+        // Fall back to milestone-based agreement
+        payroll::resume_milestone_agreement(env, agreement_id);
+    }
+
+    /// Claims time-based payments for an escrow agreement based on elapsed periods.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the escrow agreement
+    ///
+    /// # Requirements
+    /// - Agreement must be Active and activated
+    /// - Agreement must be Escrow mode
+    /// - Caller must be the contributor
+    /// - Cannot claim more than total periods
+    /// - Works during grace period
+    pub fn claim_time_based(env: Env, agreement_id: u128) {
+        payroll::claim_time_based(&env, agreement_id);
+    }
+
+    /// Gets the number of claimed periods for a time-based escrow agreement.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    ///
+    /// # Returns
+    /// Number of claimed periods, or 0 if not a time-based agreement
+    pub fn get_claimed_periods(env: Env, agreement_id: u128) -> u32 {
+        payroll::get_claimed_periods(&env, agreement_id)
+    }
 }

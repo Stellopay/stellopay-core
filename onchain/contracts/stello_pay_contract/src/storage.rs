@@ -120,6 +120,11 @@ pub struct Agreement {
     pub activated_at: Option<u64>,
     pub cancelled_at: Option<u64>,
     pub grace_period_seconds: u64,
+    // Time-based payment fields (for escrow mode)
+    pub amount_per_period: Option<i128>,
+    pub period_seconds: Option<u64>,
+    pub num_periods: Option<u32>,
+    pub claimed_periods: Option<u32>,
 }
 
 /// Employee info within an agreement

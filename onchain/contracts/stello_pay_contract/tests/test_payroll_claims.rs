@@ -3,7 +3,7 @@
 use soroban_sdk::{testutils::Address as _, testutils::Ledger, Address, Env};
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
 use stello_pay_contract::PayrollContract;
-use stello_pay_contract::storage::DataKey;
+use stello_pay_contract::storage::{Agreement, AgreementMode, AgreementStatus, DataKey, StorageKey};
 
 fn create_test_environment() -> Env {
     let env = Env::default();
@@ -49,6 +49,7 @@ fn setup_test_agreement(
     env: &Env,
     contract_id: &Address,
     agreement_id: u128,
+    employer: &Address,
     employees: &[(Address, i128)],
     period_duration: u64,
     token: &Address,
@@ -69,6 +70,29 @@ fn setup_test_agreement(
         DataKey::set_agreement_period_duration(env, agreement_id, period_duration);
         DataKey::set_agreement_token(env, agreement_id, token);
         DataKey::set_agreement_escrow_balance(env, agreement_id, token, escrow_amount);
+        
+        // Create and store the Agreement struct
+        let agreement = Agreement {
+            id: agreement_id,
+            employer: employer.clone(),
+            token: token.clone(),
+            mode: AgreementMode::Payroll,
+            status: AgreementStatus::Active,
+            total_amount: 0,
+            paid_amount: 0,
+            created_at: current_time,
+            activated_at: Some(current_time),
+            cancelled_at: None,
+            grace_period_seconds: period_duration * 10, // 10 periods grace period
+            amount_per_period: None,
+            period_seconds: Some(period_duration),
+            num_periods: None,
+            claimed_periods: None,
+        };
+        
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Agreement(agreement_id), &agreement);
     });
 }
 
@@ -78,6 +102,7 @@ fn test_claim_payroll_unauthorized() {
     let contract_id = env.register_contract(None, PayrollContract);
     
     let agreement_id = 1u128;
+    let employer = create_test_address(&env);
     let employee = create_test_address(&env);
     let wrong_caller = create_test_address(&env);
     let token = create_token(&env);
@@ -89,6 +114,7 @@ fn test_claim_payroll_unauthorized() {
         &env,
         &contract_id,
         agreement_id,
+        &employer,
         &[(employee.clone(), salary)],
         period_duration,
         &token,
@@ -110,6 +136,7 @@ fn test_claim_payroll_invalid_employee_index() {
     let contract_id = env.register_contract(None, PayrollContract);
     
     let agreement_id = 1u128;
+    let employer = create_test_address(&env);
     let employee = create_test_address(&env);
     let token = create_token(&env);
     let salary = 1000i128;
@@ -120,6 +147,7 @@ fn test_claim_payroll_invalid_employee_index() {
         &env,
         &contract_id,
         agreement_id,
+        &employer,
         &[(employee.clone(), salary)],
         period_duration,
         &token,
@@ -137,6 +165,7 @@ fn test_multiple_employees_independent_claiming() {
     let contract_id = env.register_contract(None, PayrollContract);
     
     let agreement_id = 1u128;
+    let employer = create_test_address(&env);
     let employee1 = create_test_address(&env);
     let employee2 = create_test_address(&env);
     let token = create_token(&env);
@@ -148,6 +177,7 @@ fn test_multiple_employees_independent_claiming() {
         &env,
         &contract_id,
         agreement_id,
+        &employer,
         &[(employee1.clone(), salary), (employee2.clone(), salary)],
         period_duration,
         &token,
@@ -184,6 +214,7 @@ fn test_different_salaries_per_employee() {
     let contract_id = env.register_contract(None, PayrollContract);
     
     let agreement_id = 1u128;
+    let employer = create_test_address(&env);
     let employee1 = create_test_address(&env);
     let employee2 = create_test_address(&env);
     let token = create_token(&env);
@@ -196,6 +227,7 @@ fn test_different_salaries_per_employee() {
         &env,
         &contract_id,
         agreement_id,
+        &employer,
         &[(employee1.clone(), salary1), (employee2.clone(), salary2)],
         period_duration,
         &token,
@@ -233,6 +265,7 @@ fn test_claiming_during_grace_period() {
     let contract_id = env.register_contract(None, PayrollContract);
     
     let agreement_id = 1u128;
+    let employer = create_test_address(&env);
     let employee = create_test_address(&env);
     let token = create_token(&env);
     let salary = 1000i128;
@@ -243,6 +276,7 @@ fn test_claiming_during_grace_period() {
         &env,
         &contract_id,
         agreement_id,
+        &employer,
         &[(employee.clone(), salary)],
         period_duration,
         &token,
