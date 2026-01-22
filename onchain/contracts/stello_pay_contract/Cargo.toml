@@ -9,14 +9,17 @@ crate-type = ["cdylib"]
 doctest = false
 
 [dependencies]
-soroban-sdk = { workspace = true, features = ["alloc"] }
-hmac = { version = "0.12", default-features = false }
-sha1 = { version = "0.10", default-features = false }
-
-# For backup encryption and hashing (Soroban-compatible)
-sha2 = { version = "0.10", default-features = false }
 aes-gcm = { version = "0.10", default-features = false }
 base64 = { version = "0.21", default-features = false }
+hmac = { version = "0.12", default-features = false }
+sha1 = { version = "0.10", default-features = false }
+# For backup encryption and hashing (Soroban-compatible)
+sha2 = { version = "0.10", default-features = false }
+soroban-sdk = { workspace = true, features = ["alloc"] }
+stellar-access = "0.6.0"
+stellar-contract-utils = "0.6.0"
+stellar-macros = "0.6.0"
+stellar-tokens = "0.6.0"
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
