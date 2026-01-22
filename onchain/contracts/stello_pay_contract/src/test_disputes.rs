@@ -1,9 +1,11 @@
 #![cfg(test)]
-use crate::{PayrollContract, PayrollContractClient, DisputeStatus, PayrollError};
-use soroban_sdk::{
-    testutils::{Address as _, Ledger}, token, Address, BytesN, Env, String, Vec, log
-};
+use crate::{DisputeStatus, PayrollContract, PayrollContractClient, PayrollError};
 use soroban_sdk::token::TokenClient;
+use soroban_sdk::{
+    log,
+    testutils::{Address as _, Ledger},
+    token, Address, BytesN, Env, String, Vec,
+};
 
 fn create_test_env() -> (
     Env,
@@ -51,7 +53,7 @@ fn test_dispute_flow() {
     // Set arbiter
     client.set_arbiter(&owner, &arbiter.clone());
 
-     // Setup token
+    // Setup token
     let token_admin = Address::generate(&env);
     let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
 
@@ -64,9 +66,9 @@ fn test_dispute_flow() {
         &86400,
         &5,
     );
-    
+
     // Raise dispute by employee
-    client.raise_dispute( &employer, &agreement_id);
+    client.raise_dispute(&employer, &agreement_id);
 
     let status = client.get_dispute_status(&agreement_id);
     log!(&env, "Status: {}", status);
@@ -118,11 +120,11 @@ fn test_raise_dispute_non_arbiter() {
     // Set arbiter
     client.set_arbiter(&owner, &arbiter.clone());
 
-     // Setup token
+    // Setup token
     let token_admin = Address::generate(&env);
     let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
 
-     // Create agreement
+    // Create agreement
     let agreement_id = client.create_escrow_agreement(
         &employer.clone(),
         &employee.clone(),
@@ -133,8 +135,7 @@ fn test_raise_dispute_non_arbiter() {
     );
 
     // Raise dispute by employee
-    client.raise_dispute( &non_party, &agreement_id);
-
+    client.raise_dispute(&non_party, &agreement_id);
 }
 
 #[test]
@@ -155,7 +156,7 @@ fn test_raise_dispute_outisde_grace_period() {
     // Set arbiter
     client.set_arbiter(&owner, &arbiter.clone());
 
-     // Setup token
+    // Setup token
     let token_admin = Address::generate(&env);
     let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
 
@@ -171,7 +172,7 @@ fn test_raise_dispute_outisde_grace_period() {
 
     env.ledger().set_timestamp(3000 * 5 + 1);
     // Raise dispute by employee
-    client.raise_dispute( &employer, &agreement_id);
+    client.raise_dispute(&employer, &agreement_id);
 }
 
 #[test]
@@ -192,7 +193,7 @@ fn test_resolve_dispute_invalid_payout() {
     // Set arbiter
     client.set_arbiter(&owner, &arbiter.clone());
 
-     // Setup token
+    // Setup token
     let token_admin = Address::generate(&env);
     let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
 
@@ -205,9 +206,9 @@ fn test_resolve_dispute_invalid_payout() {
         &86400,
         &5,
     );
-    
+
     // Raise dispute by employee
-    client.raise_dispute( &employer, &agreement_id);
+    client.raise_dispute(&employer, &agreement_id);
 
     let status = client.get_dispute_status(&agreement_id);
     log!(&env, "Status: {}", status);
@@ -230,8 +231,6 @@ fn test_resolve_dispute_invalid_payout() {
     client.resolve_dispute(&arbiter, &agreement_id, &1000, &300);
 }
 
-
-
 #[test]
 fn test_dispute_payroll_distribution() {
     let (env, employer, employee, _token, client) = create_test_env();
@@ -249,10 +248,9 @@ fn test_dispute_payroll_distribution() {
     // Set arbiter
     client.set_arbiter(&owner, &arbiter.clone());
 
-     // Setup token
+    // Setup token
     let token_admin = Address::generate(&env);
     let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
-
 
     env.mock_all_auths();
     let agreement_id = client.create_payroll_agreement(&employer, &token, &3600);
@@ -262,7 +260,7 @@ fn test_dispute_payroll_distribution() {
     client.add_employee_to_agreement(&agreement_id, &employee2, &300);
 
     // Raise dispute by employee
-    client.raise_dispute( &employer, &agreement_id);
+    client.raise_dispute(&employer, &agreement_id);
 
     let status = client.get_dispute_status(&agreement_id);
     log!(&env, "Status: {}", status);
@@ -283,13 +281,11 @@ fn test_dispute_payroll_distribution() {
     assert_eq!(token_client.balance(&employee2), 0);
     assert_eq!(token_client.balance(&client.address), 900);
 
-   
-
     // Resolve by arbiter
     client.resolve_dispute(&arbiter, &agreement_id, &600, &300);
 
     assert_eq!(token_client.balance(&employer), 1400);
-     assert_eq!(token_client.balance(&employee), 200);
+    assert_eq!(token_client.balance(&employee), 200);
     assert_eq!(token_client.balance(&employee1), 200);
     assert_eq!(token_client.balance(&employee2), 200);
     assert_eq!(token_client.balance(&client.address), 0);

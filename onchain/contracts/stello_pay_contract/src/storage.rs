@@ -161,23 +161,22 @@ pub enum StorageKey {
 pub enum DisputeStatus {
     None,
     Raised,
-    Resolved
+    Resolved,
 }
 
-use soroban_sdk::{contractimpl, contracterror, events};
+use soroban_sdk::{contracterror, contractimpl, events};
 
 #[contracterror]
 #[derive(Copy, Clone)]
 pub enum PayrollError {
     DisputeAlreadyRaised = 1,
-    NotInGracePeriod     = 2,
-    NotParty             = 3,
-    NotArbiter           = 4,
-    InvalidPayout        = 5,
-    ActiveDispute        = 6,
-    AgreementNotFound    = 7,
-    NoDispute            = 8,
-    NoEmployee           = 9,
-    NotActivated         = 10,
+    NotInGracePeriod = 2,
+    NotParty = 3,
+    NotArbiter = 4,
+    InvalidPayout = 5,
+    ActiveDispute = 6,
+    AgreementNotFound = 7,
+    NoDispute = 8,
+    NoEmployee = 9,
+    NotActivated = 10,
 }
-

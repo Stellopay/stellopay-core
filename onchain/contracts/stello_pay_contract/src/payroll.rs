@@ -1,19 +1,20 @@
 use core::ops::Add;
 
-use soroban_sdk::{Address, Env, Vec};
 use soroban_sdk::token::TokenClient;
+use soroban_sdk::{Address, Env, Vec};
 
 use crate::events::{
-    emit_agreement_activated, emit_agreement_created, emit_agreement_paused, emit_dsipute_raised,
-    emit_agreement_resumed, emit_employee_added, emit_set_arbiter, emit_dsipute_resolved, emit_payroll_claimed, emit_payment_received,
-    emit_payment_sent,
-    AgreementActivatedEvent, AgreementCreatedEvent, AgreementPausedEvent,
-    AgreementResumedEvent, ArbiterSetEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, MilestoneAdded, MilestoneApproved,
-    MilestoneClaimed, PayrollClaimedEvent, PaymentReceivedEvent, PaymentSentEvent,
+    emit_agreement_activated, emit_agreement_created, emit_agreement_paused,
+    emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved, emit_employee_added,
+    emit_payment_received, emit_payment_sent, emit_payroll_claimed, emit_set_arbiter,
+    AgreementActivatedEvent, AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent,
+    ArbiterSetEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, MilestoneAdded,
+    MilestoneApproved, MilestoneClaimed, PaymentReceivedEvent, PaymentSentEvent,
+    PayrollClaimedEvent,
 };
 use crate::storage::{
-    Agreement, AgreementMode, AgreementStatus, DataKey, DisputeStatus, EmployeeInfo, Milestone, PaymentType, PayrollError,
-    StorageKey,
+    Agreement, AgreementMode, AgreementStatus, DataKey, DisputeStatus, EmployeeInfo, Milestone,
+    PaymentType, PayrollError, StorageKey,
 };
 
 pub fn create_milestone_agreement(
@@ -574,7 +575,7 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
 ///
 /// # Arguments
 /// * `env` - Contract environment
-/// * `caller` - Address of the caller 
+/// * `caller` - Address of the caller
 /// * `arbiter` - Address of the arbiter to add
 ///
 /// # Access Control
@@ -585,10 +586,7 @@ pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
     env.storage()
         .persistent()
         .set(&StorageKey::Arbiter, &arbiter);
-    emit_set_arbiter(
-        env,
-        ArbiterSetEvent { arbiter }
-    );
+    emit_set_arbiter(env, ArbiterSetEvent { arbiter });
 
     true
 }
@@ -604,8 +602,7 @@ pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
 pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(), PayrollError> {
     caller.require_auth();
 
-    let mut agreement = get_agreement(env, agreement_id)
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let mut agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     let employees: Vec<EmployeeInfo> = env
         .storage()
@@ -632,7 +629,9 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
     agreement.dispute_status = DisputeStatus::Raised;
     agreement.dispute_raised_at = Some(now);
 
-    env.storage().persistent().set(&StorageKey::Agreement(agreement_id), &agreement);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Agreement(agreement_id), &agreement);
 
     emit_dsipute_raised(env, DisputeRaisedEvent { agreement_id });
 
@@ -658,13 +657,16 @@ pub fn resolve_dispute(
 ) -> Result<(), PayrollError> {
     caller.require_auth();
 
-    let arbiter = env.storage().persistent().get::<_, Address>(&StorageKey::Arbiter).expect("No Arbiter");
+    let arbiter = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::Arbiter)
+        .expect("No Arbiter");
     if caller != arbiter {
         return Err(PayrollError::NotArbiter);
     }
 
-    let mut agreement = get_agreement(&env, agreement_id)
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let mut agreement = get_agreement(&env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     if agreement.dispute_status != DisputeStatus::Raised {
         return Err(PayrollError::NoDispute);
@@ -685,7 +687,7 @@ pub fn resolve_dispute(
 
     // Execute transfers
     if pay_employee > 0 {
-       let num_employees = employees.len() as i128;
+        let num_employees = employees.len() as i128;
         if num_employees > 0 {
             let amount_per_employee = pay_employee / num_employees;
             for employee in employees.iter() {
@@ -699,21 +701,29 @@ pub fn resolve_dispute(
     }
 
     if refund_employer > 0 {
-        token.transfer(&env.current_contract_address(), &agreement.employer, &refund_employer);
+        token.transfer(
+            &env.current_contract_address(),
+            &agreement.employer,
+            &refund_employer,
+        );
     }
 
     agreement.dispute_status = DisputeStatus::Resolved;
-    env.storage().persistent().set(&StorageKey::Agreement(agreement_id), &agreement);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Agreement(agreement_id), &agreement);
 
-    emit_dsipute_resolved(&env, DisputeResolvedEvent{
-        agreement_id,
-        pay_contributor: pay_employee,
-        refund_employer: refund_employer
-    });
+    emit_dsipute_resolved(
+        &env,
+        DisputeResolvedEvent {
+            agreement_id,
+            pay_contributor: pay_employee,
+            refund_employer: refund_employer,
+        },
+    );
 
     Ok(())
 }
-
 
 /// Retrieves current dispute status for an agreement by ID
 ///
@@ -884,9 +894,7 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) {
     let num_periods = agreement
         .num_periods
         .expect("Agreement must have num_periods");
-    let mut claimed_periods = agreement
-        .claimed_periods
-        .unwrap_or(0);
+    let mut claimed_periods = agreement.claimed_periods.unwrap_or(0);
 
     assert!(
         claimed_periods < num_periods,

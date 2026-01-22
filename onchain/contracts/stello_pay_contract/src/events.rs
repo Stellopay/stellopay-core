@@ -109,7 +109,6 @@ pub fn emit_employee_added(env: &Env, event: EmployeeAddedEvent) {
     env.events().publish(topics, event);
 }
 
-
 /// Event: ArbiterSet
 #[contracttype]
 #[derive(Clone, Debug)]

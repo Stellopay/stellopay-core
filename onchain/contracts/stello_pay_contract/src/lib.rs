@@ -2,11 +2,11 @@
 mod events;
 mod payroll;
 mod storage;
-mod test_milestones;
 mod test_disputes;
+mod test_milestones;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
-use storage::{Agreement, Milestone, StorageKey, PayrollError, DisputeStatus};
+use storage::{Agreement, DisputeStatus, Milestone, PayrollError, StorageKey};
 
 /// Minimal baseline Soroban contract.
 ///
@@ -219,12 +219,11 @@ impl PayrollContract {
         payroll::get_agreement_employees(&env, agreement_id)
     }
 
-
     /// Set Arbiter
     ///
     /// # Arguments
     /// * `env` - Contract environment
-    /// * `caller` - Address of the caller 
+    /// * `caller` - Address of the caller
     /// * `arbiter` - Address of the arbiter to add
     ///
     /// # Access Control
@@ -241,12 +240,16 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires employer or employee authentication
-    pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(), PayrollError> {
+    pub fn raise_dispute(
+        env: &Env,
+        caller: Address,
+        agreement_id: u128,
+    ) -> Result<(), PayrollError> {
         payroll::raise_dispute(env, caller, agreement_id)
     }
 
     /// Resove Dispute
-///
+    ///
     /// # Arguments
     /// * `env` - Contract environment
     /// * agreement_id` - ID of the agreement to raise dispute for
@@ -255,7 +258,13 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires arbiter authentication
-    pub fn resolve_dispute(env: Env,caller: Address, agreement_id: u128, pay_employee: i128, refund_employer: i128) -> Result<(), PayrollError> {
+    pub fn resolve_dispute(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        pay_employee: i128,
+        refund_employer: i128,
+    ) -> Result<(), PayrollError> {
         payroll::resolve_dispute(env, caller, agreement_id, pay_employee, refund_employer)
     }
 
