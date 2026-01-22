@@ -1,5 +1,77 @@
 use soroban_sdk::{contracttype, Address, Env};
 
+pub type Error = soroban_sdk::Error;
+
+/// Operating mode for agreements
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AgreementMode {
+    /// Escrow mode for freelance/contract work
+    Escrow,
+    /// Payroll mode for traditional employee payroll
+    Payroll,
+}
+
+/// Lifecycle states for agreements
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AgreementStatus {
+    /// Agreement created but not yet funded/activated
+    Created,
+    /// Agreement is active and payments can be processed
+    Active,
+    /// Agreement temporarily paused
+    Paused,
+    /// Agreement cancelled by employer
+    Cancelled,
+    /// Agreement completed successfully
+    Completed,
+    /// Agreement in dispute
+    Disputed,
+}
+
+/// Core agreement structure
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Agreement {
+    pub id: u128,
+    pub employer: Address,
+    pub token: Address,
+    pub mode: AgreementMode,
+    pub status: AgreementStatus,
+    pub total_amount: i128,
+    pub paid_amount: i128,
+    pub created_at: u64,
+    pub activated_at: Option<u64>,
+    pub cancelled_at: Option<u64>,
+    pub grace_period_seconds: u64,
+}
+
+/// Employee info within an agreement
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct EmployeeInfo {
+    pub address: Address,
+    pub salary_per_period: i128,
+    pub added_at: u64,
+}
+
+/// Storage keys
+#[contracttype]
+#[derive(Clone)]
+pub enum StorageKey {
+    /// Contract owner
+    Owner,
+    /// Agreement by ID
+    Agreement(u128),
+    /// List of employees for an agreement
+    AgreementEmployees(u128),
+    /// Next agreement ID counter
+    NextAgreementId,
+    /// List of agreement IDs for an employer
+    EmployerAgreements(Address),
+}
+
 /// Represents payroll information for an employee within an agreement.
 #[derive(Clone)]
 #[contracttype]
@@ -12,7 +84,7 @@ pub struct EmployeePayroll {
     pub claimed_periods: u32,
 }
 
-/// Storage keys for the payroll agreement system.
+/// Storage keys for the payroll claiming system.
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey {
@@ -20,42 +92,42 @@ pub enum DataKey {
     /// Key: AgreementEmployeeCount(u128)
     /// Value: u32
     AgreementEmployeeCount(u128),
-    
+
     /// Maps agreement ID and employee index to employee address
     /// Key: AgreementEmployee(u128, u32)
     /// Value: Address
     AgreementEmployee(u128, u32),
-    
+
     /// Maps agreement ID and employee index to salary per period
     /// Key: EmployeeSalary(u128, u32)
     /// Value: i128
     EmployeeSalary(u128, u32),
-    
+
     /// Maps agreement ID and employee index to number of claimed periods
     /// Key: EmployeeClaimedPeriods(u128, u32)
     /// Value: u32
     EmployeeClaimedPeriods(u128, u32),
-    
+
     /// Maps agreement ID to activation timestamp
     /// Key: AgreementActivationTime(u128)
     /// Value: u64
     AgreementActivationTime(u128),
-    
+
     /// Maps agreement ID to period duration in seconds
     /// Key: AgreementPeriodDuration(u128)
     /// Value: u64
     AgreementPeriodDuration(u128),
-    
+
     /// Maps agreement ID to token address
     /// Key: AgreementToken(u128)
     /// Value: Address
     AgreementToken(u128),
-    
+
     /// Maps agreement ID to total paid amount
     /// Key: AgreementPaidAmount(u128)
     /// Value: i128
     AgreementPaidAmount(u128),
-    
+
     /// Maps agreement ID and token to escrow balance
     /// Key: AgreementEscrowBalance(u128, Address)
     /// Value: i128
