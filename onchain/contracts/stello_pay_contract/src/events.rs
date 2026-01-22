@@ -73,6 +73,27 @@ pub struct AgreementResumedEvent {
     pub agreement_id: u128,
 }
 
+/// Event: Payment sent
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PaymentSentEvent {
+    pub agreement_id: u128,
+    pub from: Address,
+    pub to: Address,
+    pub amount: i128,
+    pub token: Address,
+}
+
+/// Event: Payment received
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PaymentReceivedEvent {
+    pub agreement_id: u128,
+    pub to: Address,
+    pub amount: i128,
+    pub token: Address,
+}
+
 pub fn emit_agreement_created(env: &Env, event: AgreementCreatedEvent) {
     let topics = (symbol_short!("agr_new"), event.agreement_id);
     env.events().publish(topics, event);
@@ -100,5 +121,15 @@ pub fn emit_agreement_paused(env: &Env, event: AgreementPausedEvent) {
 
 pub fn emit_agreement_resumed(env: &Env, event: AgreementResumedEvent) {
     let topics = (symbol_short!("agr_res"), event.agreement_id);
+    env.events().publish(topics, event);
+}
+
+pub fn emit_payment_sent(env: &Env, event: PaymentSentEvent) {
+    let topics = (symbol_short!("pay_snt"), event.agreement_id);
+    env.events().publish(topics, event);
+}
+
+pub fn emit_payment_received(env: &Env, event: PaymentReceivedEvent) {
+    let topics = (symbol_short!("pay_rcv"), event.agreement_id);
     env.events().publish(topics, event);
 }
