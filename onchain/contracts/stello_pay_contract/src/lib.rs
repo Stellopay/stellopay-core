@@ -281,4 +281,30 @@ impl PayrollContract {
         // Fall back to milestone-based agreement
         payroll::resume_milestone_agreement(env, agreement_id);
     }
+
+    /// Claims time-based payments for an escrow agreement based on elapsed periods.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the escrow agreement
+    ///
+    /// # Requirements
+    /// - Agreement must be Active and activated
+    /// - Agreement must be Escrow mode
+    /// - Caller must be the contributor
+    /// - Cannot claim more than total periods
+    /// - Works during grace period
+    pub fn claim_time_based(env: Env, agreement_id: u128) {
+        payroll::claim_time_based(&env, agreement_id);
+    }
+
+    /// Gets the number of claimed periods for a time-based escrow agreement.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    ///
+    /// # Returns
+    /// Number of claimed periods, or 0 if not a time-based agreement
+    pub fn get_claimed_periods(env: Env, agreement_id: u128) -> u32 {
+        payroll::get_claimed_periods(&env, agreement_id)
+    }
 }

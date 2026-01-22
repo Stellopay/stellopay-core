@@ -1,8 +1,10 @@
 use crate::events::{
     emit_agreement_activated, emit_agreement_created, emit_agreement_paused,
-    emit_agreement_resumed, emit_employee_added, emit_payroll_claimed, AgreementActivatedEvent,
-    AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, EmployeeAddedEvent,
-    MilestoneAdded, MilestoneApproved, MilestoneClaimed, PayrollClaimedEvent,
+    emit_agreement_resumed, emit_employee_added, emit_payroll_claimed, emit_payment_received,
+    emit_payment_sent,
+    AgreementActivatedEvent, AgreementCreatedEvent, AgreementPausedEvent,
+    AgreementResumedEvent, EmployeeAddedEvent, MilestoneAdded, MilestoneApproved,
+    MilestoneClaimed, PayrollClaimedEvent, PaymentReceivedEvent, PaymentSentEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, DataKey, EmployeeInfo, Milestone, PaymentType,
@@ -350,6 +352,10 @@ pub fn create_payroll_agreement(
         activated_at: None,
         cancelled_at: None,
         grace_period_seconds,
+        amount_per_period: None,
+        period_seconds: None,
+        num_periods: None,
+        claimed_periods: None,
     };
 
     env.storage()
@@ -419,6 +425,10 @@ pub fn create_escrow_agreement(
         activated_at: None,
         cancelled_at: None,
         grace_period_seconds: period_seconds * (num_periods as u64),
+        amount_per_period: Some(amount_per_period),
+        period_seconds: Some(period_seconds),
+        num_periods: Some(num_periods),
+        claimed_periods: Some(0),
     };
 
     env.storage()
@@ -652,6 +662,136 @@ pub fn claim_payroll(env: &Env, agreement_id: u128, employee: Address) {
             amount: employee_info.salary_per_period,
         },
     );
+}
+
+/// Claims time-based payments for an escrow agreement based on elapsed periods
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `agreement_id` - ID of the escrow agreement
+///
+/// # Requirements
+/// - Agreement must be Active (not Paused, Cancelled, etc.)
+/// - Agreement must be activated
+/// - Caller must be the contributor
+/// - Cannot claim more than total periods
+/// - Works during grace period
+pub fn claim_time_based(env: &Env, agreement_id: u128) {
+    let mut agreement = get_agreement(env, agreement_id).expect("Agreement not found");
+
+    assert!(
+        agreement.mode == AgreementMode::Escrow,
+        "Can only claim time-based payments for escrow agreements"
+    );
+
+    assert!(
+        agreement.status != AgreementStatus::Paused,
+        "Cannot claim when agreement is paused"
+    );
+
+    assert!(
+        agreement.status == AgreementStatus::Active,
+        "Agreement must be active"
+    );
+
+    let employees: Vec<EmployeeInfo> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::AgreementEmployees(agreement_id))
+        .unwrap_or(Vec::new(env));
+
+    let contributor = employees
+        .get(0)
+        .expect("Escrow agreement must have a contributor")
+        .address
+        .clone();
+
+    contributor.require_auth();
+
+    let activated_at = agreement
+        .activated_at
+        .expect("Agreement must be activated before claiming");
+
+    let amount_per_period = agreement
+        .amount_per_period
+        .expect("Agreement must have amount_per_period");
+    let period_seconds = agreement
+        .period_seconds
+        .expect("Agreement must have period_seconds");
+    let num_periods = agreement
+        .num_periods
+        .expect("Agreement must have num_periods");
+    let mut claimed_periods = agreement
+        .claimed_periods
+        .unwrap_or(0);
+
+    assert!(
+        claimed_periods < num_periods,
+        "All periods have been claimed"
+    );
+
+    let current_time = env.ledger().timestamp();
+    let elapsed_seconds = current_time - activated_at;
+    let periods_elapsed = (elapsed_seconds / period_seconds) as u32;
+
+    let periods_to_pay = if periods_elapsed > num_periods {
+        num_periods - claimed_periods
+    } else {
+        periods_elapsed - claimed_periods
+    };
+
+    assert!(periods_to_pay > 0, "No periods available to claim");
+
+    let amount = amount_per_period * (periods_to_pay as i128);
+
+    claimed_periods += periods_to_pay;
+    agreement.claimed_periods = Some(claimed_periods);
+    agreement.paid_amount += amount;
+
+    if claimed_periods >= num_periods {
+        agreement.status = AgreementStatus::Completed;
+    }
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Agreement(agreement_id), &agreement);
+
+    emit_payment_sent(
+        env,
+        PaymentSentEvent {
+            agreement_id,
+            from: agreement.employer.clone(),
+            to: contributor.clone(),
+            amount,
+            token: agreement.token.clone(),
+        },
+    );
+
+    emit_payment_received(
+        env,
+        PaymentReceivedEvent {
+            agreement_id,
+            to: contributor,
+            amount,
+            token: agreement.token,
+        },
+    );
+}
+
+/// Gets the number of claimed periods for a time-based escrow agreement
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `agreement_id` - ID of the agreement
+///
+/// # Returns
+/// Number of claimed periods, or 0 if not a time-based agreement
+pub fn get_claimed_periods(env: &Env, agreement_id: u128) -> u32 {
+    let agreement = get_agreement(env, agreement_id).unwrap_or_else(|| {
+        panic!("Agreement not found");
+    });
+
+    agreement.claimed_periods.unwrap_or(0)
 }
 
 // Helper functions
