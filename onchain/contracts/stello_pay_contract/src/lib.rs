@@ -5,7 +5,7 @@ mod payroll;
 mod storage;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
-use storage::{Agreement, StorageKey};
+use storage::{Agreement, StorageKey, PayrollError};
 
 /// Minimal baseline Soroban contract.
 ///
@@ -126,5 +126,31 @@ impl PayrollContract {
     /// Vector of employee addresses
     pub fn get_agreement_employees(env: Env, agreement_id: u128) -> Vec<Address> {
         payroll::get_agreement_employees(&env, agreement_id)
+    }
+
+
+    /// Set Arbiter
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `caller` - Address of the caller 
+    /// * `arbiter` - Address of the arbiter to add
+    ///
+    /// # Access Control
+    /// Requires caller authentication
+    pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
+        payroll::set_arbiter(env, caller, arbiter)
+    }
+
+    /// Raise Disoute
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * agreement_id` - ID of the agreement to raise dispute for
+    ///
+    /// # Access Control
+    /// Requires employer or employee authentication
+    pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(), PayrollError> {
+        payroll::raise_dispute(env, caller, agreement_id)
     }
 }

@@ -1,11 +1,14 @@
+use core::ops::Add;
+
 use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::token::TokenClient;
 
 use crate::events::{
-    emit_agreement_activated, emit_agreement_created, emit_employee_added,
-    AgreementActivatedEvent, AgreementCreatedEvent, EmployeeAddedEvent,
+    emit_agreement_activated, emit_agreement_created, emit_dsipute_raised, emit_employee_added, emit_set_arbiter, emit_dsipute_resolved,
+    AgreementActivatedEvent, AgreementCreatedEvent, ArbiterSetEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
 };
 use crate::storage::{
-    Agreement, AgreementMode, AgreementStatus, EmployeeInfo, StorageKey,
+    Agreement, AgreementMode, AgreementStatus, DisputeStatus, EmployeeInfo, PayrollError, StorageKey,
 };
 
 /// Creates a payroll agreement for multiple employees
@@ -43,6 +46,8 @@ pub fn create_payroll_agreement(
         activated_at: None,
         cancelled_at: None,
         grace_period_seconds,
+        dispute_status: DisputeStatus::None,
+        dispute_raised_at: None
     };
 
     env.storage().persistent().set(&StorageKey::Agreement(agreement_id), &agreement);
@@ -108,6 +113,8 @@ pub fn create_escrow_agreement(
         activated_at: None,
         cancelled_at: None,
         grace_period_seconds: period_seconds * (num_periods as u64),
+        dispute_status: DisputeStatus::None,
+        dispute_raised_at: None
     };
 
     env.storage().persistent().set(&StorageKey::Agreement(agreement_id), &agreement);
@@ -234,6 +241,142 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
         env,
         AgreementActivatedEvent { agreement_id },
     );
+}
+
+/// Set Arbiter
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `caller` - Address of the caller 
+/// * `arbiter` - Address of the arbiter to add
+///
+/// # Access Control
+/// Requires caller authentication
+pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
+    caller.require_auth();
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Arbiter, &arbiter);
+    emit_set_arbiter(
+        env,
+        ArbiterSetEvent { arbiter }
+    );
+
+    true
+}
+
+/// Raise Dispute
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * agreement_id` - ID of the agreement to raise dispute for
+///
+/// # Access Control
+/// Requires caller or employee authentication
+pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(), PayrollError> {
+    caller.require_auth();
+
+    let mut agreement = get_agreement(env, agreement_id)
+        .ok_or(PayrollError::AgreementNotFound)?;
+
+    let employee =  env.storage().persistent()
+        .get(&StorageKey::AgreementEmployees(agreement_id)).unwrap();
+
+    if caller != agreement.employer && caller != employee {
+        return Err(PayrollError::NotParty);
+    }
+
+    if agreement.dispute_status != DisputeStatus::None {
+        return Err(PayrollError::DisputeAlreadyRaised);
+    }
+
+    let now = env.ledger().timestamp();
+    if now > agreement.grace_period_seconds {
+        return Err(PayrollError::NotInGracePeriod);
+    }
+
+    agreement.dispute_status = DisputeStatus::Raised;
+    agreement.dispute_raised_at = Some(now);
+
+    env.storage().persistent().set(&StorageKey::Agreement(agreement_id), &agreement);
+
+    emit_dsipute_raised(env, DisputeRaisedEvent { agreement_id });
+
+    Ok(())
+}
+
+/// Resove Dispute
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * agreement_id` - ID of the agreement to raise dispute for
+/// * pay_employee` - ID of the agreement to raise dispute for
+/// * refund_employer` - ID of the agreement to raise dispute for
+///
+/// # Access Control
+/// Requires arbiter authentication
+pub fn resolve_dispute(
+    env: Env,
+    caller: Address,
+    agreement_id: u128,
+    pay_employee: i128,
+    refund_employer: i128,
+) -> Result<(), PayrollError> {
+    caller.require_auth();
+
+    let arbiter = env.storage().persistent().get::<_, Address>(&StorageKey::Arbiter).expect("No Arbiter");
+    if caller != arbiter {
+        return Err(PayrollError::NotArbiter);
+    }
+
+    let mut agreement = get_agreement(&env, agreement_id)
+        .ok_or(PayrollError::AgreementNotFound)?;
+
+    if agreement.dispute_status != DisputeStatus::Raised {
+        return Err(PayrollError::NoDispute);
+    }
+
+    let total_locked = agreement.total_amount;
+    if pay_employee + refund_employer != total_locked {
+        return Err(PayrollError::InvalidPayout);
+    }
+
+    let token = TokenClient::new(&env, &agreement.token);
+    let employee =  env.storage().persistent()
+        .get(&StorageKey::AgreementEmployees(agreement_id)).unwrap();
+
+
+    // Execute transfers
+    if pay_employee > 0 {
+        token.transfer(&env.current_contract_address(), &employee, &pay_employee);
+    }
+
+    if refund_employer > 0 {
+        token.transfer(&env.current_contract_address(), &agreement.employer, &refund_employer);
+    }
+
+    agreement.dispute_status = DisputeStatus::Resolved;
+    env.storage().persistent().set(&StorageKey::Agreement(agreement_id), &agreement);
+
+    emit_dsipute_resolved(&env, DisputeResolvedEvent{
+        agreement_id,
+        pay_contributor: pay_employee,
+        refund_employer: refund_employer
+    });
+
+    Ok(())
+}
+
+
+/// Retrieves current dispute status for an agreement by ID
+///
+/// # Returns
+/// Some(Agreement) if found, None otherwise
+pub fn get_dispute_status(env: Env, agreement_id: u128) -> DisputeStatus {
+    get_agreement(&env, agreement_id)
+        .map(|a| a.dispute_status)
+        .unwrap_or(DisputeStatus::None)
 }
 
 /// Retrieves an agreement by ID

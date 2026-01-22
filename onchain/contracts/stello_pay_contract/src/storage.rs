@@ -43,6 +43,8 @@ pub struct Agreement {
     pub activated_at: Option<u64>,
     pub cancelled_at: Option<u64>,
     pub grace_period_seconds: u64,
+    pub dispute_status: DisputeStatus,
+    pub dispute_raised_at: Option<u64>,
 }
 
 /// Employee info within an agreement
@@ -68,4 +70,31 @@ pub enum StorageKey {
     NextAgreementId,
     /// List of agreement IDs for an employer
     EmployerAgreements(Address),
+    /// Dispute Status
+    DisputeStatus(u128),
+    DisputeRaisedAt(u128),
+    Arbiter,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
+pub enum DisputeStatus {
+    None,
+    Raised,
+    Resolved
+}
+
+use soroban_sdk::{contractimpl, contracterror, events};
+
+#[contracterror]
+#[derive(Copy, Clone)]
+pub enum PayrollError {
+    DisputeAlreadyRaised = 1,
+    NotInGracePeriod     = 2,
+    NotParty             = 3,
+    NotArbiter           = 4,
+    InvalidPayout        = 5,
+    ActiveDispute        = 6,
+    AgreementNotFound    = 7,
+    NoDispute            = 8,
 }

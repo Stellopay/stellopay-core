@@ -41,3 +41,42 @@ pub fn emit_employee_added(env: &Env, event: EmployeeAddedEvent) {
     let topics = (symbol_short!("emp_add"), event.agreement_id);
     env.events().publish(topics, event);
 }
+
+
+/// Event: ArbiterSet
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ArbiterSetEvent {
+    pub arbiter: Address,
+}
+
+pub fn emit_set_arbiter(env: &Env, event: ArbiterSetEvent) {
+    let topics = (symbol_short!("arb_set"), &event.arbiter);
+    env.events().publish(topics, event.clone());
+}
+
+/// Event: ArbiteDisputeRaisedrSet
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct DisputeRaisedEvent {
+    pub agreement_id: u128,
+}
+
+pub fn emit_dsipute_raised(env: &Env, event: DisputeRaisedEvent) {
+    let topics = (symbol_short!("dis_rai"), &event.agreement_id);
+    env.events().publish(topics, event.clone());
+}
+
+/// Event: ArbiteDisputeRaisedrSet
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct DisputeResolvedEvent {
+    pub agreement_id: u128,
+    pub pay_contributor: i128,
+    pub refund_employer: i128,
+}
+
+pub fn emit_dsipute_resolved(env: &Env, event: DisputeResolvedEvent) {
+    let topics = (symbol_short!("dis_res"), &event.agreement_id);
+    env.events().publish(topics, event.clone());
+}
