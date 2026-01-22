@@ -59,6 +59,20 @@ pub struct PayrollClaimedEvent {
     pub amount: i128,
 }
 
+/// Event: Agreement paused
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AgreementPausedEvent {
+    pub agreement_id: u128,
+}
+
+/// Event: Agreement resumed
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AgreementResumedEvent {
+    pub agreement_id: u128,
+}
+
 pub fn emit_agreement_created(env: &Env, event: AgreementCreatedEvent) {
     let topics = (symbol_short!("agr_new"), event.agreement_id);
     env.events().publish(topics, event);
@@ -76,5 +90,15 @@ pub fn emit_employee_added(env: &Env, event: EmployeeAddedEvent) {
 
 pub fn emit_payroll_claimed(env: &Env, event: PayrollClaimedEvent) {
     let topics = (symbol_short!("pay_clm"), event.agreement_id);
+    env.events().publish(topics, event);
+}
+
+pub fn emit_agreement_paused(env: &Env, event: AgreementPausedEvent) {
+    let topics = (symbol_short!("agr_pau"), event.agreement_id);
+    env.events().publish(topics, event);
+}
+
+pub fn emit_agreement_resumed(env: &Env, event: AgreementResumedEvent) {
+    let topics = (symbol_short!("agr_res"), event.agreement_id);
     env.events().publish(topics, event);
 }

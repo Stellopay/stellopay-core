@@ -226,4 +226,58 @@ impl PayrollContract {
     pub fn claim_payroll(env: Env, agreement_id: u128, employee: Address) {
         payroll::claim_payroll(&env, agreement_id, employee);
     }
+
+    /// Pauses an active agreement, preventing claims.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement to pause
+    ///
+    /// # State Transition
+    /// Active -> Paused
+    ///
+    /// # Requirements
+    /// - Agreement must be in Active status
+    /// - Caller must be the employer
+    ///
+    /// # Behavior
+    /// - Paused agreements cannot have claims processed
+    /// - Agreement state is preserved
+    /// - Can be resumed later or cancelled
+    pub fn pause_agreement(env: Env, agreement_id: u128) {
+        // Try new-style agreement first (payroll/escrow)
+        if payroll::get_agreement(&env, agreement_id).is_some() {
+            payroll::pause_agreement(&env, agreement_id);
+            return;
+        }
+
+        // Fall back to milestone-based agreement
+        payroll::pause_milestone_agreement(env, agreement_id);
+    }
+
+    /// Resumes a paused agreement, allowing claims again.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement to resume
+    ///
+    /// # State Transition
+    /// Paused -> Active
+    ///
+    /// # Requirements
+    /// - Agreement must be in Paused status
+    /// - Caller must be the employer
+    ///
+    /// # Behavior
+    /// - Agreement returns to Active status
+    /// - Claims can be processed again
+    /// - All agreement data is preserved
+    pub fn resume_agreement(env: Env, agreement_id: u128) {
+        // Try new-style agreement first (payroll/escrow)
+        if payroll::get_agreement(&env, agreement_id).is_some() {
+            payroll::resume_agreement(&env, agreement_id);
+            return;
+        }
+
+        // Fall back to milestone-based agreement
+        payroll::resume_milestone_agreement(env, agreement_id);
+    }
 }

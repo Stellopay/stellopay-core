@@ -1,7 +1,9 @@
 use crate::events::{
-    emit_agreement_activated, emit_agreement_created, emit_employee_added, emit_payroll_claimed,
-    AgreementActivatedEvent, AgreementCreatedEvent, EmployeeAddedEvent, MilestoneAdded,
-    MilestoneApproved, MilestoneClaimed, PayrollClaimedEvent,
+    emit_agreement_activated, emit_agreement_created, emit_agreement_paused,
+    emit_agreement_resumed, emit_employee_added, emit_payroll_claimed,
+    AgreementActivatedEvent, AgreementCreatedEvent, AgreementPausedEvent,
+    AgreementResumedEvent, EmployeeAddedEvent, MilestoneAdded, MilestoneApproved,
+    MilestoneClaimed, PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, DataKey, EmployeeInfo, Milestone, PaymentType,
@@ -176,6 +178,11 @@ pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
 /// * `env` - Contract environment
 /// * `agreement_id` - ID of the agreement
 /// * `milestone_id` - ID of the milestone to claim
+///
+/// # Requirements
+/// - Agreement must not be Paused
+/// - Milestone must be approved
+/// - Milestone must not be already claimed
 pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
     let contributor: Address = env
         .storage()
@@ -183,6 +190,17 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         .get(&DataKey::Contributor(agreement_id))
         .expect("Contributor not found");
     contributor.require_auth();
+
+    // Check if agreement is paused
+    let status: AgreementStatus = env
+        .storage()
+        .instance()
+        .get(&DataKey::Status(agreement_id))
+        .expect("Agreement not found");
+    assert!(
+        status != AgreementStatus::Paused,
+        "Cannot claim when agreement is paused"
+    );
 
     let count: u32 = env
         .storage()
@@ -563,6 +581,17 @@ pub fn get_agreement_employees(env: &Env, agreement_id: u128) -> Vec<Address> {
     addresses
 }
 
+/// Claims payroll for the calling employee
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `agreement_id` - ID of the agreement
+/// * `employee` - Address of the employee claiming
+///
+/// # Requirements
+/// - Agreement must be Active (not Paused, Cancelled, etc.)
+/// - Caller must be an employee of the agreement
+/// - If agreement is Cancelled, must be past grace period
 pub fn claim_payroll(env: &Env, agreement_id: u128, employee: Address) {
     employee.require_auth();
 
@@ -572,11 +601,20 @@ pub fn claim_payroll(env: &Env, agreement_id: u128, employee: Address) {
         .get(&StorageKey::Agreement(agreement_id))
         .expect("Agreement not found");
 
+    // Check if agreement is paused
+    assert!(
+        agreement.status != AgreementStatus::Paused,
+        "Cannot claim when agreement is paused"
+    );
+
+    // Check if agreement is active
     assert!(
         agreement.status == AgreementStatus::Active,
         "Agreement must be active"
     );
 
+    // Note: The cancelled check is redundant here since we already check for Active,
+    // but keeping it for clarity and future-proofing
     if agreement.status == AgreementStatus::Cancelled {
         let current_time = env.ledger().timestamp();
         let cancelled_at = agreement
@@ -624,6 +662,182 @@ fn get_next_agreement_id(env: &Env) -> u128 {
     let id: u128 = env.storage().persistent().get(&key).unwrap_or(1);
     env.storage().persistent().set(&key, &(id + 1));
     id
+}
+
+/// Pauses an active agreement, preventing claims
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `agreement_id` - ID of the agreement to pause
+///
+/// # State Transition
+/// Active -> Paused
+///
+/// # Access Control
+/// Requires employer authentication
+///
+/// # Requirements
+/// - Agreement must be in Active status
+/// - Only the employer can pause the agreement
+///
+/// # Behavior
+/// - Paused agreements cannot have claims processed
+/// - Agreement state is preserved
+/// - Can be resumed later or cancelled
+pub fn pause_agreement(env: &Env, agreement_id: u128) {
+    let mut agreement = get_agreement(env, agreement_id).expect("Agreement not found");
+
+    agreement.employer.require_auth();
+
+    assert!(
+        agreement.status == AgreementStatus::Active,
+        "Can only pause Active agreements"
+    );
+
+    agreement.status = AgreementStatus::Paused;
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Agreement(agreement_id), &agreement);
+
+    emit_agreement_paused(env, AgreementPausedEvent { agreement_id });
+}
+
+/// Resumes a paused agreement, allowing claims again
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `agreement_id` - ID of the agreement to resume
+///
+/// # State Transition
+/// Paused -> Active
+///
+/// # Access Control
+/// Requires employer authentication
+///
+/// # Requirements
+/// - Agreement must be in Paused status
+/// - Only the employer can resume the agreement
+///
+/// # Behavior
+/// - Agreement returns to Active status
+/// - Claims can be processed again
+/// - All agreement data is preserved
+pub fn resume_agreement(env: &Env, agreement_id: u128) {
+    let mut agreement = get_agreement(env, agreement_id).expect("Agreement not found");
+
+    agreement.employer.require_auth();
+
+    assert!(
+        agreement.status == AgreementStatus::Paused,
+        "Can only resume Paused agreements"
+    );
+
+    agreement.status = AgreementStatus::Active;
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Agreement(agreement_id), &agreement);
+
+    emit_agreement_resumed(env, AgreementResumedEvent { agreement_id });
+}
+
+/// Pauses a milestone-based agreement, preventing claims
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `agreement_id` - ID of the milestone agreement to pause
+///
+/// # State Transition
+/// Active -> Paused, or Created -> Paused (if has approved milestones)
+///
+/// # Access Control
+/// Requires employer authentication
+///
+/// # Requirements
+/// - Agreement must be in Active status, or Created status with approved milestones
+/// - Only the employer can pause the agreement
+///
+/// # Note
+/// Milestone agreements can be paused in Created status if they have approved milestones
+/// that could be claimed, effectively making them "active" for claiming purposes.
+pub fn pause_milestone_agreement(env: Env, agreement_id: u128) {
+    let employer: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Employer(agreement_id))
+        .expect("Agreement not found");
+    employer.require_auth();
+
+    let status: AgreementStatus = env
+        .storage()
+        .instance()
+        .get(&DataKey::Status(agreement_id))
+        .expect("Agreement not found");
+
+    // Allow pausing Active agreements, or Created agreements (which can have claimable milestones)
+    assert!(
+        status == AgreementStatus::Active || status == AgreementStatus::Created,
+        "Can only pause Active or Created agreements"
+    );
+
+    env.storage()
+        .instance()
+        .set(&DataKey::Status(agreement_id), &AgreementStatus::Paused);
+
+    env.events().publish(
+        ("agreement_paused", agreement_id),
+        AgreementPausedEvent { agreement_id },
+    );
+}
+
+/// Resumes a paused milestone-based agreement, allowing claims again
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `agreement_id` - ID of the milestone agreement to resume
+///
+/// # State Transition
+/// Paused -> Active (or Paused -> Created if it was Created before)
+///
+/// # Access Control
+/// Requires employer authentication
+///
+/// # Requirements
+/// - Agreement must be in Paused status
+/// - Only the employer can resume the agreement
+///
+/// # Note
+/// Resumed milestone agreements return to Active status. If they were Created before
+/// pausing, they will be Active after resuming (allowing milestone claims).
+pub fn resume_milestone_agreement(env: Env, agreement_id: u128) {
+    let employer: Address = env
+        .storage()
+        .instance()
+        .get(&DataKey::Employer(agreement_id))
+        .expect("Agreement not found");
+    employer.require_auth();
+
+    let status: AgreementStatus = env
+        .storage()
+        .instance()
+        .get(&DataKey::Status(agreement_id))
+        .expect("Agreement not found");
+
+    assert!(
+        status == AgreementStatus::Paused,
+        "Can only resume Paused agreements"
+    );
+
+    // Resume to Active status (milestone agreements can have claimable milestones in Active state)
+    env.storage()
+        .instance()
+        .set(&DataKey::Status(agreement_id), &AgreementStatus::Active);
+
+    env.events().publish(
+        ("agreement_resumed", agreement_id),
+        AgreementResumedEvent { agreement_id },
+    );
 }
 
 fn add_to_employer_agreements(env: &Env, employer: &Address, agreement_id: u128) {
