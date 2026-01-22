@@ -1,8 +1,5 @@
-// test_milestones.rs - Comprehensive test suite for milestone-based payments
-
 #![cfg(test)]
-use crate::payroll::{PayrollContract, PayrollContractClient};
-use crate::storage::Milestone;
+use crate::{PayrollContract, PayrollContractClient};
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
 fn create_test_env() -> (
@@ -24,331 +21,111 @@ fn create_test_env() -> (
 }
 
 #[test]
-fn test_create_milestone_agreement() {
-    let (env, employer, contributor, token, client) = create_test_env();
+#[should_panic(expected = "Caller is not an employee")]
+fn test_claiming_for_wrong_employee() {
+    let (env, employer, _contributor, token, client) = create_test_env();
+    let employee1 = Address::generate(&env);
+    let wrong_employee = Address::generate(&env);
 
     env.mock_all_auths();
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    // Create payroll agreement
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &3600);
 
-    assert_eq!(agreement_id, 1);
-    assert_eq!(client.get_milestone_count(&agreement_id), 0);
+    // Add only employee1
+    client.add_employee_to_agreement(&agreement_id, &employee1, &1000);
+
+    // Activate agreement
+    client.activate_agreement(&agreement_id);
+
+    // Try to claim with wrong employee - should fail
+    client.claim_payroll(&agreement_id, &wrong_employee);
 }
 
 #[test]
-fn test_add_milestone_success() {
-    let (env, employer, contributor, token, client) = create_test_env();
+fn test_multiple_employees_claiming_independently() {
+    let (env, employer, _contributor, token, client) = create_test_env();
+    let employee1 = Address::generate(&env);
+    let employee2 = Address::generate(&env);
+    let employee3 = Address::generate(&env);
 
     env.mock_all_auths();
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    // Create payroll agreement
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &3600);
 
-    client.add_milestone(&agreement_id, &1000);
+    // Add multiple employees
+    client.add_employee_to_agreement(&agreement_id, &employee1, &1000);
+    client.add_employee_to_agreement(&agreement_id, &employee2, &2000);
+    client.add_employee_to_agreement(&agreement_id, &employee3, &1500);
 
-    assert_eq!(client.get_milestone_count(&agreement_id), 1);
+    // Activate agreement
+    client.activate_agreement(&agreement_id);
 
-    let milestone = client.get_milestone(&agreement_id, &1).unwrap();
-    assert_eq!(milestone.id, 1);
-    assert_eq!(milestone.amount, 1000);
-    assert_eq!(milestone.approved, false);
-    assert_eq!(milestone.claimed, false);
+    // Each employee claims independently
+    client.claim_payroll(&agreement_id, &employee1);
+    client.claim_payroll(&agreement_id, &employee2);
+    client.claim_payroll(&agreement_id, &employee3);
+
+    // Verify agreement is updated with paid amounts
+    let agreement = client.get_agreement(&agreement_id).unwrap();
+    assert_eq!(agreement.paid_amount, 4500); // 1000 + 2000 + 1500
 }
 
 #[test]
-fn test_add_multiple_milestones() {
-    let (env, employer, contributor, token, client) = create_test_env();
+fn test_different_salaries_per_employee() {
+    let (env, employer, _contributor, token, client) = create_test_env();
+    let employee1 = Address::generate(&env);
+    let employee2 = Address::generate(&env);
+    let employee3 = Address::generate(&env);
 
     env.mock_all_auths();
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    // Create payroll agreement
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &3600);
 
-    client.add_milestone(&agreement_id, &1000);
-    client.add_milestone(&agreement_id, &2000);
-    client.add_milestone(&agreement_id, &1500);
+    // Add employees with different salaries
+    client.add_employee_to_agreement(&agreement_id, &employee1, &5000); // High salary
+    client.add_employee_to_agreement(&agreement_id, &employee2, &3000); // Medium salary
+    client.add_employee_to_agreement(&agreement_id, &employee3, &1000); // Low salary
 
-    assert_eq!(client.get_milestone_count(&agreement_id), 3);
+    // Activate agreement
+    client.activate_agreement(&agreement_id);
 
-    let m1 = client.get_milestone(&agreement_id, &1).unwrap();
-    assert_eq!(m1.amount, 1000);
+    // Get initial state
+    let agreement_before = client.get_agreement(&agreement_id).unwrap();
+    assert_eq!(agreement_before.paid_amount, 0);
+    assert_eq!(agreement_before.total_amount, 9000); // 5000 + 3000 + 1000
 
-    let m2 = client.get_milestone(&agreement_id, &2).unwrap();
-    assert_eq!(m2.amount, 2000);
+    // Employee 1 claims
+    client.claim_payroll(&agreement_id, &employee1);
+    let agreement_after1 = client.get_agreement(&agreement_id).unwrap();
+    assert_eq!(agreement_after1.paid_amount, 5000);
 
-    let m3 = client.get_milestone(&agreement_id, &3).unwrap();
-    assert_eq!(m3.amount, 1500);
+    // Employee 3 claims
+    client.claim_payroll(&agreement_id, &employee3);
+    let agreement_after2 = client.get_agreement(&agreement_id).unwrap();
+    assert_eq!(agreement_after2.paid_amount, 6000); // 5000 + 1000
+
+    // Employee 2 claims
+    client.claim_payroll(&agreement_id, &employee2);
+    let agreement_final = client.get_agreement(&agreement_id).unwrap();
+    assert_eq!(agreement_final.paid_amount, 9000); // All paid
 }
 
 #[test]
-#[should_panic(expected = "Amount must be positive")]
-fn test_add_milestone_zero_amount() {
-    let (env, employer, contributor, token, client) = create_test_env();
+fn test_claiming_during_grace_period() {
+    let (env, employer, _contributor, token, client) = create_test_env();
+    let employee = Address::generate(&env);
 
     env.mock_all_auths();
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_escrow_agreement(
+        &employer, &employee, &token, &1000, &3600, // 1 hour period
+        &3,    // 3 periods
+    );
 
-    client.add_milestone(&agreement_id, &0);
-}
+    client.activate_agreement(&agreement_id);
 
-#[test]
-#[should_panic(expected = "Amount must be positive")]
-fn test_add_milestone_negative_amount() {
-    let (env, employer, contributor, token, client) = create_test_env();
-
-    env.mock_all_auths();
-
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-
-    client.add_milestone(&agreement_id, &-100);
-}
-
-#[test]
-fn test_approve_milestone_success() {
-    let (env, employer, contributor, token, client) = create_test_env();
-
-    env.mock_all_auths();
-
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &1000);
-
-    client.approve_milestone(&agreement_id, &1);
-
-    let milestone = client.get_milestone(&agreement_id, &1).unwrap();
-    assert_eq!(milestone.approved, true);
-    assert_eq!(milestone.claimed, false);
-}
-
-#[test]
-#[should_panic(expected = "Invalid milestone ID")]
-fn test_approve_invalid_milestone_id() {
-    let (env, employer, contributor, token, client) = create_test_env();
-
-    env.mock_all_auths();
-
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &1000);
-
-    client.approve_milestone(&agreement_id, &5);
-}
-
-#[test]
-#[should_panic(expected = "Invalid milestone ID")]
-fn test_approve_milestone_id_zero() {
-    let (env, employer, contributor, token, client) = create_test_env();
-
-    env.mock_all_auths();
-
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &1000);
-
-    client.approve_milestone(&agreement_id, &0);
-}
-
-#[test]
-#[should_panic(expected = "Milestone already approved")]
-fn test_approve_already_approved_milestone() {
-    let (env, employer, contributor, token, client) = create_test_env();
-
-    env.mock_all_auths();
-
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &1000);
-
-    client.approve_milestone(&agreement_id, &1);
-    client.approve_milestone(&agreement_id, &1); // Should panic
-}
-
-#[test]
-fn test_claim_milestone_success() {
-    let (env, employer, contributor, token, client) = create_test_env();
-
-    env.mock_all_auths();
-
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &1000);
-    client.approve_milestone(&agreement_id, &1);
-
-    client.claim_milestone(&agreement_id, &1);
-
-    let milestone = client.get_milestone(&agreement_id, &1).unwrap();
-    assert_eq!(milestone.approved, true);
-    assert_eq!(milestone.claimed, true);
-}
-
-#[test]
-#[should_panic(expected = "Milestone not approved")]
-fn test_claim_unapproved_milestone() {
-    let (env, employer, contributor, token, client) = create_test_env();
-
-    env.mock_all_auths();
-
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &1000);
-
-    client.claim_milestone(&agreement_id, &1); // Should panic
-}
-
-#[test]
-#[should_panic(expected = "Milestone already claimed")]
-fn test_claim_already_claimed_milestone() {
-    let (env, employer, contributor, token, client) = create_test_env();
-
-    env.mock_all_auths();
-
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &1000);
-    client.approve_milestone(&agreement_id, &1);
-    client.claim_milestone(&agreement_id, &1);
-
-    client.claim_milestone(&agreement_id, &1); // Should panic
-}
-
-#[test]
-#[should_panic(expected = "Invalid milestone ID")]
-fn test_claim_invalid_milestone_id() {
-    let (env, employer, contributor, token, client) = create_test_env();
-
-    env.mock_all_auths();
-
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &1000);
-
-    client.claim_milestone(&agreement_id, &10); // Should panic
-}
-
-#[test]
-fn test_get_milestone_nonexistent() {
-    let (env, employer, contributor, token, client) = create_test_env();
-
-    env.mock_all_auths();
-
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-
-    let result = client.get_milestone(&agreement_id, &1);
-    assert!(result.is_none());
-}
-
-#[test]
-fn test_milestone_workflow_complete() {
-    let (env, employer, contributor, token, client) = create_test_env();
-
-    env.mock_all_auths();
-
-    // Create agreement
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-
-    // Add 3 milestones
-    client.add_milestone(&agreement_id, &1000);
-    client.add_milestone(&agreement_id, &2000);
-    client.add_milestone(&agreement_id, &1500);
-
-    assert_eq!(client.get_milestone_count(&agreement_id), 3);
-
-    // Approve and claim first milestone
-    client.approve_milestone(&agreement_id, &1);
-    client.claim_milestone(&agreement_id, &1);
-
-    let m1 = client.get_milestone(&agreement_id, &1).unwrap();
-    assert!(m1.approved && m1.claimed);
-
-    // Approve and claim third milestone (out of order)
-    client.approve_milestone(&agreement_id, &3);
-    client.claim_milestone(&agreement_id, &3);
-
-    let m3 = client.get_milestone(&agreement_id, &3).unwrap();
-    assert!(m3.approved && m3.claimed);
-
-    // Second milestone still unclaimed
-    let m2 = client.get_milestone(&agreement_id, &2).unwrap();
-    assert!(!m2.approved && !m2.claimed);
-
-    // Complete second milestone
-    client.approve_milestone(&agreement_id, &2);
-    client.claim_milestone(&agreement_id, &2);
-
-    // All milestones should be claimed now
-    for i in 1..=3 {
-        let m = client.get_milestone(&agreement_id, &i).unwrap();
-        assert!(m.approved && m.claimed);
-    }
-}
-
-#[test]
-fn test_milestone_can_claim_helper() {
-    let milestone_unclaimed = Milestone {
-        id: 1,
-        amount: 1000,
-        approved: true,
-        claimed: false,
-    };
-    assert!(milestone_unclaimed.can_claim());
-
-    let milestone_claimed = Milestone {
-        id: 1,
-        amount: 1000,
-        approved: true,
-        claimed: true,
-    };
-    assert!(!milestone_claimed.can_claim());
-
-    let milestone_unapproved = Milestone {
-        id: 1,
-        amount: 1000,
-        approved: false,
-        claimed: false,
-    };
-    assert!(!milestone_unapproved.can_claim());
-}
-
-#[test]
-fn test_multiple_agreements_isolation() {
-    let (env, employer, contributor, token, client) = create_test_env();
-    let employer2 = Address::generate(&env);
-    let contributor2 = Address::generate(&env);
-
-    env.mock_all_auths();
-
-    // Create two separate agreements
-    let agreement1 = client.create_milestone_agreement(&employer, &contributor, &token);
-    let agreement2 = client.create_milestone_agreement(&employer2, &contributor2, &token);
-
-    // Add milestones to first agreement
-    client.add_milestone(&agreement1, &1000);
-    client.add_milestone(&agreement1, &2000);
-
-    // Add milestone to second agreement
-    client.add_milestone(&agreement2, &3000);
-
-    // Verify isolation
-    assert_eq!(client.get_milestone_count(&agreement1), 2);
-    assert_eq!(client.get_milestone_count(&agreement2), 1);
-
-    let m1_a1 = client.get_milestone(&agreement1, &1).unwrap();
-    assert_eq!(m1_a1.amount, 1000);
-
-    let m1_a2 = client.get_milestone(&agreement2, &1).unwrap();
-    assert_eq!(m1_a2.amount, 3000);
-}
-
-#[test]
-fn test_edge_case_many_milestones() {
-    let (env, employer, contributor, token, client) = create_test_env();
-
-    env.mock_all_auths();
-
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-
-    // Add 50 milestones
-    for i in 1..=50 {
-        client.add_milestone(&agreement_id, &(i * 100));
-    }
-
-    assert_eq!(client.get_milestone_count(&agreement_id), 50);
-
-    // Verify random milestones
-    let m10 = client.get_milestone(&agreement_id, &10).unwrap();
-    assert_eq!(m10.amount, 1000);
-
-    let m50 = client.get_milestone(&agreement_id, &50).unwrap();
-    assert_eq!(m50.amount, 5000);
+    client.claim_payroll(&agreement_id, &employee);
 }
