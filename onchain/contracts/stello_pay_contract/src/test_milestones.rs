@@ -1,4 +1,5 @@
 #![cfg(test)]
+#![allow(deprecated)]
 use crate::{PayrollContract, PayrollContractClient};
 use soroban_sdk::{testutils::Address as _, Address, Env};
 

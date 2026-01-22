@@ -1,9 +1,8 @@
 use crate::events::{
     emit_agreement_activated, emit_agreement_created, emit_agreement_paused,
-    emit_agreement_resumed, emit_employee_added, emit_payroll_claimed,
-    AgreementActivatedEvent, AgreementCreatedEvent, AgreementPausedEvent,
-    AgreementResumedEvent, EmployeeAddedEvent, MilestoneAdded, MilestoneApproved,
-    MilestoneClaimed, PayrollClaimedEvent,
+    emit_agreement_resumed, emit_employee_added, emit_payroll_claimed, AgreementActivatedEvent,
+    AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, EmployeeAddedEvent,
+    MilestoneAdded, MilestoneApproved, MilestoneClaimed, PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, DataKey, EmployeeInfo, Milestone, PaymentType,

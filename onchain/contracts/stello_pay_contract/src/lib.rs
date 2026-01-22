@@ -2,6 +2,7 @@
 mod events;
 mod payroll;
 mod storage;
+mod test_agreement_pause;
 mod test_milestones;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
