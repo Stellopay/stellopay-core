@@ -1,11 +1,12 @@
 #![no_std]
-
 mod events;
 mod payroll;
 mod storage;
+mod test_milestones;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
 use storage::{Agreement, StorageKey, PayrollError};
+use storage::{Agreement, Milestone, StorageKey};
 
 /// Minimal baseline Soroban contract.
 ///
@@ -75,6 +76,96 @@ impl PayrollContract {
             period_seconds,
             num_periods,
         )
+    }
+
+    /// Creates a milestone-based payment agreement.
+    ///
+    /// # Arguments
+    /// * `employer` - Address of the employer who will approve milestones
+    /// * `contributor` - Address of the contributor who will complete work
+    /// * `token` - Token address for payments
+    ///
+    /// # Returns
+    /// New agreement ID
+    ///
+    /// # State Transition
+    /// None -> Created
+    ///
+    /// # Access Control
+    /// Requires employer authentication
+    pub fn create_milestone_agreement(
+        env: Env,
+        employer: Address,
+        contributor: Address,
+        token: Address,
+    ) -> u128 {
+        payroll::create_milestone_agreement(env, employer, contributor, token)
+    }
+
+    /// Adds a milestone to a milestone-based agreement.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    /// * `amount` - Payment amount for this milestone
+    ///
+    /// # Requirements
+    /// - Agreement must be in Created status
+    /// - Amount must be positive
+    /// - Caller must be the employer
+    pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
+        payroll::add_milestone(env, agreement_id, amount);
+    }
+
+    /// Approves a milestone for payment.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    /// * `milestone_id` - ID of the milestone to approve
+    ///
+    /// # Requirements
+    /// - Milestone must exist
+    /// - Milestone must not be already approved
+    /// - Caller must be the employer
+    pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
+        payroll::approve_milestone(env, agreement_id, milestone_id);
+    }
+
+    /// Claims payment for an approved milestone.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    /// * `milestone_id` - ID of the milestone to claim
+    ///
+    /// # Requirements
+    /// - Milestone must be approved
+    /// - Milestone must not be already claimed
+    /// - Caller must be the contributor
+    /// - Agreement auto-completes when all milestones are claimed
+    pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
+        payroll::claim_milestone(env, agreement_id, milestone_id);
+    }
+
+    /// Gets the total number of milestones for an agreement.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    ///
+    /// # Returns
+    /// Number of milestones
+    pub fn get_milestone_count(env: Env, agreement_id: u128) -> u32 {
+        payroll::get_milestone_count(env, agreement_id)
+    }
+
+    /// Gets details of a specific milestone.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    /// * `milestone_id` - ID of the milestone
+    ///
+    /// # Returns
+    /// Milestone details if it exists, None otherwise
+    pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<Milestone> {
+        payroll::get_milestone(env, agreement_id, milestone_id)
     }
 
     /// Adds an employee to a payroll agreement.
@@ -152,5 +243,94 @@ impl PayrollContract {
     /// Requires employer or employee authentication
     pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(), PayrollError> {
         payroll::raise_dispute(env, caller, agreement_id)
+    }
+}
+    /// Claims payroll for the calling employee.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    /// * `employee` - Address of the employee claiming
+    pub fn claim_payroll(env: Env, agreement_id: u128, employee: Address) {
+        payroll::claim_payroll(&env, agreement_id, employee);
+    }
+
+    /// Pauses an active agreement, preventing claims.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement to pause
+    ///
+    /// # State Transition
+    /// Active -> Paused
+    ///
+    /// # Requirements
+    /// - Agreement must be in Active status
+    /// - Caller must be the employer
+    ///
+    /// # Behavior
+    /// - Paused agreements cannot have claims processed
+    /// - Agreement state is preserved
+    /// - Can be resumed later or cancelled
+    pub fn pause_agreement(env: Env, agreement_id: u128) {
+        // Try new-style agreement first (payroll/escrow)
+        if payroll::get_agreement(&env, agreement_id).is_some() {
+            payroll::pause_agreement(&env, agreement_id);
+            return;
+        }
+
+        // Fall back to milestone-based agreement
+        payroll::pause_milestone_agreement(env, agreement_id);
+    }
+
+    /// Resumes a paused agreement, allowing claims again.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement to resume
+    ///
+    /// # State Transition
+    /// Paused -> Active
+    ///
+    /// # Requirements
+    /// - Agreement must be in Paused status
+    /// - Caller must be the employer
+    ///
+    /// # Behavior
+    /// - Agreement returns to Active status
+    /// - Claims can be processed again
+    /// - All agreement data is preserved
+    pub fn resume_agreement(env: Env, agreement_id: u128) {
+        // Try new-style agreement first (payroll/escrow)
+        if payroll::get_agreement(&env, agreement_id).is_some() {
+            payroll::resume_agreement(&env, agreement_id);
+            return;
+        }
+
+        // Fall back to milestone-based agreement
+        payroll::resume_milestone_agreement(env, agreement_id);
+    }
+
+    /// Claims time-based payments for an escrow agreement based on elapsed periods.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the escrow agreement
+    ///
+    /// # Requirements
+    /// - Agreement must be Active and activated
+    /// - Agreement must be Escrow mode
+    /// - Caller must be the contributor
+    /// - Cannot claim more than total periods
+    /// - Works during grace period
+    pub fn claim_time_based(env: Env, agreement_id: u128) {
+        payroll::claim_time_based(&env, agreement_id);
+    }
+
+    /// Gets the number of claimed periods for a time-based escrow agreement.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    ///
+    /// # Returns
+    /// Number of claimed periods, or 0 if not a time-based agreement
+    pub fn get_claimed_periods(env: Env, agreement_id: u128) -> u32 {
+        payroll::get_claimed_periods(&env, agreement_id)
     }
 }
