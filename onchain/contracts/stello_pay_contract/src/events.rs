@@ -1,6 +1,29 @@
-use soroban_sdk::{contracttype, symbol_short, Address, Env,};
-
 use crate::storage::AgreementMode;
+use soroban_sdk::{contracttype, symbol_short, Address, Env};
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MilestoneAdded {
+    pub agreement_id: u128,
+    pub milestone_id: u32,
+    pub amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MilestoneApproved {
+    pub agreement_id: u128,
+    pub milestone_id: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct MilestoneClaimed {
+    pub agreement_id: u128,
+    pub milestone_id: u32,
+    pub amount: i128,
+    pub to: Address,
+}
 
 /// Event: Agreement created
 #[contracttype]
@@ -27,6 +50,15 @@ pub struct EmployeeAddedEvent {
     pub salary_per_period: i128,
 }
 
+/// Event: Payroll claimed by employee
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct PayrollClaimedEvent {
+    pub agreement_id: u128,
+    pub employee: Address,
+    pub amount: i128,
+}
+
 pub fn emit_agreement_created(env: &Env, event: AgreementCreatedEvent) {
     let topics = (symbol_short!("agr_new"), event.agreement_id);
     env.events().publish(topics, event);
@@ -39,5 +71,10 @@ pub fn emit_agreement_activated(env: &Env, event: AgreementActivatedEvent) {
 
 pub fn emit_employee_added(env: &Env, event: EmployeeAddedEvent) {
     let topics = (symbol_short!("emp_add"), event.agreement_id);
+    env.events().publish(topics, event);
+}
+
+pub fn emit_payroll_claimed(env: &Env, event: PayrollClaimedEvent) {
+    let topics = (symbol_short!("pay_clm"), event.agreement_id);
     env.events().publish(topics, event);
 }

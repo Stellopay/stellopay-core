@@ -1,12 +1,13 @@
 #![no_std]
-
 mod events;
 mod payroll;
 pub mod storage;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
-use storage::{Agreement, StorageKey, Error};
-use payroll::{claim_payroll, get_employee_claimed_periods};
+#[cfg(test)]
+mod test_milestones;
+
+use storage::{Agreement, Milestone, StorageKey};
 
 /// Payroll Contract for managing payroll agreements with employee claiming functionality.
 ///
@@ -86,6 +87,96 @@ impl PayrollContract {
             period_seconds,
             num_periods,
         )
+    }
+
+    /// Creates a milestone-based payment agreement.
+    ///
+    /// # Arguments
+    /// * `employer` - Address of the employer who will approve milestones
+    /// * `contributor` - Address of the contributor who will complete work
+    /// * `token` - Token address for payments
+    ///
+    /// # Returns
+    /// New agreement ID
+    ///
+    /// # State Transition
+    /// None -> Created
+    ///
+    /// # Access Control
+    /// Requires employer authentication
+    pub fn create_milestone_agreement(
+        env: Env,
+        employer: Address,
+        contributor: Address,
+        token: Address,
+    ) -> u128 {
+        payroll::create_milestone_agreement(env, employer, contributor, token)
+    }
+
+    /// Adds a milestone to a milestone-based agreement.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    /// * `amount` - Payment amount for this milestone
+    ///
+    /// # Requirements
+    /// - Agreement must be in Created status
+    /// - Amount must be positive
+    /// - Caller must be the employer
+    pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
+        payroll::add_milestone(env, agreement_id, amount);
+    }
+
+    /// Approves a milestone for payment.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    /// * `milestone_id` - ID of the milestone to approve
+    ///
+    /// # Requirements
+    /// - Milestone must exist
+    /// - Milestone must not be already approved
+    /// - Caller must be the employer
+    pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
+        payroll::approve_milestone(env, agreement_id, milestone_id);
+    }
+
+    /// Claims payment for an approved milestone.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    /// * `milestone_id` - ID of the milestone to claim
+    ///
+    /// # Requirements
+    /// - Milestone must be approved
+    /// - Milestone must not be already claimed
+    /// - Caller must be the contributor
+    /// - Agreement auto-completes when all milestones are claimed
+    pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
+        payroll::claim_milestone(env, agreement_id, milestone_id);
+    }
+
+    /// Gets the total number of milestones for an agreement.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    ///
+    /// # Returns
+    /// Number of milestones
+    pub fn get_milestone_count(env: Env, agreement_id: u128) -> u32 {
+        payroll::get_milestone_count(env, agreement_id)
+    }
+
+    /// Gets details of a specific milestone.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    /// * `milestone_id` - ID of the milestone
+    ///
+    /// # Returns
+    /// Milestone details if it exists, None otherwise
+    pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<Milestone> {
+        payroll::get_milestone(env, agreement_id, milestone_id)
     }
 
     /// Adds an employee to a payroll agreement.
@@ -176,9 +267,14 @@ impl PayrollContract {
     /// employee.require_auth();
     /// contract.claim_payroll(&env, employee, 1u128, 0u32)?;
     /// ```
-    pub fn claim_payroll(env: Env, caller: Address, agreement_id: u128, employee_index: u32) -> Result<(), Error> {
+    pub fn claim_payroll(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        employee_index: u32,
+    ) -> Result<(), soroban_sdk::Error> {
         caller.require_auth();
-        claim_payroll(&env, &caller, agreement_id, employee_index).map_err(Into::into)
+        payroll::claim_payroll(&env, &caller, agreement_id, employee_index).map_err(Into::into)
     }
 
     /// Get the number of periods already claimed by an employee.
@@ -203,6 +299,6 @@ impl PayrollContract {
     /// println!("Employee has claimed {} periods", claimed);
     /// ```
     pub fn get_employee_claimed_periods(env: Env, agreement_id: u128, employee_index: u32) -> u32 {
-        get_employee_claimed_periods(&env, agreement_id, employee_index)
+        payroll::get_employee_claimed_periods(&env, agreement_id, employee_index)
     }
 }
