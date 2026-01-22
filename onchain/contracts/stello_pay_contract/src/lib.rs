@@ -14,7 +14,7 @@ pub struct PayrollContract;
 
 #[contractimpl]
 impl PayrollContract {
-     pub fn initialize(env: Env, owner: Address) {
+    pub fn initialize(env: Env, owner: Address) {
         ownable::set_owner(&env, &owner);
         // Placeholder: any other initialization logic
     }
@@ -26,10 +26,8 @@ impl UpgradeableInternal for PayrollContract {
     }
 }
 
-
-#[contractimpl]
+#[contractimpl(contracttrait)]
 impl Ownable for PayrollContract {}
-
 
 #[cfg(test)]
 mod test_upgrade;
