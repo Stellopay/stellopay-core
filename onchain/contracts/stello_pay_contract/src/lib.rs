@@ -5,10 +5,10 @@ mod payroll;
 mod storage;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
-use storage::{Agreement, StorageKey};
 use stellar_access::ownable::{self as ownable, Ownable};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
+use storage::{Agreement, StorageKey};
 
 /// Minimal baseline Soroban contract.
 ///
@@ -20,23 +20,6 @@ pub struct PayrollContract;
 #[contractimpl]
 impl PayrollContract {
     pub fn initialize(env: Env, owner: Address) {
-        ownable::set_owner(&env, &owner);
-        // Placeholder: any other initialization logic
-    }
-}
-
-impl UpgradeableInternal for PayrollContract {
-    fn _require_auth(e: &Env, _operator: &Address) {
-        ownable::enforce_owner_auth(e);
-    }
-}
-
-#[contractimpl(contracttrait)]
-impl Ownable for PayrollContract {}
-
-#[cfg(test)]
-mod test_upgrade;
-
         owner.require_auth();
         env.storage().persistent().set(&StorageKey::Owner, &owner);
     }
@@ -148,3 +131,15 @@ mod test_upgrade;
         payroll::get_agreement_employees(&env, agreement_id)
     }
 }
+
+impl UpgradeableInternal for PayrollContract {
+    fn _require_auth(e: &Env, _operator: &Address) {
+        ownable::enforce_owner_auth(e);
+    }
+}
+
+#[contractimpl(contracttrait)]
+impl Ownable for PayrollContract {}
+
+#[cfg(test)]
+mod test_upgrade;
