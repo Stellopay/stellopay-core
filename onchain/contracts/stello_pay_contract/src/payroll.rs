@@ -1,6 +1,12 @@
-use crate::events::{MilestoneAdded, MilestoneApproved, MilestoneClaimed};
-use crate::storage::{AgreementStatus, DataKey, Milestone, PaymentType};
-use soroban_sdk::{contract, contractimpl, Address, Env};
+use crate::events::{
+    emit_agreement_activated, emit_agreement_created, emit_employee_added, AgreementActivatedEvent,
+    AgreementCreatedEvent, EmployeeAddedEvent, MilestoneAdded, MilestoneApproved, MilestoneClaimed,
+};
+use crate::storage::{
+    Agreement, AgreementMode, AgreementStatus, DataKey, EmployeeInfo, Milestone, PaymentType,
+    StorageKey,
+};
+use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
 
 #[contract]
 pub struct PayrollContract;
@@ -296,15 +302,6 @@ impl PayrollContract {
         true
     }
 }
-use soroban_sdk::{Address, Env, Vec};
-
-use crate::events::{
-    emit_agreement_activated, emit_agreement_created, emit_employee_added,
-    AgreementActivatedEvent, AgreementCreatedEvent, EmployeeAddedEvent,
-};
-use crate::storage::{
-    Agreement, AgreementMode, AgreementStatus, EmployeeInfo, StorageKey,
-};
 
 /// Creates a payroll agreement for multiple employees
 ///
@@ -328,7 +325,7 @@ pub fn create_payroll_agreement(
     employer.require_auth();
 
     let agreement_id = get_next_agreement_id(env);
-    
+
     let agreement = Agreement {
         id: agreement_id,
         employer: employer.clone(),
@@ -343,12 +340,16 @@ pub fn create_payroll_agreement(
         grace_period_seconds,
     };
 
-    env.storage().persistent().set(&StorageKey::Agreement(agreement_id), &agreement);
-    
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Agreement(agreement_id), &agreement);
+
     // Initialize empty employee list
     let employees: Vec<EmployeeInfo> = Vec::new(env);
-    env.storage().persistent().set(&StorageKey::AgreementEmployees(agreement_id), &employees);
-    
+    env.storage()
+        .persistent()
+        .set(&StorageKey::AgreementEmployees(agreement_id), &employees);
+
     // Track employer's agreements
     add_to_employer_agreements(env, &employer, agreement_id);
 
@@ -393,7 +394,7 @@ pub fn create_escrow_agreement(
 
     let agreement_id = get_next_agreement_id(env);
     let total_amount = amount_per_period * (num_periods as i128);
-    
+
     let agreement = Agreement {
         id: agreement_id,
         employer: employer.clone(),
@@ -408,8 +409,10 @@ pub fn create_escrow_agreement(
         grace_period_seconds: period_seconds * (num_periods as u64),
     };
 
-    env.storage().persistent().set(&StorageKey::Agreement(agreement_id), &agreement);
-    
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Agreement(agreement_id), &agreement);
+
     // Add the contributor as the sole employee
     let mut employees: Vec<EmployeeInfo> = Vec::new(env);
     employees.push_back(EmployeeInfo {
@@ -417,8 +420,10 @@ pub fn create_escrow_agreement(
         salary_per_period: amount_per_period,
         added_at: env.ledger().timestamp(),
     });
-    env.storage().persistent().set(&StorageKey::AgreementEmployees(agreement_id), &employees);
-    
+    env.storage()
+        .persistent()
+        .set(&StorageKey::AgreementEmployees(agreement_id), &employees);
+
     add_to_employer_agreements(env, &employer, agreement_id);
 
     emit_agreement_created(
@@ -459,16 +464,15 @@ pub fn add_employee_to_agreement(
     employee: Address,
     salary_per_period: i128,
 ) {
-    let mut agreement = get_agreement(env, agreement_id)
-        .expect("Agreement not found");
-    
+    let mut agreement = get_agreement(env, agreement_id).expect("Agreement not found");
+
     agreement.employer.require_auth();
-    
+
     assert!(
         agreement.status == AgreementStatus::Created,
         "Can only add employees to Created agreements"
     );
-    
+
     assert!(
         agreement.mode == AgreementMode::Payroll,
         "Can only add employees to Payroll agreements"
@@ -487,9 +491,13 @@ pub fn add_employee_to_agreement(
     });
 
     agreement.total_amount += salary_per_period;
-    
-    env.storage().persistent().set(&StorageKey::Agreement(agreement_id), &agreement);
-    env.storage().persistent().set(&StorageKey::AgreementEmployees(agreement_id), &employees);
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Agreement(agreement_id), &agreement);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::AgreementEmployees(agreement_id), &employees);
 
     emit_employee_added(
         env,
@@ -513,11 +521,10 @@ pub fn add_employee_to_agreement(
 /// # Access Control
 /// Requires employer authentication
 pub fn activate_agreement(env: &Env, agreement_id: u128) {
-    let mut agreement = get_agreement(env, agreement_id)
-        .expect("Agreement not found");
-    
+    let mut agreement = get_agreement(env, agreement_id).expect("Agreement not found");
+
     agreement.employer.require_auth();
-    
+
     assert!(
         agreement.status == AgreementStatus::Created,
         "Agreement must be in Created status"
@@ -526,12 +533,11 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
     agreement.status = AgreementStatus::Active;
     agreement.activated_at = Some(env.ledger().timestamp());
 
-    env.storage().persistent().set(&StorageKey::Agreement(agreement_id), &agreement);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Agreement(agreement_id), &agreement);
 
-    emit_agreement_activated(
-        env,
-        AgreementActivatedEvent { agreement_id },
-    );
+    emit_agreement_activated(env, AgreementActivatedEvent { agreement_id });
 }
 
 /// Retrieves an agreement by ID
@@ -573,7 +579,11 @@ fn get_next_agreement_id(env: &Env) -> u128 {
 
 fn add_to_employer_agreements(env: &Env, employer: &Address, agreement_id: u128) {
     let key = StorageKey::EmployerAgreements(employer.clone());
-    let mut agreements: Vec<u128> = env.storage().persistent().get(&key).unwrap_or(Vec::new(env));
+    let mut agreements: Vec<u128> = env
+        .storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(Vec::new(env));
     agreements.push_back(agreement_id);
     env.storage().persistent().set(&key, &agreements);
 }

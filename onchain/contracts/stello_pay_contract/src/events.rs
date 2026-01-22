@@ -1,4 +1,5 @@
-use soroban_sdk::{contracttype, Address};
+use crate::storage::AgreementMode;
+use soroban_sdk::{contracttype, symbol_short, Address, Env};
 
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -23,9 +24,6 @@ pub struct MilestoneClaimed {
     pub amount: i128,
     pub to: Address,
 }
-use soroban_sdk::{contracttype, symbol_short, Address, Env,};
-
-use crate::storage::AgreementMode;
 
 /// Event: Agreement created
 #[contracttype]

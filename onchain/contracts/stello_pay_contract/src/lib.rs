@@ -4,10 +4,6 @@ mod payroll;
 mod storage;
 mod test_milestones;
 
-mod events;
-mod payroll;
-mod storage;
-
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
 use storage::{Agreement, StorageKey};
 

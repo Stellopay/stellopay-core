@@ -16,47 +16,10 @@ pub enum PaymentType {
     MilestoneBased,
 }
 
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AgreementStatus {
-    Created,
-    Active,
-    Completed,
-    Cancelled,
-}
-
-/// Operating mode for agreements
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AgreementMode {
-    /// Escrow mode for freelance/contract work
-    Escrow,
-    /// Payroll mode for traditional employee payroll
-    Payroll,
-}
-
-/// Lifecycle states for agreements
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum AgreementStatus {
-    /// Agreement created but not yet funded/activated
-    Created,
-    /// Agreement is active and payments can be processed
-    Active,
-    /// Agreement temporarily paused
-    Paused,
-    /// Agreement cancelled by employer
-    Cancelled,
-    /// Agreement completed successfully
-    Completed,
-    /// Agreement in dispute
-    Disputed,
-}
-
-/// Core agreement structure
+/// Core milestone agreement structure
 #[contracttype]
 #[derive(Clone, Debug)]
-pub struct Agreement {
+pub struct MilestoneAgreement {
     pub id: u128,
     pub employer: Address,
     pub contributor: Address,
@@ -71,7 +34,7 @@ pub struct Agreement {
 pub enum DataKey {
     /// Counter for agreement IDs
     AgreementCounter,
-    /// Agreement data: agreement_id -> Agreement
+    /// Agreement data: agreement_id -> MilestoneAgreement
     Agreement(u128),
     /// Employer address: agreement_id -> Address
     Employer(u128),
@@ -111,6 +74,41 @@ impl Milestone {
         self.approved && !self.claimed
     }
 }
+
+/// Operating mode for agreements
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AgreementMode {
+    /// Escrow mode for freelance/contract work
+    Escrow,
+    /// Payroll mode for traditional employee payroll
+    Payroll,
+}
+
+/// Lifecycle states for agreements
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AgreementStatus {
+    /// Agreement created but not yet funded/activated
+    Created,
+    /// Agreement is active and payments can be processed
+    Active,
+    /// Agreement temporarily paused
+    Paused,
+    /// Agreement cancelled by employer
+    Cancelled,
+    /// Agreement completed successfully
+    Completed,
+    /// Agreement in dispute
+    Disputed,
+}
+
+/// Core agreement structure
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct Agreement {
+    pub id: u128,
+    pub employer: Address,
     pub token: Address,
     pub mode: AgreementMode,
     pub status: AgreementStatus,
