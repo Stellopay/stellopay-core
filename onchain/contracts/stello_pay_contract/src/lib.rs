@@ -3,9 +3,9 @@
 pub mod events;
 pub mod storage_types;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, Symbol};
 use crate::events::{AgreementPaused, AgreementResumed};
 use crate::storage_types::{DataKey, Payroll};
+use soroban_sdk::{contract, contractimpl, Address, Env, Symbol};
 
 #[contract]
 pub struct PayrollContract;
@@ -31,7 +31,7 @@ impl PayrollContract {
         recurrence_frequency: u32,
     ) {
         employer.require_auth();
-        
+
         let payroll = Payroll {
             amount,
             employer,
@@ -43,7 +43,9 @@ impl PayrollContract {
             token,
         };
 
-        env.storage().persistent().set(&DataKey::Payroll(employee), &payroll);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Payroll(employee), &payroll);
     }
 
     pub fn pause_agreement(env: Env, employee: Address) {
@@ -53,14 +55,14 @@ impl PayrollContract {
         }
 
         let mut payroll: Payroll = env.storage().persistent().get(&key).unwrap();
-        
-        // Authorization: Only employer or owner can pause? 
-        // Issue says "Only employer can pause/resume". 
+
+        // Authorization: Only employer or owner can pause?
+        // Issue says "Only employer can pause/resume".
         // Also maybe Owner? For now, enforcing Employer.
         payroll.employer.require_auth();
 
         if payroll.is_paused {
-             panic!("Agreement already paused");
+            panic!("Agreement already paused");
         }
 
         payroll.is_paused = true;
@@ -79,11 +81,11 @@ impl PayrollContract {
         }
 
         let mut payroll: Payroll = env.storage().persistent().get(&key).unwrap();
-        
+
         payroll.employer.require_auth();
 
         if !payroll.is_paused {
-             panic!("Agreement not paused");
+            panic!("Agreement not paused");
         }
 
         payroll.is_paused = false;
@@ -102,9 +104,13 @@ impl PayrollContract {
     // Simplified claim function to verify blocking
     pub fn claim_payroll(env: Env, employee: Address) {
         employee.require_auth();
-        
+
         let key = DataKey::Payroll(employee.clone());
-        let payroll: Payroll = env.storage().persistent().get(&key).expect("Payroll not found");
+        let payroll: Payroll = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("Payroll not found");
 
         if payroll.is_paused {
             panic!("Agreement is paused");

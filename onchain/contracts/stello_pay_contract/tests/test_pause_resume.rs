@@ -1,9 +1,20 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::{Address as _, Events}, vec, Address, Env, IntoVal, Symbol};
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    vec, Address, Env, IntoVal, Symbol,
+};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
-fn create_setup() -> (Env, PayrollContractClient<'static>, Address, Address, Address, Address, Address) {
+fn create_setup() -> (
+    Env,
+    PayrollContractClient<'static>,
+    Address,
+    Address,
+    Address,
+    Address,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -20,7 +31,12 @@ fn create_setup() -> (Env, PayrollContractClient<'static>, Address, Address, Add
     (env, client, contract_id, owner, employer, employee, token)
 }
 
-fn create_agreement(client: &PayrollContractClient, employer: &Address, employee: &Address, token: &Address) {
+fn create_agreement(
+    client: &PayrollContractClient,
+    employer: &Address,
+    employee: &Address,
+    token: &Address,
+) {
     client.create_or_update_escrow(
         employer,
         employee,
@@ -68,15 +84,13 @@ fn test_pause_already_paused_fails() {
     client.pause_agreement(&employee);
 }
 
-
-
 #[test]
 fn test_verify_pause_requires_employer_auth() {
-     let (env, client, _, _, employer, employee, token) = create_setup();
+    let (env, client, _, _, employer, employee, token) = create_setup();
     create_agreement(&client, &employer, &employee, &token);
 
     client.pause_agreement(&employee);
-    
+
     let auths = env.auths();
     assert_eq!(auths.len(), 1);
     assert_eq!(auths[0].0, employer);
@@ -91,10 +105,13 @@ fn test_agreement_paused_event() {
 
     let events = env.events().all();
     let event = events.last().unwrap();
-    
+
     // valid event tuple: (contract_address, topics, data)
     assert_eq!(event.0, contract_address);
-    assert_eq!(event.1, vec![&env, Symbol::new(&env, "agreement_paused").into_val(&env)]);
+    assert_eq!(
+        event.1,
+        vec![&env, Symbol::new(&env, "agreement_paused").into_val(&env)]
+    );
 }
 
 #[test]
@@ -112,7 +129,7 @@ fn test_agreement_status_changes_to_paused() {
     // Verify status changed
     let payroll_after = client.get_payroll(&employee).unwrap();
     assert_eq!(payroll_after.is_paused, true);
-    
+
     // Verify other fields remain unchanged
     assert_eq!(payroll_after.amount, payroll_before.amount);
     assert_eq!(payroll_after.employer, payroll_before.employer);
@@ -125,13 +142,13 @@ fn test_pause_resume_preserves_agreement_data() {
     create_agreement(&client, &employer, &employee, &token);
 
     let original = client.get_payroll(&employee).unwrap();
-    
+
     // Pause and resume
     client.pause_agreement(&employee);
     client.resume_agreement(&employee);
-    
+
     let after = client.get_payroll(&employee).unwrap();
-    
+
     // Verify all data preserved except pause state
     assert_eq!(after.amount, original.amount);
     assert_eq!(after.employer, original.employer);
@@ -147,17 +164,17 @@ fn test_multiple_employees_independent_pause_states() {
     let env = Env::default();
     env.mock_all_auths();
     let employee2 = Address::generate(&env);
-    
+
     // Create agreements for both employees
     create_agreement(&client, &employer, &employee1, &token);
     create_agreement(&client, &employer, &employee2, &token);
-    
+
     // Pause only employee1's agreement
     client.pause_agreement(&employee1);
-    
+
     // Verify employee1 is paused
     assert!(client.get_payroll(&employee1).unwrap().is_paused);
-    
+
     // Verify employee2 is NOT paused
     assert!(!client.get_payroll(&employee2).unwrap().is_paused);
 }
@@ -189,12 +206,12 @@ fn test_resume_non_paused_fails() {
 
 #[test]
 fn test_verify_resume_requires_employer_auth() {
-     let (env, client, _, _, employer, employee, token) = create_setup();
+    let (env, client, _, _, employer, employee, token) = create_setup();
     create_agreement(&client, &employer, &employee, &token);
     client.pause_agreement(&employee);
 
     client.resume_agreement(&employee);
-    
+
     let auths = env.auths();
     assert_eq!(auths.len(), 1);
     assert_eq!(auths[0].0, employer);
@@ -210,28 +227,31 @@ fn test_agreement_resumed_event() {
 
     let events = env.events().all();
     let event = events.last().unwrap();
-    
+
     assert_eq!(event.0, contract_address);
-    assert_eq!(event.1, vec![&env, Symbol::new(&env, "agreement_resumed").into_val(&env)]);
+    assert_eq!(
+        event.1,
+        vec![&env, Symbol::new(&env, "agreement_resumed").into_val(&env)]
+    );
 }
 
 #[test]
 fn test_agreement_status_changes_to_active() {
     let (_, client, _, _, employer, employee, token) = create_setup();
     create_agreement(&client, &employer, &employee, &token);
-    
+
     // First pause
     client.pause_agreement(&employee);
     let payroll_paused = client.get_payroll(&employee).unwrap();
     assert_eq!(payroll_paused.is_paused, true);
-    
+
     // Then resume
     client.resume_agreement(&employee);
-    
+
     // Verify status changed to active
     let payroll_active = client.get_payroll(&employee).unwrap();
     assert_eq!(payroll_active.is_paused, false);
-    
+
     // Verify other fields remain unchanged
     assert_eq!(payroll_active.amount, payroll_paused.amount);
     assert_eq!(payroll_active.employer, payroll_paused.employer);
@@ -255,7 +275,7 @@ fn test_can_claim_after_resuming() {
     let (_, client, _, _, employer, employee, token) = create_setup();
     create_agreement(&client, &employer, &employee, &token);
     client.pause_agreement(&employee);
-    
+
     // Verify claim fails
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.claim_payroll(&employee);
@@ -263,7 +283,7 @@ fn test_can_claim_after_resuming() {
     assert!(result.is_err());
 
     client.resume_agreement(&employee);
-    
+
     // Verify claim succeeds
     client.claim_payroll(&employee);
 }
@@ -276,7 +296,7 @@ fn test_pause_resume_cycle_multiple_times() {
     for _ in 0..3 {
         client.pause_agreement(&employee);
         assert!(client.get_payroll(&employee).unwrap().is_paused);
-        
+
         client.resume_agreement(&employee);
         assert!(!client.get_payroll(&employee).unwrap().is_paused);
     }
