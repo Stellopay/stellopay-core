@@ -5,7 +5,6 @@ mod payroll;
 mod storage;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
-use stellar_access::ownable::{self as ownable, Ownable};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 use storage::{Agreement, StorageKey};
@@ -134,12 +133,10 @@ impl PayrollContract {
 
 impl UpgradeableInternal for PayrollContract {
     fn _require_auth(e: &Env, _operator: &Address) {
-        ownable::enforce_owner_auth(e);
+        let owner: Address = e.storage().persistent().get(&StorageKey::Owner).unwrap();
+        owner.require_auth();
     }
 }
-
-#[contractimpl(contracttrait)]
-impl Ownable for PayrollContract {}
 
 #[cfg(test)]
 mod test_upgrade;
