@@ -177,5 +177,7 @@ pub enum PayrollError {
     ActiveDispute        = 6,
     AgreementNotFound    = 7,
     NoDispute            = 8,
+    NoEmployee           = 9,
+    NotActivated         = 10,
 }
-}
+

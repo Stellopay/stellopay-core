@@ -186,6 +186,24 @@
                     },
                     {
                       "key": {
+                        "symbol": "dispute_raised_at"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "dispute_status"
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "None"
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "employer"
                       },
                       "val": {

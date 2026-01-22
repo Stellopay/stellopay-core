@@ -4,24 +4,17 @@ use soroban_sdk::{Address, Env, Vec};
 use soroban_sdk::token::TokenClient;
 
 use crate::events::{
-    emit_agreement_activated, emit_agreement_created, emit_dsipute_raised, emit_employee_added, emit_set_arbiter, emit_dsipute_resolved,
-    AgreementActivatedEvent, AgreementCreatedEvent, ArbiterSetEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
-};
-use crate::storage::{
-    Agreement, AgreementMode, AgreementStatus, DisputeStatus, EmployeeInfo, PayrollError, StorageKey,
-use crate::events::{
-    emit_agreement_activated, emit_agreement_created, emit_agreement_paused,
-    emit_agreement_resumed, emit_employee_added, emit_payroll_claimed, emit_payment_received,
+    emit_agreement_activated, emit_agreement_created, emit_agreement_paused, emit_dsipute_raised,
+    emit_agreement_resumed, emit_employee_added, emit_set_arbiter, emit_dsipute_resolved, emit_payroll_claimed, emit_payment_received,
     emit_payment_sent,
     AgreementActivatedEvent, AgreementCreatedEvent, AgreementPausedEvent,
-    AgreementResumedEvent, EmployeeAddedEvent, MilestoneAdded, MilestoneApproved,
+    AgreementResumedEvent, ArbiterSetEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, MilestoneAdded, MilestoneApproved,
     MilestoneClaimed, PayrollClaimedEvent, PaymentReceivedEvent, PaymentSentEvent,
 };
 use crate::storage::{
-    Agreement, AgreementMode, AgreementStatus, DataKey, EmployeeInfo, Milestone, PaymentType,
+    Agreement, AgreementMode, AgreementStatus, DataKey, DisputeStatus, EmployeeInfo, Milestone, PaymentType, PayrollError,
     StorageKey,
 };
-use soroban_sdk::{Address, Env, Vec};
 
 pub fn create_milestone_agreement(
     env: Env,
@@ -364,7 +357,7 @@ pub fn create_payroll_agreement(
         cancelled_at: None,
         grace_period_seconds,
         dispute_status: DisputeStatus::None,
-        dispute_raised_at: None
+        dispute_raised_at: None,
         amount_per_period: None,
         period_seconds: None,
         num_periods: None,
@@ -439,7 +432,7 @@ pub fn create_escrow_agreement(
         cancelled_at: None,
         grace_period_seconds: period_seconds * (num_periods as u64),
         dispute_status: DisputeStatus::None,
-        dispute_raised_at: None
+        dispute_raised_at: None,
         amount_per_period: Some(amount_per_period),
         period_seconds: Some(period_seconds),
         num_periods: Some(num_periods),
@@ -614,10 +607,15 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
     let mut agreement = get_agreement(env, agreement_id)
         .ok_or(PayrollError::AgreementNotFound)?;
 
-    let employee =  env.storage().persistent()
-        .get(&StorageKey::AgreementEmployees(agreement_id)).unwrap();
+    let employees: Vec<EmployeeInfo> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::AgreementEmployees(agreement_id))
+        .unwrap_or(Vec::new(env));
 
-    if caller != agreement.employer && caller != employee {
+    let is_employee = employees.iter().any(|emp| emp.address == caller);
+
+    if caller != agreement.employer && !is_employee {
         return Err(PayrollError::NotParty);
     }
 
@@ -626,7 +624,8 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
     }
 
     let now = env.ledger().timestamp();
-    if now > agreement.grace_period_seconds {
+    let created_time = agreement.created_at;
+    if created_time + agreement.grace_period_seconds <= now {
         return Err(PayrollError::NotInGracePeriod);
     }
 
@@ -672,18 +671,31 @@ pub fn resolve_dispute(
     }
 
     let total_locked = agreement.total_amount;
-    if pay_employee + refund_employer != total_locked {
+    if pay_employee + refund_employer > total_locked {
         return Err(PayrollError::InvalidPayout);
     }
 
     let token = TokenClient::new(&env, &agreement.token);
-    let employee =  env.storage().persistent()
-        .get(&StorageKey::AgreementEmployees(agreement_id)).unwrap();
 
+    let employees: Vec<EmployeeInfo> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::AgreementEmployees(agreement_id))
+        .unwrap_or(Vec::new(&env));
 
     // Execute transfers
     if pay_employee > 0 {
-        token.transfer(&env.current_contract_address(), &employee, &pay_employee);
+       let num_employees = employees.len() as i128;
+        if num_employees > 0 {
+            let amount_per_employee = pay_employee / num_employees;
+            for employee in employees.iter() {
+                token.transfer(
+                    &env.current_contract_address(),
+                    &employee.address,
+                    &amount_per_employee,
+                );
+            }
+        }
     }
 
     if refund_employer > 0 {

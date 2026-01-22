@@ -3,10 +3,10 @@ mod events;
 mod payroll;
 mod storage;
 mod test_milestones;
+mod test_disputes;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
-use storage::{Agreement, StorageKey, PayrollError};
-use storage::{Agreement, Milestone, StorageKey};
+use storage::{Agreement, Milestone, StorageKey, PayrollError, DisputeStatus};
 
 /// Minimal baseline Soroban contract.
 ///
@@ -244,7 +244,29 @@ impl PayrollContract {
     pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(), PayrollError> {
         payroll::raise_dispute(env, caller, agreement_id)
     }
-}
+
+    /// Resove Dispute
+///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * agreement_id` - ID of the agreement to raise dispute for
+    /// * pay_employee` - ID of the agreement to raise dispute for
+    /// * refund_employer` - ID of the agreement to raise dispute for
+    ///
+    /// # Access Control
+    /// Requires arbiter authentication
+    pub fn resolve_dispute(env: Env,caller: Address, agreement_id: u128, pay_employee: i128, refund_employer: i128) -> Result<(), PayrollError> {
+        payroll::resolve_dispute(env, caller, agreement_id, pay_employee, refund_employer)
+    }
+
+    /// Retrieves current dispute status for an agreement by ID
+    ///
+    /// # Returns
+    /// Some(Agreement) if found, None otherwise
+    pub fn get_dispute_status(env: Env, agreement_id: u128) -> DisputeStatus {
+        payroll::get_dispute_status(env, agreement_id)
+    }
+
     /// Claims payroll for the calling employee.
     ///
     /// # Arguments
