@@ -1,6 +1,4 @@
-use soroban_sdk::{contracttype, Address, Env};
-
-pub type Error = soroban_sdk::Error;
+use soroban_sdk::{contracterror, contracttype, Address, Env};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -120,6 +118,8 @@ pub struct Agreement {
     pub activated_at: Option<u64>,
     pub cancelled_at: Option<u64>,
     pub grace_period_seconds: u64,
+    pub dispute_status: DisputeStatus,
+    pub dispute_raised_at: Option<u64>,
     // Time-based payment fields (for escrow mode)
     pub amount_per_period: Option<i128>,
     pub period_seconds: Option<u64>,
@@ -150,7 +150,44 @@ pub enum StorageKey {
     NextAgreementId,
     /// List of agreement IDs for an employer
     EmployerAgreements(Address),
+    /// Dispute Status
+    DisputeStatus(u128),
+    DisputeRaisedAt(u128),
+    Arbiter,
 }
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
+pub enum DisputeStatus {
+    None,
+    Raised,
+    Resolved,
+}
+
+/// Error types for payroll operations
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum PayrollError {
+    DisputeAlreadyRaised = 1,
+    NotInGracePeriod = 2,
+    NotParty = 3,
+    NotArbiter = 4,
+    InvalidPayout = 5,
+    ActiveDispute = 6,
+    AgreementNotFound = 7,
+    NoDispute = 8,
+    NoEmployee = 9,
+    NotActivated = 10,
+    Unauthorized = 11,
+    InvalidEmployeeIndex = 12,
+    InvalidData = 13,
+    TransferFailed = 14,
+    InsufficientEscrowBalance = 15,
+    NoPeriodsToClaim = 16,
+    AgreementNotActivated = 17,
+}
+
 /// Storage keys for the payroll claiming system.
 #[derive(Clone)]
 #[contracttype]
@@ -205,10 +242,7 @@ impl DataKey {
     /// Get the number of employees in an agreement
     pub fn get_employee_count(env: &Env, agreement_id: u128) -> u32 {
         let key: DataKey = DataKey::AgreementEmployeeCount(agreement_id);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(0u32)
+        env.storage().persistent().get(&key).unwrap_or(0u32)
     }
 
     /// Set the number of employees in an agreement
@@ -244,10 +278,7 @@ impl DataKey {
     /// Get number of claimed periods for an employee at a specific index
     pub fn get_employee_claimed_periods(env: &Env, agreement_id: u128, employee_index: u32) -> u32 {
         let key: DataKey = DataKey::EmployeeClaimedPeriods(agreement_id, employee_index);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(0u32)
+        env.storage().persistent().get(&key).unwrap_or(0u32)
     }
 
     /// Set number of claimed periods for an employee at a specific index
@@ -300,10 +331,7 @@ impl DataKey {
     /// Get total paid amount for an agreement
     pub fn get_agreement_paid_amount(env: &Env, agreement_id: u128) -> i128 {
         let key: DataKey = DataKey::AgreementPaidAmount(agreement_id);
-        env.storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(0i128)
+        env.storage().persistent().get(&key).unwrap_or(0i128)
     }
 
     /// Set total paid amount for an agreement
@@ -315,10 +343,7 @@ impl DataKey {
     /// Get escrow balance for an agreement and token
     pub fn get_agreement_escrow_balance(env: &Env, agreement_id: u128, token: &Address) -> i128 {
         let key: DataKey = DataKey::AgreementEscrowBalance(agreement_id, token.clone());
-        env.storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(0i128)
+        env.storage().persistent().get(&key).unwrap_or(0i128)
     }
 
     /// Set escrow balance for an agreement and token

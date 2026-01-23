@@ -1,26 +1,22 @@
-use soroban_sdk::{
-    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contracttype,
-    token,
-    Address,
-    Env,
-    Error,
-    IntoVal,
-    Symbol,
-    Val,
-    Vec,
-};
+use soroban_sdk::token::TokenClient;
+use soroban_sdk::{Address, Env, Vec};
+
 use crate::events::{
     emit_agreement_activated, emit_agreement_created, emit_agreement_paused,
-    emit_agreement_resumed, emit_employee_added, emit_payroll_claimed, emit_payment_received,
-    emit_payment_sent,
-    AgreementActivatedEvent, AgreementCreatedEvent, AgreementPausedEvent,
-    AgreementResumedEvent, EmployeeAddedEvent, MilestoneAdded, MilestoneApproved,
-    MilestoneClaimed, PayrollClaimedEvent, PaymentReceivedEvent, PaymentSentEvent,
+    emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved, emit_employee_added,
+    emit_payment_received, emit_payment_sent, emit_payroll_claimed, emit_set_arbiter,
+    AgreementActivatedEvent, AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent,
+    ArbiterSetEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, MilestoneAdded,
+    MilestoneApproved, MilestoneClaimed, PaymentReceivedEvent, PaymentSentEvent,
+    PayrollClaimedEvent,
 };
 use crate::storage::{
-    Agreement, AgreementMode, AgreementStatus, DataKey, EmployeeInfo, Milestone, MilestoneKey,
-    PaymentType, StorageKey,
+    Agreement, AgreementMode, AgreementStatus, DataKey, DisputeStatus, EmployeeInfo, Milestone,
+    MilestoneKey, PaymentType, PayrollError, StorageKey,
+};
+use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
+    token, IntoVal, Symbol, Val,
 };
 
 pub fn create_milestone_agreement(
@@ -56,9 +52,10 @@ pub fn create_milestone_agreement(
         &MilestoneKey::PaymentType(agreement_id),
         &PaymentType::MilestoneBased,
     );
-    env.storage()
-        .instance()
-        .set(&MilestoneKey::Status(agreement_id), &AgreementStatus::Created);
+    env.storage().instance().set(
+        &MilestoneKey::Status(agreement_id),
+        &AgreementStatus::Created,
+    );
     env.storage()
         .instance()
         .set(&MilestoneKey::TotalAmount(agreement_id), &0i128);
@@ -267,9 +264,10 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
 
     let all_claimed = all_milestones_claimed(&env, agreement_id, count);
     if all_claimed {
-        env.storage()
-            .instance()
-            .set(&MilestoneKey::Status(agreement_id), &AgreementStatus::Completed);
+        env.storage().instance().set(
+            &MilestoneKey::Status(agreement_id),
+            &AgreementStatus::Completed,
+        );
     }
 }
 
@@ -328,27 +326,6 @@ fn all_milestones_claimed(env: &Env, agreement_id: u128, count: u32) -> bool {
     true
 }
 
-/// Error types for payroll operations
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[contracttype]
-#[repr(u32)]
-pub enum PayrollError {
-    Unauthorized = 1,
-    InvalidEmployeeIndex = 2,
-    InvalidData = 3,
-    AgreementNotFound = 4,
-    TransferFailed = 5,
-    InsufficientEscrowBalance = 6,
-    NoPeriodsToClaim = 7,
-    AgreementNotActivated = 8,
-}
-
-impl From<PayrollError> for Error {
-    fn from(err: PayrollError) -> Self {
-        Error::from_contract_error(err as u32)
-    }
-}
-
 // -----------------------------------------------------------------------------
 // Agreement lifecycle (main)
 // -----------------------------------------------------------------------------
@@ -388,6 +365,8 @@ pub fn create_payroll_agreement(
         activated_at: None,
         cancelled_at: None,
         grace_period_seconds,
+        dispute_status: DisputeStatus::None,
+        dispute_raised_at: None,
         amount_per_period: None,
         period_seconds: None,
         num_periods: None,
@@ -461,6 +440,8 @@ pub fn create_escrow_agreement(
         activated_at: None,
         cancelled_at: None,
         grace_period_seconds: period_seconds * (num_periods as u64),
+        dispute_status: DisputeStatus::None,
+        dispute_raised_at: None,
         amount_per_period: Some(amount_per_period),
         period_seconds: Some(period_seconds),
         num_periods: Some(num_periods),
@@ -598,6 +579,170 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
     emit_agreement_activated(env, AgreementActivatedEvent { agreement_id });
 }
 
+/// Set Arbiter
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `caller` - Address of the caller
+/// * `arbiter` - Address of the arbiter to add
+///
+/// # Access Control
+/// Requires caller authentication
+pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
+    caller.require_auth();
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Arbiter, &arbiter);
+    emit_set_arbiter(env, ArbiterSetEvent { arbiter });
+
+    true
+}
+
+/// Raise Dispute
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * agreement_id` - ID of the agreement to raise dispute for
+///
+/// # Access Control
+/// Requires caller or employee authentication
+pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(), PayrollError> {
+    caller.require_auth();
+
+    let mut agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
+
+    let employees: Vec<EmployeeInfo> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::AgreementEmployees(agreement_id))
+        .unwrap_or(Vec::new(env));
+
+    let is_employee = employees.iter().any(|emp| emp.address == caller);
+
+    if caller != agreement.employer && !is_employee {
+        return Err(PayrollError::NotParty);
+    }
+
+    if agreement.dispute_status != DisputeStatus::None {
+        return Err(PayrollError::DisputeAlreadyRaised);
+    }
+
+    let now = env.ledger().timestamp();
+    let created_time = agreement.created_at;
+    if created_time + agreement.grace_period_seconds <= now {
+        return Err(PayrollError::NotInGracePeriod);
+    }
+
+    agreement.dispute_status = DisputeStatus::Raised;
+    agreement.dispute_raised_at = Some(now);
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Agreement(agreement_id), &agreement);
+
+    emit_dsipute_raised(env, DisputeRaisedEvent { agreement_id });
+
+    Ok(())
+}
+
+/// Resove Dispute
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * agreement_id` - ID of the agreement to raise dispute for
+/// * pay_employee` - ID of the agreement to raise dispute for
+/// * refund_employer` - ID of the agreement to raise dispute for
+///
+/// # Access Control
+/// Requires arbiter authentication
+pub fn resolve_dispute(
+    env: Env,
+    caller: Address,
+    agreement_id: u128,
+    pay_employee: i128,
+    refund_employer: i128,
+) -> Result<(), PayrollError> {
+    caller.require_auth();
+
+    let arbiter = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::Arbiter)
+        .expect("No Arbiter");
+    if caller != arbiter {
+        return Err(PayrollError::NotArbiter);
+    }
+
+    let mut agreement = get_agreement(&env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
+
+    if agreement.dispute_status != DisputeStatus::Raised {
+        return Err(PayrollError::NoDispute);
+    }
+
+    let total_locked = agreement.total_amount;
+    if pay_employee + refund_employer > total_locked {
+        return Err(PayrollError::InvalidPayout);
+    }
+
+    let token = TokenClient::new(&env, &agreement.token);
+
+    let employees: Vec<EmployeeInfo> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::AgreementEmployees(agreement_id))
+        .unwrap_or(Vec::new(&env));
+
+    // Execute transfers
+    if pay_employee > 0 {
+        let num_employees = employees.len() as i128;
+        if num_employees > 0 {
+            let amount_per_employee = pay_employee / num_employees;
+            for employee in employees.iter() {
+                token.transfer(
+                    &env.current_contract_address(),
+                    &employee.address,
+                    &amount_per_employee,
+                );
+            }
+        }
+    }
+
+    if refund_employer > 0 {
+        token.transfer(
+            &env.current_contract_address(),
+            &agreement.employer,
+            &refund_employer,
+        );
+    }
+
+    agreement.dispute_status = DisputeStatus::Resolved;
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Agreement(agreement_id), &agreement);
+
+    emit_dsipute_resolved(
+        &env,
+        DisputeResolvedEvent {
+            agreement_id,
+            pay_contributor: pay_employee,
+            refund_employer: refund_employer,
+        },
+    );
+
+    Ok(())
+}
+
+/// Retrieves current dispute status for an agreement by ID
+///
+/// # Returns
+/// Some(Agreement) if found, None otherwise
+pub fn get_dispute_status(env: Env, agreement_id: u128) -> DisputeStatus {
+    get_agreement(&env, agreement_id)
+        .map(|a| a.dispute_status)
+        .unwrap_or(DisputeStatus::None)
+}
+
 /// Retrieves an agreement by ID
 ///
 /// # Returns
@@ -670,8 +815,7 @@ pub fn claim_payroll(
     }
 
     // Get agreement and check status
-    let agreement = get_agreement(env, agreement_id)
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     // Check if agreement is paused
     if agreement.status == AgreementStatus::Paused {
@@ -712,8 +856,8 @@ pub fn claim_payroll(
         .ok_or(PayrollError::AgreementNotFound)?;
 
     // Get token address
-    let token = DataKey::get_agreement_token(env, agreement_id)
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let token =
+        DataKey::get_agreement_token(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     // Get current timestamp
     let current_time = env.ledger().timestamp();
@@ -729,8 +873,7 @@ pub fn claim_payroll(
     let total_elapsed_periods = (elapsed_time / period_duration) as u32;
 
     // Get employee's claimed periods
-    let claimed_periods =
-        DataKey::get_employee_claimed_periods(env, agreement_id, employee_index);
+    let claimed_periods = DataKey::get_employee_claimed_periods(env, agreement_id, employee_index);
 
     // Calculate periods to pay
     if total_elapsed_periods <= claimed_periods {
@@ -904,9 +1047,7 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) {
     let num_periods = agreement
         .num_periods
         .expect("Agreement must have num_periods");
-    let mut claimed_periods = agreement
-        .claimed_periods
-        .unwrap_or(0);
+    let mut claimed_periods = agreement.claimed_periods.unwrap_or(0);
 
     assert!(
         claimed_periods < num_periods,
@@ -1105,9 +1246,10 @@ pub fn pause_milestone_agreement(env: Env, agreement_id: u128) {
         "Can only pause Active or Created agreements"
     );
 
-    env.storage()
-        .instance()
-        .set(&MilestoneKey::Status(agreement_id), &AgreementStatus::Paused);
+    env.storage().instance().set(
+        &MilestoneKey::Status(agreement_id),
+        &AgreementStatus::Paused,
+    );
 
     env.events().publish(
         ("agreement_paused", agreement_id),
@@ -1154,9 +1296,10 @@ pub fn resume_milestone_agreement(env: Env, agreement_id: u128) {
     );
 
     // Resume to Active status (milestone agreements can have claimable milestones in Active state)
-    env.storage()
-        .instance()
-        .set(&MilestoneKey::Status(agreement_id), &AgreementStatus::Active);
+    env.storage().instance().set(
+        &MilestoneKey::Status(agreement_id),
+        &AgreementStatus::Active,
+    );
 
     env.events().publish(
         ("agreement_resumed", agreement_id),
