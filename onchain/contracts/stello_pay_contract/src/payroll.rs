@@ -1,20 +1,6 @@
-use core::ops::Add;
-
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{Address, Env, Vec};
 
-use soroban_sdk::{
-    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contracttype,
-    token,
-    Address,
-    Env,
-    Error,
-    IntoVal,
-    Symbol,
-    Val,
-    Vec,
-};
 use crate::events::{
     emit_agreement_activated, emit_agreement_created, emit_agreement_paused,
     emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved, emit_employee_added,
@@ -25,8 +11,12 @@ use crate::events::{
     PayrollClaimedEvent,
 };
 use crate::storage::{
-    Agreement, AgreementMode, AgreementStatus, DataKey, DisputeStatus, EmployeeInfo, Milestone, MilestoneKey,
-    PaymentType, PayrollError, StorageKey,
+    Agreement, AgreementMode, AgreementStatus, DataKey, DisputeStatus, EmployeeInfo, Milestone,
+    MilestoneKey, PaymentType, PayrollError, StorageKey,
+};
+use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
+    token, IntoVal, Symbol, Val,
 };
 
 pub fn create_milestone_agreement(
@@ -62,9 +52,10 @@ pub fn create_milestone_agreement(
         &MilestoneKey::PaymentType(agreement_id),
         &PaymentType::MilestoneBased,
     );
-    env.storage()
-        .instance()
-        .set(&MilestoneKey::Status(agreement_id), &AgreementStatus::Created);
+    env.storage().instance().set(
+        &MilestoneKey::Status(agreement_id),
+        &AgreementStatus::Created,
+    );
     env.storage()
         .instance()
         .set(&MilestoneKey::TotalAmount(agreement_id), &0i128);
@@ -273,9 +264,10 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
 
     let all_claimed = all_milestones_claimed(&env, agreement_id, count);
     if all_claimed {
-        env.storage()
-            .instance()
-            .set(&MilestoneKey::Status(agreement_id), &AgreementStatus::Completed);
+        env.storage().instance().set(
+            &MilestoneKey::Status(agreement_id),
+            &AgreementStatus::Completed,
+        );
     }
 }
 
@@ -332,27 +324,6 @@ fn all_milestones_claimed(env: &Env, agreement_id: u128, count: u32) -> bool {
         }
     }
     true
-}
-
-/// Error types for payroll operations
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[contracttype]
-#[repr(u32)]
-pub enum PayrollError {
-    Unauthorized = 1,
-    InvalidEmployeeIndex = 2,
-    InvalidData = 3,
-    AgreementNotFound = 4,
-    TransferFailed = 5,
-    InsufficientEscrowBalance = 6,
-    NoPeriodsToClaim = 7,
-    AgreementNotActivated = 8,
-}
-
-impl From<PayrollError> for Error {
-    fn from(err: PayrollError) -> Self {
-        Error::from_contract_error(err as u32)
-    }
 }
 
 // -----------------------------------------------------------------------------
@@ -844,8 +815,7 @@ pub fn claim_payroll(
     }
 
     // Get agreement and check status
-    let agreement = get_agreement(env, agreement_id)
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     // Check if agreement is paused
     if agreement.status == AgreementStatus::Paused {
@@ -886,8 +856,8 @@ pub fn claim_payroll(
         .ok_or(PayrollError::AgreementNotFound)?;
 
     // Get token address
-    let token = DataKey::get_agreement_token(env, agreement_id)
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let token =
+        DataKey::get_agreement_token(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     // Get current timestamp
     let current_time = env.ledger().timestamp();
@@ -903,8 +873,7 @@ pub fn claim_payroll(
     let total_elapsed_periods = (elapsed_time / period_duration) as u32;
 
     // Get employee's claimed periods
-    let claimed_periods =
-        DataKey::get_employee_claimed_periods(env, agreement_id, employee_index);
+    let claimed_periods = DataKey::get_employee_claimed_periods(env, agreement_id, employee_index);
 
     // Calculate periods to pay
     if total_elapsed_periods <= claimed_periods {
@@ -1277,9 +1246,10 @@ pub fn pause_milestone_agreement(env: Env, agreement_id: u128) {
         "Can only pause Active or Created agreements"
     );
 
-    env.storage()
-        .instance()
-        .set(&MilestoneKey::Status(agreement_id), &AgreementStatus::Paused);
+    env.storage().instance().set(
+        &MilestoneKey::Status(agreement_id),
+        &AgreementStatus::Paused,
+    );
 
     env.events().publish(
         ("agreement_paused", agreement_id),
@@ -1326,9 +1296,10 @@ pub fn resume_milestone_agreement(env: Env, agreement_id: u128) {
     );
 
     // Resume to Active status (milestone agreements can have claimable milestones in Active state)
-    env.storage()
-        .instance()
-        .set(&MilestoneKey::Status(agreement_id), &AgreementStatus::Active);
+    env.storage().instance().set(
+        &MilestoneKey::Status(agreement_id),
+        &AgreementStatus::Active,
+    );
 
     env.events().publish(
         ("agreement_resumed", agreement_id),

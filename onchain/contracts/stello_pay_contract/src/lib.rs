@@ -1,9 +1,7 @@
 #![no_std]
 mod events;
 mod payroll;
-mod storage;
-mod test_disputes;
-mod test_milestones;
+pub mod storage;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
 use storage::{Agreement, DisputeStatus, Milestone, PayrollError, StorageKey};
