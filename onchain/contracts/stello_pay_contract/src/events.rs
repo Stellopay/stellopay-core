@@ -170,3 +170,27 @@ pub fn emit_payment_received(env: &Env, event: PaymentReceivedEvent) {
     let topics = (symbol_short!("pay_rcv"), event.agreement_id);
     env.events().publish(topics, event);
 }
+
+/// Event: Agreement cancelled
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AgreementCancelledEvent {
+    pub agreement_id: u128,
+}
+
+pub fn emit_agreement_cancelled(env: &Env, event: AgreementCancelledEvent) {
+    let topics = (symbol_short!("agr_can"), event.agreement_id);
+    env.events().publish(topics, event);
+}
+
+/// Event: Grace period finalized
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct GracePeriodFinalizedEvent {
+    pub agreement_id: u128,
+}
+
+pub fn emit_grace_period_finalized(env: &Env, event: GracePeriodFinalizedEvent) {
+    let topics = (symbol_short!("grc_fin"), event.agreement_id);
+    env.events().publish(topics, event);
+}

@@ -436,4 +436,63 @@ impl PayrollContract {
     pub fn get_claimed_periods(env: Env, agreement_id: u128) -> u32 {
         payroll::get_claimed_periods(&env, agreement_id)
     }
+
+    /// Cancels an agreement, initiating the grace period.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement to cancel
+    ///
+    /// # Requirements
+    /// - Agreement must be in Active or Created status
+    /// - Caller must be the employer
+    ///
+    /// # State Transition
+    /// Active/Created -> Cancelled
+    ///
+    /// # Behavior
+    /// - Sets cancelled_at timestamp
+    /// - Claims are allowed during grace period
+    /// - Refunds are prevented until grace period expires
+    pub fn cancel_agreement(env: Env, agreement_id: u128) {
+        payroll::cancel_agreement(&env, agreement_id);
+    }
+
+    /// Finalizes the grace period and allows refund of remaining balance.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    ///
+    /// # Requirements
+    /// - Agreement must be in Cancelled status
+    /// - Grace period must have expired
+    /// - Caller must be the employer
+    ///
+    /// # Behavior
+    /// - Refunds remaining escrow balance to employer
+    /// - Marks agreement as ready for finalization
+    pub fn finalize_grace_period(env: Env, agreement_id: u128) {
+        payroll::finalize_grace_period(&env, agreement_id);
+    }
+
+    /// Checks if the grace period is currently active for a cancelled agreement.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    ///
+    /// # Returns
+    /// true if grace period is active, false otherwise
+    pub fn is_grace_period_active(env: Env, agreement_id: u128) -> bool {
+        payroll::is_grace_period_active(&env, agreement_id)
+    }
+
+    /// Gets the grace period end timestamp for a cancelled agreement.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    ///
+    /// # Returns
+    /// Some(timestamp) if agreement is cancelled, None otherwise
+    pub fn get_grace_period_end(env: Env, agreement_id: u128) -> Option<u64> {
+        payroll::get_grace_period_end(&env, agreement_id)
+    }
 }
