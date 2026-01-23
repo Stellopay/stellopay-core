@@ -11,6 +11,7 @@ fn create_test_env() -> (
     PayrollContractClient<'static>,
 ) {
     let env = Env::default();
+    #[allow(deprecated)]
     let contract_id = env.register_contract(None, PayrollContract);
     let client = PayrollContractClient::new(&env, &contract_id);
 
