@@ -4,10 +4,7 @@ mod payroll;
 pub mod storage;
 
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
-#[cfg(test)]
-mod test_milestones;
-
-use storage::{Agreement, Milestone, StorageKey};
+use storage::{Agreement, DisputeStatus, Milestone, PayrollError, StorageKey};
 
 /// Payroll Contract for managing payroll agreements with employee claiming functionality.
 ///
@@ -230,6 +227,64 @@ impl PayrollContract {
         payroll::get_agreement_employees(&env, agreement_id)
     }
 
+    /// Set Arbiter
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `caller` - Address of the caller
+    /// * `arbiter` - Address of the arbiter to add
+    ///
+    /// # Access Control
+    /// Requires caller authentication
+    pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
+        payroll::set_arbiter(env, caller, arbiter)
+    }
+
+    /// Raise Disoute
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * agreement_id` - ID of the agreement to raise dispute for
+    ///
+    /// # Access Control
+    /// Requires employer or employee authentication
+    pub fn raise_dispute(
+        env: &Env,
+        caller: Address,
+        agreement_id: u128,
+    ) -> Result<(), PayrollError> {
+        payroll::raise_dispute(env, caller, agreement_id)
+    }
+
+    /// Resove Dispute
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * agreement_id` - ID of the agreement to raise dispute for
+    /// * pay_employee` - ID of the agreement to raise dispute for
+    /// * refund_employer` - ID of the agreement to raise dispute for
+    ///
+    /// # Access Control
+    /// Requires arbiter authentication
+    pub fn resolve_dispute(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        pay_employee: i128,
+        refund_employer: i128,
+    ) -> Result<(), PayrollError> {
+        payroll::resolve_dispute(env, caller, agreement_id, pay_employee, refund_employer)
+    }
+
+    /// Retrieves current dispute status for an agreement by ID
+    ///
+    /// # Returns
+    /// Some(Agreement) if found, None otherwise
+    pub fn get_dispute_status(env: Env, agreement_id: u128) -> DisputeStatus {
+        payroll::get_dispute_status(env, agreement_id)
+    }
+
+    /// Claims payroll for the calling employee.
     /// Claim payroll for an employee in a payroll agreement.
     ///
     /// Allows an employee to claim their salary based on elapsed time periods since

@@ -1,6 +1,6 @@
 #![cfg(test)]
-use crate::{PayrollContract, PayrollContractClient};
 use soroban_sdk::{testutils::Address as _, Address, Env};
+use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 fn create_test_env() -> (
     Env,
