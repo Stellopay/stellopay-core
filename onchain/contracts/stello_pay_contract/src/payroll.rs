@@ -3,6 +3,18 @@ use core::ops::Add;
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{Address, Env, Vec};
 
+use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
+    contracttype,
+    token,
+    Address,
+    Env,
+    Error,
+    IntoVal,
+    Symbol,
+    Val,
+    Vec,
+};
 use crate::events::{
     emit_agreement_activated, emit_agreement_created, emit_agreement_paused,
     emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved, emit_employee_added,
@@ -13,7 +25,7 @@ use crate::events::{
     PayrollClaimedEvent,
 };
 use crate::storage::{
-    Agreement, AgreementMode, AgreementStatus, DataKey, DisputeStatus, EmployeeInfo, Milestone,
+    Agreement, AgreementMode, AgreementStatus, DataKey, DisputeStatus, EmployeeInfo, Milestone, MilestoneKey,
     PaymentType, PayrollError, StorageKey,
 };
 
@@ -28,7 +40,7 @@ pub fn create_milestone_agreement(
     let mut counter: u128 = env
         .storage()
         .instance()
-        .get(&DataKey::AgreementCounter)
+        .get(&MilestoneKey::AgreementCounter)
         .unwrap_or(0);
     counter += 1;
 
@@ -36,29 +48,29 @@ pub fn create_milestone_agreement(
 
     env.storage()
         .instance()
-        .set(&DataKey::AgreementCounter, &counter);
+        .set(&MilestoneKey::AgreementCounter, &counter);
     env.storage()
         .instance()
-        .set(&DataKey::Employer(agreement_id), &employer);
+        .set(&MilestoneKey::Employer(agreement_id), &employer);
     env.storage()
         .instance()
-        .set(&DataKey::Contributor(agreement_id), &contributor);
+        .set(&MilestoneKey::Contributor(agreement_id), &contributor);
     env.storage()
         .instance()
-        .set(&DataKey::Token(agreement_id), &token);
+        .set(&MilestoneKey::Token(agreement_id), &token);
     env.storage().instance().set(
-        &DataKey::PaymentType(agreement_id),
+        &MilestoneKey::PaymentType(agreement_id),
         &PaymentType::MilestoneBased,
     );
     env.storage()
         .instance()
-        .set(&DataKey::Status(agreement_id), &AgreementStatus::Created);
+        .set(&MilestoneKey::Status(agreement_id), &AgreementStatus::Created);
     env.storage()
         .instance()
-        .set(&DataKey::TotalAmount(agreement_id), &0i128);
+        .set(&MilestoneKey::TotalAmount(agreement_id), &0i128);
     env.storage()
         .instance()
-        .set(&DataKey::MilestoneCount(agreement_id), &0u32);
+        .set(&MilestoneKey::MilestoneCount(agreement_id), &0u32);
 
     agreement_id
 }
@@ -73,7 +85,7 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
     let status: AgreementStatus = env
         .storage()
         .instance()
-        .get(&DataKey::Status(agreement_id))
+        .get(&MilestoneKey::Status(agreement_id))
         .expect("Agreement not found");
 
     assert!(
@@ -85,42 +97,42 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
     let employer: Address = env
         .storage()
         .instance()
-        .get(&DataKey::Employer(agreement_id))
+        .get(&MilestoneKey::Employer(agreement_id))
         .expect("Employer not found");
     employer.require_auth();
 
     let count: u32 = env
         .storage()
         .instance()
-        .get(&DataKey::MilestoneCount(agreement_id))
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
         .unwrap_or(0);
 
     let milestone_id = count + 1;
 
     env.storage().instance().set(
-        &DataKey::MilestoneAmount(agreement_id, milestone_id),
+        &MilestoneKey::MilestoneAmount(agreement_id, milestone_id),
         &amount,
     );
     env.storage().instance().set(
-        &DataKey::MilestoneApproved(agreement_id, milestone_id),
+        &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
         &false,
     );
     env.storage().instance().set(
-        &DataKey::MilestoneClaimed(agreement_id, milestone_id),
+        &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
         &false,
     );
     env.storage()
         .instance()
-        .set(&DataKey::MilestoneCount(agreement_id), &milestone_id);
+        .set(&MilestoneKey::MilestoneCount(agreement_id), &milestone_id);
 
     let total: i128 = env
         .storage()
         .instance()
-        .get(&DataKey::TotalAmount(agreement_id))
+        .get(&MilestoneKey::TotalAmount(agreement_id))
         .unwrap_or(0);
     env.storage()
         .instance()
-        .set(&DataKey::TotalAmount(agreement_id), &(total + amount));
+        .set(&MilestoneKey::TotalAmount(agreement_id), &(total + amount));
 
     env.events().publish(
         ("milestone_added", agreement_id),
@@ -143,14 +155,14 @@ pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
     let employer: Address = env
         .storage()
         .instance()
-        .get(&DataKey::Employer(agreement_id))
+        .get(&MilestoneKey::Employer(agreement_id))
         .expect("Employer not found");
     employer.require_auth();
 
     let count: u32 = env
         .storage()
         .instance()
-        .get(&DataKey::MilestoneCount(agreement_id))
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
         .expect("No milestones found");
     assert!(
         milestone_id > 0 && milestone_id <= count,
@@ -160,12 +172,12 @@ pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
     let already_approved: bool = env
         .storage()
         .instance()
-        .get(&DataKey::MilestoneApproved(agreement_id, milestone_id))
+        .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
         .unwrap_or(false);
     assert!(!already_approved, "Milestone already approved");
 
     env.storage().instance().set(
-        &DataKey::MilestoneApproved(agreement_id, milestone_id),
+        &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
         &true,
     );
 
@@ -193,7 +205,7 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
     let contributor: Address = env
         .storage()
         .instance()
-        .get(&DataKey::Contributor(agreement_id))
+        .get(&MilestoneKey::Contributor(agreement_id))
         .expect("Contributor not found");
     contributor.require_auth();
 
@@ -201,7 +213,7 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
     let status: AgreementStatus = env
         .storage()
         .instance()
-        .get(&DataKey::Status(agreement_id))
+        .get(&MilestoneKey::Status(agreement_id))
         .expect("Agreement not found");
     assert!(
         status != AgreementStatus::Paused,
@@ -211,7 +223,7 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
     let count: u32 = env
         .storage()
         .instance()
-        .get(&DataKey::MilestoneCount(agreement_id))
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
         .expect("No milestones found");
     assert!(
         milestone_id > 0 && milestone_id <= count,
@@ -221,32 +233,32 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
     let approved: bool = env
         .storage()
         .instance()
-        .get(&DataKey::MilestoneApproved(agreement_id, milestone_id))
+        .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
         .unwrap_or(false);
     assert!(approved, "Milestone not approved");
 
     let already_claimed: bool = env
         .storage()
         .instance()
-        .get(&DataKey::MilestoneClaimed(agreement_id, milestone_id))
+        .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
         .unwrap_or(false);
     assert!(!already_claimed, "Milestone already claimed");
 
     let amount: i128 = env
         .storage()
         .instance()
-        .get(&DataKey::MilestoneAmount(agreement_id, milestone_id))
+        .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
         .expect("Milestone amount not found");
 
     env.storage().instance().set(
-        &DataKey::MilestoneClaimed(agreement_id, milestone_id),
+        &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
         &true,
     );
 
     let _token: Address = env
         .storage()
         .instance()
-        .get(&DataKey::Token(agreement_id))
+        .get(&MilestoneKey::Token(agreement_id))
         .expect("Token not found");
 
     env.events().publish(
@@ -263,14 +275,14 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
     if all_claimed {
         env.storage()
             .instance()
-            .set(&DataKey::Status(agreement_id), &AgreementStatus::Completed);
+            .set(&MilestoneKey::Status(agreement_id), &AgreementStatus::Completed);
     }
 }
 
 pub fn get_milestone_count(env: Env, agreement_id: u128) -> u32 {
     env.storage()
         .instance()
-        .get(&DataKey::MilestoneCount(agreement_id))
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
         .unwrap_or(0)
 }
 
@@ -278,7 +290,7 @@ pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<
     let count: u32 = env
         .storage()
         .instance()
-        .get(&DataKey::MilestoneCount(agreement_id))
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
         .unwrap_or(0);
 
     if milestone_id == 0 || milestone_id > count {
@@ -288,16 +300,16 @@ pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<
     let amount: i128 = env
         .storage()
         .instance()
-        .get(&DataKey::MilestoneAmount(agreement_id, milestone_id))?;
+        .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))?;
     let approved: bool = env
         .storage()
         .instance()
-        .get(&DataKey::MilestoneApproved(agreement_id, milestone_id))
+        .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
         .unwrap_or(false);
     let claimed: bool = env
         .storage()
         .instance()
-        .get(&DataKey::MilestoneClaimed(agreement_id, milestone_id))
+        .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
         .unwrap_or(false);
 
     Some(Milestone {
@@ -313,7 +325,7 @@ fn all_milestones_claimed(env: &Env, agreement_id: u128, count: u32) -> bool {
         let claimed: bool = env
             .storage()
             .instance()
-            .get(&DataKey::MilestoneClaimed(agreement_id, i))
+            .get(&MilestoneKey::MilestoneClaimed(agreement_id, i))
             .unwrap_or(false);
         if !claimed {
             return false;
@@ -321,6 +333,31 @@ fn all_milestones_claimed(env: &Env, agreement_id: u128, count: u32) -> bool {
     }
     true
 }
+
+/// Error types for payroll operations
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[contracttype]
+#[repr(u32)]
+pub enum PayrollError {
+    Unauthorized = 1,
+    InvalidEmployeeIndex = 2,
+    InvalidData = 3,
+    AgreementNotFound = 4,
+    TransferFailed = 5,
+    InsufficientEscrowBalance = 6,
+    NoPeriodsToClaim = 7,
+    AgreementNotActivated = 8,
+}
+
+impl From<PayrollError> for Error {
+    fn from(err: PayrollError) -> Self {
+        Error::from_contract_error(err as u32)
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Agreement lifecycle (main)
+// -----------------------------------------------------------------------------
 
 /// Creates a payroll agreement for multiple employees
 ///
@@ -763,78 +800,225 @@ pub fn get_agreement_employees(env: &Env, agreement_id: u128) -> Vec<Address> {
     addresses
 }
 
-/// Claims payroll for the calling employee
+// -----------------------------------------------------------------------------
+// Payroll claiming (feature/payroll-claiming)
+// -----------------------------------------------------------------------------
+
+/// Claim payroll for an employee in a payroll agreement.
+///
+/// This function allows an employee to claim their salary based on elapsed time periods
+/// since the agreement was activated. Each employee has individual period tracking.
 ///
 /// # Arguments
-/// * `env` - Contract environment
-/// * `agreement_id` - ID of the agreement
-/// * `employee` - Address of the employee claiming
 ///
-/// # Requirements
-/// - Agreement must be Active (not Paused, Cancelled, etc.)
-/// - Caller must be an employee of the agreement
-/// - If agreement is Cancelled, must be past grace period
-pub fn claim_payroll(env: &Env, agreement_id: u128, employee: Address) {
-    employee.require_auth();
+/// * `env` - The Soroban environment
+/// * `agreement_id` - The unique identifier for the payroll agreement
+/// * `employee_index` - The index of the employee in the agreement (0-based)
+///
+/// # Returns
+///
+/// Returns `Ok(())` on success, or a `PayrollError` on failure.
+///
+/// # Errors
+///
+/// * `PayrollError::Unauthorized` - If the caller is not the employee at the given index
+/// * `PayrollError::InvalidEmployeeIndex` - If the employee index is out of bounds
+/// * `PayrollError::AgreementNotFound` - If the agreement doesn't exist or isn't activated
+/// * `PayrollError::InsufficientEscrowBalance` - If there aren't enough funds in escrow
+/// * `PayrollError::NoPeriodsToClaim` - If there are no periods available to claim
+/// * `PayrollError::TransferFailed` - If the token transfer fails
+///
+/// # Events
+///
+/// Emits `PayrollClaimed`, `PaymentSent`, and `PaymentReceived` events on success.
+pub fn claim_payroll(
+    env: &Env,
+    caller: &Address,
+    agreement_id: u128,
+    employee_index: u32,
+) -> Result<(), PayrollError> {
+    // Validate employee index
+    let employee_count = DataKey::get_employee_count(env, agreement_id);
+    if employee_index >= employee_count {
+        return Err(PayrollError::InvalidEmployeeIndex);
+    }
 
-    let agreement: Agreement = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::Agreement(agreement_id))
-        .expect("Agreement not found");
+    // Get agreement and check status
+    let agreement = get_agreement(env, agreement_id)
+        .ok_or(PayrollError::AgreementNotFound)?;
 
     // Check if agreement is paused
-    assert!(
-        agreement.status != AgreementStatus::Paused,
-        "Cannot claim when agreement is paused"
-    );
+    if agreement.status == AgreementStatus::Paused {
+        return Err(PayrollError::InvalidData);
+    }
 
     // Check if agreement is active
-    assert!(
-        agreement.status == AgreementStatus::Active,
-        "Agreement must be active"
-    );
+    if agreement.status != AgreementStatus::Active {
+        return Err(PayrollError::InvalidData);
+    }
 
-    // Note: The cancelled check is redundant here since we already check for Active,
-    // but keeping it for clarity and future-proofing
+    // Handle cancelled agreement grace period check
     if agreement.status == AgreementStatus::Cancelled {
         let current_time = env.ledger().timestamp();
-        let cancelled_at = agreement
-            .cancelled_at
-            .expect("Cancelled agreement must have cancelled_at");
-        let grace_end = cancelled_at + agreement.grace_period_seconds;
-        assert!(current_time > grace_end, "Cannot claim during grace period");
-    }
-
-    let employees: Vec<EmployeeInfo> = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::AgreementEmployees(agreement_id))
-        .unwrap_or(Vec::new(env));
-
-    let mut employee_info: Option<EmployeeInfo> = None;
-    for emp in employees.iter() {
-        if emp.address == employee {
-            employee_info = Some(emp.clone());
-            break;
+        if let Some(cancelled_at) = agreement.cancelled_at {
+            let grace_end = cancelled_at + agreement.grace_period_seconds;
+            if current_time <= grace_end {
+                return Err(PayrollError::InvalidData);
+            }
         }
     }
-    let employee_info = employee_info.expect("Caller is not an employee");
 
-    let mut agreement = agreement;
-    agreement.paid_amount += employee_info.salary_per_period;
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Agreement(agreement_id), &agreement);
+    // Get employee address at the given index
+    let employee = DataKey::get_employee(env, agreement_id, employee_index)
+        .ok_or(PayrollError::AgreementNotFound)?;
 
+    // Validate that caller is the employee
+    if *caller != employee {
+        return Err(PayrollError::Unauthorized);
+    }
+
+    // Get agreement activation time
+    let activation_time = DataKey::get_agreement_activation_time(env, agreement_id)
+        .ok_or(PayrollError::AgreementNotActivated)?;
+
+    // Get period duration
+    let period_duration = DataKey::get_agreement_period_duration(env, agreement_id)
+        .ok_or(PayrollError::AgreementNotFound)?;
+
+    // Get token address
+    let token = DataKey::get_agreement_token(env, agreement_id)
+        .ok_or(PayrollError::AgreementNotFound)?;
+
+    // Get current timestamp
+    let current_time = env.ledger().timestamp();
+
+    // Calculate elapsed time since activation
+    if current_time < activation_time {
+        return Err(PayrollError::InvalidData);
+    }
+
+    let elapsed_time = current_time - activation_time;
+
+    // Calculate total elapsed periods
+    let total_elapsed_periods = (elapsed_time / period_duration) as u32;
+
+    // Get employee's claimed periods
+    let claimed_periods =
+        DataKey::get_employee_claimed_periods(env, agreement_id, employee_index);
+
+    // Calculate periods to pay
+    if total_elapsed_periods <= claimed_periods {
+        return Err(PayrollError::NoPeriodsToClaim);
+    }
+
+    let periods_to_pay = total_elapsed_periods - claimed_periods;
+
+    // Get employee salary per period
+    let salary_per_period = DataKey::get_employee_salary(env, agreement_id, employee_index)
+        .ok_or(PayrollError::AgreementNotFound)?;
+
+    // Calculate total amount to pay
+    let amount = salary_per_period
+        .checked_mul(periods_to_pay as i128)
+        .ok_or(PayrollError::InvalidData)?;
+
+    // Check escrow balance
+    let escrow_balance = DataKey::get_agreement_escrow_balance(env, agreement_id, &token);
+    if escrow_balance < amount {
+        return Err(PayrollError::InsufficientEscrowBalance);
+    }
+
+    // Get contract address (this contract)
+    let contract_address = env.current_contract_address();
+
+    // Transfer tokens from escrow to employee.
+    //
+    // IMPORTANT: Token `transfer(from=contract_address, ...)` requires `from.require_auth()`.
+    // When the token contract calls `require_auth()` on a contract address, the calling
+    // contract must pre-authorize that deeper invocation via `authorize_as_current_contract`.
+    let token_client = token::Client::new(env, &token);
+    env.authorize_as_current_contract(Vec::from_array(
+        env,
+        [InvokerContractAuthEntry::Contract(SubContractInvocation {
+            context: ContractContext {
+                contract: token.clone(),
+                fn_name: Symbol::new(env, "transfer"),
+                args: Vec::<Val>::from_array(
+                    env,
+                    [
+                        contract_address.clone().into_val(env),
+                        employee.clone().into_val(env),
+                        amount.into_val(env),
+                    ],
+                ),
+            },
+            sub_invocations: Vec::new(env),
+        })],
+    ));
+    token_client.transfer(&contract_address, &employee, &amount);
+
+    // Update escrow balance
+    let new_escrow_balance = escrow_balance - amount;
+    DataKey::set_agreement_escrow_balance(env, agreement_id, &token, new_escrow_balance);
+
+    // Update employee's claimed periods
+    let new_claimed_periods = claimed_periods + periods_to_pay;
+    DataKey::set_employee_claimed_periods(env, agreement_id, employee_index, new_claimed_periods);
+
+    // Update agreement total paid amount
+    let current_paid = DataKey::get_agreement_paid_amount(env, agreement_id);
+    let new_paid = current_paid
+        .checked_add(amount)
+        .ok_or(PayrollError::InvalidData)?;
+    DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
+
+    // Emit events
     emit_payroll_claimed(
         env,
         PayrollClaimedEvent {
             agreement_id,
-            employee,
-            amount: employee_info.salary_per_period,
+            employee: employee.clone(),
+            amount,
         },
     );
+
+    env.events().publish(
+        (Symbol::new(env, "PaymentSent"),),
+        PaymentSentEvent {
+            agreement_id,
+            from: contract_address,
+            to: employee.clone(),
+            amount,
+            token: token.clone(),
+        },
+    );
+
+    env.events().publish(
+        (Symbol::new(env, "PaymentReceived"),),
+        PaymentReceivedEvent {
+            agreement_id,
+            to: employee,
+            amount,
+            token,
+        },
+    );
+
+    Ok(())
+}
+
+/// Get the number of periods already claimed by an employee.
+///
+/// # Arguments
+///
+/// * `env` - The Soroban environment
+/// * `agreement_id` - The unique identifier for the payroll agreement
+/// * `employee_index` - The index of the employee in the agreement (0-based)
+///
+/// # Returns
+///
+/// Returns the number of claimed periods (0 if none have been claimed).
+pub fn get_employee_claimed_periods(env: &Env, agreement_id: u128, employee_index: u32) -> u32 {
+    DataKey::get_employee_claimed_periods(env, agreement_id, employee_index)
 }
 
 /// Claims time-based payments for an escrow agreement based on elapsed periods
@@ -965,7 +1149,9 @@ pub fn get_claimed_periods(env: &Env, agreement_id: u128) -> u32 {
     agreement.claimed_periods.unwrap_or(0)
 }
 
-// Helper functions
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
 
 fn get_next_agreement_id(env: &Env) -> u128 {
     let key = StorageKey::NextAgreementId;
@@ -1075,14 +1261,14 @@ pub fn pause_milestone_agreement(env: Env, agreement_id: u128) {
     let employer: Address = env
         .storage()
         .instance()
-        .get(&DataKey::Employer(agreement_id))
+        .get(&MilestoneKey::Employer(agreement_id))
         .expect("Agreement not found");
     employer.require_auth();
 
     let status: AgreementStatus = env
         .storage()
         .instance()
-        .get(&DataKey::Status(agreement_id))
+        .get(&MilestoneKey::Status(agreement_id))
         .expect("Agreement not found");
 
     // Allow pausing Active agreements, or Created agreements (which can have claimable milestones)
@@ -1093,7 +1279,7 @@ pub fn pause_milestone_agreement(env: Env, agreement_id: u128) {
 
     env.storage()
         .instance()
-        .set(&DataKey::Status(agreement_id), &AgreementStatus::Paused);
+        .set(&MilestoneKey::Status(agreement_id), &AgreementStatus::Paused);
 
     env.events().publish(
         ("agreement_paused", agreement_id),
@@ -1124,14 +1310,14 @@ pub fn resume_milestone_agreement(env: Env, agreement_id: u128) {
     let employer: Address = env
         .storage()
         .instance()
-        .get(&DataKey::Employer(agreement_id))
+        .get(&MilestoneKey::Employer(agreement_id))
         .expect("Agreement not found");
     employer.require_auth();
 
     let status: AgreementStatus = env
         .storage()
         .instance()
-        .get(&DataKey::Status(agreement_id))
+        .get(&MilestoneKey::Status(agreement_id))
         .expect("Agreement not found");
 
     assert!(
@@ -1142,7 +1328,7 @@ pub fn resume_milestone_agreement(env: Env, agreement_id: u128) {
     // Resume to Active status (milestone agreements can have claimable milestones in Active state)
     env.storage()
         .instance()
-        .set(&DataKey::Status(agreement_id), &AgreementStatus::Active);
+        .set(&MilestoneKey::Status(agreement_id), &AgreementStatus::Active);
 
     env.events().publish(
         ("agreement_resumed", agreement_id),
