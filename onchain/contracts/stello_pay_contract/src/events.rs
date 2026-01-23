@@ -1,7 +1,7 @@
 use crate::storage::AgreementMode;
-use soroban_sdk::{contracttype, symbol_short, Address, Env};
+use soroban_sdk::{contractevent, Address, Env};
 
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct MilestoneAdded {
     pub agreement_id: u128,
@@ -9,14 +9,14 @@ pub struct MilestoneAdded {
     pub amount: i128,
 }
 
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct MilestoneApproved {
     pub agreement_id: u128,
     pub milestone_id: u32,
 }
 
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct MilestoneClaimed {
     pub agreement_id: u128,
@@ -26,7 +26,7 @@ pub struct MilestoneClaimed {
 }
 
 /// Event: Agreement created
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct AgreementCreatedEvent {
     pub agreement_id: u128,
@@ -35,14 +35,14 @@ pub struct AgreementCreatedEvent {
 }
 
 /// Event: Agreement activated
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct AgreementActivatedEvent {
     pub agreement_id: u128,
 }
 
 /// Event: Employee added to agreement
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct EmployeeAddedEvent {
     pub agreement_id: u128,
@@ -51,7 +51,7 @@ pub struct EmployeeAddedEvent {
 }
 
 /// Event: Payroll claimed by employee
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct PayrollClaimedEvent {
     pub agreement_id: u128,
@@ -60,21 +60,21 @@ pub struct PayrollClaimedEvent {
 }
 
 /// Event: Agreement paused
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct AgreementPausedEvent {
     pub agreement_id: u128,
 }
 
 /// Event: Agreement resumed
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct AgreementResumedEvent {
     pub agreement_id: u128,
 }
 
 /// Event: Payment sent
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct PaymentSentEvent {
     pub agreement_id: u128,
@@ -85,7 +85,7 @@ pub struct PaymentSentEvent {
 }
 
 /// Event: Payment received
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct PaymentReceivedEvent {
     pub agreement_id: u128,
@@ -95,46 +95,41 @@ pub struct PaymentReceivedEvent {
 }
 
 pub fn emit_agreement_created(env: &Env, event: AgreementCreatedEvent) {
-    let topics = (symbol_short!("agr_new"), event.agreement_id);
-    env.events().publish(topics, event);
+    event.publish(env);
 }
 
 pub fn emit_agreement_activated(env: &Env, event: AgreementActivatedEvent) {
-    let topics = (symbol_short!("agr_act"), event.agreement_id);
-    env.events().publish(topics, event);
+    event.publish(env);
 }
 
 pub fn emit_employee_added(env: &Env, event: EmployeeAddedEvent) {
-    let topics = (symbol_short!("emp_add"), event.agreement_id);
-    env.events().publish(topics, event);
+    event.publish(env);
 }
 
 /// Event: ArbiterSet
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct ArbiterSetEvent {
     pub arbiter: Address,
 }
 
 pub fn emit_set_arbiter(env: &Env, event: ArbiterSetEvent) {
-    let topics = (symbol_short!("arb_set"), &event.arbiter);
-    env.events().publish(topics, event.clone());
+    event.publish(env);
 }
 
 /// Event: ArbiteDisputeRaisedrSet
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct DisputeRaisedEvent {
     pub agreement_id: u128,
 }
 
 pub fn emit_dsipute_raised(env: &Env, event: DisputeRaisedEvent) {
-    let topics = (symbol_short!("dis_rai"), &event.agreement_id);
-    env.events().publish(topics, event.clone());
+    event.publish(env);
 }
 
 /// Event: ArbiteDisputeRaisedrSet
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct DisputeResolvedEvent {
     pub agreement_id: u128,
@@ -143,54 +138,46 @@ pub struct DisputeResolvedEvent {
 }
 
 pub fn emit_dsipute_resolved(env: &Env, event: DisputeResolvedEvent) {
-    let topics = (symbol_short!("dis_res"), &event.agreement_id);
-    env.events().publish(topics, event.clone());
+    event.publish(env);
 }
 pub fn emit_payroll_claimed(env: &Env, event: PayrollClaimedEvent) {
-    let topics = (symbol_short!("pay_clm"), event.agreement_id);
-    env.events().publish(topics, event);
+    event.publish(env);
 }
 
 pub fn emit_agreement_paused(env: &Env, event: AgreementPausedEvent) {
-    let topics = (symbol_short!("agr_pau"), event.agreement_id);
-    env.events().publish(topics, event);
+    event.publish(env);
 }
 
 pub fn emit_agreement_resumed(env: &Env, event: AgreementResumedEvent) {
-    let topics = (symbol_short!("agr_res"), event.agreement_id);
-    env.events().publish(topics, event);
+    event.publish(env);
 }
 
 pub fn emit_payment_sent(env: &Env, event: PaymentSentEvent) {
-    let topics = (symbol_short!("pay_snt"), event.agreement_id);
-    env.events().publish(topics, event);
+    event.publish(env);
 }
 
 pub fn emit_payment_received(env: &Env, event: PaymentReceivedEvent) {
-    let topics = (symbol_short!("pay_rcv"), event.agreement_id);
-    env.events().publish(topics, event);
+    event.publish(env);
 }
 
 /// Event: Agreement cancelled
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct AgreementCancelledEvent {
     pub agreement_id: u128,
 }
 
 pub fn emit_agreement_cancelled(env: &Env, event: AgreementCancelledEvent) {
-    let topics = (symbol_short!("agr_can"), event.agreement_id);
-    env.events().publish(topics, event);
+    event.publish(env);
 }
 
 /// Event: Grace period finalized
-#[contracttype]
+#[contractevent]
 #[derive(Clone, Debug)]
 pub struct GracePeriodFinalizedEvent {
     pub agreement_id: u128,
 }
 
 pub fn emit_grace_period_finalized(env: &Env, event: GracePeriodFinalizedEvent) {
-    let topics = (symbol_short!("grc_fin"), event.agreement_id);
-    env.events().publish(topics, event);
+    event.publish(env);
 }

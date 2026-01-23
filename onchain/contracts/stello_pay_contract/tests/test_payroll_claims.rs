@@ -103,6 +103,7 @@ fn setup_test_agreement(
 #[test]
 fn test_claim_payroll_unauthorized() {
     let env = create_test_environment();
+    #[allow(deprecated)]
     let contract_id = env.register_contract(None, PayrollContract);
 
     let agreement_id = 1u128;
@@ -137,6 +138,7 @@ fn test_claim_payroll_unauthorized() {
 #[test]
 fn test_claim_payroll_invalid_employee_index() {
     let env = create_test_environment();
+    #[allow(deprecated)]
     let contract_id = env.register_contract(None, PayrollContract);
 
     let agreement_id = 1u128;
@@ -166,6 +168,7 @@ fn test_claim_payroll_invalid_employee_index() {
 #[test]
 fn test_multiple_employees_independent_claiming() {
     let env = create_test_environment();
+    #[allow(deprecated)]
     let contract_id = env.register_contract(None, PayrollContract);
 
     let agreement_id = 1u128;
@@ -215,6 +218,7 @@ fn test_multiple_employees_independent_claiming() {
 #[test]
 fn test_different_salaries_per_employee() {
     let env = create_test_environment();
+    #[allow(deprecated)]
     let contract_id = env.register_contract(None, PayrollContract);
 
     let agreement_id = 1u128;
@@ -266,6 +270,7 @@ fn test_different_salaries_per_employee() {
 #[test]
 fn test_claiming_during_grace_period() {
     let env = create_test_environment();
+    #[allow(deprecated)]
     let contract_id = env.register_contract(None, PayrollContract);
 
     let agreement_id = 1u128;

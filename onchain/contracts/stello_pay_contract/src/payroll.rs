@@ -126,14 +126,12 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
         .instance()
         .set(&MilestoneKey::TotalAmount(agreement_id), &(total + amount));
 
-    env.events().publish(
-        ("milestone_added", agreement_id),
-        MilestoneAdded {
-            agreement_id,
-            milestone_id,
-            amount,
-        },
-    );
+    MilestoneAdded {
+        agreement_id,
+        milestone_id,
+        amount,
+    }
+    .publish(&env);
 }
 
 /// Approves a milestone for payment
@@ -173,13 +171,11 @@ pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         &true,
     );
 
-    env.events().publish(
-        ("milestone_approved", agreement_id),
-        MilestoneApproved {
-            agreement_id,
-            milestone_id,
-        },
-    );
+    MilestoneApproved {
+        agreement_id,
+        milestone_id,
+    }
+    .publish(&env);
 }
 
 /// Claims payment for an approved milestone
@@ -253,15 +249,13 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         .get(&MilestoneKey::Token(agreement_id))
         .expect("Token not found");
 
-    env.events().publish(
-        ("milestone_claimed", agreement_id),
-        MilestoneClaimed {
-            agreement_id,
-            milestone_id,
-            amount,
-            to: contributor.clone(),
-        },
-    );
+    MilestoneClaimed {
+        agreement_id,
+        milestone_id,
+        amount,
+        to: contributor.clone(),
+    }
+    .publish(&env);
 
     let all_claimed = all_milestones_claimed(&env, agreement_id, count);
     if all_claimed {
@@ -949,26 +943,22 @@ pub fn claim_payroll(
         },
     );
 
-    env.events().publish(
-        (Symbol::new(env, "PaymentSent"),),
-        PaymentSentEvent {
-            agreement_id,
-            from: contract_address,
-            to: employee.clone(),
-            amount,
-            token: token.clone(),
-        },
-    );
+    PaymentSentEvent {
+        agreement_id,
+        from: contract_address,
+        to: employee.clone(),
+        amount,
+        token: token.clone(),
+    }
+    .publish(&env);
 
-    env.events().publish(
-        (Symbol::new(env, "PaymentReceived"),),
-        PaymentReceivedEvent {
-            agreement_id,
-            to: employee,
-            amount,
-            token,
-        },
-    );
+    PaymentReceivedEvent {
+        agreement_id,
+        to: employee,
+        amount,
+        token,
+    }
+    .publish(&env);
 
     Ok(())
 }
@@ -1255,10 +1245,7 @@ pub fn pause_milestone_agreement(env: Env, agreement_id: u128) {
         &AgreementStatus::Paused,
     );
 
-    env.events().publish(
-        ("agreement_paused", agreement_id),
-        AgreementPausedEvent { agreement_id },
-    );
+    AgreementPausedEvent { agreement_id }.publish(&env);
 }
 
 /// Resumes a paused milestone-based agreement, allowing claims again
@@ -1305,10 +1292,7 @@ pub fn resume_milestone_agreement(env: Env, agreement_id: u128) {
         &AgreementStatus::Active,
     );
 
-    env.events().publish(
-        ("agreement_resumed", agreement_id),
-        AgreementResumedEvent { agreement_id },
-    );
+    AgreementResumedEvent { agreement_id }.publish(&env);
 }
 
 fn add_to_employer_agreements(env: &Env, employer: &Address, agreement_id: u128) {

@@ -15,6 +15,7 @@ fn create_test_env() -> (
     PayrollContractClient<'static>,
 ) {
     let env = Env::default();
+    #[allow(deprecated)]
     let contract_id = env.register_contract(None, PayrollContract);
     let client = PayrollContractClient::new(&env, &contract_id);
 
@@ -40,7 +41,7 @@ fn create_token_contract<'a>(
 fn test_dispute_flow() {
     // let env = Env::default();
 
-    let (env, employer, employee, _token, client) = create_test_env();
+    let (env, employer, _employee, _token, client) = create_test_env();
     let employee = Address::generate(&env);
     env.mock_all_auths();
 
@@ -106,7 +107,7 @@ fn test_dispute_flow() {
 fn test_raise_dispute_non_arbiter() {
     // let env = Env::default();
 
-    let (env, employer, employee, _token, client) = create_test_env();
+    let (env, employer, _employee, _token, client) = create_test_env();
     let employee = Address::generate(&env);
     env.mock_all_auths();
 
@@ -122,7 +123,7 @@ fn test_raise_dispute_non_arbiter() {
 
     // Setup token
     let token_admin = Address::generate(&env);
-    let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
+    let (token, _token_client, _token_admin_client) = create_token_contract(&env, &token_admin);
 
     // Create agreement
     let agreement_id = client.create_escrow_agreement(
@@ -143,7 +144,7 @@ fn test_raise_dispute_non_arbiter() {
 fn test_raise_dispute_outisde_grace_period() {
     // let env = Env::default();
 
-    let (env, employer, employee, _token, client) = create_test_env();
+    let (env, employer, _employee, _token, client) = create_test_env();
     let employee = Address::generate(&env);
     env.mock_all_auths();
 
@@ -158,7 +159,7 @@ fn test_raise_dispute_outisde_grace_period() {
 
     // Setup token
     let token_admin = Address::generate(&env);
-    let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
+    let (token, _token_client, _token_admin_client) = create_token_contract(&env, &token_admin);
 
     // Create agreement
     let agreement_id = client.create_escrow_agreement(
@@ -180,7 +181,7 @@ fn test_raise_dispute_outisde_grace_period() {
 fn test_resolve_dispute_invalid_payout() {
     // let env = Env::default();
 
-    let (env, employer, employee, _token, client) = create_test_env();
+    let (env, employer, _employee, _token, client) = create_test_env();
     let employee = Address::generate(&env);
     env.mock_all_auths();
 
@@ -233,7 +234,7 @@ fn test_resolve_dispute_invalid_payout() {
 
 #[test]
 fn test_dispute_payroll_distribution() {
-    let (env, employer, employee, _token, client) = create_test_env();
+    let (env, employer, _employee, _token, client) = create_test_env();
     let employee = Address::generate(&env);
     let employee1 = Address::generate(&env);
     let employee2 = Address::generate(&env);
