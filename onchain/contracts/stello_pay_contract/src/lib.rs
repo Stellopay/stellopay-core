@@ -239,4 +239,95 @@ impl PayrollContract {
     pub fn get_agreement_employees(env: Env, agreement_id: u128) -> Vec<Address> {
         payroll::get_agreement_employees(&env, agreement_id)
     }
+
+    /// Set Arbiter
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `caller` - Address of the caller
+    /// * `arbiter` - Address of the arbiter to add
+    ///
+    /// # Access Control
+    /// Requires caller authentication
+    pub fn set_arbiter(env: Env, caller: Address, arbiter: Address) -> bool {
+        payroll::set_arbiter(&env, caller, arbiter)
+    }
+
+    /// Raise Dispute
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `caller` - Address of the caller
+    /// * `agreement_id` - ID of the agreement to raise dispute for
+    ///
+    /// # Access Control
+    /// Requires caller or employee authentication
+    pub fn raise_dispute(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+    ) -> Result<(), PayrollError> {
+        payroll::raise_dispute(&env, caller, agreement_id)
+    }
+
+    /// Resolve Dispute
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `caller` - Address of the caller
+    /// * `agreement_id` - ID of the agreement to raise dispute for
+    /// * `pay_employee` - Amount to pay the employee
+    /// * `refund_employer` - Amount to refund the employer
+    ///
+    /// # Access Control
+    /// Requires arbiter authentication
+    pub fn resolve_dispute(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        pay_employee: i128,
+        refund_employer: i128,
+    ) -> Result<(), PayrollError> {
+        payroll::resolve_dispute(env, caller, agreement_id, pay_employee, refund_employer)
+    }
+
+    /// Retrieves current dispute status for an agreement by ID
+    ///
+    /// # Returns
+    /// DisputeStatus enum
+    pub fn get_dispute_status(env: Env, agreement_id: u128) -> DisputeStatus {
+        payroll::get_dispute_status(env, agreement_id)
+    }
+
+    /// Claim payroll for an employee
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `caller` - Address of the caller
+    /// * `agreement_id` - ID of the agreement
+    /// * `employee_index` - Index of the employee in the agreement
+    ///
+    /// # Access Control
+    /// Requires caller to be the employee
+    pub fn claim_payroll(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        employee_index: u32,
+    ) -> Result<(), PayrollError> {
+        payroll::claim_payroll(&env, &caller, agreement_id, employee_index)
+    }
+
+    /// Get claimed periods for an employee
+    ///
+    /// # Arguments
+    /// * `env` - Contract environment
+    /// * `agreement_id` - ID of the agreement
+    /// * `employee_index` - Index of the employee in the agreement
+    ///
+    /// # Returns
+    /// Number of periods claimed
+    pub fn get_employee_claimed_periods(env: Env, agreement_id: u128, employee_index: u32) -> u32 {
+        payroll::get_employee_claimed_periods(&env, agreement_id, employee_index)
+    }
 }
