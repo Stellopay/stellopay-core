@@ -2,12 +2,13 @@ use soroban_sdk::token::TokenClient;
 use soroban_sdk::{Address, Env, Vec};
 
 use crate::events::{
-    emit_agreement_activated, emit_agreement_created, emit_agreement_paused,
-    emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved, emit_employee_added,
-    emit_payment_received, emit_payment_sent, emit_payroll_claimed, emit_set_arbiter,
-    AgreementActivatedEvent, AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent,
-    ArbiterSetEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, MilestoneAdded,
-    MilestoneApproved, MilestoneClaimed, PaymentReceivedEvent, PaymentSentEvent,
+    emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
+    emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
+    emit_employee_added, emit_grace_period_finalized, emit_payment_received, emit_payment_sent,
+    emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent,
+    AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent,
+    DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, GracePeriodFinalizedEvent,
+    MilestoneAdded, MilestoneApproved, MilestoneClaimed, PaymentReceivedEvent, PaymentSentEvent,
     PayrollClaimedEvent,
 };
 use crate::storage::{
@@ -822,20 +823,17 @@ pub fn claim_payroll(
         return Err(PayrollError::InvalidData);
     }
 
-    // Check if agreement is active
-    if agreement.status != AgreementStatus::Active {
-        return Err(PayrollError::InvalidData);
-    }
+    // Allow claims if:
+    // 1. Agreement is Active, OR
+    // 2. Agreement is Cancelled AND grace period is still active
+    let can_claim = match agreement.status {
+        AgreementStatus::Active => true,
+        AgreementStatus::Cancelled => is_grace_period_active(env, agreement_id),
+        _ => false,
+    };
 
-    // Handle cancelled agreement grace period check
-    if agreement.status == AgreementStatus::Cancelled {
-        let current_time = env.ledger().timestamp();
-        if let Some(cancelled_at) = agreement.cancelled_at {
-            let grace_end = cancelled_at + agreement.grace_period_seconds;
-            if current_time <= grace_end {
-                return Err(PayrollError::InvalidData);
-            }
-        }
+    if !can_claim {
+        return Err(PayrollError::InvalidData);
     }
 
     // Get employee address at the given index
@@ -1015,10 +1013,16 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) {
         "Cannot claim when agreement is paused"
     );
 
-    assert!(
-        agreement.status == AgreementStatus::Active,
-        "Agreement must be active"
-    );
+    // Allow claims if:
+    // 1. Agreement is Active, OR
+    // 2. Agreement is Cancelled AND grace period is still active
+    let can_claim = match agreement.status {
+        AgreementStatus::Active => true,
+        AgreementStatus::Cancelled => is_grace_period_active(env, agreement_id),
+        _ => false,
+    };
+
+    assert!(can_claim, "Agreement must be active or in grace period");
 
     let employees: Vec<EmployeeInfo> = env
         .storage()
@@ -1316,4 +1320,154 @@ fn add_to_employer_agreements(env: &Env, employer: &Address, agreement_id: u128)
         .unwrap_or(Vec::new(env));
     agreements.push_back(agreement_id);
     env.storage().persistent().set(&key, &agreements);
+}
+
+// -----------------------------------------------------------------------------
+// Grace Period and Cancellation
+// -----------------------------------------------------------------------------
+
+/// Cancels an agreement, initiating the grace period.
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `agreement_id` - ID of the agreement to cancel
+///
+/// # Requirements
+/// - Agreement must be in Active or Created status
+/// - Caller must be the employer
+///
+/// # State Transition
+/// Active/Created -> Cancelled
+///
+/// # Behavior
+/// - Sets cancelled_at timestamp
+/// - Claims are allowed during grace period
+/// - Refunds are prevented until grace period expires
+pub fn cancel_agreement(env: &Env, agreement_id: u128) {
+    let mut agreement = get_agreement(env, agreement_id).expect("Agreement not found");
+
+    agreement.employer.require_auth();
+
+    assert!(
+        agreement.status == AgreementStatus::Active || agreement.status == AgreementStatus::Created,
+        "Can only cancel Active or Created agreements"
+    );
+
+    agreement.status = AgreementStatus::Cancelled;
+    agreement.cancelled_at = Some(env.ledger().timestamp());
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Agreement(agreement_id), &agreement);
+
+    emit_agreement_cancelled(
+        env,
+        AgreementCancelledEvent { agreement_id },
+    );
+}
+
+/// Finalizes the grace period and allows refund of remaining balance.
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `agreement_id` - ID of the agreement
+///
+/// # Requirements
+/// - Agreement must be in Cancelled status
+/// - Grace period must have expired
+/// - Caller must be the employer
+///
+/// # Behavior
+/// - Refunds remaining escrow balance to employer
+/// - Marks agreement as ready for finalization
+pub fn finalize_grace_period(env: &Env, agreement_id: u128) {
+    let agreement = get_agreement(env, agreement_id).expect("Agreement not found");
+
+    agreement.employer.require_auth();
+
+    assert!(
+        agreement.status == AgreementStatus::Cancelled,
+        "Agreement must be cancelled"
+    );
+
+    let cancelled_at = agreement
+        .cancelled_at
+        .expect("Cancelled agreement must have cancelled_at timestamp");
+
+    let current_time = env.ledger().timestamp();
+    let grace_end = cancelled_at + agreement.grace_period_seconds;
+
+    assert!(
+        current_time >= grace_end,
+        "Grace period has not expired yet"
+    );
+
+    // Refund remaining balance using escrow contract if available
+    // For now, we'll use the existing escrow balance tracking
+    let escrow_balance = DataKey::get_agreement_escrow_balance(env, agreement_id, &agreement.token);
+    
+    if escrow_balance > 0 {
+        let token_client = soroban_sdk::token::Client::new(env, &agreement.token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &agreement.employer,
+            &escrow_balance,
+        );
+
+        // Clear escrow balance
+        DataKey::set_agreement_escrow_balance(env, agreement_id, &agreement.token, 0);
+    }
+
+    emit_grace_period_finalized(
+        env,
+        GracePeriodFinalizedEvent { agreement_id },
+    );
+}
+
+/// Checks if the grace period is currently active for a cancelled agreement.
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `agreement_id` - ID of the agreement
+///
+/// # Returns
+/// true if grace period is active, false otherwise
+pub fn is_grace_period_active(env: &Env, agreement_id: u128) -> bool {
+    let agreement = match get_agreement(env, agreement_id) {
+        Some(agreement) => agreement,
+        None => return false,
+    };
+
+    if agreement.status != AgreementStatus::Cancelled {
+        return false;
+    }
+
+    let cancelled_at = match agreement.cancelled_at {
+        Some(timestamp) => timestamp,
+        None => return false,
+    };
+
+    let current_time = env.ledger().timestamp();
+    let grace_end = cancelled_at + agreement.grace_period_seconds;
+
+    current_time < grace_end
+}
+
+/// Gets the grace period end timestamp for a cancelled agreement.
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `agreement_id` - ID of the agreement
+///
+/// # Returns
+/// Some(timestamp) if agreement is cancelled, None otherwise
+pub fn get_grace_period_end(env: &Env, agreement_id: u128) -> Option<u64> {
+    let agreement = get_agreement(env, agreement_id)?;
+
+    if agreement.status != AgreementStatus::Cancelled {
+        return None;
+    }
+
+    let cancelled_at = agreement.cancelled_at?;
+    Some(cancelled_at + agreement.grace_period_seconds)
 }
