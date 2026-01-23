@@ -1,8 +1,7 @@
-use super::{PayrollContract, PayrollContractClient};
 use soroban_sdk::{testutils::Address as _, Address, BytesN, Env};
+use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
-const NEW_CONTRACT_WASM: &[u8] =
-    include_bytes!("../../../target/wasm32-unknown-unknown/release/stello_pay_contract.wasm");
+const NEW_CONTRACT_WASM: &[u8] = include_bytes!("./stello_pay_contract.wasm");
 
 #[test]
 fn test_upgrade_flow() {

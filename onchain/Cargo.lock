@@ -1400,6 +1400,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "soroban-token-sdk"
+version = "23.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d39a6be52b50dca31a27ec55901b8024e943274dae50331817a0fa85c787ffb1"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "soroban-wasmi"
 version = "0.31.1-soroban.20.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1512,6 +1521,7 @@ dependencies = [
  "sha1",
  "sha2",
  "soroban-sdk",
+ "soroban-token-sdk",
  "stellar-access",
  "stellar-contract-utils",
  "stellar-macros",

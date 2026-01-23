@@ -10,6 +10,7 @@ use storage::{Agreement, DisputeStatus, Milestone, PayrollError, StorageKey};
 
 /// Payroll Contract for managing payroll agreements with employee claiming functionality.
 ///
+///
 /// This contract supports:
 /// - Multiple employees per agreement with individual salary tracking
 /// - Per-employee period tracking for claimed salaries
@@ -19,6 +20,16 @@ use storage::{Agreement, DisputeStatus, Milestone, PayrollError, StorageKey};
 #[derive(Upgradeable)]
 #[contract]
 pub struct PayrollContract;
+
+/// UpgradeableInternal implementation for PayrollContract
+///
+///
+impl UpgradeableInternal for PayrollContract {
+    fn _require_auth(e: &Env, _operator: &Address) {
+        let owner: Address = e.storage().persistent().get(&StorageKey::Owner).unwrap();
+        owner.require_auth();
+    }
+}
 
 #[contractimpl]
 impl PayrollContract {
