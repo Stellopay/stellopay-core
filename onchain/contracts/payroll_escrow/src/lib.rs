@@ -367,3 +367,5 @@ impl PayrollEscrowContract {
     }
 }
 
+#[cfg(test)]
+mod tests;
