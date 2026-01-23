@@ -3,7 +3,7 @@
 use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
 use soroban_sdk::{testutils::Address as _, testutils::Ledger, Address, Env};
 use stello_pay_contract::storage::{
-    Agreement, AgreementMode, AgreementStatus, DataKey, DisputeStatus, StorageKey,
+    Agreement, AgreementMode, AgreementStatus, DataKey, DisputeStatus, PayrollError, StorageKey,
 };
 use stello_pay_contract::PayrollContract;
 
@@ -35,7 +35,7 @@ fn claim(
     caller: &Address,
     agreement_id: u128,
     employee_index: u32,
-) -> Result<(), soroban_sdk::Error> {
+) -> Result<(), PayrollError> {
     env.as_contract(contract_id, || {
         PayrollContract::claim_payroll(env.clone(), caller.clone(), agreement_id, employee_index)
     })
