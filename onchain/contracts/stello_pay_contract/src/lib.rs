@@ -75,7 +75,8 @@ impl PayrollContract {
     /// * `num_periods` - Number of periods
     ///
     /// # Returns
-    /// New agreement ID
+    /// * `Ok(agreement_id)` - New agreement ID on success
+    /// * `Err(PayrollError)` - Error on validation failure
     ///
     /// # State Transition
     /// None -> Created
@@ -87,7 +88,7 @@ impl PayrollContract {
         amount_per_period: i128,
         period_seconds: u64,
         num_periods: u32,
-    ) -> u128 {
+    ) -> Result<u128, storage::PayrollError> {
         payroll::create_escrow_agreement(
             &env,
             employer,
@@ -390,14 +391,18 @@ impl PayrollContract {
     /// # Arguments
     /// * `agreement_id` - ID of the escrow agreement
     ///
+    /// # Returns
+    /// * `Ok(())` on success
+    /// * `Err(PayrollError)` on failure
+    ///
     /// # Requirements
     /// - Agreement must be Active and activated
     /// - Agreement must be Escrow mode
     /// - Caller must be the contributor
     /// - Cannot claim more than total periods
     /// - Works during grace period
-    pub fn claim_time_based(env: Env, agreement_id: u128) {
-        payroll::claim_time_based(&env, agreement_id);
+    pub fn claim_time_based(env: Env, agreement_id: u128) -> Result<(), storage::PayrollError> {
+        payroll::claim_time_based(&env, agreement_id)
     }
 
     /// Gets the number of claimed periods for a time-based escrow agreement.
