@@ -1,8 +1,6 @@
 [workspace]
 resolver = "2"
-members = [
-  "contracts/*",
-]
+members = ["contracts/*"]
 
 [workspace.dependencies]
 soroban-sdk = "23.4.1"

@@ -186,6 +186,12 @@ pub enum PayrollError {
     InsufficientEscrowBalance = 15,
     NoPeriodsToClaim = 16,
     AgreementNotActivated = 17,
+    InvalidAgreementMode = 18,
+    AgreementPaused = 19,
+    AllPeriodsClaimed = 20,
+    ZeroAmountPerPeriod = 21,
+    ZeroPeriodDuration = 22,
+    ZeroNumPeriods = 23,
 }
 
 /// Storage keys for the payroll claiming system.
