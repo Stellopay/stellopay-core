@@ -5,3 +5,6 @@ target
 .soroban
 .stellar
 **/test_snapshots/
+
+# coverage
+tarpaulin-report.html

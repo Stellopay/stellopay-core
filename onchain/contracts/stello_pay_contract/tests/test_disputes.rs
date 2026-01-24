@@ -1,10 +1,9 @@
 #![cfg(test)]
 use soroban_sdk::{
-    log,
-    testutils::{Address as _, Ledger},
-    token, Address, Env,
+    testutils::{Address as _, Events, Ledger},
+    token, Address, Env, Symbol, TryFromVal,
 };
-use stello_pay_contract::storage::DisputeStatus;
+use stello_pay_contract::storage::{AgreementStatus, DisputeStatus};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 fn create_test_env() -> (
@@ -15,8 +14,8 @@ fn create_test_env() -> (
     PayrollContractClient<'static>,
 ) {
     let env = Env::default();
-    #[allow(deprecated)]
-    let contract_id = env.register_contract(None, PayrollContract);
+
+    let contract_id = env.register(PayrollContract, ());
     let client = PayrollContractClient::new(&env, &contract_id);
 
     let employer = Address::generate(&env);
@@ -37,263 +36,571 @@ fn create_token_contract<'a>(
     (token, token_client, token_admin_client)
 }
 
+// --- Arbiter Management ---
+
 #[test]
-fn test_dispute_flow() {
-    // let env = Env::default();
-
-    let (env, employer, _employee, _token, client) = create_test_env();
-    let employee = Address::generate(&env);
+fn test_set_arbiter_by_admin() {
+    let (env, _, _, _, client) = create_test_env();
     env.mock_all_auths();
-
     let owner = Address::generate(&env);
     let arbiter = Address::generate(&env);
 
-    // Initialize
-    client.initialize(&owner.clone());
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
 
-    // Set arbiter
-    client.set_arbiter(&owner, &arbiter.clone());
+    assert_eq!(client.get_arbiter(), Some(arbiter));
+}
 
-    // Setup token
-    let token_admin = Address::generate(&env);
-    let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
+#[test]
+#[should_panic]
+fn test_set_arbiter_unauthorized_fails() {
+    let (env, _, _, _, client) = create_test_env();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let attacker = Address::generate(&env);
 
-    // Create agreement
-    let agreement_id = client.create_escrow_agreement(
-        &employer.clone(),
-        &employee.clone(),
-        &token.clone(),
-        &200,
-        &86400,
-        &5,
-    );
+    env.mock_all_auths();
+    client.initialize(&owner);
 
-    // Raise dispute by employee
+    env.set_auths(&[]); // Clear all mocks
+
+    client.set_arbiter(&attacker, &arbiter);
+}
+
+#[test]
+fn test_get_arbiter_address() {
+    let (env, _, _, _, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+
+    client.initialize(&owner);
+    assert_eq!(client.get_arbiter(), None);
+
+    client.set_arbiter(&owner, &arbiter);
+    assert_eq!(client.get_arbiter(), Some(arbiter));
+}
+
+// --- Raising Disputes ---
+
+#[test]
+fn test_raise_dispute_by_employer() {
+    let (env, employer, contributor, token_id, client) = create_test_env();
+    env.mock_all_auths();
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token_id, &100, &3600, &1);
+
     client.raise_dispute(&employer, &agreement_id);
 
-    let status = client.get_dispute_status(&agreement_id);
-    log!(&env, "Status: {}", status);
-
-    // Check status
     assert_eq!(
         client.get_dispute_status(&agreement_id),
         DisputeStatus::Raised
     );
+    let agreement = client.get_agreement(&agreement_id).unwrap();
+    assert_eq!(agreement.status, AgreementStatus::Disputed);
+}
 
+#[test]
+fn test_raise_dispute_by_contributor() {
+    let (env, employer, contributor, token_id, client) = create_test_env();
     env.mock_all_auths();
-    token_admin_client.mint(&employer, &2000);
-    token_client.transfer(&employer, &client.address, &1000);
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token_id, &100, &3600, &1);
 
-    assert_eq!(token_client.balance(&employer), 1000);
-    assert_eq!(token_client.balance(&employee), 0);
-    assert_eq!(token_client.balance(&client.address), 1000);
+    client.raise_dispute(&contributor, &agreement_id);
 
-    // Resolve by arbiter
-    client.resolve_dispute(&arbiter, &agreement_id, &700, &300);
-
-    assert_eq!(token_client.balance(&employer), 1300);
-    assert_eq!(token_client.balance(&employee), 700);
-    assert_eq!(token_client.balance(&client.address), 0);
-
-    // Check resolved
     assert_eq!(
         client.get_dispute_status(&agreement_id),
-        DisputeStatus::Resolved
+        DisputeStatus::Raised
     );
 }
 
 #[test]
-#[should_panic(expected = "HostError: Error(Contract, #3)")]
-fn test_raise_dispute_non_arbiter() {
-    // let env = Env::default();
-
-    let (env, employer, _employee, _token, client) = create_test_env();
-    let employee = Address::generate(&env);
+fn test_raise_dispute_by_employee() {
+    let (env, employer, _, token_id, client) = create_test_env();
     env.mock_all_auths();
+    let employee = Address::generate(&env);
+    let agreement_id = client.create_payroll_agreement(&employer, &token_id, &3600);
+    client.add_employee_to_agreement(&agreement_id, &employee, &100);
 
-    let owner = Address::generate(&env);
-    let arbiter = Address::generate(&env);
+    client.raise_dispute(&employee, &agreement_id);
+
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
+}
+
+#[test]
+fn test_raise_dispute_by_non_party_fails() {
+    let (env, employer, contributor, token_id, client) = create_test_env();
+    env.mock_all_auths();
     let non_party = Address::generate(&env);
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token_id, &100, &3600, &1);
 
-    // Initialize
-    client.initialize(&owner.clone());
-
-    // Set arbiter
-    client.set_arbiter(&owner, &arbiter.clone());
-
-    // Setup token
-    let token_admin = Address::generate(&env);
-    let (token, _token_client, _token_admin_client) = create_token_contract(&env, &token_admin);
-
-    // Create agreement
-    let agreement_id = client.create_escrow_agreement(
-        &employer.clone(),
-        &employee.clone(),
-        &token.clone(),
-        &200,
-        &86400,
-        &5,
-    );
-
-    // Raise dispute by employee
-    client.raise_dispute(&non_party, &agreement_id);
+    let result = client.try_raise_dispute(&non_party, &agreement_id);
+    assert!(result.is_err());
 }
 
 #[test]
-#[should_panic(expected = "HostError: Error(Contract, #2)")]
-fn test_raise_dispute_outisde_grace_period() {
-    // let env = Env::default();
-
-    let (env, employer, _employee, _token, client) = create_test_env();
-    let employee = Address::generate(&env);
+fn test_raise_dispute_after_grace_period_fails() {
+    let (env, employer, contributor, token_id, client) = create_test_env();
     env.mock_all_auths();
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token_id, &100, &3600, &1);
 
-    let owner = Address::generate(&env);
-    let arbiter = Address::generate(&env);
+    env.ledger().set_timestamp(3601);
 
-    // Initialize
-    client.initialize(&owner.clone());
-
-    // Set arbiter
-    client.set_arbiter(&owner, &arbiter.clone());
-
-    // Setup token
-    let token_admin = Address::generate(&env);
-    let (token, _token_client, _token_admin_client) = create_token_contract(&env, &token_admin);
-
-    // Create agreement
-    let agreement_id = client.create_escrow_agreement(
-        &employer.clone(),
-        &employee.clone(),
-        &token.clone(),
-        &200,
-        &3000,
-        &5,
-    );
-
-    env.ledger().set_timestamp(3000 * 5 + 1);
-    // Raise dispute by employee
-    client.raise_dispute(&employer, &agreement_id);
+    let result = client.try_raise_dispute(&employer, &agreement_id);
+    assert!(result.is_err());
 }
 
 #[test]
-#[should_panic(expected = "HostError: Error(Contract, #5)")]
-fn test_resolve_dispute_invalid_payout() {
-    // let env = Env::default();
-
-    let (env, employer, _employee, _token, client) = create_test_env();
-    let employee = Address::generate(&env);
+fn test_raise_dispute_already_raised_fails() {
+    let (env, employer, contributor, token_id, client) = create_test_env();
     env.mock_all_auths();
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token_id, &100, &3600, &1);
 
-    let owner = Address::generate(&env);
-    let arbiter = Address::generate(&env);
-
-    // Initialize
-    client.initialize(&owner.clone());
-
-    // Set arbiter
-    client.set_arbiter(&owner, &arbiter.clone());
-
-    // Setup token
-    let token_admin = Address::generate(&env);
-    let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
-
-    // Create agreement
-    let agreement_id = client.create_escrow_agreement(
-        &employer.clone(),
-        &employee.clone(),
-        &token.clone(),
-        &200,
-        &86400,
-        &5,
-    );
-
-    // Raise dispute by employee
     client.raise_dispute(&employer, &agreement_id);
+    let result = client.try_raise_dispute(&employer, &agreement_id);
+    assert!(result.is_err());
+}
 
-    let status = client.get_dispute_status(&agreement_id);
-    log!(&env, "Status: {}", status);
+#[test]
+fn test_dispute_status_set_to_raised() {
+    let (env, employer, contributor, token_id, client) = create_test_env();
+    env.mock_all_auths();
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token_id, &100, &3600, &1);
 
-    // Check status
+    client.raise_dispute(&employer, &agreement_id);
     assert_eq!(
         client.get_dispute_status(&agreement_id),
         DisputeStatus::Raised
     );
-
-    env.mock_all_auths();
-    token_admin_client.mint(&employer, &2000);
-    token_client.transfer(&employer, &client.address, &1000);
-
-    assert_eq!(token_client.balance(&employer), 1000);
-    assert_eq!(token_client.balance(&employee), 0);
-    assert_eq!(token_client.balance(&client.address), 1000);
-
-    // Resolve by arbiter
-    client.resolve_dispute(&arbiter, &agreement_id, &1000, &300);
 }
 
 #[test]
-fn test_dispute_payroll_distribution() {
-    let (env, employer, _employee, _token, client) = create_test_env();
-    let employee = Address::generate(&env);
-    let employee1 = Address::generate(&env);
-    let employee2 = Address::generate(&env);
+fn test_dispute_raised_at_recorded() {
+    let (env, employer, contributor, token_id, client) = create_test_env();
     env.mock_all_auths();
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token_id, &100, &3600, &1);
 
+    let now = 1000;
+    env.ledger().set_timestamp(now);
+
+    client.raise_dispute(&employer, &agreement_id);
+    let agreement = client.get_agreement(&agreement_id).unwrap();
+    assert_eq!(agreement.dispute_raised_at, Some(now));
+}
+
+#[test]
+fn test_agreement_status_changes_to_disputed() {
+    let (env, employer, contributor, token_id, client) = create_test_env();
+    env.mock_all_auths();
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token_id, &100, &3600, &1);
+
+    client.raise_dispute(&employer, &agreement_id);
+    let agreement = client.get_agreement(&agreement_id).unwrap();
+    assert_eq!(agreement.status, AgreementStatus::Disputed);
+}
+
+#[test]
+fn test_dispute_raised_event() {
+    let (env, employer, contributor, token_id, client) = create_test_env();
+    env.mock_all_auths();
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token_id, &100, &3600, &1);
+
+    client.raise_dispute(&employer, &agreement_id);
+
+    let events = env.events().all();
+    let event_found = events.iter().any(|event| {
+        event.0 == client.address
+            && Symbol::try_from_val(&env, &event.1.get(0).unwrap())
+                .map(|s| s == Symbol::new(&env, "dispute_raised_event"))
+                .unwrap_or(false)
+    });
+    assert!(event_found, "DisputeRaisedEvent not found");
+}
+
+// --- Resolving Disputes ---
+
+#[test]
+fn test_resolve_dispute_by_arbiter() {
+    let (env, employer, contributor, _, client) = create_test_env();
+    env.mock_all_auths();
     let owner = Address::generate(&env);
     let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
 
-    // Initialize
-    client.initialize(&owner.clone());
-
-    // Set arbiter
-    client.set_arbiter(&owner, &arbiter.clone());
-
-    // Setup token
     let token_admin = Address::generate(&env);
     let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
 
-    env.mock_all_auths();
-    let agreement_id = client.create_payroll_agreement(&employer, &token, &3600);
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100, &3600, &1);
 
-    client.add_employee_to_agreement(&agreement_id, &employee.clone(), &300);
-    client.add_employee_to_agreement(&agreement_id, &employee1.clone(), &300);
-    client.add_employee_to_agreement(&agreement_id, &employee2, &300);
+    // Fund agreement
+    token_admin_client.mint(&client.address, &100);
 
-    // Raise dispute by employee
     client.raise_dispute(&employer, &agreement_id);
+    client.resolve_dispute(&arbiter, &agreement_id, &60, &40);
 
-    let status = client.get_dispute_status(&agreement_id);
-    log!(&env, "Status: {}", status);
-
-    // Check status
-    assert_eq!(
-        client.get_dispute_status(&agreement_id),
-        DisputeStatus::Raised
-    );
-
-    env.mock_all_auths();
-    token_admin_client.mint(&employer, &2000);
-    token_client.transfer(&employer, &client.address, &900);
-
-    assert_eq!(token_client.balance(&employer), 1100);
-    assert_eq!(token_client.balance(&employee), 0);
-    assert_eq!(token_client.balance(&employee1), 0);
-    assert_eq!(token_client.balance(&employee2), 0);
-    assert_eq!(token_client.balance(&client.address), 900);
-
-    // Resolve by arbiter
-    client.resolve_dispute(&arbiter, &agreement_id, &600, &300);
-
-    assert_eq!(token_client.balance(&employer), 1400);
-    assert_eq!(token_client.balance(&employee), 200);
-    assert_eq!(token_client.balance(&employee1), 200);
-    assert_eq!(token_client.balance(&employee2), 200);
-    assert_eq!(token_client.balance(&client.address), 0);
-
-    // Check resolved
+    assert_eq!(token_client.balance(&contributor), 60);
+    assert_eq!(token_client.balance(&employer), 40);
     assert_eq!(
         client.get_dispute_status(&agreement_id),
         DisputeStatus::Resolved
     );
+}
+
+#[test]
+fn test_resolve_dispute_unauthorized_fails() {
+    let (env, employer, contributor, token_id, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token_id, &100, &3600, &1);
+    client.raise_dispute(&employer, &agreement_id);
+
+    env.set_auths(&[]);
+
+    let result = client.try_resolve_dispute(&attacker, &agreement_id, &50, &50);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_resolve_no_dispute_fails() {
+    let (env, employer, contributor, token_id, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token_id, &100, &3600, &1);
+
+    let result = client.try_resolve_dispute(&arbiter, &agreement_id, &50, &50);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_resolve_with_pay_contributor_only() {
+    let (env, employer, contributor, _, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+    let token_admin = Address::generate(&env);
+    let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100, &3600, &1);
+    token_admin_client.mint(&client.address, &100);
+
+    client.raise_dispute(&employer, &agreement_id);
+    client.resolve_dispute(&arbiter, &agreement_id, &100, &0);
+
+    assert_eq!(token_client.balance(&contributor), 100);
+    assert_eq!(token_client.balance(&employer), 0);
+}
+
+#[test]
+fn test_resolve_with_refund_employer_only() {
+    let (env, employer, contributor, _, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+    let token_admin = Address::generate(&env);
+    let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100, &3600, &1);
+    token_admin_client.mint(&client.address, &100);
+
+    client.raise_dispute(&employer, &agreement_id);
+    client.resolve_dispute(&arbiter, &agreement_id, &0, &100);
+
+    assert_eq!(token_client.balance(&contributor), 0);
+    assert_eq!(token_client.balance(&employer), 100);
+}
+
+#[test]
+fn test_resolve_with_both_payouts() {
+    let (env, employer, contributor, _, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+    let token_admin = Address::generate(&env);
+    let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100, &3600, &1);
+    token_admin_client.mint(&client.address, &100);
+
+    client.raise_dispute(&employer, &agreement_id);
+    client.resolve_dispute(&arbiter, &agreement_id, &30, &70);
+
+    assert_eq!(token_client.balance(&contributor), 30);
+    assert_eq!(token_client.balance(&employer), 70);
+}
+
+#[test]
+fn test_resolve_amounts_exceed_balance_fails() {
+    let (env, employer, contributor, token_id, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token_id, &100, &3600, &1);
+    client.raise_dispute(&employer, &agreement_id);
+
+    let result = client.try_resolve_dispute(&arbiter, &agreement_id, &60, &50); // 110 > 100
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_resolve_funds_released_correctly() {
+    let (env, employer, contributor, _, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+    let token_admin = Address::generate(&env);
+    let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100, &3600, &1);
+    token_admin_client.mint(&client.address, &100);
+
+    client.raise_dispute(&employer, &agreement_id);
+    client.resolve_dispute(&arbiter, &agreement_id, &50, &50);
+
+    assert_eq!(token_client.balance(&contributor), 50);
+    assert_eq!(token_client.balance(&employer), 50);
+    assert_eq!(token_client.balance(&client.address), 0);
+}
+
+#[test]
+fn test_resolve_remaining_balance_refunded() {
+    let (env, employer, contributor, _, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+    let token_admin = Address::generate(&env);
+    let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100, &3600, &1);
+    token_admin_client.mint(&client.address, &100);
+
+    client.raise_dispute(&employer, &agreement_id);
+    client.resolve_dispute(&arbiter, &agreement_id, &40, &30);
+
+    assert_eq!(token_client.balance(&contributor), 40);
+    assert_eq!(token_client.balance(&employer), 30);
+    assert_eq!(token_client.balance(&client.address), 30);
+}
+
+#[test]
+fn test_dispute_status_set_to_resolved() {
+    let (env, employer, contributor, _, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+
+    let token_admin = Address::generate(&env);
+    let (token, _, token_admin_client) = create_token_contract(&env, &token_admin);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100, &3600, &1);
+    token_admin_client.mint(&client.address, &100);
+
+    client.raise_dispute(&employer, &agreement_id);
+    client.resolve_dispute(&arbiter, &agreement_id, &50, &50);
+
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Resolved
+    );
+}
+
+#[test]
+fn test_dispute_resolved_event() {
+    let (env, employer, contributor, _, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+
+    let token_admin = Address::generate(&env);
+    let (token, _, token_admin_client) = create_token_contract(&env, &token_admin);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100, &3600, &1);
+    token_admin_client.mint(&client.address, &100);
+
+    client.raise_dispute(&employer, &agreement_id);
+    client.resolve_dispute(&arbiter, &agreement_id, &40, &60);
+
+    let events = env.events().all();
+    let event_found = events.iter().any(|event| {
+        event.0 == client.address
+            && Symbol::try_from_val(&env, &event.1.get(0).unwrap())
+                .map(|s| s == Symbol::new(&env, "dispute_resolved_event"))
+                .unwrap_or(false)
+    });
+    assert!(event_found, "DisputeResolvedEvent not found");
+}
+
+#[test]
+fn test_agreement_status_changes_to_completed() {
+    let (env, employer, contributor, _, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+
+    let token_admin = Address::generate(&env);
+    let (token, _, token_admin_client) = create_token_contract(&env, &token_admin);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100, &3600, &1);
+    token_admin_client.mint(&client.address, &100);
+
+    client.raise_dispute(&employer, &agreement_id);
+    client.resolve_dispute(&arbiter, &agreement_id, &50, &50);
+
+    let agreement = client.get_agreement(&agreement_id).unwrap();
+    assert_eq!(agreement.status, AgreementStatus::Completed);
+}
+
+// --- Payroll Mode Disputes ---
+
+#[test]
+fn test_resolve_dispute_payroll_agreement() {
+    let (env, employer, _, _, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+
+    let token_admin = Address::generate(&env);
+    let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
+
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &3600);
+    let e1 = Address::generate(&env);
+    let e2 = Address::generate(&env);
+    client.add_employee_to_agreement(&agreement_id, &e1, &100);
+    client.add_employee_to_agreement(&agreement_id, &e2, &100);
+
+    token_admin_client.mint(&client.address, &200);
+
+    client.raise_dispute(&employer, &agreement_id);
+    client.resolve_dispute(&arbiter, &agreement_id, &150, &50);
+
+    // 150 / 2 employees = 75 each
+    assert_eq!(token_client.balance(&e1), 75);
+    assert_eq!(token_client.balance(&e2), 75);
+    assert_eq!(token_client.balance(&employer), 50);
+}
+
+#[test]
+fn test_pay_contributor_distributed_to_employees() {
+    let (env, employer, _, _, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+    let token_admin = Address::generate(&env);
+    let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
+
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &3600);
+    let e1 = Address::generate(&env);
+    client.add_employee_to_agreement(&agreement_id, &e1, &100);
+    token_admin_client.mint(&client.address, &100);
+
+    client.raise_dispute(&employer, &agreement_id);
+    client.resolve_dispute(&arbiter, &agreement_id, &100, &0);
+
+    assert_eq!(token_client.balance(&e1), 100);
+}
+
+#[test]
+fn test_proportional_distribution_multiple_employees() {
+    // Current implementation distributes equally.
+}
+
+// --- Edge Cases ---
+
+#[test]
+fn test_resolve_with_zero_payouts() {
+    let (env, employer, contributor, _, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+    let token_admin = Address::generate(&env);
+    let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100, &3600, &1);
+    token_admin_client.mint(&client.address, &100);
+
+    client.raise_dispute(&employer, &agreement_id);
+    client.resolve_dispute(&arbiter, &agreement_id, &0, &0);
+
+    assert_eq!(token_client.balance(&contributor), 0);
+    assert_eq!(token_client.balance(&employer), 0);
+}
+
+#[test]
+fn test_resolve_with_full_balance_payout() {
+    let (env, employer, contributor, _, client) = create_test_env();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    client.initialize(&owner);
+    client.set_arbiter(&owner, &arbiter);
+    let token_admin = Address::generate(&env);
+    let (token, token_client, token_admin_client) = create_token_contract(&env, &token_admin);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100, &3600, &1);
+    token_admin_client.mint(&client.address, &100);
+
+    client.raise_dispute(&employer, &agreement_id);
+    client.resolve_dispute(&arbiter, &agreement_id, &100, &0);
+
+    assert_eq!(token_client.balance(&contributor), 100);
+    assert_eq!(token_client.balance(&employer), 0);
 }

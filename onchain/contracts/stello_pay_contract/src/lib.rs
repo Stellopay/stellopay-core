@@ -1,5 +1,5 @@
 #![no_std]
-mod events;
+pub mod events;
 mod payroll;
 pub mod storage;
 
@@ -251,6 +251,14 @@ impl PayrollContract {
     /// Requires caller authentication
     pub fn set_arbiter(env: Env, caller: Address, arbiter: Address) -> bool {
         payroll::set_arbiter(&env, caller, arbiter)
+    }
+
+    /// Gets the current arbiter address
+    ///
+    /// # Returns
+    /// Arbiter address if set, None otherwise
+    pub fn get_arbiter(env: Env) -> Option<Address> {
+        payroll::get_arbiter(&env)
     }
 
     /// Raise Dispute

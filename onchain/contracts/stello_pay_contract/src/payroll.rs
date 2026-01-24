@@ -594,6 +594,17 @@ pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
     true
 }
 
+/// Get Arbiter
+///
+/// # Arguments
+/// * `env` - Contract environment
+///
+/// # Returns
+/// Arbiter address if set, None otherwise
+pub fn get_arbiter(env: &Env) -> Option<Address> {
+    env.storage().persistent().get(&StorageKey::Arbiter)
+}
+
 /// Raise Dispute
 ///
 /// # Arguments
@@ -631,6 +642,7 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
 
     agreement.dispute_status = DisputeStatus::Raised;
     agreement.dispute_raised_at = Some(now);
+    agreement.status = AgreementStatus::Disputed;
 
     env.storage()
         .persistent()
@@ -712,6 +724,7 @@ pub fn resolve_dispute(
     }
 
     agreement.dispute_status = DisputeStatus::Resolved;
+    agreement.status = AgreementStatus::Completed;
     env.storage()
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
@@ -1344,10 +1357,7 @@ pub fn cancel_agreement(env: &Env, agreement_id: u128) {
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
 
-    emit_agreement_cancelled(
-        env,
-        AgreementCancelledEvent { agreement_id },
-    );
+    emit_agreement_cancelled(env, AgreementCancelledEvent { agreement_id });
 }
 
 /// Finalizes the grace period and allows refund of remaining balance.
@@ -1389,7 +1399,7 @@ pub fn finalize_grace_period(env: &Env, agreement_id: u128) {
     // Refund remaining balance using escrow contract if available
     // For now, we'll use the existing escrow balance tracking
     let escrow_balance = DataKey::get_agreement_escrow_balance(env, agreement_id, &agreement.token);
-    
+
     if escrow_balance > 0 {
         let token_client = soroban_sdk::token::Client::new(env, &agreement.token);
         token_client.transfer(
@@ -1402,10 +1412,7 @@ pub fn finalize_grace_period(env: &Env, agreement_id: u128) {
         DataKey::set_agreement_escrow_balance(env, agreement_id, &agreement.token, 0);
     }
 
-    emit_grace_period_finalized(
-        env,
-        GracePeriodFinalizedEvent { agreement_id },
-    );
+    emit_grace_period_finalized(env, GracePeriodFinalizedEvent { agreement_id });
 }
 
 /// Checks if the grace period is currently active for a cancelled agreement.
