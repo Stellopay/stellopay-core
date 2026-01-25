@@ -1,5 +1,4 @@
 #![no_std]
-
 use soroban_sdk::{contract, contractimpl, Address, Env};
 
 /// Minimal baseline Soroban contract.
@@ -17,3 +16,10 @@ impl PayrollContract {
         let _ = env;
     }
 }
+
+pub mod mock_contract;
+
+#[cfg(test)]
+mod tests;
+
+
