@@ -21,5 +21,3 @@ pub mod mock_contract;
 
 #[cfg(test)]
 mod tests;
-
-
