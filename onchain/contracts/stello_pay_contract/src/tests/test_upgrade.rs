@@ -1,8 +1,8 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    contract, contractimpl, testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation},
-    Address, Env, IntoVal, Symbol, Vec as SorobanVec,
+    testutils::{Address as _, Events},
+    Address, Env, Symbol,
 };
 
 use crate::mock_contract::{UpgradeableContract, UpgradeableContractClient};
@@ -14,6 +14,7 @@ use crate::mock_contract::{UpgradeableContract, UpgradeableContractClient};
 #[test]
 fn test_initial_version_set() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, UpgradeableContract);
     let client = UpgradeableContractClient::new(&env, &contract_id);
     
@@ -29,6 +30,7 @@ fn test_initial_version_set() {
 #[test]
 fn test_get_contract_version() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, UpgradeableContract);
     let client = UpgradeableContractClient::new(&env, &contract_id);
     
@@ -47,6 +49,7 @@ fn test_get_contract_version() {
 #[test]
 fn test_version_increments_on_upgrade() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, UpgradeableContract);
     let client = UpgradeableContractClient::new(&env, &contract_id);
     
@@ -152,6 +155,7 @@ fn test_upgrade_authorized_event() {
 #[test]
 fn test_existing_agreements_persist() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, UpgradeableContract);
     let client = UpgradeableContractClient::new(&env, &contract_id);
     
@@ -181,6 +185,7 @@ fn test_existing_agreements_persist() {
 #[test]
 fn test_employee_data_persists() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, UpgradeableContract);
     let client = UpgradeableContractClient::new(&env, &contract_id);
     
@@ -210,6 +215,7 @@ fn test_employee_data_persists() {
 #[test]
 fn test_balances_persist() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, UpgradeableContract);
     let client = UpgradeableContractClient::new(&env, &contract_id);
     
@@ -238,6 +244,7 @@ fn test_balances_persist() {
 #[test]
 fn test_settings_persist() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, UpgradeableContract);
     let client = UpgradeableContractClient::new(&env, &contract_id);
     
@@ -271,6 +278,7 @@ fn test_settings_persist() {
 #[test]
 fn test_migration_functions_work() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, UpgradeableContract);
     let client = UpgradeableContractClient::new(&env, &contract_id);
     
@@ -289,6 +297,7 @@ fn test_migration_functions_work() {
 #[test]
 fn test_migration_preserves_all_data() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, UpgradeableContract);
     let client = UpgradeableContractClient::new(&env, &contract_id);
     
@@ -343,6 +352,7 @@ fn test_migration_preserves_all_data() {
 #[test]
 fn test_migration_can_run_multiple_times_safely() {
     let env = Env::default();
+    env.mock_all_auths();
     let contract_id = env.register_contract(None, UpgradeableContract);
     let client = UpgradeableContractClient::new(&env, &contract_id);
     

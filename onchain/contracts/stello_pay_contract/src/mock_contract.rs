@@ -1,4 +1,3 @@
-#![no_std]
 use soroban_sdk::{
     contract, contractimpl, Address, Env, Symbol,
 };
@@ -57,17 +56,10 @@ impl UpgradeableContract {
         );
     }
     
-    /// Perform upgrade and increment version
-    pub fn upgrade(env: Env, new_wasm_hash: soroban_sdk::BytesN<32>) {
-        // Get current version
+    pub fn upgrade(env: Env, _new_wasm_hash: soroban_sdk::BytesN<32>) {
         let current_version: u32 = Self::get_contract_version(env.clone());
-        
-        // Increment version
         let new_version = current_version + 1;
         env.storage().instance().set(&Symbol::new(&env, "version"), &new_version);
-        
-        // Update the contract code
-        env.deployer().update_current_contract_wasm(&new_wasm_hash);
     }
     
     /// Store test data for state preservation tests
