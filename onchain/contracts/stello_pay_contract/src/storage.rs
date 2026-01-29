@@ -48,6 +48,8 @@ pub enum MilestoneKey {
     Status(u128),
     /// Total amount: agreement_id -> i128
     TotalAmount(u128),
+    /// Total paid amount: agreement_id -> i128
+    PaidAmount(u128),
 
     // Milestone-specific keys
     /// Number of milestones: agreement_id -> u32
