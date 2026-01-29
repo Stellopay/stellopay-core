@@ -209,3 +209,9 @@ impl PayrollContract {
         payroll::get_grace_period_end(&env, agreement_id)
     }
 }
+
+#[cfg(test)]
+pub mod mock_contract;
+
+#[cfg(test)]
+mod tests;

@@ -121,7 +121,6 @@ fn test_add_milestone() {
     assert_eq!(m1.amount, 1000);
     assert!(!m1.approved);
     assert!(!m1.claimed);
-
 }
 
 /// test_add_multiple_milestones()
