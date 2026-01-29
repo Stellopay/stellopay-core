@@ -149,6 +149,16 @@ pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         .expect("Employer not found");
     employer.require_auth();
 
+    let status: AgreementStatus = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Status(agreement_id))
+        .expect("Agreement not found");
+    assert!(
+        status == AgreementStatus::Created || status == AgreementStatus::Active,
+        "Can only approve milestones when agreement is Created or Active"
+    );
+
     let count: u32 = env
         .storage()
         .instance()
@@ -523,6 +533,8 @@ pub fn add_employee_to_agreement(
         "Can only add employees to Payroll agreements"
     );
 
+    assert!(salary_per_period > 0, "Salary must be positive");
+
     let mut employees: Vec<EmployeeInfo> = env
         .storage()
         .persistent()
@@ -574,6 +586,18 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
         agreement.status == AgreementStatus::Created,
         "Agreement must be in Created status"
     );
+
+    if agreement.mode == AgreementMode::Payroll {
+        let employees: Vec<EmployeeInfo> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::AgreementEmployees(agreement_id))
+            .unwrap_or(Vec::new(env));
+        assert!(
+            employees.len() > 0,
+            "Payroll agreement must have at least one employee to activate"
+        );
+    }
 
     agreement.status = AgreementStatus::Active;
     agreement.activated_at = Some(env.ledger().timestamp());
