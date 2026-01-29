@@ -2,6 +2,7 @@ use soroban_sdk::{
     contract, contractimpl, Address, Env, Symbol,
 };
 
+
 /// Mock contract for testing upgrade functionality
 #[contract]
 pub struct UpgradeableContract;
@@ -50,6 +51,7 @@ impl UpgradeableContract {
             .set(&Symbol::new(&env, "authorized_wasm"), &new_wasm_hash);
         
         // Emit upgrade authorized event
+        #[allow(deprecated)]
         env.events().publish(
             (Symbol::new(&env, "upgrade"), Symbol::new(&env, "authorized")),
             new_wasm_hash,

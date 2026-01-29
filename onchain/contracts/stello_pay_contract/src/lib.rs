@@ -20,6 +20,8 @@ impl PayrollContract {
 pub mod events;
 pub mod storage;
 pub mod payroll;
+
+#[cfg(test)]
 pub mod mock_contract;
 
 #[cfg(test)]
