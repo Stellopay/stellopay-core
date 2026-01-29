@@ -62,9 +62,6 @@ pub fn create_milestone_agreement(
         .set(&MilestoneKey::TotalAmount(agreement_id), &0i128);
     env.storage()
         .instance()
-        .set(&MilestoneKey::PaidAmount(agreement_id), &0i128);
-    env.storage()
-        .instance()
         .set(&MilestoneKey::MilestoneCount(agreement_id), &0u32);
 
     agreement_id
@@ -152,16 +149,6 @@ pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         .expect("Employer not found");
     employer.require_auth();
 
-    let status: AgreementStatus = env
-        .storage()
-        .instance()
-        .get(&MilestoneKey::Status(agreement_id))
-        .expect("Agreement not found");
-    assert!(
-        status != AgreementStatus::Paused && status != AgreementStatus::Completed,
-        "Agreement status does not allow approval"
-    );
-
     let count: u32 = env
         .storage()
         .instance()
@@ -220,10 +207,6 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         status != AgreementStatus::Paused,
         "Cannot claim when agreement is paused"
     );
-    assert!(
-        status != AgreementStatus::Completed,
-        "Cannot claim when agreement is completed"
-    );
 
     let count: u32 = env
         .storage()
@@ -260,47 +243,11 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         &true,
     );
 
-    let token_addr: Address = env
+    let _token: Address = env
         .storage()
         .instance()
         .get(&MilestoneKey::Token(agreement_id))
         .expect("Token not found");
-
-    // Transfer tokens from this contract to contributor.
-    //
-    // The contract is expected to be funded externally (e.g. employer deposits tokens).
-    // This function enforces milestone authorization and then releases the milestone amount.
-    let contract_address = env.current_contract_address();
-    let token_client = token::Client::new(&env, &token_addr);
-    env.authorize_as_current_contract(Vec::from_array(
-        &env,
-        [InvokerContractAuthEntry::Contract(SubContractInvocation {
-            context: ContractContext {
-                contract: token_addr.clone(),
-                fn_name: Symbol::new(&env, "transfer"),
-                args: Vec::<Val>::from_array(
-                    &env,
-                    [
-                        contract_address.clone().into_val(&env),
-                        contributor.clone().into_val(&env),
-                        amount.into_val(&env),
-                    ],
-                ),
-            },
-            sub_invocations: Vec::new(&env),
-        })],
-    ));
-    token_client.transfer(&contract_address, &contributor, &amount);
-
-    // Track paid amount for this milestone agreement.
-    let paid: i128 = env
-        .storage()
-        .instance()
-        .get(&MilestoneKey::PaidAmount(agreement_id))
-        .unwrap_or(0);
-    env.storage()
-        .instance()
-        .set(&MilestoneKey::PaidAmount(agreement_id), &(paid + amount));
 
     MilestoneClaimed {
         agreement_id,
@@ -566,8 +513,6 @@ pub fn add_employee_to_agreement(
 
     agreement.employer.require_auth();
 
-    assert!(salary_per_period > 0, "Salary must be positive");
-
     assert!(
         agreement.status == AgreementStatus::Created,
         "Can only add employees to Created agreements"
@@ -576,6 +521,11 @@ pub fn add_employee_to_agreement(
     assert!(
         agreement.mode == AgreementMode::Payroll,
         "Can only add employees to Payroll agreements"
+    );
+
+    assert!(
+        salary_per_period > 0,
+        "Salary per period must be positive"
     );
 
     let mut employees: Vec<EmployeeInfo> = env
@@ -628,6 +578,16 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
     assert!(
         agreement.status == AgreementStatus::Created,
         "Agreement must be in Created status"
+    );
+
+    let employees: Vec<EmployeeInfo> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::AgreementEmployees(agreement_id))
+        .unwrap_or(Vec::new(env));
+    assert!(
+        !employees.is_empty(),
+        "Agreement must have at least one employee before activation"
     );
 
     agreement.status = AgreementStatus::Active;
@@ -1466,9 +1426,7 @@ pub fn cancel_agreement(env: &Env, agreement_id: u128) {
     agreement.employer.require_auth();
 
     assert!(
-        agreement.status == AgreementStatus::Active
-            || agreement.status == AgreementStatus::Created
-            || agreement.status == AgreementStatus::Disputed,
+        agreement.status == AgreementStatus::Active || agreement.status == AgreementStatus::Created,
         "Can only cancel Active or Created agreements"
     );
 
