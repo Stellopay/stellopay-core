@@ -181,3 +181,31 @@ pub struct GracePeriodFinalizedEvent {
 pub fn emit_grace_period_finalized(env: &Env, event: GracePeriodFinalizedEvent) {
     event.publish(env);
 }
+
+/// Event: Batch payroll claimed
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BatchPayrollClaimedEvent {
+    pub agreement_id: u128,
+    pub total_claimed: i128,
+    pub successful_claims: u32,
+    pub failed_claims: u32,
+}
+
+pub fn emit_batch_payroll_claimed(env: &Env, event: BatchPayrollClaimedEvent) {
+    event.publish(env);
+}
+
+/// Event: Batch milestone claimed
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BatchMilestoneClaimedEvent {
+    pub agreement_id: u128,
+    pub total_claimed: i128,
+    pub successful_claims: u32,
+    pub failed_claims: u32,
+}
+
+pub fn emit_batch_milestone_claimed(env: &Env, event: BatchMilestoneClaimedEvent) {
+    event.publish(env);
+}
