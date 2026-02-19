@@ -1,0 +1,16 @@
+[package]
+name = "payment_history"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+stellar-contract-utils = { version = "0.6.0" }
+stellar-macros = { version = "0.6.0" }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
