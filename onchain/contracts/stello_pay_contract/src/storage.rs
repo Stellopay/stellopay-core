@@ -1,4 +1,4 @@
-use soroban_sdk::{contracterror, contracttype, Address, Env};
+use soroban_sdk::{contracterror, contracttype, Address, Env, Vec};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -162,6 +162,46 @@ pub enum DisputeStatus {
     None,
     Raised,
     Resolved,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollClaimResult {
+    pub employee_index: u32,
+    pub success: bool,
+    pub amount_claimed: i128,
+    /// Mirrors the PayrollError discriminant value; 0 = success
+    pub error_code: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchPayrollResult {
+    pub agreement_id: u128,
+    pub total_claimed: i128,
+    pub successful_claims: u32,
+    pub failed_claims: u32,
+    pub results: Vec<PayrollClaimResult>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct MilestoneClaimResult {
+    pub milestone_id: u32,
+    pub success: bool,
+    pub amount_claimed: i128,
+    /// 0 = success | 1 = duplicate | 2 = invalid ID | 3 = not approved | 4 = already claimed
+    pub error_code: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchMilestoneResult {
+    pub agreement_id: u128,
+    pub total_claimed: i128,
+    pub successful_claims: u32,
+    pub failed_claims: u32,
+    pub results: Vec<MilestoneClaimResult>,
 }
 
 /// Error types for payroll operations

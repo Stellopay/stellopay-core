@@ -6,7 +6,10 @@ pub mod storage;
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
-use storage::{Agreement, DisputeStatus, Milestone, PayrollError, StorageKey};
+use storage::{
+    Agreement, BatchMilestoneResult, BatchPayrollResult, DisputeStatus, Milestone, PayrollError,
+    StorageKey,
+};
 
 /// Payroll Contract for managing payroll agreements with employee claiming functionality.
 ///
@@ -167,6 +170,14 @@ impl PayrollContract {
         payroll::claim_milestone(env, agreement_id, milestone_id);
     }
 
+    pub fn batch_claim_milestones(
+        env: Env,
+        agreement_id: u128,
+        milestone_ids: Vec<u32>,
+    ) -> BatchMilestoneResult {
+        payroll::batch_claim_milestones(&env, agreement_id, milestone_ids)
+    }
+
     /// Gets the total number of milestones for an agreement.
     ///
     /// # Arguments
@@ -325,6 +336,15 @@ impl PayrollContract {
         employee_index: u32,
     ) -> Result<(), PayrollError> {
         payroll::claim_payroll(&env, &caller, agreement_id, employee_index)
+    }
+
+    pub fn batch_claim_payroll(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        employee_indices: Vec<u32>,
+    ) -> Result<BatchPayrollResult, PayrollError> {
+        payroll::batch_claim_payroll(&env, &caller, agreement_id, employee_indices)
     }
 
     /// Get claimed periods for an employee

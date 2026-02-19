@@ -7,13 +7,14 @@ use crate::events::{
     emit_employee_added, emit_grace_period_finalized, emit_payment_received, emit_payment_sent,
     emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent,
     AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent,
-    DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, GracePeriodFinalizedEvent,
-    MilestoneAdded, MilestoneApproved, MilestoneClaimed, PaymentReceivedEvent, PaymentSentEvent,
-    PayrollClaimedEvent,
+    BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent,
+    EmployeeAddedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
+    MilestoneClaimed, PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
 };
 use crate::storage::{
-    Agreement, AgreementMode, AgreementStatus, DataKey, DisputeStatus, EmployeeInfo, Milestone,
-    MilestoneKey, PaymentType, PayrollError, StorageKey,
+    Agreement, AgreementMode, AgreementStatus, BatchMilestoneResult, BatchPayrollResult, DataKey,
+    DisputeStatus, EmployeeInfo, Milestone, MilestoneClaimResult, MilestoneKey, PaymentType,
+    PayrollClaimResult, PayrollError, StorageKey,
 };
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
@@ -273,6 +274,184 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
             &MilestoneKey::Status(agreement_id),
             &AgreementStatus::Completed,
         );
+    }
+}
+
+/// Iterates over `milestone_ids` and claims each approved, unclaimed milestone
+/// for the authenticated contributor. Failures are non-fatal; processing
+/// continues to the next ID on error.
+///
+/// # Arguments
+/// * `env`           - Contract environment
+/// * `agreement_id`  - ID of the milestone agreement
+/// * `milestone_ids` - 1-based milestone IDs to claim.
+///                     Duplicates are detected in-memory and skipped.
+///
+/// # Returns
+/// `BatchMilestoneResult` — always returns (never panics at batch level).
+
+pub fn batch_claim_milestones(
+    env: &Env,
+    agreement_id: u128,
+    milestone_ids: Vec<u32>,
+) -> BatchMilestoneResult {
+    let contributor: Address = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Contributor(agreement_id))
+        .expect("Contributor not found");
+    contributor.require_auth();
+
+    assert!(!milestone_ids.is_empty(), "No milestone IDs provided");
+
+    // Shared pre-flight
+    let status: AgreementStatus = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Status(agreement_id))
+        .expect("Agreement not found");
+    assert!(
+        status != AgreementStatus::Paused,
+        "Cannot claim when agreement is paused"
+    );
+
+    let count: u32 = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
+        .expect("No milestones found");
+
+    // Token client created once and reused
+    let token: Address = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Token(agreement_id))
+        .expect("Token not found");
+    let token_client = TokenClient::new(env, &token);
+    let contract_address = env.current_contract_address();
+
+    let mut results: Vec<MilestoneClaimResult> = Vec::new(env);
+    let mut total_claimed: i128 = 0;
+    let mut successful_claims: u32 = 0;
+    let mut failed_claims: u32 = 0;
+    let mut processed: Vec<u32> = Vec::new(env);
+
+    for milestone_id in milestone_ids.iter() {
+        // Duplicate guard
+        if processed.iter().any(|p| p == milestone_id) {
+            failed_claims += 1;
+            results.push_back(MilestoneClaimResult {
+                milestone_id,
+                success: false,
+                amount_claimed: 0,
+                error_code: 1, // duplicate
+            });
+            continue;
+        }
+
+        // Bounds check (1-based, mirrors claim_milestone)
+        if milestone_id == 0 || milestone_id > count {
+            failed_claims += 1;
+            results.push_back(MilestoneClaimResult {
+                milestone_id,
+                success: false,
+                amount_claimed: 0,
+                error_code: 2, // invalid ID
+            });
+            continue;
+        }
+
+        // Approved check
+        let approved: bool = env
+            .storage()
+            .instance()
+            .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
+            .unwrap_or(false);
+        if !approved {
+            failed_claims += 1;
+            results.push_back(MilestoneClaimResult {
+                milestone_id,
+                success: false,
+                amount_claimed: 0,
+                error_code: 3, // not approved
+            });
+            continue;
+        }
+
+        // Already-claimed check
+        let already_claimed: bool = env
+            .storage()
+            .instance()
+            .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
+            .unwrap_or(false);
+        if already_claimed {
+            failed_claims += 1;
+            results.push_back(MilestoneClaimResult {
+                milestone_id,
+                success: false,
+                amount_claimed: 0,
+                error_code: 4, // already claimed
+            });
+            continue;
+        }
+
+        let amount: i128 = env
+            .storage()
+            .instance()
+            .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
+            .expect("Milestone amount not found");
+
+        // Checks-Effects-Interactions: mark claimed BEFORE transfer
+        env.storage().instance().set(
+            &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
+            &true,
+        );
+
+        token_client.transfer(&contract_address, &contributor, &amount);
+
+        total_claimed += amount;
+        successful_claims += 1;
+
+        // Event — identical to claim_milestone
+        MilestoneClaimed {
+            agreement_id,
+            milestone_id,
+            amount,
+            to: contributor.clone(),
+        }
+        .publish(env);
+
+        results.push_back(MilestoneClaimResult {
+            milestone_id,
+            success: true,
+            amount_claimed: amount,
+            error_code: 0,
+        });
+
+        processed.push_back(milestone_id);
+    }
+
+    if all_milestones_claimed(env, agreement_id, count) {
+        env.storage().instance().set(
+            &MilestoneKey::Status(agreement_id),
+            &AgreementStatus::Completed,
+        );
+    }
+
+    BatchMilestoneClaimedEvent {
+        agreement_id,
+        total_claimed,
+        successful_claims,
+        failed_claims,
+    }
+    .publish(env);
+
+    BatchMilestoneResult {
+        agreement_id,
+        total_claimed,
+        successful_claims,
+        failed_claims,
+        results,
     }
 }
 
@@ -1014,6 +1193,295 @@ pub fn claim_payroll(
     .publish(&env);
 
     Ok(())
+}
+
+/// Attempts `claim_payroll` semantics for each entry in `employee_indices`.
+/// A failure for one employee does **not** abort the remaining claims —
+/// partial success is intentional so that one unclaimable index cannot
+/// block all others.
+///
+/// # Arguments
+/// * `env`              - Contract environment
+/// * `caller`           - Must equal the employee address at each supplied
+///                        index (each claim still enforces `caller == employee`)
+/// * `agreement_id`     - ID of the payroll agreement
+/// * `employee_indices` - 0-based employee indices to claim for.
+///                        Duplicates are detected in-memory and skipped.
+///
+/// # Returns
+/// `Ok(BatchPayrollResult)` — always succeeds at the batch level; inspect
+/// `.failed_claims` / `.results` to detect per-employee failures.
+///
+/// # Batch-level errors (returned before any processing)
+/// * `PayrollError::InvalidData`          — empty index list, or agreement Paused
+/// * `PayrollError::AgreementNotFound`    — agreement does not exist
+/// * `PayrollError::InvalidAgreementMode` — agreement is not Payroll mode
+/// * `PayrollError::AgreementNotActivated`— activation timestamp missing
+///
+/// # Gas optimisations
+/// * Agreement metadata (token, activation time, period duration) read once.
+/// * Escrow balance tracked in-memory; written back with a single `set()`.
+/// * Token client constructed once and reused.
+/// * Completion / status updates are batched where possible.
+pub fn batch_claim_payroll(
+    env: &Env,
+    caller: &Address,
+    agreement_id: u128,
+    employee_indices: Vec<u32>,
+) -> Result<BatchPayrollResult, PayrollError> {
+    caller.require_auth();
+
+    if employee_indices.is_empty() {
+        return Err(PayrollError::InvalidData);
+    }
+
+    let agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
+
+    if agreement.mode != AgreementMode::Payroll {
+        return Err(PayrollError::InvalidAgreementMode);
+    }
+    if agreement.status == AgreementStatus::Paused {
+        return Err(PayrollError::InvalidData);
+    }
+
+    let can_claim = match agreement.status {
+        AgreementStatus::Active => true,
+        AgreementStatus::Cancelled => is_grace_period_active(env, agreement_id),
+        _ => false,
+    };
+    if !can_claim {
+        return Err(PayrollError::InvalidData);
+    }
+
+    // Read shared metadata once
+    let activation_time = DataKey::get_agreement_activation_time(env, agreement_id)
+        .ok_or(PayrollError::AgreementNotActivated)?;
+    let period_duration = DataKey::get_agreement_period_duration(env, agreement_id)
+        .ok_or(PayrollError::AgreementNotFound)?;
+    let token =
+        DataKey::get_agreement_token(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
+    let employee_count = DataKey::get_employee_count(env, agreement_id);
+
+    let current_time = env.ledger().timestamp();
+    if current_time < activation_time {
+        return Err(PayrollError::InvalidData);
+    }
+
+    let total_elapsed_periods = ((current_time - activation_time) / period_duration) as u32;
+
+    // Load escrow balance once; update in-memory, write back once at the end
+    let mut escrow_balance = DataKey::get_agreement_escrow_balance(env, agreement_id, &token);
+
+    let token_client = token::Client::new(env, &token);
+    let contract_address = env.current_contract_address();
+
+    let mut results: Vec<PayrollClaimResult> = Vec::new(env);
+    let mut total_claimed: i128 = 0;
+    let mut successful_claims: u32 = 0;
+    let mut failed_claims: u32 = 0;
+    let mut processed: Vec<u32> = Vec::new(env);
+
+    for employee_index in employee_indices.iter() {
+        // Duplicate guard
+        if processed.iter().any(|p| p == employee_index) {
+            failed_claims += 1;
+            results.push_back(PayrollClaimResult {
+                employee_index,
+                success: false,
+                amount_claimed: 0,
+                error_code: PayrollError::InvalidData as u32,
+            });
+            continue;
+        }
+
+        // Bounds check
+        if employee_index >= employee_count {
+            failed_claims += 1;
+            results.push_back(PayrollClaimResult {
+                employee_index,
+                success: false,
+                amount_claimed: 0,
+                error_code: PayrollError::InvalidEmployeeIndex as u32,
+            });
+            continue;
+        }
+
+        // Employee must exist
+        let employee = match DataKey::get_employee(env, agreement_id, employee_index) {
+            Some(addr) => addr,
+            None => {
+                failed_claims += 1;
+                results.push_back(PayrollClaimResult {
+                    employee_index,
+                    success: false,
+                    amount_claimed: 0,
+                    error_code: PayrollError::AgreementNotFound as u32,
+                });
+                continue;
+            }
+        };
+
+        // Caller must be this specific employee (same check as claim_payroll)
+        if *caller != employee {
+            failed_claims += 1;
+            results.push_back(PayrollClaimResult {
+                employee_index,
+                success: false,
+                amount_claimed: 0,
+                error_code: PayrollError::Unauthorized as u32,
+            });
+            continue;
+        }
+
+        // Must have unclaimed periods
+        let claimed_periods =
+            DataKey::get_employee_claimed_periods(env, agreement_id, employee_index);
+        if total_elapsed_periods <= claimed_periods {
+            failed_claims += 1;
+            results.push_back(PayrollClaimResult {
+                employee_index,
+                success: false,
+                amount_claimed: 0,
+                error_code: PayrollError::NoPeriodsToClaim as u32,
+            });
+            continue;
+        }
+
+        let periods_to_pay = total_elapsed_periods - claimed_periods;
+
+        // Salary must be configured
+        let salary_per_period =
+            match DataKey::get_employee_salary(env, agreement_id, employee_index) {
+                Some(s) => s,
+                None => {
+                    failed_claims += 1;
+                    results.push_back(PayrollClaimResult {
+                        employee_index,
+                        success: false,
+                        amount_claimed: 0,
+                        error_code: PayrollError::AgreementNotFound as u32,
+                    });
+                    continue;
+                }
+            };
+
+        // Overflow-safe amount
+        let amount = match salary_per_period.checked_mul(periods_to_pay as i128) {
+            Some(a) => a,
+            None => {
+                failed_claims += 1;
+                results.push_back(PayrollClaimResult {
+                    employee_index,
+                    success: false,
+                    amount_claimed: 0,
+                    error_code: PayrollError::InvalidData as u32,
+                });
+                continue;
+            }
+        };
+
+        // Check in-memory escrow
+        if escrow_balance < amount {
+            failed_claims += 1;
+            results.push_back(PayrollClaimResult {
+                employee_index,
+                success: false,
+                amount_claimed: 0,
+                error_code: PayrollError::InsufficientEscrowBalance as u32,
+            });
+            continue;
+        }
+
+        env.authorize_as_current_contract(Vec::from_array(
+            env,
+            [InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: token.clone(),
+                    fn_name: Symbol::new(env, "transfer"),
+                    args: Vec::<Val>::from_array(
+                        env,
+                        [
+                            contract_address.clone().into_val(env),
+                            employee.clone().into_val(env),
+                            amount.into_val(env),
+                        ],
+                    ),
+                },
+                sub_invocations: Vec::new(env),
+            })],
+        ));
+        token_client.transfer(&contract_address, &employee, &amount);
+
+        // Update in-memory balance
+        escrow_balance -= amount;
+        total_claimed += amount;
+        successful_claims += 1;
+
+        // Persist per-employee state
+        DataKey::set_employee_claimed_periods(
+            env,
+            agreement_id,
+            employee_index,
+            claimed_periods + periods_to_pay,
+        );
+
+        let new_paid = DataKey::get_agreement_paid_amount(env, agreement_id)
+            .checked_add(amount)
+            .unwrap_or(DataKey::get_agreement_paid_amount(env, agreement_id));
+        DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
+
+        // Events — identical to claim_payroll
+        emit_payroll_claimed(
+            env,
+            PayrollClaimedEvent {
+                agreement_id,
+                employee: employee.clone(),
+                amount,
+            },
+        );
+        PaymentSentEvent {
+            agreement_id,
+            from: contract_address.clone(),
+            to: employee.clone(),
+            amount,
+            token: token.clone(),
+        }
+        .publish(env);
+        PaymentReceivedEvent {
+            agreement_id,
+            to: employee.clone(),
+            amount,
+            token: token.clone(),
+        }
+        .publish(env);
+
+        results.push_back(PayrollClaimResult {
+            employee_index,
+            success: true,
+            amount_claimed: amount,
+            error_code: 0,
+        });
+
+        processed.push_back(employee_index);
+    }
+
+    DataKey::set_agreement_escrow_balance(env, agreement_id, &token, escrow_balance);
+
+    BatchPayrollClaimedEvent {
+        agreement_id,
+        total_claimed,
+        successful_claims,
+        failed_claims,
+    }
+    .publish(env);
+
+    Ok(BatchPayrollResult {
+        agreement_id,
+        total_claimed,
+        successful_claims,
+        failed_claims,
+        results,
+    })
 }
 
 /// Get the number of periods already claimed by an employee.
