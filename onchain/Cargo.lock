@@ -213,6 +213,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "bonus_system"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
