@@ -1,0 +1,18 @@
+[package]
+name = "integration_tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
+stello_pay_contract = { path = "../contracts/stello_pay_contract" }
+payroll_escrow = { path = "../contracts/payroll_escrow" }
+bonus_system = { path = "../contracts/bonus_system" }
+payment_history = { path = "../contracts/payment_history" }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
