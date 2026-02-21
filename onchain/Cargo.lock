@@ -822,6 +822,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "integration_tests"
+version = "0.0.0"
+dependencies = [
+ "bonus_system",
+ "payment_history",
+ "payroll_escrow",
+ "soroban-sdk",
+ "stello_pay_contract",
+]
+
+[[package]]
 name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
