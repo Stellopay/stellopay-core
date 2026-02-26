@@ -24,3 +24,9 @@ stellar-tokens = "0.6.0"
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
+proptest = "1.10.0"
+criterion = { version = "0.8.2", features = ["html_reports"] }
+
+[[bench]]
+name = "performance_benchmarks"
+harness = false
