@@ -27,6 +27,15 @@ This repository uses GitHub Actions to automatically build and test Soroban Rust
   cargo install --locked --version 20.0.0-rc.1 soroban-cli
   ```
 
+### Building on Windows (GNU / MinGW)
+If you see **"export ordinal too large"** when running `cargo test` or `cargo build`, use **Option B**: build only the WASM on Windows and run tests in WSL or CI.
+
+1. `rustup target add wasm32-unknown-unknown`
+2. From repo root: `.\scripts\migrations\build_wasm_only.ps1`
+
+WASM output: `onchain/contracts/stello_pay_contract/target/wasm32-unknown-unknown/release/stello_pay_contract.wasm`.  
+See [docs/windows-build.md](../docs/windows-build.md) for Option A (MSVC) and test instructions.
+
 ### References
 - [GitHub Actions Documentation](https://docs.github.com/en/actions)
 - [Stellar Soroban Rust Docs](https://soroban.stellar.org/docs)

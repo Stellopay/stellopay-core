@@ -10,6 +10,7 @@ Migration scripts for upgrading StellopayCore contracts and migrating data safel
 - **04_verify_post_upgrade.sh** — Run post-upgrade checks (owner, version, critical reads).
 - **rollback.sh** — Rollback procedure: re-deploy previous WASM and re-authorize upgrade.
 - **run_migration_tests.sh** — Run in-repo upgrade and data-persistence tests (see [Testing](#testing)).
+- **build_wasm_only.ps1** — (Windows) Build contract WASM only; use when host build fails with "export ordinal too large". See [docs/windows-build.md](../../docs/windows-build.md).
 
 See [docs/migrations.md](../../docs/migrations.md) for full procedures, data compatibility, and rollback.
 

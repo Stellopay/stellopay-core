@@ -8,6 +8,9 @@
 # Usage:
 #   ./scripts/migrations/run_migration_tests.sh
 #
+# On Windows (GNU toolchain): host build may fail with "export ordinal too large".
+# Use MSVC toolchain or build WASM only and run this script in WSL. See docs/windows-build.md.
+#
 # See docs/migrations.md for full testing procedures.
 # =============================================================================
 set -euo pipefail
