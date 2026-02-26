@@ -1,0 +1,18 @@
+[package]
+name = "dispute_escalation"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true, features = ["alloc"] }
+stellar-contract-utils = "0.6.0"
+stellar-macros = "0.6.0"
+stellar-access = "0.6.0"
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }

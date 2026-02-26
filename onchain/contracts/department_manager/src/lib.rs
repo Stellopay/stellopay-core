@@ -75,9 +75,15 @@ impl DepartmentManagerContract {
             .unwrap_or(false);
         assert!(!initialized, "Already initialized");
         env.storage().persistent().set(&StorageKey::Admin, &admin);
-        env.storage().persistent().set(&StorageKey::Initialized, &true);
-        env.storage().persistent().set(&StorageKey::NextOrgId, &1u128);
-        env.storage().persistent().set(&StorageKey::NextDeptId, &1u128);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Initialized, &true);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::NextOrgId, &1u128);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::NextDeptId, &1u128);
     }
 
     /// Creates a new organization.
@@ -257,7 +263,11 @@ impl DepartmentManagerContract {
             .set(&StorageKey::DepartmentEmployees(department_id), &employees);
     }
 
-    fn remove_employee_from_department_internal(env: &Env, department_id: u128, employee: &Address) {
+    fn remove_employee_from_department_internal(
+        env: &Env,
+        department_id: u128,
+        employee: &Address,
+    ) {
         let key = StorageKey::EmployeeInDepartment(department_id, employee.clone());
         env.storage().persistent().remove(&key);
 
@@ -268,7 +278,12 @@ impl DepartmentManagerContract {
             .unwrap_or_else(|| Vec::new(env));
         let mut i = 0u32;
         while i < employees.len() {
-            if employees.get(i).as_ref().map(|a| a == employee).unwrap_or(false) {
+            if employees
+                .get(i)
+                .as_ref()
+                .map(|a| a == employee)
+                .unwrap_or(false)
+            {
                 employees.remove(i);
                 break;
             }
@@ -319,10 +334,7 @@ impl DepartmentManagerContract {
     }
 
     /// Department-level report: employee count and child department IDs.
-    pub fn get_department_report(
-        env: Env,
-        department_id: u128,
-    ) -> (u32, Vec<u128>, Vec<Address>) {
+    pub fn get_department_report(env: Env, department_id: u128) -> (u32, Vec<u128>, Vec<Address>) {
         let employees: Vec<Address> = Self::get_department_employees(env.clone(), department_id);
         let children: Vec<u128> = env
             .storage()

@@ -319,6 +319,44 @@ impl PayrollContract {
         payroll::get_dispute_status(env, agreement_id)
     }
 
+    /// Sets the global FX rate admin address that is allowed to update
+    /// exchange rates in addition to the contract owner (e.g. an oracle
+    /// contract responsible for pushing prices on-chain).
+    pub fn set_exchange_rate_admin(
+        env: Env,
+        caller: Address,
+        admin: Address,
+    ) -> Result<(), PayrollError> {
+        payroll::set_exchange_rate_admin(&env, caller, admin)
+    }
+
+    /// Configures the FX rate for a `(base, quote)` token pair.
+    ///
+    /// Access control:
+    /// - Contract owner OR
+    /// - FX admin set via `set_exchange_rate_admin`
+    pub fn set_exchange_rate(
+        env: Env,
+        caller: Address,
+        base: Address,
+        quote: Address,
+        rate: i128,
+    ) -> Result<(), PayrollError> {
+        payroll::set_exchange_rate(&env, caller, base, quote, rate)
+    }
+
+    /// Converts an `amount` from one token into another using the configured
+    /// FX rate, without performing any on-chain transfer. This is useful for
+    /// off-chain estimation and validation of multi-currency payouts.
+    pub fn convert_currency(
+        env: Env,
+        from_token: Address,
+        to_token: Address,
+        amount: i128,
+    ) -> Result<i128, PayrollError> {
+        payroll::convert_currency(&env, from_token, to_token, amount)
+    }
+
     /// Claim payroll for an employee
     ///
     /// # Arguments
@@ -336,6 +374,20 @@ impl PayrollContract {
         employee_index: u32,
     ) -> Result<(), PayrollError> {
         payroll::claim_payroll(&env, &caller, agreement_id, employee_index)
+    }
+
+    /// Claims payroll for an employee, but settles the transfer in a
+    /// caller-specified payout token. The agreement continues to track its
+    /// accounting in the base token while the actual transfer is executed
+    /// in the requested payout currency using the configured FX rate.
+    pub fn claim_payroll_in_token(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        employee_index: u32,
+        payout_token: Address,
+    ) -> Result<(), PayrollError> {
+        payroll::claim_payroll_in_token(&env, &caller, agreement_id, employee_index, payout_token)
     }
 
     pub fn batch_claim_payroll(

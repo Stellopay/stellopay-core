@@ -3,10 +3,10 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
 use department_manager::{
     Department, DepartmentManagerContract, DepartmentManagerContractClient, Organization,
 };
+use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
 
 fn create_env() -> Env {
     let env = Env::default();

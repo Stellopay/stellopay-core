@@ -3,10 +3,10 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 use payment_splitter::{
     PaymentSplitterContract, PaymentSplitterContractClient, RecipientShare, ShareKind,
 };
+use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 
 fn create_env() -> Env {
     let env = Env::default();

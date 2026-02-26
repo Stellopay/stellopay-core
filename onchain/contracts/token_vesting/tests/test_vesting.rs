@@ -197,4 +197,3 @@ fn custom_schedule_and_early_release() {
     let schedule = client.get_schedule(&schedule_id).unwrap();
     assert!(schedule.released_amount >= 200);
 }
-

@@ -59,9 +59,13 @@ impl PaymentSplitterContract {
             .get(&StorageKey::Initialized)
             .unwrap_or(false);
         assert!(!init, "Already initialized");
-        env.storage().persistent().set(&StorageKey::Initialized, &true);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Initialized, &true);
         env.storage().persistent().set(&StorageKey::Admin, &admin);
-        env.storage().persistent().set(&StorageKey::NextSplitId, &1u128);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::NextSplitId, &1u128);
     }
 
     /// Creates a split definition. Percent shares must sum to 10000 (100%). Fixed shares are validated at execute time.
@@ -82,15 +86,16 @@ impl PaymentSplitterContract {
             match &r.kind {
                 ShareKind::Percent(bps) => {
                     has_percent = true;
-                    total_bps = total_bps
-                        .checked_add(*bps)
-                        .expect("Percent overflow");
+                    total_bps = total_bps.checked_add(*bps).expect("Percent overflow");
                 }
                 ShareKind::Fixed(_) => {}
             }
         }
         if has_percent {
-            assert!(total_bps == 10000, "Percent shares must sum to 10000 (100%)");
+            assert!(
+                total_bps == 10000,
+                "Percent shares must sum to 10000 (100%)"
+            );
         }
 
         let next_id: u128 = env
@@ -146,11 +151,7 @@ impl PaymentSplitterContract {
     }
 
     /// Computes the amount for each recipient given a total. Callable by anyone (view).
-    pub fn compute_split(
-        env: Env,
-        split_id: u128,
-        total_amount: i128,
-    ) -> Vec<(Address, i128)> {
+    pub fn compute_split(env: Env, split_id: u128, total_amount: i128) -> Vec<(Address, i128)> {
         let def: SplitDefinition = env
             .storage()
             .persistent()
@@ -160,9 +161,7 @@ impl PaymentSplitterContract {
         for i in 0..def.recipients.len() {
             let r = def.recipients.get(i).unwrap();
             let amt = match &r.kind {
-                ShareKind::Percent(bps) => {
-                    (i128::from(*bps) * total_amount) / 10000
-                }
+                ShareKind::Percent(bps) => (i128::from(*bps) * total_amount) / 10000,
                 ShareKind::Fixed(a) => *a,
             };
             out.push_back((r.recipient.clone(), amt));
