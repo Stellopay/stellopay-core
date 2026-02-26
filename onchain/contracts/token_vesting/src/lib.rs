@@ -1,8 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Vec};
 
 #[contract]
 pub struct TokenVestingContract;
@@ -85,9 +83,7 @@ fn next_schedule_id(env: &Env) -> u128 {
         .persistent()
         .get::<_, u128>(&StorageKey::NextScheduleId)
         .unwrap_or(0);
-    let next = current
-        .checked_add(1)
-        .expect("Schedule id overflow");
+    let next = current.checked_add(1).expect("Schedule id overflow");
     env.storage()
         .persistent()
         .set(&StorageKey::NextScheduleId, &next);
@@ -130,18 +126,15 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
                     schedule.total_amount
                 } else {
                     // Linear interpolation: total * elapsed / duration
-                    (schedule.total_amount
-                        * i128::from(elapsed as i64))
+                    (schedule.total_amount * i128::from(elapsed as i64))
                         / i128::from(duration as i64)
                 }
             }
         }
-        VestingKind::Cliff => {
-            match schedule.cliff_time {
-                Some(cliff) if effective_now >= cliff => schedule.total_amount,
-                _ => 0,
-            }
-        }
+        VestingKind::Cliff => match schedule.cliff_time {
+            Some(cliff) if effective_now >= cliff => schedule.total_amount,
+            _ => 0,
+        },
         VestingKind::Custom => {
             if schedule.checkpoints.len() == 0 {
                 return 0;
@@ -166,9 +159,7 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
 
 fn compute_releasable(now: u64, schedule: &VestingSchedule) -> i128 {
     let vested = compute_vested_amount(now, schedule);
-    let mut releasable = vested
-        .checked_sub(schedule.released_amount)
-        .unwrap_or(0);
+    let mut releasable = vested.checked_sub(schedule.released_amount).unwrap_or(0);
     if releasable < 0 {
         releasable = 0;
     }
@@ -419,10 +410,7 @@ impl TokenVestingContract {
 
         let now = env.ledger().timestamp();
         let vested = compute_vested_amount(now, &schedule);
-        let unvested_remaining = schedule
-            .total_amount
-            .checked_sub(vested)
-            .unwrap_or(0);
+        let unvested_remaining = schedule.total_amount.checked_sub(vested).unwrap_or(0);
         assert!(
             unvested_remaining > 0,
             "No unvested tokens remain for early release"
@@ -459,11 +447,7 @@ impl TokenVestingContract {
     /// @param employer Employer that created the schedule; must authenticate.
     /// @param schedule_id Vesting schedule identifier.
     /// @return refunded_amount Amount of unvested tokens refunded to employer.
-    pub fn revoke(
-        env: Env,
-        employer: Address,
-        schedule_id: u128,
-    ) -> i128 {
+    pub fn revoke(env: Env, employer: Address, schedule_id: u128) -> i128 {
         require_initialized(&env);
         employer.require_auth();
 
@@ -477,10 +461,7 @@ impl TokenVestingContract {
 
         let now = env.ledger().timestamp();
         let vested = compute_vested_amount(now, &schedule);
-        let unvested = schedule
-            .total_amount
-            .checked_sub(vested)
-            .unwrap_or(0);
+        let unvested = schedule.total_amount.checked_sub(vested).unwrap_or(0);
         assert!(unvested >= 0, "Invalid vesting state");
 
         if unvested > 0 {
@@ -521,4 +502,3 @@ impl TokenVestingContract {
         env.storage().persistent().get(&StorageKey::Owner)
     }
 }
-

@@ -1,5 +1,5 @@
-use soroban_sdk::{Address, Env};
 use crate::types::{DisputeDetails, EscalationLevel, StorageKey};
+use soroban_sdk::{Address, Env};
 
 /// Set the time limit (in seconds) for a specific escalation level
 pub fn set_level_time_limit(env: &Env, level: EscalationLevel, limit_seconds: u64) {
@@ -28,11 +28,19 @@ pub fn set_dispute(env: &Env, agreement_id: u128, details: &DisputeDetails) {
 
 /// Check if a given address is the contract administrator
 pub fn is_admin(env: &Env, caller: &Address) -> bool {
-    if let Some(admin) = env.storage().persistent().get::<_, Address>(&StorageKey::Admin) {
+    if let Some(admin) = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::Admin)
+    {
         return admin == *caller;
     }
     // Fall back to owner if no admin is explicitly set
-    if let Some(owner) = env.storage().persistent().get::<_, Address>(&StorageKey::Owner) {
+    if let Some(owner) = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::Owner)
+    {
         return owner == *caller;
     }
     false

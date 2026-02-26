@@ -1,12 +1,19 @@
 #![cfg(test)]
 
-use dispute_escalation::{
-    DisputeEscalationContract, DisputeEscalationContractClient,
-};
 use dispute_escalation::types::{DisputeError, DisputeStatus, EscalationLevel};
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env};
+use dispute_escalation::{DisputeEscalationContract, DisputeEscalationContractClient};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env,
+};
 
-fn setup_test() -> (Env, DisputeEscalationContractClient<'static>, Address, Address, Address) {
+fn setup_test() -> (
+    Env,
+    DisputeEscalationContractClient<'static>,
+    Address,
+    Address,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -65,14 +72,15 @@ fn test_time_limit_enforcement() {
 
     // File Dispute
     client.file_dispute(&user, &agreement_id);
-    
+
     // Simulate time passing beyond the default 7 days limit (604800 seconds)
-    env.ledger().set_timestamp(env.ledger().timestamp() + 800000);
+    env.ledger()
+        .set_timestamp(env.ledger().timestamp() + 800000);
 
     // Escalate should fail due to time limit
     let res = client.try_escalate_dispute(&user, &agreement_id);
     assert!(res.is_err());
-    
+
     match res {
         Err(Ok(e)) => assert_eq!(e, DisputeError::TimeLimitExpired.into()),
         _ => panic!("Expected TimeLimitExpired error"),
@@ -85,7 +93,7 @@ fn test_unauthorized_resolution() {
     let agreement_id = 102u128;
 
     client.file_dispute(&user, &agreement_id);
-    
+
     // User tries to resolve their own dispute, should fail
     let res = client.try_resolve_dispute(&user, &agreement_id);
     assert!(res.is_err());

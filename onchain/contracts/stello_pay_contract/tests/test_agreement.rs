@@ -6,10 +6,7 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
-use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env};
 use stello_pay_contract::storage::{AgreementMode, AgreementStatus};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
@@ -99,14 +96,8 @@ fn test_create_agreement_invalid_parameters_zero_amount() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let _ = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &token,
-        &0i128,
-        &86400u64,
-        &4u32,
-    );
+    let _ =
+        client.create_escrow_agreement(&employer, &contributor, &token, &0i128, &86400u64, &4u32);
 }
 
 /// Creating escrow agreement with zero num_periods fails.
@@ -481,7 +472,10 @@ fn test_maximum_employees_per_agreement() {
     }
     let employees = client.get_agreement_employees(&agreement_id);
     assert_eq!(employees.len(), n);
-    assert_eq!(client.get_agreement(&agreement_id).unwrap().total_amount, total);
+    assert_eq!(
+        client.get_agreement(&agreement_id).unwrap().total_amount,
+        total
+    );
 }
 
 /// Agreement with large amounts.

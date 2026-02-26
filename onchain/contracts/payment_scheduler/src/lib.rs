@@ -1,8 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
 
 #[contract]
 pub struct PaymentSchedulerContract;
@@ -89,9 +87,7 @@ fn next_job_id(env: &Env) -> u128 {
         .persistent()
         .get::<_, u128>(&StorageKey::NextJobId)
         .unwrap_or(0);
-    let next = current
-        .checked_add(1)
-        .expect("Job id overflow");
+    let next = current.checked_add(1).expect("Job id overflow");
     env.storage()
         .persistent()
         .set(&StorageKey::NextJobId, &next);
@@ -158,10 +154,13 @@ impl PaymentSchedulerContract {
         employer.require_auth();
 
         assert!(amount > 0, "Amount must be positive");
-        
+
         // SUPPORT ONE-TIME PAYMENTS: Allow 0 interval only if max_executions is 1
         if max_executions != Some(1) {
-            assert!(interval_seconds > 0, "Interval must be positive for recurring jobs");
+            assert!(
+                interval_seconds > 0,
+                "Interval must be positive for recurring jobs"
+            );
         }
 
         // CONFLICT DETECTION: Prevent identical jobs for the same recipient at the exact same start time
@@ -237,14 +236,12 @@ impl PaymentSchedulerContract {
 
                     if balance < job_mut.amount {
                         // Insufficient funds: schedule retry or mark failed.
-                        job_mut.retry_count = job_mut
-                            .retry_count
-                            .saturating_add(1);
+                        job_mut.retry_count = job_mut.retry_count.saturating_add(1);
                         if job_mut.retry_count > job_mut.max_retries {
                             job_mut.status = JobStatus::Failed;
                         } else {
-                            job_mut.next_scheduled_time = now
-                                .saturating_add(job_mut.interval_seconds);
+                            job_mut.next_scheduled_time =
+                                now.saturating_add(job_mut.interval_seconds);
                         }
                         env.events().publish(
                             ("job_failed", job_mut.id),
@@ -265,8 +262,7 @@ impl PaymentSchedulerContract {
                         );
                         job_mut.executions = job_mut.executions.saturating_add(1);
                         job_mut.retry_count = 0;
-                        job_mut.next_scheduled_time = now
-                            .saturating_add(job_mut.interval_seconds);
+                        job_mut.next_scheduled_time = now.saturating_add(job_mut.interval_seconds);
 
                         if let Some(max_exec) = job_mut.max_executions {
                             if job_mut.executions >= max_exec {
@@ -340,9 +336,7 @@ impl PaymentSchedulerContract {
 
     /// @notice Reads a payment job by id.
     pub fn get_job(env: Env, job_id: u128) -> Option<PaymentJob> {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::Job(job_id))
+        env.storage().persistent().get(&StorageKey::Job(job_id))
     }
 
     /// @notice Returns the contract owner/admin.
@@ -350,4 +344,3 @@ impl PaymentSchedulerContract {
         env.storage().persistent().get(&StorageKey::Owner)
     }
 }
-

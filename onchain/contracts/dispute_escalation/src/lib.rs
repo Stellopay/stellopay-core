@@ -8,7 +8,7 @@ use stellar_macros::Upgradeable;
 use types::{DisputeDetails, DisputeError, DisputeStatus, EscalationLevel, StorageKey};
 
 /// Dispute Escalation Contract
-/// 
+///
 /// Manages the lifecycle of payment disputes across multiple escalation levels.
 /// It enforces strict time limits for appealing to a higher level.
 #[derive(Upgradeable)]
@@ -37,16 +37,16 @@ impl DisputeEscalationContract {
     }
 
     /// Open a new Level 1 dispute.
-    /// 
+    ///
     /// # Arguments
     /// * `caller` - The initiator of the dispute (must be authenticated)
     /// * `agreement_id` - ID of the agreement in dispute
-    /// 
+    ///
     /// # Returns
     /// Result containing unit on success, or DisputeError
     pub fn file_dispute(env: Env, caller: Address, agreement_id: u128) -> Result<(), DisputeError> {
         caller.require_auth();
-        
+
         let existing = storage::get_dispute(&env, agreement_id);
         if existing.is_some() {
             // Can't open if already exists; must use escalate or appeal.
@@ -55,7 +55,7 @@ impl DisputeEscalationContract {
 
         let time_limit = storage::get_level_time_limit(&env, EscalationLevel::Level1);
         let now = env.ledger().timestamp();
-        
+
         let dispute = DisputeDetails {
             agreement_id,
             initiator: caller,
@@ -70,19 +70,24 @@ impl DisputeEscalationContract {
     }
 
     /// Escalate an existing dispute to the next level.
-    /// 
+    ///
     /// # Arguments
     /// * `caller` - The caller performing the escalation (must be authenticated)
     /// * `agreement_id` - ID of the active dispute to escalate
-    /// 
+    ///
     /// # Requirements
     /// - Dispute must exist and not be in a Resolved state.
     /// - Must be within the time limit.
-    pub fn escalate_dispute(env: Env, caller: Address, agreement_id: u128) -> Result<(), DisputeError> {
+    pub fn escalate_dispute(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+    ) -> Result<(), DisputeError> {
         caller.require_auth();
 
-        let mut dispute = storage::get_dispute(&env, agreement_id).ok_or(DisputeError::DisputeNotFound)?;
-        
+        let mut dispute =
+            storage::get_dispute(&env, agreement_id).ok_or(DisputeError::DisputeNotFound)?;
+
         if dispute.status == DisputeStatus::Resolved {
             return Err(DisputeError::AlreadyResolved);
         }
@@ -109,18 +114,23 @@ impl DisputeEscalationContract {
     }
 
     /// Appeal a resolved ruling to a higher level.
-    /// 
+    ///
     /// # Arguments
     /// * `caller` - Initiator of the appeal
     /// * `agreement_id` - ID of the agreement with a resolved dispute
-    /// 
+    ///
     /// # Requirements
     /// - Dispute must be resolved.
     /// - Must be within the appeal window of the previous level.
-    pub fn appeal_ruling(env: Env, caller: Address, agreement_id: u128) -> Result<(), DisputeError> {
+    pub fn appeal_ruling(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+    ) -> Result<(), DisputeError> {
         caller.require_auth();
 
-        let mut dispute = storage::get_dispute(&env, agreement_id).ok_or(DisputeError::DisputeNotFound)?;
+        let mut dispute =
+            storage::get_dispute(&env, agreement_id).ok_or(DisputeError::DisputeNotFound)?;
 
         if dispute.status != DisputeStatus::Resolved {
             return Err(DisputeError::InvalidTransition);
@@ -149,21 +159,26 @@ impl DisputeEscalationContract {
     }
 
     /// Resolves an active dispute at the current level.
-    /// 
+    ///
     /// # Arguments
     /// * `caller` - Authorized admin or arbiter
     /// * `agreement_id` - Dispute agreement ID
-    /// 
+    ///
     /// # Requirements
     /// - Caller must be an admin.
-    pub fn resolve_dispute(env: Env, caller: Address, agreement_id: u128) -> Result<(), DisputeError> {
+    pub fn resolve_dispute(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+    ) -> Result<(), DisputeError> {
         caller.require_auth();
 
         if !storage::is_admin(&env, &caller) {
             return Err(DisputeError::Unauthorized);
         }
 
-        let mut dispute = storage::get_dispute(&env, agreement_id).ok_or(DisputeError::DisputeNotFound)?;
+        let mut dispute =
+            storage::get_dispute(&env, agreement_id).ok_or(DisputeError::DisputeNotFound)?;
 
         if dispute.status == DisputeStatus::Resolved {
             return Err(DisputeError::AlreadyResolved);
@@ -171,7 +186,7 @@ impl DisputeEscalationContract {
 
         // Set status to resolved, and update the appeal deadline for this level
         dispute.status = DisputeStatus::Resolved;
-        
+
         let now = env.ledger().timestamp();
         // Give 3 days to appeal minimum (or the remaining time limit)
         dispute.phase_started_at = now;
@@ -182,7 +197,12 @@ impl DisputeEscalationContract {
     }
 
     /// Admin configuration to adjust time limits for a given escalation level.
-    pub fn set_level_time_limit(env: Env, caller: Address, level: EscalationLevel, limit_seconds: u64) -> Result<(), DisputeError> {
+    pub fn set_level_time_limit(
+        env: Env,
+        caller: Address,
+        level: EscalationLevel,
+        limit_seconds: u64,
+    ) -> Result<(), DisputeError> {
         caller.require_auth();
         if !storage::is_admin(&env, &caller) {
             return Err(DisputeError::Unauthorized);

@@ -147,14 +147,8 @@ fn test_escrow_zero_amount_per_period_rejected() {
     let token = create_test_address(&env);
 
     // amount_per_period = 0 triggers ZeroAmountPerPeriod validation
-    let _ = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &token,
-        &0i128,
-        &86400u64,
-        &4u32,
-    );
+    let _ =
+        client.create_escrow_agreement(&employer, &contributor, &token, &0i128, &86400u64, &4u32);
 }
 
 /// Verifies that creating an escrow agreement with a negative amount_per_period
@@ -218,14 +212,8 @@ fn test_escrow_minimum_valid_amount_succeeds() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let agreement_id = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &token,
-        &1i128,
-        &86400u64,
-        &4u32,
-    );
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &1i128, &86400u64, &4u32);
 
     let agreement = client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agreement.total_amount, 4); // 1 * 4
@@ -272,14 +260,7 @@ fn test_escrow_zero_period_seconds_rejected() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let _ = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &token,
-        &100i128,
-        &0u64,
-        &4u32,
-    );
+    let _ = client.create_escrow_agreement(&employer, &contributor, &token, &100i128, &0u64, &4u32);
 }
 
 /// Verifies that creating an escrow agreement with zero num_periods
@@ -296,14 +277,8 @@ fn test_escrow_zero_num_periods_rejected() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let _ = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &token,
-        &100i128,
-        &86400u64,
-        &0u32,
-    );
+    let _ =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100i128, &86400u64, &0u32);
 }
 
 /// Verifies that creating an escrow agreement with u32::MAX num_periods
@@ -322,14 +297,8 @@ fn test_escrow_max_u32_num_periods() {
 
     // total_amount = 1 * u32::MAX = 4_294_967_295 — fits comfortably in i128
     // grace_period_seconds = 1 * u32::MAX = 4_294_967_295 — fits in u64
-    let agreement_id = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &token,
-        &1i128,
-        &1u64,
-        &u32::MAX,
-    );
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &1i128, &1u64, &u32::MAX);
 
     let agreement = client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agreement.total_amount, u32::MAX as i128);
@@ -351,14 +320,8 @@ fn test_escrow_max_u64_period_seconds() {
     let token = create_test_address(&env);
 
     // With num_periods = 1: grace_period = u64::MAX * 1 = u64::MAX (no overflow)
-    let agreement_id = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &token,
-        &1i128,
-        &u64::MAX,
-        &1u32,
-    );
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &1i128, &u64::MAX, &1u32);
 
     let agreement = client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agreement.period_seconds, Some(u64::MAX));
@@ -566,14 +529,8 @@ fn test_resolve_dispute_payout_exceeds_total_rejected() {
 
     // Create escrow: total_amount = 100 * 1 = 100
     // grace_period_seconds = 3600 * 1 = 3600 (dispute must be raised within this)
-    let agreement_id = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &token,
-        &100i128,
-        &3600u64,
-        &1u32,
-    );
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100i128, &3600u64, &1u32);
 
     // Raise dispute (within grace period since timestamp starts at 0)
     client.raise_dispute(&employer, &agreement_id);
@@ -601,14 +558,8 @@ fn test_resolve_dispute_zero_payouts_succeeds() {
     client.set_arbiter(&employer, &arbiter);
 
     // Create escrow: total_amount = 100
-    let agreement_id = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &token,
-        &100i128,
-        &3600u64,
-        &1u32,
-    );
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100i128, &3600u64, &1u32);
 
     // Raise dispute
     client.raise_dispute(&employer, &agreement_id);
