@@ -10,6 +10,7 @@ Welcome to the comprehensive documentation for the StellopayCore smart contract 
 4. [Examples](./examples/README.md) - Common use cases and code examples
 5. [Developer Tools](./dev-tools/README.md) - CLI tools and utilities
 6. [Architecture](./architecture/README.md) - System design and architecture
+7. [Migrations](./migrations.md) - Contract upgrade procedures, rollback, and data compatibility
 
 ## Quick Start
 
