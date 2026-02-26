@@ -166,7 +166,9 @@ impl BonusSystemContract {
         assert!(!initialized, "Contract already initialized");
 
         env.storage().persistent().set(&StorageKey::Owner, &owner);
-        env.storage().persistent().set(&StorageKey::Initialized, &true);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Initialized, &true);
     }
 
     /// @notice Creates a one-time bonus with escrowed funds.
@@ -206,7 +208,11 @@ impl BonusSystemContract {
             interval_seconds: 0,
         };
 
-        token::Client::new(&env, &token).transfer(&employer, &env.current_contract_address(), &amount);
+        token::Client::new(&env, &token).transfer(
+            &employer,
+            &env.current_contract_address(),
+            &amount,
+        );
 
         write_incentive(&env, &incentive);
         env.events().publish(
@@ -269,7 +275,11 @@ impl BonusSystemContract {
             interval_seconds,
         };
 
-        token::Client::new(&env, &token).transfer(&employer, &env.current_contract_address(), &escrowed_amount);
+        token::Client::new(&env, &token).transfer(
+            &employer,
+            &env.current_contract_address(),
+            &escrowed_amount,
+        );
 
         write_incentive(&env, &incentive);
         env.events().publish(
@@ -298,7 +308,10 @@ impl BonusSystemContract {
 
         let mut incentive = read_incentive(&env, incentive_id);
         assert!(incentive.approver == approver, "Only approver can approve");
-        assert!(incentive.status == ApprovalStatus::Pending, "Incentive is not pending");
+        assert!(
+            incentive.status == ApprovalStatus::Pending,
+            "Incentive is not pending"
+        );
 
         incentive.status = ApprovalStatus::Approved;
         write_incentive(&env, &incentive);
@@ -322,7 +335,10 @@ impl BonusSystemContract {
 
         let mut incentive = read_incentive(&env, incentive_id);
         assert!(incentive.approver == approver, "Only approver can reject");
-        assert!(incentive.status == ApprovalStatus::Pending, "Incentive is not pending");
+        assert!(
+            incentive.status == ApprovalStatus::Pending,
+            "Incentive is not pending"
+        );
 
         incentive.status = ApprovalStatus::Rejected;
         write_incentive(&env, &incentive);
@@ -347,7 +363,10 @@ impl BonusSystemContract {
 
         let mut incentive = read_incentive(&env, incentive_id);
         assert!(incentive.employee == employee, "Only employee can claim");
-        assert!(incentive.status == ApprovalStatus::Approved, "Incentive is not approved");
+        assert!(
+            incentive.status == ApprovalStatus::Approved,
+            "Incentive is not approved"
+        );
 
         let now = env.ledger().timestamp();
         let payouts_to_claim = match incentive.kind {
@@ -370,7 +389,11 @@ impl BonusSystemContract {
         };
 
         let amount = checked_mul_amount(incentive.amount_per_payout, payouts_to_claim);
-        token::Client::new(&env, &incentive.token).transfer(&env.current_contract_address(), &employee, &amount);
+        token::Client::new(&env, &incentive.token).transfer(
+            &env.current_contract_address(),
+            &employee,
+            &amount,
+        );
 
         incentive.claimed_payouts = incentive
             .claimed_payouts
@@ -407,7 +430,8 @@ impl BonusSystemContract {
         let mut incentive = read_incentive(&env, incentive_id);
         assert!(incentive.employer == employer, "Only employer can cancel");
         assert!(
-            incentive.status == ApprovalStatus::Pending || incentive.status == ApprovalStatus::Rejected,
+            incentive.status == ApprovalStatus::Pending
+                || incentive.status == ApprovalStatus::Rejected,
             "Incentive cannot be cancelled"
         );
 
@@ -420,8 +444,11 @@ impl BonusSystemContract {
         incentive.status = ApprovalStatus::Cancelled;
         write_incentive(&env, &incentive);
 
-        token::Client::new(&env, &incentive.token)
-            .transfer(&env.current_contract_address(), &employer, &refunded_amount);
+        token::Client::new(&env, &incentive.token).transfer(
+            &env.current_contract_address(),
+            &employer,
+            &refunded_amount,
+        );
 
         env.events().publish(
             ("incentive_cancelled", incentive_id),

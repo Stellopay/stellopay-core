@@ -92,9 +92,13 @@ impl PayrollEscrowContract {
 
         // Store configuration
         env.storage().persistent().set(&StorageKey::Token, &token);
-        env.storage().persistent().set(&StorageKey::Manager, &manager);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Manager, &manager);
         env.storage().persistent().set(&StorageKey::Admin, &admin);
-        env.storage().persistent().set(&StorageKey::Initialized, &true);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Initialized, &true);
     }
 
     /// Funds an agreement with tokens.
@@ -119,7 +123,13 @@ impl PayrollEscrowContract {
     /// # Events
     ///
     /// Emits `Funded` event on success.
-    pub fn fund_agreement(env: Env, from: Address, agreement_id: u128, employer: Address, amount: i128) {
+    pub fn fund_agreement(
+        env: Env,
+        from: Address,
+        agreement_id: u128,
+        employer: Address,
+        amount: i128,
+    ) {
         from.require_auth();
 
         // Validate contract is initialized

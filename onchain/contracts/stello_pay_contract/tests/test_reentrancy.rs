@@ -97,7 +97,10 @@ fn test_claim_payroll_state_updated_prevents_double_claim() {
     assert_eq!(claimed, 1);
 
     let res2 = client.try_claim_payroll(&employee, &agreement_id, &0);
-    assert!(res2.is_err() || res2.as_ref().ok().and_then(|r| r.as_ref().err()).is_some(), "second claim must fail (no periods to claim)");
+    assert!(
+        res2.is_err() || res2.as_ref().ok().and_then(|r| r.as_ref().err()).is_some(),
+        "second claim must fail (no periods to claim)"
+    );
 }
 
 /// Verifies that after claim_time_based, claimed periods are updated so
