@@ -386,6 +386,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "compliance_checker"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "clap"
 version = "4.5.60"
 source = "registry+https://github.com/rust-lang/crates.io-index"
