@@ -319,6 +319,44 @@ impl PayrollContract {
         payroll::get_dispute_status(env, agreement_id)
     }
 
+    /// Sets the global FX rate admin address that is allowed to update
+    /// exchange rates in addition to the contract owner (e.g. an oracle
+    /// contract responsible for pushing prices on-chain).
+    pub fn set_exchange_rate_admin(
+        env: Env,
+        caller: Address,
+        admin: Address,
+    ) -> Result<(), PayrollError> {
+        payroll::set_exchange_rate_admin(&env, caller, admin)
+    }
+
+    /// Configures the FX rate for a `(base, quote)` token pair.
+    ///
+    /// Access control:
+    /// - Contract owner OR
+    /// - FX admin set via `set_exchange_rate_admin`
+    pub fn set_exchange_rate(
+        env: Env,
+        caller: Address,
+        base: Address,
+        quote: Address,
+        rate: i128,
+    ) -> Result<(), PayrollError> {
+        payroll::set_exchange_rate(&env, caller, base, quote, rate)
+    }
+
+    /// Converts an `amount` from one token into another using the configured
+    /// FX rate, without performing any on-chain transfer. This is useful for
+    /// off-chain estimation and validation of multi-currency payouts.
+    pub fn convert_currency(
+        env: Env,
+        from_token: Address,
+        to_token: Address,
+        amount: i128,
+    ) -> Result<i128, PayrollError> {
+        payroll::convert_currency(&env, from_token, to_token, amount)
+    }
+
     /// Claim payroll for an employee
     ///
     /// # Arguments
@@ -336,6 +374,20 @@ impl PayrollContract {
         employee_index: u32,
     ) -> Result<(), PayrollError> {
         payroll::claim_payroll(&env, &caller, agreement_id, employee_index)
+    }
+
+    /// Claims payroll for an employee, but settles the transfer in a
+    /// caller-specified payout token. The agreement continues to track its
+    /// accounting in the base token while the actual transfer is executed
+    /// in the requested payout currency using the configured FX rate.
+    pub fn claim_payroll_in_token(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        employee_index: u32,
+        payout_token: Address,
+    ) -> Result<(), PayrollError> {
+        payroll::claim_payroll_in_token(&env, &caller, agreement_id, employee_index, payout_token)
     }
 
     pub fn batch_claim_payroll(
@@ -501,5 +553,87 @@ impl PayrollContract {
     /// Some(timestamp) if agreement is cancelled, None otherwise
     pub fn get_grace_period_end(env: Env, agreement_id: u128) -> Option<u64> {
         payroll::get_grace_period_end(&env, agreement_id)
+    }
+
+    // ============================================================================
+    // Emergency Pause Functions
+    // ============================================================================
+
+    /// Sets emergency guardians for multi-sig pause activation
+    ///
+    /// # Arguments
+    /// * `guardians` - Vector of guardian addresses
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn set_emergency_guardians(env: Env, guardians: Vec<Address>) {
+        payroll::set_emergency_guardians(&env, guardians);
+    }
+
+    /// Gets current emergency guardians
+    ///
+    /// # Returns
+    /// Vector of guardian addresses if set
+    pub fn get_emergency_guardians(env: Env) -> Option<Vec<Address>> {
+        payroll::get_emergency_guardians(&env)
+    }
+
+    /// Proposes emergency pause with optional timelock
+    ///
+    /// # Arguments
+    /// * `caller` - Guardian proposing the pause
+    /// * `timelock_seconds` - Delay before pause activates (0 for immediate)
+    ///
+    /// # Access Control
+    /// Requires guardian authentication
+    pub fn propose_emergency_pause(
+        env: Env,
+        caller: Address,
+        timelock_seconds: u64,
+    ) -> Result<(), storage::PayrollError> {
+        payroll::propose_emergency_pause(&env, caller, timelock_seconds)
+    }
+
+    /// Approves pending emergency pause proposal
+    ///
+    /// # Arguments
+    /// * `caller` - Guardian approving the pause
+    ///
+    /// # Access Control
+    /// Requires guardian authentication
+    pub fn approve_emergency_pause(env: Env, caller: Address) -> Result<(), storage::PayrollError> {
+        payroll::approve_emergency_pause(&env, caller)
+    }
+
+    /// Immediately activates emergency pause (owner only)
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn emergency_pause(env: Env) -> Result<(), storage::PayrollError> {
+        payroll::emergency_pause(&env)
+    }
+
+    /// Unpauses contract after emergency resolved
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn emergency_unpause(env: Env) -> Result<(), storage::PayrollError> {
+        payroll::emergency_unpause(&env)
+    }
+
+    /// Checks if contract is in emergency pause state
+    ///
+    /// # Returns
+    /// true if paused, false otherwise
+    pub fn is_emergency_paused(env: Env) -> bool {
+        payroll::is_emergency_paused(&env)
+    }
+
+    /// Gets emergency pause state details
+    ///
+    /// # Returns
+    /// EmergencyPause state if set
+    pub fn get_emergency_pause_state(env: Env) -> Option<storage::EmergencyPause> {
+        payroll::get_emergency_pause_state(&env)
     }
 }

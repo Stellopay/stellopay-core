@@ -154,6 +154,16 @@ pub enum StorageKey {
     DisputeStatus(u128),
     DisputeRaisedAt(u128),
     Arbiter,
+    /// Emergency pause state
+    EmergencyPause,
+    /// Emergency guardians (multi-sig addresses)
+    EmergencyGuardians,
+    /// Pending emergency pause proposal
+    PendingPause,
+    /// Pause approvals
+    PauseApprovals,
+    /// Global admin allowed to update FX rates (e.g. an oracle contract)
+    ExchangeRateAdmin,
 }
 
 #[contracttype]
@@ -232,6 +242,26 @@ pub enum PayrollError {
     ZeroAmountPerPeriod = 21,
     ZeroPeriodDuration = 22,
     ZeroNumPeriods = 23,
+    EmergencyPaused = 24,
+    NotGuardian = 25,
+    TimelockActive = 26,
+    InvalidTimelock = 27,
+}
+
+/// Emergency pause state
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyPause {
+    pub is_paused: bool,
+    pub paused_at: Option<u64>,
+    pub paused_by: Option<Address>,
+    pub timelock_end: Option<u64>,
+    /// Missing or unconfigured FX rate for a currency pair
+    ExchangeRateNotFound = 24,
+    /// Arithmetic overflow/underflow during FX conversion
+    ExchangeRateOverflow = 25,
+    /// Invalid FX rate (e.g. non-positive)
+    ExchangeRateInvalid = 26,
 }
 
 /// Storage keys for the payroll claiming system.
@@ -282,6 +312,16 @@ pub enum DataKey {
     /// Key: AgreementEscrowBalance(u128, Address)
     /// Value: i128
     AgreementEscrowBalance(u128, Address),
+
+    /// Maps a currency pair (base, quote) to a fixed-point exchange rate.
+    ///
+    /// The stored value represents `quote_per_base * FX_SCALE`, where
+    /// `FX_SCALE` is a global fixed-point scaling factor used by the
+    /// multi-currency conversion helpers.
+    ///
+    /// Key: ExchangeRate(Address, Address)
+    /// Value: i128 (scaled rate)
+    ExchangeRate(Address, Address),
 }
 
 impl DataKey {
@@ -401,5 +441,22 @@ impl DataKey {
     ) {
         let key: DataKey = DataKey::AgreementEscrowBalance(agreement_id, token.clone());
         env.storage().persistent().set(&key, &amount);
+    }
+
+    /// Get the configured FX rate for a `(base, quote)` currency pair, if any.
+    ///
+    /// The returned value is the fixed-point rate `quote_per_base * FX_SCALE`.
+    pub fn get_exchange_rate(env: &Env, base: &Address, quote: &Address) -> Option<i128> {
+        let key: DataKey = DataKey::ExchangeRate(base.clone(), quote.clone());
+        env.storage().persistent().get(&key)
+    }
+
+    /// Set the FX rate for a `(base, quote)` currency pair.
+    ///
+    /// Callers are responsible for enforcing any necessary access control;
+    /// this helper only performs the storage write.
+    pub fn set_exchange_rate(env: &Env, base: &Address, quote: &Address, rate: i128) {
+        let key: DataKey = DataKey::ExchangeRate(base.clone(), quote.clone());
+        env.storage().persistent().set(&key, &rate);
     }
 }

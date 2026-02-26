@@ -91,8 +91,10 @@ fn propose_and_auto_approve_by_creator() {
     let target = Address::generate(&env);
     let hash: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
 
-    let op_id =
-        client.propose_operation(&proposer, &OperationKind::ContractUpgrade(target.clone(), hash));
+    let op_id = client.propose_operation(
+        &proposer,
+        &OperationKind::ContractUpgrade(target.clone(), hash),
+    );
 
     let op = client.get_operation(&op_id).unwrap();
     assert_eq!(op.id, op_id);
@@ -188,4 +190,3 @@ fn cancel_operation_by_creator_or_owner() {
     let res = client.try_cancel_operation(&owner, &op_id);
     assert!(res.is_err());
 }
-

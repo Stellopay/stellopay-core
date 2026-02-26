@@ -13,7 +13,13 @@ use stello_pay_contract::{PayrollContract, PayrollContractClient};
 // HELPERS
 // ============================================================================
 
-fn create_test_env() -> (Env, Address, Address, Address, PayrollContractClient<'static>) {
+fn create_test_env() -> (
+    Env,
+    Address,
+    Address,
+    Address,
+    PayrollContractClient<'static>,
+) {
     let env = Env::default();
     env.mock_all_auths();
     #[allow(deprecated)]
@@ -95,8 +101,14 @@ fn test_add_multiple_milestones() {
     client.add_milestone(&agreement_id, &1500);
     assert_eq!(client.get_milestone_count(&agreement_id), 3);
     assert_eq!(client.get_milestone(&agreement_id, &1).unwrap().amount, 500);
-    assert_eq!(client.get_milestone(&agreement_id, &2).unwrap().amount, 1000);
-    assert_eq!(client.get_milestone(&agreement_id, &3).unwrap().amount, 1500);
+    assert_eq!(
+        client.get_milestone(&agreement_id, &2).unwrap().amount,
+        1000
+    );
+    assert_eq!(
+        client.get_milestone(&agreement_id, &3).unwrap().amount,
+        1500
+    );
 }
 
 /// Adding a milestone with zero amount must fail.
@@ -392,6 +404,9 @@ fn test_very_large_milestone_amounts() {
     client.add_milestone(&agreement_id, &large);
     client.approve_milestone(&agreement_id, &1);
     client.claim_milestone(&agreement_id, &1);
-    assert_eq!(client.get_milestone(&agreement_id, &1).unwrap().amount, large);
+    assert_eq!(
+        client.get_milestone(&agreement_id, &1).unwrap().amount,
+        large
+    );
     assert!(client.get_milestone(&agreement_id, &1).unwrap().claimed);
 }

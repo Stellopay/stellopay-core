@@ -41,7 +41,13 @@ use stello_pay_contract::{PayrollContract, PayrollContractClient};
 /// initialized owner/arbiter, and a real Stellar Asset Contract for token ops.
 ///
 /// Returns `(env, employer, token, arbiter, client)`.
-fn create_test_env() -> (Env, Address, Address, Address, PayrollContractClient<'static>) {
+fn create_test_env() -> (
+    Env,
+    Address,
+    Address,
+    Address,
+    PayrollContractClient<'static>,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -57,7 +63,9 @@ fn create_test_env() -> (Env, Address, Address, Address, PayrollContractClient<'
     let employer = Address::generate(&env);
 
     let token_admin = Address::generate(&env);
-    let token = env.register_stellar_asset_contract_v2(token_admin).address();
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
 
     (env, employer, token, arbiter, client)
 }
@@ -114,7 +122,12 @@ fn setup_funded_milestone(
     for _ in 1..=num_milestones {
         client.add_milestone(&agreement_id, &amount);
     }
-    mint(env, token, &client.address, amount * (num_milestones as i128));
+    mint(
+        env,
+        token,
+        &client.address,
+        amount * (num_milestones as i128),
+    );
     agreement_id
 }
 
@@ -180,10 +193,24 @@ fn test_payroll_interleaved_employee_claims() {
     // Instead of payroll mode (which needs manual DataKey seeding), use
     // separate escrow agreements per employee to exercise the same claim logic.
     let id_e1 = setup_funded_escrow(
-        &env, &client, &employer, &e1, &token, salary_e1, period_s, num_periods,
+        &env,
+        &client,
+        &employer,
+        &e1,
+        &token,
+        salary_e1,
+        period_s,
+        num_periods,
     );
     let id_e2 = setup_funded_escrow(
-        &env, &client, &employer, &e2, &token, salary_e2, period_s, num_periods,
+        &env,
+        &client,
+        &employer,
+        &e2,
+        &token,
+        salary_e2,
+        period_s,
+        num_periods,
     );
 
     // --- Period 1 ---
@@ -254,7 +281,8 @@ fn test_milestone_concurrent_batch_claim_state_consistency() {
     let (env, employer, token, _arbiter, client) = create_test_env();
     let contributor = Address::generate(&env);
 
-    let agreement_id = setup_funded_milestone(&env, &client, &employer, &contributor, &token, 1000, 5);
+    let agreement_id =
+        setup_funded_milestone(&env, &client, &employer, &contributor, &token, 1000, 5);
 
     // Approve milestones 1, 3, 5; leave 2 and 4 unapproved.
     client.approve_milestone(&agreement_id, &1);
@@ -266,8 +294,8 @@ fn test_milestone_concurrent_batch_claim_state_consistency() {
     let ids = Vec::from_array(&env, [1u32, 2u32, 3u32, 6u32, 5u32]);
     let res = client.batch_claim_milestones(&agreement_id, &ids);
 
-    assert_eq!(res.successful_claims, 3);    // 1, 3, 5
-    assert_eq!(res.failed_claims, 2);        // 2 (unapproved) + 6 (invalid)
+    assert_eq!(res.successful_claims, 3); // 1, 3, 5
+    assert_eq!(res.failed_claims, 2); // 2 (unapproved) + 6 (invalid)
     assert_eq!(res.total_claimed, 3000);
 
     // Persistent state: only approved milestones are marked claimed.
@@ -293,23 +321,18 @@ fn test_milestone_duplicate_claims_rejected_idempotently() {
     let (env, employer, token, _arbiter, client) = create_test_env();
     let contributor = Address::generate(&env);
 
-    let agreement_id = setup_funded_milestone(&env, &client, &employer, &contributor, &token, 500, 3);
+    let agreement_id =
+        setup_funded_milestone(&env, &client, &employer, &contributor, &token, 500, 3);
     client.approve_milestone(&agreement_id, &1);
     client.approve_milestone(&agreement_id, &2);
 
     // First claim succeeds for both milestones.
-    let first = client.batch_claim_milestones(
-        &agreement_id,
-        &Vec::from_array(&env, [1u32, 2u32]),
-    );
+    let first = client.batch_claim_milestones(&agreement_id, &Vec::from_array(&env, [1u32, 2u32]));
     assert_eq!(first.successful_claims, 2);
     assert_eq!(first.total_claimed, 1000);
 
     // Second call with same IDs — both already claimed, both must fail.
-    let second = client.batch_claim_milestones(
-        &agreement_id,
-        &Vec::from_array(&env, [1u32, 2u32]),
-    );
+    let second = client.batch_claim_milestones(&agreement_id, &Vec::from_array(&env, [1u32, 2u32]));
     assert_eq!(second.successful_claims, 0);
     assert_eq!(second.failed_claims, 2);
     assert_eq!(second.total_claimed, 0);
@@ -317,12 +340,9 @@ fn test_milestone_duplicate_claims_rejected_idempotently() {
     // Inline-duplicate: milestone 1 appears twice in a single batch.
     // First occurrence succeeds (milestone 3 not yet claimed); second is a duplicate.
     client.approve_milestone(&agreement_id, &3);
-    let dedup = client.batch_claim_milestones(
-        &agreement_id,
-        &Vec::from_array(&env, [3u32, 3u32]),
-    );
+    let dedup = client.batch_claim_milestones(&agreement_id, &Vec::from_array(&env, [3u32, 3u32]));
     assert_eq!(dedup.successful_claims, 1); // only 1 of the two `3`s succeeds
-    assert_eq!(dedup.failed_claims, 1);     // second is a duplicate
+    assert_eq!(dedup.failed_claims, 1); // second is a duplicate
 
     // Verify contributor was paid exactly once per milestone — never double-paid.
     let tok = soroban_sdk::token::Client::new(&env, &token);
@@ -340,7 +360,8 @@ fn test_milestone_auto_complete_on_all_claimed() {
     let (env, employer, token, _arbiter, client) = create_test_env();
     let contributor = Address::generate(&env);
 
-    let agreement_id = setup_funded_milestone(&env, &client, &employer, &contributor, &token, 1000, 3);
+    let agreement_id =
+        setup_funded_milestone(&env, &client, &employer, &contributor, &token, 1000, 3);
 
     // Approve and claim milestones 1 and 2 — agreement must stay non-Completed.
     client.approve_milestone(&agreement_id, &1);
@@ -379,12 +400,22 @@ fn test_concurrent_dispute_resolutions() {
     let contributor = Address::generate(&env);
 
     let agreement_id = setup_funded_escrow(
-        &env, &client, &employer, &contributor, &token, 1000, 86400, 4,
+        &env,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        1000,
+        86400,
+        4,
     );
 
     // --- Scenario 7: duplicate raise ---
     client.raise_dispute(&employer, &agreement_id);
-    assert_eq!(client.get_dispute_status(&agreement_id), DisputeStatus::Raised);
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
 
     // Contributor concurrently tries to open another dispute on same agreement.
     let dup_raise = client.try_raise_dispute(&contributor, &agreement_id);
@@ -399,7 +430,10 @@ fn test_concurrent_dispute_resolutions() {
     // Fund contract to satisfy transfer during resolution.
     mint(&env, &token, &client.address, 1000);
     client.resolve_dispute(&arbiter, &agreement_id, &500, &500);
-    assert_eq!(client.get_dispute_status(&agreement_id), DisputeStatus::Resolved);
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Resolved
+    );
 
     let double_resolve = client.try_resolve_dispute(&arbiter, &agreement_id, &500, &500);
     assert_eq!(double_resolve, Err(Ok(PayrollError::NoDispute)));
@@ -418,7 +452,8 @@ fn test_pause_resume_blocks_and_restores_claims() {
     let (env, employer, token, _arbiter, client) = create_test_env();
     let contributor = Address::generate(&env);
 
-    let agreement_id = setup_funded_milestone(&env, &client, &employer, &contributor, &token, 1000, 2);
+    let agreement_id =
+        setup_funded_milestone(&env, &client, &employer, &contributor, &token, 1000, 2);
     client.approve_milestone(&agreement_id, &1);
     client.approve_milestone(&agreement_id, &2);
 
@@ -460,8 +495,16 @@ fn test_cancel_during_active_period_grace_window() {
     let num_periods = 5u32;
     let amount = 1000i128;
 
-    let agreement_id =
-        setup_funded_escrow(&env, &client, &employer, &contributor, &token, amount, period_s, num_periods);
+    let agreement_id = setup_funded_escrow(
+        &env,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        amount,
+        period_s,
+        num_periods,
+    );
 
     // Advance 2 periods — contributor has 2 earned but unclaimed.
     env.ledger().with_mut(|li| li.timestamp += period_s * 2);
@@ -557,8 +600,15 @@ fn test_high_milestone_count_state_consistency() {
     let count = 20u32;
     let amount = 500i128;
 
-    let agreement_id =
-        setup_funded_milestone(&env, &client, &employer, &contributor, &token, amount, count);
+    let agreement_id = setup_funded_milestone(
+        &env,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        amount,
+        count,
+    );
 
     // Approve all milestones.
     for i in 1..=count {

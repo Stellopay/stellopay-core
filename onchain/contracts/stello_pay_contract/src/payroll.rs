@@ -21,6 +21,9 @@ use soroban_sdk::{
     token, IntoVal, Symbol, Val,
 };
 
+/// Fixed-point scaling factor for FX rates: 1e6 precision.
+const FX_SCALE: i128 = 1_000_000;
+
 pub fn create_milestone_agreement(
     env: Env,
     employer: Address,
@@ -141,7 +144,6 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
 /// * `env` - Contract environment
 /// * `agreement_id` - ID of the agreement
 /// * `milestone_id` - ID of the milestone to approve
-
 pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
     let employer: Address = env
         .storage()
@@ -201,6 +203,9 @@ pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
 /// - Milestone must be approved
 /// - Milestone must not be already claimed
 pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
+    // Check emergency pause
+    assert!(!is_emergency_paused(&env), "Contract is emergency paused");
+
     let contributor: Address = env
         .storage()
         .instance()
@@ -285,11 +290,10 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
 /// * `env`           - Contract environment
 /// * `agreement_id`  - ID of the milestone agreement
 /// * `milestone_ids` - 1-based milestone IDs to claim.
-///                     Duplicates are detected in-memory and skipped.
+///   Duplicates are detected in-memory and skipped.
 ///
 /// # Returns
 /// `BatchMilestoneResult` — always returns (never panics at batch level).
-
 pub fn batch_claim_milestones(
     env: &Env,
     agreement_id: u128,
@@ -773,7 +777,7 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
             .get(&StorageKey::AgreementEmployees(agreement_id))
             .unwrap_or(Vec::new(env));
         assert!(
-            employees.len() > 0,
+            !employees.is_empty(),
             "Payroll agreement must have at least one employee to activate"
         );
     }
@@ -948,7 +952,7 @@ pub fn resolve_dispute(
         DisputeResolvedEvent {
             agreement_id,
             pay_contributor: pay_employee,
-            refund_employer: refund_employer,
+            refund_employer,
         },
     );
 
@@ -963,6 +967,82 @@ pub fn get_dispute_status(env: Env, agreement_id: u128) -> DisputeStatus {
     get_agreement(&env, agreement_id)
         .map(|a| a.dispute_status)
         .unwrap_or(DisputeStatus::None)
+}
+
+/// Sets the global FX rate admin address that is allowed to update exchange
+/// rates in addition to the contract owner (e.g. an oracle contract).
+pub fn set_exchange_rate_admin(
+    env: &Env,
+    caller: Address,
+    admin: Address,
+) -> Result<(), PayrollError> {
+    let owner: Address = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::Owner)
+        .ok_or(PayrollError::Unauthorized)?;
+
+    caller.require_auth();
+
+    if caller != owner {
+        return Err(PayrollError::Unauthorized);
+    }
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::ExchangeRateAdmin, &admin);
+
+    Ok(())
+}
+
+/// Configures the FX rate for a `(base, quote)` token pair.
+///
+/// Access control:
+/// - Contract owner OR
+/// - FX admin set via `set_exchange_rate_admin`
+pub fn set_exchange_rate(
+    env: &Env,
+    caller: Address,
+    base: Address,
+    quote: Address,
+    rate: i128,
+) -> Result<(), PayrollError> {
+    if rate <= 0 || base == quote {
+        return Err(PayrollError::ExchangeRateInvalid);
+    }
+
+    caller.require_auth();
+
+    let owner: Option<Address> = env.storage().persistent().get(&StorageKey::Owner);
+    let fx_admin: Option<Address> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::ExchangeRateAdmin);
+
+    let is_authorized = match (owner, fx_admin) {
+        (Some(o), _) if caller == o => true,
+        (_, Some(a)) if caller == a => true,
+        _ => false,
+    };
+
+    if !is_authorized {
+        return Err(PayrollError::Unauthorized);
+    }
+
+    DataKey::set_exchange_rate(env, &base, &quote, rate);
+
+    Ok(())
+}
+
+/// Pure conversion helper exposed as a contract entry point so off-chain
+/// clients can query expected converted amounts without performing a transfer.
+pub fn convert_currency(
+    env: &Env,
+    from_token: Address,
+    to_token: Address,
+    amount: i128,
+) -> Result<i128, PayrollError> {
+    convert_amount(env, &from_token, &to_token, amount)
 }
 
 /// Retrieves an agreement by ID
@@ -1030,6 +1110,11 @@ pub fn claim_payroll(
     agreement_id: u128,
     employee_index: u32,
 ) -> Result<(), PayrollError> {
+    // Check emergency pause
+    if is_emergency_paused(env) {
+        return Err(PayrollError::EmergencyPaused);
+    }
+
     // Validate employee index
     let employee_count = DataKey::get_employee_count(env, agreement_id);
     if employee_index >= employee_count {
@@ -1182,13 +1267,202 @@ pub fn claim_payroll(
         amount,
         token: token.clone(),
     }
-    .publish(&env);
+    .publish(env);
 
     PaymentReceivedEvent {
         agreement_id,
         to: employee,
         amount,
-        token,
+        token: token.clone(),
+    }
+    .publish(env);
+
+    Ok(())
+}
+
+/// Claims payroll for an employee but settles the payout in a caller-specified
+/// currency, using the configured FX rate between the agreement's base token
+/// and the requested payout token.
+///
+/// This preserves all invariants of `claim_payroll` (period counting, grace
+/// period semantics, and agreement accounting in base currency), while
+/// allowing the actual transfer to occur in any token that has sufficient
+/// escrow balance and a configured FX rate.
+pub fn claim_payroll_in_token(
+    env: &Env,
+    caller: &Address,
+    agreement_id: u128,
+    employee_index: u32,
+    payout_token: Address,
+) -> Result<(), PayrollError> {
+    // Validate employee index
+    let employee_count = DataKey::get_employee_count(env, agreement_id);
+    if employee_index >= employee_count {
+        return Err(PayrollError::InvalidEmployeeIndex);
+    }
+
+    // Get agreement and check status
+    let agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
+
+    // Check if agreement is paused
+    if agreement.status == AgreementStatus::Paused {
+        return Err(PayrollError::InvalidData);
+    }
+
+    // Check agreement mode
+    if agreement.mode != AgreementMode::Payroll {
+        return Err(PayrollError::InvalidAgreementMode);
+    }
+
+    // Allow claims if:
+    // 1. Agreement is Active, OR
+    // 2. Agreement is Cancelled AND grace period is still active
+    let can_claim = match agreement.status {
+        AgreementStatus::Active => true,
+        AgreementStatus::Cancelled => is_grace_period_active(env, agreement_id),
+        _ => false,
+    };
+
+    if !can_claim {
+        return Err(PayrollError::InvalidData);
+    }
+
+    // Get employee address at the given index
+    let employee = DataKey::get_employee(env, agreement_id, employee_index)
+        .ok_or(PayrollError::AgreementNotFound)?;
+
+    // Validate that caller is the employee
+    if *caller != employee {
+        return Err(PayrollError::Unauthorized);
+    }
+
+    // Get agreement activation time
+    let activation_time = DataKey::get_agreement_activation_time(env, agreement_id)
+        .ok_or(PayrollError::AgreementNotActivated)?;
+
+    // Get period duration
+    let period_duration = DataKey::get_agreement_period_duration(env, agreement_id)
+        .ok_or(PayrollError::AgreementNotFound)?;
+
+    // Get base token address
+    let base_token =
+        DataKey::get_agreement_token(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
+
+    // Shortcut to the single-currency path if payout token == base token.
+    if payout_token == base_token {
+        return claim_payroll(env, caller, agreement_id, employee_index);
+    }
+
+    // Get current timestamp
+    let current_time = env.ledger().timestamp();
+
+    // Calculate elapsed time since activation
+    if current_time < activation_time {
+        return Err(PayrollError::InvalidData);
+    }
+
+    let elapsed_time = current_time - activation_time;
+
+    // Calculate total elapsed periods
+    let total_elapsed_periods = (elapsed_time / period_duration) as u32;
+
+    // Get employee's claimed periods
+    let claimed_periods = DataKey::get_employee_claimed_periods(env, agreement_id, employee_index);
+
+    // Calculate periods to pay
+    if total_elapsed_periods <= claimed_periods {
+        return Err(PayrollError::NoPeriodsToClaim);
+    }
+
+    let periods_to_pay = total_elapsed_periods - claimed_periods;
+
+    // Get employee salary per period
+    let salary_per_period = DataKey::get_employee_salary(env, agreement_id, employee_index)
+        .ok_or(PayrollError::AgreementNotFound)?;
+
+    // Calculate total amount to pay in base currency
+    let amount_base = salary_per_period
+        .checked_mul(periods_to_pay as i128)
+        .ok_or(PayrollError::InvalidData)?;
+
+    // Convert to payout currency using configured FX rate.
+    let amount_payout = convert_amount(env, &base_token, &payout_token, amount_base)?;
+
+    // Check escrow balance for payout token
+    let escrow_balance_payout =
+        DataKey::get_agreement_escrow_balance(env, agreement_id, &payout_token);
+    if escrow_balance_payout < amount_payout {
+        return Err(PayrollError::InsufficientEscrowBalance);
+    }
+
+    // Get contract address (this contract)
+    let contract_address = env.current_contract_address();
+
+    // Transfer tokens from escrow to employee in payout currency.
+    //
+    // Token `transfer(from=contract_address, ...)` requires `from.require_auth()`.
+    // We pre-authorize via `authorize_as_current_contract` as in the base path.
+    let token_client = token::Client::new(env, &payout_token);
+    env.authorize_as_current_contract(Vec::from_array(
+        env,
+        [InvokerContractAuthEntry::Contract(SubContractInvocation {
+            context: ContractContext {
+                contract: payout_token.clone(),
+                fn_name: Symbol::new(env, "transfer"),
+                args: Vec::<Val>::from_array(
+                    env,
+                    [
+                        contract_address.clone().into_val(env),
+                        employee.clone().into_val(env),
+                        amount_payout.into_val(env),
+                    ],
+                ),
+            },
+            sub_invocations: Vec::new(env),
+        })],
+    ));
+    token_client.transfer(&contract_address, &employee, &amount_payout);
+
+    // Update escrow balance for payout currency
+    let new_escrow_payout = escrow_balance_payout - amount_payout;
+    DataKey::set_agreement_escrow_balance(env, agreement_id, &payout_token, new_escrow_payout);
+
+    // Update employee's claimed periods
+    let new_claimed_periods = claimed_periods + periods_to_pay;
+    DataKey::set_employee_claimed_periods(env, agreement_id, employee_index, new_claimed_periods);
+
+    // Update agreement total paid amount in base currency
+    let current_paid = DataKey::get_agreement_paid_amount(env, agreement_id);
+    let new_paid = current_paid
+        .checked_add(amount_base)
+        .ok_or(PayrollError::InvalidData)?;
+    DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
+
+    // Emit events: `PayrollClaimed` remains in base currency units, while the
+    // payment events reflect the actual payout asset and amount.
+    emit_payroll_claimed(
+        env,
+        PayrollClaimedEvent {
+            agreement_id,
+            employee: employee.clone(),
+            amount: amount_base,
+        },
+    );
+
+    PaymentSentEvent {
+        agreement_id,
+        from: contract_address,
+        to: employee.clone(),
+        amount: amount_payout,
+        token: payout_token.clone(),
+    }
+    .publish(&env);
+
+    PaymentReceivedEvent {
+        agreement_id,
+        to: employee,
+        amount: amount_payout,
+        token: payout_token,
     }
     .publish(&env);
 
@@ -1201,22 +1475,22 @@ pub fn claim_payroll(
 /// block all others.
 ///
 /// # Arguments
-/// * `env`              - Contract environment
-/// * `caller`           - Must equal the employee address at each supplied
-///                        index (each claim still enforces `caller == employee`)
-/// * `agreement_id`     - ID of the payroll agreement
+/// * `env` - Contract environment
+/// * `caller` - Must equal the employee address at each supplied
+///   index (each claim still enforces `caller == employee`)
+/// * `agreement_id` - ID of the payroll agreement
 /// * `employee_indices` - 0-based employee indices to claim for.
-///                        Duplicates are detected in-memory and skipped.
+///   Duplicates are detected in-memory and skipped.
 ///
 /// # Returns
 /// `Ok(BatchPayrollResult)` — always succeeds at the batch level; inspect
 /// `.failed_claims` / `.results` to detect per-employee failures.
 ///
 /// # Batch-level errors (returned before any processing)
-/// * `PayrollError::InvalidData`          — empty index list, or agreement Paused
-/// * `PayrollError::AgreementNotFound`    — agreement does not exist
+/// * `PayrollError::InvalidData` — empty index list, or agreement Paused
+/// * `PayrollError::AgreementNotFound` — agreement does not exist
 /// * `PayrollError::InvalidAgreementMode` — agreement is not Payroll mode
-/// * `PayrollError::AgreementNotActivated`— activation timestamp missing
+/// * `PayrollError::AgreementNotActivated` — activation timestamp missing
 ///
 /// # Gas optimisations
 /// * Agreement metadata (token, activation time, period duration) read once.
@@ -1516,6 +1790,11 @@ pub fn get_employee_claimed_periods(env: &Env, agreement_id: u128, employee_inde
 /// - Cannot claim more than total periods
 /// - Works during grace period
 pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollError> {
+    // Check emergency pause
+    if is_emergency_paused(env) {
+        return Err(PayrollError::EmergencyPaused);
+    }
+
     let mut agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     // Check agreement mode
@@ -1691,6 +1970,39 @@ fn get_next_agreement_id(env: &Env) -> u128 {
     let id: u128 = env.storage().persistent().get(&key).unwrap_or(1);
     env.storage().persistent().set(&key, &(id + 1));
     id
+}
+
+/// Internal helper: convert `amount` from `from_token` into `to_token` using
+/// the configured FX rate stored in `DataKey::ExchangeRate`.
+///
+/// The rate is interpreted as `quote_per_base * FX_SCALE`, where `from_token`
+/// is the base and `to_token` is the quote.
+fn convert_amount(
+    env: &Env,
+    from_token: &Address,
+    to_token: &Address,
+    amount: i128,
+) -> Result<i128, PayrollError> {
+    if amount == 0 || from_token == to_token {
+        return Ok(amount);
+    }
+
+    let rate = DataKey::get_exchange_rate(env, from_token, to_token)
+        .ok_or(PayrollError::ExchangeRateNotFound)?;
+
+    if rate <= 0 {
+        return Err(PayrollError::ExchangeRateInvalid);
+    }
+
+    let scaled = amount
+        .checked_mul(rate)
+        .ok_or(PayrollError::ExchangeRateOverflow)?;
+
+    let converted = scaled
+        .checked_div(FX_SCALE)
+        .ok_or(PayrollError::ExchangeRateInvalid)?;
+
+    Ok(converted)
 }
 
 /// Pauses an active agreement, preventing claims
@@ -2018,4 +2330,219 @@ pub fn get_grace_period_end(env: &Env, agreement_id: u128) -> Option<u64> {
 
     let cancelled_at = agreement.cancelled_at?;
     Some(cancelled_at + agreement.grace_period_seconds)
+}
+
+// ============================================================================
+// Emergency Pause Functions
+// ============================================================================
+
+/// Checks if contract is in emergency pause state
+pub fn is_emergency_paused(env: &Env) -> bool {
+    env.storage()
+        .persistent()
+        .get::<StorageKey, crate::storage::EmergencyPause>(&StorageKey::EmergencyPause)
+        .map(|p| p.is_paused)
+        .unwrap_or(false)
+}
+
+/// Adds emergency guardians (multi-sig addresses)
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `guardians` - Vector of guardian addresses
+///
+/// # Access Control
+/// Requires owner authentication
+pub fn set_emergency_guardians(env: &Env, guardians: Vec<Address>) {
+    let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+    owner.require_auth();
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyGuardians, &guardians);
+}
+
+/// Gets emergency guardians
+pub fn get_emergency_guardians(env: &Env) -> Option<Vec<Address>> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::EmergencyGuardians)
+}
+
+/// Proposes emergency pause with timelock
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `caller` - Guardian proposing the pause
+/// * `timelock_seconds` - Delay before pause activates (0 for immediate)
+///
+/// # Access Control
+/// Requires guardian authentication
+pub fn propose_emergency_pause(
+    env: &Env,
+    caller: Address,
+    timelock_seconds: u64,
+) -> Result<(), PayrollError> {
+    caller.require_auth();
+
+    let guardians: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::EmergencyGuardians)
+        .ok_or(PayrollError::NotGuardian)?;
+
+    if !guardians.iter().any(|g| g == caller) {
+        return Err(PayrollError::NotGuardian);
+    }
+
+    let timelock_end = if timelock_seconds > 0 {
+        Some(env.ledger().timestamp() + timelock_seconds)
+    } else {
+        None
+    };
+
+    let pause_state = crate::storage::EmergencyPause {
+        is_paused: false,
+        paused_at: None,
+        paused_by: Some(caller.clone()),
+        timelock_end,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PendingPause, &pause_state);
+
+    let mut approvals: Vec<Address> = Vec::new(env);
+    approvals.push_back(caller);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PauseApprovals, &approvals);
+
+    Ok(())
+}
+
+/// Approves pending emergency pause
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `caller` - Guardian approving the pause
+///
+/// # Access Control
+/// Requires guardian authentication
+pub fn approve_emergency_pause(env: &Env, caller: Address) -> Result<(), PayrollError> {
+    caller.require_auth();
+
+    let guardians: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::EmergencyGuardians)
+        .ok_or(PayrollError::NotGuardian)?;
+
+    if !guardians.iter().any(|g| g == caller) {
+        return Err(PayrollError::NotGuardian);
+    }
+
+    let mut approvals: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::PauseApprovals)
+        .unwrap_or(Vec::new(env));
+
+    if approvals.iter().any(|a| a == caller) {
+        return Ok(());
+    }
+
+    approvals.push_back(caller);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PauseApprovals, &approvals);
+
+    let threshold = (guardians.len() / 2) + 1;
+    if approvals.len() >= threshold {
+        execute_emergency_pause(env)?;
+    }
+
+    Ok(())
+}
+
+/// Executes emergency pause after approval threshold met
+fn execute_emergency_pause(env: &Env) -> Result<(), PayrollError> {
+    let mut pending: crate::storage::EmergencyPause = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::PendingPause)
+        .ok_or(PayrollError::Unauthorized)?;
+
+    if let Some(timelock_end) = pending.timelock_end {
+        if env.ledger().timestamp() < timelock_end {
+            return Err(PayrollError::TimelockActive);
+        }
+    }
+
+    pending.is_paused = true;
+    pending.paused_at = Some(env.ledger().timestamp());
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyPause, &pending);
+    env.storage().persistent().remove(&StorageKey::PendingPause);
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::PauseApprovals);
+
+    Ok(())
+}
+
+/// Immediately activates emergency pause (owner only)
+///
+/// # Arguments
+/// * `env` - Contract environment
+///
+/// # Access Control
+/// Requires owner authentication
+pub fn emergency_pause(env: &Env) -> Result<(), PayrollError> {
+    let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+    owner.require_auth();
+
+    let pause_state = crate::storage::EmergencyPause {
+        is_paused: true,
+        paused_at: Some(env.ledger().timestamp()),
+        paused_by: Some(owner),
+        timelock_end: None,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyPause, &pause_state);
+
+    Ok(())
+}
+
+/// Unpauses contract after emergency resolved
+///
+/// # Arguments
+/// * `env` - Contract environment
+///
+/// # Access Control
+/// Requires owner authentication
+pub fn emergency_unpause(env: &Env) -> Result<(), PayrollError> {
+    let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+    owner.require_auth();
+
+    let pause_state = crate::storage::EmergencyPause {
+        is_paused: false,
+        paused_at: None,
+        paused_by: None,
+        timelock_end: None,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyPause, &pause_state);
+
+    Ok(())
+}
+
+/// Gets emergency pause state
+pub fn get_emergency_pause_state(env: &Env) -> Option<crate::storage::EmergencyPause> {
+    env.storage().persistent().get(&StorageKey::EmergencyPause)
 }

@@ -162,11 +162,7 @@ fn add_test_employees(
 }
 
 /// Cancels an agreement and returns the cancellation timestamp
-fn cancel_and_get_timestamp(
-    env: &Env,
-    client: &PayrollContractClient,
-    agreement_id: u128,
-) -> u64 {
+fn cancel_and_get_timestamp(env: &Env, client: &PayrollContractClient, agreement_id: u128) -> u64 {
     client.cancel_agreement(&agreement_id);
     let agreement = client.get_agreement(&agreement_id).unwrap();
     agreement.cancelled_at.unwrap()
@@ -345,7 +341,11 @@ fn test_cancel_already_cancelled_fails() {
     );
 
     client.cancel_agreement(&agreement_id);
-    let first_cancel_time = client.get_agreement(&agreement_id).unwrap().cancelled_at.unwrap();
+    let first_cancel_time = client
+        .get_agreement(&agreement_id)
+        .unwrap()
+        .cancelled_at
+        .unwrap();
 
     // Attempt to cancel again - should panic
     client.cancel_agreement(&agreement_id);
@@ -574,7 +574,11 @@ fn test_custom_grace_period() {
 
         // Get grace end
         let grace_end = client.get_grace_period_end(&agreement_id).unwrap();
-        let cancel_time = client.get_agreement(&agreement_id).unwrap().cancelled_at.unwrap();
+        let cancel_time = client
+            .get_agreement(&agreement_id)
+            .unwrap()
+            .cancelled_at
+            .unwrap();
         assert_eq!(grace_end, cancel_time + grace_period);
     }
 }
@@ -727,7 +731,13 @@ fn test_claim_time_based_during_grace_period() {
     );
 
     // Fund escrow
-    fund_agreement_escrow(&env, &contract_id, agreement_id, &token, STANDARD_SALARY * 5);
+    fund_agreement_escrow(
+        &env,
+        &contract_id,
+        agreement_id,
+        &token,
+        STANDARD_SALARY * 5,
+    );
     mint(&env, &token, &contract_id, STANDARD_SALARY * 5);
 
     // Advance 2 periods
@@ -815,7 +825,7 @@ fn test_cannot_claim_if_not_cancelled() {
 }
 
 // ============================================================================
-// SECTION 4: FINALIZATION TESTS 
+// SECTION 4: FINALIZATION TESTS
 // ============================================================================
 
 #[test]
@@ -940,7 +950,10 @@ fn test_finalize_with_active_dispute_fails() {
     );
 
     client.try_raise_dispute(&employer, &agreement_id).unwrap();
-    assert_eq!(client.get_dispute_status(&agreement_id), DisputeStatus::Raised);
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
 
     client.cancel_agreement(&agreement_id);
 }
@@ -976,7 +989,9 @@ fn test_finalize_refunds_remaining() {
     client.cancel_agreement(&agreement_id);
 
     // Employee claims 1000
-    client.try_claim_payroll(&employee, &agreement_id, &0).unwrap();
+    client
+        .try_claim_payroll(&employee, &agreement_id, &0)
+        .unwrap();
 
     // Advance beyond grace
     advance_time(&env, ONE_WEEK + 1);

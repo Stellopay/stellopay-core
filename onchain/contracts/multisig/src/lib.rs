@@ -1,8 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, BytesN, Env, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, Vec};
 
 #[contract]
 pub struct MultisigContract;
@@ -127,9 +125,7 @@ fn next_operation_id(env: &Env) -> u128 {
         .persistent()
         .get::<_, u128>(&StorageKey::OperationCounter)
         .unwrap_or(0);
-    let next = current
-        .checked_add(1)
-        .expect("Operation id overflow");
+    let next = current.checked_add(1).expect("Operation id overflow");
     env.storage()
         .persistent()
         .set(&StorageKey::OperationCounter, &next);
@@ -269,9 +265,7 @@ impl MultisigContract {
             }
         }
 
-        env.storage()
-            .persistent()
-            .set(&StorageKey::Owner, &owner);
+        env.storage().persistent().set(&StorageKey::Owner, &owner);
         env.storage()
             .persistent()
             .set(&StorageKey::Signers, &signers);
@@ -446,5 +440,3 @@ impl MultisigContract {
         read_approvals(&env, operation_id)
     }
 }
-
-

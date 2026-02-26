@@ -60,7 +60,10 @@ fn has_event(env: &Env, event_name: &str) -> bool {
 }
 
 /// Helper to find an event by name
-fn find_event(env: &Env, event_name: &str) -> Option<(Address, Vec<soroban_sdk::Val>, soroban_sdk::Val)> {
+fn find_event(
+    env: &Env,
+    event_name: &str,
+) -> Option<(Address, Vec<soroban_sdk::Val>, soroban_sdk::Val)> {
     let events = env.events().all();
     let found = events.iter().find(|e| {
         if e.1.len() > 0 {
@@ -71,22 +74,25 @@ fn find_event(env: &Env, event_name: &str) -> Option<(Address, Vec<soroban_sdk::
         }
         false
     });
-    
+
     found.map(|e| (e.0.clone(), e.1.clone(), e.2.clone()))
 }
 
 /// Helper to count events by name
 fn count_events(env: &Env, event_name: &str) -> usize {
     let events = env.events().all();
-    events.iter().filter(|e| {
-        if e.1.len() > 0 {
-            let topic = e.1.get(0).unwrap();
-            if let Ok(sym) = Symbol::try_from_val(env, &topic) {
-                return sym.to_string() == event_name;
+    events
+        .iter()
+        .filter(|e| {
+            if e.1.len() > 0 {
+                let topic = e.1.get(0).unwrap();
+                if let Ok(sym) = Symbol::try_from_val(env, &topic) {
+                    return sym.to_string() == event_name;
+                }
             }
-        }
-        false
-    }).count()
+            false
+        })
+        .count()
 }
 
 /// Helper to extract event data from map-based event
@@ -123,12 +129,12 @@ fn test_agreement_created_event_payroll() {
     let agreement_id = client.create_payroll_agreement(&employer, &token, &grace_period);
 
     assert!(has_event(&env, "agreement_created_event"));
-    
+
     let event = find_event(&env, "agreement_created_event").unwrap();
     let event_agreement_id: u128 = get_event_field(&env, &event.2, "agreement_id");
     let event_employer: Address = get_event_field(&env, &event.2, "employer");
     let event_mode: AgreementMode = get_event_field(&env, &event.2, "mode");
-    
+
     assert_eq!(event_agreement_id, agreement_id);
     assert_eq!(event_employer, employer);
     assert_eq!(event_mode, AgreementMode::Payroll);
@@ -154,12 +160,12 @@ fn test_agreement_created_event_escrow() {
 
     assert!(has_event(&env, "agreement_created_event"));
     assert!(has_event(&env, "employee_added_event"));
-    
+
     let event = find_event(&env, "agreement_created_event").unwrap();
     let event_agreement_id: u128 = get_event_field(&env, &event.2, "agreement_id");
     let event_employer: Address = get_event_field(&env, &event.2, "employer");
     let event_mode: AgreementMode = get_event_field(&env, &event.2, "mode");
-    
+
     assert_eq!(event_agreement_id, agreement_id);
     assert_eq!(event_employer, employer);
     assert_eq!(event_mode, AgreementMode::Escrow);
@@ -199,12 +205,12 @@ fn test_employee_added_event() {
     client.add_employee_to_agreement(&agreement_id, &employee, &salary);
 
     assert!(has_event(&env, "employee_added_event"));
-    
+
     let event = find_event(&env, "employee_added_event").unwrap();
     let event_agreement_id: u128 = get_event_field(&env, &event.2, "agreement_id");
     let event_employee: Address = get_event_field(&env, &event.2, "employee");
     let event_salary: i128 = get_event_field(&env, &event.2, "salary_per_period");
-    
+
     assert_eq!(event_agreement_id, agreement_id);
     assert_eq!(event_employee, employee);
     assert_eq!(event_salary, salary);
@@ -219,16 +225,25 @@ fn test_multiple_employee_added_events() {
     let token = create_test_address(&env);
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    
+
     // Each call emits one event
     client.add_employee_to_agreement(&agreement_id, &create_test_address(&env), &1000);
-    assert!(has_event(&env, "employee_added_event"), "First employee event not found");
-    
+    assert!(
+        has_event(&env, "employee_added_event"),
+        "First employee event not found"
+    );
+
     client.add_employee_to_agreement(&agreement_id, &create_test_address(&env), &2000);
-    assert!(has_event(&env, "employee_added_event"), "Second employee event not found");
-    
+    assert!(
+        has_event(&env, "employee_added_event"),
+        "Second employee event not found"
+    );
+
     client.add_employee_to_agreement(&agreement_id, &create_test_address(&env), &3000);
-    assert!(has_event(&env, "employee_added_event"), "Third employee event not found");
+    assert!(
+        has_event(&env, "employee_added_event"),
+        "Third employee event not found"
+    );
 }
 
 // ============================================================================
@@ -249,7 +264,7 @@ fn test_agreement_activated_event() {
     client.activate_agreement(&agreement_id);
 
     assert!(has_event(&env, "agreement_activated_event"));
-    
+
     let event = find_event(&env, "agreement_activated_event").unwrap();
     let event_agreement_id: u128 = get_event_field(&env, &event.2, "agreement_id");
     assert_eq!(event_agreement_id, agreement_id);
@@ -274,7 +289,7 @@ fn test_agreement_paused_event() {
     client.pause_agreement(&agreement_id);
 
     assert!(has_event(&env, "agreement_paused_event"));
-    
+
     let event = find_event(&env, "agreement_paused_event").unwrap();
     let event_agreement_id: u128 = get_event_field(&env, &event.2, "agreement_id");
     assert_eq!(event_agreement_id, agreement_id);
@@ -296,7 +311,7 @@ fn test_agreement_resumed_event() {
     client.resume_agreement(&agreement_id);
 
     assert!(has_event(&env, "agreement_resumed_event"));
-    
+
     let event = find_event(&env, "agreement_resumed_event").unwrap();
     let event_agreement_id: u128 = get_event_field(&env, &event.2, "agreement_id");
     assert_eq!(event_agreement_id, agreement_id);
@@ -320,12 +335,12 @@ fn test_milestone_added_event() {
     client.add_milestone(&agreement_id, &amount);
 
     assert!(has_event(&env, "milestone_added"));
-    
+
     let event = find_event(&env, "milestone_added").unwrap();
     let event_agreement_id: u128 = get_event_field(&env, &event.2, "agreement_id");
     let event_milestone_id: u32 = get_event_field(&env, &event.2, "milestone_id");
     let event_amount: i128 = get_event_field(&env, &event.2, "amount");
-    
+
     assert_eq!(event_agreement_id, agreement_id);
     assert_eq!(event_milestone_id, 1); // First milestone ID
     assert_eq!(event_amount, amount);
@@ -345,11 +360,11 @@ fn test_milestone_approved_event() {
     client.approve_milestone(&agreement_id, &1);
 
     assert!(has_event(&env, "milestone_approved"));
-    
+
     let event = find_event(&env, "milestone_approved").unwrap();
     let event_agreement_id: u128 = get_event_field(&env, &event.2, "agreement_id");
     let event_milestone_id: u32 = get_event_field(&env, &event.2, "milestone_id");
-    
+
     assert_eq!(event_agreement_id, agreement_id);
     assert_eq!(event_milestone_id, 1);
 }
@@ -370,13 +385,13 @@ fn test_milestone_claimed_event() {
     client.claim_milestone(&agreement_id, &1);
 
     assert!(has_event(&env, "milestone_claimed"));
-    
+
     let event = find_event(&env, "milestone_claimed").unwrap();
     let event_agreement_id: u128 = get_event_field(&env, &event.2, "agreement_id");
     let event_milestone_id: u32 = get_event_field(&env, &event.2, "milestone_id");
     let event_amount: i128 = get_event_field(&env, &event.2, "amount");
     let event_to: Address = get_event_field(&env, &event.2, "to");
-    
+
     assert_eq!(event_agreement_id, agreement_id);
     assert_eq!(event_milestone_id, 1);
     assert_eq!(event_amount, amount);
@@ -398,7 +413,7 @@ fn test_arbiter_set_event() {
     client.set_arbiter(&caller, &arbiter);
 
     assert!(has_event(&env, "arbiter_set_event"));
-    
+
     let event = find_event(&env, "arbiter_set_event").unwrap();
     let event_arbiter: Address = get_event_field(&env, &event.2, "arbiter");
     assert_eq!(event_arbiter, arbiter);
@@ -425,7 +440,7 @@ fn test_dispute_raised_event() {
     let _ = client.try_raise_dispute(&employer, &agreement_id);
 
     assert!(has_event(&env, "dispute_raised_event"));
-    
+
     let event = find_event(&env, "dispute_raised_event").unwrap();
     let event_agreement_id: u128 = get_event_field(&env, &event.2, "agreement_id");
     assert_eq!(event_agreement_id, agreement_id);
@@ -450,7 +465,7 @@ fn test_agreement_cancelled_event() {
     client.cancel_agreement(&agreement_id);
 
     assert!(has_event(&env, "agreement_cancelled_event"));
-    
+
     let event = find_event(&env, "agreement_cancelled_event").unwrap();
     let event_agreement_id: u128 = get_event_field(&env, &event.2, "agreement_id");
     assert_eq!(event_agreement_id, agreement_id);
@@ -465,7 +480,7 @@ fn test_agreement_cancelled_event() {
 fn test_grace_period_finalized_event() {
     let env = create_test_env();
     env.mock_all_auths();
-    
+
     let (_contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let token = create_test_address(&env);
@@ -484,7 +499,7 @@ fn test_grace_period_finalized_event() {
     client.finalize_grace_period(&agreement_id);
 
     assert!(has_event(&env, "grace_period_finalized_event"));
-    
+
     let event = find_event(&env, "grace_period_finalized_event").unwrap();
     let event_agreement_id: u128 = get_event_field(&env, &event.2, "agreement_id");
     assert_eq!(event_agreement_id, agreement_id);
@@ -505,15 +520,24 @@ fn test_event_ordering_agreement_lifecycle() {
 
     // Create agreement
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    assert!(has_event(&env, "agreement_created_event"), "agreement_created_event not found");
-    
+    assert!(
+        has_event(&env, "agreement_created_event"),
+        "agreement_created_event not found"
+    );
+
     // Add employee
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    assert!(has_event(&env, "employee_added_event"), "employee_added_event not found");
-    
+    assert!(
+        has_event(&env, "employee_added_event"),
+        "employee_added_event not found"
+    );
+
     // Activate agreement
     client.activate_agreement(&agreement_id);
-    assert!(has_event(&env, "agreement_activated_event"), "agreement_activated_event not found");
+    assert!(
+        has_event(&env, "agreement_activated_event"),
+        "agreement_activated_event not found"
+    );
 }
 
 /// Test: Events are emitted in correct order during milestone workflow
@@ -526,15 +550,24 @@ fn test_event_ordering_milestone_workflow() {
     let token = create_test_address(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    
+
     client.add_milestone(&agreement_id, &5000);
-    assert!(has_event(&env, "milestone_added"), "milestone_added not found");
-    
+    assert!(
+        has_event(&env, "milestone_added"),
+        "milestone_added not found"
+    );
+
     client.approve_milestone(&agreement_id, &1);
-    assert!(has_event(&env, "milestone_approved"), "milestone_approved not found");
-    
+    assert!(
+        has_event(&env, "milestone_approved"),
+        "milestone_approved not found"
+    );
+
     client.claim_milestone(&agreement_id, &1);
-    assert!(has_event(&env, "milestone_claimed"), "milestone_claimed not found");
+    assert!(
+        has_event(&env, "milestone_claimed"),
+        "milestone_claimed not found"
+    );
 }
 
 // ============================================================================
@@ -546,31 +579,49 @@ fn test_event_ordering_milestone_workflow() {
 fn test_complete_payroll_workflow_events() {
     let env = create_test_env();
     env.mock_all_auths();
-    
+
     let (_contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let employee = create_test_address(&env);
     let token = create_test_address(&env);
-    
+
     let salary = 1000i128;
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    assert!(has_event(&env, "agreement_created_event"), "agreement_created_event not found");
-    
+    assert!(
+        has_event(&env, "agreement_created_event"),
+        "agreement_created_event not found"
+    );
+
     client.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    assert!(has_event(&env, "employee_added_event"), "employee_added_event not found");
-    
+    assert!(
+        has_event(&env, "employee_added_event"),
+        "employee_added_event not found"
+    );
+
     client.activate_agreement(&agreement_id);
-    assert!(has_event(&env, "agreement_activated_event"), "agreement_activated_event not found");
-    
+    assert!(
+        has_event(&env, "agreement_activated_event"),
+        "agreement_activated_event not found"
+    );
+
     client.pause_agreement(&agreement_id);
-    assert!(has_event(&env, "agreement_paused_event"), "agreement_paused_event not found");
-    
+    assert!(
+        has_event(&env, "agreement_paused_event"),
+        "agreement_paused_event not found"
+    );
+
     client.resume_agreement(&agreement_id);
-    assert!(has_event(&env, "agreement_resumed_event"), "agreement_resumed_event not found");
-    
+    assert!(
+        has_event(&env, "agreement_resumed_event"),
+        "agreement_resumed_event not found"
+    );
+
     client.cancel_agreement(&agreement_id);
-    assert!(has_event(&env, "agreement_cancelled_event"), "agreement_cancelled_event not found");
+    assert!(
+        has_event(&env, "agreement_cancelled_event"),
+        "agreement_cancelled_event not found"
+    );
 }
 
 /// Test: Complete milestone workflow emits all expected events
@@ -583,24 +634,42 @@ fn test_complete_milestone_workflow_events() {
     let token = create_test_address(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    
+
     client.add_milestone(&agreement_id, &1000);
-    assert!(has_event(&env, "milestone_added"), "First milestone_added not found");
-    
+    assert!(
+        has_event(&env, "milestone_added"),
+        "First milestone_added not found"
+    );
+
     client.add_milestone(&agreement_id, &2000);
-    assert!(has_event(&env, "milestone_added"), "Second milestone_added not found");
-    
+    assert!(
+        has_event(&env, "milestone_added"),
+        "Second milestone_added not found"
+    );
+
     client.approve_milestone(&agreement_id, &1);
-    assert!(has_event(&env, "milestone_approved"), "First milestone_approved not found");
-    
+    assert!(
+        has_event(&env, "milestone_approved"),
+        "First milestone_approved not found"
+    );
+
     client.approve_milestone(&agreement_id, &2);
-    assert!(has_event(&env, "milestone_approved"), "Second milestone_approved not found");
-    
+    assert!(
+        has_event(&env, "milestone_approved"),
+        "Second milestone_approved not found"
+    );
+
     client.claim_milestone(&agreement_id, &1);
-    assert!(has_event(&env, "milestone_claimed"), "First milestone_claimed not found");
-    
+    assert!(
+        has_event(&env, "milestone_claimed"),
+        "First milestone_claimed not found"
+    );
+
     client.claim_milestone(&agreement_id, &2);
-    assert!(has_event(&env, "milestone_claimed"), "Second milestone_claimed not found");
+    assert!(
+        has_event(&env, "milestone_claimed"),
+        "Second milestone_claimed not found"
+    );
 }
 
 // ============================================================================
@@ -624,7 +693,7 @@ fn test_event_data_accuracy() {
     let event_agreement_id: u128 = get_event_field(&env, &event.2, "agreement_id");
     let event_employee: Address = get_event_field(&env, &event.2, "employee");
     let event_salary: i128 = get_event_field(&env, &event.2, "salary_per_period");
-    
+
     // Verify exact match
     assert_eq!(event_agreement_id, agreement_id);
     assert_eq!(event_employee, employee);
@@ -640,7 +709,7 @@ fn test_no_duplicate_events() {
     let token = create_test_address(&env);
 
     client.create_payroll_agreement(&employer, &token, &604800u64);
-    
+
     // Should emit exactly 1 agreement_created_event
     assert_eq!(count_events(&env, "agreement_created_event"), 1);
 }
@@ -667,7 +736,7 @@ fn test_all_event_types_covered() {
     // ✓ milestone_claimed
     // ✓ arbiter_set_event
     // ✓ dispute_raised_event
-    
+
     // All existing event types are covered in this test suite
     assert!(true);
 }
