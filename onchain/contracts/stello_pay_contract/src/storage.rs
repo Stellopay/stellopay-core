@@ -154,6 +154,14 @@ pub enum StorageKey {
     DisputeStatus(u128),
     DisputeRaisedAt(u128),
     Arbiter,
+    /// Emergency pause state
+    EmergencyPause,
+    /// Emergency guardians (multi-sig addresses)
+    EmergencyGuardians,
+    /// Pending emergency pause proposal
+    PendingPause,
+    /// Pause approvals
+    PauseApprovals,
     /// Global admin allowed to update FX rates (e.g. an oracle contract)
     ExchangeRateAdmin,
 }
@@ -234,6 +242,20 @@ pub enum PayrollError {
     ZeroAmountPerPeriod = 21,
     ZeroPeriodDuration = 22,
     ZeroNumPeriods = 23,
+    EmergencyPaused = 24,
+    NotGuardian = 25,
+    TimelockActive = 26,
+    InvalidTimelock = 27,
+}
+
+/// Emergency pause state
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyPause {
+    pub is_paused: bool,
+    pub paused_at: Option<u64>,
+    pub paused_by: Option<Address>,
+    pub timelock_end: Option<u64>,
     /// Missing or unconfigured FX rate for a currency pair
     ExchangeRateNotFound = 24,
     /// Arithmetic overflow/underflow during FX conversion

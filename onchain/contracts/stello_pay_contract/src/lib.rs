@@ -554,4 +554,86 @@ impl PayrollContract {
     pub fn get_grace_period_end(env: Env, agreement_id: u128) -> Option<u64> {
         payroll::get_grace_period_end(&env, agreement_id)
     }
+
+    // ============================================================================
+    // Emergency Pause Functions
+    // ============================================================================
+
+    /// Sets emergency guardians for multi-sig pause activation
+    ///
+    /// # Arguments
+    /// * `guardians` - Vector of guardian addresses
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn set_emergency_guardians(env: Env, guardians: Vec<Address>) {
+        payroll::set_emergency_guardians(&env, guardians);
+    }
+
+    /// Gets current emergency guardians
+    ///
+    /// # Returns
+    /// Vector of guardian addresses if set
+    pub fn get_emergency_guardians(env: Env) -> Option<Vec<Address>> {
+        payroll::get_emergency_guardians(&env)
+    }
+
+    /// Proposes emergency pause with optional timelock
+    ///
+    /// # Arguments
+    /// * `caller` - Guardian proposing the pause
+    /// * `timelock_seconds` - Delay before pause activates (0 for immediate)
+    ///
+    /// # Access Control
+    /// Requires guardian authentication
+    pub fn propose_emergency_pause(
+        env: Env,
+        caller: Address,
+        timelock_seconds: u64,
+    ) -> Result<(), storage::PayrollError> {
+        payroll::propose_emergency_pause(&env, caller, timelock_seconds)
+    }
+
+    /// Approves pending emergency pause proposal
+    ///
+    /// # Arguments
+    /// * `caller` - Guardian approving the pause
+    ///
+    /// # Access Control
+    /// Requires guardian authentication
+    pub fn approve_emergency_pause(env: Env, caller: Address) -> Result<(), storage::PayrollError> {
+        payroll::approve_emergency_pause(&env, caller)
+    }
+
+    /// Immediately activates emergency pause (owner only)
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn emergency_pause(env: Env) -> Result<(), storage::PayrollError> {
+        payroll::emergency_pause(&env)
+    }
+
+    /// Unpauses contract after emergency resolved
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn emergency_unpause(env: Env) -> Result<(), storage::PayrollError> {
+        payroll::emergency_unpause(&env)
+    }
+
+    /// Checks if contract is in emergency pause state
+    ///
+    /// # Returns
+    /// true if paused, false otherwise
+    pub fn is_emergency_paused(env: Env) -> bool {
+        payroll::is_emergency_paused(&env)
+    }
+
+    /// Gets emergency pause state details
+    ///
+    /// # Returns
+    /// EmergencyPause state if set
+    pub fn get_emergency_pause_state(env: Env) -> Option<storage::EmergencyPause> {
+        payroll::get_emergency_pause_state(&env)
+    }
 }
