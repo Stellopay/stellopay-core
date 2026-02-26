@@ -1343,6 +1343,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "payment_retry"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "payment_scheduler"
 version = "0.0.0"
 dependencies = [
