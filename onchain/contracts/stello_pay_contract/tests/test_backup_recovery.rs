@@ -40,7 +40,9 @@ fn test_agreement_data_integrity_after_creation() {
     let grace = 604800u64;
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &grace);
-    let agreement = client.get_agreement(&agreement_id).expect("Agreement must exist");
+    let agreement = client
+        .get_agreement(&agreement_id)
+        .expect("Agreement must exist");
     assert_eq!(agreement.id, agreement_id);
     assert_eq!(agreement.employer, employer);
     assert_eq!(agreement.token, token);
@@ -81,7 +83,10 @@ fn test_activation_state_integrity() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &grace);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000i128);
-    assert_eq!(client.get_agreement(&agreement_id).unwrap().status, AgreementStatus::Created);
+    assert_eq!(
+        client.get_agreement(&agreement_id).unwrap().status,
+        AgreementStatus::Created
+    );
 
     client.activate_agreement(&agreement_id);
     let agreement = client.get_agreement(&agreement_id).unwrap();

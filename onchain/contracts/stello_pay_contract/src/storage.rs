@@ -154,6 +154,14 @@ pub enum StorageKey {
     DisputeStatus(u128),
     DisputeRaisedAt(u128),
     Arbiter,
+    /// Emergency pause state
+    EmergencyPause,
+    /// Emergency guardians (multi-sig addresses)
+    EmergencyGuardians,
+    /// Pending emergency pause proposal
+    PendingPause,
+    /// Pause approvals
+    PauseApprovals,
 }
 
 #[contracttype]
@@ -232,6 +240,20 @@ pub enum PayrollError {
     ZeroAmountPerPeriod = 21,
     ZeroPeriodDuration = 22,
     ZeroNumPeriods = 23,
+    EmergencyPaused = 24,
+    NotGuardian = 25,
+    TimelockActive = 26,
+    InvalidTimelock = 27,
+}
+
+/// Emergency pause state
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyPause {
+    pub is_paused: bool,
+    pub paused_at: Option<u64>,
+    pub paused_by: Option<Address>,
+    pub timelock_end: Option<u64>,
 }
 
 /// Storage keys for the payroll claiming system.

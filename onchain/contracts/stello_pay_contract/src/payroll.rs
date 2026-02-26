@@ -141,7 +141,6 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
 /// * `env` - Contract environment
 /// * `agreement_id` - ID of the agreement
 /// * `milestone_id` - ID of the milestone to approve
-
 pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
     let employer: Address = env
         .storage()
@@ -201,6 +200,9 @@ pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
 /// - Milestone must be approved
 /// - Milestone must not be already claimed
 pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
+    // Check emergency pause
+    assert!(!is_emergency_paused(&env), "Contract is emergency paused");
+
     let contributor: Address = env
         .storage()
         .instance()
@@ -285,11 +287,10 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
 /// * `env`           - Contract environment
 /// * `agreement_id`  - ID of the milestone agreement
 /// * `milestone_ids` - 1-based milestone IDs to claim.
-///                     Duplicates are detected in-memory and skipped.
+///   Duplicates are detected in-memory and skipped.
 ///
 /// # Returns
 /// `BatchMilestoneResult` — always returns (never panics at batch level).
-
 pub fn batch_claim_milestones(
     env: &Env,
     agreement_id: u128,
@@ -773,7 +774,7 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
             .get(&StorageKey::AgreementEmployees(agreement_id))
             .unwrap_or(Vec::new(env));
         assert!(
-            employees.len() > 0,
+            !employees.is_empty(),
             "Payroll agreement must have at least one employee to activate"
         );
     }
@@ -948,7 +949,7 @@ pub fn resolve_dispute(
         DisputeResolvedEvent {
             agreement_id,
             pay_contributor: pay_employee,
-            refund_employer: refund_employer,
+            refund_employer,
         },
     );
 
@@ -1030,6 +1031,11 @@ pub fn claim_payroll(
     agreement_id: u128,
     employee_index: u32,
 ) -> Result<(), PayrollError> {
+    // Check emergency pause
+    if is_emergency_paused(env) {
+        return Err(PayrollError::EmergencyPaused);
+    }
+
     // Validate employee index
     let employee_count = DataKey::get_employee_count(env, agreement_id);
     if employee_index >= employee_count {
@@ -1182,15 +1188,15 @@ pub fn claim_payroll(
         amount,
         token: token.clone(),
     }
-    .publish(&env);
+    .publish(env);
 
     PaymentReceivedEvent {
         agreement_id,
         to: employee,
         amount,
-        token,
+        token: token.clone(),
     }
-    .publish(&env);
+    .publish(env);
 
     Ok(())
 }
@@ -1201,22 +1207,22 @@ pub fn claim_payroll(
 /// block all others.
 ///
 /// # Arguments
-/// * `env`              - Contract environment
-/// * `caller`           - Must equal the employee address at each supplied
-///                        index (each claim still enforces `caller == employee`)
-/// * `agreement_id`     - ID of the payroll agreement
+/// * `env` - Contract environment
+/// * `caller` - Must equal the employee address at each supplied
+///   index (each claim still enforces `caller == employee`)
+/// * `agreement_id` - ID of the payroll agreement
 /// * `employee_indices` - 0-based employee indices to claim for.
-///                        Duplicates are detected in-memory and skipped.
+///   Duplicates are detected in-memory and skipped.
 ///
 /// # Returns
 /// `Ok(BatchPayrollResult)` — always succeeds at the batch level; inspect
 /// `.failed_claims` / `.results` to detect per-employee failures.
 ///
 /// # Batch-level errors (returned before any processing)
-/// * `PayrollError::InvalidData`          — empty index list, or agreement Paused
-/// * `PayrollError::AgreementNotFound`    — agreement does not exist
+/// * `PayrollError::InvalidData` — empty index list, or agreement Paused
+/// * `PayrollError::AgreementNotFound` — agreement does not exist
 /// * `PayrollError::InvalidAgreementMode` — agreement is not Payroll mode
-/// * `PayrollError::AgreementNotActivated`— activation timestamp missing
+/// * `PayrollError::AgreementNotActivated` — activation timestamp missing
 ///
 /// # Gas optimisations
 /// * Agreement metadata (token, activation time, period duration) read once.
@@ -1516,6 +1522,11 @@ pub fn get_employee_claimed_periods(env: &Env, agreement_id: u128, employee_inde
 /// - Cannot claim more than total periods
 /// - Works during grace period
 pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollError> {
+    // Check emergency pause
+    if is_emergency_paused(env) {
+        return Err(PayrollError::EmergencyPaused);
+    }
+
     let mut agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     // Check agreement mode
@@ -2018,4 +2029,219 @@ pub fn get_grace_period_end(env: &Env, agreement_id: u128) -> Option<u64> {
 
     let cancelled_at = agreement.cancelled_at?;
     Some(cancelled_at + agreement.grace_period_seconds)
+}
+
+// ============================================================================
+// Emergency Pause Functions
+// ============================================================================
+
+/// Checks if contract is in emergency pause state
+pub fn is_emergency_paused(env: &Env) -> bool {
+    env.storage()
+        .persistent()
+        .get::<StorageKey, crate::storage::EmergencyPause>(&StorageKey::EmergencyPause)
+        .map(|p| p.is_paused)
+        .unwrap_or(false)
+}
+
+/// Adds emergency guardians (multi-sig addresses)
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `guardians` - Vector of guardian addresses
+///
+/// # Access Control
+/// Requires owner authentication
+pub fn set_emergency_guardians(env: &Env, guardians: Vec<Address>) {
+    let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+    owner.require_auth();
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyGuardians, &guardians);
+}
+
+/// Gets emergency guardians
+pub fn get_emergency_guardians(env: &Env) -> Option<Vec<Address>> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::EmergencyGuardians)
+}
+
+/// Proposes emergency pause with timelock
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `caller` - Guardian proposing the pause
+/// * `timelock_seconds` - Delay before pause activates (0 for immediate)
+///
+/// # Access Control
+/// Requires guardian authentication
+pub fn propose_emergency_pause(
+    env: &Env,
+    caller: Address,
+    timelock_seconds: u64,
+) -> Result<(), PayrollError> {
+    caller.require_auth();
+
+    let guardians: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::EmergencyGuardians)
+        .ok_or(PayrollError::NotGuardian)?;
+
+    if !guardians.iter().any(|g| g == caller) {
+        return Err(PayrollError::NotGuardian);
+    }
+
+    let timelock_end = if timelock_seconds > 0 {
+        Some(env.ledger().timestamp() + timelock_seconds)
+    } else {
+        None
+    };
+
+    let pause_state = crate::storage::EmergencyPause {
+        is_paused: false,
+        paused_at: None,
+        paused_by: Some(caller.clone()),
+        timelock_end,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PendingPause, &pause_state);
+
+    let mut approvals: Vec<Address> = Vec::new(env);
+    approvals.push_back(caller);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PauseApprovals, &approvals);
+
+    Ok(())
+}
+
+/// Approves pending emergency pause
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `caller` - Guardian approving the pause
+///
+/// # Access Control
+/// Requires guardian authentication
+pub fn approve_emergency_pause(env: &Env, caller: Address) -> Result<(), PayrollError> {
+    caller.require_auth();
+
+    let guardians: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::EmergencyGuardians)
+        .ok_or(PayrollError::NotGuardian)?;
+
+    if !guardians.iter().any(|g| g == caller) {
+        return Err(PayrollError::NotGuardian);
+    }
+
+    let mut approvals: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::PauseApprovals)
+        .unwrap_or(Vec::new(env));
+
+    if approvals.iter().any(|a| a == caller) {
+        return Ok(());
+    }
+
+    approvals.push_back(caller);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PauseApprovals, &approvals);
+
+    let threshold = (guardians.len() / 2) + 1;
+    if approvals.len() >= threshold {
+        execute_emergency_pause(env)?;
+    }
+
+    Ok(())
+}
+
+/// Executes emergency pause after approval threshold met
+fn execute_emergency_pause(env: &Env) -> Result<(), PayrollError> {
+    let mut pending: crate::storage::EmergencyPause = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::PendingPause)
+        .ok_or(PayrollError::Unauthorized)?;
+
+    if let Some(timelock_end) = pending.timelock_end {
+        if env.ledger().timestamp() < timelock_end {
+            return Err(PayrollError::TimelockActive);
+        }
+    }
+
+    pending.is_paused = true;
+    pending.paused_at = Some(env.ledger().timestamp());
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyPause, &pending);
+    env.storage().persistent().remove(&StorageKey::PendingPause);
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::PauseApprovals);
+
+    Ok(())
+}
+
+/// Immediately activates emergency pause (owner only)
+///
+/// # Arguments
+/// * `env` - Contract environment
+///
+/// # Access Control
+/// Requires owner authentication
+pub fn emergency_pause(env: &Env) -> Result<(), PayrollError> {
+    let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+    owner.require_auth();
+
+    let pause_state = crate::storage::EmergencyPause {
+        is_paused: true,
+        paused_at: Some(env.ledger().timestamp()),
+        paused_by: Some(owner),
+        timelock_end: None,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyPause, &pause_state);
+
+    Ok(())
+}
+
+/// Unpauses contract after emergency resolved
+///
+/// # Arguments
+/// * `env` - Contract environment
+///
+/// # Access Control
+/// Requires owner authentication
+pub fn emergency_unpause(env: &Env) -> Result<(), PayrollError> {
+    let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+    owner.require_auth();
+
+    let pause_state = crate::storage::EmergencyPause {
+        is_paused: false,
+        paused_at: None,
+        paused_by: None,
+        timelock_end: None,
+    };
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyPause, &pause_state);
+
+    Ok(())
+}
+
+/// Gets emergency pause state
+pub fn get_emergency_pause_state(env: &Env) -> Option<crate::storage::EmergencyPause> {
+    env.storage().persistent().get(&StorageKey::EmergencyPause)
 }
