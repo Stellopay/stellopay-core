@@ -1,7 +1,10 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env,
+};
 
 use rate_limiter::{RateLimiter, RateLimiterClient, Usage};
 
@@ -144,4 +147,3 @@ fn edge_cases_zero_limit() {
     let err = client.try_check_and_consume(&user);
     assert!(err.is_err());
 }
-
