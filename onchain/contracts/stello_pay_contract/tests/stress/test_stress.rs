@@ -35,7 +35,9 @@ fn create_test_env() -> (Env, Address, Address, PayrollContractClient<'static>) 
 
     let employer = Address::generate(&env);
     let token_admin = Address::generate(&env);
-    let token = env.register_stellar_asset_contract_v2(token_admin).address();
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
 
     (env, employer, token, client)
 }
@@ -90,7 +92,12 @@ fn setup_funded_milestone(
     for _ in 0..milestone_count {
         client.add_milestone(&agreement_id, &amount);
     }
-    mint(env, token, &client.address, amount * (milestone_count as i128));
+    mint(
+        env,
+        token,
+        &client.address,
+        amount * (milestone_count as i128),
+    );
     agreement_id
 }
 
@@ -139,16 +146,8 @@ fn stress_max_values_and_overflow_boundaries() {
 fn stress_rapid_transactions_single_window() {
     let (env, employer, token, client) = create_test_env();
     let contributor = Address::generate(&env);
-    let agreement_id = setup_funded_escrow(
-        &env,
-        &client,
-        &employer,
-        &contributor,
-        &token,
-        1000,
-        1,
-        10,
-    );
+    let agreement_id =
+        setup_funded_escrow(&env, &client, &employer, &contributor, &token, 1000, 1, 10);
 
     env.ledger().with_mut(|li| li.timestamp += 1);
     client.claim_time_based(&agreement_id);
@@ -190,15 +189,8 @@ fn stress_rapid_transactions_single_window() {
 fn stress_network_congestion_mixed_batch() {
     let (env, employer, token, client) = create_test_env();
     let contributor = Address::generate(&env);
-    let agreement_id = setup_funded_milestone(
-        &env,
-        &client,
-        &employer,
-        &contributor,
-        &token,
-        100,
-        100,
-    );
+    let agreement_id =
+        setup_funded_milestone(&env, &client, &employer, &contributor, &token, 100, 100);
 
     for id in 1..=60u32 {
         client.approve_milestone(&agreement_id, &id);

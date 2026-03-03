@@ -68,9 +68,7 @@ fn test_claim_payroll_in_different_token_uses_fx_rate() {
     // Token setup
     // ---------------------------------------------------------------------
     let base_admin = Address::generate(&env);
-    let base_token = env
-        .register_stellar_asset_contract_v2(base_admin)
-        .address();
+    let base_token = env.register_stellar_asset_contract_v2(base_admin).address();
 
     let payout_admin = Address::generate(&env);
     let payout_token = env
@@ -140,12 +138,10 @@ fn test_claim_payroll_in_different_token_uses_fx_rate() {
 
     // Escrow balance and paid amount are updated correctly.
     env.as_contract(&contract_address, || {
-        let remaining =
-            DataKey::get_agreement_escrow_balance(&env, agreement_id, &payout_token);
+        let remaining = DataKey::get_agreement_escrow_balance(&env, agreement_id, &payout_token);
         assert_eq!(remaining, escrow_total - expected_payout);
 
         let paid = DataKey::get_agreement_paid_amount(&env, agreement_id);
         assert_eq!(paid, salary_per_period);
     });
 }
-

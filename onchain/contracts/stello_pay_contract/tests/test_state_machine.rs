@@ -51,9 +51,7 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env,
 };
-use stello_pay_contract::storage::{
-    AgreementStatus, DataKey, DisputeStatus, MilestoneKey,
-};
+use stello_pay_contract::storage::{AgreementStatus, DataKey, DisputeStatus, MilestoneKey};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 // ============================================================================
@@ -243,14 +241,8 @@ fn test_escrow_created_to_active() {
     let contributor = create_address(&env);
     let token = create_address(&env);
 
-    let id = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &token,
-        &SALARY,
-        &ONE_DAY,
-        &4u32,
-    );
+    let id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &SALARY, &ONE_DAY, &4u32);
     assert_eq!(
         client.get_agreement(&id).unwrap().status,
         AgreementStatus::Created

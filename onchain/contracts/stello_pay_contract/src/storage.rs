@@ -214,6 +214,59 @@ pub struct BatchMilestoneResult {
     pub results: Vec<MilestoneClaimResult>,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollCreateParams {
+    pub token: Address,
+    pub grace_period_seconds: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EscrowCreateParams {
+    pub contributor: Address,
+    pub token: Address,
+    pub amount_per_period: i128,
+    pub period_seconds: u64,
+    pub num_periods: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PayrollCreateResult {
+    pub agreement_id: Option<u128>,
+    pub success: bool,
+    /// Mirrors PayrollError discriminant where applicable; 0 = success
+    pub error_code: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EscrowCreateResult {
+    pub agreement_id: Option<u128>,
+    pub success: bool,
+    /// Mirrors PayrollError discriminant where applicable; 0 = success
+    pub error_code: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchPayrollCreateResult {
+    pub total_created: u32,
+    pub total_failed: u32,
+    pub agreement_ids: Vec<u128>,
+    pub results: Vec<PayrollCreateResult>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct BatchEscrowCreateResult {
+    pub total_created: u32,
+    pub total_failed: u32,
+    pub agreement_ids: Vec<u128>,
+    pub results: Vec<EscrowCreateResult>,
+}
+
 /// Error types for payroll operations
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -246,6 +299,12 @@ pub enum PayrollError {
     NotGuardian = 25,
     TimelockActive = 26,
     InvalidTimelock = 27,
+    /// Missing or unconfigured FX rate for a currency pair
+    ExchangeRateNotFound = 28,
+    /// Arithmetic overflow/underflow during FX conversion
+    ExchangeRateOverflow = 29,
+    /// Invalid FX rate (e.g. non-positive)
+    ExchangeRateInvalid = 30,
 }
 
 /// Emergency pause state
@@ -256,12 +315,6 @@ pub struct EmergencyPause {
     pub paused_at: Option<u64>,
     pub paused_by: Option<Address>,
     pub timelock_end: Option<u64>,
-    /// Missing or unconfigured FX rate for a currency pair
-    ExchangeRateNotFound = 24,
-    /// Arithmetic overflow/underflow during FX conversion
-    ExchangeRateOverflow = 25,
-    /// Invalid FX rate (e.g. non-positive)
-    ExchangeRateInvalid = 26,
 }
 
 /// Storage keys for the payroll claiming system.

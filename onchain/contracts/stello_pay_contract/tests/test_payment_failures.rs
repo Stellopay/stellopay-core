@@ -339,12 +339,7 @@ fn test_time_based_claim_escrow_drains_across_periods() {
     // Fund only enough for 1 period.
     mint(&env, &token, &client.address, amount_per_period);
     env.as_contract(&client.address, || {
-        DataKey::set_agreement_escrow_balance(
-            &env,
-            agreement_id,
-            &token,
-            amount_per_period,
-        );
+        DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, amount_per_period);
     });
 
     client.activate_agreement(&agreement_id);
@@ -405,20 +400,12 @@ fn test_batch_payroll_partial_escrow_failure() {
     advance_time(&env, ONE_DAY + 1);
 
     // e1 claims successfully, draining the escrow.
-    let batch_e1 = client.batch_claim_payroll(
-        &e1,
-        &agreement_id,
-        &Vec::from_array(&env, [0u32]),
-    );
+    let batch_e1 = client.batch_claim_payroll(&e1, &agreement_id, &Vec::from_array(&env, [0u32]));
     assert_eq!(batch_e1.successful_claims, 1);
     assert_eq!(batch_e1.total_claimed, salary);
 
     // e2 attempts to claim — escrow is empty.
-    let batch_e2 = client.batch_claim_payroll(
-        &e2,
-        &agreement_id,
-        &Vec::from_array(&env, [1u32]),
-    );
+    let batch_e2 = client.batch_claim_payroll(&e2, &agreement_id, &Vec::from_array(&env, [1u32]));
     assert_eq!(batch_e2.successful_claims, 0);
     assert_eq!(batch_e2.failed_claims, 1);
 
@@ -488,12 +475,7 @@ fn test_time_based_claim_panics_without_onchain_tokens() {
 
     // Set DataKey escrow balance but do NOT mint tokens.
     env.as_contract(&client.address, || {
-        DataKey::set_agreement_escrow_balance(
-            &env,
-            agreement_id,
-            &token,
-            STANDARD_SALARY * 4,
-        );
+        DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, STANDARD_SALARY * 4);
     });
 
     client.activate_agreement(&agreement_id);
@@ -534,7 +516,14 @@ fn test_pause_blocks_claim_resume_allows_claim() {
     client.pause_agreement(&agreement_id);
 
     let result = client.try_claim_payroll(&employee, &agreement_id, &0u32);
-    assert!(result.is_err() || result.as_ref().ok().and_then(|r| r.as_ref().err()).is_some());
+    assert!(
+        result.is_err()
+            || result
+                .as_ref()
+                .ok()
+                .and_then(|r| r.as_ref().err())
+                .is_some()
+    );
 
     // Resume — claim should succeed.
     client.resume_agreement(&agreement_id);
@@ -688,12 +677,7 @@ fn test_fund_and_retry_after_insufficient_balance() {
     // Top up escrow.
     mint(&env, &token, &contract_id, STANDARD_SALARY * 5);
     env.as_contract(&contract_id, || {
-        DataKey::set_agreement_escrow_balance(
-            &env,
-            agreement_id,
-            &token,
-            STANDARD_SALARY * 5,
-        );
+        DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, STANDARD_SALARY * 5);
     });
 
     // Retry — should succeed.
@@ -944,7 +928,14 @@ fn test_claimed_periods_unchanged_after_failed_claim() {
 
     // Fail on second claim.
     let result = client.try_claim_payroll(&employee, &agreement_id, &0u32);
-    assert!(result.is_err() || result.as_ref().ok().and_then(|r| r.as_ref().err()).is_some());
+    assert!(
+        result.is_err()
+            || result
+                .as_ref()
+                .ok()
+                .and_then(|r| r.as_ref().err())
+                .is_some()
+    );
 
     // Claimed periods still 1.
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &0u32), 1);
@@ -1053,7 +1044,14 @@ fn test_payroll_claim_on_non_activated_agreement() {
     advance_time(&env, ONE_DAY + 1);
 
     let result = client.try_claim_payroll(&employee, &agreement_id, &0u32);
-    assert!(result.is_err() || result.as_ref().ok().and_then(|r| r.as_ref().err()).is_some());
+    assert!(
+        result.is_err()
+            || result
+                .as_ref()
+                .ok()
+                .and_then(|r| r.as_ref().err())
+                .is_some()
+    );
 }
 
 /// Time-based claim on a non-activated escrow agreement must fail.
@@ -1428,28 +1426,16 @@ fn test_batch_payroll_mixed_state_consistency() {
     // Claims for all three as e1 (only index 0 matches caller).
     // e1 succeeds on index 0, fails on 1 (Unauthorized), fails on 2 (Unauthorized).
     // So use e1 for index 0, then separately use e2 for index 1.
-    let batch_e1 = client.batch_claim_payroll(
-        &e1,
-        &agreement_id,
-        &Vec::from_array(&env, [0u32]),
-    );
+    let batch_e1 = client.batch_claim_payroll(&e1, &agreement_id, &Vec::from_array(&env, [0u32]));
     assert_eq!(batch_e1.successful_claims, 1);
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &0u32), 1);
 
-    let batch_e2 = client.batch_claim_payroll(
-        &e2,
-        &agreement_id,
-        &Vec::from_array(&env, [1u32]),
-    );
+    let batch_e2 = client.batch_claim_payroll(&e2, &agreement_id, &Vec::from_array(&env, [1u32]));
     assert_eq!(batch_e2.successful_claims, 1);
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &1u32), 1);
 
     // e3 tries to claim — insufficient escrow.
-    let batch_e3 = client.batch_claim_payroll(
-        &e3,
-        &agreement_id,
-        &Vec::from_array(&env, [2u32]),
-    );
+    let batch_e3 = client.batch_claim_payroll(&e3, &agreement_id, &Vec::from_array(&env, [2u32]));
     assert_eq!(batch_e3.successful_claims, 0);
     assert_eq!(batch_e3.failed_claims, 1);
 

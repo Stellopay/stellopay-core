@@ -5,11 +5,17 @@ use soroban_sdk::{
     Address, Env, Vec,
 };
 
+use stello_pay_contract::storage::{AgreementStatus, DataKey};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
-use stello_pay_contract::storage::{DataKey, AgreementStatus};
 
 /// Create a baseline environment + deployed payroll contract for benchmarks.
-fn setup_env() -> (Env, Address, Address, Address, PayrollContractClient<'static>) {
+fn setup_env() -> (
+    Env,
+    Address,
+    Address,
+    Address,
+    PayrollContractClient<'static>,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -43,6 +49,42 @@ fn bench_create_payroll_agreement(c: &mut Criterion) {
             |(env, employer, client, token)| {
                 let grace: u64 = 7 * 24 * 60 * 60;
                 let _id = client.create_payroll_agreement(&employer, &token, &grace);
+            },
+            BatchSize::SmallInput,
+        )
+    });
+
+    group.bench_function("batch_3_agreements", |b| {
+        b.iter_batched(
+            || {
+                let (env, _owner, employer, _arbiter, client) = setup_env();
+                let t1 = env
+                    .register_stellar_asset_contract_v2(Address::generate(&env))
+                    .address();
+                let t2 = env
+                    .register_stellar_asset_contract_v2(Address::generate(&env))
+                    .address();
+                let t3 = env
+                    .register_stellar_asset_contract_v2(Address::generate(&env))
+                    .address();
+                (env, employer, client, t1, t2, t3)
+            },
+            |(env, employer, client, t1, t2, t3)| {
+                let mut items: soroban_sdk::Vec<stello_pay_contract::storage::PayrollCreateParams> =
+                    soroban_sdk::Vec::new(&env);
+                items.push_back(stello_pay_contract::storage::PayrollCreateParams {
+                    token: t1,
+                    grace_period_seconds: 3600,
+                });
+                items.push_back(stello_pay_contract::storage::PayrollCreateParams {
+                    token: t2,
+                    grace_period_seconds: 7200,
+                });
+                items.push_back(stello_pay_contract::storage::PayrollCreateParams {
+                    token: t3,
+                    grace_period_seconds: 0,
+                });
+                let _ = client.batch_create_payroll_agreements(&employer, &items);
             },
             BatchSize::SmallInput,
         )
@@ -105,7 +147,7 @@ fn bench_claim_time_based(c: &mut Criterion) {
                 env.ledger().with_mut(|li| {
                     li.timestamp += 86_400;
                 });
-                let _ = client.claim_time_based(&agreement_id);
+                client.claim_time_based(&agreement_id);
             },
             BatchSize::SmallInput,
         )
@@ -118,7 +160,7 @@ fn setup_funded_milestone(
     env: &Env,
     client: &PayrollContractClient<'static>,
     employer: &Address,
-) -> (Address, u128, Vec<u32>) {
+) -> (Address, u128, soroban_sdk::Vec<u32>) {
     let contributor = Address::generate(env);
 
     let token_admin = Address::generate(env);
@@ -143,7 +185,7 @@ fn setup_funded_milestone(
     }
 
     // Build ID list
-    let mut ids = Vec::new(env);
+    let mut ids: soroban_sdk::Vec<u32> = soroban_sdk::Vec::new(env);
     for i in 1..=count {
         ids.push_back(i);
     }
@@ -188,9 +230,10 @@ fn bench_batch_claim_milestones(c: &mut Criterion) {
                         claimed_periods: None,
                     };
                     // Bump storage to keep host work comparable.
-                    env.storage()
-                        .persistent()
-                        .set(&stello_pay_contract::storage::StorageKey::Agreement(agreement_id), &agreement);
+                    env.storage().persistent().set(
+                        &stello_pay_contract::storage::StorageKey::Agreement(agreement_id),
+                        &agreement,
+                    );
                 });
             },
             BatchSize::SmallInput,
@@ -209,4 +252,3 @@ criterion_group!(
         bench_batch_claim_milestones
 );
 criterion_main!(benches);
-

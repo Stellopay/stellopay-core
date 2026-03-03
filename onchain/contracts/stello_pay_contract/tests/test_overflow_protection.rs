@@ -106,4 +106,3 @@ fn test_claim_payroll_paid_amount_addition_overflow_guard() {
     let result = client.try_claim_payroll(&employee, &agreement_id, &0u32);
     assert_eq!(result, Err(Ok(PayrollError::InvalidData)));
 }
-
