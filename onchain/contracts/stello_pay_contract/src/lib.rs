@@ -7,8 +7,9 @@ use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 use storage::{
-    Agreement, BatchMilestoneResult, BatchPayrollResult, DisputeStatus, Milestone, PayrollError,
-    StorageKey,
+    Agreement, BatchEscrowCreateResult, BatchMilestoneResult, BatchPayrollCreateResult,
+    BatchPayrollResult, DisputeStatus, EscrowCreateParams, Milestone, PayrollCreateParams,
+    PayrollError, StorageKey,
 };
 
 /// Payroll Contract for managing payroll agreements with employee claiming functionality.
@@ -67,6 +68,25 @@ impl PayrollContract {
         payroll::create_payroll_agreement(&env, employer, token, grace_period_seconds)
     }
 
+    /// Creates multiple payroll agreements in a single transaction.
+    ///
+    /// # Arguments
+    /// * `employer` - Address of the employer creating the agreements
+    /// * `items` - Vector of payroll creation parameters
+    ///
+    /// # Returns
+    /// `Ok(BatchPayrollCreateResult)` on success, or `Err(PayrollError)` if inputs invalid
+    ///
+    /// # Events
+    /// Emits `agreement_created_event` per created agreement
+    pub fn batch_create_payroll_agreements(
+        env: Env,
+        employer: Address,
+        items: Vec<PayrollCreateParams>,
+    ) -> Result<BatchPayrollCreateResult, PayrollError> {
+        payroll::batch_create_payroll_agreements(&env, employer, items)
+    }
+
     /// Creates an escrow agreement for a single contributor.
     ///
     /// # Arguments
@@ -101,6 +121,25 @@ impl PayrollContract {
             period_seconds,
             num_periods,
         )
+    }
+
+    /// Creates multiple escrow agreements in a single transaction.
+    ///
+    /// # Arguments
+    /// * `employer` - Address of the employer
+    /// * `items` - Vector of escrow creation parameters
+    ///
+    /// # Returns
+    /// `Ok(BatchEscrowCreateResult)` on success, or `Err(PayrollError)` if inputs invalid
+    ///
+    /// # Events
+    /// Emits `agreement_created_event` and `employee_added_event` per created agreement
+    pub fn batch_create_escrow_agreements(
+        env: Env,
+        employer: Address,
+        items: Vec<EscrowCreateParams>,
+    ) -> Result<BatchEscrowCreateResult, PayrollError> {
+        payroll::batch_create_escrow_agreements(&env, employer, items)
     }
 
     /// Creates a milestone-based payment agreement.

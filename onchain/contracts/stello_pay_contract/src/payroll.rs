@@ -12,9 +12,11 @@ use crate::events::{
     MilestoneClaimed, PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
 };
 use crate::storage::{
-    Agreement, AgreementMode, AgreementStatus, BatchMilestoneResult, BatchPayrollResult, DataKey,
-    DisputeStatus, EmployeeInfo, Milestone, MilestoneClaimResult, MilestoneKey, PaymentType,
-    PayrollClaimResult, PayrollError, StorageKey,
+    Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
+    BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
+    EscrowCreateParams, EscrowCreateResult, Milestone, MilestoneClaimResult, MilestoneKey,
+    PaymentType, PayrollClaimResult, PayrollCreateParams, PayrollCreateResult, PayrollError,
+    StorageKey,
 };
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
@@ -417,13 +419,14 @@ pub fn batch_claim_milestones(
         successful_claims += 1;
 
         // Event — identical to claim_milestone
+        #[allow(clippy::needless_borrow)]
         MilestoneClaimed {
             agreement_id,
             milestone_id,
             amount,
             to: contributor.clone(),
         }
-        .publish(env);
+        .publish(&env);
 
         results.push_back(MilestoneClaimResult {
             milestone_id,
@@ -442,13 +445,14 @@ pub fn batch_claim_milestones(
         );
     }
 
+    #[allow(clippy::needless_borrow)]
     BatchMilestoneClaimedEvent {
         agreement_id,
         total_claimed,
         successful_claims,
         failed_claims,
     }
-    .publish(env);
+    .publish(&env);
 
     BatchMilestoneResult {
         agreement_id,
@@ -538,7 +542,15 @@ pub fn create_payroll_agreement(
     grace_period_seconds: u64,
 ) -> u128 {
     employer.require_auth();
+    create_payroll_agreement_internal(env, employer, token, grace_period_seconds)
+}
 
+fn create_payroll_agreement_internal(
+    env: &Env,
+    employer: Address,
+    token: Address,
+    grace_period_seconds: u64,
+) -> u128 {
     let agreement_id = get_next_agreement_id(env);
 
     let agreement = Agreement {
@@ -565,13 +577,11 @@ pub fn create_payroll_agreement(
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
 
-    // Initialize empty employee list
     let employees: Vec<EmployeeInfo> = Vec::new(env);
     env.storage()
         .persistent()
         .set(&StorageKey::AgreementEmployees(agreement_id), &employees);
 
-    // Track employer's agreements
     add_to_employer_agreements(env, &employer, agreement_id);
 
     emit_agreement_created(
@@ -584,6 +594,56 @@ pub fn create_payroll_agreement(
     );
 
     agreement_id
+}
+
+/// Creates multiple payroll agreements in a single transaction.
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `employer` - Address of the employer creating the agreements
+/// * `items` - Vector of payroll creation parameters
+///
+/// # Returns
+/// `Ok(BatchPayrollCreateResult)` — always succeeds at the batch level
+/// unless `items` is empty; inspect per-item results for failures.
+pub fn batch_create_payroll_agreements(
+    env: &Env,
+    employer: Address,
+    items: Vec<PayrollCreateParams>,
+) -> Result<BatchPayrollCreateResult, PayrollError> {
+    employer.require_auth();
+
+    if items.is_empty() {
+        return Err(PayrollError::InvalidData);
+    }
+
+    let mut agreement_ids: Vec<u128> = Vec::new(env);
+    let mut results: Vec<PayrollCreateResult> = Vec::new(env);
+    let mut total_created: u32 = 0;
+    let total_failed: u32 = 0;
+
+    for params in items.iter() {
+        let id = create_payroll_agreement_internal(
+            env,
+            employer.clone(),
+            params.token.clone(),
+            params.grace_period_seconds,
+        );
+        agreement_ids.push_back(id);
+        results.push_back(PayrollCreateResult {
+            agreement_id: Some(id),
+            success: true,
+            error_code: 0,
+        });
+        total_created += 1;
+    }
+
+    Ok(BatchPayrollCreateResult {
+        total_created,
+        total_failed,
+        agreement_ids,
+        results,
+    })
 }
 
 /// Creates an escrow agreement for a single contributor
@@ -612,8 +672,26 @@ pub fn create_escrow_agreement(
     num_periods: u32,
 ) -> Result<u128, PayrollError> {
     employer.require_auth();
+    create_escrow_agreement_internal(
+        env,
+        employer,
+        contributor,
+        token,
+        amount_per_period,
+        period_seconds,
+        num_periods,
+    )
+}
 
-    // Validate inputs
+fn create_escrow_agreement_internal(
+    env: &Env,
+    employer: Address,
+    contributor: Address,
+    token: Address,
+    amount_per_period: i128,
+    period_seconds: u64,
+    num_periods: u32,
+) -> Result<u128, PayrollError> {
     if amount_per_period <= 0 {
         return Err(PayrollError::ZeroAmountPerPeriod);
     }
@@ -683,6 +761,70 @@ pub fn create_escrow_agreement(
     );
 
     Ok(agreement_id)
+}
+
+/// Creates multiple escrow agreements in a single transaction.
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `employer` - Address of the employer
+/// * `items` - Vector of escrow creation parameters
+///
+/// # Returns
+/// `Ok(BatchEscrowCreateResult)` — always succeeds at the batch level
+/// unless `items` is empty; inspect per-item `results` for failures.
+pub fn batch_create_escrow_agreements(
+    env: &Env,
+    employer: Address,
+    items: Vec<EscrowCreateParams>,
+) -> Result<BatchEscrowCreateResult, PayrollError> {
+    employer.require_auth();
+
+    if items.is_empty() {
+        return Err(PayrollError::InvalidData);
+    }
+
+    let mut agreement_ids: Vec<u128> = Vec::new(env);
+    let mut results: Vec<EscrowCreateResult> = Vec::new(env);
+    let mut total_created: u32 = 0;
+    let mut total_failed: u32 = 0;
+
+    for params in items.iter() {
+        match create_escrow_agreement_internal(
+            env,
+            employer.clone(),
+            params.contributor.clone(),
+            params.token.clone(),
+            params.amount_per_period,
+            params.period_seconds,
+            params.num_periods,
+        ) {
+            Ok(id) => {
+                agreement_ids.push_back(id);
+                results.push_back(EscrowCreateResult {
+                    agreement_id: Some(id),
+                    success: true,
+                    error_code: 0,
+                });
+                total_created += 1;
+            }
+            Err(err) => {
+                results.push_back(EscrowCreateResult {
+                    agreement_id: None,
+                    success: false,
+                    error_code: err as u32,
+                });
+                total_failed += 1;
+            }
+        }
+    }
+
+    Ok(BatchEscrowCreateResult {
+        total_created,
+        total_failed,
+        agreement_ids,
+        results,
+    })
 }
 
 /// Adds an employee to a payroll agreement
@@ -1260,6 +1402,7 @@ pub fn claim_payroll(
         },
     );
 
+    #[allow(clippy::needless_borrow)]
     PaymentSentEvent {
         agreement_id,
         from: contract_address,
@@ -1267,15 +1410,16 @@ pub fn claim_payroll(
         amount,
         token: token.clone(),
     }
-    .publish(env);
+    .publish(&env);
 
+    #[allow(clippy::needless_borrow)]
     PaymentReceivedEvent {
         agreement_id,
         to: employee,
         amount,
         token: token.clone(),
     }
-    .publish(env);
+    .publish(&env);
 
     Ok(())
 }
@@ -1449,6 +1593,7 @@ pub fn claim_payroll_in_token(
         },
     );
 
+    #[allow(clippy::needless_borrow)]
     PaymentSentEvent {
         agreement_id,
         from: contract_address,
@@ -1458,6 +1603,7 @@ pub fn claim_payroll_in_token(
     }
     .publish(&env);
 
+    #[allow(clippy::needless_borrow)]
     PaymentReceivedEvent {
         agreement_id,
         to: employee,
@@ -1713,6 +1859,7 @@ pub fn batch_claim_payroll(
                 amount,
             },
         );
+        #[allow(clippy::needless_borrow)]
         PaymentSentEvent {
             agreement_id,
             from: contract_address.clone(),
@@ -1720,14 +1867,15 @@ pub fn batch_claim_payroll(
             amount,
             token: token.clone(),
         }
-        .publish(env);
+        .publish(&env);
+        #[allow(clippy::needless_borrow)]
         PaymentReceivedEvent {
             agreement_id,
             to: employee.clone(),
             amount,
             token: token.clone(),
         }
-        .publish(env);
+        .publish(&env);
 
         results.push_back(PayrollClaimResult {
             employee_index,
@@ -1741,13 +1889,14 @@ pub fn batch_claim_payroll(
 
     DataKey::set_agreement_escrow_balance(env, agreement_id, &token, escrow_balance);
 
+    #[allow(clippy::needless_borrow)]
     BatchPayrollClaimedEvent {
         agreement_id,
         total_claimed,
         successful_claims,
         failed_claims,
     }
-    .publish(env);
+    .publish(&env);
 
     Ok(BatchPayrollResult {
         agreement_id,
