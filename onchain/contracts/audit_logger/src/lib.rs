@@ -77,6 +77,9 @@ impl AuditLoggerContract {
     /// # Arguments
     /// * `owner` - Address that controls retention configuration
     /// * `retention_limit` - Maximum number of logs to retain (0 = unlimited)
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn initialize(env: Env, owner: Address, retention_limit: u32) {
         owner.require_auth();
 
@@ -87,9 +90,7 @@ impl AuditLoggerContract {
         env.storage()
             .persistent()
             .set(&StorageKey::NextLogId, &1u64);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::LogCount, &0u64);
+        env.storage().persistent().set(&StorageKey::LogCount, &0u64);
         env.storage()
             .persistent()
             .set(&StorageKey::FirstLogId, &1u64);
@@ -99,7 +100,21 @@ impl AuditLoggerContract {
     ///
     /// # Access Control
     /// - Caller must be the contract owner.
-    pub fn set_retention_limit(env: Env, caller: Address, retention_limit: u32) -> Result<(), AuditError> {
+    ///
+    /// # Arguments
+    /// * `caller` - caller parameter
+    /// * `retention_limit` - retention_limit parameter
+    ///
+    /// # Returns
+    /// Result<(), AuditError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
+    pub fn set_retention_limit(
+        env: Env,
+        caller: Address,
+        retention_limit: u32,
+    ) -> Result<(), AuditError> {
         let owner: Address = env
             .storage()
             .persistent()
@@ -118,6 +133,9 @@ impl AuditLoggerContract {
     }
 
     /// Returns the current retention limit (0 = unlimited).
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_retention_limit(env: Env) -> u32 {
         env.storage()
             .persistent()
@@ -210,6 +228,9 @@ impl AuditLoggerContract {
     }
 
     /// Returns the total number of logs currently retained.
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_log_count(env: Env) -> u64 {
         env.storage()
             .persistent()
@@ -218,6 +239,15 @@ impl AuditLoggerContract {
     }
 
     /// Fetches a single log entry by identifier, if it is still retained.
+    ///
+    /// # Arguments
+    /// * `id` - id parameter
+    ///
+    /// # Returns
+    /// `Option<AuditLogEntry>`
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_log(env: Env, id: u64) -> Option<AuditLogEntry> {
         let first_id: u64 = env
             .storage()
@@ -234,9 +264,7 @@ impl AuditLoggerContract {
             return None;
         }
 
-        env.storage()
-            .persistent()
-            .get(&StorageKey::LogEntry(id))
+        env.storage().persistent().get(&StorageKey::LogEntry(id))
     }
 
     /// Returns a window of logs starting at a given offset from the first
@@ -245,6 +273,12 @@ impl AuditLoggerContract {
     /// # Arguments
     /// * `offset` - Zero-based index into the retained log window
     /// * `limit` - Maximum number of entries to return
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_logs(env: Env, offset: u32, limit: u32) -> Result<Vec<AuditLogEntry>, AuditError> {
         if limit == 0 {
             return Err(AuditError::InvalidArguments);
@@ -285,6 +319,15 @@ impl AuditLoggerContract {
     }
 
     /// Returns the latest `limit` log entries (newest first).
+    ///
+    /// # Arguments
+    /// * `limit` - limit parameter
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_latest_logs(env: Env, limit: u32) -> Result<Vec<AuditLogEntry>, AuditError> {
         if limit == 0 {
             return Err(AuditError::InvalidArguments);
@@ -322,4 +365,3 @@ impl AuditLoggerContract {
         Ok(results)
     }
 }
-

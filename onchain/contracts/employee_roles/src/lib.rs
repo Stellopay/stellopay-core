@@ -58,6 +58,9 @@ impl EmployeeRolesContract {
     ///
     /// # Arguments
     /// * `owner` - Initial owner account with full admin privileges.
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn initialize(env: Env, owner: Address) {
         owner.require_auth();
         env.storage().persistent().set(&StorageKey::Owner, &owner);
@@ -67,6 +70,17 @@ impl EmployeeRolesContract {
     ///
     /// # Access Control
     /// - Caller must be the owner or hold the `Admin` role.
+    ///
+    /// # Arguments
+    /// * `caller` - caller parameter
+    /// * `employee` - employee parameter
+    /// * `role` - role parameter
+    ///
+    /// # Returns
+    /// Result<(), RoleError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn assign_role(
         env: Env,
         caller: Address,
@@ -95,6 +109,17 @@ impl EmployeeRolesContract {
     ///
     /// # Access Control
     /// - Caller must be the owner or hold the `Admin` role.
+    ///
+    /// # Arguments
+    /// * `caller` - caller parameter
+    /// * `employee` - employee parameter
+    /// * `role` - role parameter
+    ///
+    /// # Returns
+    /// Result<(), RoleError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn revoke_role(
         env: Env,
         caller: Address,
@@ -124,6 +149,12 @@ impl EmployeeRolesContract {
     }
 
     /// Returns all roles currently assigned to an employee.
+    ///
+    /// # Arguments
+    /// * `employee` - employee parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_roles(env: Env, employee: Address) -> Vec<BuiltInRole> {
         env.storage()
             .persistent()
@@ -132,6 +163,16 @@ impl EmployeeRolesContract {
     }
 
     /// Checks whether `employee` has a specific built-in role.
+    ///
+    /// # Arguments
+    /// * `employee` - employee parameter
+    /// * `role` - role parameter
+    ///
+    /// # Returns
+    /// bool
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn has_role(env: Env, employee: Address, role: BuiltInRole) -> bool {
         let roles: Vec<BuiltInRole> = env
             .storage()
@@ -144,6 +185,13 @@ impl EmployeeRolesContract {
 
     /// Checks whether `employee` has at least the required role in the
     /// hierarchy (e.g. Admin satisfies Manager and Employee).
+    ///
+    /// # Arguments
+    /// * `employee` - employee parameter
+    /// * `required` - required parameter
+    ///
+    /// # Returns
+    /// bool
     pub fn has_role_at_least(env: Env, employee: Address, required: BuiltInRole) -> bool {
         let roles: Vec<BuiltInRole> = env
             .storage()
@@ -177,4 +225,3 @@ impl EmployeeRolesContract {
         Ok(())
     }
 }
-

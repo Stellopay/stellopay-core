@@ -134,12 +134,8 @@ fn next_policy_id(env: &Env) -> u32 {
         .instance()
         .get::<_, u32>(&DataKey::NextPolicyId)
         .unwrap_or(1);
-    let next = current
-        .checked_add(1)
-        .expect("policy id overflow");
-    env.storage()
-        .instance()
-        .set(&DataKey::NextPolicyId, &next);
+    let next = current.checked_add(1).expect("policy id overflow");
+    env.storage().instance().set(&DataKey::NextPolicyId, &next);
     current
 }
 
@@ -149,12 +145,8 @@ fn next_record_id(env: &Env) -> u64 {
         .instance()
         .get::<_, u64>(&DataKey::NextRecordId)
         .unwrap_or(1);
-    let next = current
-        .checked_add(1)
-        .expect("record id overflow");
-    env.storage()
-        .instance()
-        .set(&DataKey::NextRecordId, &next);
+    let next = current.checked_add(1).expect("record id overflow");
+    env.storage().instance().set(&DataKey::NextRecordId, &next);
     current
 }
 
@@ -163,6 +155,8 @@ impl SlashingPenaltyContract {
     /// @notice Initializes the slashing/penalty contract.
     /// @dev Must be called exactly once by the protocol owner.
     /// @param owner Administrative owner address for managing policies.
+    /// @return Result<(), PenaltyError>
+    /// @notice Returns an error on failure.
     pub fn initialize(env: Env, owner: Address) -> Result<(), PenaltyError> {
         if env
             .storage()
@@ -175,15 +169,9 @@ impl SlashingPenaltyContract {
 
         owner.require_auth();
         env.storage().instance().set(&DataKey::Owner, &owner);
-        env.storage()
-            .instance()
-            .set(&DataKey::Initialized, &true);
-        env.storage()
-            .instance()
-            .set(&DataKey::NextPolicyId, &1u32);
-        env.storage()
-            .instance()
-            .set(&DataKey::NextRecordId, &1u64);
+        env.storage().instance().set(&DataKey::Initialized, &true);
+        env.storage().instance().set(&DataKey::NextPolicyId, &1u32);
+        env.storage().instance().set(&DataKey::NextRecordId, &1u64);
         Ok(())
     }
 
@@ -192,20 +180,16 @@ impl SlashingPenaltyContract {
     ///      where an arbiter or automation contract is delegated authority.
     /// @param caller Owner address authorizing the change.
     /// @param operator New operator address.
-    pub fn set_operator(
-        env: Env,
-        caller: Address,
-        operator: Address,
-    ) -> Result<(), PenaltyError> {
+    /// @return Result<(), PenaltyError>
+    /// @notice Returns an error on failure.
+    pub fn set_operator(env: Env, caller: Address, operator: Address) -> Result<(), PenaltyError> {
         require_initialized(&env)?;
         caller.require_auth();
         let owner = read_owner(&env);
         if owner != caller {
             return Err(PenaltyError::NotAuthorized);
         }
-        env.storage()
-            .instance()
-            .set(&DataKey::Operator, &operator);
+        env.storage().instance().set(&DataKey::Operator, &operator);
         Ok(())
     }
 
@@ -219,6 +203,7 @@ impl SlashingPenaltyContract {
     /// @param absolute_cap Optional absolute cap in token units.
     /// @param description Human-readable description / policy name.
     /// @return policy_id Newly created policy id.
+    /// @notice Returns an error on failure.
     pub fn create_policy(
         env: Env,
         caller: Address,
@@ -249,9 +234,7 @@ impl SlashingPenaltyContract {
             is_active: true,
         };
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Policy(id), &policy);
+        env.storage().instance().set(&DataKey::Policy(id), &policy);
 
         Ok(id)
     }
@@ -260,6 +243,9 @@ impl SlashingPenaltyContract {
     /// @param caller Owner or operator.
     /// @param policy_id Policy identifier.
     /// @param is_active New active flag value.
+    /// @return Result<(), PenaltyError>
+    /// @notice Returns an error on failure.
+    /// @dev Requires caller authentication
     pub fn set_policy_active(
         env: Env,
         caller: Address,
@@ -282,10 +268,11 @@ impl SlashingPenaltyContract {
     }
 
     /// @notice Reads a policy by id.
+    /// @param policy_id policy_id parameter
+    /// @return `Option<PenaltyPolicy>`
+    /// @dev Requires caller authentication
     pub fn get_policy(env: Env, policy_id: u32) -> Option<PenaltyPolicy> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Policy(policy_id))
+        env.storage().instance().get(&DataKey::Policy(policy_id))
     }
 
     /// @notice Executes a slashing action under a configured policy.
@@ -303,6 +290,8 @@ impl SlashingPenaltyContract {
     /// @param amount Slashing amount in token units.
     /// @param current_locked_amount Locked amount against which caps are evaluated.
     /// @param reason High-level reason for the penalty.
+    /// @return Result<(), PenaltyError>
+    /// @notice Returns an error on failure.
     pub fn slash(
         env: Env,
         caller: Address,
@@ -341,8 +330,8 @@ impl SlashingPenaltyContract {
         }
 
         // Percentage cap: amount <= max_penalty_bps / 10000 * current_locked_amount
-        let max_from_bps = (i128::from(policy.max_penalty_bps) * current_locked_amount)
-            / 10_000i128;
+        let max_from_bps =
+            (i128::from(policy.max_penalty_bps) * current_locked_amount) / 10_000i128;
         if amount > max_from_bps {
             return Err(PenaltyError::CapExceeded);
         }
@@ -358,11 +347,7 @@ impl SlashingPenaltyContract {
         let client = token::Client::new(&env, &token);
         let contract_balance = client.balance(&env.current_contract_address());
         if contract_balance >= amount {
-            client.transfer(
-                &env.current_contract_address(),
-                &beneficiary,
-                &amount,
-            );
+            client.transfer(&env.current_contract_address(), &beneficiary, &amount);
         }
 
         // Persist slashing record for auditability.
@@ -400,20 +385,22 @@ impl SlashingPenaltyContract {
     }
 
     /// @notice Reads a slashing record by id.
+    /// @param record_id record_id parameter
+    /// @return `Option<SlashingRecord>`
+    /// @dev Requires caller authentication
     pub fn get_record(env: Env, record_id: u64) -> Option<SlashingRecord> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Record(record_id))
+        env.storage().instance().get(&DataKey::Record(record_id))
     }
 
     /// @notice Returns the configured owner.
+    /// @dev Requires caller authentication
     pub fn get_owner(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Owner)
     }
 
     /// @notice Returns the configured operator, if any.
+    /// @dev Requires caller authentication
     pub fn get_operator(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Operator)
     }
 }
-

@@ -295,6 +295,12 @@ impl DepartmentManagerContract {
     }
 
     /// Returns the organization record.
+    ///
+    /// # Arguments
+    /// * `org_id` - org_id parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_organization(env: Env, org_id: u128) -> Organization {
         env.storage()
             .persistent()
@@ -303,6 +309,12 @@ impl DepartmentManagerContract {
     }
 
     /// Returns the department record.
+    ///
+    /// # Arguments
+    /// * `department_id` - department_id parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_department(env: Env, department_id: u128) -> Department {
         env.storage()
             .persistent()
@@ -311,6 +323,12 @@ impl DepartmentManagerContract {
     }
 
     /// Returns department IDs for an organization (top-level only or all if flatten not set).
+    ///
+    /// # Arguments
+    /// * `org_id` - org_id parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_org_departments(env: Env, org_id: u128) -> Vec<u128> {
         env.storage()
             .persistent()
@@ -319,6 +337,12 @@ impl DepartmentManagerContract {
     }
 
     /// Returns employee addresses in a department (department-level reporting).
+    ///
+    /// # Arguments
+    /// * `department_id` - department_id parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_department_employees(env: Env, department_id: u128) -> Vec<Address> {
         env.storage()
             .persistent()
@@ -327,6 +351,13 @@ impl DepartmentManagerContract {
     }
 
     /// Returns the department ID for an employee in an org, or None if not assigned.
+    ///
+    /// # Arguments
+    /// * `employee` - employee parameter
+    /// * `org_id` - org_id parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_employee_department(env: Env, employee: Address, org_id: u128) -> Option<u128> {
         env.storage()
             .persistent()
@@ -334,6 +365,15 @@ impl DepartmentManagerContract {
     }
 
     /// Department-level report: employee count and child department IDs.
+    ///
+    /// # Arguments
+    /// * `department_id` - department_id parameter
+    ///
+    /// # Returns
+    /// `(u32, Vec<u128>, Vec<Address>)`
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_department_report(env: Env, department_id: u128) -> (u32, Vec<u128>, Vec<Address>) {
         let employees: Vec<Address> = Self::get_department_employees(env.clone(), department_id);
         let children: Vec<u128> = env

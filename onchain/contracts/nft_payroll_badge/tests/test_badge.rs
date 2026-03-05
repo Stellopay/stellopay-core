@@ -2,9 +2,7 @@
 
 use soroban_sdk::{testutils::Address as _, Address, Bytes, Env};
 
-use nft_payroll_badge::{
-    Badge, BadgeError, BadgeKind, NftPayrollBadge, NftPayrollBadgeClient,
-};
+use nft_payroll_badge::{Badge, BadgeError, BadgeKind, NftPayrollBadge, NftPayrollBadgeClient};
 
 fn create_env() -> Env {
     let env = Env::default();
@@ -45,20 +43,20 @@ fn mint_employer_and_employee_badges() {
     let (client, admin, employer, employee) = setup_initialized(&env);
 
     let employer_badge_id = client.mint(
-            &admin,
-            &employer,
-            &BadgeKind::Employer,
-            &bytes_from_str(&env, "employer-meta"),
-            &false,
-        );
+        &admin,
+        &employer,
+        &BadgeKind::Employer,
+        &bytes_from_str(&env, "employer-meta"),
+        &false,
+    );
 
     let employee_badge_id = client.mint(
-            &admin,
-            &employee,
-            &BadgeKind::Employee,
-            &bytes_from_str(&env, "employee-meta"),
-            &true,
-        );
+        &admin,
+        &employee,
+        &BadgeKind::Employee,
+        &bytes_from_str(&env, "employee-meta"),
+        &true,
+    );
 
     assert!(employer_badge_id != employee_badge_id);
 
@@ -87,12 +85,12 @@ fn custom_badge_and_transferable_flag() {
     let (client, admin, employer, _) = setup_initialized(&env);
 
     let badge_id = client.mint(
-            &admin,
-            &employer,
-            &BadgeKind::Custom(42),
-            &bytes_from_str(&env, "custom"),
-            &true,
-        );
+        &admin,
+        &employer,
+        &BadgeKind::Custom(42),
+        &bytes_from_str(&env, "custom"),
+        &true,
+    );
 
     let badge = client.get_badge(&badge_id).unwrap();
     assert_eq!(badge.kind, BadgeKind::Custom(42));
@@ -105,20 +103,20 @@ fn transfer_only_allowed_for_transferable_badges() {
     let (client, admin, employer, employee) = setup_initialized(&env);
 
     let non_transferable_id = client.mint(
-            &admin,
-            &employer,
-            &BadgeKind::Employer,
-            &bytes_from_str(&env, "nt"),
-            &false,
-        );
+        &admin,
+        &employer,
+        &BadgeKind::Employer,
+        &bytes_from_str(&env, "nt"),
+        &false,
+    );
 
     let transferable_id = client.mint(
-            &admin,
-            &employee,
-            &BadgeKind::Employee,
-            &bytes_from_str(&env, "t"),
-            &true,
-        );
+        &admin,
+        &employee,
+        &BadgeKind::Employee,
+        &bytes_from_str(&env, "t"),
+        &true,
+    );
 
     // Non-transferable: transfer should fail.
     let res = client.try_transfer(&employer, &non_transferable_id, &employee);
@@ -137,20 +135,20 @@ fn burn_by_admin_or_owner() {
     let (client, admin, employer, employee) = setup_initialized(&env);
 
     let admin_minted_id = client.mint(
-            &admin,
-            &employer,
-            &BadgeKind::Employer,
-            &bytes_from_str(&env, "admin-minted"),
-            &false,
-        );
+        &admin,
+        &employer,
+        &BadgeKind::Employer,
+        &bytes_from_str(&env, "admin-minted"),
+        &false,
+    );
 
     let owner_minted_id = client.mint(
-            &admin,
-            &employee,
-            &BadgeKind::Employee,
-            &bytes_from_str(&env, "owner-minted"),
-            &false,
-        );
+        &admin,
+        &employee,
+        &BadgeKind::Employee,
+        &bytes_from_str(&env, "owner-minted"),
+        &false,
+    );
 
     // Admin can burn employer badge.
     client.burn(&admin, &admin_minted_id);
@@ -179,15 +177,14 @@ fn non_admin_cannot_mint_or_burn_others() {
 
     // Admin mints a badge for employee.
     let badge_id = client.mint(
-            &admin,
-            &employee,
-            &BadgeKind::Employee,
-            &bytes_from_str(&env, "y"),
-            &true,
-        );
+        &admin,
+        &employee,
+        &BadgeKind::Employee,
+        &bytes_from_str(&env, "y"),
+        &true,
+    );
 
     // Employer (not admin, not owner) cannot burn.
     let res = client.try_burn(&employer, &badge_id);
     assert_eq!(res, Err(Ok(BadgeError::NotOwnerOrAdmin)));
 }
-

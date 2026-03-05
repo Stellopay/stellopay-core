@@ -95,9 +95,7 @@ impl ComplianceCheckerContract {
             panic!("Already initialized");
         }
         admin.require_auth();
-        env.storage()
-            .persistent()
-            .set(&StorageKey::Admin, &admin);
+        env.storage().persistent().set(&StorageKey::Admin, &admin);
         env.storage()
             .persistent()
             .set(&StorageKey::Initialized, &true);
@@ -117,6 +115,9 @@ impl ComplianceCheckerContract {
     /// * `kind` - Rule kind.
     /// * `description` - Short description of the rule.
     /// * `severity` - Severity level.
+    ///
+    /// # Returns
+    /// u32
     pub fn add_rule(
         env: Env,
         caller: Address,
@@ -132,9 +133,7 @@ impl ComplianceCheckerContract {
             .persistent()
             .get(&StorageKey::NextRuleId)
             .unwrap_or(1);
-        let new_next = next_id
-            .checked_add(1)
-            .expect("Rule id overflow");
+        let new_next = next_id.checked_add(1).expect("Rule id overflow");
         env.storage()
             .persistent()
             .set(&StorageKey::NextRuleId, &new_next);
@@ -164,6 +163,14 @@ impl ComplianceCheckerContract {
     }
 
     /// Activates or deactivates an existing rule.
+    ///
+    /// # Arguments
+    /// * `caller` - caller parameter
+    /// * `rule_id` - rule_id parameter
+    /// * `active` - active parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn set_rule_active(env: Env, caller: Address, rule_id: u32, active: bool) {
         Self::require_initialized(&env);
         Self::require_admin(&env, &caller);
@@ -179,6 +186,12 @@ impl ComplianceCheckerContract {
     }
 
     /// Returns a single rule.
+    ///
+    /// # Arguments
+    /// * `rule_id` - rule_id parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_rule(env: Env, rule_id: u32) -> Rule {
         env.storage()
             .persistent()
@@ -187,6 +200,12 @@ impl ComplianceCheckerContract {
     }
 
     /// Lists all rules in insertion order.
+    ///
+    /// # Returns
+    /// `Vec<Rule>`
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn list_rules(env: Env) -> Vec<Rule> {
         let index: Vec<u32> = env
             .storage()
@@ -246,6 +265,12 @@ impl ComplianceCheckerContract {
     }
 
     /// Returns the last stored report for a subject, if any.
+    ///
+    /// # Arguments
+    /// * `subject_id` - subject_id parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_last_report(env: Env, subject_id: u128) -> Option<ComplianceReport> {
         env.storage()
             .persistent()

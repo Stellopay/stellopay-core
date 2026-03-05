@@ -124,6 +124,9 @@ impl ExpenseReimbursementContract {
     ///
     /// # Panics
     /// * If already initialized
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn initialize(env: Env, owner: Address) {
         assert!(
             !env.storage()
@@ -133,9 +136,7 @@ impl ExpenseReimbursementContract {
             "Already initialized"
         );
 
-        env.storage()
-            .persistent()
-            .set(&StorageKey::Owner, &owner);
+        env.storage().persistent().set(&StorageKey::Owner, &owner);
         env.storage()
             .persistent()
             .set(&StorageKey::NextExpenseId, &0u128);
@@ -151,6 +152,9 @@ impl ExpenseReimbursementContract {
     ///
     /// # Panics
     /// * If caller is not owner
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn add_approver(env: Env, approver: Address) {
         require_initialized(&env);
         let owner: Address = env
@@ -172,6 +176,9 @@ impl ExpenseReimbursementContract {
     ///
     /// # Panics
     /// * If caller is not owner
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn remove_approver(env: Env, approver: Address) {
         require_initialized(&env);
         let owner: Address = env
@@ -301,6 +308,9 @@ impl ExpenseReimbursementContract {
     /// # Panics
     /// * If caller is not the designated approver
     /// * If expense is not in Pending status
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn reject_expense(env: Env, approver: Address, expense_id: u128) {
         require_initialized(&env);
         approver.require_auth();
@@ -336,6 +346,9 @@ impl ExpenseReimbursementContract {
     ///
     /// # Panics
     /// * If expense is not in Approved status
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn pay_expense(env: Env, payer: Address, expense_id: u128) {
         require_initialized(&env);
         payer.require_auth();
@@ -375,6 +388,9 @@ impl ExpenseReimbursementContract {
     /// # Panics
     /// * If caller is not the submitter
     /// * If expense is not in Pending status
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn cancel_expense(env: Env, submitter: Address, expense_id: u128) {
         require_initialized(&env);
         submitter.require_auth();
@@ -409,6 +425,9 @@ impl ExpenseReimbursementContract {
     ///
     /// # Returns
     /// Expense details or None if not found
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_expense(env: Env, expense_id: u128) -> Option<Expense> {
         require_initialized(&env);
         env.storage()
@@ -423,6 +442,9 @@ impl ExpenseReimbursementContract {
     ///
     /// # Returns
     /// true if address is an approver
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn is_approver(env: Env, address: Address) -> bool {
         require_initialized(&env);
         is_approver(&env, &address)

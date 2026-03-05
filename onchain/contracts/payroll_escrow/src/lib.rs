@@ -353,6 +353,9 @@ impl PayrollEscrowContract {
     /// # Returns
     ///
     /// The current balance (0 if no balance exists)
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_agreement_balance(env: Env, agreement_id: u128) -> i128 {
         env.storage()
             .persistent()
@@ -370,6 +373,9 @@ impl PayrollEscrowContract {
     /// # Returns
     ///
     /// The employer address if found, None otherwise
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_agreement_employer(env: Env, agreement_id: u128) -> Option<Address> {
         env.storage()
             .persistent()

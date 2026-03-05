@@ -135,13 +135,7 @@ fn unauthorized_and_invalid_updates_rejected() {
 
     // Unregistered source is rejected.
     let unknown_source = Address::generate(&env);
-    let res = oracle_client.try_push_price(
-        &unknown_source,
-        &base,
-        &quote,
-        &2_000_000i128,
-        &0u64,
-    );
+    let res = oracle_client.try_push_price(&unknown_source, &base, &quote, &2_000_000i128, &0u64);
     assert_eq!(res, Err(Ok(OracleError::InvalidSource)));
 
     // Register source.
@@ -153,23 +147,11 @@ fn unauthorized_and_invalid_updates_rejected() {
     });
 
     // Out-of-bounds rate.
-    let res = oracle_client.try_push_price(
-        &source,
-        &base,
-        &quote,
-        &10_000_000i128,
-        &1_000u64,
-    );
+    let res = oracle_client.try_push_price(&source, &base, &quote, &10_000_000i128, &1_000u64);
     assert_eq!(res, Err(Ok(OracleError::RateOutOfBounds)));
 
     // Stale rate.
-    let res = oracle_client.try_push_price(
-        &source,
-        &base,
-        &quote,
-        &2_000_000i128,
-        &100u64,
-    );
+    let res = oracle_client.try_push_price(&source, &base, &quote, &2_000_000i128, &100u64);
     assert_eq!(res, Err(Ok(OracleError::RateStale)));
 }
 
@@ -229,4 +211,3 @@ fn monotonic_updates_and_fallback_behavior() {
     let converted = payroll_client.convert_currency(&base, &quote, &amount);
     assert_eq!(converted, Ok(30));
 }
-

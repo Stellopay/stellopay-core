@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use slashing_penalty::{
-    PenaltyError, PenaltyReason, PenaltyPolicy, SlashingPenaltyContract,
+    PenaltyError, PenaltyPolicy, PenaltyReason, SlashingPenaltyContract,
     SlashingPenaltyContractClient, SlashingRecord,
 };
 use soroban_sdk::{
@@ -251,4 +251,3 @@ fn scoped_policy_mismatch_rejected() {
     );
     assert_eq!(res, Err(Ok(PenaltyError::InvalidConfig)));
 }
-

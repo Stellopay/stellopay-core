@@ -1,9 +1,6 @@
 #![cfg(test)]
 
-use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env};
 
 use employee_roles::{BuiltInRole, EmployeeRolesContract, EmployeeRolesContractClient};
 
@@ -61,4 +58,3 @@ fn test_hierarchy_admin_satisfies_manager_and_employee() {
     assert!(client.has_role_at_least(&admin, &BuiltInRole::Manager));
     assert!(client.has_role_at_least(&admin, &BuiltInRole::Admin));
 }
-

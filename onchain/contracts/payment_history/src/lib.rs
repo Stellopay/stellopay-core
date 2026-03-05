@@ -13,6 +13,13 @@ pub struct PaymentHistoryContract;
 #[contractimpl]
 impl PaymentHistoryContract {
     /// Initialize the contract
+    ///
+    /// # Arguments
+    /// * `owner` - owner parameter
+    /// * `payroll_contract` - payroll_contract parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn initialize(env: Env, owner: Address, payroll_contract: Address) {
         if env.storage().persistent().has(&StorageKey::Owner) {
             panic!("Already initialized");
@@ -27,6 +34,20 @@ impl PaymentHistoryContract {
     }
 
     /// Record a payment (Only callable by Payroll Contract)
+    ///
+    /// # Arguments
+    /// * `agreement_id` - agreement_id parameter
+    /// * `token` - token parameter
+    /// * `amount` - amount parameter
+    /// * `from` - from parameter
+    /// * `to` - to parameter
+    /// * `timestamp` - timestamp parameter
+    ///
+    /// # Returns
+    /// u128
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn record_payment(
         env: Env,
         agreement_id: u128,
@@ -132,6 +153,15 @@ impl PaymentHistoryContract {
     }
 
     /// Get total payment count for an agreement
+    ///
+    /// # Arguments
+    /// * `agreement_id` - agreement_id parameter
+    ///
+    /// # Returns
+    /// u32
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_agreement_payment_count(env: Env, agreement_id: u128) -> u32 {
         env.storage()
             .persistent()
@@ -146,6 +176,11 @@ impl PaymentHistoryContract {
     ///     Actually, purely index based access is better for pagination.
     ///     Let's use (page_number, page_size) or (start_index, limit)?
     ///     Standard limit/offset is easier.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - agreement_id parameter
+    /// * `start_index` - start_index parameter
+    /// * `limit` - limit parameter
     pub fn get_payments_by_agreement(
         env: Env,
         agreement_id: u128,
@@ -178,6 +213,15 @@ impl PaymentHistoryContract {
     }
 
     /// Get total payment count for an employer
+    ///
+    /// # Arguments
+    /// * `employer` - employer parameter
+    ///
+    /// # Returns
+    /// u32
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_employer_payment_count(env: Env, employer: Address) -> u32 {
         env.storage()
             .persistent()
@@ -186,6 +230,17 @@ impl PaymentHistoryContract {
     }
 
     /// Get payments for an employer
+    ///
+    /// # Arguments
+    /// * `employer` - employer parameter
+    /// * `start_index` - start_index parameter
+    /// * `limit` - limit parameter
+    ///
+    /// # Returns
+    /// `Vec<PaymentRecord>`
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_payments_by_employer(
         env: Env,
         employer: Address,
@@ -218,6 +273,15 @@ impl PaymentHistoryContract {
     }
 
     /// Get total payment count for an employee
+    ///
+    /// # Arguments
+    /// * `employee` - employee parameter
+    ///
+    /// # Returns
+    /// u32
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_employee_payment_count(env: Env, employee: Address) -> u32 {
         env.storage()
             .persistent()
@@ -226,6 +290,17 @@ impl PaymentHistoryContract {
     }
 
     /// Get payments for an employee
+    ///
+    /// # Arguments
+    /// * `employee` - employee parameter
+    /// * `start_index` - start_index parameter
+    /// * `limit` - limit parameter
+    ///
+    /// # Returns
+    /// `Vec<PaymentRecord>`
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_payments_by_employee(
         env: Env,
         employee: Address,

@@ -51,6 +51,12 @@ pub struct SplitDefinition {
 #[contractimpl]
 impl PaymentSplitterContract {
     /// Initializes the contract. Callable once.
+    ///
+    /// # Arguments
+    /// * `admin` - admin parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn initialize(env: Env, admin: Address) {
         admin.require_auth();
         let init: bool = env
@@ -120,6 +126,16 @@ impl PaymentSplitterContract {
 
     /// Validates a split definition against a total amount: for Percent shares no amount needed;
     /// for Fixed shares, sum of fixed amounts must equal total.
+    ///
+    /// # Arguments
+    /// * `split_id` - split_id parameter
+    /// * `total_amount` - total_amount parameter
+    ///
+    /// # Returns
+    /// bool
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn validate_split_for_amount(env: Env, split_id: u128, total_amount: i128) -> bool {
         let def: SplitDefinition = env
             .storage()
@@ -151,6 +167,16 @@ impl PaymentSplitterContract {
     }
 
     /// Computes the amount for each recipient given a total. Callable by anyone (view).
+    ///
+    /// # Arguments
+    /// * `split_id` - split_id parameter
+    /// * `total_amount` - total_amount parameter
+    ///
+    /// # Returns
+    /// `Vec<(Address, i128)>`
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn compute_split(env: Env, split_id: u128, total_amount: i128) -> Vec<(Address, i128)> {
         let def: SplitDefinition = env
             .storage()
@@ -170,6 +196,12 @@ impl PaymentSplitterContract {
     }
 
     /// Returns the split definition.
+    ///
+    /// # Arguments
+    /// * `split_id` - split_id parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_split(env: Env, split_id: u128) -> SplitDefinition {
         env.storage()
             .persistent()

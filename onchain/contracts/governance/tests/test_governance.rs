@@ -206,4 +206,3 @@ fn owner_can_cancel_before_execution() {
     let res = client.try_execute(&proposal_id);
     assert!(res.is_err());
 }
-

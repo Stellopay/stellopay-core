@@ -114,7 +114,13 @@ impl PriceOracleContract {
     /// @dev Must be called exactly once by the protocol owner.
     /// @param owner Administrative owner address.
     /// @param payroll_contract Address of the core payroll contract that will consume FX rates.
-    pub fn initialize(env: Env, owner: Address, payroll_contract: Address) -> Result<(), OracleError> {
+    /// @return Result<(), OracleError>
+    /// @notice Returns an error on failure.
+    pub fn initialize(
+        env: Env,
+        owner: Address,
+        payroll_contract: Address,
+    ) -> Result<(), OracleError> {
         if env
             .storage()
             .instance()
@@ -129,15 +135,15 @@ impl PriceOracleContract {
         env.storage()
             .instance()
             .set(&DataKey::PayrollContract, &payroll_contract);
-        env.storage()
-            .instance()
-            .set(&DataKey::Initialized, &true);
+        env.storage().instance().set(&DataKey::Initialized, &true);
         Ok(())
     }
 
     /// @notice Adds an authorized oracle source.
     /// @param caller Owner address authorizing the source.
     /// @param source Oracle source address (e.g. signer or feeder).
+    /// @return Result<(), OracleError>
+    /// @notice Returns an error on failure.
     pub fn add_source(env: Env, caller: Address, source: Address) -> Result<(), OracleError> {
         require_admin(&env, &caller)?;
         env.storage()
@@ -149,6 +155,8 @@ impl PriceOracleContract {
     /// @notice Removes an authorized oracle source.
     /// @param caller Owner address.
     /// @param source Oracle source to revoke.
+    /// @return Result<(), OracleError>
+    /// @notice Returns an error on failure.
     pub fn remove_source(env: Env, caller: Address, source: Address) -> Result<(), OracleError> {
         require_admin(&env, &caller)?;
         env.storage()
@@ -164,6 +172,8 @@ impl PriceOracleContract {
     /// @param min_rate Minimum allowed scaled rate (inclusive).
     /// @param max_rate Maximum allowed scaled rate (inclusive).
     /// @param max_staleness_seconds Maximum allowed age of a rate update.
+    /// @return Result<(), OracleError>
+    /// @notice Returns an error on failure.
     pub fn configure_pair(
         env: Env,
         caller: Address,
@@ -197,6 +207,9 @@ impl PriceOracleContract {
     }
 
     /// @notice Returns the configuration for a `(base, quote)` pair, if any.
+    /// @param base base parameter
+    /// @param quote quote parameter
+    /// @dev Requires caller authentication
     pub fn get_pair_config(env: Env, base: Address, quote: Address) -> Option<PairConfig> {
         env.storage()
             .instance()
@@ -204,6 +217,9 @@ impl PriceOracleContract {
     }
 
     /// @notice Returns the last accepted state for a `(base, quote)` pair, if any.
+    /// @param base base parameter
+    /// @param quote quote parameter
+    /// @dev Requires caller authentication
     pub fn get_pair_state(env: Env, base: Address, quote: Address) -> Option<PairState> {
         env.storage()
             .instance()
@@ -222,6 +238,8 @@ impl PriceOracleContract {
     /// @param quote Quote token address.
     /// @param rate Scaled exchange rate (quote_per_base * FX_SCALE).
     /// @param source_timestamp Timestamp associated with the external price (seconds).
+    /// @return Result<(), OracleError>
+    /// @notice Returns an error on failure.
     pub fn push_price(
         env: Env,
         source: Address,
@@ -300,13 +318,14 @@ impl PriceOracleContract {
     }
 
     /// @notice Returns the configured owner.
+    /// @dev Requires caller authentication
     pub fn get_owner(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Owner)
     }
 
     /// @notice Returns whether an address is an authorized oracle source.
+    /// @param addr addr parameter
     pub fn is_source_address(env: Env, addr: Address) -> bool {
         is_source(&env, &addr)
     }
 }
-

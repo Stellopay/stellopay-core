@@ -26,9 +26,7 @@ use soroban_sdk::{
 use bonus_system::{BonusSystemContract, BonusSystemContractClient};
 use payment_history::{PaymentHistoryContract, PaymentHistoryContractClient};
 use payroll_escrow::{PayrollEscrowContract, PayrollEscrowContractClient};
-use stello_pay_contract::storage::{
-    AgreementMode, AgreementStatus, DataKey, DisputeStatus,
-};
+use stello_pay_contract::storage::{AgreementMode, AgreementStatus, DataKey, DisputeStatus};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 // ============================================================================
@@ -591,14 +589,7 @@ fn test_dispute_full_lifecycle() {
 
     // Create escrow agreement (grace_period = 3600s = 1 hour, which is also
     // the window for raising disputes since dispute checks created_at + grace)
-    let aid = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &1000,
-        &ONE_HOUR,
-        &1,
-    );
+    let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &1000, &ONE_HOUR, &1);
 
     // Raise dispute (within grace period from creation)
     assert_eq!(client.get_dispute_status(&aid), DisputeStatus::None);
@@ -627,14 +618,7 @@ fn test_dispute_raised_by_employee() {
 
     client.set_arbiter(&employer, &arbiter);
 
-    let aid = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &1000,
-        &ONE_HOUR,
-        &1,
-    );
+    let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &1000, &ONE_HOUR, &1);
 
     // Employee raises dispute
     client.raise_dispute(&contributor, &aid);
@@ -653,14 +637,7 @@ fn test_dispute_cannot_raise_twice() {
 
     client.set_arbiter(&employer, &arbiter);
 
-    let aid = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &1000,
-        &ONE_HOUR,
-        &1,
-    );
+    let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &1000, &ONE_HOUR, &1);
 
     client.raise_dispute(&employer, &aid);
     let result = client.try_raise_dispute(&employer, &aid);
@@ -680,14 +657,7 @@ fn test_dispute_non_party_rejected() {
 
     client.set_arbiter(&employer, &arbiter);
 
-    let aid = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &1000,
-        &ONE_HOUR,
-        &1,
-    );
+    let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &1000, &ONE_HOUR, &1);
 
     let result = client.try_raise_dispute(&outsider, &aid);
     assert!(result.is_err());
@@ -705,14 +675,7 @@ fn test_dispute_non_arbiter_resolve_rejected() {
 
     client.set_arbiter(&employer, &arbiter);
 
-    let aid = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &1000,
-        &ONE_HOUR,
-        &1,
-    );
+    let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &1000, &ONE_HOUR, &1);
 
     client.raise_dispute(&employer, &aid);
 
@@ -733,14 +696,7 @@ fn test_dispute_resolve_without_raise_rejected() {
 
     client.set_arbiter(&employer, &arbiter);
 
-    let aid = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &1000,
-        &ONE_HOUR,
-        &1,
-    );
+    let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &1000, &ONE_HOUR, &1);
 
     let result = client.try_resolve_dispute(&arbiter, &aid, &500, &500);
     assert!(result.is_err());
@@ -759,14 +715,7 @@ fn test_dispute_payout_exceeds_total_rejected() {
     client.set_arbiter(&employer, &arbiter);
 
     // total_amount = 1000 * 1 = 1000
-    let aid = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &1000,
-        &ONE_HOUR,
-        &1,
-    );
+    let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &1000, &ONE_HOUR, &1);
 
     client.raise_dispute(&employer, &aid);
 
@@ -787,14 +736,7 @@ fn test_dispute_outside_grace_period_rejected() {
 
     client.set_arbiter(&employer, &arbiter);
 
-    let aid = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &1000,
-        &ONE_HOUR,
-        &1,
-    );
+    let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &1000, &ONE_HOUR, &1);
 
     // Advance past the grace period window (created_at + grace_period_seconds)
     advance(&env, ONE_HOUR + 1);
@@ -873,14 +815,7 @@ fn test_escrow_pause_resume() {
     let contributor = addr(&env);
     let tok = token(&env);
 
-    let aid = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &500,
-        &ONE_DAY,
-        &4,
-    );
+    let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &500, &ONE_DAY, &4);
     client.activate_agreement(&aid);
     mint(&env, &tok, &cid, 2000);
     env.as_contract(&cid, || {
@@ -909,14 +844,7 @@ fn test_escrow_cancel_with_grace_period() {
     let contributor = addr(&env);
     let tok = token(&env);
 
-    let aid = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &500,
-        &ONE_DAY,
-        &5,
-    );
+    let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &500, &ONE_DAY, &5);
     client.activate_agreement(&aid);
 
     let fund = 2500i128;
@@ -945,14 +873,7 @@ fn test_escrow_insufficient_balance_rejected() {
     let contributor = addr(&env);
     let tok = token(&env);
 
-    let aid = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &500,
-        &ONE_DAY,
-        &4,
-    );
+    let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &500, &ONE_DAY, &4);
     client.activate_agreement(&aid);
 
     // Fund only 100 — not enough for a single period (500)
@@ -975,14 +896,7 @@ fn test_escrow_claim_before_activation_rejected() {
     let contributor = addr(&env);
     let tok = token(&env);
 
-    let aid = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &500,
-        &ONE_DAY,
-        &4,
-    );
+    let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &500, &ONE_DAY, &4);
 
     // Don't activate — try to claim
     advance(&env, ONE_DAY);
@@ -999,14 +913,7 @@ fn test_escrow_all_periods_claimed_rejected() {
     let contributor = addr(&env);
     let tok = token(&env);
 
-    let aid = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &100,
-        &ONE_DAY,
-        &2,
-    );
+    let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &100, &ONE_DAY, &2);
     client.activate_agreement(&aid);
     mint(&env, &tok, &cid, 200);
     env.as_contract(&cid, || {
@@ -1033,36 +940,16 @@ fn test_escrow_invalid_creation_parameters() {
     let tok = token(&env);
 
     // Zero amount
-    let r = client.try_create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &0,
-        &ONE_DAY,
-        &4,
-    );
+    let r = client.try_create_escrow_agreement(&employer, &contributor, &tok, &0, &ONE_DAY, &4);
     assert!(r.is_err());
 
     // Zero period
-    let r = client.try_create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &100,
-        &0u64,
-        &4,
-    );
+    let r = client.try_create_escrow_agreement(&employer, &contributor, &tok, &100, &0u64, &4);
     assert!(r.is_err());
 
     // Zero num_periods
-    let r = client.try_create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &100,
-        &ONE_DAY,
-        &0u32,
-    );
+    let r =
+        client.try_create_escrow_agreement(&employer, &contributor, &tok, &100, &ONE_DAY, &0u32);
     assert!(r.is_err());
 }
 
@@ -1199,8 +1086,14 @@ fn test_cross_bonus_one_time_lifecycle() {
     // Create a one-time bonus
     set_time(&env, 1000);
     let unlock_time = 2000u64;
-    let incentive_id =
-        bonus_client.create_one_time_bonus(&employer, &employee, &approver, &tok, &1000, &unlock_time);
+    let incentive_id = bonus_client.create_one_time_bonus(
+        &employer,
+        &employee,
+        &approver,
+        &tok,
+        &1000,
+        &unlock_time,
+    );
 
     let incentive = bonus_client.get_incentive(&incentive_id).unwrap();
     assert_eq!(incentive.amount_per_payout, 1000);
@@ -1238,14 +1131,7 @@ fn test_cross_bonus_recurring_lifecycle() {
 
     set_time(&env, 1000);
     let incentive_id = bonus_client.create_recurring_incentive(
-        &employer,
-        &employee,
-        &approver,
-        &tok,
-        &500,
-        &4,
-        &1000,
-        &ONE_DAY,
+        &employer, &employee, &approver, &tok, &500, &4, &1000, &ONE_DAY,
     );
 
     bonus_client.approve_incentive(&approver, &incentive_id);
@@ -1430,21 +1316,20 @@ fn test_mixed_agreement_types_coexist() {
     let p1 = client.create_payroll_agreement(&employer, &tok, &ONE_WEEK);
 
     // Escrow agreement
-    let e1 = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &500,
-        &ONE_DAY,
-        &4,
-    );
+    let e1 = client.create_escrow_agreement(&employer, &contributor, &tok, &500, &ONE_DAY, &4);
 
     // Milestone agreement (uses separate counter)
     let m1 = client.create_milestone_agreement(&employer, &contributor, &tok);
 
     // Payroll and escrow share the same counter; milestone has its own
-    assert_eq!(client.get_agreement(&p1).unwrap().mode, AgreementMode::Payroll);
-    assert_eq!(client.get_agreement(&e1).unwrap().mode, AgreementMode::Escrow);
+    assert_eq!(
+        client.get_agreement(&p1).unwrap().mode,
+        AgreementMode::Payroll
+    );
+    assert_eq!(
+        client.get_agreement(&e1).unwrap().mode,
+        AgreementMode::Escrow
+    );
     assert!(client.get_milestone_count(&m1) == 0);
 }
 
@@ -1665,14 +1550,7 @@ fn test_payroll_claim_on_escrow_mode_rejected() {
     let contributor = addr(&env);
     let tok = token(&env);
 
-    let aid = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &tok,
-        &500,
-        &ONE_DAY,
-        &4,
-    );
+    let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &500, &ONE_DAY, &4);
     client.activate_agreement(&aid);
 
     let result = client.try_claim_payroll(&contributor, &aid, &0);

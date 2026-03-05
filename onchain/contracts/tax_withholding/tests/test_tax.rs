@@ -1,11 +1,10 @@
 #![cfg(test)]
 
-use soroban_sdk::{
-    testutils::Address as _,
-    Address, Env, Symbol, Vec,
-};
+use soroban_sdk::{testutils::Address as _, Address, Env, Symbol, Vec};
 
-use tax_withholding::{TaxComputation, TaxError, TaxWithholdingContract, TaxWithholdingContractClient};
+use tax_withholding::{
+    TaxComputation, TaxError, TaxWithholdingContract, TaxWithholdingContractClient,
+};
 
 fn setup() -> (Env, Address, TaxWithholdingContractClient<'static>) {
     let env = Env::default();
@@ -54,7 +53,7 @@ fn test_multi_jurisdiction_withholding() {
     let j2 = Symbol::new(&env, "US_STATE");
 
     client.set_jurisdiction_rate(&owner, &j1, &1000u32); // 10%
-    client.set_jurisdiction_rate(&owner, &j2, &500u32);  // 5%
+    client.set_jurisdiction_rate(&owner, &j2, &500u32); // 5%
 
     let jurisdictions = Vec::from_array(&env, [j1.clone(), j2.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
@@ -77,4 +76,3 @@ fn test_not_configured_employee() {
     let res = client.try_calculate_withholding(&employee, &gross);
     assert_eq!(res, Err(Ok(TaxError::NotConfigured)));
 }
-

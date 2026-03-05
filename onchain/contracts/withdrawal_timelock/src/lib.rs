@@ -105,9 +105,7 @@ fn next_op_id(env: &Env) -> u128 {
         .get(&StorageKey::NextOpId)
         .unwrap_or(0);
     let next = current.checked_add(1).expect("op id overflow");
-    env.storage()
-        .persistent()
-        .set(&StorageKey::NextOpId, &next);
+    env.storage().persistent().set(&StorageKey::NextOpId, &next);
     next
 }
 
@@ -145,7 +143,13 @@ impl WithdrawalTimelock {
     /// @dev Sets the admin and the global minimum delay for queued operations.
     /// @param admin Address allowed to queue and execute operations.
     /// @param min_delay_seconds Minimum delay between queue time and executable time.
-    pub fn initialize(env: Env, admin: Address, min_delay_seconds: u64) -> Result<(), TimelockError> {
+    /// @return Result<(), TimelockError>
+    /// @notice Returns an error on failure.
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        min_delay_seconds: u64,
+    ) -> Result<(), TimelockError> {
         if env
             .storage()
             .persistent()
@@ -174,11 +178,8 @@ impl WithdrawalTimelock {
     /// @param caller Admin queuing the operation; must authenticate.
     /// @param kind Encoded operation kind (withdrawal/admin change).
     /// @return op_id Newly queued operation identifier.
-    pub fn queue(
-        env: Env,
-        caller: Address,
-        kind: OperationKind,
-    ) -> Result<u128, TimelockError> {
+    /// @notice Returns an error on failure.
+    pub fn queue(env: Env, caller: Address, kind: OperationKind) -> Result<u128, TimelockError> {
         require_initialized(&env)?;
         require_admin(&env, &caller)?;
 
@@ -216,6 +217,8 @@ impl WithdrawalTimelock {
     ///      external orchestrators using the recorded intent.
     /// @param caller Admin executing the operation; must authenticate.
     /// @param op_id Operation identifier.
+    /// @return Result<(), TimelockError>
+    /// @notice Returns an error on failure.
     pub fn execute(env: Env, caller: Address, op_id: u128) -> Result<(), TimelockError> {
         require_initialized(&env)?;
         require_admin(&env, &caller)?;
@@ -245,6 +248,8 @@ impl WithdrawalTimelock {
     ///      cannot be cancelled.
     /// @param caller Admin requesting cancellation; must authenticate.
     /// @param op_id Operation identifier.
+    /// @return Result<(), TimelockError>
+    /// @notice Returns an error on failure.
     pub fn cancel(env: Env, caller: Address, op_id: u128) -> Result<(), TimelockError> {
         require_initialized(&env)?;
         require_admin(&env, &caller)?;
@@ -257,13 +262,14 @@ impl WithdrawalTimelock {
         op.status = OperationStatus::Cancelled;
         write_operation(&env, &op);
 
-        env.events()
-            .publish(("timelock_cancelled", op_id), ());
+        env.events().publish(("timelock_cancelled", op_id), ());
 
         Ok(())
     }
 
     /// @notice Returns the current timelock configuration.
+    /// @notice Returns an error on failure.
+    /// @dev Requires caller authentication
     pub fn get_config(env: Env) -> Result<(Address, u64), TimelockError> {
         require_initialized(&env)?;
         let admin = read_admin(&env)?;
@@ -272,6 +278,8 @@ impl WithdrawalTimelock {
     }
 
     /// @notice Returns an operation by id, if any.
+    /// @param op_id op_id parameter
+    /// @dev Requires caller authentication
     pub fn get_operation(env: Env, op_id: u128) -> Option<TimelockedOperation> {
         env.storage()
             .persistent()
@@ -279,6 +287,8 @@ impl WithdrawalTimelock {
     }
 
     /// @notice Returns queued operation ids created by the given admin address.
+    /// @param owner owner parameter
+    /// @dev Requires caller authentication
     pub fn get_operations_for(env: Env, owner: Address) -> Vec<u128> {
         env.storage()
             .persistent()
@@ -286,4 +296,3 @@ impl WithdrawalTimelock {
             .unwrap_or(Vec::new(&env))
     }
 }
-

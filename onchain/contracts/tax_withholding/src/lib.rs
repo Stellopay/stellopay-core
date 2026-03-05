@@ -77,6 +77,9 @@ impl TaxWithholdingContract {
     ///
     /// # Arguments
     /// * `owner` - Address with permission to configure global tax rates.
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn initialize(env: Env, owner: Address) {
         owner.require_auth();
         env.storage().persistent().set(&StorageKey::Owner, &owner);
@@ -87,6 +90,17 @@ impl TaxWithholdingContract {
     ///
     /// # Access Control
     /// - Caller must be the contract owner.
+    ///
+    /// # Arguments
+    /// * `caller` - caller parameter
+    /// * `jurisdiction` - jurisdiction parameter
+    /// * `rate_bps` - rate_bps parameter
+    ///
+    /// # Returns
+    /// Result<(), TaxError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn set_jurisdiction_rate(
         env: Env,
         caller: Address,
@@ -116,6 +130,12 @@ impl TaxWithholdingContract {
 
     /// Returns the configured tax rate in basis points for a jurisdiction,
     /// or `None` if not configured.
+    ///
+    /// # Arguments
+    /// * `jurisdiction` - jurisdiction parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_jurisdiction_rate(env: Env, jurisdiction: Symbol) -> Option<u32> {
         env.storage()
             .persistent()
@@ -126,6 +146,17 @@ impl TaxWithholdingContract {
     ///
     /// # Access Control
     /// - Caller must be the contract owner.
+    ///
+    /// # Arguments
+    /// * `caller` - caller parameter
+    /// * `employee` - employee parameter
+    /// * `jurisdictions` - jurisdictions parameter
+    ///
+    /// # Returns
+    /// Result<(), TaxError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn set_employee_jurisdictions(
         env: Env,
         caller: Address,
@@ -150,6 +181,12 @@ impl TaxWithholdingContract {
     }
 
     /// Returns the jurisdictions currently configured for an employee.
+    ///
+    /// # Arguments
+    /// * `employee` - employee parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_employee_jurisdictions(env: Env, employee: Address) -> Vec<Symbol> {
         env.storage()
             .persistent()
@@ -165,6 +202,12 @@ impl TaxWithholdingContract {
     ///
     /// # Returns
     /// - `TaxComputation` containing per‑jurisdiction breakdown and net amount.
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn calculate_withholding(
         env: Env,
         employee: Address,
@@ -231,4 +274,3 @@ impl TaxWithholdingContract {
         })
     }
 }
-
