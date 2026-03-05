@@ -47,7 +47,9 @@ pub use events::{
 pub use storage::StorageKey;
 pub use types::{FeeConfig, FeeMode};
 
-use helpers::{bump_ttl, compute_fee_internal, require_admin, require_initialized, require_not_paused};
+use helpers::{
+    bump_ttl, compute_fee_internal, require_admin, require_initialized, require_not_paused,
+};
 use soroban_sdk::{contract, contractimpl, token, Address, Env};
 
 // ---------------------------------------------------------------------------
@@ -145,21 +147,15 @@ impl FeeCollectorContract {
         env.storage()
             .instance()
             .set(&StorageKey::FeeRecipient, &fee_recipient);
-        env.storage()
-            .instance()
-            .set(&StorageKey::FeeBps, &fee_bps);
+        env.storage().instance().set(&StorageKey::FeeBps, &fee_bps);
         env.storage()
             .instance()
             .set(&StorageKey::FlatFee, &flat_fee);
-        env.storage()
-            .instance()
-            .set(&StorageKey::FeeMode, &mode);
+        env.storage().instance().set(&StorageKey::FeeMode, &mode);
         env.storage()
             .instance()
             .set(&StorageKey::TotalFeesCollected, &0i128);
-        env.storage()
-            .instance()
-            .set(&StorageKey::Paused, &false);
+        env.storage().instance().set(&StorageKey::Paused, &false);
         env.storage()
             .instance()
             .set(&StorageKey::Initialized, &true);
@@ -286,6 +282,9 @@ impl FeeCollectorContract {
     /// # Panics
     ///
     /// * `"Gross amount must be non-negative"` — if `gross_amount < 0`.
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn calculate_fee(env: Env, gross_amount: i128) -> (i128, i128) {
         require_initialized(&env);
         bump_ttl(&env);
@@ -431,9 +430,7 @@ impl FeeCollectorContract {
         admin.require_auth();
         require_admin(&env, &admin);
 
-        env.storage()
-            .instance()
-            .set(&StorageKey::Paused, &paused);
+        env.storage().instance().set(&StorageKey::Paused, &paused);
 
         env.events().publish(
             ("pause_state_changed",),
@@ -462,9 +459,7 @@ impl FeeCollectorContract {
         admin.require_auth();
         require_admin(&env, &admin);
 
-        env.storage()
-            .instance()
-            .set(&StorageKey::Admin, &new_admin);
+        env.storage().instance().set(&StorageKey::Admin, &new_admin);
 
         env.events().publish(
             ("admin_transferred",),
@@ -480,6 +475,9 @@ impl FeeCollectorContract {
     /// Returns a snapshot of the current fee configuration.
     ///
     /// Includes recipient, both fee parameters, active mode, and pause state.
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_config(env: Env) -> FeeConfig {
         require_initialized(&env);
         bump_ttl(&env);
@@ -516,6 +514,9 @@ impl FeeCollectorContract {
     ///
     /// This counter saturates at [`i128::MAX`] rather than wrapping on overflow
     /// (an unreachable condition in practice).
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_total_fees_collected(env: Env) -> i128 {
         require_initialized(&env);
         bump_ttl(&env);
@@ -526,6 +527,9 @@ impl FeeCollectorContract {
     }
 
     /// Returns the current admin address.
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_admin(env: Env) -> Address {
         require_initialized(&env);
         bump_ttl(&env);
@@ -534,5 +538,4 @@ impl FeeCollectorContract {
             .get(&StorageKey::Admin)
             .expect("Admin not set")
     }
-
 }

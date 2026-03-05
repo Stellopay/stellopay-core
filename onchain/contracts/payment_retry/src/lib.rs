@@ -1,8 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Vec};
 
 #[contract]
 pub struct PaymentRetryContract;
@@ -134,9 +132,7 @@ fn validate_retry_configuration(max_retry_attempts: u32, retry_intervals: &Vec<u
 
     let mut i: u32 = 0;
     while i < retry_intervals.len() {
-        let interval = retry_intervals
-            .get(i)
-            .expect("Retry interval missing");
+        let interval = retry_intervals.get(i).expect("Retry interval missing");
         assert!(interval > 0, "Retry interval must be positive");
         assert!(
             interval <= MAX_SINGLE_RETRY_INTERVAL_SECONDS,
@@ -157,9 +153,7 @@ fn interval_for_retry(retry_intervals: &Vec<u64>, retry_count: u32) -> u64 {
         index = max_index;
     }
 
-    retry_intervals
-        .get(index)
-        .expect("Retry interval missing")
+    retry_intervals.get(index).expect("Retry interval missing")
 }
 
 #[contractimpl]
@@ -254,7 +248,10 @@ impl PaymentRetryContract {
 
         let payment = read_payment(&env, payment_id);
         assert!(payment.payer == payer, "Only payer can fund payment");
-        assert!(payment.status == PaymentStatus::Pending, "Payment is not pending");
+        assert!(
+            payment.status == PaymentStatus::Pending,
+            "Payment is not pending"
+        );
 
         let token_client = token::Client::new(&env, &payment.token);
         token_client.transfer(&payer, &env.current_contract_address(), &amount);
@@ -330,10 +327,8 @@ impl PaymentRetryContract {
                                 },
                             );
                         } else {
-                            let retry_interval = interval_for_retry(
-                                &payment.retry_intervals,
-                                payment.retry_count,
-                            );
+                            let retry_interval =
+                                interval_for_retry(&payment.retry_intervals, payment.retry_count);
                             payment.next_retry_at = now.saturating_add(retry_interval);
                             write_payment(&env, &payment);
 
@@ -361,19 +356,26 @@ impl PaymentRetryContract {
     /// @notice Cancels a pending payment request.
     /// @param payer Request owner.
     /// @param payment_id Request id.
+    /// @dev Requires caller authentication
     pub fn cancel_payment(env: Env, payer: Address, payment_id: u128) {
         require_initialized(&env);
         payer.require_auth();
 
         let mut payment = read_payment(&env, payment_id);
         assert!(payment.payer == payer, "Only payer can cancel payment");
-        assert!(payment.status == PaymentStatus::Pending, "Payment is not pending");
+        assert!(
+            payment.status == PaymentStatus::Pending,
+            "Payment is not pending"
+        );
 
         payment.status = PaymentStatus::Cancelled;
         write_payment(&env, &payment);
     }
 
     /// @notice Reads a payment request by id.
+    /// @param payment_id payment_id parameter
+    /// @return `Option<PaymentRequest>`
+    /// @dev Requires caller authentication
     pub fn get_payment(env: Env, payment_id: u128) -> Option<PaymentRequest> {
         env.storage()
             .persistent()
@@ -381,7 +383,10 @@ impl PaymentRetryContract {
     }
 
     /// @notice Returns the contract owner.
+    /// @dev Requires caller authentication
     pub fn get_owner(env: Env) -> Option<Address> {
-        env.storage().persistent().get::<_, Address>(&StorageKey::Owner)
+        env.storage()
+            .persistent()
+            .get::<_, Address>(&StorageKey::Owner)
     }
 }

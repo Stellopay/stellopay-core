@@ -177,4 +177,3 @@ fn operations_for_admin_lists_ids() {
     assert_eq!(ids.get(0).unwrap(), id1);
     assert_eq!(ids.get(1).unwrap(), id2);
 }
-

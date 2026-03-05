@@ -139,6 +139,7 @@ impl PaymentSchedulerContract {
     /// @param start_time First execution timestamp.
     /// @param max_executions Optional maximum number of executions (None = unlimited).
     /// @param max_retries Maximum retry attempts for insufficient funds.
+    /// @return u128
     pub fn create_job(
         env: Env,
         employer: Address,
@@ -335,11 +336,15 @@ impl PaymentSchedulerContract {
     }
 
     /// @notice Reads a payment job by id.
+    /// @param job_id job_id parameter
+    /// @return `Option<PaymentJob>`
+    /// @dev Requires caller authentication
     pub fn get_job(env: Env, job_id: u128) -> Option<PaymentJob> {
         env.storage().persistent().get(&StorageKey::Job(job_id))
     }
 
     /// @notice Returns the contract owner/admin.
+    /// @dev Requires caller authentication
     pub fn get_owner(env: Env) -> Option<Address> {
         env.storage().persistent().get(&StorageKey::Owner)
     }

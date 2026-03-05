@@ -148,4 +148,3 @@ fn test_require_role_panics_when_missing() {
 
     client.require_role(&user, &Role::Employer);
 }
-

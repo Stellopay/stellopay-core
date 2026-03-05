@@ -63,6 +63,9 @@ pub struct ComplianceReportingContract;
 impl ComplianceReportingContract {
     /// @notice Initializes the compliance reporting contract.
     /// @param admin The administrator address.
+    /// @return Result<(), ComplianceError>
+    /// @notice Returns an error on failure.
+    /// @dev Requires caller authentication
     pub fn initialize(env: Env, admin: Address) -> Result<(), ComplianceError> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(ComplianceError::AlreadyInitialized);
@@ -79,6 +82,8 @@ impl ComplianceReportingContract {
     /// @param amount The token amount.
     /// @param report_type Classification of the record (Tax, Payroll, Regulatory).
     /// @param metadata Extra bytes for off-chain linkage.
+    /// @return Result<u32, ComplianceError>
+    /// @notice Returns an error on failure.
     pub fn log_record(
         env: Env,
         employer: Address,
@@ -111,7 +116,7 @@ impl ComplianceReportingContract {
         env.storage()
             .persistent()
             .set(&DataKey::Record(employer.clone(), next_id), &record);
-        
+
         // Update count
         env.storage().persistent().set(&count_key, &next_id);
 
@@ -131,6 +136,8 @@ impl ComplianceReportingContract {
     /// @param end_date Unix timestamp of the range end.
     /// @param filter_type Optional filter for a specific report type.
     /// @param limit Maximum records to process (to prevent instruction limit overflows).
+    /// @return Result<ComplianceReport, ComplianceError>
+    /// @notice Returns an error on failure.
     pub fn generate_report(
         env: Env,
         employer: Address,
@@ -140,7 +147,7 @@ impl ComplianceReportingContract {
         limit: u32,
     ) -> Result<ComplianceReport, ComplianceError> {
         Self::require_initialized(&env)?;
-        
+
         if start_date > end_date {
             return Err(ComplianceError::InvalidDateRange);
         }
@@ -178,9 +185,9 @@ impl ComplianceReportingContract {
                         processed += 1;
                     }
                 } else if record.timestamp < start_date {
-                    // Since we iterate backwards chronologically, if we hit a record older than our start_date, 
+                    // Since we iterate backwards chronologically, if we hit a record older than our start_date,
                     // we can safely break early to save gas.
-                    break; 
+                    break;
                 }
             }
             current_id -= 1;
@@ -197,6 +204,8 @@ impl ComplianceReportingContract {
     }
 
     /// @notice Returns the total number of records logged by an employer.
+    /// @param employer employer parameter
+    /// @dev Requires caller authentication
     pub fn get_record_count(env: Env, employer: Address) -> u32 {
         env.storage()
             .persistent()

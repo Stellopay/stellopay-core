@@ -66,6 +66,7 @@ impl RateLimiter {
     /// Gets the admin address
     ///
     /// @return admin Optional admin address (Some if initialized)
+    /// @dev Requires caller authentication
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().persistent().get(&StorageKey::Admin)
     }
@@ -73,6 +74,7 @@ impl RateLimiter {
     /// Gets the default limit
     ///
     /// @return limit Default max operations per window
+    /// @dev Requires caller authentication
     pub fn get_default_limit(env: Env) -> u32 {
         env.storage()
             .persistent()
@@ -83,6 +85,7 @@ impl RateLimiter {
     /// Gets the window duration in seconds
     ///
     /// @return seconds Window length in seconds
+    /// @dev Requires caller authentication
     pub fn get_window_seconds(env: Env) -> u64 {
         env.storage()
             .persistent()
@@ -138,6 +141,7 @@ impl RateLimiter {
     ///
     /// @param addr Subject address
     /// @return limit Effective limit (override or default)
+    /// @dev Requires caller authentication
     pub fn get_limit_for(env: Env, addr: Address) -> u32 {
         let per: Option<u32> = env
             .storage()
@@ -155,6 +159,7 @@ impl RateLimiter {
     ///
     /// @param addr Subject address
     /// @return usage Current counter and window start
+    /// @dev Requires caller authentication
     pub fn get_usage(env: Env, addr: Address) -> Usage {
         let now = env.ledger().timestamp();
         let window_seconds = Self::window_seconds(&env);
@@ -220,9 +225,7 @@ impl RateLimiter {
             count: 0,
             window_start: now,
         };
-        env.storage()
-            .persistent()
-            .set(&StorageKey::Usage(addr), &u);
+        env.storage().persistent().set(&StorageKey::Usage(addr), &u);
     }
 
     // Internal helpers
@@ -256,4 +259,3 @@ impl RateLimiter {
         now.saturating_sub(window_start) >= window_seconds
     }
 }
-

@@ -96,4 +96,3 @@ fn test_get_logs_pagination() {
     assert_eq!(page.get(1).unwrap().id, 3u64);
     assert_eq!(page.get(2).unwrap().id, 4u64);
 }
-

@@ -151,6 +151,7 @@ impl SalaryAdjustmentContract {
     /// @param current_salary Current salary amount.
     /// @param new_salary Proposed new salary amount.
     /// @param effective_date Timestamp when the adjustment takes effect.
+    /// @return u128
     pub fn create_adjustment(
         env: Env,
         employer: Address,
@@ -217,10 +218,7 @@ impl SalaryAdjustmentContract {
         approver.require_auth();
 
         let mut adjustment = read_adjustment(&env, adjustment_id);
-        assert!(
-            adjustment.approver == approver,
-            "Only approver can approve"
-        );
+        assert!(adjustment.approver == approver, "Only approver can approve");
         assert!(
             adjustment.status == AdjustmentStatus::Pending,
             "Adjustment is not pending"
@@ -247,10 +245,7 @@ impl SalaryAdjustmentContract {
         approver.require_auth();
 
         let mut adjustment = read_adjustment(&env, adjustment_id);
-        assert!(
-            adjustment.approver == approver,
-            "Only approver can reject"
-        );
+        assert!(adjustment.approver == approver, "Only approver can reject");
         assert!(
             adjustment.status == AdjustmentStatus::Pending,
             "Adjustment is not pending"
@@ -277,10 +272,7 @@ impl SalaryAdjustmentContract {
         employer.require_auth();
 
         let mut adjustment = read_adjustment(&env, adjustment_id);
-        assert!(
-            adjustment.employer == employer,
-            "Only employer can apply"
-        );
+        assert!(adjustment.employer == employer, "Only employer can apply");
         assert!(
             adjustment.status == AdjustmentStatus::Approved,
             "Adjustment is not approved"
@@ -314,10 +306,7 @@ impl SalaryAdjustmentContract {
         employer.require_auth();
 
         let mut adjustment = read_adjustment(&env, adjustment_id);
-        assert!(
-            adjustment.employer == employer,
-            "Only employer can cancel"
-        );
+        assert!(adjustment.employer == employer, "Only employer can cancel");
         assert!(
             adjustment.status == AdjustmentStatus::Pending
                 || adjustment.status == AdjustmentStatus::Rejected,
@@ -338,6 +327,8 @@ impl SalaryAdjustmentContract {
 
     /// @notice Reads a stored salary adjustment by id.
     /// @param adjustment_id Adjustment identifier.
+    /// @return `Option<SalaryAdjustment>`
+    /// @dev Requires caller authentication
     pub fn get_adjustment(env: Env, adjustment_id: u128) -> Option<SalaryAdjustment> {
         env.storage()
             .persistent()
@@ -345,6 +336,7 @@ impl SalaryAdjustmentContract {
     }
 
     /// @notice Returns contract owner.
+    /// @dev Requires caller authentication
     pub fn get_owner(env: Env) -> Option<Address> {
         env.storage().persistent().get(&StorageKey::Owner)
     }

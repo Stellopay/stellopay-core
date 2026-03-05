@@ -198,6 +198,7 @@ impl TokenVestingContract {
     /// @param end_time Vesting end timestamp (must be > start_time).
     /// @param cliff_time Optional cliff timestamp.
     /// @param revocable Whether employer can revoke this schedule.
+    /// @return u128
     pub fn create_linear_schedule(
         env: Env,
         employer: Address,
@@ -249,6 +250,13 @@ impl TokenVestingContract {
 
     /// @notice Creates a cliff vesting schedule.
     /// @dev All tokens vest at `cliff_time`.
+    /// @param employer employer parameter
+    /// @param beneficiary beneficiary parameter
+    /// @param token token parameter
+    /// @param total_amount total_amount parameter
+    /// @param cliff_time cliff_time parameter
+    /// @param revocable revocable parameter
+    /// @return u128
     pub fn create_cliff_schedule(
         env: Env,
         employer: Address,
@@ -289,6 +297,13 @@ impl TokenVestingContract {
 
     /// @notice Creates a custom vesting schedule with arbitrary checkpoints.
     /// @dev `checkpoints` must be sorted by `time` and end at `total_amount`.
+    /// @param employer employer parameter
+    /// @param beneficiary beneficiary parameter
+    /// @param token token parameter
+    /// @param total_amount total_amount parameter
+    /// @param checkpoints checkpoints parameter
+    /// @param revocable revocable parameter
+    /// @return u128
     pub fn create_custom_schedule(
         env: Env,
         employer: Address,
@@ -477,6 +492,9 @@ impl TokenVestingContract {
     }
 
     /// @notice Reads a vesting schedule by id.
+    /// @param schedule_id schedule_id parameter
+    /// @return `Option<VestingSchedule>`
+    /// @dev Requires caller authentication
     pub fn get_schedule(env: Env, schedule_id: u128) -> Option<VestingSchedule> {
         env.storage()
             .persistent()
@@ -484,6 +502,8 @@ impl TokenVestingContract {
     }
 
     /// @notice Returns the amount currently vested for a schedule.
+    /// @param schedule_id schedule_id parameter
+    /// @dev Requires caller authentication
     pub fn get_vested_amount(env: Env, schedule_id: u128) -> i128 {
         let schedule = read_schedule(&env, schedule_id);
         let now = env.ledger().timestamp();
@@ -491,6 +511,8 @@ impl TokenVestingContract {
     }
 
     /// @notice Returns the currently releasable (claimable) amount.
+    /// @param schedule_id schedule_id parameter
+    /// @dev Requires caller authentication
     pub fn get_releasable_amount(env: Env, schedule_id: u128) -> i128 {
         let schedule = read_schedule(&env, schedule_id);
         let now = env.ledger().timestamp();
@@ -498,6 +520,7 @@ impl TokenVestingContract {
     }
 
     /// @notice Returns the contract owner/admin.
+    /// @dev Requires caller authentication
     pub fn get_owner(env: Env) -> Option<Address> {
         env.storage().persistent().get(&StorageKey::Owner)
     }

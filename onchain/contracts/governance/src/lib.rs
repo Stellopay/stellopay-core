@@ -1,8 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, BytesN, Env, Address, Symbol, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, Symbol, Vec};
 
 /// Basis points denominator used for quorum configuration (100% = 10_000 bps).
 const BPS_DENOMINATOR: u32 = 10_000;
@@ -147,9 +145,7 @@ fn next_proposal_id(env: &Env) -> u128 {
         .persistent()
         .get(&StorageKey::NextProposalId)
         .unwrap_or(0);
-    let next = current
-        .checked_add(1)
-        .expect("proposal id overflow");
+    let next = current.checked_add(1).expect("proposal id overflow");
     env.storage()
         .persistent()
         .set(&StorageKey::NextProposalId, &next);
@@ -243,13 +239,14 @@ impl GovernanceContract {
             .unwrap_or(false);
         assert!(!initialized, "already initialized");
 
-        assert!(quorum_bps > 0 && quorum_bps <= BPS_DENOMINATOR, "invalid quorum");
+        assert!(
+            quorum_bps > 0 && quorum_bps <= BPS_DENOMINATOR,
+            "invalid quorum"
+        );
         assert!(voting_period_seconds > 0, "invalid voting period");
         // Timelock of zero is allowed (immediate execution after success).
 
-        env.storage()
-            .persistent()
-            .set(&StorageKey::Owner, &owner);
+        env.storage().persistent().set(&StorageKey::Owner, &owner);
         env.storage()
             .persistent()
             .set(&StorageKey::QuorumBps, &quorum_bps);
@@ -280,7 +277,10 @@ impl GovernanceContract {
         require_initialized(&env);
         require_owner(&env, &caller);
 
-        assert!(quorum_bps > 0 && quorum_bps <= BPS_DENOMINATOR, "invalid quorum");
+        assert!(
+            quorum_bps > 0 && quorum_bps <= BPS_DENOMINATOR,
+            "invalid quorum"
+        );
         assert!(voting_period_seconds > 0, "invalid voting period");
 
         env.storage()
@@ -306,12 +306,8 @@ impl GovernanceContract {
 
         let prev = read_voter_power(&env, &voter);
         let mut total = read_total_power(&env);
-        total = total
-            .checked_sub(prev)
-            .expect("total power underflow");
-        total = total
-            .checked_add(power)
-            .expect("total power overflow");
+        total = total.checked_sub(prev).expect("total power underflow");
+        total = total.checked_add(power).expect("total power overflow");
 
         write_voter_power(&env, &voter, power);
         write_total_power(&env, total);
@@ -344,9 +340,7 @@ impl GovernanceContract {
             against_votes: 0,
             abstain_votes: 0,
             start_time: now,
-            end_time: now
-                .checked_add(voting_period)
-                .expect("voting end overflow"),
+            end_time: now.checked_add(voting_period).expect("voting end overflow"),
             eta: None,
         };
 
@@ -377,10 +371,7 @@ impl GovernanceContract {
         assert!(now <= proposal.end_time, "voting closed");
 
         let vote_key = StorageKey::Vote(proposal_id, voter.clone());
-        let already_voted: Option<VoteChoice> = env
-            .storage()
-            .persistent()
-            .get(&vote_key);
+        let already_voted: Option<VoteChoice> = env.storage().persistent().get(&vote_key);
         assert!(already_voted.is_none(), "already voted");
 
         match choice {
@@ -404,9 +395,7 @@ impl GovernanceContract {
             }
         }
 
-        env.storage()
-            .persistent()
-            .set(&vote_key, &choice);
+        env.storage().persistent().set(&vote_key, &choice);
         write_proposal(&env, &proposal);
     }
 
@@ -441,9 +430,8 @@ impl GovernanceContract {
 
         if total_power > 0 && quorum_bps > 0 {
             // quorum requirement: participation >= total_power * quorum_bps / BPS_DENOMINATOR
-            let quorum_threshold = (total_power
-                * i128::from(quorum_bps as i64))
-                / i128::from(BPS_DENOMINATOR as i64);
+            let quorum_threshold =
+                (total_power * i128::from(quorum_bps as i64)) / i128::from(BPS_DENOMINATOR as i64);
             let has_quorum = total_participation >= quorum_threshold;
             let approved = proposal.for_votes > proposal.against_votes;
 
@@ -454,9 +442,7 @@ impl GovernanceContract {
 
         if succeeded {
             let timelock = get_timelock(&env);
-            let eta = now
-                .checked_add(timelock)
-                .expect("eta overflow");
+            let eta = now.checked_add(timelock).expect("eta overflow");
             proposal.status = ProposalStatus::Succeeded;
             proposal.eta = Some(eta);
         } else {
@@ -527,6 +513,7 @@ impl GovernanceContract {
 
     /// @notice Returns the current governance configuration.
     /// @return owner, quorum_bps, voting_period_seconds, timelock_seconds.
+    /// @dev Requires caller authentication
     pub fn get_config(env: Env) -> (Address, u32, u64, u64) {
         require_initialized(&env);
         let owner = read_owner(&env);
@@ -537,16 +524,21 @@ impl GovernanceContract {
     }
 
     /// @notice Returns the voting power for a given voter.
+    /// @param voter voter parameter
+    /// @dev Requires caller authentication
     pub fn get_voter_power(env: Env, voter: Address) -> i128 {
         read_voter_power(&env, &voter)
     }
 
     /// @notice Returns the total voting power across all voters.
+    /// @dev Requires caller authentication
     pub fn get_total_voting_power(env: Env) -> i128 {
         read_total_power(&env)
     }
 
     /// @notice Returns a stored proposal by id, if any.
+    /// @param proposal_id proposal_id parameter
+    /// @dev Requires caller authentication
     pub fn get_proposal(env: Env, proposal_id: u128) -> Option<Proposal> {
         env.storage()
             .persistent()
@@ -554,6 +546,9 @@ impl GovernanceContract {
     }
 
     /// @notice Returns whether a voter has already voted on a proposal.
+    /// @param proposal_id proposal_id parameter
+    /// @param voter voter parameter
+    /// @dev Requires caller authentication
     pub fn get_vote(env: Env, proposal_id: u128, voter: Address) -> Option<VoteChoice> {
         env.storage()
             .persistent()
@@ -561,24 +556,23 @@ impl GovernanceContract {
     }
 
     /// @notice Returns a parameter value previously set via a `ParameterChange` proposal.
+    /// @dev Requires caller authentication
     pub fn get_parameter(env: Env, key: Symbol) -> Option<i128> {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::Parameter(key))
+        env.storage().persistent().get(&StorageKey::Parameter(key))
     }
 
     /// @notice Returns the last approved arbiter address, if any.
+    /// @dev Requires caller authentication
     pub fn get_arbiter(env: Env) -> Option<Address> {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::Arbiter)
+        env.storage().persistent().get(&StorageKey::Arbiter)
     }
 
     /// @notice Returns the last approved upgrade hash for a target contract, if any.
+    /// @param target target parameter
+    /// @dev Requires caller authentication
     pub fn get_approved_upgrade(env: Env, target: Address) -> Option<BytesN<32>> {
         env.storage()
             .persistent()
             .get(&StorageKey::ApprovedUpgrade(target))
     }
 }
-

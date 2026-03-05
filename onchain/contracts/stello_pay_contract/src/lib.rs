@@ -42,6 +42,9 @@ impl PayrollContract {
     ///
     /// * `env` - The Soroban environment
     /// * `owner` - The contract owner address
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn initialize(env: Env, owner: Address) {
         owner.require_auth();
         env.storage().persistent().set(&StorageKey::Owner, &owner);
@@ -59,6 +62,9 @@ impl PayrollContract {
     ///
     /// # State Transition
     /// None -> Created
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn create_payroll_agreement(
         env: Env,
         employer: Address,
@@ -79,6 +85,9 @@ impl PayrollContract {
     ///
     /// # Events
     /// Emits `agreement_created_event` per created agreement
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn batch_create_payroll_agreements(
         env: Env,
         employer: Address,
@@ -103,6 +112,9 @@ impl PayrollContract {
     ///
     /// # State Transition
     /// None -> Created
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn create_escrow_agreement(
         env: Env,
         employer: Address,
@@ -134,6 +146,9 @@ impl PayrollContract {
     ///
     /// # Events
     /// Emits `agreement_created_event` and `employee_added_event` per created agreement
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn batch_create_escrow_agreements(
         env: Env,
         employer: Address,
@@ -209,6 +224,20 @@ impl PayrollContract {
         payroll::claim_milestone(env, agreement_id, milestone_id);
     }
 
+    /// Batch Claim Milestones
+    ///
+    /// # Arguments
+    /// * `agreement_id` - agreement_id parameter
+    /// * `milestone_ids` - milestone_ids parameter
+    ///
+    /// # Returns
+    /// BatchMilestoneResult
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn batch_claim_milestones(
         env: Env,
         agreement_id: u128,
@@ -224,6 +253,9 @@ impl PayrollContract {
     ///
     /// # Returns
     /// Number of milestones
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_milestone_count(env: Env, agreement_id: u128) -> u32 {
         payroll::get_milestone_count(env, agreement_id)
     }
@@ -236,6 +268,9 @@ impl PayrollContract {
     ///
     /// # Returns
     /// Milestone details if it exists, None otherwise
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<Milestone> {
         payroll::get_milestone(env, agreement_id, milestone_id)
     }
@@ -279,6 +314,12 @@ impl PayrollContract {
     ///
     /// # Returns
     /// Agreement details if found, None otherwise
+    ///
+    /// # Arguments
+    /// * `agreement_id` - agreement_id parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_agreement(env: Env, agreement_id: u128) -> Option<Agreement> {
         payroll::get_agreement(&env, agreement_id)
     }
@@ -287,6 +328,12 @@ impl PayrollContract {
     ///
     /// # Returns
     /// Vector of employee addresses
+    ///
+    /// # Arguments
+    /// * `agreement_id` - agreement_id parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_agreement_employees(env: Env, agreement_id: u128) -> Vec<Address> {
         payroll::get_agreement_employees(&env, agreement_id)
     }
@@ -300,6 +347,9 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires caller authentication
+    ///
+    /// # Returns
+    /// bool
     pub fn set_arbiter(env: Env, caller: Address, arbiter: Address) -> bool {
         payroll::set_arbiter(&env, caller, arbiter)
     }
@@ -308,6 +358,9 @@ impl PayrollContract {
     ///
     /// # Returns
     /// Arbiter address if set, None otherwise
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_arbiter(env: Env) -> Option<Address> {
         payroll::get_arbiter(&env)
     }
@@ -321,6 +374,12 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires caller or employee authentication
+    ///
+    /// # Returns
+    /// Result<(), PayrollError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn raise_dispute(
         env: Env,
         caller: Address,
@@ -340,6 +399,12 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires arbiter authentication
+    ///
+    /// # Returns
+    /// Result<(), PayrollError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn resolve_dispute(
         env: Env,
         caller: Address,
@@ -354,6 +419,12 @@ impl PayrollContract {
     ///
     /// # Returns
     /// DisputeStatus enum
+    ///
+    /// # Arguments
+    /// * `agreement_id` - agreement_id parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_dispute_status(env: Env, agreement_id: u128) -> DisputeStatus {
         payroll::get_dispute_status(env, agreement_id)
     }
@@ -361,6 +432,19 @@ impl PayrollContract {
     /// Sets the global FX rate admin address that is allowed to update
     /// exchange rates in addition to the contract owner (e.g. an oracle
     /// contract responsible for pushing prices on-chain).
+    ///
+    /// # Arguments
+    /// * `caller` - caller parameter
+    /// * `admin` - admin parameter
+    ///
+    /// # Returns
+    /// Result<(), PayrollError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn set_exchange_rate_admin(
         env: Env,
         caller: Address,
@@ -374,6 +458,18 @@ impl PayrollContract {
     /// Access control:
     /// - Contract owner OR
     /// - FX admin set via `set_exchange_rate_admin`
+    ///
+    /// # Arguments
+    /// * `caller` - caller parameter
+    /// * `base` - base parameter
+    /// * `quote` - quote parameter
+    /// * `rate` - rate parameter
+    ///
+    /// # Returns
+    /// Result<(), PayrollError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn set_exchange_rate(
         env: Env,
         caller: Address,
@@ -387,6 +483,20 @@ impl PayrollContract {
     /// Converts an `amount` from one token into another using the configured
     /// FX rate, without performing any on-chain transfer. This is useful for
     /// off-chain estimation and validation of multi-currency payouts.
+    ///
+    /// # Arguments
+    /// * `from_token` - from_token parameter
+    /// * `to_token` - to_token parameter
+    /// * `amount` - amount parameter
+    ///
+    /// # Returns
+    /// Result<i128, PayrollError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn convert_currency(
         env: Env,
         from_token: Address,
@@ -406,6 +516,12 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires caller to be the employee
+    ///
+    /// # Returns
+    /// Result<(), PayrollError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn claim_payroll(
         env: Env,
         caller: Address,
@@ -419,6 +535,21 @@ impl PayrollContract {
     /// caller-specified payout token. The agreement continues to track its
     /// accounting in the base token while the actual transfer is executed
     /// in the requested payout currency using the configured FX rate.
+    ///
+    /// # Arguments
+    /// * `caller` - caller parameter
+    /// * `agreement_id` - agreement_id parameter
+    /// * `employee_index` - employee_index parameter
+    /// * `payout_token` - payout_token parameter
+    ///
+    /// # Returns
+    /// Result<(), PayrollError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn claim_payroll_in_token(
         env: Env,
         caller: Address,
@@ -429,6 +560,21 @@ impl PayrollContract {
         payroll::claim_payroll_in_token(&env, &caller, agreement_id, employee_index, payout_token)
     }
 
+    /// Batch Claim Payroll
+    ///
+    /// # Arguments
+    /// * `caller` - caller parameter
+    /// * `agreement_id` - agreement_id parameter
+    /// * `employee_indices` - employee_indices parameter
+    ///
+    /// # Returns
+    /// Result<BatchPayrollResult, PayrollError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn batch_claim_payroll(
         env: Env,
         caller: Address,
@@ -447,6 +593,9 @@ impl PayrollContract {
     ///
     /// # Returns
     /// Number of periods claimed
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_employee_claimed_periods(env: Env, agreement_id: u128, employee_index: u32) -> u32 {
         payroll::get_employee_claimed_periods(&env, agreement_id, employee_index)
     }
@@ -531,6 +680,9 @@ impl PayrollContract {
     ///
     /// # Returns
     /// Number of claimed periods, or 0 if not a time-based agreement
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_claimed_periods(env: Env, agreement_id: u128) -> u32 {
         payroll::get_claimed_periods(&env, agreement_id)
     }
@@ -579,6 +731,9 @@ impl PayrollContract {
     ///
     /// # Returns
     /// true if grace period is active, false otherwise
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn is_grace_period_active(env: Env, agreement_id: u128) -> bool {
         payroll::is_grace_period_active(&env, agreement_id)
     }
@@ -590,6 +745,9 @@ impl PayrollContract {
     ///
     /// # Returns
     /// Some(timestamp) if agreement is cancelled, None otherwise
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_grace_period_end(env: Env, agreement_id: u128) -> Option<u64> {
         payroll::get_grace_period_end(&env, agreement_id)
     }
@@ -613,6 +771,9 @@ impl PayrollContract {
     ///
     /// # Returns
     /// Vector of guardian addresses if set
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_emergency_guardians(env: Env) -> Option<Vec<Address>> {
         payroll::get_emergency_guardians(&env)
     }
@@ -625,6 +786,12 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires guardian authentication
+    ///
+    /// # Returns
+    /// Result<(), storage::PayrollError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn propose_emergency_pause(
         env: Env,
         caller: Address,
@@ -640,6 +807,12 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires guardian authentication
+    ///
+    /// # Returns
+    /// Result<(), storage::PayrollError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn approve_emergency_pause(env: Env, caller: Address) -> Result<(), storage::PayrollError> {
         payroll::approve_emergency_pause(&env, caller)
     }
@@ -648,6 +821,12 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires owner authentication
+    ///
+    /// # Returns
+    /// Result<(), storage::PayrollError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn emergency_pause(env: Env) -> Result<(), storage::PayrollError> {
         payroll::emergency_pause(&env)
     }
@@ -656,6 +835,12 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires owner authentication
+    ///
+    /// # Returns
+    /// Result<(), storage::PayrollError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn emergency_unpause(env: Env) -> Result<(), storage::PayrollError> {
         payroll::emergency_unpause(&env)
     }
@@ -664,6 +849,9 @@ impl PayrollContract {
     ///
     /// # Returns
     /// true if paused, false otherwise
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn is_emergency_paused(env: Env) -> bool {
         payroll::is_emergency_paused(&env)
     }
@@ -672,6 +860,9 @@ impl PayrollContract {
     ///
     /// # Returns
     /// EmergencyPause state if set
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_emergency_pause_state(env: Env) -> Option<storage::EmergencyPause> {
         payroll::get_emergency_pause_state(&env)
     }

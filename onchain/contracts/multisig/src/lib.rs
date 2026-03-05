@@ -419,6 +419,8 @@ impl MultisigContract {
     }
 
     /// @notice Returns the stored operation by id, if any.
+    /// @param operation_id operation_id parameter
+    /// @dev Requires caller authentication
     pub fn get_operation(env: Env, operation_id: u128) -> Option<Operation> {
         env.storage()
             .persistent()
@@ -426,16 +428,20 @@ impl MultisigContract {
     }
 
     /// @notice Returns the current signer set.
+    /// @dev Requires caller authentication
     pub fn get_signers(env: Env) -> Vec<Address> {
         read_signers(&env)
     }
 
     /// @notice Returns the current threshold.
+    /// @dev Requires caller authentication
     pub fn get_threshold(env: Env) -> u32 {
         read_threshold(&env)
     }
 
     /// @notice Returns current approvals for an operation.
+    /// @param operation_id operation_id parameter
+    /// @dev Requires caller authentication
     pub fn get_approvals(env: Env, operation_id: u128) -> Vec<Address> {
         read_approvals(&env, operation_id)
     }

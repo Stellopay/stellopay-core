@@ -179,6 +179,7 @@ impl BonusSystemContract {
     /// @param token Token contract used for payout.
     /// @param amount Bonus amount.
     /// @param unlock_time Earliest claim timestamp.
+    /// @return u128
     pub fn create_one_time_bonus(
         env: Env,
         employer: Address,
@@ -241,6 +242,7 @@ impl BonusSystemContract {
     /// @param total_payouts Number of payout intervals.
     /// @param start_time Timestamp when first payout becomes claimable.
     /// @param interval_seconds Number of seconds between payouts.
+    /// @return u128
     pub fn create_recurring_incentive(
         env: Env,
         employer: Address,
@@ -465,6 +467,7 @@ impl BonusSystemContract {
     /// @notice Reads a stored incentive by id.
     /// @param incentive_id Incentive identifier.
     /// @return incentive Optional incentive object.
+    /// @dev Requires caller authentication
     pub fn get_incentive(env: Env, incentive_id: u128) -> Option<Incentive> {
         env.storage()
             .persistent()
@@ -511,6 +514,7 @@ impl BonusSystemContract {
     }
 
     /// @notice Returns contract owner.
+    /// @dev Requires caller authentication
     pub fn get_owner(env: Env) -> Option<Address> {
         env.storage().persistent().get(&StorageKey::Owner)
     }

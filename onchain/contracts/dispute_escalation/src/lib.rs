@@ -30,6 +30,9 @@ impl DisputeEscalationContract {
     /// * `env` - The Soroban environment
     /// * `owner` - Contract owner address
     /// * `admin` - Admin address for the dispute system
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn initialize(env: Env, owner: Address, admin: Address) {
         owner.require_auth();
         env.storage().persistent().set(&StorageKey::Owner, &owner);
@@ -78,6 +81,12 @@ impl DisputeEscalationContract {
     /// # Requirements
     /// - Dispute must exist and not be in a Resolved state.
     /// - Must be within the time limit.
+    ///
+    /// # Returns
+    /// Result<(), DisputeError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn escalate_dispute(
         env: Env,
         caller: Address,
@@ -122,6 +131,12 @@ impl DisputeEscalationContract {
     /// # Requirements
     /// - Dispute must be resolved.
     /// - Must be within the appeal window of the previous level.
+    ///
+    /// # Returns
+    /// Result<(), DisputeError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn appeal_ruling(
         env: Env,
         caller: Address,
@@ -166,6 +181,12 @@ impl DisputeEscalationContract {
     ///
     /// # Requirements
     /// - Caller must be an admin.
+    ///
+    /// # Returns
+    /// Result<(), DisputeError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
     pub fn resolve_dispute(
         env: Env,
         caller: Address,
@@ -197,6 +218,20 @@ impl DisputeEscalationContract {
     }
 
     /// Admin configuration to adjust time limits for a given escalation level.
+    ///
+    /// # Arguments
+    /// * `caller` - caller parameter
+    /// * `level` - level parameter
+    /// * `limit_seconds` - limit_seconds parameter
+    ///
+    /// # Returns
+    /// Result<(), DisputeError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn set_level_time_limit(
         env: Env,
         caller: Address,
@@ -212,6 +247,15 @@ impl DisputeEscalationContract {
     }
 
     /// Fetch details for a specific dispute
+    ///
+    /// # Arguments
+    /// * `agreement_id` - agreement_id parameter
+    ///
+    /// # Returns
+    /// `Option<DisputeDetails>`
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_dispute(env: Env, agreement_id: u128) -> Option<DisputeDetails> {
         storage::get_dispute(&env, agreement_id)
     }

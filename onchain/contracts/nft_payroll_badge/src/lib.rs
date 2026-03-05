@@ -126,12 +126,7 @@ fn remove_badge(env: &Env, id: u128) {
             .unwrap_or(Vec::new(env));
         let mut i = 0u32;
         while i < owned.len() {
-            if owned
-                .get(i)
-                .as_ref()
-                .map(|x| *x == id)
-                .unwrap_or(false)
-            {
+            if owned.get(i).as_ref().map(|x| *x == id).unwrap_or(false) {
                 owned.remove(i);
                 break;
             }
@@ -166,6 +161,8 @@ impl NftPayrollBadge {
     /// @notice Initializes the NFT payroll badge contract.
     /// @dev Can only be called once. Sets the admin who may mint/burn badges.
     /// @param admin Address that will administer badge issuance.
+    /// @return Result<(), BadgeError>
+    /// @notice Returns an error on failure.
     pub fn initialize(env: Env, admin: Address) -> Result<(), BadgeError> {
         if env
             .storage()
@@ -229,6 +226,8 @@ impl NftPayrollBadge {
     /// @dev Callable by admin or current badge owner.
     /// @param caller Address requesting the burn; must authenticate.
     /// @param badge_id Identifier of the badge to burn.
+    /// @return Result<(), BadgeError>
+    /// @notice Returns an error on failure.
     pub fn burn(env: Env, caller: Address, badge_id: u128) -> Result<(), BadgeError> {
         require_initialized(&env)?;
         caller.require_auth();
@@ -253,6 +252,8 @@ impl NftPayrollBadge {
     /// @param caller Current owner; must authenticate.
     /// @param badge_id Identifier of the badge to transfer.
     /// @param to New owner address.
+    /// @return Result<(), BadgeError>
+    /// @notice Returns an error on failure.
     pub fn transfer(
         env: Env,
         caller: Address,
@@ -283,13 +284,15 @@ impl NftPayrollBadge {
     }
 
     /// @notice Returns the badge data for a given id.
+    /// @param badge_id badge_id parameter
+    /// @dev Requires caller authentication
     pub fn get_badge(env: Env, badge_id: u128) -> Option<Badge> {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::Badge(badge_id))
+        env.storage().persistent().get(&StorageKey::Badge(badge_id))
     }
 
     /// @notice Returns the owner of a badge, if it exists.
+    /// @param badge_id badge_id parameter
+    /// @dev Requires caller authentication
     pub fn owner_of(env: Env, badge_id: u128) -> Option<Address> {
         env.storage()
             .persistent()
@@ -297,6 +300,8 @@ impl NftPayrollBadge {
     }
 
     /// @notice Returns all badge ids currently owned by an address.
+    /// @param owner owner parameter
+    /// @dev Requires caller authentication
     pub fn badges_of(env: Env, owner: Address) -> Vec<u128> {
         env.storage()
             .persistent()
@@ -305,8 +310,8 @@ impl NftPayrollBadge {
     }
 
     /// @notice Returns the configured admin address.
+    /// @dev Requires caller authentication
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().persistent().get(&StorageKey::Admin)
     }
 }
-

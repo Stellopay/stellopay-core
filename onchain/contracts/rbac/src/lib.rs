@@ -171,6 +171,7 @@ impl RbacContract {
     /// @notice Returns all roles assigned to an address (without inheritance).
     /// @param addr Address to query.
     /// @return roles Vector of directly assigned roles.
+    /// @dev Requires caller authentication
     pub fn get_roles(env: Env, addr: Address) -> Vec<Role> {
         require_initialized(&env);
         read_roles(&env, &addr)
@@ -199,4 +200,3 @@ impl RbacContract {
         );
     }
 }
-

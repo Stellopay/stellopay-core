@@ -3,9 +3,7 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
-use compliance_checker::{
-    ComplianceCheckerContract, ComplianceCheckerContractClient, RuleKind,
-};
+use compliance_checker::{ComplianceCheckerContract, ComplianceCheckerContractClient, RuleKind};
 use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Symbol, Vec};
 
 fn create_env() -> Env {
