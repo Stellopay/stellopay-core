@@ -436,7 +436,7 @@ fn test_time_based_claim_blocked_during_emergency_pause() {
     advance_time(&env, ONE_DAY);
 
     // Activate emergency pause.
-    client.emergency_pause().unwrap();
+    client.emergency_pause();
     assert!(client.is_emergency_paused());
 
     let result = client.try_claim_time_based(&agreement_id);
@@ -820,7 +820,7 @@ fn test_payroll_claim_after_one_period_correct_amount() {
     );
 
     advance_time(&env, ONE_DAY);
-    client.claim_payroll(&employee, &agreement_id, &0u32).unwrap();
+    client.claim_payroll(&employee, &agreement_id, &0u32);
 
     assert_eq!(balance(&env, &token, &employee), STANDARD_SALARY);
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &0u32), 1);
@@ -854,7 +854,7 @@ fn test_payroll_batch_distributes_to_multiple_employees() {
     indices.push_back(0u32);
     indices.push_back(1u32);
     indices.push_back(2u32);
-    let batch = client.batch_claim_payroll(&employer, &agreement_id, &indices).unwrap();
+    let batch = client.batch_claim_payroll(&employer, &agreement_id, &indices);
 
     assert_eq!(batch.successful_claims, 3);
     assert_eq!(batch.failed_claims, 0);
@@ -962,7 +962,7 @@ fn test_payroll_claim_in_token_applies_fx_rate() {
     let payout_token = create_token(&env);
 
     // FX: 1 base = 2 payout (rate * FX_SCALE = 2_000_000).
-    client.set_exchange_rate(&owner, &base_token, &payout_token, &2_000_000i128).unwrap();
+    client.set_exchange_rate(&owner, &base_token, &payout_token, &2_000_000i128);
 
     let salary: i128 = 1_000;
     let period_seconds = ONE_DAY;
@@ -987,7 +987,7 @@ fn test_payroll_claim_in_token_applies_fx_rate() {
     });
 
     advance_time(&env, period_seconds);
-    client.claim_payroll_in_token(&employee, &agreement_id, &0u32, &payout_token).unwrap();
+    client.claim_payroll_in_token(&employee, &agreement_id, &0u32, &payout_token);
 
     // Employee receives 2_000 payout tokens (1_000 base × FX rate 2).
     assert_eq!(balance(&env, &payout_token, &employee), salary * 2);
@@ -1054,7 +1054,7 @@ fn test_composite_emergency_pause_blocks_all_trigger_types() {
     advance_time(&env, ONE_DAY);
 
     // Activate emergency pause.
-    client.emergency_pause().unwrap();
+    client.emergency_pause();
 
     // All three must fail.
     assert!(client.try_claim_time_based(&escrow_id).is_err());
@@ -1080,7 +1080,7 @@ fn test_composite_dispute_blocks_payroll_claims() {
     advance_time(&env, ONE_DAY);
 
     // Employer raises dispute.
-    client.raise_dispute(&employer, &agreement_id).unwrap();
+    client.raise_dispute(&employer, &agreement_id);
     assert_eq!(
         client.get_agreement(&agreement_id).unwrap().status,
         AgreementStatus::Disputed
@@ -1128,7 +1128,7 @@ fn test_composite_grace_period_claim_succeeds_then_expires() {
     assert!(client.is_grace_period_active(&agreement_id));
 
     // Claim within grace period must succeed.
-    client.claim_payroll(&employee, &agreement_id, &0u32).unwrap();
+    client.claim_payroll(&employee, &agreement_id, &0u32);
     assert_eq!(balance(&env, &token, &employee), STANDARD_SALARY);
 
     // Advance past grace period.
