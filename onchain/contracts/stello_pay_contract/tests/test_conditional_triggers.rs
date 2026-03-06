@@ -687,10 +687,13 @@ fn test_milestone_claim_blocked_when_paused() {
 #[test]
 fn test_milestone_batch_claim_only_approved() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
+
+    // Fund the contract so token transfers succeed.
+    mint(&env, &token, &contract_id, 10_000i128);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &100i128); // id 1
@@ -720,10 +723,13 @@ fn test_milestone_batch_claim_only_approved() {
 #[test]
 fn test_milestone_batch_claim_skips_duplicates() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
+
+    // Fund the contract so the successful transfer can execute.
+    mint(&env, &token, &contract_id, 10_000i128);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
@@ -744,10 +750,13 @@ fn test_milestone_batch_claim_skips_duplicates() {
 #[test]
 fn test_milestone_batch_claim_partial_success_correct_counts() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
+
+    // Fund the contract so the successful transfer can execute.
+    mint(&env, &token, &contract_id, 10_000i128);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &500i128); // id 1 — will be approved
@@ -850,15 +859,24 @@ fn test_payroll_batch_distributes_to_multiple_employees() {
 
     advance_time(&env, ONE_DAY);
 
-    let mut indices = Vec::new(&env);
-    indices.push_back(0u32);
-    indices.push_back(1u32);
-    indices.push_back(2u32);
-    let batch = client.batch_claim_payroll(&employer, &agreement_id, &indices);
+    // batch_claim_payroll enforces caller == employee at each index,
+    // so each employee claims their own index individually.
+    let mut idx0 = Vec::new(&env);
+    idx0.push_back(0u32);
+    let b0 = client.batch_claim_payroll(&e0, &agreement_id, &idx0);
 
-    assert_eq!(batch.successful_claims, 3);
-    assert_eq!(batch.failed_claims, 0);
-    assert_eq!(batch.total_claimed, 6_000i128);
+    let mut idx1 = Vec::new(&env);
+    idx1.push_back(1u32);
+    let b1 = client.batch_claim_payroll(&e1, &agreement_id, &idx1);
+
+    let mut idx2 = Vec::new(&env);
+    idx2.push_back(2u32);
+    let b2 = client.batch_claim_payroll(&e2, &agreement_id, &idx2);
+
+    assert_eq!(b0.successful_claims, 1);
+    assert_eq!(b1.successful_claims, 1);
+    assert_eq!(b2.successful_claims, 1);
+    assert_eq!(b0.total_claimed + b1.total_claimed + b2.total_claimed, 6_000i128);
     assert_eq!(balance(&env, &token, &e0), 1_000i128);
     assert_eq!(balance(&env, &token, &e1), 2_000i128);
     assert_eq!(balance(&env, &token, &e2), 3_000i128);
