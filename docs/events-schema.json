@@ -1,0 +1,172 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Stellopay Soroban Events",
+  "description": "Schema for events emitted by the Stellopay Soroban contract",
+  "type": "object",
+  "definitions": {
+    "Address": {
+      "type": "string",
+      "description": "Stellar/Soroban address string"
+    },
+    "AgreementMode": {
+      "type": "integer",
+      "enum": [0, 1, 2],
+      "description": "0: Escrow, 1: Payroll, 2: Milestone"
+    }
+  },
+  "oneOf": [
+    {
+      "title": "MilestoneAdded",
+      "properties": {
+        "event": { "const": "MilestoneAdded" },
+        "agreement_id": { "type": "string" },
+        "milestone_id": { "type": "integer" },
+        "amount": { "type": "string" }
+      }
+    },
+    {
+      "title": "MilestoneApproved",
+      "properties": {
+        "event": { "const": "MilestoneApproved" },
+        "agreement_id": { "type": "string" },
+        "milestone_id": { "type": "integer" }
+      }
+    },
+    {
+      "title": "MilestoneClaimed",
+      "properties": {
+        "event": { "const": "MilestoneClaimed" },
+        "agreement_id": { "type": "string" },
+        "milestone_id": { "type": "integer" },
+        "amount": { "type": "string" },
+        "to": { "$ref": "#/definitions/Address" }
+      }
+    },
+    {
+      "title": "AgreementCreated",
+      "properties": {
+        "event": { "const": "AgreementCreated" },
+        "agreement_id": { "type": "string" },
+        "employer": { "$ref": "#/definitions/Address" },
+        "mode": { "$ref": "#/definitions/AgreementMode" }
+      }
+    },
+    {
+      "title": "AgreementActivated",
+      "properties": {
+        "event": { "const": "AgreementActivated" },
+        "agreement_id": { "type": "string" }
+      }
+    },
+    {
+      "title": "EmployeeAdded",
+      "properties": {
+        "event": { "const": "EmployeeAdded" },
+        "agreement_id": { "type": "string" },
+        "employee": { "$ref": "#/definitions/Address" },
+        "salary_per_period": { "type": "string" }
+      }
+    },
+    {
+      "title": "PayrollClaimed",
+      "properties": {
+        "event": { "const": "PayrollClaimed" },
+        "agreement_id": { "type": "string" },
+        "employee": { "$ref": "#/definitions/Address" },
+        "amount": { "type": "string" }
+      }
+    },
+    {
+      "title": "AgreementPaused",
+      "properties": {
+        "event": { "const": "AgreementPaused" },
+        "agreement_id": { "type": "string" }
+      }
+    },
+    {
+      "title": "AgreementResumed",
+      "properties": {
+        "event": { "const": "AgreementResumed" },
+        "agreement_id": { "type": "string" }
+      }
+    },
+    {
+      "title": "PaymentSent",
+      "properties": {
+        "event": { "const": "PaymentSent" },
+        "agreement_id": { "type": "string" },
+        "from": { "$ref": "#/definitions/Address" },
+        "to": { "$ref": "#/definitions/Address" },
+        "amount": { "type": "string" },
+        "token": { "$ref": "#/definitions/Address" }
+      }
+    },
+    {
+      "title": "PaymentReceived",
+      "properties": {
+        "event": { "const": "PaymentReceived" },
+        "agreement_id": { "type": "string" },
+        "to": { "$ref": "#/definitions/Address" },
+        "amount": { "type": "string" },
+        "token": { "$ref": "#/definitions/Address" }
+      }
+    },
+    {
+      "title": "ArbiterSet",
+      "properties": {
+        "event": { "const": "ArbiterSet" },
+        "arbiter": { "$ref": "#/definitions/Address" }
+      }
+    },
+    {
+      "title": "DisputeRaised",
+      "properties": {
+        "event": { "const": "DisputeRaised" },
+        "agreement_id": { "type": "string" }
+      }
+    },
+    {
+      "title": "DisputeResolved",
+      "properties": {
+        "event": { "const": "DisputeResolved" },
+        "agreement_id": { "type": "string" },
+        "pay_contributor": { "type": "string" },
+        "refund_employer": { "type": "string" }
+      }
+    },
+    {
+      "title": "AgreementCancelled",
+      "properties": {
+        "event": { "const": "AgreementCancelled" },
+        "agreement_id": { "type": "string" }
+      }
+    },
+    {
+      "title": "GracePeriodFinalized",
+      "properties": {
+        "event": { "const": "GracePeriodFinalized" },
+        "agreement_id": { "type": "string" }
+      }
+    },
+    {
+      "title": "BatchPayrollClaimed",
+      "properties": {
+        "event": { "const": "BatchPayrollClaimed" },
+        "agreement_id": { "type": "string" },
+        "total_claimed": { "type": "string" },
+        "successful_claims": { "type": "integer" },
+        "failed_claims": { "type": "integer" }
+      }
+    },
+    {
+      "title": "BatchMilestoneClaimed",
+      "properties": {
+        "event": { "const": "BatchMilestoneClaimed" },
+        "agreement_id": { "type": "string" },
+        "total_claimed": { "type": "string" },
+        "successful_claims": { "type": "integer" },
+        "failed_claims": { "type": "integer" }
+      }
+    }
+  ]
+}
