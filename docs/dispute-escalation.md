@@ -26,3 +26,9 @@ Only authenticated participants can open or escalate disputes. Furthermore, `res
 - `escalate_dispute(caller, agreement_id)`: Moves an active dispute to the next higher level.
 - `appeal_ruling(caller, agreement_id)`: If a dispute has been resolved, use this to reopen it at the next level for an appeal.
 - `resolve_dispute(caller, agreement_id)`: Admin function to finalize the current level's ruling.
+
+## Integration tests
+
+- **dispute_escalation**: `onchain/contracts/dispute_escalation/tests/test_escalation.rs` (lifecycle, time limit, unauthorized resolve).
+- **Cross-crate**: `onchain/integration_tests/tests/test_dispute_escalation_integration.rs` (appeal flow + unauthorized at integration boundary).
+- **PayrollContract disputes**: `onchain/contracts/stello_pay_contract/tests/test_dispute_integration.rs` (payroll equal split + escrow funded split). The former `test_disputes.rs.disabled` suite was removed in favor of these focused integration tests and existing workflow tests where applicable.
