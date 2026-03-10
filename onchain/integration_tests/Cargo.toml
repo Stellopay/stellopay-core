@@ -13,6 +13,7 @@ stello_pay_contract = { path = "../contracts/stello_pay_contract" }
 payroll_escrow = { path = "../contracts/payroll_escrow" }
 bonus_system = { path = "../contracts/bonus_system" }
 payment_history = { path = "../contracts/payment_history" }
+dispute_escalation = { path = "../contracts/dispute_escalation" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
