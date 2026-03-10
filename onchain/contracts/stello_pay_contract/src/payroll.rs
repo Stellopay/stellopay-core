@@ -965,11 +965,11 @@ pub fn get_arbiter(env: &Env) -> Option<Address> {
     env.storage().persistent().get(&StorageKey::Arbiter)
 }
 
-/// Raise Dispute
+/// Raise a dispute during the grace period (escrow or payroll agreement).
 ///
 /// # Arguments
 /// * `env` - Contract environment
-/// * agreement_id` - ID of the agreement to raise dispute for
+/// * `agreement_id` - Agreement ID to dispute
 ///
 /// # Access Control
 /// Requires caller or employee authentication
@@ -1013,13 +1013,13 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
     Ok(())
 }
 
-/// Resove Dispute
+/// Resolve a raised dispute: arbiter splits locked funds between employees and employer.
 ///
 /// # Arguments
 /// * `env` - Contract environment
-/// * agreement_id` - ID of the agreement to raise dispute for
-/// * pay_employee` - ID of the agreement to raise dispute for
-/// * refund_employer` - ID of the agreement to raise dispute for
+/// * `agreement_id` - Agreement ID in `DisputeStatus::Raised`
+/// * `pay_employee` - Total amount to distribute equally across employees (payroll) or to contributor (escrow)
+/// * `refund_employer` - Amount to refund the employer
 ///
 /// # Access Control
 /// Requires arbiter authentication
