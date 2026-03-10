@@ -1175,6 +1175,7 @@ name = "integration_tests"
 version = "0.0.0"
 dependencies = [
  "bonus_system",
+ "dispute_escalation",
  "payment_history",
  "payroll_escrow",
  "soroban-sdk",
