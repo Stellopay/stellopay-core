@@ -1,96 +1,108 @@
 # Stellopay Core
 
-Stellopay Core is a Soroban-based payroll contract workspace for Stellar. It contains the on-chain contracts, documentation, and supporting scripts for payroll escrow, recurring salary disbursement, multi-currency payroll flows, governance, compliance, and related operational modules.
+Stellopay Core is a Soroban-based payroll and escrow system built on the [Stellar](https://stellar.org) blockchain. This repository contains the on-chain smart contract workspace, project documentation, and supporting tooling for payroll escrow, recurring salary disbursement, multi-currency payroll flows, governance, compliance, and related operational modules.
 
 ## Repository Layout
 
 | Path | Purpose |
 | --- | --- |
-| `docs/` | Project documentation, API notes, integration guides, architecture docs, migration guidance, examples, and Windows build notes. |
-| `onchain/` | Rust/Soroban workspace for smart contracts and integration tests. |
-| `onchain/contracts/` | Individual contract crates for payroll, governance, compliance, payment scheduling, vesting, withdrawal controls, and related modules. |
+| `docs/` | Project documentation, API notes, integration guides, architecture docs, deployment guide, and more. |
+| `onchain/` | Rust/Soroban workspace (`soroban-sdk` 23.4.1) for 28 smart contracts and integration tests. |
 | `scripts/` | Repository helper scripts, including migration/build helpers. |
-| `tools/` | Supporting tooling for repository workflows. |
+| `tools/` | CLI tooling and doc-checking utilities. |
+| `benchmarks/` | Benchmark data and analysis. |
 
-Start with the [documentation index](docs/README.md) for product and integration context, then use the [on-chain workspace guide](onchain/README.md) for contract build and test details.
+Start with the [documentation index](docs/README.md) for product and integration context, then use the [on-chain workspace guide](onchain/README.md) for contract build, test, and deployment details.
 
-## On-Chain Workspace
+## On-Chain Contracts
 
-The Soroban workspace is defined in [`onchain/Cargo.toml`](onchain/Cargo.toml). It includes all crates under `onchain/contracts/*` plus `onchain/integration_tests`.
+The Soroban workspace is defined in [`onchain/Cargo.toml`](onchain/Cargo.toml) and includes all crates under `onchain/contracts/*` plus `onchain/integration_tests`. Each contract crate maps to a documented module:
 
-Notable contract modules include:
+| Contract | Description | Docs |
+|----------|-------------|------|
+| `stello_pay_contract` | Core payroll & escrow agreement logic (payroll, time-based, milestone) | [architecture.md](docs/architecture.md) |
+| `audit_logger` | On-chain audit event logging for compliance trails | [audit-logging.md](docs/audit-logging.md) |
+| `bonus_system` | Employer bonus & incentive distribution | [bonus-system.md](docs/bonus-system.md) |
+| `compliance_checker` | Automated compliance rule validation | [compliance-checker.md](docs/compliance-checker.md) |
+| `compliance_reporting` | Compliance report generation and storage | [compliance-reporting.md](docs/compliance-reporting.md) |
+| `department_manager` | Organization & department hierarchy management | [department-management.md](docs/department-management.md) |
+| `dispute_escalation` | Dispute raising, arbitration, and resolution | [dispute-escalation.md](docs/dispute-escalation.md) |
+| `employee_roles` | Employee role assignment and lifecycle | [employee-roles.md](docs/employee-roles.md) |
+| `expense_reimbursement` | Expense submission and reimbursement processing | [expense-reimbursement.md](docs/expense-reimbursement.md) |
+| `fee_collector` | Protocol fee collection and distribution | [fee-collector.md](docs/fee-collector.md) |
+| `governance` | On-chain governance proposals and voting | [governance.md](docs/governance.md) |
+| `multisig` | Multi-signature authorization for sensitive ops | [multisig.md](docs/multisig.md) |
+| `nft_payroll_badge` | NFT-based payroll badges for employees | [nft-payroll-badge.md](docs/nft-payroll-badge.md) |
+| `payment_history` | Payment record storage and querying | [payment-history.md](docs/payment-history.md) |
+| `payment_retry` | Failed payment retry logic | [payment-retry.md](docs/payment-retry.md) |
+| `payment_scheduler` | Scheduled and recurring payment processing | [payment-scheduler.md](docs/payment-scheduler.md) |
+| `payment_splitter` | Payment splitting across multiple recipients | [payment-splitting.md](docs/payment-splitting.md) |
+| `payroll_escrow` | Token escrow for payroll fund custody | [payroll-escrow.md](docs/payroll-escrow.md) |
+| `price_oracle` | Price feed oracle for multi-currency conversion | [price-oracle.md](docs/price-oracle.md) |
+| `rate_limiter` | Rate limiting for contract entrypoints | [rate-limiter.md](docs/rate-limiter.md) |
+| `rbac` | Role-based access control implementation | [rbac.md](docs/rbac.md) |
+| `rbac-interface` | RBAC trait interface for cross-contract use | [rbac.md](docs/rbac.md) |
+| `salary_adjustment` | Salary modification and adjustment tracking | [salary-adjustment.md](docs/salary-adjustment.md) |
+| `slashing_penalty` | Penalty and slashing mechanism for violations | [slashing-penalty.md](docs/slashing-penalty.md) |
+| `tax_withholding` | Tax calculation and withholding at source | [tax-withholding.md](docs/tax-withholding.md) |
+| `template_versioning` | Contract template version management | [template-versioning.md](docs/template-versioning.md) |
+| `token_vesting` | Token vesting schedules with cliff and linear release | [vesting.md](docs/vesting.md) |
+| `withdrawal_timelock` | Time-locked withdrawal enforcement | [withdrawal-timelock.md](docs/withdrawal-timelock.md) |
 
-| Contract | Focus |
-| --- | --- |
-| `stello_pay_contract` | Core payroll contract implementation. |
-| `payroll_escrow` | Escrowed salary funding and release flows. |
-| `payment_scheduler` | Scheduled and recurring payment support. |
-| `payment_retry` | Retry handling for failed payment attempts. |
-| `payment_splitter` | Split-payment logic. |
-| `price_oracle` | Pricing and conversion support for multi-currency flows. |
-| `governance`, `multisig`, `rbac` | Administrative controls and permissioning. |
-| `compliance_checker`, `compliance_reporting`, `tax_withholding` | Compliance and reporting support. |
-| `token_vesting`, `withdrawal_timelock`, `slashing_penalty` | Vesting, withdrawal constraints, and penalty flows. |
-| `audit_logger`, `payment_history` | Audit and historical payment records. |
-
-See [`onchain/contracts/`](onchain/contracts/) for the full contract list.
+See [`onchain/README.md`](onchain/README.md) for the full workspace guide, including integration tests, coverage, benchmarks, and release profile details.
 
 ## Documentation Map
 
-- [API documentation](docs/api/README.md)
+Key documentation topics:
+
+- [Documentation index](docs/README.md)
+- [System architecture](docs/architecture.md)
+- [Payroll escrow](docs/payroll-escrow.md)
+- [Deployment guide](docs/deployment.md)
+- [WASM build targets](docs/build-targets.md)
+- [Multi-currency support](docs/multi-currency.md)
+- [API reference](docs/api/README.md)
 - [Integration guide](docs/integration/README.md)
-- [Architecture](docs/architecture.md)
-- [Examples](docs/examples/README.md)
-- [Best practices](docs/best-practices/README.md)
-- [Developer tools](docs/dev-tools/README.md)
-- [Migrations](docs/migrations.md)
-- [Upgrade and migration strategy](docs/upgrade-migration-strategy.md)
+- [CI pipeline](docs/ci.md)
+- [Benchmarks](docs/benchmarks.md)
+- [Upgrade & migration strategy](docs/upgrade-migration-strategy.md)
 - [Windows build notes](docs/windows-build.md)
 
 ## Build And Test
 
-Install Rust and the Soroban CLI before running contract commands locally. The on-chain README pins the Soroban CLI example to `20.0.0-rc.1`:
+The workspace is pinned to `soroban-sdk` 23.4.1 (see [`onchain/Cargo.toml`](onchain/Cargo.toml)). Install the Rust toolchain, WASM target, and Stellar CLI:
 
 ```sh
 rustup install stable
-cargo install --locked --version 20.0.0-rc.1 soroban-cli
-```
-
-Common local checks from the on-chain workspace:
-
-```sh
-cd onchain
-cargo build
-cargo test
-```
-
-For Soroban contract builds, use:
-
-```sh
-cd onchain
-stellar contract build
-```
-
-On Windows GNU/MinGW, the repository documents a WASM-only path for the known `export ordinal too large` linker issue:
-
-```powershell
 rustup target add wasm32-unknown-unknown
-.\scripts\migrations\build_wasm_only.ps1
+cargo install stellar-cli --locked
 ```
 
-See [Building on Windows](docs/windows-build.md) for the full Windows guidance.
+From the `onchain/` directory, common commands:
+
+```sh
+# Build all contracts (WASM)
+for dir in contracts/*/; do (cd "$dir" && stellar contract build) || true; done
+
+# Run all workspace tests
+cargo test --workspace
+
+# Test a specific contract
+cargo test -p stello_pay_contract --verbose
+```
+
+See [`onchain/README.md`](onchain/README.md) for detailed build, test, coverage, and benchmark instructions.
 
 ## CI
 
-The on-chain workspace uses GitHub Actions to build and test Soroban contracts on pull requests and pushes to the main branches. See [`onchain/README.md`](onchain/README.md) for the CI overview and local setup notes.
+The on-chain workspace uses GitHub Actions to build and test Soroban contracts on pull requests and pushes. See [`onchain/README.md`](onchain/README.md) for the CI overview and [`docs/ci.md`](docs/ci.md) for pipeline details.
 
 ## Safety Notes
 
-This repository contains smart contract code. Review migrations, upgrades, and deployment steps carefully before using any live network or production asset. Keep private keys, RPC credentials, wallet secrets, and production database or ledger data out of commits, issue comments, and logs.
+This repository contains smart contract code. Review migrations, upgrades, and deployment steps carefully before using any live network or production asset. Keep private keys, RPC credentials, wallet secrets, and production data out of commits, issue comments, and logs.
 
-For upgrade and migration planning, start with [Migrations](docs/migrations.md) and [Upgrade and migration strategy](docs/upgrade-migration-strategy.md).
+For upgrade and migration planning, see [Migrations](docs/migrations.md) and [Upgrade and migration strategy](docs/upgrade-migration-strategy.md).
 
 ## License
 
-This project is licensed under the MIT License. See [`onchain/README.md`](onchain/README.md#license) for the existing license note.
-
+This project is licensed under the MIT License. See [`onchain/README.md`](onchain/README.md#license) for details.
