@@ -3,14 +3,16 @@
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String};
 
 /// ExpenseReimbursementContract manages expense submissions with approval workflows
-/// and receipt verification for organizational expense management.
+/// and receipt verification with escrow capabilities for organizational expense management.
 ///
 /// # Security Model
-/// - Only submitters can cancel their pending expenses
-/// - Only designated approvers can approve/reject expenses
-/// - Only contract owner can initialize and update approvers
-/// - Funds are held in escrow until approval
-/// - All state changes emit events for auditability
+/// - Only submitters can cancel their pending expenses.
+/// - Only designated approvers can approve/reject expenses.
+/// - Only contract owner can initialize and update approvers.
+/// - Funds are held in escrow within the contract until approval or rejection.
+/// - Employer funds are protected and refunded reliably on rejection or cancellation.
+/// - Approvers cannot self-approve their own submitted expenses to prevent collusion.
+/// - All state changes emit events for auditability.
 #[contract]
 pub struct ExpenseReimbursementContract;
 
@@ -33,7 +35,12 @@ pub struct Expense {
     pub approver: Address,
     pub token: Address,
     pub amount: i128,
+    pub escrow_amount: i128,
+    pub approved_amount: Option<i128>,
+    pub payer: Option<Address>,
     pub status: ExpenseStatus,
+    /// NatSpec: `receipt_hash` is a deterministic commitment (e.g., SHA-256) of the 
+    /// receipt document, allowing off-chain auditing of original receipts corresponding to on-chain payouts.
     pub receipt_hash: String,
     pub description: String,
     pub submitted_at: u64,
@@ -61,9 +68,18 @@ pub struct ExpenseSubmittedEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExpenseFundedEvent {
+    pub expense_id: u128,
+    pub payer: Address,
+    pub amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExpenseApprovedEvent {
     pub expense_id: u128,
     pub approver: Address,
+    pub approved_amount: i128,
 }
 
 #[contracttype]
@@ -118,15 +134,6 @@ fn is_approver(env: &Env, addr: &Address) -> bool {
 #[contractimpl]
 impl ExpenseReimbursementContract {
     /// Initialize the contract with an owner
-    ///
-    /// # Arguments
-    /// * `owner` - Address that can manage approvers
-    ///
-    /// # Panics
-    /// * If already initialized
-    ///
-    /// # Access Control
-    /// Requires caller authentication
     pub fn initialize(env: Env, owner: Address) {
         assert!(
             !env.storage()
@@ -146,15 +153,6 @@ impl ExpenseReimbursementContract {
     }
 
     /// Add an approver who can approve/reject expenses
-    ///
-    /// # Arguments
-    /// * `approver` - Address to grant approver role
-    ///
-    /// # Panics
-    /// * If caller is not owner
-    ///
-    /// # Access Control
-    /// Requires caller authentication
     pub fn add_approver(env: Env, approver: Address) {
         require_initialized(&env);
         let owner: Address = env
@@ -170,15 +168,6 @@ impl ExpenseReimbursementContract {
     }
 
     /// Remove an approver
-    ///
-    /// # Arguments
-    /// * `approver` - Address to revoke approver role
-    ///
-    /// # Panics
-    /// * If caller is not owner
-    ///
-    /// # Access Control
-    /// Requires caller authentication
     pub fn remove_approver(env: Env, approver: Address) {
         require_initialized(&env);
         let owner: Address = env
@@ -194,21 +183,6 @@ impl ExpenseReimbursementContract {
     }
 
     /// Submit an expense for reimbursement
-    ///
-    /// # Arguments
-    /// * `submitter` - Employee submitting the expense
-    /// * `approver` - Designated approver for this expense
-    /// * `token` - Token address for reimbursement
-    /// * `amount` - Reimbursement amount
-    /// * `receipt_hash` - Hash of receipt document for verification
-    /// * `description` - Expense description
-    ///
-    /// # Returns
-    /// Expense ID
-    ///
-    /// # Panics
-    /// * If amount is not positive
-    /// * If approver is not authorized
     pub fn submit_expense(
         env: Env,
         submitter: Address,
@@ -223,6 +197,7 @@ impl ExpenseReimbursementContract {
 
         assert!(amount > 0, "Amount must be positive");
         assert!(is_approver(&env, &approver), "Invalid approver");
+        assert!(submitter != approver, "Approver cannot be submitter");
 
         let expense_id: u128 = env
             .storage()
@@ -236,6 +211,9 @@ impl ExpenseReimbursementContract {
             approver: approver.clone(),
             token,
             amount,
+            escrow_amount: 0,
+            approved_amount: None,
+            payer: None,
             status: ExpenseStatus::Pending,
             receipt_hash: receipt_hash.clone(),
             description,
@@ -263,16 +241,49 @@ impl ExpenseReimbursementContract {
         expense_id
     }
 
-    /// Approve an expense and transfer funds to submitter
-    ///
-    /// # Arguments
-    /// * `approver` - Approver authorizing the expense
-    /// * `expense_id` - ID of expense to approve
-    ///
-    /// # Panics
-    /// * If caller is not the designated approver
-    /// * If expense is not in Pending status
-    pub fn approve_expense(env: Env, approver: Address, expense_id: u128) {
+    /// Extends a pending claim by escrowing funds
+    pub fn fund_expense(env: Env, payer: Address, expense_id: u128, amount: i128) {
+        require_initialized(&env);
+        payer.require_auth();
+        assert!(amount > 0, "Amount must be positive");
+
+        let mut expense: Expense = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Expense(expense_id))
+            .expect("Expense not found");
+
+        assert!(expense.status == ExpenseStatus::Pending, "Expense not pending");
+
+        let token_client = token::Client::new(&env, &expense.token);
+        token_client.transfer(&payer, &env.current_contract_address(), &amount);
+
+        expense.escrow_amount += amount;
+        
+        // Register the payer if none exists; else require same payer for refunds to be coherent
+        if expense.payer.is_none() {
+            expense.payer = Some(payer.clone());
+        } else {
+            assert!(expense.payer.unwrap() == payer, "Only initial payer can add funds");
+            expense.payer = Some(payer.clone());
+        }
+
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Expense(expense_id), &expense);
+
+        env.events().publish(
+            (String::from_str(&env, "expense_funded"), expense_id),
+            ExpenseFundedEvent {
+                expense_id,
+                payer,
+                amount,
+            },
+        );
+    }
+
+    /// Approve an expense, with support for partial approval.
+    pub fn approve_expense(env: Env, approver: Address, expense_id: u128, approved_amount: i128) {
         require_initialized(&env);
         approver.require_auth();
 
@@ -284,7 +295,11 @@ impl ExpenseReimbursementContract {
 
         assert!(expense.approver == approver, "Unauthorized approver");
         assert!(expense.status == ExpenseStatus::Pending, "Invalid status");
+        assert!(approved_amount > 0, "Approved amount must be positive");
+        assert!(approved_amount <= expense.amount, "Cannot approve more than requested");
+        assert!(expense.escrow_amount >= approved_amount, "Insufficient escrowed funds");
 
+        expense.approved_amount = Some(approved_amount);
         expense.status = ExpenseStatus::Approved;
         env.storage()
             .persistent()
@@ -295,22 +310,12 @@ impl ExpenseReimbursementContract {
             ExpenseApprovedEvent {
                 expense_id,
                 approver,
+                approved_amount,
             },
         );
     }
 
-    /// Reject an expense
-    ///
-    /// # Arguments
-    /// * `approver` - Approver rejecting the expense
-    /// * `expense_id` - ID of expense to reject
-    ///
-    /// # Panics
-    /// * If caller is not the designated approver
-    /// * If expense is not in Pending status
-    ///
-    /// # Access Control
-    /// Requires caller authentication
+    /// Reject an expense, refunding escrowed funds to the employer safely
     pub fn reject_expense(env: Env, approver: Address, expense_id: u128) {
         require_initialized(&env);
         approver.require_auth();
@@ -325,6 +330,18 @@ impl ExpenseReimbursementContract {
         assert!(expense.status == ExpenseStatus::Pending, "Invalid status");
 
         expense.status = ExpenseStatus::Rejected;
+
+        // Refund any escrowed funds securely
+        if expense.escrow_amount > 0 {
+            if let Some(payer) = expense.payer.clone() {
+                let token_client = token::Client::new(&env, &expense.token);
+                token_client.transfer(&env.current_contract_address(), &payer, &expense.escrow_amount);
+            }
+        }
+
+        // Must sync escrow reduction if we refund
+        expense.escrow_amount = 0;
+
         env.storage()
             .persistent()
             .set(&StorageKey::Expense(expense_id), &expense);
@@ -338,20 +355,11 @@ impl ExpenseReimbursementContract {
         );
     }
 
-    /// Pay an approved expense
-    ///
-    /// # Arguments
-    /// * `payer` - Address funding the reimbursement
-    /// * `expense_id` - ID of expense to pay
-    ///
-    /// # Panics
-    /// * If expense is not in Approved status
-    ///
-    /// # Access Control
-    /// Requires caller authentication
-    pub fn pay_expense(env: Env, payer: Address, expense_id: u128) {
+    /// Pay an approved expense to the employee. Any surplus escrow goes back to the payer.
+    pub fn pay_expense(env: Env, expense_id: u128) {
         require_initialized(&env);
-        payer.require_auth();
+        
+        // Anyone can execute the token payout if it's approved
 
         let mut expense: Expense = env
             .storage()
@@ -360,10 +368,22 @@ impl ExpenseReimbursementContract {
             .expect("Expense not found");
 
         assert!(expense.status == ExpenseStatus::Approved, "Not approved");
+        let amount_to_pay = expense.approved_amount.unwrap();
 
         let token_client = token::Client::new(&env, &expense.token);
-        token_client.transfer(&payer, &expense.submitter, &expense.amount);
+        
+        // Payout to employee
+        token_client.transfer(&env.current_contract_address(), &expense.submitter, &amount_to_pay);
 
+        // Refund any unapproved surplus
+        let surplus = expense.escrow_amount - amount_to_pay;
+        if surplus > 0 {
+            if let Some(payer) = expense.payer.clone() {
+                token_client.transfer(&env.current_contract_address(), &payer, &surplus);
+            }
+        }
+
+        expense.escrow_amount = 0; // all dispersed
         expense.status = ExpenseStatus::Paid;
         env.storage()
             .persistent()
@@ -373,24 +393,13 @@ impl ExpenseReimbursementContract {
             (String::from_str(&env, "expense_paid"), expense_id),
             ExpensePaidEvent {
                 expense_id,
-                submitter: expense.submitter,
-                amount: expense.amount,
+                submitter: expense.submitter.clone(),
+                amount: amount_to_pay,
             },
         );
     }
 
-    /// Cancel a pending expense
-    ///
-    /// # Arguments
-    /// * `submitter` - Original submitter cancelling the expense
-    /// * `expense_id` - ID of expense to cancel
-    ///
-    /// # Panics
-    /// * If caller is not the submitter
-    /// * If expense is not in Pending status
-    ///
-    /// # Access Control
-    /// Requires caller authentication
+    /// Cancel a pending expense, triggering refund
     pub fn cancel_expense(env: Env, submitter: Address, expense_id: u128) {
         require_initialized(&env);
         submitter.require_auth();
@@ -405,6 +414,16 @@ impl ExpenseReimbursementContract {
         assert!(expense.status == ExpenseStatus::Pending, "Invalid status");
 
         expense.status = ExpenseStatus::Cancelled;
+
+        // Refund any escrowed funds
+        if expense.escrow_amount > 0 {
+            if let Some(payer) = expense.payer.clone() {
+                let token_client = token::Client::new(&env, &expense.token);
+                token_client.transfer(&env.current_contract_address(), &payer, &expense.escrow_amount);
+            }
+        }
+        expense.escrow_amount = 0;
+
         env.storage()
             .persistent()
             .set(&StorageKey::Expense(expense_id), &expense);
@@ -419,32 +438,13 @@ impl ExpenseReimbursementContract {
     }
 
     /// Get expense details
-    ///
-    /// # Arguments
-    /// * `expense_id` - ID of expense to retrieve
-    ///
-    /// # Returns
-    /// Expense details or None if not found
-    ///
-    /// # Access Control
-    /// Requires caller authentication
     pub fn get_expense(env: Env, expense_id: u128) -> Option<Expense> {
-        require_initialized(&env);
         env.storage()
             .persistent()
             .get(&StorageKey::Expense(expense_id))
     }
 
     /// Check if an address has approver role
-    ///
-    /// # Arguments
-    /// * `address` - Address to check
-    ///
-    /// # Returns
-    /// true if address is an approver
-    ///
-    /// # Access Control
-    /// Requires caller authentication
     pub fn is_approver(env: Env, address: Address) -> bool {
         require_initialized(&env);
         is_approver(&env, &address)
