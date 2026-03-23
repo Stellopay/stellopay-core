@@ -238,7 +238,43 @@ This section references concrete mechanisms present in the codebase.
 
 ---
 
-### 6.8 Misconfiguration / key compromise (off-chain)
+### 6.8 Cross-contract workflow orchestration drift
+
+**Threat**: A realistic payout flow spans multiple contracts, but one step is
+executed out of order or by the wrong authority. Examples include:
+
+- Recording payment history from a non-payroll address
+- Releasing escrow from a non-manager address
+- Escalating a dispute after the allowed deadline
+- Claiming an optional bonus before approval or unlock
+
+**Impact**: Operators can mis-read workflow progress, retry successful steps,
+or strand funds in module-specific escrows while the primary agreement moves
+forward.
+
+**Mitigations**:
+- Keep each contract's auth boundary explicit in integration tests and
+  orchestration code.
+- Treat failed intermediate calls as state-preserving unless a success result
+  is observed and indexed.
+- Verify token conservation across employer, employee, and contract balances
+  for multi-step workflows.
+- Verify dispute deadlines and escalation levels with explicit ledger-time
+  manipulation in integration tests.
+
+**Integration coverage added in `onchain/integration_tests`**:
+- Payroll plus `payment_history` only records successfully when executed as the
+  payroll contract.
+- Payroll plus `payroll_escrow` rejects unauthorized release attempts without
+  mutating the tracked agreement balance.
+- Payroll disputes can be mirrored into `dispute_escalation`, including both
+  deadline-expiry failures and successful escalation/resolution sequences.
+- Optional `bonus_system` claims are covered both before unlock and after
+  approval/unlock.
+
+---
+
+### 6.9 Misconfiguration / key compromise (off-chain)
 
 **Threat**: Leaked `secret_key` in CLI config; compromised admin wallet upgrades malicious code.
 
