@@ -3,7 +3,10 @@
 
 use dispute_escalation::types::{DisputeError, DisputeStatus, EscalationLevel};
 use dispute_escalation::{DisputeEscalationContract, DisputeEscalationContractClient};
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env,
+};
 
 fn setup() -> (
     Env,
@@ -21,6 +24,10 @@ fn setup() -> (
     let user = Address::generate(&env);
     client.initialize(&owner, &admin);
     (env, client, owner, admin, user)
+}
+
+fn advance(env: &Env, seconds: u64) {
+    env.ledger().with_mut(|li| li.timestamp += seconds);
 }
 
 /// Full escalation flow: open -> escalate -> admin resolve -> appeal -> admin resolve.
@@ -71,4 +78,59 @@ fn test_escalation_resolve_unauthorized_integration() {
         Err(Ok(e)) => assert_eq!(e, DisputeError::Unauthorized.into()),
         _ => panic!("expected Unauthorized"),
     }
+}
+
+/// Expired escalation windows must reject the transition and preserve the
+/// current dispute state for off-chain operators to inspect.
+#[test]
+fn test_escalation_deadline_expiry_preserves_open_state_integration() {
+    let (env, client, _owner, admin, user) = setup();
+    let agreement_id = 203u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &60);
+    client.file_dispute(&user, &agreement_id);
+
+    advance(&env, 61);
+    let res = client.try_escalate_dispute(&user, &agreement_id);
+    assert!(res.is_err());
+    match res {
+        Err(Ok(e)) => assert_eq!(e, DisputeError::TimeLimitExpired.into()),
+        _ => panic!("expected TimeLimitExpired"),
+    }
+
+    let dispute = client.get_dispute(&agreement_id).unwrap();
+    assert_eq!(dispute.status, DisputeStatus::Open);
+    assert_eq!(dispute.level, EscalationLevel::Level1);
+}
+
+/// Admin-configured windows should affect the full file -> escalate -> resolve
+/// -> appeal sequence so integrations can rely on explicit deadlines.
+#[test]
+fn test_escalation_custom_deadlines_apply_to_appeals_integration() {
+    let (env, client, _owner, admin, user) = setup();
+    let agreement_id = 204u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &120);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &240);
+
+    client.file_dispute(&user, &agreement_id);
+    let opened = client.get_dispute(&agreement_id).unwrap();
+    assert_eq!(opened.phase_deadline, opened.phase_started_at + 120);
+
+    advance(&env, 30);
+    client.escalate_dispute(&user, &agreement_id);
+    let escalated = client.get_dispute(&agreement_id).unwrap();
+    assert_eq!(escalated.status, DisputeStatus::Escalated);
+    assert_eq!(escalated.level, EscalationLevel::Level2);
+    assert_eq!(escalated.phase_deadline, escalated.phase_started_at + 240);
+
+    client.resolve_dispute(&admin, &agreement_id);
+    let resolved = client.get_dispute(&agreement_id).unwrap();
+    assert_eq!(resolved.status, DisputeStatus::Resolved);
+
+    advance(&env, 100);
+    client.appeal_ruling(&user, &agreement_id);
+    let appealed = client.get_dispute(&agreement_id).unwrap();
+    assert_eq!(appealed.status, DisputeStatus::Appealed);
+    assert_eq!(appealed.level, EscalationLevel::Level3);
 }

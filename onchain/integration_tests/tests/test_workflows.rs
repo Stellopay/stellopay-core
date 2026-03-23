@@ -24,6 +24,10 @@ use soroban_sdk::{
 };
 
 use bonus_system::{BonusSystemContract, BonusSystemContractClient};
+use dispute_escalation::types::{
+    DisputeError as EscalationError, DisputeStatus as EscalationStatus, EscalationLevel,
+};
+use dispute_escalation::{DisputeEscalationContract, DisputeEscalationContractClient};
 use payment_history::{PaymentHistoryContract, PaymentHistoryContractClient};
 use payroll_escrow::{PayrollEscrowContract, PayrollEscrowContractClient};
 use stello_pay_contract::storage::{AgreementMode, AgreementStatus, DataKey, DisputeStatus};
@@ -65,6 +69,11 @@ fn token(env: &Env) -> Address {
 /// Mints `amount` tokens to `to`.
 fn mint(env: &Env, tok: &Address, to: &Address, amount: i128) {
     StellarAssetClient::new(env, tok).mint(to, &amount);
+}
+
+/// Transfers `amount` tokens from `from` to `to`.
+fn transfer(env: &Env, tok: &Address, from: &Address, to: &Address, amount: i128) {
+    TokenClient::new(env, tok).transfer(from, to, &amount);
 }
 
 /// Returns the token balance of `who`.
@@ -115,6 +124,16 @@ fn deploy_bonus(env: &Env) -> (Address, BonusSystemContractClient<'_>) {
     (id, client)
 }
 
+/// Deploys and initializes the dispute escalation contract.
+fn deploy_escalation(env: &Env) -> (Address, DisputeEscalationContractClient<'_>, Address) {
+    let id = env.register_contract(None, DisputeEscalationContract);
+    let client = DisputeEscalationContractClient::new(env, &id);
+    let owner = addr(env);
+    let admin = addr(env);
+    client.initialize(&owner, &admin);
+    (id, client, admin)
+}
+
 /// Deploys and initializes the PaymentHistoryContract; returns (contract_addr, client).
 fn deploy_history<'a>(
     env: &'a Env,
@@ -127,10 +146,9 @@ fn deploy_history<'a>(
     (id, client)
 }
 
-/// Funds the internal DataKey escrow balance for an agreement inside the
-/// payroll contract. Also sets up the per-employee DataKey storage needed
-/// for the claiming path.
-fn fund_payroll_internal(
+/// Seeds the internal payroll storage that claim paths depend on, with an
+/// explicitly provided tracked escrow balance.
+fn seed_payroll_internal_with_balance(
     env: &Env,
     contract_id: &Address,
     agreement_id: u128,
@@ -138,7 +156,6 @@ fn fund_payroll_internal(
     employees: &[(Address, i128)],
     total_fund: i128,
 ) {
-    mint(env, tok, contract_id, total_fund);
     env.as_contract(contract_id, || {
         DataKey::set_agreement_escrow_balance(env, agreement_id, tok, total_fund);
         DataKey::set_agreement_activation_time(env, agreement_id, env.ledger().timestamp());
@@ -152,6 +169,55 @@ fn fund_payroll_internal(
         }
         DataKey::set_employee_count(env, agreement_id, employees.len() as u32);
     });
+}
+
+fn fund_payroll_internal(
+    env: &Env,
+    contract_id: &Address,
+    agreement_id: u128,
+    tok: &Address,
+    employees: &[(Address, i128)],
+    total_fund: i128,
+) {
+    mint(env, tok, contract_id, total_fund);
+    seed_payroll_internal_with_balance(env, contract_id, agreement_id, tok, employees, total_fund);
+}
+
+/// Funds the payroll contract from the employer so token conservation can be
+/// checked across all participating contracts in end-to-end workflows.
+fn fund_payroll_from_employer(
+    env: &Env,
+    tok: &Address,
+    employer: &Address,
+    contract_id: &Address,
+    agreement_id: u128,
+    employees: &[(Address, i128)],
+    total_fund: i128,
+) {
+    transfer(env, tok, employer, contract_id, total_fund);
+    seed_payroll_internal_with_balance(env, contract_id, agreement_id, tok, employees, total_fund);
+}
+
+/// Records a payment as if it were emitted by the payroll contract itself.
+fn record_payment_as_payroll(
+    env: &Env,
+    payroll_contract: &Address,
+    history_client: &PaymentHistoryContractClient<'_>,
+    agreement_id: u128,
+    tok: &Address,
+    amount: i128,
+    from: &Address,
+    to: &Address,
+    timestamp: u64,
+) -> u128 {
+    env.as_contract(payroll_contract, || {
+        history_client.record_payment(&agreement_id, tok, &amount, from, to, &timestamp)
+    })
+}
+
+/// Sums balances across the supplied addresses for token-conservation checks.
+fn tracked_total(env: &Env, tok: &Address, addrs: &[Address]) -> i128 {
+    addrs.iter().map(|address| balance(env, tok, address)).sum()
 }
 
 // ============================================================================
@@ -1247,6 +1313,272 @@ fn test_cross_payment_history_multi_agreement() {
     assert_eq!(hist_client.get_employer_payment_count(&employer), 3);
     assert_eq!(hist_client.get_employee_payment_count(&emp1), 2);
     assert_eq!(hist_client.get_employee_payment_count(&emp2), 1);
+}
+
+/// Realistic orchestration across payroll, escrow, dispute escalation,
+/// payment history, and an optional bonus module.
+///
+/// Threat assumptions:
+/// - The payroll contract is the only authority allowed to write payment history.
+/// - The escrow contract only releases funds when the configured manager signs.
+/// - Off-chain orchestration may combine modules, but token conservation must
+///   still hold across every contract balance and recipient balance.
+#[test]
+fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservation() {
+    let env = env();
+    set_time(&env, 1_000);
+
+    let (payroll_id, payroll_client) = deploy_payroll(&env);
+    let (_dispute_id, dispute_client, dispute_admin) = deploy_escalation(&env);
+    let tok = token(&env);
+    let (escrow_id, escrow_client) = deploy_escrow(&env, &tok, &payroll_id);
+    let (bonus_id, bonus_client) = deploy_bonus(&env);
+    let (_history_id, history_client) = deploy_history(&env, &payroll_id);
+
+    let employer = addr(&env);
+    let employee_a = addr(&env);
+    let employee_b = addr(&env);
+    let approver = addr(&env);
+    let arbiter = addr(&env);
+    let outsider = addr(&env);
+
+    mint(&env, &tok, &employer, 10_000);
+    let tracked = [
+        employer.clone(),
+        employee_a.clone(),
+        employee_b.clone(),
+        payroll_id.clone(),
+        escrow_id.clone(),
+        bonus_id.clone(),
+    ];
+    let initial_total = tracked_total(&env, &tok, &tracked);
+
+    payroll_client.set_arbiter(&employer, &arbiter);
+    let agreement_id = payroll_client.create_payroll_agreement(&employer, &tok, &ONE_WEEK);
+    payroll_client.add_employee_to_agreement(&agreement_id, &employee_a, &1_000);
+    payroll_client.add_employee_to_agreement(&agreement_id, &employee_b, &500);
+    payroll_client.activate_agreement(&agreement_id);
+
+    fund_payroll_from_employer(
+        &env,
+        &tok,
+        &employer,
+        &payroll_id,
+        agreement_id,
+        &[(employee_a.clone(), 1_000), (employee_b.clone(), 500)],
+        3_000,
+    );
+
+    escrow_client.fund_agreement(&employer, &agreement_id, &employer, &900);
+    assert_eq!(escrow_client.get_agreement_balance(&agreement_id), 900);
+
+    advance(&env, ONE_DAY);
+    payroll_client.claim_payroll(&employee_a, &agreement_id, &0);
+    record_payment_as_payroll(
+        &env,
+        &payroll_id,
+        &history_client,
+        agreement_id,
+        &tok,
+        1_000,
+        &payroll_id,
+        &employee_a,
+        env.ledger().timestamp(),
+    );
+
+    let unauthorized_release = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        escrow_client.release(&outsider, &agreement_id, &employee_b, &50);
+    }));
+    assert!(unauthorized_release.is_err());
+    assert_eq!(escrow_client.get_agreement_balance(&agreement_id), 900);
+
+    escrow_client.release(&payroll_id, &agreement_id, &employee_b, &200);
+    assert_eq!(escrow_client.get_agreement_balance(&agreement_id), 700);
+
+    let incentive_id =
+        bonus_client.create_one_time_bonus(&employer, &employee_b, &approver, &tok, &250, &1_000);
+    bonus_client.approve_incentive(&approver, &incentive_id);
+    assert_eq!(bonus_client.claim_incentive(&employee_b, &incentive_id), 250);
+
+    // Mirror the payroll dispute into the escalation module so the integration
+    // test covers the off-chain coordination sequence as well as token effects.
+    payroll_client.raise_dispute(&employee_b, &agreement_id);
+    dispute_client.file_dispute(&employee_b, &agreement_id);
+    dispute_client.escalate_dispute(&employee_b, &agreement_id);
+    dispute_client.resolve_dispute(&dispute_admin, &agreement_id);
+    payroll_client.resolve_dispute(&arbiter, &agreement_id, &600, &400);
+
+    record_payment_as_payroll(
+        &env,
+        &payroll_id,
+        &history_client,
+        agreement_id,
+        &tok,
+        300,
+        &payroll_id,
+        &employee_a,
+        env.ledger().timestamp(),
+    );
+    record_payment_as_payroll(
+        &env,
+        &payroll_id,
+        &history_client,
+        agreement_id,
+        &tok,
+        300,
+        &payroll_id,
+        &employee_b,
+        env.ledger().timestamp(),
+    );
+    record_payment_as_payroll(
+        &env,
+        &payroll_id,
+        &history_client,
+        agreement_id,
+        &tok,
+        400,
+        &payroll_id,
+        &employer,
+        env.ledger().timestamp(),
+    );
+
+    assert_eq!(payroll_client.get_dispute_status(&agreement_id), DisputeStatus::Resolved);
+    assert_eq!(
+        payroll_client.get_agreement(&agreement_id).unwrap().status,
+        AgreementStatus::Completed
+    );
+
+    let escalated = dispute_client.get_dispute(&agreement_id).unwrap();
+    assert_eq!(escalated.status, EscalationStatus::Resolved);
+    assert_eq!(escalated.level, EscalationLevel::Level2);
+
+    let payments = history_client.get_payments_by_agreement(&agreement_id, &1, &10);
+    assert_eq!(payments.len(), 4);
+    assert_eq!(payments.get(0).unwrap().amount, 1_000);
+    assert_eq!(payments.get(1).unwrap().amount, 300);
+    assert_eq!(payments.get(2).unwrap().amount, 300);
+    assert_eq!(payments.get(3).unwrap().amount, 400);
+
+    assert_eq!(balance(&env, &tok, &employee_a), 1_300);
+    assert_eq!(balance(&env, &tok, &employee_b), 750);
+    assert_eq!(balance(&env, &tok, &employer), 6_250);
+    assert_eq!(balance(&env, &tok, &payroll_id), 1_000);
+    assert_eq!(balance(&env, &tok, &escrow_id), 700);
+    assert_eq!(balance(&env, &tok, &bonus_id), 0);
+    assert_eq!(tracked_total(&env, &tok, &tracked), initial_total);
+}
+
+/// Injects authorization and ordering failures mid-workflow, then verifies the
+/// orchestrated path can recover without leaking funds or corrupting state.
+///
+/// Threat assumptions:
+/// - Failed cross-contract calls must not mutate balances or indexed history.
+/// - Escalation deadlines must freeze the dispute phase rather than silently
+///   advancing it.
+/// - Optional-module failures must not block later authorized recovery steps.
+#[test]
+fn test_cross_contract_workflow_failure_injection_preserves_state() {
+    let env = env();
+    set_time(&env, 5_000);
+
+    let (payroll_id, payroll_client) = deploy_payroll(&env);
+    let (bonus_id, bonus_client) = deploy_bonus(&env);
+    let (_history_id, history_client) = deploy_history(&env, &payroll_id);
+    let (_dispute_id, dispute_client, _dispute_admin) = deploy_escalation(&env);
+    let tok = token(&env);
+    let (escrow_id, escrow_client) = deploy_escrow(&env, &tok, &payroll_id);
+
+    let employer = addr(&env);
+    let employee = addr(&env);
+    let approver = addr(&env);
+    let outsider = addr(&env);
+
+    mint(&env, &tok, &employer, 5_000);
+    let tracked = [
+        employer.clone(),
+        employee.clone(),
+        payroll_id.clone(),
+        escrow_id.clone(),
+        bonus_id.clone(),
+    ];
+    let initial_total = tracked_total(&env, &tok, &tracked);
+
+    let agreement_id = payroll_client.create_payroll_agreement(&employer, &tok, &ONE_WEEK);
+    payroll_client.add_employee_to_agreement(&agreement_id, &employee, &1_000);
+    payroll_client.activate_agreement(&agreement_id);
+    fund_payroll_from_employer(
+        &env,
+        &tok,
+        &employer,
+        &payroll_id,
+        agreement_id,
+        &[(employee.clone(), 1_000)],
+        1_500,
+    );
+    escrow_client.fund_agreement(&employer, &agreement_id, &employer, &600);
+
+    let unauthorized_admin = dispute_client.try_set_level_time_limit(
+        &outsider,
+        &EscalationLevel::Level1,
+        &60,
+    );
+    assert_eq!(
+        unauthorized_admin,
+        Err(Ok(EscalationError::Unauthorized.into()))
+    );
+    assert_eq!(history_client.get_agreement_payment_count(&agreement_id), 0);
+
+    let unauthorized_release = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        escrow_client.release(&outsider, &agreement_id, &employee, &100);
+    }));
+    assert!(unauthorized_release.is_err());
+    assert_eq!(escrow_client.get_agreement_balance(&agreement_id), 600);
+    assert_eq!(balance(&env, &tok, &employee), 0);
+
+    let incentive_id =
+        bonus_client.create_one_time_bonus(&employer, &employee, &approver, &tok, &200, &6_000);
+    bonus_client.approve_incentive(&approver, &incentive_id);
+    let early_claim = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        bonus_client.claim_incentive(&employee, &incentive_id);
+    }));
+    assert!(early_claim.is_err());
+    let stored_bonus = bonus_client.get_incentive(&incentive_id).unwrap();
+    assert_eq!(stored_bonus.claimed_payouts, 0);
+    assert_eq!(stored_bonus.status, bonus_system::ApprovalStatus::Approved);
+
+    dispute_client.file_dispute(&employee, &agreement_id);
+    advance(&env, ONE_WEEK + 1);
+    let escalation_attempt = dispute_client.try_escalate_dispute(&employee, &agreement_id);
+    assert_eq!(
+        escalation_attempt,
+        Err(Ok(EscalationError::TimeLimitExpired.into()))
+    );
+    let frozen = dispute_client.get_dispute(&agreement_id).unwrap();
+    assert_eq!(frozen.status, EscalationStatus::Open);
+    assert_eq!(frozen.level, EscalationLevel::Level1);
+
+    // Recovery path after the injected failures: authorized payment history,
+    // authorized escrow release, and bonus unlock all proceed without loss.
+    set_time(&env, 5_000 + ONE_DAY + 1);
+    payroll_client.claim_payroll(&employee, &agreement_id, &0);
+    record_payment_as_payroll(
+        &env,
+        &payroll_id,
+        &history_client,
+        agreement_id,
+        &tok,
+        1_000,
+        &payroll_id,
+        &employee,
+        env.ledger().timestamp(),
+    );
+    escrow_client.release(&payroll_id, &agreement_id, &employee, &100);
+    assert_eq!(bonus_client.claim_incentive(&employee, &incentive_id), 200);
+
+    assert_eq!(history_client.get_agreement_payment_count(&agreement_id), 1);
+    assert_eq!(escrow_client.get_agreement_balance(&agreement_id), 500);
+    assert_eq!(balance(&env, &tok, &employee), 1_300);
+    assert_eq!(tracked_total(&env, &tok, &tracked), initial_total);
 }
 
 // ============================================================================
