@@ -1,10 +1,14 @@
 #![no_std]
 
-//! Payment Splitting Contract (#206)
+//! Payment Splitting Contract
 //!
 //! Splits a single payment across multiple recipients with configurable
-//! percentage-based or fixed-amount splits. Validates that split totals
-//! sum correctly before execution.
+//! percentage-based (basis points) or fixed-amount splits.
+//!
+//! Hardened with:
+//! - Rounding discipline (remainder absorber pattern)
+//! - Arithmetic safety (checked operations)
+//! - Validation helpers (duplicate recipient checks, zero-weight prevention)
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Vec};
 
@@ -46,6 +50,8 @@ pub struct SplitDefinition {
     pub id: u128,
     pub creator: Address,
     pub recipients: Vec<RecipientShare>,
+    /// Optimization: Store whether it's a percentage-based split
+    pub is_percent: bool,
 }
 
 #[contractimpl]
@@ -53,10 +59,7 @@ impl PaymentSplitterContract {
     /// Initializes the contract. Callable once.
     ///
     /// # Arguments
-    /// * `admin` - admin parameter
-    ///
-    /// # Access Control
-    /// Requires caller authentication
+    /// * `admin` - The administrative address for the contract.
     pub fn initialize(env: Env, admin: Address) {
         admin.require_auth();
         let init: bool = env
@@ -74,34 +77,52 @@ impl PaymentSplitterContract {
             .set(&StorageKey::NextSplitId, &1u128);
     }
 
-    /// Creates a split definition. Percent shares must sum to 10000 (100%). Fixed shares are validated at execute time.
+    /// Creates a split definition. Splits must be either all Percentage or all Fixed.
     ///
     /// # Arguments
-    /// * `creator` - Caller (must authenticate)
-    /// * `recipients` - List of (recipient, ShareKind)
+    /// * `creator` - Caller (must authenticate).
+    /// * `recipients` - List of (recipient, ShareKind).
+    ///
     /// # Returns
-    /// Split ID
+    /// Unique split ID.
     pub fn create_split(env: Env, creator: Address, recipients: Vec<RecipientShare>) -> u128 {
         creator.require_auth();
         Self::require_initialized(&env);
-        assert!(!recipients.is_empty(), "At least one recipient");
+        assert!(!recipients.is_empty(), "At least one recipient required");
+
         let mut has_percent = false;
+        let mut has_fixed = false;
         let mut total_bps = 0u32;
+        let mut seen_addresses = Vec::<Address>::new(&env);
+
         for i in 0..recipients.len() {
-            let r = recipients.get(i).unwrap();
-            match &r.kind {
+            let r = recipients.get_unchecked(i);
+            
+            // 1. Uniqueness check
+            for seen in 0..seen_addresses.len() {
+                assert!(seen_addresses.get_unchecked(seen) != r.recipient, "Duplicate recipient address");
+            }
+            seen_addresses.push_back(r.recipient.clone());
+
+            match r.kind {
                 ShareKind::Percent(bps) => {
                     has_percent = true;
-                    total_bps = total_bps.checked_add(*bps).expect("Percent overflow");
+                    assert!(bps > 0, "Percentage-based share must be > 0");
+                    total_bps = total_bps.checked_add(bps).expect("Percentage overflow");
                 }
-                ShareKind::Fixed(_) => {}
+                ShareKind::Fixed(amt) => {
+                    has_fixed = true;
+                    assert!(amt > 0, "Fixed share amount must be > 0");
+                }
             }
         }
+
+        // 2. Mutual exclusivity check (Percent vs Fixed)
+        assert!(has_percent != has_fixed, "Split must be either all Percentage or all Fixed");
+
+        // 3. Percentage sum validation
         if has_percent {
-            assert!(
-                total_bps == 10000,
-                "Percent shares must sum to 10000 (100%)"
-            );
+            assert!(total_bps == 10000, "Percentage shares must sum to 10000 (100%)");
         }
 
         let next_id: u128 = env
@@ -117,6 +138,7 @@ impl PaymentSplitterContract {
             id: next_id,
             creator: creator.clone(),
             recipients,
+            is_percent: has_percent,
         };
         env.storage()
             .persistent()
@@ -124,84 +146,77 @@ impl PaymentSplitterContract {
         next_id
     }
 
-    /// Validates a split definition against a total amount: for Percent shares no amount needed;
-    /// for Fixed shares, sum of fixed amounts must equal total.
+    /// Validates a split configuration against a total amount.
     ///
-    /// # Arguments
-    /// * `split_id` - split_id parameter
-    /// * `total_amount` - total_amount parameter
-    ///
-    /// # Returns
-    /// bool
-    ///
-    /// # Access Control
-    /// Requires caller authentication
+    /// For Percent splits: always true if sum is 100% (already checked at creation).
+    /// For Fixed splits: sum of fixed amounts must equal total_amount.
     pub fn validate_split_for_amount(env: Env, split_id: u128, total_amount: i128) -> bool {
         let def: SplitDefinition = env
             .storage()
             .persistent()
             .get(&StorageKey::Split(split_id))
             .expect("Split not found");
-        let mut fixed_sum: i128 = 0;
-        for i in 0..def.recipients.len() {
-            let r = def.recipients.get(i).unwrap();
-            match &r.kind {
-                ShareKind::Percent(_) => {}
-                ShareKind::Fixed(amt) => {
-                    fixed_sum = fixed_sum.checked_add(*amt).expect("Fixed sum overflow");
+
+        if def.is_percent {
+            true
+        } else {
+            let mut fixed_sum: i128 = 0;
+            for i in 0..def.recipients.len() {
+                let r = def.recipients.get_unchecked(i);
+                if let ShareKind::Fixed(amt) = r.kind {
+                    fixed_sum = fixed_sum.checked_add(amt).expect("Fixed sum overflow");
                 }
             }
-        }
-        let mut has_fixed = false;
-        for i in 0..def.recipients.len() {
-            if matches!(&def.recipients.get(i).unwrap().kind, ShareKind::Fixed(_)) {
-                has_fixed = true;
-                break;
-            }
-        }
-        if has_fixed {
             fixed_sum == total_amount
-        } else {
-            true
         }
     }
 
-    /// Computes the amount for each recipient given a total. Callable by anyone (view).
-    ///
-    /// # Arguments
-    /// * `split_id` - split_id parameter
-    /// * `total_amount` - total_amount parameter
+    /// Computes the amount for each recipient given a total amount.
+    /// Uses a "remainder absorber" approach to handle rounding errors.
     ///
     /// # Returns
-    /// `Vec<(Address, i128)>`
-    ///
-    /// # Access Control
-    /// Requires caller authentication
+    /// `Vec<(Address, i128)>` where each tuple is a recipient and their share.
     pub fn compute_split(env: Env, split_id: u128, total_amount: i128) -> Vec<(Address, i128)> {
         let def: SplitDefinition = env
             .storage()
             .persistent()
             .get(&StorageKey::Split(split_id))
             .expect("Split not found");
+
         let mut out: Vec<(Address, i128)> = Vec::new(&env);
-        for i in 0..def.recipients.len() {
-            let r = def.recipients.get(i).unwrap();
-            let amt = match &r.kind {
-                ShareKind::Percent(bps) => (i128::from(*bps) * total_amount) / 10000,
-                ShareKind::Fixed(a) => *a,
+        let mut total_allocated: i128 = 0;
+        let recipient_count = def.recipients.len();
+
+        for i in 0..recipient_count {
+            let r = def.recipients.get_unchecked(i);
+            
+            let amt = if i == recipient_count - 1 {
+                // Remainder absorber: last recipient gets the rest of the bucket
+                total_amount.checked_sub(total_allocated).expect("Allocation underflow")
+            } else {
+                let slice = match r.kind {
+                    ShareKind::Percent(bps) => {
+                        // (bps * total_amount) / 10000
+                        let bps_u128 = i128::from(bps);
+                        bps_u128.checked_mul(total_amount)
+                            .expect("Mul overflow")
+                            .checked_div(10000)
+                            .expect("Div error")
+                    }
+                    ShareKind::Fixed(a) => a,
+                };
+                total_allocated = total_allocated.checked_add(slice).expect("Total allocated overflow");
+                slice
             };
+
+            // Sanity check: ensure no negative allocations for the absorber
+            assert!(amt >= 0, "Negative allocation detected (check fixed sums)");
             out.push_back((r.recipient.clone(), amt));
         }
         out
     }
 
     /// Returns the split definition.
-    ///
-    /// # Arguments
-    /// * `split_id` - split_id parameter
-    ///
-    /// # Access Control
-    /// Requires caller authentication
     pub fn get_split(env: Env, split_id: u128) -> SplitDefinition {
         env.storage()
             .persistent()
