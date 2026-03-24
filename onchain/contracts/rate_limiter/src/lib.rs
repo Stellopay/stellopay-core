@@ -1,261 +1,222 @@
 #![no_std]
 
-//! Per-address rate limiting contract
+//! Per-address and global rate limiting contract using Token Bucket algorithm.
 //!
-//! Provides configurable rate limits with automatic window resets and
-//! explicit admin reset APIs. Designed for integration with other
-//! Soroban contracts to prevent abuse and ensure fair usage.
+//! Provides burst-friendly rate limiting with automatic token refills, 
+//! global throttling, and admin bypass to ensure security and fairness.
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
 
-#[contract]
-pub struct RateLimiter;
-
-/// Storage keys for the rate limiter
 #[contracttype]
 #[derive(Clone)]
 enum StorageKey {
-    Initialized,
     Admin,
-    DefaultLimit,
-    WindowSeconds,
-    /// Per-address override: address -> limit
+    Initialized,
+    /// Default burst capacity for all addresses
+    DefaultBurst,
+    /// Default refill rate (tokens per second) for all addresses
+    DefaultRefillRate,
+    /// Global limit active
+    GlobalLimitEnabled,
+    /// Global burst capacity
+    GlobalBurst,
+    /// Global refill rate
+    GlobalRefillRate,
+    /// Global usage state
+    GlobalUsage,
+    /// Admin bypass enabled
+    AdminBypass,
+    /// Per-address override: address -> LimitConfig
     Limit(Address),
     /// Per-address usage: address -> Usage
     Usage(Address),
 }
 
-/// Usage counters for a subject address within a window
+/// Usage state for a token bucket
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Usage {
-    pub count: u32,
-    pub window_start: u64,
+    /// Last timestamp when tokens were refilled
+    pub last_update: u64,
+    /// Current number of tokens in the bucket
+    pub tokens: u32,
 }
+
+/// Configuration for a specific rate limit
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LimitConfig {
+    /// Maximum tokens the bucket can hold (burst capacity)
+    pub burst: u32,
+    /// Tokens added to the bucket per second (refill rate)
+    pub refill_rate: u32,
+}
+
+#[contract]
+pub struct RateLimiter;
 
 #[contractimpl]
 impl RateLimiter {
-    /// Initializes the contract
+    /// Initializes the Rate Limiter contract.
     ///
-    /// @notice Sets the admin, default limit, and window size. Callable once.
-    /// @param admin Admin address that controls configuration (must authenticate)
-    /// @param default_limit Default max operations per window for addresses without overrides
-    /// @param window_seconds Duration of a window in seconds (must be > 0)
-    pub fn initialize(env: Env, admin: Address, default_limit: u32, window_seconds: u64) {
+    /// @notice Sets initial configuration. Only callable once.
+    /// @param admin Admin address that controls configuration (must authenticate).
+    /// @param default_burst Max burst capacity for addresses without overrides.
+    /// @param default_refill_rate Tokens added per second for addresses without overrides.
+    /// @param admin_bypass If true, the admin address is exempt from all rate limits.
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        default_burst: u32,
+        default_refill_rate: u32,
+        admin_bypass: bool,
+    ) {
         admin.require_auth();
-        let initialized: bool = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::Initialized)
-            .unwrap_or(false);
-        assert!(!initialized, "Already initialized");
-        assert!(window_seconds > 0, "window_seconds must be > 0");
+        assert!(!Self::is_initialized(&env), "already initialized");
 
         env.storage().persistent().set(&StorageKey::Admin, &admin);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::DefaultLimit, &default_limit);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::WindowSeconds, &window_seconds);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::Initialized, &true);
+        env.storage().persistent().set(&StorageKey::DefaultBurst, &default_burst);
+        env.storage().persistent().set(&StorageKey::DefaultRefillRate, &default_refill_rate);
+        env.storage().persistent().set(&StorageKey::AdminBypass, &admin_bypass);
+        env.storage().persistent().set(&StorageKey::Initialized, &true);
     }
 
-    /// Gets the admin address
+    /// Configures the global rate limit.
     ///
-    /// @return admin Optional admin address (Some if initialized)
-    /// @dev Requires caller authentication
-    pub fn get_admin(env: Env) -> Option<Address> {
-        env.storage().persistent().get(&StorageKey::Admin)
-    }
-
-    /// Gets the default limit
-    ///
-    /// @return limit Default max operations per window
-    /// @dev Requires caller authentication
-    pub fn get_default_limit(env: Env) -> u32 {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::DefaultLimit)
-            .unwrap_or(0u32)
-    }
-
-    /// Gets the window duration in seconds
-    ///
-    /// @return seconds Window length in seconds
-    /// @dev Requires caller authentication
-    pub fn get_window_seconds(env: Env) -> u64 {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::WindowSeconds)
-            .unwrap_or(0u64)
-    }
-
-    /// Sets the default limit
-    ///
+    /// @notice Applies to the entire contract across all users if enabled.
     /// @dev Only callable by admin.
-    /// @param limit New default max operations per window
-    pub fn set_default_limit(env: Env, limit: u32) {
+    /// @param enabled Whether to enforce the global limit.
+    /// @param burst Global maximum burst capacity.
+    /// @param refill_rate Global tokens added per second.
+    pub fn set_global_limit(env: Env, enabled: bool, burst: u32, refill_rate: u32) {
         Self::require_admin_auth(&env);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::DefaultLimit, &limit);
+        env.storage().persistent().set(&StorageKey::GlobalLimitEnabled, &enabled);
+        env.storage().persistent().set(&StorageKey::GlobalBurst, &burst);
+        env.storage().persistent().set(&StorageKey::GlobalRefillRate, &refill_rate);
     }
 
-    /// Sets the window duration
+    /// Sets a per-address limit override.
     ///
     /// @dev Only callable by admin.
-    /// @param seconds New window size in seconds (must be > 0)
-    pub fn set_window_seconds(env: Env, seconds: u64) {
+    /// @param addr Subject address.
+    /// @param burst Max burst capacity for this address.
+    /// @param refill_rate Tokens added per second for this address.
+    pub fn set_limit_for(env: Env, addr: Address, burst: u32, refill_rate: u32) {
         Self::require_admin_auth(&env);
-        assert!(seconds > 0, "window_seconds must be > 0");
-        env.storage()
-            .persistent()
-            .set(&StorageKey::WindowSeconds, &seconds);
+        env.storage().persistent().set(&StorageKey::Limit(addr), &LimitConfig { burst, refill_rate });
     }
 
-    /// Sets a per-address limit override
+    /// Removes a per-address limit override.
     ///
     /// @dev Only callable by admin.
-    /// @param addr Subject address whose limit is being set
-    /// @param limit Max operations per window for this address
-    pub fn set_limit_for(env: Env, addr: Address, limit: u32) {
-        Self::require_admin_auth(&env);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::Limit(addr), &limit);
-    }
-
-    /// Removes a per-address limit override, falling back to the default
-    ///
-    /// @dev Only callable by admin.
-    /// @param addr Subject address whose override is removed
     pub fn clear_limit_for(env: Env, addr: Address) {
         Self::require_admin_auth(&env);
         env.storage().persistent().remove(&StorageKey::Limit(addr));
     }
 
-    /// Gets the effective limit for an address
+    /// Checks and consumes one unit from the subject's rate limit.
     ///
-    /// @param addr Subject address
-    /// @return limit Effective limit (override or default)
-    /// @dev Requires caller authentication
-    pub fn get_limit_for(env: Env, addr: Address) -> u32 {
-        let per: Option<u32> = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::Limit(addr.clone()));
-        per.unwrap_or_else(|| {
-            env.storage()
-                .persistent()
-                .get(&StorageKey::DefaultLimit)
-                .unwrap_or(0u32)
-        })
-    }
-
-    /// Gets the current usage for an address
-    ///
-    /// @param addr Subject address
-    /// @return usage Current counter and window start
-    /// @dev Requires caller authentication
-    pub fn get_usage(env: Env, addr: Address) -> Usage {
-        let now = env.ledger().timestamp();
-        let window_seconds = Self::window_seconds(&env);
-        let usage: Option<Usage> = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::Usage(addr.clone()));
-        match usage {
-            Some(mut u) => {
-                if Self::is_window_expired(u.window_start, now, window_seconds) {
-                    u.count = 0;
-                    u.window_start = now;
-                }
-                u
-            }
-            None => Usage {
-                count: 0,
-                window_start: now,
-            },
-        }
-    }
-
-    /// Checks and consumes one unit from the subject's rate limit
-    ///
-    /// @notice Requires subject authentication. Increments usage and enforces limit.
-    /// @param subject Address subject to rate limiting (must authenticate)
-    /// @return remaining Remaining quota after consumption
+    /// @notice Implements Token Bucket algorithm for burst handling.
+    /// @notice Validates security by allowing admins to bypass if configured.
+    /// @param subject Address to check and consume quota for (must authenticate).
+    /// @return tokens_remaining User's tokens remaining after consumption.
     pub fn check_and_consume(env: Env, subject: Address) -> u32 {
         subject.require_auth();
         Self::require_initialized(&env);
 
-        let now = env.ledger().timestamp();
-        let limit = Self::get_limit_for(env.clone(), subject.clone());
-        let window_seconds = Self::window_seconds(&env);
+        let admin: Address = env.storage().persistent().get(&StorageKey::Admin).unwrap();
+        let bypass: bool = env.storage().persistent().get(&StorageKey::AdminBypass).unwrap_or(true);
 
-        let key = StorageKey::Usage(subject.clone());
-        let mut usage: Usage = env.storage().persistent().get(&key).unwrap_or(Usage {
-            count: 0,
-            window_start: now,
-        });
-
-        if Self::is_window_expired(usage.window_start, now, window_seconds) {
-            usage.count = 0;
-            usage.window_start = now;
+        // Security assumption: Admin bypass prevents permanent lockout of governance controllers.
+        if bypass && subject == admin {
+            return u32::MAX;
         }
 
-        assert!(limit > 0, "Rate limit is zero");
-        assert!(usage.count < limit, "Rate limit exceeded");
+        // 1. Check Global Limit (if enabled)
+        if env.storage().persistent().get(&StorageKey::GlobalLimitEnabled).unwrap_or(false) {
+            let g_burst = env.storage().persistent().get(&StorageKey::GlobalBurst).unwrap_or(0);
+            let g_refill = env.storage().persistent().get(&StorageKey::GlobalRefillRate).unwrap_or(0);
+            Self::consume_bucket(&env, StorageKey::GlobalUsage, g_burst, g_refill);
+        }
 
-        usage.count = usage.count.saturating_add(1);
-        env.storage().persistent().set(&key, &usage);
-        limit - usage.count
+        // 2. Check Per-Address Limit
+        let limit = Self::get_limit_config(&env, &subject);
+        Self::consume_bucket(&env, StorageKey::Usage(subject.clone()), limit.burst, limit.refill_rate)
     }
 
-    /// Explicitly resets the usage for a subject
+    /// Explicitly resets usage for an address.
     ///
     /// @dev Only callable by admin.
-    /// @param addr Subject address to reset
     pub fn reset_usage(env: Env, addr: Address) {
         Self::require_admin_auth(&env);
-        let now = env.ledger().timestamp();
-        let u = Usage {
-            count: 0,
-            window_start: now,
-        };
-        env.storage().persistent().set(&StorageKey::Usage(addr), &u);
+        env.storage().persistent().remove(&StorageKey::Usage(addr));
+    }
+
+    /// Transfers admin rights to a new address.
+    ///
+    /// @dev Only callable by current admin.
+    pub fn transfer_admin(env: Env, new_admin: Address) {
+        Self::require_admin_auth(&env);
+        env.storage().persistent().set(&StorageKey::Admin, &new_admin);
+    }
+
+    /// Gets current config for an address.
+    pub fn get_limit_for(env: Env, addr: Address) -> LimitConfig {
+        Self::get_limit_config(&env, &addr)
+    }
+
+    /// Gets effective admin address.
+    pub fn get_admin(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&StorageKey::Admin)
     }
 
     // Internal helpers
 
+    fn consume_bucket(env: &Env, key: StorageKey, burst: u32, refill_rate: u32) -> u32 {
+        let now = env.ledger().timestamp();
+        let mut usage: Usage = env.storage().persistent().get(&key).unwrap_or(Usage {
+            last_update: now,
+            tokens: burst,
+        });
+
+        // Refill tokens based on time elapsed since last update
+        let elapsed = now.saturating_sub(usage.last_update);
+        if elapsed > 0 {
+            let new_tokens = (elapsed as u32).saturating_mul(refill_rate);
+            usage.tokens = usage.tokens.saturating_add(new_tokens);
+            if usage.tokens > burst {
+                usage.tokens = burst;
+            }
+            usage.last_update = now;
+        }
+
+        assert!(usage.tokens >= 1, "rate limit exceeded");
+        usage.tokens -= 1;
+
+        env.storage().persistent().set(&key, &usage);
+        usage.tokens
+    }
+
+    fn get_limit_config(env: &Env, addr: &Address) -> LimitConfig {
+        env.storage().persistent().get(&StorageKey::Limit(addr.clone())).unwrap_or_else(|| {
+            LimitConfig {
+                burst: env.storage().persistent().get(&StorageKey::DefaultBurst).unwrap_or(0),
+                refill_rate: env.storage().persistent().get(&StorageKey::DefaultRefillRate).unwrap_or(0),
+            }
+        })
+    }
+
+    fn is_initialized(env: &Env) -> bool {
+        env.storage().persistent().get(&StorageKey::Initialized).unwrap_or(false)
+    }
+
     fn require_initialized(env: &Env) {
-        let initialized: bool = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::Initialized)
-            .unwrap_or(false);
-        assert!(initialized, "Not initialized");
+        assert!(Self::is_initialized(env), "not initialized");
     }
 
     fn require_admin_auth(env: &Env) {
-        let admin: Address = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::Admin)
-            .expect("Admin not set");
+        let admin: Address = env.storage().persistent().get(&StorageKey::Admin).expect("admin not set");
         admin.require_auth();
     }
-
-    fn window_seconds(env: &Env) -> u64 {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::WindowSeconds)
-            .unwrap_or(0u64)
-    }
-
-    fn is_window_expired(window_start: u64, now: u64, window_seconds: u64) -> bool {
-        now.saturating_sub(window_start) >= window_seconds
-    }
 }
+
