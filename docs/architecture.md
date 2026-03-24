@@ -97,3 +97,22 @@ Stellopay Core is a Soroban-based payroll and agreement system. It consists of:
 - `tools/cli/` – CLI for deployment and interaction.
 
 This architecture is intended to stay aligned with the codebase; for implementation details, refer to the contract sources and their NatSpec comments.
+
+## Security-Critical Entrypoints
+
+The contracts rely on checks-effects-interactions for token-moving paths.
+The following entrypoints are security-critical and have explicit
+authorization and accounting invariants:
+
+- `expense_reimbursement::initialize`
+- `expense_reimbursement::pay_expense`
+- `payroll_escrow::release`
+- `payroll_escrow::refund_remaining`
+- `payment_scheduler::process_due_payments`
+- `bonus_system::claim_incentive`
+- `token_vesting::claim`
+- `token_vesting::approve_early_release`
+- `token_vesting::revoke`
+
+For these paths, mutable state is committed before external token transfers so
+nested callbacks cannot observe stale state.

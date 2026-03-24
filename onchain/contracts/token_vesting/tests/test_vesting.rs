@@ -98,6 +98,9 @@ fn linear_vesting_claim_flow() {
     let claimed2 = client.claim(&beneficiary, &schedule_id);
     assert_eq!(claimed2, remaining);
 
+    let second = client.try_claim(&beneficiary, &schedule_id);
+    assert!(second.is_err());
+
     let schedule = client.get_schedule(&schedule_id).unwrap();
     assert_eq!(schedule.status, VestingStatus::Completed);
 }

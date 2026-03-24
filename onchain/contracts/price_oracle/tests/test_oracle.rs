@@ -48,13 +48,11 @@ fn initialize_and_configure_pair() {
     let (oracle_id, oracle_client, oracle_owner) = setup_oracle(&env, &payroll_id);
 
     // Designate the oracle contract as FX admin in the payroll contract.
-    payroll_client
-        .set_exchange_rate_admin(&payroll_owner, &oracle_id)
-        .unwrap();
+    payroll_client.set_exchange_rate_admin(&payroll_owner, &oracle_id);
 
     // Configure an oracle source and a pair.
     let source = Address::generate(&env);
-    oracle_client.add_source(&oracle_owner, &source).unwrap();
+    oracle_client.add_source(&oracle_owner, &source);
     assert!(oracle_client.is_source_address(&source));
 
     let base = Address::generate(&env);
@@ -64,16 +62,14 @@ fn initialize_and_configure_pair() {
     let max_rate: i128 = 5_000_000; // 5.0
     let max_staleness: u64 = 600;
 
-    oracle_client
-        .configure_pair(
-            &oracle_owner,
-            &base,
-            &quote,
-            &min_rate,
-            &max_rate,
-            &max_staleness,
-        )
-        .unwrap();
+    oracle_client.configure_pair(
+        &oracle_owner,
+        &base,
+        &quote,
+        &min_rate,
+        &max_rate,
+        &max_staleness,
+    );
 
     let cfg: PairConfig = oracle_client.get_pair_config(&base, &quote).unwrap();
     assert!(cfg.enabled);
@@ -88,9 +84,7 @@ fn initialize_and_configure_pair() {
     let rate: i128 = 2_000_000; // 2.0
     let source_ts: u64 = 1_000;
 
-    oracle_client
-        .push_price(&source, &base, &quote, &rate, &source_ts)
-        .unwrap();
+    oracle_client.push_price(&source, &base, &quote, &rate, &source_ts);
 
     // Pair state updated.
     let state: PairState = oracle_client.get_pair_state(&base, &quote).unwrap();
@@ -101,7 +95,7 @@ fn initialize_and_configure_pair() {
     // Payroll contract should now reflect the FX rate.
     let amount: i128 = 10;
     let converted = payroll_client.convert_currency(&base, &quote, &amount);
-    assert_eq!(converted, Ok(20));
+    assert_eq!(converted, 20);
 }
 
 #[test]
@@ -111,9 +105,7 @@ fn unauthorized_and_invalid_updates_rejected() {
     let (payroll_id, payroll_owner, payroll_client) = setup_payroll(&env);
     let (_oracle_id, oracle_client, oracle_owner) = setup_oracle(&env, &payroll_id);
 
-    payroll_client
-        .set_exchange_rate_admin(&payroll_owner, &_oracle_id)
-        .unwrap();
+    payroll_client.set_exchange_rate_admin(&payroll_owner, &_oracle_id);
 
     let base = Address::generate(&env);
     let quote = Address::generate(&env);
@@ -122,16 +114,14 @@ fn unauthorized_and_invalid_updates_rejected() {
     let max_rate: i128 = 3_000_000;
     let max_staleness: u64 = 300;
 
-    oracle_client
-        .configure_pair(
-            &oracle_owner,
-            &base,
-            &quote,
-            &min_rate,
-            &max_rate,
-            &max_staleness,
-        )
-        .unwrap();
+    oracle_client.configure_pair(
+        &oracle_owner,
+        &base,
+        &quote,
+        &min_rate,
+        &max_rate,
+        &max_staleness,
+    );
 
     // Unregistered source is rejected.
     let unknown_source = Address::generate(&env);
@@ -140,7 +130,7 @@ fn unauthorized_and_invalid_updates_rejected() {
 
     // Register source.
     let source = Address::generate(&env);
-    oracle_client.add_source(&oracle_owner, &source).unwrap();
+    oracle_client.add_source(&oracle_owner, &source);
 
     env.ledger().with_mut(|li| {
         li.timestamp = 1_000;
@@ -162,42 +152,37 @@ fn monotonic_updates_and_fallback_behavior() {
     let (payroll_id, payroll_owner, payroll_client) = setup_payroll(&env);
     let (_oracle_id, oracle_client, oracle_owner) = setup_oracle(&env, &payroll_id);
 
-    payroll_client
-        .set_exchange_rate_admin(&payroll_owner, &_oracle_id)
-        .unwrap();
+    payroll_client.set_exchange_rate_admin(&payroll_owner, &_oracle_id);
 
     let base = Address::generate(&env);
     let quote = Address::generate(&env);
 
-    oracle_client
-        .configure_pair(
-            &oracle_owner,
-            &base,
-            &quote,
-            &1_000_000i128,
-            &4_000_000i128,
-            &600u64,
-        )
-        .unwrap();
+    oracle_client.configure_pair(
+        &oracle_owner,
+        &base,
+        &quote,
+        &1_000_000i128,
+        &4_000_000i128,
+        &600u64,
+    );
 
     let primary = Address::generate(&env);
     let backup = Address::generate(&env);
-    oracle_client.add_source(&oracle_owner, &primary).unwrap();
-    oracle_client.add_source(&oracle_owner, &backup).unwrap();
+    oracle_client.add_source(&oracle_owner, &primary);
+    oracle_client.add_source(&oracle_owner, &backup);
 
     // Primary reports first.
     env.ledger().with_mut(|li| {
         li.timestamp = 2_000;
     });
 
-    oracle_client
-        .push_price(&primary, &base, &quote, &2_000_000i128, &2_000u64)
-        .unwrap();
+    oracle_client.push_price(&primary, &base, &quote, &2_000_000i128, &2_000u64);
 
     // Backup reports a newer, valid rate.
-    oracle_client
-        .push_price(&backup, &base, &quote, &3_000_000i128, &2_100u64)
-        .unwrap();
+    env.ledger().with_mut(|li| {
+        li.timestamp = 2_100;
+    });
+    oracle_client.push_price(&backup, &base, &quote, &3_000_000i128, &2_100u64);
 
     // Older updates are ignored.
     let _ = oracle_client.push_price(&primary, &base, &quote, &1_500_000i128, &1_900u64);
@@ -209,5 +194,5 @@ fn monotonic_updates_and_fallback_behavior() {
     // Payroll sees the latest rate.
     let amount: i128 = 10;
     let converted = payroll_client.convert_currency(&base, &quote, &amount);
-    assert_eq!(converted, Ok(30));
+    assert_eq!(converted, 30);
 }

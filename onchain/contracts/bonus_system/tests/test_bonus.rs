@@ -88,6 +88,9 @@ fn test_one_time_bonus_claim_after_unlock() {
     let stored = client.get_incentive(&incentive_id).unwrap();
     assert_eq!(stored.status, ApprovalStatus::Completed);
     assert_eq!(stored.claimed_payouts, 1);
+
+    let second = client.try_claim_incentive(&employee, &incentive_id);
+    assert!(second.is_err());
 }
 
 #[test]

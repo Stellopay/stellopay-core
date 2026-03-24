@@ -128,6 +128,7 @@ impl ExpenseReimbursementContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn initialize(env: Env, owner: Address) {
+        owner.require_auth();
         assert!(
             !env.storage()
                 .persistent()
@@ -361,13 +362,15 @@ impl ExpenseReimbursementContract {
 
         assert!(expense.status == ExpenseStatus::Approved, "Not approved");
 
-        let token_client = token::Client::new(&env, &expense.token);
-        token_client.transfer(&payer, &expense.submitter, &expense.amount);
-
+        // Checks-effects-interactions:
+        // mark as paid before external token call to prevent reentrant double payment.
         expense.status = ExpenseStatus::Paid;
         env.storage()
             .persistent()
             .set(&StorageKey::Expense(expense_id), &expense);
+
+        let token_client = token::Client::new(&env, &expense.token);
+        token_client.transfer(&payer, &expense.submitter, &expense.amount);
 
         env.events().publish(
             (String::from_str(&env, "expense_paid"), expense_id),

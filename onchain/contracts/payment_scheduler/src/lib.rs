@@ -255,12 +255,9 @@ impl PaymentSchedulerContract {
                         write_job(&env, &job_mut);
                         processed = processed.saturating_add(1);
                     } else {
-                        // Execute payment
-                        token_client.transfer(
-                            &env.current_contract_address(),
-                            &job_mut.recipient,
-                            &job_mut.amount,
-                        );
+                        // Checks-effects-interactions:
+                        // commit job progress before transfer so reentrant
+                        // callbacks cannot re-execute the same due payment.
                         job_mut.executions = job_mut.executions.saturating_add(1);
                         job_mut.retry_count = 0;
                         job_mut.next_scheduled_time = now.saturating_add(job_mut.interval_seconds);
@@ -271,6 +268,15 @@ impl PaymentSchedulerContract {
                             }
                         }
 
+                        write_job(&env, &job_mut);
+
+                        // Execute payment
+                        token_client.transfer(
+                            &env.current_contract_address(),
+                            &job_mut.recipient,
+                            &job_mut.amount,
+                        );
+
                         env.events().publish(
                             ("job_executed", job_mut.id),
                             JobExecutedEvent {
@@ -279,7 +285,6 @@ impl PaymentSchedulerContract {
                                 amount: job_mut.amount,
                             },
                         );
-                        write_job(&env, &job_mut);
                         processed = processed.saturating_add(1);
                     }
                 }

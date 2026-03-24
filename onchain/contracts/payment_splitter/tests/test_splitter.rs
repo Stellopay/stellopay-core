@@ -79,10 +79,12 @@ fn test_compute_split_percent() {
     let id = client.create_split(&creator, &recipients);
     let out = client.compute_split(&id, &1000);
     assert_eq!(out.len(), 2);
-    assert_eq!(out.get(0).0, a);
-    assert_eq!(out.get(0).1, 600);
-    assert_eq!(out.get(1).0, b);
-    assert_eq!(out.get(1).1, 400);
+    let first = out.get(0).unwrap();
+    let second = out.get(1).unwrap();
+    assert_eq!(first.0, a);
+    assert_eq!(first.1, 600);
+    assert_eq!(second.0, b);
+    assert_eq!(second.1, 400);
 }
 
 #[test]
@@ -103,8 +105,8 @@ fn test_compute_split_fixed() {
     });
     let id = client.create_split(&creator, &recipients);
     let out = client.compute_split(&id, &1000);
-    assert_eq!(out.get(0).1, 300);
-    assert_eq!(out.get(1).1, 700);
+    assert_eq!(out.get(0).unwrap().1, 300);
+    assert_eq!(out.get(1).unwrap().1, 700);
     assert!(client.validate_split_for_amount(&id, &1000));
     assert!(!client.validate_split_for_amount(&id, &500));
 }

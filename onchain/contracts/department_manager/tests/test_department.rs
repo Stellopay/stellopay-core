@@ -3,9 +3,7 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
-use department_manager::{
-    Department, DepartmentManagerContract, DepartmentManagerContractClient, Organization,
-};
+use department_manager::{DepartmentManagerContract, DepartmentManagerContractClient};
 use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env};
 
 fn create_env() -> Env {
@@ -64,12 +62,12 @@ fn test_create_department_top_level() {
     let (_cid, client) = setup_contract(&env);
     let owner = Address::generate(&env);
     let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
-    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("Engineering"), &None);
+    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("EngTeam"), &None);
     assert_eq!(dept_id, 1);
     let dept = client.get_department(&dept_id);
     assert_eq!(dept.org_id, org_id);
     assert_eq!(dept.parent_id, None);
-    assert_eq!(dept.name, symbol_short!("Engineering"));
+    assert_eq!(dept.name, symbol_short!("EngTeam"));
 }
 
 #[test]
@@ -78,7 +76,7 @@ fn test_create_department_hierarchy() {
     let (_cid, client) = setup_contract(&env);
     let owner = Address::generate(&env);
     let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
-    let eng_id = client.create_department(&owner, &org_id, &symbol_short!("Engineering"), &None);
+    let eng_id = client.create_department(&owner, &org_id, &symbol_short!("EngTeam"), &None);
     let backend_id =
         client.create_department(&owner, &org_id, &symbol_short!("Backend"), &Some(eng_id));
     let dept = client.get_department(&backend_id);
@@ -86,7 +84,7 @@ fn test_create_department_hierarchy() {
     let (len, children, _) = client.get_department_report(&eng_id);
     assert_eq!(len, 0);
     assert_eq!(children.len(), 1);
-    assert_eq!(children.get(0), backend_id);
+    assert_eq!(children.get(0), Some(backend_id));
 }
 
 #[test]
@@ -101,7 +99,7 @@ fn test_assign_employee_and_report() {
 
     let employees = client.get_department_employees(&dept_id);
     assert_eq!(employees.len(), 1);
-    assert_eq!(employees.get(0), emp);
+    assert_eq!(employees.get(0), Some(emp.clone()));
 
     let emp_dept = client.get_employee_department(&emp, &org_id);
     assert_eq!(emp_dept, Some(dept_id));
@@ -109,7 +107,7 @@ fn test_assign_employee_and_report() {
     let (count, children, addrs) = client.get_department_report(&dept_id);
     assert_eq!(count, 1);
     assert_eq!(addrs.len(), 1);
-    assert_eq!(addrs.get(0), emp);
+    assert_eq!(addrs.get(0), Some(emp));
 }
 
 #[test]

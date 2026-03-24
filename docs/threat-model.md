@@ -129,6 +129,28 @@ This section references concrete mechanisms present in the codebase.
 - Contract errors are enumerated (`PayrollError`) in `onchain/contracts/stello_pay_contract/src/storage.rs`.
 - Batch claim operations are designed to be partially successful (errors captured per item) (see batch claim result types in `storage.rs`).
 
+### 5.5 Entry points reviewed in security pass #351
+
+The following externally callable entry points were reviewed and aligned to
+auth/composition expectations:
+
+- `expense_reimbursement::initialize` now requires `owner.require_auth()`.
+- `expense_reimbursement::pay_expense` updates status to `Paid` before token transfer.
+- `payroll_escrow::release` decrements per-agreement balance before transfer.
+- `payroll_escrow::refund_remaining` zeroes per-agreement balance before transfer.
+- `payment_scheduler::process_due_payments` commits execution counters and next schedule before transfer.
+- `bonus_system::claim_incentive` commits claimed payout counters/status before transfer.
+- `token_vesting::{claim, approve_early_release, revoke}` commit vesting state before transfer.
+
+Security invariants for these paths:
+
+- Auth completeness: every privileged or identity-bound operation gates with
+  explicit `require_auth()`.
+- Token conservation: each transfer path preserves per-object accounting
+  (`released + remaining == funded`, modulo expected refunds/claims).
+- Reentrancy resilience: mutable accounting is committed before external token
+  interaction.
+
 ---
 
 ## 6) Threats and mitigations

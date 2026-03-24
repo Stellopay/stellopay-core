@@ -213,6 +213,11 @@ impl PayrollEscrowContract {
     ///
     /// Only the manager contract can release funds.
     ///
+    /// # Invariant
+    ///
+    /// Agreement balance is reduced before the token transfer to avoid
+    /// reentrant double-release against stale balance state.
+    ///
     /// # Events
     ///
     /// Emits `Released` event on success.
@@ -245,15 +250,15 @@ impl PayrollEscrowContract {
             .get(&StorageKey::Token)
             .expect("Token not set");
 
-        // Transfer tokens
-        let token_client = soroban_sdk::token::Client::new(&env, &token);
-        token_client.transfer(&env.current_contract_address(), &to, &amount);
-
         // Update balance
         let new_balance = balance - amount;
         env.storage()
             .persistent()
             .set(&StorageKey::AgreementBalance(agreement_id), &new_balance);
+
+        // Transfer tokens
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        token_client.transfer(&env.current_contract_address(), &to, &amount);
 
         // Emit event
         env.events().publish(
@@ -286,6 +291,11 @@ impl PayrollEscrowContract {
     /// # Access Control
     ///
     /// Only the manager contract can refund funds.
+    ///
+    /// # Invariant
+    ///
+    /// Refunded agreement balance is zeroed before transfer so nested calls
+    /// cannot observe and drain the old balance twice.
     ///
     /// # Events
     ///
@@ -323,14 +333,14 @@ impl PayrollEscrowContract {
             .get(&StorageKey::Token)
             .expect("Token not set");
 
-        // Transfer tokens
-        let token_client = soroban_sdk::token::Client::new(&env, &token);
-        token_client.transfer(&env.current_contract_address(), &employer, &balance);
-
         // Clear balance
         env.storage()
             .persistent()
             .set(&StorageKey::AgreementBalance(agreement_id), &0i128);
+
+        // Transfer tokens
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        token_client.transfer(&env.current_contract_address(), &employer, &balance);
 
         // Emit event
         env.events().publish(
