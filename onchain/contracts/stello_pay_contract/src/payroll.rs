@@ -995,8 +995,18 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
     }
 
     let now = env.ledger().timestamp();
-    let created_time = agreement.created_at;
-    if created_time + agreement.grace_period_seconds <= now {
+    // Dispute window semantics:
+    // - If the agreement is Cancelled, the dispute window is the *cancellation grace period*.
+    // - Otherwise, the dispute window is the *creation grace period* (legacy behavior).
+    let window_start = if agreement.status == AgreementStatus::Cancelled {
+        agreement
+            .cancelled_at
+            .ok_or(PayrollError::NotInGracePeriod)?
+    } else {
+        agreement.created_at
+    };
+
+    if window_start + agreement.grace_period_seconds <= now {
         return Err(PayrollError::NotInGracePeriod);
     }
 
@@ -2419,12 +2429,29 @@ pub fn finalize_grace_period(env: &Env, agreement_id: u128) {
     let escrow_balance = DataKey::get_agreement_escrow_balance(env, agreement_id, &agreement.token);
 
     if escrow_balance > 0 {
-        let token_client = soroban_sdk::token::Client::new(env, &agreement.token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &agreement.employer,
-            &escrow_balance,
-        );
+        // Token `transfer(from=contract_address, ...)` requires contract auth.
+        // Mirror the same `authorize_as_current_contract` pattern used in claim paths.
+        let contract_address = env.current_contract_address();
+        let token_client = token::Client::new(env, &agreement.token);
+        env.authorize_as_current_contract(Vec::from_array(
+            env,
+            [InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: agreement.token.clone(),
+                    fn_name: Symbol::new(env, "transfer"),
+                    args: Vec::<Val>::from_array(
+                        env,
+                        [
+                            contract_address.clone().into_val(env),
+                            agreement.employer.clone().into_val(env),
+                            escrow_balance.into_val(env),
+                        ],
+                    ),
+                },
+                sub_invocations: Vec::new(env),
+            })],
+        ));
+        token_client.transfer(&contract_address, &agreement.employer, &escrow_balance);
 
         // Clear escrow balance
         DataKey::set_agreement_escrow_balance(env, agreement_id, &agreement.token, 0);
