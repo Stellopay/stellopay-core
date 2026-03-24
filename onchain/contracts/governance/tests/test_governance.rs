@@ -24,8 +24,8 @@ fn setup_initialized(env: &Env) -> (GovernanceContractClient<'static>, Address, 
     let voter1 = Address::generate(env);
     let voter2 = Address::generate(env);
 
-    // quorum 50%, voting period 100 seconds, timelock 10 seconds
-    client.initialize(&owner, &5000u32, &100u64, &10u64);
+    // quorum 50%, voting period 100 seconds, timelock 10 seconds, execution window 100 seconds
+    client.initialize(&owner, &5000u32, &100u64, &10u64, &100u64);
 
     // give both voters equal power
     client.set_voter_power(&owner, &voter1, &10i128);
@@ -45,18 +45,20 @@ fn initialize_and_config() {
     let env = create_env();
     let (client, owner, _, _) = setup_initialized(&env);
 
-    let (cfg_owner, quorum_bps, voting_period, timelock) = client.get_config();
+    let (cfg_owner, quorum_bps, voting_period, timelock, window) = client.get_config();
     assert_eq!(cfg_owner, owner);
     assert_eq!(quorum_bps, 5000u32);
     assert_eq!(voting_period, 100u64);
     assert_eq!(timelock, 10u64);
+    assert_eq!(window, 100u64);
 
     // owner can update config
-    client.update_config(&owner, &6000u32, &200u64, &20u64);
-    let (_o, q2, vp2, tl2) = client.get_config();
+    client.update_config(&owner, &6000u32, &200u64, &20u64, &300u64);
+    let (_o, q2, vp2, tl2, w2) = client.get_config();
     assert_eq!(q2, 6000u32);
     assert_eq!(vp2, 200u64);
     assert_eq!(tl2, 20u64);
+    assert_eq!(w2, 300u64);
 }
 
 #[test]
@@ -205,4 +207,56 @@ fn owner_can_cancel_before_execution() {
     // execute should now fail
     let res = client.try_execute(&proposal_id);
     assert!(res.is_err());
+}
+
+#[test]
+fn execution_window_expires() {
+    let env = create_env();
+    let (client, _owner, voter1, voter2) = setup_initialized(&env);
+
+    let kind = ProposalKind::ArbiterChange(Address::generate(&env));
+    let proposal_id = client.propose(&voter1, &kind);
+
+    client.vote(&voter1, &proposal_id, &VoteChoice::For);
+    client.vote(&voter2, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 101); // end voting
+    client.queue(&proposal_id);
+
+    advance_time(&env, 10); // end timelock
+    advance_time(&env, 101); // exceed execution window (100s)
+
+    let res = client.try_execute(&proposal_id);
+    assert!(res.is_err());
+
+    // Status is only updated when mark_expired is called
+    client.mark_expired(&proposal_id);
+
+    let p = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(p.status, ProposalStatus::Expired);
+}
+
+#[test]
+fn snapshot_voting_power() {
+    let env = create_env();
+    let (client, owner, voter1, voter2) = setup_initialized(&env);
+
+    let kind = ProposalKind::ArbiterChange(Address::generate(&env));
+    let proposal_id = client.propose(&voter1, &kind);
+
+    // increase voter power after proposal creation
+    client.set_voter_power(&owner, &voter1, &100i128);
+
+    // vote uses current power (which is 100 now)
+    client.vote(&voter1, &proposal_id, &VoteChoice::For);
+
+    // HOWEVER, the total_power used for quorum calculation is snapshotted (20)
+    // 100 votes out of 20 total power = 500% participation (meets 50% quorum)
+    advance_time(&env, 101);
+    client.queue(&proposal_id);
+
+    let p = client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(p.status, ProposalStatus::Succeeded);
+    assert_eq!(p.for_votes, 100);
+    assert_eq!(p.total_power_at_propose, 20);
 }

@@ -1,125 +1,27 @@
-## Governance and Voting Contract
+# Governance Module
 
-The `governance` contract provides on-chain governance primitives for Stellopay
-deployments. It supports configurable quorum and voting periods, proposal
-creation and voting, and time-locked execution of approved proposals.
+The Governance contract provides on-chain decision-making primitives for the Stellopay ecosystem. it enables stakeholders to propose, vote on, and execute changes such as parameter adjustments, contract upgrades, and arbiter changes.
 
-### Contract Location
+## Proposal Lifecycle
 
-- Contract: `onchain/contracts/governance/src/lib.rs`
-- Tests: `onchain/contracts/governance/tests/test_governance.rs`
+1.  **Propose**: Any address with non-zero voting power can create a proposal. The voting power of all participants is snapshotted at the moment of proposal creation to prevent vote inflation via power transfers during the process.
+2.  **Vote**: Holders of voting power cast votes (`For`, `Against`, or `Abstain`). Each address can vote only once per proposal.
+3.  **Queue**: Once the voting period ends, any user can trigger the `queue` function. The contract calculates if the quorum was met and if the proposal was approved (`For > Against`). If successful, the proposal enters a **Timelock** state.
+4.  **Execute**: After the timelock expires, the proposal can be executed. Execution must occur within the **Execution Window**. If this window passes, the proposal is marked as `Expired` and cannot be executed.
+5.  **Cancel**: The owner can cancel a proposal at any time before it is executed, providing an emergency guardrail.
 
-### Design Goals
+## Configuration
 
-- **Configurable quorum and timing** – Owners can set quorum (in basis points),
-  voting period duration, and an execution timelock.
-- **Simple voting model** – Explicit voter weights (voting power) managed by
-  the owner; each voter can vote once per proposal.
-- **Time-locked execution** – Successful proposals enter a queued state and can
-  only be executed after a configured timelock.
-- **Integration with existing admin/owner roles** – The same owner that
-  controls upgrade or admin flows for other contracts can be used as the
-  governance owner or delegate voting power to additional addresses.
-- **Auditability** – Proposals and votes are stored on-chain with clear
-  configuration and outcome state.
+| Parameter | Description |
+| :--- | :--- |
+| `Quorum Bps` | Minimum percentage of total voting power required for a proposal to be valid (in basis points, e.g., 5000 = 50%). |
+| `Voting Period` | Duration (in seconds) that a proposal is open for voting. |
+| `Timelock` | Forced delay (in seconds) between proposal success and execution. |
+| `Execution Window` | Duration (in seconds) after the timelock during which a proposal must be executed. |
 
-### Data Model
+## Security Assumptions
 
-- `ProposalKind`
-  - `ParameterChange { key: Symbol, value: i128 }` – Generic on-chain parameter
-    slot stored under the given key.
-  - `UpgradeContract { target: Address, new_wasm_hash: BytesN<32> }` –
-    Governance approval for a contract upgrade; the actual upgrade is performed
-    by an owner/upgrader using this recorded hash.
-  - `ArbiterChange { new_arbiter: Address }` – Records an approved arbiter
-    address for downstream dispute-resolution flows.
-- `ProposalStatus`
-  - `Active`, `Succeeded`, `Defeated`, `Cancelled`, `Executed`
-- `Proposal`
-  - `id`, `proposer`, `kind`, `status`
-  - `for_votes`, `against_votes`, `abstain_votes`
-  - `start_time`, `end_time`, `eta` (execution time after timelock)
-- `VoteChoice`
-  - `For`, `Against`, `Abstain`
-- Voter weights
-  - `VoterPower(Address) -> i128`
-  - `TotalVotingPower` aggregate for quorum calculations
-
-Quorum is expressed in basis points (`quorum_bps`) over
-`TotalVotingPower`. Participation and approvals are computed from the sum of
-`for_votes`, `against_votes`, and `abstain_votes`.
-
-### Public API
-
-Initialization and configuration:
-
-- `initialize(owner, quorum_bps, voting_period_seconds, timelock_seconds)`
-- `update_config(caller, quorum_bps, voting_period_seconds, timelock_seconds)`
-
-Voter management:
-
-- `set_voter_power(caller, voter, power)`
-- `get_voter_power(voter) -> i128`
-- `get_total_voting_power() -> i128`
-
-Governance workflow:
-
-- `propose(proposer, kind) -> proposal_id`
-- `vote(voter, proposal_id, choice)`
-- `queue(proposal_id)` – Finalizes outcome and, on success, sets `eta`.
-- `execute(proposal_id)` – After timelock expiry, applies the intent:
-  - `ParameterChange` writes `key -> value` into governance storage.
-  - `ArbiterChange` updates the stored arbiter address.
-  - `UpgradeContract` records an approved hash per target address.
-- `cancel(caller, proposal_id)` – Owner-only cancellation before execution.
-
-Read helpers:
-
-- `get_config() -> (owner, quorum_bps, voting_period_seconds, timelock_seconds)`
-- `get_proposal(proposal_id) -> Option<Proposal>`
-- `get_vote(proposal_id, voter) -> Option<VoteChoice>`
-- `get_parameter(key) -> Option<i128>`
-- `get_arbiter() -> Option<Address>`
-- `get_approved_upgrade(target) -> Option<BytesN<32>>`
-
-### Governance Flow
-
-1. **Configuration** – Contract owner initializes and optionally updates
-   quorum, voting period, and timelock.
-2. **Voter setup** – Owner assigns voting power to authorized addresses, which
-   can reflect RBAC roles, multisig signers, or token-weighted governance.
-3. **Proposal creation** – Any address with non-zero voting power can create a
-   proposal.
-4. **Voting** – Voters cast a single `For`, `Against`, or `Abstain` vote while
-   the proposal is `Active` and within its `[start_time, end_time]` window.
-5. **Queue** – After the voting period ends, anyone can call `queue` to compute
-   quorum and approval and, if satisfied, transition the proposal to
-   `Succeeded` and set its `eta`.
-6. **Execution** – After `eta` and the configured timelock, `execute` applies
-   the proposal’s effect in governance storage for integration or off-chain
-   tooling.
-7. **Cancellation** – The owner can cancel `Active` or `Succeeded` proposals as
-   an emergency override.
-
-### Integration Notes
-
-- **Admin/owner roles** – The governance owner should typically be the same
-  principal (wallet, multisig, or RBAC-admin) that controls upgrades and admin
-  operations for the broader Stellopay deployment.
-- **Upgrade and arbiter intents** – Other contracts or operational tooling
-  should read:
-  - `get_approved_upgrade(target)` before performing an upgrade on `target`.
-  - `get_arbiter()` when configuring arbiters in dispute or payroll contracts.
-- **Parameter reads** – Contracts can integrate by reading specific keys from
-  `get_parameter(key)` for feature flags, risk limits, or rate bounds.
-
-### Security Considerations
-
-- Keep `quorum_bps` and voter power assignments aligned with your risk model.
-- Use multisig and/or RBAC for the governance owner where possible.
-- Prefer long enough `voting_period_seconds` and `timelock_seconds` to allow
-  monitoring and intervention for sensitive proposals (e.g. upgrades).
-- Snapshot-style behavior is implicit: voting power is read at vote time; if
-  using tokenized governance externally, ensure power changes are coordinated to
-  avoid unexpected outcomes.
-
+-   **Double Execution**: Prevented by state transitions; once a proposal is `Executed`, it cannot be triggered again.
+-   **Vote Inflation**: Prevented by using the snapshot of voting power taken at proposal creation.
+-   **Late Votes**: Disallowed by strict timestamp checks against `end_time`.
+-   **Execution Guards**: Timelocks ensure stakeholders have time to react to approved changes, and execution windows prevent stale proposals from being executed unexpectedly.
