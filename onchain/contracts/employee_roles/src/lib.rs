@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Symbol, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Vec};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 
@@ -19,12 +19,52 @@ pub enum RoleError {
 ///
 /// Higher ordinal values represent strictly higher privileges:
 /// Admin > Manager > Employee.
+///
+/// ## Capability Mapping (NatSpec)
+/// | Role   | Allowed Actions                                                                 |
+/// |--------|----------------------------------------------------------------------------------|
+/// | Employee | ViewPayrollStatus, ViewPayrollHistory, ClaimOwnPayroll, WithdrawOwnPayroll   |
+/// | Manager  | + CreatePayrollRecord, UpdatePayrollRecord, PauseEmployeePayroll, ResumeEmployeePayroll |
+/// | Admin    | + AssignRoles, RevokeRoles, EmergencyPause, EmergencyUnpause                   |
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq, Copy)]
 pub enum BuiltInRole {
     Employee = 1,
     Manager = 2,
     Admin = 3,
+}
+
+/// Payroll actions that can be permission-checked via role hierarchy.
+///
+/// Each action maps to a minimum required role. Admin implicitly satisfies
+/// all lower-level capabilities.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq, Copy)]
+pub enum PayrollAction {
+    /// View own payroll status (Employee+).
+    ViewPayrollStatus = 1,
+    /// View own payroll history (Employee+).
+    ViewPayrollHistory = 2,
+    /// Claim/withdraw own payroll (Employee+).
+    ClaimOwnPayroll = 3,
+    /// Withdraw own payroll funds (Employee+).
+    WithdrawOwnPayroll = 4,
+    /// Create payroll records for team (Manager+).
+    CreatePayrollRecord = 5,
+    /// Update payroll records for team (Manager+).
+    UpdatePayrollRecord = 6,
+    /// Pause employee payroll (Manager+).
+    PauseEmployeePayroll = 7,
+    /// Resume employee payroll (Manager+).
+    ResumeEmployeePayroll = 8,
+    /// Assign roles to employees (Admin+).
+    AssignRoles = 9,
+    /// Revoke roles from employees (Admin+).
+    RevokeRoles = 10,
+    /// Emergency pause (Admin+).
+    EmergencyPause = 11,
+    /// Emergency unpause (Admin+).
+    EmergencyUnpause = 12,
 }
 
 /// Storage keys for the employee roles contract.
@@ -63,6 +103,9 @@ impl EmployeeRolesContract {
     /// Requires caller authentication
     pub fn initialize(env: Env, owner: Address) {
         owner.require_auth();
+        if env.storage().persistent().has(&StorageKey::Owner) {
+            panic!("Already initialized");
+        }
         env.storage().persistent().set(&StorageKey::Owner, &owner);
     }
 
@@ -88,6 +131,12 @@ impl EmployeeRolesContract {
         role: BuiltInRole,
     ) -> Result<(), RoleError> {
         Self::require_role_admin(&env, &caller)?;
+
+        // Escalation safeguard: non-owner caller must have at least the role being assigned.
+        let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        if caller != owner && !Self::has_role_at_least(env.clone(), caller.clone(), role) {
+            return Err(RoleError::Unauthorized);
+        }
 
         let mut roles: Vec<BuiltInRole> = env
             .storage()
@@ -128,7 +177,13 @@ impl EmployeeRolesContract {
     ) -> Result<(), RoleError> {
         Self::require_role_admin(&env, &caller)?;
 
-        let mut roles: Vec<BuiltInRole> = env
+        // Escalation safeguard: non-owner caller must have at least the role being revoked.
+        let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        if caller != owner && !Self::has_role_at_least(env.clone(), caller.clone(), role) {
+            return Err(RoleError::Unauthorized);
+        }
+
+        let roles: Vec<BuiltInRole> = env
             .storage()
             .persistent()
             .get(&StorageKey::EmployeeRoles(employee.clone()))
@@ -201,6 +256,69 @@ impl EmployeeRolesContract {
 
         let required_level = required as u32;
         roles.iter().any(|r| (r as u32) >= required_level)
+    }
+
+    /// Checks whether `employee` can perform the given payroll action.
+    ///
+    /// Owner and Admin can perform all actions; Manager can perform
+    /// Manager- and Employee-level actions; Employee can perform
+    /// Employee-level actions only.
+    ///
+    /// # Arguments
+    /// * `employee` - Employee address to check
+    /// * `action` - Payroll action to authorize
+    ///
+    /// # Returns
+    /// `true` if the employee has sufficient role for the action.
+    pub fn can_perform(env: Env, employee: Address, action: PayrollAction) -> bool {
+        let owner: Option<Address> = env.storage().persistent().get(&StorageKey::Owner);
+        if owner.as_ref() == Some(&employee) {
+            return true;
+        }
+
+        let required = Self::action_minimum_role(action);
+        Self::has_role_at_least(env, employee, required)
+    }
+
+    /// Enforces that `employee` can perform the given action; returns error if not.
+    ///
+    /// Use this in integrating contracts to gate payroll operations.
+    ///
+    /// # Arguments
+    /// * `employee` - Employee address (must be authenticated)
+    /// * `action` - Payroll action to authorize
+    ///
+    /// # Errors
+    /// Returns `RoleError::Unauthorized` if the employee lacks the required role.
+    pub fn require_capability(
+        env: Env,
+        employee: Address,
+        action: PayrollAction,
+    ) -> Result<(), RoleError> {
+        employee.require_auth();
+        if Self::can_perform(env.clone(), employee.clone(), action) {
+            Ok(())
+        } else {
+            Err(RoleError::Unauthorized)
+        }
+    }
+
+    /// Maps a payroll action to its minimum required role.
+    fn action_minimum_role(action: PayrollAction) -> BuiltInRole {
+        match action {
+            PayrollAction::ViewPayrollStatus
+            | PayrollAction::ViewPayrollHistory
+            | PayrollAction::ClaimOwnPayroll
+            | PayrollAction::WithdrawOwnPayroll => BuiltInRole::Employee,
+            PayrollAction::CreatePayrollRecord
+            | PayrollAction::UpdatePayrollRecord
+            | PayrollAction::PauseEmployeePayroll
+            | PayrollAction::ResumeEmployeePayroll => BuiltInRole::Manager,
+            PayrollAction::AssignRoles
+            | PayrollAction::RevokeRoles
+            | PayrollAction::EmergencyPause
+            | PayrollAction::EmergencyUnpause => BuiltInRole::Admin,
+        }
     }
 
     /// Internal helper: require that `caller` is allowed to manage roles.
