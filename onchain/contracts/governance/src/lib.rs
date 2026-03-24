@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, Symbol};
 
 /// Basis points denominator used for quorum configuration (100% = 10_000 bps).
 const BPS_DENOMINATOR: u32 = 10_000;
@@ -57,6 +57,8 @@ pub enum ProposalStatus {
     Cancelled,
     /// Proposal has been executed after the timelock.
     Executed,
+    /// Proposal was not executed within the allowed window.
+    Expired,
 }
 
 /// Vote choices for a proposal.
@@ -81,9 +83,10 @@ pub struct Proposal {
     pub abstain_votes: i128,
     pub start_time: u64,
     pub end_time: u64,
-    /// Earliest timestamp at which the proposal can be executed,
-    /// set when the proposal moves to `Succeeded`.
+    /// Earliest timestamp at which the proposal can be executed.
     pub eta: Option<u64>,
+    /// Total voting power at the time of proposal creation (snapshot).
+    pub total_power_at_propose: i128,
 }
 
 /// Storage keys for governance state.
@@ -109,6 +112,8 @@ pub enum StorageKey {
     VotingPeriodSeconds,
     /// Execution timelock in seconds applied after proposal success.
     TimelockSeconds,
+    /// Window after timelock during which a proposal is executable.
+    ExecutionWindowSeconds,
     /// Parameter storage for `ParameterChange` proposals: key -> value.
     Parameter(Symbol),
     /// Last approved arbiter address from `ArbiterChange` proposals.
@@ -212,6 +217,13 @@ fn get_timelock(env: &Env) -> u64 {
         .unwrap_or(0)
 }
 
+fn get_execution_window(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get::<_, u64>(&StorageKey::ExecutionWindowSeconds)
+        .unwrap_or(0)
+}
+
 #[contract]
 pub struct GovernanceContract;
 
@@ -223,12 +235,14 @@ impl GovernanceContract {
     /// @param quorum_bps Quorum requirement in basis points (1-10_000).
     /// @param voting_period_seconds Duration of the voting period in seconds.
     /// @param timelock_seconds Delay between proposal success and execution.
+    /// @param execution_window_seconds Window after timelock during which a proposal remains executable.
     pub fn initialize(
         env: Env,
         owner: Address,
         quorum_bps: u32,
         voting_period_seconds: u64,
         timelock_seconds: u64,
+        execution_window_seconds: u64,
     ) {
         owner.require_auth();
 
@@ -244,7 +258,7 @@ impl GovernanceContract {
             "invalid quorum"
         );
         assert!(voting_period_seconds > 0, "invalid voting period");
-        // Timelock of zero is allowed (immediate execution after success).
+        assert!(execution_window_seconds > 0, "invalid execution window");
 
         env.storage().persistent().set(&StorageKey::Owner, &owner);
         env.storage()
@@ -258,6 +272,9 @@ impl GovernanceContract {
             .set(&StorageKey::TimelockSeconds, &timelock_seconds);
         env.storage()
             .persistent()
+            .set(&StorageKey::ExecutionWindowSeconds, &execution_window_seconds);
+        env.storage()
+            .persistent()
             .set(&StorageKey::Initialized, &true);
     }
 
@@ -267,12 +284,14 @@ impl GovernanceContract {
     /// @param quorum_bps New quorum in basis points (1-10_000).
     /// @param voting_period_seconds New voting period in seconds.
     /// @param timelock_seconds New timelock in seconds.
+    /// @param execution_window_seconds New execution window in seconds.
     pub fn update_config(
         env: Env,
         caller: Address,
         quorum_bps: u32,
         voting_period_seconds: u64,
         timelock_seconds: u64,
+        execution_window_seconds: u64,
     ) {
         require_initialized(&env);
         require_owner(&env, &caller);
@@ -282,6 +301,7 @@ impl GovernanceContract {
             "invalid quorum"
         );
         assert!(voting_period_seconds > 0, "invalid voting period");
+        assert!(execution_window_seconds > 0, "invalid execution window");
 
         env.storage()
             .persistent()
@@ -292,6 +312,9 @@ impl GovernanceContract {
         env.storage()
             .persistent()
             .set(&StorageKey::TimelockSeconds, &timelock_seconds);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ExecutionWindowSeconds, &execution_window_seconds);
     }
 
     /// @notice Sets or updates the voting power for a voter.
@@ -330,6 +353,7 @@ impl GovernanceContract {
 
         let now = env.ledger().timestamp();
         let id = next_proposal_id(&env);
+        let total_power = read_total_power(&env);
 
         let proposal = Proposal {
             id,
@@ -342,6 +366,7 @@ impl GovernanceContract {
             start_time: now,
             end_time: now.checked_add(voting_period).expect("voting end overflow"),
             eta: None,
+            total_power_at_propose: total_power,
         };
 
         write_proposal(&env, &proposal);
@@ -417,7 +442,7 @@ impl GovernanceContract {
         let now = env.ledger().timestamp();
         assert!(now > proposal.end_time, "voting still in progress");
 
-        let total_power = read_total_power(&env);
+        let total_power = proposal.total_power_at_propose;
         let quorum_bps = get_quorum_bps(&env);
 
         let total_participation = proposal
@@ -470,6 +495,13 @@ impl GovernanceContract {
         let now = env.ledger().timestamp();
         assert!(now >= eta, "timelock not expired");
 
+        let execution_window = get_execution_window(&env);
+        if now > eta.checked_add(execution_window).expect("window overflow") {
+            // We don't update status to Expired here because a panic would revert it.
+            // Status update is handled by the dedicated `mark_expired` function.
+            panic!("execution window expired");
+        }
+
         match &proposal.kind {
             ProposalKind::ParameterChange(key, value) => {
                 env.storage()
@@ -511,16 +543,40 @@ impl GovernanceContract {
         write_proposal(&env, &proposal);
     }
 
+    /// @notice Marks a successful proposal as expired if the execution window has passed.
+    /// @param proposal_id Proposal identifier.
+    pub fn mark_expired(env: Env, proposal_id: u128) {
+        require_initialized(&env);
+
+        let mut proposal = read_proposal(&env, proposal_id);
+        assert!(
+            proposal.status == ProposalStatus::Succeeded,
+            "proposal not succeeded"
+        );
+
+        let eta = proposal.eta.expect("eta not set");
+        let now = env.ledger().timestamp();
+        let execution_window = get_execution_window(&env);
+
+        assert!(
+            now > eta.checked_add(execution_window).expect("window overflow"),
+            "window not yet expired"
+        );
+
+        proposal.status = ProposalStatus::Expired;
+        write_proposal(&env, &proposal);
+    }
+
     /// @notice Returns the current governance configuration.
-    /// @return owner, quorum_bps, voting_period_seconds, timelock_seconds.
-    /// @dev Requires caller authentication
-    pub fn get_config(env: Env) -> (Address, u32, u64, u64) {
+    /// @return owner, quorum_bps, voting_period_seconds, timelock_seconds, execution_window_seconds.
+    pub fn get_config(env: Env) -> (Address, u32, u64, u64, u64) {
         require_initialized(&env);
         let owner = read_owner(&env);
         let quorum_bps = get_quorum_bps(&env);
         let voting_period = get_voting_period(&env);
         let timelock = get_timelock(&env);
-        (owner, quorum_bps, voting_period, timelock)
+        let execution_window = get_execution_window(&env);
+        (owner, quorum_bps, voting_period, timelock, execution_window)
     }
 
     /// @notice Returns the voting power for a given voter.
