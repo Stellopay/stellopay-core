@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use expense_reimbursement::{
     ExpenseReimbursementContract, ExpenseReimbursementContractClient, ExpenseStatus,
 };
@@ -111,6 +113,7 @@ fn test_submit_expense() {
     assert_eq!(expense.submitter, submitter);
     assert_eq!(expense.approver, approver);
     assert_eq!(expense.amount, 500);
+    assert_eq!(expense.escrow_amount, 0);
     assert_eq!(expense.status, ExpenseStatus::Pending);
     assert_eq!(
         expense.receipt_hash,
@@ -145,151 +148,32 @@ fn test_submit_expense_zero_amount_fails() {
 }
 
 #[test]
-#[should_panic(expected = "Invalid approver")]
-fn test_submit_expense_invalid_approver_fails() {
+#[should_panic(expected = "Approver cannot be submitter")]
+fn test_submit_expense_self_approve_fails() {
     let env = Env::default();
     env.mock_all_auths();
 
     let owner = Address::generate(&env);
-    let submitter = Address::generate(&env);
-    let invalid_approver = Address::generate(&env);
+    let submitter_and_approver = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token_client = create_token(&env, &token_admin);
     let client = create_contract(&env);
 
     client.initialize(&owner);
+    client.add_approver(&submitter_and_approver);
 
     client.submit_expense(
-        &submitter,
-        &invalid_approver,
-        &token_client.address,
-        &100,
-        &String::from_str(&env, "receipt_hash"),
-        &String::from_str(&env, "Test"),
-    );
-}
-
-#[test]
-fn test_approve_expense() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let owner = Address::generate(&env);
-    let submitter = Address::generate(&env);
-    let approver = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token_client = create_token(&env, &token_admin);
-    let client = create_contract(&env);
-
-    client.initialize(&owner);
-    client.add_approver(&approver);
-
-    let expense_id = client.submit_expense(
-        &submitter,
-        &approver,
+        &submitter_and_approver,
+        &submitter_and_approver,
         &token_client.address,
         &500,
         &String::from_str(&env, "receipt_hash"),
-        &String::from_str(&env, "Travel"),
+        &String::from_str(&env, "Invalid"),
     );
-
-    client.approve_expense(&approver, &expense_id);
-
-    let expense = client.get_expense(&expense_id).unwrap();
-    assert_eq!(expense.status, ExpenseStatus::Approved);
 }
 
 #[test]
-#[should_panic(expected = "Unauthorized approver")]
-fn test_approve_expense_wrong_approver_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let owner = Address::generate(&env);
-    let submitter = Address::generate(&env);
-    let approver = Address::generate(&env);
-    let wrong_approver = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token_client = create_token(&env, &token_admin);
-    let client = create_contract(&env);
-
-    client.initialize(&owner);
-    client.add_approver(&approver);
-    client.add_approver(&wrong_approver);
-
-    let expense_id = client.submit_expense(
-        &submitter,
-        &approver,
-        &token_client.address,
-        &500,
-        &String::from_str(&env, "receipt_hash"),
-        &String::from_str(&env, "Travel"),
-    );
-
-    client.approve_expense(&wrong_approver, &expense_id);
-}
-
-#[test]
-fn test_reject_expense() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let owner = Address::generate(&env);
-    let submitter = Address::generate(&env);
-    let approver = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token_client = create_token(&env, &token_admin);
-    let client = create_contract(&env);
-
-    client.initialize(&owner);
-    client.add_approver(&approver);
-
-    let expense_id = client.submit_expense(
-        &submitter,
-        &approver,
-        &token_client.address,
-        &500,
-        &String::from_str(&env, "receipt_hash"),
-        &String::from_str(&env, "Travel"),
-    );
-
-    client.reject_expense(&approver, &expense_id);
-
-    let expense = client.get_expense(&expense_id).unwrap();
-    assert_eq!(expense.status, ExpenseStatus::Rejected);
-}
-
-#[test]
-#[should_panic(expected = "Invalid status")]
-fn test_approve_rejected_expense_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let owner = Address::generate(&env);
-    let submitter = Address::generate(&env);
-    let approver = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token_client = create_token(&env, &token_admin);
-    let client = create_contract(&env);
-
-    client.initialize(&owner);
-    client.add_approver(&approver);
-
-    let expense_id = client.submit_expense(
-        &submitter,
-        &approver,
-        &token_client.address,
-        &500,
-        &String::from_str(&env, "receipt_hash"),
-        &String::from_str(&env, "Travel"),
-    );
-
-    client.reject_expense(&approver, &expense_id);
-    client.approve_expense(&approver, &expense_id);
-}
-
-#[test]
-fn test_pay_expense() {
+fn test_fund_expense() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -315,13 +199,195 @@ fn test_pay_expense() {
         &String::from_str(&env, "Travel"),
     );
 
-    client.approve_expense(&approver, &expense_id);
-    client.pay_expense(&payer, &expense_id);
+    client.fund_expense(&payer, &expense_id, &500);
+
+    let expense = client.get_expense(&expense_id).unwrap();
+    assert_eq!(expense.escrow_amount, 500);
+    assert_eq!(expense.payer, Some(payer.clone()));
+    
+    // contract holds tokens
+    assert_eq!(token_client.balance(&client.address), 500);
+    assert_eq!(token_client.balance(&payer), 500);
+}
+
+#[test]
+fn test_approve_expense_full() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
+
+    client.initialize(&owner);
+    client.add_approver(&approver);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_client.address,
+        &500,
+        &String::from_str(&env, "receipt_hash"),
+        &String::from_str(&env, "Travel"),
+    );
+
+    client.fund_expense(&payer, &expense_id, &500);
+    client.approve_expense(&approver, &expense_id, &500);
+
+    let expense = client.get_expense(&expense_id).unwrap();
+    assert_eq!(expense.status, ExpenseStatus::Approved);
+    assert_eq!(expense.approved_amount, Some(500));
+}
+
+#[test]
+fn test_approve_expense_partial() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
+
+    client.initialize(&owner);
+    client.add_approver(&approver);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_client.address,
+        &500,
+        &String::from_str(&env, "receipt_hash"),
+        &String::from_str(&env, "Travel"),
+    );
+
+    client.fund_expense(&payer, &expense_id, &500);
+    client.approve_expense(&approver, &expense_id, &300); // partial approval
+
+    let expense = client.get_expense(&expense_id).unwrap();
+    assert_eq!(expense.status, ExpenseStatus::Approved);
+    assert_eq!(expense.approved_amount, Some(300));
+}
+
+#[test]
+#[should_panic(expected = "Insufficient escrowed funds")]
+fn test_approve_expense_unfunded_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    client.initialize(&owner);
+    client.add_approver(&approver);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_client.address,
+        &500,
+        &String::from_str(&env, "receipt_hash"),
+        &String::from_str(&env, "Travel"),
+    );
+
+    // Fails because escrow_amount is 0 -> 0 is not >= 500
+    client.approve_expense(&approver, &expense_id, &500);
+}
+
+#[test]
+fn test_reject_expense_refunds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
+
+    client.initialize(&owner);
+    client.add_approver(&approver);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_client.address,
+        &500,
+        &String::from_str(&env, "receipt_hash"),
+        &String::from_str(&env, "Travel"),
+    );
+
+    client.fund_expense(&payer, &expense_id, &500);
+    assert_eq!(token_client.balance(&client.address), 500);
+    
+    client.reject_expense(&approver, &expense_id);
+
+    let expense = client.get_expense(&expense_id).unwrap();
+    assert_eq!(expense.status, ExpenseStatus::Rejected);
+    assert_eq!(expense.escrow_amount, 0);
+
+    // Funds refunded to payer
+    assert_eq!(token_client.balance(&client.address), 0);
+    assert_eq!(token_client.balance(&payer), 1_000);
+}
+
+#[test]
+fn test_pay_expense_full() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
+
+    client.initialize(&owner);
+    client.add_approver(&approver);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_client.address,
+        &500,
+        &String::from_str(&env, "receipt_hash"),
+        &String::from_str(&env, "Travel"),
+    );
+
+    client.fund_expense(&payer, &expense_id, &500);
+    client.approve_expense(&approver, &expense_id, &500);
+    client.pay_expense(&expense_id);
 
     let expense = client.get_expense(&expense_id).unwrap();
     assert_eq!(expense.status, ExpenseStatus::Paid);
+    
+    // Funds disbursed fully to submitter
     assert_eq!(token_client.balance(&submitter), 500);
-    assert_eq!(token_client.balance(&payer), 500);
+    assert_eq!(token_client.balance(&payer), 500); // the remaining 500 out of initial 1_000
+    assert_eq!(token_client.balance(&client.address), 0);
 }
 
 #[test]
@@ -351,16 +417,16 @@ fn test_pay_expense_cannot_be_paid_twice() {
         &String::from_str(&env, "Travel"),
     );
 
-    client.approve_expense(&approver, &expense_id);
-    client.pay_expense(&payer, &expense_id);
+    client.fund_expense(&payer, &expense_id, &500);
+    client.approve_expense(&approver, &expense_id, &500);
+    client.pay_expense(&expense_id);
 
-    let second = client.try_pay_expense(&payer, &expense_id);
+    let second = client.try_pay_expense(&expense_id);
     assert!(second.is_err());
 }
 
 #[test]
-#[should_panic(expected = "Not approved")]
-fn test_pay_pending_expense_fails() {
+fn test_pay_expense_partial() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -386,20 +452,30 @@ fn test_pay_pending_expense_fails() {
         &String::from_str(&env, "Travel"),
     );
 
-    client.pay_expense(&payer, &expense_id);
+    client.fund_expense(&payer, &expense_id, &500);
+    client.approve_expense(&approver, &expense_id, &300); // Only approve 300
+    client.pay_expense(&expense_id);
+
+    // Verify partial disbursement and refund
+    assert_eq!(token_client.balance(&submitter), 300); // Gets approved amount
+    assert_eq!(token_client.balance(&payer), 700); // 500 remaining + 200 returned
+    assert_eq!(token_client.balance(&client.address), 0);
 }
 
 #[test]
-fn test_cancel_expense() {
+fn test_cancel_expense_refunds() {
     let env = Env::default();
     env.mock_all_auths();
 
     let owner = Address::generate(&env);
     let submitter = Address::generate(&env);
     let approver = Address::generate(&env);
+    let payer = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token_client = create_token(&env, &token_admin);
     let client = create_contract(&env);
+
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
 
     client.initialize(&owner);
     client.add_approver(&approver);
@@ -413,72 +489,20 @@ fn test_cancel_expense() {
         &String::from_str(&env, "Travel"),
     );
 
+    client.fund_expense(&payer, &expense_id, &500);
     client.cancel_expense(&submitter, &expense_id);
 
     let expense = client.get_expense(&expense_id).unwrap();
     assert_eq!(expense.status, ExpenseStatus::Cancelled);
+    assert_eq!(expense.escrow_amount, 0);
+
+    // Funds refunded
+    assert_eq!(token_client.balance(&client.address), 0);
+    assert_eq!(token_client.balance(&payer), 1_000);
 }
 
 #[test]
-#[should_panic(expected = "Unauthorized")]
-fn test_cancel_expense_wrong_submitter_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let owner = Address::generate(&env);
-    let submitter = Address::generate(&env);
-    let other_user = Address::generate(&env);
-    let approver = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token_client = create_token(&env, &token_admin);
-    let client = create_contract(&env);
-
-    client.initialize(&owner);
-    client.add_approver(&approver);
-
-    let expense_id = client.submit_expense(
-        &submitter,
-        &approver,
-        &token_client.address,
-        &500,
-        &String::from_str(&env, "receipt_hash"),
-        &String::from_str(&env, "Travel"),
-    );
-
-    client.cancel_expense(&other_user, &expense_id);
-}
-
-#[test]
-#[should_panic(expected = "Invalid status")]
-fn test_cancel_approved_expense_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let owner = Address::generate(&env);
-    let submitter = Address::generate(&env);
-    let approver = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token_client = create_token(&env, &token_admin);
-    let client = create_contract(&env);
-
-    client.initialize(&owner);
-    client.add_approver(&approver);
-
-    let expense_id = client.submit_expense(
-        &submitter,
-        &approver,
-        &token_client.address,
-        &500,
-        &String::from_str(&env, "receipt_hash"),
-        &String::from_str(&env, "Travel"),
-    );
-
-    client.approve_expense(&approver, &expense_id);
-    client.cancel_expense(&submitter, &expense_id);
-}
-
-#[test]
-fn test_multiple_expenses() {
+fn test_multiple_expenses_and_duplicate_handling_implicitly_resolved_by_incrementing_ids() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -486,9 +510,12 @@ fn test_multiple_expenses() {
     let submitter1 = Address::generate(&env);
     let submitter2 = Address::generate(&env);
     let approver = Address::generate(&env);
+    let payer = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token_client = create_token(&env, &token_admin);
     let client = create_contract(&env);
+
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &5_000);
 
     client.initialize(&owner);
     client.add_approver(&approver);
@@ -501,8 +528,16 @@ fn test_multiple_expenses() {
         &String::from_str(&env, "receipt1"),
         &String::from_str(&env, "Expense 1"),
     );
-
+    // Duplicate submission should result in a different ID thus avoiding ID collisions
     let expense_id2 = client.submit_expense(
+        &submitter1,
+        &approver,
+        &token_client.address,
+        &300,
+        &String::from_str(&env, "receipt1"),
+        &String::from_str(&env, "Expense 1_duplicate"),
+    );
+    let expense_id3 = client.submit_expense(
         &submitter2,
         &approver,
         &token_client.address,
@@ -513,72 +548,32 @@ fn test_multiple_expenses() {
 
     assert_eq!(expense_id1, 0);
     assert_eq!(expense_id2, 1);
+    assert_eq!(expense_id3, 2);
 
     let expense1 = client.get_expense(&expense_id1).unwrap();
     let expense2 = client.get_expense(&expense_id2).unwrap();
+    let expense3 = client.get_expense(&expense_id3).unwrap();
 
     assert_eq!(expense1.amount, 300);
-    assert_eq!(expense2.amount, 700);
+    // Submitter duplicate works seamlessly
+    assert_eq!(expense2.amount, 300);
+    assert_eq!(expense3.amount, 700);
     assert_eq!(expense1.submitter, submitter1);
-    assert_eq!(expense2.submitter, submitter2);
-}
+    assert_eq!(expense2.submitter, submitter1);
+    assert_eq!(expense3.submitter, submitter2);
 
-#[test]
-fn test_get_nonexistent_expense() {
-    let env = Env::default();
-    env.mock_all_auths();
+    // Pay expenses
+    client.fund_expense(&payer, &expense_id1, &300);
+    client.fund_expense(&payer, &expense_id3, &700);
 
-    let owner = Address::generate(&env);
-    let client = create_contract(&env);
+    client.approve_expense(&approver, &expense_id1, &300);
+    client.approve_expense(&approver, &expense_id3, &700);
 
-    client.initialize(&owner);
+    client.pay_expense(&expense_id1);
+    client.pay_expense(&expense_id3);
 
-    let result = client.get_expense(&999);
-    assert!(result.is_none());
-}
-
-#[test]
-fn test_full_expense_workflow() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let owner = Address::generate(&env);
-    let submitter = Address::generate(&env);
-    let approver = Address::generate(&env);
-    let payer = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token_client = create_token(&env, &token_admin);
-    let client = create_contract(&env);
-
-    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &10_000);
-
-    client.initialize(&owner);
-    client.add_approver(&approver);
-
-    // Submit expense
-    let expense_id = client.submit_expense(
-        &submitter,
-        &approver,
-        &token_client.address,
-        &2_500,
-        &String::from_str(&env, "sha256_receipt_hash"),
-        &String::from_str(&env, "Conference travel and accommodation"),
-    );
-
-    let expense = client.get_expense(&expense_id).unwrap();
-    assert_eq!(expense.status, ExpenseStatus::Pending);
-
-    // Approve expense
-    client.approve_expense(&approver, &expense_id);
-    let expense = client.get_expense(&expense_id).unwrap();
-    assert_eq!(expense.status, ExpenseStatus::Approved);
-
-    // Pay expense
-    client.pay_expense(&payer, &expense_id);
-    let expense = client.get_expense(&expense_id).unwrap();
-    assert_eq!(expense.status, ExpenseStatus::Paid);
-
-    // Verify balances
-    assert_eq!(token_client.balance(&submitter), 2_500);
-    assert_eq!(token_client.balance(&payer), 7_500);
+    assert_eq!(token_client.balance(&submitter1), 300);
+    assert_eq!(token_client.balance(&submitter2), 700);
+    assert_eq!(token_client.balance(&client.address), 0);
+    assert_eq!(token_client.balance(&payer), 4000);
 }

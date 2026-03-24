@@ -1,14 +1,15 @@
 # Payment Splitting
 
-This document describes the Payment Splitting contract (issue #206): splitting a single payment across multiple recipients with configurable percentage or fixed amounts.
+This document describes the hardened **Payment Splitter** contract, which allows splitting a single token payment across multiple recipients with high arithmetic precision and rounding discipline.
 
 ## Overview
 
 The `payment_splitter` contract provides:
 
-- **Split definitions** – Multiple recipients with either percentage (basis points) or fixed amounts.
-- **Validation** – Percent splits must sum to 10000 (100%); fixed splits are validated against the total amount at execution time.
-- **Computation** – View function to compute each recipient’s amount given a total.
+- **Split definitions** – Multiple recipients with either percentage-based (basis points) or fixed-amount allocations.
+- **Rounding Discipline** – Implementation of the "remainder absorber" pattern to ensure zero dust loss.
+- **Arithmetic Safety** – Checked math operations to prevent overflows and allocation underflows.
+- **Validation** – Strict checks for duplicate recipients, zero weights, and mutual exclusivity between split modes.
 
 ## Contract Location
 
@@ -18,26 +19,40 @@ The `payment_splitter` contract provides:
 ## API
 
 ### Initialization
+- `initialize(admin)` – Sets the admin for the contract. Callable only once.
 
-- `initialize(admin)` – Sets the admin. Callable once.
+### Split Creation
+- `create_split(creator, recipients)` – Creates a new split definition.
+    - `recipients`: A list of `RecipientShare { recipient, kind }`.
+    - `kind`: Either `ShareKind::Percent(bps)` (1-10000) or `ShareKind::Fixed(amount)`.
+    - **Constraint**: All recipient shares in a single split must be of the same type (either all Percent or all Fixed).
+    - **Constraint**: Recipients must be unique; duplicate addresses are not allowed.
 
-### Splits
+### Computation and Validation
+- `compute_split(split_id, total_amount)` – Returns a list of `(recipient, amount)` for the given total.
+    - Uses the **Remainder Absorber** pattern: the final recipient receives the difference between `total_amount` and the sum of all previous slices. This ensures the total allocated always matches the input exactly.
+- `validate_split_for_amount(split_id, total_amount)` – Returns true if the split matches the intended amount.
+    - For Fixed splits: `sum(fixed_amounts) == total_amount`.
+    - For Percent splits: Always true (sum is validated at creation).
 
-- `create_split(creator, recipients)` – Creates a split. `recipients` is a list of `RecipientShare { recipient, kind }` where `kind` is either `ShareKind::Percent(bps)` (10000 = 100%) or `ShareKind::Fixed(amount)`. If any share is percent, all percent shares must sum to 10000.
-- `get_split(split_id)` – Returns the split definition.
+## Implementation Details
 
-### Validation and Computation
+### Rounding Discipline
+When calculating percentage-based splits, integer division typically loses "dust". The contract handles this by iterating through the recipients and tracking the `total_allocated`. The last recipient always receives `total_amount - total_allocated`, effectively absorbing any rounding remainder.
 
-- `validate_split_for_amount(split_id, total_amount)` – Returns true if the split is valid for the given total (for fixed shares, sum of fixed amounts must equal `total_amount`).
-- `compute_split(split_id, total_amount)` – Returns a list of `(recipient, amount)` for the given total. Percent shares are computed as `(bps * total_amount) / 10000`.
+### Example: Prime Number Split
+If splitting **107 units** between 2 recipients with a **60%/40%** ratio:
+1. Recipient A (60%): `(6000 * 107) / 10000 = 64.2` → **64**
+2. Recipient B (40% - Absorber): `107 - 64` → **43**
+**Total: 107**
 
-## Rules
+### Example: 1-Stroop Split
+If splitting **1 stroop** 50/50:
+1. Recipient A (50%): `(5000 * 1) / 10000 = 0.5` → **0**
+2. Recipient B (50% - Absorber): `1 - 0` → **1**
+**Total: 1**
 
-- **Percent-only**: All shares are `Percent`; they must sum to 10000.
-- **Fixed-only or mixed**: If any share is `Fixed`, `validate_split_for_amount` checks that the sum of fixed amounts equals the total.
-- **Computation**: Percent shares are derived from `total_amount`; fixed shares are used as-is.
-
-## Security
-
-- Only the creator authenticates when creating a split.
-- No token transfers in this contract; it only stores definitions and computes amounts. Actual disbursement is done by the caller (e.g. payroll or payment flow) using `compute_split` or `validate_split_for_amount`.
+## Security Considerations
+- **Non-zero Weights**: The contract prevents creating splits with zero-weight percentages or zero-amount fixed shares.
+- **Duplicate Prevention**: Prevents unintentional double-allocation to the same address within one split.
+- **Off-chain Integration**: This contract does not handle token movements directly. It provides the logic for other contracts or off-chain systems to perform safe token transfers.
