@@ -143,6 +143,21 @@ impl PayrollEscrowContract {
         // Validate amount
         assert!(amount > 0, "Amount must be positive");
 
+        // Get and validate employer consistency
+        let existing_employer: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::AgreementEmployer(agreement_id));
+
+        if let Some(existing) = existing_employer {
+            assert!(existing == employer, "Mismatched employer for agreement");
+        } else {
+            // Store employer if not already set
+            env.storage()
+                .persistent()
+                .set(&StorageKey::AgreementEmployer(agreement_id), &employer);
+        }
+
         // Get token address
         let token: Address = env
             .storage()
@@ -166,18 +181,6 @@ impl PayrollEscrowContract {
         env.storage()
             .persistent()
             .set(&StorageKey::AgreementBalance(agreement_id), &new_balance);
-
-        // Store employer if not already set
-        if env
-            .storage()
-            .persistent()
-            .get::<_, Address>(&StorageKey::AgreementEmployer(agreement_id))
-            .is_none()
-        {
-            env.storage()
-                .persistent()
-                .set(&StorageKey::AgreementEmployer(agreement_id), &employer);
-        }
 
         // Emit event
         env.events().publish(
@@ -205,13 +208,19 @@ impl PayrollEscrowContract {
     ///
     /// # Requirements
     ///
-    /// * Caller must be the manager contract
-    /// * Agreement must have sufficient balance
+    /// * Caller must be the authorized manager contract address
+    /// * Agreement must have sufficient balance for the requested amount
     /// * Amount must be positive
     ///
     /// # Access Control
     ///
-    /// Only the manager contract can release funds.
+    /// STRICT: Only the address stored as `Manager` can authorize releases.
+    ///
+    /// # Invariants
+    ///
+    /// - Sum of all `release` and `refund_remaining` calls for an agreement
+    ///   cannot exceed total `fund_agreement` deposits.
+    /// - Individual `AgreementBalance` is reduced by the exact `amount`.
     ///
     /// # Invariant
     ///
@@ -235,7 +244,7 @@ impl PayrollEscrowContract {
         // Validate amount
         assert!(amount > 0, "Amount must be positive");
 
-        // Check balance
+        // Check and update balance
         let balance: i128 = env
             .storage()
             .persistent()
@@ -251,7 +260,7 @@ impl PayrollEscrowContract {
             .expect("Token not set");
 
         // Update balance
-        let new_balance = balance - amount;
+        let new_balance = balance.checked_sub(amount).expect("Balance underflow");
         env.storage()
             .persistent()
             .set(&StorageKey::AgreementBalance(agreement_id), &new_balance);
@@ -284,13 +293,18 @@ impl PayrollEscrowContract {
     ///
     /// # Requirements
     ///
-    /// * Caller must be the manager contract
-    /// * Agreement must have a balance
-    /// * Agreement must have an employer address
+    /// * Caller must be the authorized manager contract address
+    /// * Agreement must have a positive balance remaining
+    /// * Agreement must have an assigned employer address
     ///
     /// # Access Control
     ///
-    /// Only the manager contract can refund funds.
+    /// STRICT: Only the address stored as `Manager` can authorize refunds.
+    ///
+    /// # Invariants
+    ///
+    /// - After a successful refund, the `AgreementBalance` for that `agreement_id` is exactly zero.
+    /// - Funds are only returned to the `AgreementEmployer` address originally recorded.
     ///
     /// # Invariant
     ///
@@ -333,7 +347,11 @@ impl PayrollEscrowContract {
             .get(&StorageKey::Token)
             .expect("Token not set");
 
-        // Clear balance
+        // Transfer tokens
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        token_client.transfer(&env.current_contract_address(), &employer, &balance);
+
+        // Reset balance to zero
         env.storage()
             .persistent()
             .set(&StorageKey::AgreementBalance(agreement_id), &0i128);

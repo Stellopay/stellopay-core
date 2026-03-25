@@ -45,6 +45,7 @@ Stellopay Core is a Soroban-based payroll and agreement system. It consists of:
 ### 2. Payroll Escrow Contract (`payroll_escrow`)
 
 - **Role**: Holds tokens per agreement; only the designated manager contract can release or refund.
+- **Documentation**: See [Payroll Escrow Details](file:///home/ryzen/Desktop/drip/stellopay-core/docs/payroll-escrow.md) for invariants and security model.
 - **Used by**: Stello pay contract (or other manager) to hold funds until release/refund conditions are met.
 
 ### 3. Department Manager (`department_manager`)
