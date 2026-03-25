@@ -73,8 +73,8 @@ Stellopay Core is a Soroban-based payroll and agreement system. It consists of:
 1. **Agreement creation**: Employer creates payroll or escrow agreement; for payroll, employees are added then agreement is activated.
 2. **Funding**: Tokens are transferred to the contract (or to the escrow contract) and tracked per agreement.
 3. **Claims**: Employees/contributors call `claim_payroll` or `claim_time_based` / `claim_milestone`; contract checks state, then transfers from escrow and updates claimed state.
-4. **Disputes**: Either party can raise a dispute during grace period; arbiter resolves with split amounts; contract transfers accordingly.
-5. **Grace period / refund**: After cancel, when grace period ends, employer can finalize and receive remaining escrow (refund).
+4. **Disputes**: Either party can raise a dispute within the configured dispute/grace window. If the agreement has been cancelled, the window is measured from `cancelled_at`; otherwise the window is measured from `created_at`. Arbiter resolves with split amounts; contract transfers accordingly.
+5. **Grace period / refund**: After `cancel_agreement`, claims are allowed while the grace period is active. Once the grace period ends, the employer can call `finalize_grace_period` to refund remaining escrow balance. Refund transfers are executed as contract-authorized token transfers.
 
 ## Component Interactions
 

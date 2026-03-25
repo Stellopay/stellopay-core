@@ -1,34 +1,134 @@
-# Payment Dispute Escalation
+# Dispute Escalation Contract
 
-The `dispute_escalation` contract manages the lifecycle of payment disputes within the Stello Pay ecosystem. It provides a structured, multi-tier resolution process designed to encourage fair and timely outcomes for all parties involved.
+Three-tier dispute ladder with configurable deadlines, binding outcomes, and finality rules integrated with payroll state.
 
-## Architecture & Integration
+## State Machine
 
-The escalation process works independently of the core payroll/payment contracts but links to them via `agreement_id`.
+```
+file_dispute  →  Open @ Level1
+  Open        + escalate_dispute  (within deadline)  →  Escalated @ Level2
+  Escalated   + escalate_dispute  (within deadline)  →  Escalated @ Level3
+  *active*    + expire_dispute    (deadline passed)  →  Expired   [terminal]
+  *active*    + resolve_dispute   (admin, L1/L2)     →  Resolved  (appeal window = 3 days)
+  Resolved    + appeal_ruling     (within window)    →  Appealed  @ next level
+  *active*    + resolve_dispute   (admin, L3)        →  Finalised [terminal — binding]
+```
 
-1. **Initiation**: A participant (employer or contributor) calls `file_dispute` on this contract if they cannot reach an agreement.
-2. **Escalation Levels**: Disputes move through up to three levels (Level 1, Level 2, Level 3). Each level represents a higher degree of arbitration or authority.
-3. **Appeals**: Once an arbiter (or automated system) resolves a dispute at a given level, the aggrieved party has a right to appeal the ruling (`appeal_ruling`) to the next level, provided they do so within the established time limit.
+**Terminal states:** `Finalised`, `Expired`. All further transitions are rejected.
+
+## Escalation Tiers
+
+| Level | Default deadline | Description |
+|-------|-----------------|-------------|
+| Level1 | 7 days | Initial dispute — primary arbiter |
+| Level2 | 7 days | Escalated review — senior arbiter |
+| Level3 | 7 days | Final appeal — committee / oracle |
+
+Admin can override any deadline with `set_level_time_limit`.
+
+## Contract Functions
+
+### Lifecycle
+
+| Function | Caller | Description |
+|----------|--------|-------------|
+| `initialize(owner, admin)` | owner | One-time setup |
+| `file_dispute(caller, agreement_id)` | any | Open a Level1 dispute |
+| `escalate_dispute(caller, agreement_id)` | any | Move to next tier (within deadline) |
+| `resolve_dispute(caller, agreement_id, outcome)` | admin | Issue binding ruling |
+| `appeal_ruling(caller, agreement_id)` | any | Appeal a Level1/2 ruling (within appeal window) |
+| `expire_dispute(caller, agreement_id)` | any | Close a stuck dispute after deadline |
+
+### Configuration
+
+| Function | Caller | Description |
+|----------|--------|-------------|
+| `set_level_time_limit(caller, level, seconds)` | admin | Override deadline for a tier |
+| `get_dispute(agreement_id)` | any | Read dispute details |
+
+## Binding Outcomes
+
+When `resolve_dispute` is called the `outcome` field is written to `DisputeDetails`:
+
+| Outcome | Payroll effect |
+|---------|---------------|
+| `UpholdPayment` | Escrow releases funds to employer / payer |
+| `GrantClaim` | Escrow releases funds to employee / claimant |
+| `PartialSettlement` | Off-chain split; escrow releases per agreed ratio |
+
+Downstream contracts (payroll escrow, payment splitter) listen for `dispute_resolved` and `dispute_finalised` events and act on `outcome`.
+
+## Finality Rules (NatSpec)
+
+```
+Level3 resolution → status = Finalised
+```
+
+* `Finalised` is a terminal state. Both `appeal_ruling` and `resolve_dispute` return `AlreadyFinalised`.
+* Level1/Level2 resolutions open a **3-day appeal window**. If no appeal is filed, the `Resolved` state becomes de-facto binding.
+* `Expired` is the other terminal state — reached via `expire_dispute` after a deadline passes with no action.
 
 ## Security Model
 
-### Time-based Enforcement
+| Invariant | Enforcement |
+|-----------|-------------|
+| Only admin resolves | `is_admin` check before any `resolve_dispute` |
+| Cannot double-resolve | `AlreadyResolved` / `AlreadyFinalised` on every resolve path |
+| No funds stuck | `expire_dispute` (callable by anyone) closes abandoned disputes |
+| No re-entry into terminal states | `assert_not_terminal` helper rejects all transitions on `Finalised` / `Expired` |
+| Deadlines enforced on-chain | All time comparisons use `env.ledger().timestamp()` |
 
-All phases in the dispute have strict deadlines. An escalation or appeal valid only if performed within the acceptable time limit for that level (e.g., 7 days by default). Any attempt to escalate or appeal after `phase_deadline` will result in a `TimeLimitExpired` error. This guarantees finality for the participants.
+## Events
 
-### Caller Authorization
+| Topic | Payload | When |
+|-------|---------|------|
+| `dispute_filed` | `DisputeFiledEvent` | New dispute opened |
+| `dispute_escalated` | `DisputeEscalatedEvent` | Moved to next tier |
+| `dispute_resolved` | `DisputeResolvedEvent` | Admin ruling at Level1/2 |
+| `dispute_finalised` | `DisputeFinalisedEvent` | Admin ruling at Level3 (binding) |
+| `dispute_appealed` | `DisputeAppealedEvent` | Ruling appealed |
+| `dispute_expired` | `DisputeExpiredEvent` | Deadline passed, closed without ruling |
 
-Only authenticated participants can open or escalate disputes. Furthermore, `resolve_dispute` can only be called by a pre-authorized admin/arbiter. An unauthorized participant attempting to resolve their own dispute will receive an `Unauthorized` error.
+## Usage Example
 
-## Interacting with the Contract
+```rust
+// 1. Initialize
+client.initialize(&owner, &admin);
 
-- `file_dispute(caller, agreement_id)`: Opens the initial (Level 1) dispute.
-- `escalate_dispute(caller, agreement_id)`: Moves an active dispute to the next higher level.
-- `appeal_ruling(caller, agreement_id)`: If a dispute has been resolved, use this to reopen it at the next level for an appeal.
-- `resolve_dispute(caller, agreement_id)`: Admin function to finalize the current level's ruling.
+// 2. Shorten Level1 window for testing
+client.set_level_time_limit(&admin, &EscalationLevel::Level1, &3600u64);
 
-## Integration tests
+// 3. Employee files dispute
+client.file_dispute(&employee, &agreement_id);
 
-- **dispute_escalation**: `onchain/contracts/dispute_escalation/tests/test_escalation.rs` (lifecycle, time limit, unauthorized resolve).
-- **Cross-crate**: `onchain/integration_tests/tests/test_dispute_escalation_integration.rs` (appeal flow + unauthorized at integration boundary).
-- **PayrollContract disputes**: `onchain/contracts/stello_pay_contract/tests/test_dispute_integration.rs` (payroll equal split + escrow funded split). The former `test_disputes.rs.disabled` suite was removed in favor of these focused integration tests and existing workflow tests where applicable.
+// 4. Escalate to Level2
+client.escalate_dispute(&employee, &agreement_id);
+
+// 5. Admin resolves at Level2 — appeal window opens
+client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::UpholdPayment);
+
+// 6. Employee appeals to Level3
+client.appeal_ruling(&employee, &agreement_id);
+
+// 7. Admin issues final binding ruling at Level3
+client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::GrantClaim);
+// → status = Finalised, outcome = GrantClaim, no further appeal possible
+
+// 8. Abandoned dispute — anyone can expire after deadline
+client.expire_dispute(&anyone, &stale_agreement_id);
+```
+
+## Error Codes
+
+| Code | Name | Meaning |
+|------|------|---------|
+| 1 | `Unauthorized` | Caller is not the admin |
+| 2 | `DisputeNotFound` | No dispute exists for this agreement |
+| 3 | `AlreadyResolved` | Cannot resolve an already-resolved dispute |
+| 4 | `MaxEscalationReached` | Already at Level3 |
+| 5 | `TimeLimitExpired` | Window for this action has passed |
+| 6 | `InvalidTransition` | Illegal state transition (e.g. appeal non-resolved) |
+| 7 | `NotParty` | Reserved for party-restricted operations |
+| 8 | `AlreadyFinalised` | Level3 ruling is binding; no further action |
+| 9 | `DeadlineNotPassed` | Cannot expire a dispute before its deadline |
+| 10 | `AlreadyTerminal` | Dispute is already in `Expired` state |

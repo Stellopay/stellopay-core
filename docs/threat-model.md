@@ -228,10 +228,13 @@ Security invariants for these paths:
 **Mitigations**:
 - Enforce `AgreementStatus` checks at every transition.
 - Use explicit invariants: `paid_amount <= total_amount`, claimed periods bounded, milestones count bounded.
+- Define dispute/grace windows precisely and test boundary conditions against ledger time.
 - Comprehensive test coverage for edge cases (pause, cancel, dispute, repeated claim).
 
 **Code references**:
 - Status checks in milestone claim/approval functions in `onchain/contracts/stello_pay_contract/src/payroll.rs`.
+- Dispute window enforcement in `raise_dispute` in `onchain/contracts/stello_pay_contract/src/payroll.rs` (uses `cancelled_at` as window start when cancelled, otherwise `created_at`).
+- Grace period refund transfer authorization in `finalize_grace_period` in `onchain/contracts/stello_pay_contract/src/payroll.rs` (contract-authorized token `transfer`).
 
 ---
 
