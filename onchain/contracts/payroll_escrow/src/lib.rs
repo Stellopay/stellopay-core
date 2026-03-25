@@ -222,6 +222,11 @@ impl PayrollEscrowContract {
     ///   cannot exceed total `fund_agreement` deposits.
     /// - Individual `AgreementBalance` is reduced by the exact `amount`.
     ///
+    /// # Invariant
+    ///
+    /// Agreement balance is reduced before the token transfer to avoid
+    /// reentrant double-release against stale balance state.
+    ///
     /// # Events
     ///
     /// Emits `Released` event on success.
@@ -254,15 +259,15 @@ impl PayrollEscrowContract {
             .get(&StorageKey::Token)
             .expect("Token not set");
 
-        // Transfer tokens
-        let token_client = soroban_sdk::token::Client::new(&env, &token);
-        token_client.transfer(&env.current_contract_address(), &to, &amount);
-
         // Update balance
         let new_balance = balance.checked_sub(amount).expect("Balance underflow");
         env.storage()
             .persistent()
             .set(&StorageKey::AgreementBalance(agreement_id), &new_balance);
+
+        // Transfer tokens
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        token_client.transfer(&env.current_contract_address(), &to, &amount);
 
         // Emit event
         env.events().publish(
@@ -300,6 +305,11 @@ impl PayrollEscrowContract {
     ///
     /// - After a successful refund, the `AgreementBalance` for that `agreement_id` is exactly zero.
     /// - Funds are only returned to the `AgreementEmployer` address originally recorded.
+    ///
+    /// # Invariant
+    ///
+    /// Refunded agreement balance is zeroed before transfer so nested calls
+    /// cannot observe and drain the old balance twice.
     ///
     /// # Events
     ///
@@ -345,6 +355,10 @@ impl PayrollEscrowContract {
         env.storage()
             .persistent()
             .set(&StorageKey::AgreementBalance(agreement_id), &0i128);
+
+        // Transfer tokens
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        token_client.transfer(&env.current_contract_address(), &employer, &balance);
 
         // Emit event
         env.events().publish(

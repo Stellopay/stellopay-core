@@ -382,9 +382,9 @@ impl TokenVestingContract {
         let amount = compute_releasable(now, &schedule);
         assert!(amount > 0, "Nothing to claim");
 
-        let token_client = token::Client::new(&env, &schedule.token);
-        token_client.transfer(&env.current_contract_address(), &beneficiary, &amount);
-
+        // Checks-effects-interactions:
+        // commit released amount before external transfer to prevent reentrant
+        // reuse of stale releasable state.
         schedule.released_amount = schedule
             .released_amount
             .checked_add(amount)
@@ -395,6 +395,8 @@ impl TokenVestingContract {
         }
 
         write_schedule(&env, &schedule);
+        let token_client = token::Client::new(&env, &schedule.token);
+        token_client.transfer(&env.current_contract_address(), &beneficiary, &amount);
         amount
     }
 
@@ -437,13 +439,7 @@ impl TokenVestingContract {
             amount
         };
 
-        let token_client = token::Client::new(&env, &schedule.token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &schedule.beneficiary,
-            &release_amount,
-        );
-
+        // Checks-effects-interactions: move accounting update before transfer.
         schedule.released_amount = schedule
             .released_amount
             .checked_add(release_amount)
@@ -454,6 +450,12 @@ impl TokenVestingContract {
         }
 
         write_schedule(&env, &schedule);
+        let token_client = token::Client::new(&env, &schedule.token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &schedule.beneficiary,
+            &release_amount,
+        );
         release_amount
     }
 
@@ -479,14 +481,14 @@ impl TokenVestingContract {
         let unvested = schedule.total_amount.checked_sub(vested).unwrap_or(0);
         assert!(unvested >= 0, "Invalid vesting state");
 
+        schedule.status = VestingStatus::Revoked;
+        schedule.revoked_at = Some(now);
+        write_schedule(&env, &schedule);
+
         if unvested > 0 {
             let token_client = token::Client::new(&env, &schedule.token);
             token_client.transfer(&env.current_contract_address(), &employer, &unvested);
         }
-
-        schedule.status = VestingStatus::Revoked;
-        schedule.revoked_at = Some(now);
-        write_schedule(&env, &schedule);
 
         unvested
     }
