@@ -277,7 +277,7 @@ impl PayrollContract {
 
     /// Adds an employee to a payroll agreement.
     ///
-    /// # Arguments
+    /// # Argumentls
     /// * `agreement_id` - ID of the agreement
     /// * `employee` - Address of the employee to add
     /// * `salary_per_period` - Employee's salary per period
