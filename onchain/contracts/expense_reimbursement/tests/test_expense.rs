@@ -28,6 +28,17 @@ fn test_initialize() {
 }
 
 #[test]
+fn test_initialize_requires_owner_auth() {
+    let env = Env::default();
+
+    let owner = Address::generate(&env);
+    let client = create_contract(&env);
+
+    let result = client.try_initialize(&owner);
+    assert!(result.is_err());
+}
+
+#[test]
 #[should_panic(expected = "Already initialized")]
 fn test_initialize_twice_fails() {
     let env = Env::default();
@@ -377,6 +388,41 @@ fn test_pay_expense_full() {
     assert_eq!(token_client.balance(&submitter), 500);
     assert_eq!(token_client.balance(&payer), 500); // the remaining 500 out of initial 1_000
     assert_eq!(token_client.balance(&client.address), 0);
+}
+
+#[test]
+fn test_pay_expense_cannot_be_paid_twice() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
+
+    client.initialize(&owner);
+    client.add_approver(&approver);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_client.address,
+        &500,
+        &String::from_str(&env, "receipt_hash"),
+        &String::from_str(&env, "Travel"),
+    );
+
+    client.fund_expense(&payer, &expense_id, &500);
+    client.approve_expense(&approver, &expense_id, &500);
+    client.pay_expense(&expense_id);
+
+    let second = client.try_pay_expense(&expense_id);
+    assert!(second.is_err());
 }
 
 #[test]

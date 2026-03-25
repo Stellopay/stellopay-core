@@ -135,6 +135,7 @@ fn is_approver(env: &Env, addr: &Address) -> bool {
 impl ExpenseReimbursementContract {
     /// Initialize the contract with an owner
     pub fn initialize(env: Env, owner: Address) {
+        owner.require_auth();
         assert!(
             !env.storage()
                 .persistent()
@@ -369,6 +370,16 @@ impl ExpenseReimbursementContract {
 
         assert!(expense.status == ExpenseStatus::Approved, "Not approved");
         let amount_to_pay = expense.approved_amount.unwrap();
+        let escrow_before = expense.escrow_amount;
+
+        // Checks-effects-interactions:
+        // commit terminal state before token transfers to prevent reentrant
+        // double-pay attempts from observing Approved state.
+        expense.escrow_amount = 0; // all dispersed by this execution path
+        expense.status = ExpenseStatus::Paid;
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Expense(expense_id), &expense);
 
         let token_client = token::Client::new(&env, &expense.token);
         
@@ -376,18 +387,12 @@ impl ExpenseReimbursementContract {
         token_client.transfer(&env.current_contract_address(), &expense.submitter, &amount_to_pay);
 
         // Refund any unapproved surplus
-        let surplus = expense.escrow_amount - amount_to_pay;
+        let surplus = escrow_before - amount_to_pay;
         if surplus > 0 {
             if let Some(payer) = expense.payer.clone() {
                 token_client.transfer(&env.current_contract_address(), &payer, &surplus);
             }
         }
-
-        expense.escrow_amount = 0; // all dispersed
-        expense.status = ExpenseStatus::Paid;
-        env.storage()
-            .persistent()
-            .set(&StorageKey::Expense(expense_id), &expense);
 
         env.events().publish(
             (String::from_str(&env, "expense_paid"), expense_id),

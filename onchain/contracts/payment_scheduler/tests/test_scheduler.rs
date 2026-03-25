@@ -644,6 +644,11 @@ fn test_one_time_payment() {
     assert_eq!(job.executions, 1);
     assert_eq!(job.status, JobStatus::Completed);
     assert_eq!(token.balance(&recipient), 100i128);
+
+    // Same timestamp second processing must not execute again.
+    let second = client.process_due_payments(&10u32);
+    assert_eq!(second, 0);
+    assert_eq!(token.balance(&recipient), 100i128);
 }
 
 #[test]
