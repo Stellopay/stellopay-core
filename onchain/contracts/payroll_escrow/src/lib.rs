@@ -218,7 +218,7 @@ impl PayrollEscrowContract {
     ///
     /// # Invariants
     ///
-    /// - Sum of all `release` and `refund_remaining` calls for an agreement 
+    /// - Sum of all `release` and `refund_remaining` calls for an agreement
     ///   cannot exceed total `fund_agreement` deposits.
     /// - Individual `AgreementBalance` is reduced by the exact `amount`.
     ///
