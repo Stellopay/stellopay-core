@@ -188,3 +188,40 @@ fn non_admin_cannot_mint_or_burn_others() {
     let res = client.try_burn(&employer, &badge_id);
     assert_eq!(res, Err(Ok(BadgeError::NotOwnerOrAdmin)));
 }
+
+#[test]
+fn metadata_too_long() {
+    let env = create_env();
+    let (client, admin, employee, _) = setup_initialized(&env);
+
+    // Create 1025 bytes of metadata (limit is 1024).
+    let mut data = [0u8; 1025];
+    for i in 0..1025 {
+        data[i] = (i % 256) as u8;
+    }
+    let metadata = Bytes::from_slice(&env, &data);
+
+    let res = client.try_mint(
+        &admin,
+        &employee,
+        &BadgeKind::Employee,
+        &metadata,
+        &true,
+    );
+    assert_eq!(res, Err(Ok(BadgeError::MetadataTooLong)));
+
+    // Exactly 1024 bytes should work.
+    let mut data2 = [0u8; 1024];
+    for i in 0..1024 {
+        data2[i] = (i % 256) as u8;
+    }
+    let metadata2 = Bytes::from_slice(&env, &data2);
+    let res2 = client.try_mint(
+        &admin,
+        &employee,
+        &BadgeKind::Employee,
+        &metadata2,
+        &true,
+    );
+    assert!(res2.is_ok());
+}

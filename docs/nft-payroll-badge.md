@@ -31,7 +31,7 @@ UI surfaces that need a compact on-chain signal.
 
 - `BadgeError`
   - `NotInitialized`, `AlreadyInitialized`, `NotAdmin`, `NotOwnerOrAdmin`,
-    `BadgeNotFound`, `TransferNotAllowed`
+    `BadgeNotFound`, `TransferNotAllowed`, `MetadataTooLong`
 - `BadgeKind`
   - `Employer` – Verified employer badge
   - `Employee` – Verified employee badge
@@ -63,14 +63,14 @@ Badge management:
 
 - `mint(caller, to, kind, metadata, transferable) -> Result<u128, BadgeError>`
   - Admin-only; mints a new badge and emits:
-    - `("badge_minted", id) -> (owner, kind, transferable)`
+    - `BadgeMinted { id, owner, kind, transferable }`
 - `burn(caller, badge_id) -> Result<(), BadgeError>`
   - Admin or badge owner may burn; emits:
-    - `("badge_burned", id) -> owner`
+    - `BadgeBurned { id, owner }`
 - `transfer(caller, badge_id, to) -> Result<(), BadgeError>`
   - Only the current owner may transfer; badge must be marked `transferable`.
   - Emits:
-    - `("badge_transferred", id) -> (from, to)`
+    - `BadgeTransferred { id, from, to }`
 
 Read helpers:
 
@@ -111,4 +111,6 @@ Read helpers:
 - Burning is allowed by admin or current owner; integrations relying on badge
   presence should handle the case where a badge is burned and no longer
   signals a role.
+- **Metadata size** is capped at 1024 bytes to ensure ledger predictability
+  and prevent storage-based denial-of-service.
 
