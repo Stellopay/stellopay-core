@@ -579,7 +579,9 @@ impl PaymentSchedulerContract {
                     let balance = token_client.balance(&env.current_contract_address());
 
                     if balance >= job_mut.amount {
-                        // ── Successful execution ──────────────────────────────
+                        // Checks-effects-interactions:
+                        // commit job progress before transfer so reentrant
+                        // callbacks cannot re-execute the same due payment.
                         job_mut.executions = job_mut.executions.saturating_add(1);
                         job_mut.retry_count = 0;
                         job_mut.next_scheduled_time = now.saturating_add(job_mut.interval_seconds);
@@ -608,7 +610,7 @@ impl PaymentSchedulerContract {
                             },
                         );
                     } else {
-                        // ── Insufficient funds — retry or fail ────────────────
+                        // Insufficient funds: schedule retry or mark failed.
                         job_mut.retry_count = job_mut.retry_count.saturating_add(1);
 
                         if job_mut.retry_count > job_mut.max_retries {
@@ -629,7 +631,6 @@ impl PaymentSchedulerContract {
                             },
                         );
                     }
-
                     processed = processed.saturating_add(1);
                 }
             }

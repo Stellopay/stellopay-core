@@ -391,12 +391,8 @@ impl BonusSystemContract {
         };
 
         let amount = checked_mul_amount(incentive.amount_per_payout, payouts_to_claim);
-        token::Client::new(&env, &incentive.token).transfer(
-            &env.current_contract_address(),
-            &employee,
-            &amount,
-        );
-
+        // Checks-effects-interactions:
+        // update payout counters before transfer to block reentrant double-claim.
         incentive.claimed_payouts = incentive
             .claimed_payouts
             .checked_add(payouts_to_claim)
@@ -407,6 +403,11 @@ impl BonusSystemContract {
         }
 
         write_incentive(&env, &incentive);
+        token::Client::new(&env, &incentive.token).transfer(
+            &env.current_contract_address(),
+            &employee,
+            &amount,
+        );
         env.events().publish(
             ("incentive_claimed", incentive_id),
             IncentiveClaimedEvent {
