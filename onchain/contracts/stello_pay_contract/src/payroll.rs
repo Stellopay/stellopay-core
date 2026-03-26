@@ -4,8 +4,9 @@ use soroban_sdk::{Address, Env, Vec};
 use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
-    emit_employee_added, emit_grace_period_finalized, emit_payment_received, emit_payment_sent,
-    emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent,
+    emit_employee_added, emit_grace_period_extended, emit_grace_period_finalized,
+    emit_payment_received, emit_payment_sent, emit_payroll_claimed, emit_set_arbiter,
+    AgreementActivatedEvent, AgreementCancelledEvent, GracePeriodExtendedEvent,
     AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent,
     BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent,
     EmployeeAddedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
@@ -14,9 +15,9 @@ use crate::events::{
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
     BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
-    EscrowCreateParams, EscrowCreateResult, Milestone, MilestoneClaimResult, MilestoneKey,
-    PaymentType, PayrollClaimResult, PayrollCreateParams, PayrollCreateResult, PayrollError,
-    StorageKey,
+    EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
+    MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
+    PayrollCreateResult, PayrollError, StorageKey,
 };
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
@@ -965,6 +966,129 @@ pub fn get_arbiter(env: &Env) -> Option<Address> {
     env.storage().persistent().get(&StorageKey::Arbiter)
 }
 
+fn grace_period_extension_seconds(env: &Env, agreement_id: u128) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::GracePeriodExtensionSeconds(agreement_id))
+        .unwrap_or(0u64)
+}
+
+fn effective_cancelled_grace_duration_seconds(
+    env: &Env,
+    agreement_id: u128,
+    base_grace_seconds: u64,
+) -> u64 {
+    base_grace_seconds.saturating_add(grace_period_extension_seconds(env, agreement_id))
+}
+
+/// Returns the owner-configured extension caps (defaults apply until `set_grace_extension_policy` runs).
+pub fn get_grace_extension_policy(env: &Env) -> GracePeriodExtensionPolicy {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::GracePeriodExtensionPolicy)
+        .unwrap_or(GracePeriodExtensionPolicy {
+            max_cumulative_extension_bps: 10_000,
+            max_extension_per_call_seconds: 90 * 24 * 3600,
+        })
+}
+
+/// Sets caps for per-agreement grace extensions. Callable only by the contract owner.
+pub fn set_grace_extension_policy(
+    env: &Env,
+    caller: Address,
+    policy: GracePeriodExtensionPolicy,
+) -> Result<(), PayrollError> {
+    caller.require_auth();
+    let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+    if caller != owner {
+        return Err(PayrollError::Unauthorized);
+    }
+    // Sanity bounds so a compromised owner key cannot configure absurd values in one tx.
+    const MAX_BPS: u32 = 500_000;
+    const MAX_PER_CALL: u64 = 730 * 24 * 3600;
+    if policy.max_cumulative_extension_bps > MAX_BPS {
+        return Err(PayrollError::GraceExtensionInvalid);
+    }
+    if policy.max_extension_per_call_seconds == 0 || policy.max_extension_per_call_seconds > MAX_PER_CALL
+    {
+        return Err(PayrollError::GraceExtensionInvalid);
+    }
+    env.storage()
+        .persistent()
+        .set(&StorageKey::GracePeriodExtensionPolicy, &policy);
+    Ok(())
+}
+
+/// Extra seconds applied on top of the agreement's base grace (cancellation / dispute window).
+pub fn get_grace_extension_seconds(env: &Env, agreement_id: u128) -> u64 {
+    grace_period_extension_seconds(env, agreement_id)
+}
+
+/// Extends the effective cancellation grace (claims, dispute window while cancelled) by `additional_seconds`.
+///
+/// Authorization: contract owner or agreement employer. Emits [`GracePeriodExtendedEvent`].
+pub fn extend_grace_period(
+    env: &Env,
+    caller: Address,
+    agreement_id: u128,
+    additional_seconds: u64,
+) -> Result<(), PayrollError> {
+    caller.require_auth();
+    if is_emergency_paused(env) {
+        return Err(PayrollError::EmergencyPaused);
+    }
+    if additional_seconds == 0 {
+        return Err(PayrollError::GraceExtensionInvalid);
+    }
+
+    let agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
+    if agreement.status != AgreementStatus::Cancelled {
+        return Err(PayrollError::GraceExtensionInvalid);
+    }
+
+    let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+    let extended_by_owner = caller == owner;
+    if !extended_by_owner && caller != agreement.employer {
+        return Err(PayrollError::Unauthorized);
+    }
+
+    let policy = get_grace_extension_policy(env);
+    if additional_seconds > policy.max_extension_per_call_seconds {
+        return Err(PayrollError::GraceExtensionInvalid);
+    }
+
+    let current = grace_period_extension_seconds(env, agreement_id);
+    let new_total = current
+        .checked_add(additional_seconds)
+        .ok_or(PayrollError::GraceExtensionInvalid)?;
+
+    let base = agreement.grace_period_seconds as u128;
+    let max_extra = (base
+        .saturating_mul(policy.max_cumulative_extension_bps as u128))
+        / 10000;
+
+    if (new_total as u128) > max_extra {
+        return Err(PayrollError::GraceExtensionCapExceeded);
+    }
+
+    env.storage().persistent().set(
+        &StorageKey::GracePeriodExtensionSeconds(agreement_id),
+        &new_total,
+    );
+
+    emit_grace_period_extended(
+        env,
+        GracePeriodExtendedEvent {
+            agreement_id,
+            additional_seconds,
+            total_extension_seconds: new_total,
+            extended_by_owner,
+        },
+    );
+
+    Ok(())
+}
+
 /// Raise a dispute during the grace period (escrow or payroll agreement).
 ///
 /// # Arguments
@@ -1006,7 +1130,16 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
         agreement.created_at
     };
 
-    if window_start + agreement.grace_period_seconds <= now {
+    let grace_window_seconds = if agreement.status == AgreementStatus::Cancelled {
+        effective_cancelled_grace_duration_seconds(env, agreement_id, agreement.grace_period_seconds)
+    } else {
+        agreement.grace_period_seconds
+    };
+
+    let grace_end = window_start
+        .checked_add(grace_window_seconds)
+        .ok_or(PayrollError::GraceExtensionInvalid)?;
+    if grace_end <= now {
         return Err(PayrollError::NotInGracePeriod);
     }
 
@@ -2417,7 +2550,14 @@ pub fn finalize_grace_period(env: &Env, agreement_id: u128) {
         .expect("Cancelled agreement must have cancelled_at timestamp");
 
     let current_time = env.ledger().timestamp();
-    let grace_end = cancelled_at + agreement.grace_period_seconds;
+    let effective_grace = effective_cancelled_grace_duration_seconds(
+        env,
+        agreement_id,
+        agreement.grace_period_seconds,
+    );
+    let grace_end = cancelled_at
+        .checked_add(effective_grace)
+        .expect("grace end timestamp overflow");
 
     assert!(
         current_time >= grace_end,
@@ -2484,7 +2624,15 @@ pub fn is_grace_period_active(env: &Env, agreement_id: u128) -> bool {
     };
 
     let current_time = env.ledger().timestamp();
-    let grace_end = cancelled_at + agreement.grace_period_seconds;
+    let effective_grace = effective_cancelled_grace_duration_seconds(
+        env,
+        agreement_id,
+        agreement.grace_period_seconds,
+    );
+    let grace_end = match cancelled_at.checked_add(effective_grace) {
+        Some(t) => t,
+        None => return false,
+    };
 
     current_time < grace_end
 }
@@ -2505,7 +2653,12 @@ pub fn get_grace_period_end(env: &Env, agreement_id: u128) -> Option<u64> {
     }
 
     let cancelled_at = agreement.cancelled_at?;
-    Some(cancelled_at + agreement.grace_period_seconds)
+    let effective_grace = effective_cancelled_grace_duration_seconds(
+        env,
+        agreement_id,
+        agreement.grace_period_seconds,
+    );
+    cancelled_at.checked_add(effective_grace)
 }
 
 // ============================================================================

@@ -46,7 +46,7 @@ fn test_full_dispute_lifecycle_to_level3_finalised() {
     let d = client.get_dispute(&id).unwrap();
     assert_eq!(d.status, DisputeStatus::Open);
     assert_eq!(d.level, EscalationLevel::Level1);
-    assert!(d.outcome.is_none());
+    assert_eq!(d.outcome, DisputeOutcome::Unset);
 
     // 2. Escalate → Level2
     client.escalate_dispute(&user, &id);
@@ -58,20 +58,20 @@ fn test_full_dispute_lifecycle_to_level3_finalised() {
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
     let d = client.get_dispute(&id).unwrap();
     assert_eq!(d.status, DisputeStatus::Resolved);
-    assert_eq!(d.outcome, Some(DisputeOutcome::UpholdPayment));
+    assert_eq!(d.outcome, DisputeOutcome::UpholdPayment);
 
     // 4. Appeal → Level3
     client.appeal_ruling(&user, &id);
     let d = client.get_dispute(&id).unwrap();
     assert_eq!(d.status, DisputeStatus::Appealed);
     assert_eq!(d.level, EscalationLevel::Level3);
-    assert!(d.outcome.is_none()); // outcome cleared for re-review
+    assert_eq!(d.outcome, DisputeOutcome::Unset); // outcome cleared for re-review
 
     // 5. Admin resolves Level3 → Finalised (terminal)
     client.resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
     let d = client.get_dispute(&id).unwrap();
     assert_eq!(d.status, DisputeStatus::Finalised);
-    assert_eq!(d.outcome, Some(DisputeOutcome::GrantClaim));
+    assert_eq!(d.outcome, DisputeOutcome::GrantClaim);
     assert_eq!(d.level, EscalationLevel::Level3);
 }
 
@@ -86,7 +86,7 @@ fn test_resolve_level1_directly() {
     let d = client.get_dispute(&id).unwrap();
     assert_eq!(d.status, DisputeStatus::Resolved);
     assert_eq!(d.level, EscalationLevel::Level1);
-    assert_eq!(d.outcome, Some(DisputeOutcome::PartialSettlement));
+    assert_eq!(d.outcome, DisputeOutcome::PartialSettlement);
 }
 
 // ─── Time limit tests ─────────────────────────────────────────────────────────
