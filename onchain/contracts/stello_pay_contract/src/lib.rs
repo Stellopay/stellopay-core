@@ -8,8 +8,8 @@ use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 use storage::{
     Agreement, BatchEscrowCreateResult, BatchMilestoneResult, BatchPayrollCreateResult,
-    BatchPayrollResult, DisputeStatus, EscrowCreateParams, Milestone, PayrollCreateParams,
-    PayrollError, StorageKey,
+    BatchPayrollResult, DisputeStatus, EscrowCreateParams, GracePeriodExtensionPolicy, Milestone,
+    PayrollCreateParams, PayrollError, StorageKey,
 };
 
 /// Payroll Contract for managing payroll agreements with employee claiming functionality.
@@ -750,6 +750,44 @@ impl PayrollContract {
     /// Requires caller authentication
     pub fn get_grace_period_end(env: Env, agreement_id: u128) -> Option<u64> {
         payroll::get_grace_period_end(&env, agreement_id)
+    }
+
+    /// Extends the effective grace / dispute window for a **cancelled** agreement.
+    ///
+    /// # Authorization
+    /// Contract owner or the agreement employer (both must pass `require_auth`).
+    ///
+    /// # Limits
+    /// Subject to `GracePeriodExtensionPolicy` (owner-configurable within hard sanity bounds).
+    ///
+    /// # Events
+    /// Emits `grace_period_extended_event` for auditing.
+    pub fn extend_grace_period(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        additional_seconds: u64,
+    ) -> Result<(), PayrollError> {
+        payroll::extend_grace_period(&env, caller, agreement_id, additional_seconds)
+    }
+
+    /// Owner-only: updates caps for grace extensions (basis points of base grace, per-call max).
+    pub fn set_grace_extension_policy(
+        env: Env,
+        caller: Address,
+        policy: GracePeriodExtensionPolicy,
+    ) -> Result<(), PayrollError> {
+        payroll::set_grace_extension_policy(&env, caller, policy)
+    }
+
+    /// Current grace extension policy (defaults until explicitly set).
+    pub fn get_grace_extension_policy(env: Env) -> GracePeriodExtensionPolicy {
+        payroll::get_grace_extension_policy(&env)
+    }
+
+    /// Cumulative extra seconds applied on top of `Agreement.grace_period_seconds`.
+    pub fn get_grace_extension_seconds(env: Env, agreement_id: u128) -> u64 {
+        payroll::get_grace_extension_seconds(&env, agreement_id)
     }
 
     // ============================================================================

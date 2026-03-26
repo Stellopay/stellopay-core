@@ -159,7 +159,7 @@ impl DisputeEscalationContract {
             level: EscalationLevel::Level1,
             phase_started_at: now,
             phase_deadline: deadline,
-            outcome: None,
+            outcome: DisputeOutcome::Unset,
         };
 
         storage::set_dispute(&env, agreement_id, &dispute);
@@ -267,6 +267,10 @@ impl DisputeEscalationContract {
             return Err(DisputeError::Unauthorized);
         }
 
+        if outcome == DisputeOutcome::Unset {
+            return Err(DisputeError::InvalidTransition);
+        }
+
         let mut dispute =
             storage::get_dispute(&env, agreement_id).ok_or(DisputeError::DisputeNotFound)?;
 
@@ -277,7 +281,7 @@ impl DisputeEscalationContract {
         }
 
         let now = env.ledger().timestamp();
-        dispute.outcome = Some(outcome.clone());
+        dispute.outcome = outcome.clone();
         dispute.phase_started_at = now;
 
         if dispute.level == EscalationLevel::Level3 {
@@ -360,7 +364,7 @@ impl DisputeEscalationContract {
         dispute.level = next_level.clone();
         dispute.status = DisputeStatus::Appealed;
         dispute.initiator = caller.clone();
-        dispute.outcome = None; // Outcome is under review again.
+        dispute.outcome = DisputeOutcome::Unset; // Outcome is under review again.
         dispute.phase_started_at = now;
         dispute.phase_deadline = deadline;
 

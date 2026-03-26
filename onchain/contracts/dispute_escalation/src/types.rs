@@ -20,6 +20,8 @@ pub enum EscalationLevel {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DisputeOutcome {
+    /// No ruling yet (dispute open or under appeal).
+    Unset,
     /// Ruling in favour of the employer / payer — withheld payment is released.
     UpholdPayment,
     /// Ruling in favour of the employee / claimant — payment is awarded.
@@ -97,8 +99,8 @@ pub struct DisputeDetails {
     pub phase_started_at: u64,
     /// The timestamp when the current phase expires.
     pub phase_deadline: u64,
-    /// The binding outcome once resolved or finalised; `None` while open.
-    pub outcome: Option<DisputeOutcome>,
+    /// The binding outcome once resolved or finalised; [`DisputeOutcome::Unset`] while open.
+    pub outcome: DisputeOutcome,
 }
 
 /// Storage keys for the dispute escalation contract.

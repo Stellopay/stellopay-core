@@ -1,0 +1,62 @@
+name: Contracts CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Add WASM target
+        run: rustup target add wasm32v1-none
+
+      - name: Install Stellar CLI
+        run: cargo install stellar-cli --locked
+
+      - name: Run tests (stello_pay_contract)
+        working-directory: onchain
+        run: cargo test -p stello_pay_contract --verbose
+
+      - name: Run tests (integration_tests)
+        working-directory: onchain
+        run: cargo test -p integration_tests --verbose
+
+      - name: Build Soroban contract (WASM)
+        working-directory: onchain/contracts/stello_pay_contract
+        run: stellar contract build --verbose
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage (stello_pay_contract + integration_tests)
+        working-directory: onchain
+        run: |
+          cargo llvm-cov test -p stello_pay_contract -p integration_tests \
+            --codecov --output-path codecov.json
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codecov-json
+          path: onchain/codecov.json
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        continue-on-error: true
+        with:
+          files: onchain/codecov.json
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}

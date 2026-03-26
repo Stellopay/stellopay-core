@@ -20,12 +20,13 @@
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, Vec,
+    Address, BytesN, Env, Vec,
 };
 
 use bonus_system::{BonusSystemContract, BonusSystemContractClient};
 use dispute_escalation::types::{
-    DisputeError as EscalationError, DisputeStatus as EscalationStatus, EscalationLevel,
+    DisputeError as EscalationError, DisputeOutcome, DisputeStatus as EscalationStatus,
+    EscalationLevel,
 };
 use dispute_escalation::{DisputeEscalationContract, DisputeEscalationContractClient};
 use payment_history::{PaymentHistoryContract, PaymentHistoryContractClient};
@@ -43,6 +44,13 @@ const ONE_WEEK: u64 = 604_800;
 
 const SALARY: i128 = 1_000;
 const ESCROW_FUND: i128 = 50_000;
+
+/// Deterministic 32-byte payment reference for tests (mirrors on-chain `payment_hash` arg).
+fn test_payment_hash(env: &Env, nonce: u8) -> BytesN<32> {
+    let mut b = [0u8; 32];
+    b[31] = nonce;
+    BytesN::from_array(env, &b)
+}
 
 // ============================================================================
 // HELPERS
@@ -108,7 +116,7 @@ fn deploy_escrow<'a>(
     tok: &Address,
     manager: &Address,
 ) -> (Address, PayrollEscrowContractClient<'a>) {
-    let id = env.register_contract(None, PayrollEscrowContract);
+    let id = env.register(PayrollEscrowContract, ());
     let client = PayrollEscrowContractClient::new(env, &id);
     let admin = addr(env);
     client.initialize(&admin, tok, manager);
@@ -139,7 +147,7 @@ fn deploy_history<'a>(
     env: &'a Env,
     payroll_contract: &Address,
 ) -> (Address, PaymentHistoryContractClient<'a>) {
-    let id = env.register_contract(None, PaymentHistoryContract);
+    let id = env.register(PaymentHistoryContract, ());
     let client = PaymentHistoryContractClient::new(env, &id);
     let owner = addr(env);
     client.initialize(&owner, payroll_contract);
@@ -201,18 +209,19 @@ fn fund_payroll_from_employer(
 /// Records a payment as if it were emitted by the payroll contract itself.
 fn record_payment_as_payroll(
     env: &Env,
-    payroll_contract: &Address,
+    _payroll_contract: &Address,
     history_client: &PaymentHistoryContractClient<'_>,
     agreement_id: u128,
+    hash_nonce: u8,
     tok: &Address,
     amount: i128,
     from: &Address,
     to: &Address,
     timestamp: u64,
 ) -> u128 {
-    env.as_contract(payroll_contract, || {
-        history_client.record_payment(&agreement_id, tok, &amount, from, to, &timestamp)
-    })
+    let h = test_payment_hash(env, hash_nonce);
+    // `env().mock_all_auths()` satisfies `payroll_contract.require_auth()` on the history contract.
+    history_client.record_payment(&agreement_id, &h, tok, &amount, from, to, &timestamp)
 }
 
 /// Sums balances across the supplied addresses for token-conservation checks.
@@ -1262,9 +1271,25 @@ fn test_cross_payment_history_recording() {
 
     // Record two payments for the same agreement
     set_time(&env, 1000);
-    let id1 = hist_client.record_payment(&1u128, &tok, &500, &employer, &employee, &1000);
+    let id1 = hist_client.record_payment(
+        &1u128,
+        &test_payment_hash(&env, 1),
+        &tok,
+        &500,
+        &employer,
+        &employee,
+        &1000,
+    );
     set_time(&env, 2000);
-    let id2 = hist_client.record_payment(&1u128, &tok, &700, &employer, &employee, &2000);
+    let id2 = hist_client.record_payment(
+        &1u128,
+        &test_payment_hash(&env, 2),
+        &tok,
+        &700,
+        &employer,
+        &employee,
+        &2000,
+    );
 
     assert_eq!(id1, 1);
     assert_eq!(id2, 2);
@@ -1300,13 +1325,37 @@ fn test_cross_payment_history_multi_agreement() {
     let tok = token(&env);
 
     // Agreement 1: employer -> emp1
-    hist_client.record_payment(&1u128, &tok, &100, &employer, &emp1, &1000);
+    hist_client.record_payment(
+        &1u128,
+        &test_payment_hash(&env, 1),
+        &tok,
+        &100,
+        &employer,
+        &emp1,
+        &1000,
+    );
 
     // Agreement 2: employer -> emp2
-    hist_client.record_payment(&2u128, &tok, &200, &employer, &emp2, &2000);
+    hist_client.record_payment(
+        &2u128,
+        &test_payment_hash(&env, 2),
+        &tok,
+        &200,
+        &employer,
+        &emp2,
+        &2000,
+    );
 
     // Agreement 1 again: employer -> emp1
-    hist_client.record_payment(&1u128, &tok, &300, &employer, &emp1, &3000);
+    hist_client.record_payment(
+        &1u128,
+        &test_payment_hash(&env, 3),
+        &tok,
+        &300,
+        &employer,
+        &emp1,
+        &3000,
+    );
 
     assert_eq!(hist_client.get_agreement_payment_count(&1u128), 2);
     assert_eq!(hist_client.get_agreement_payment_count(&2u128), 1);
@@ -1379,6 +1428,7 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
         &payroll_id,
         &history_client,
         agreement_id,
+        1,
         &tok,
         1_000,
         &payroll_id,
@@ -1405,7 +1455,7 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
     payroll_client.raise_dispute(&employee_b, &agreement_id);
     dispute_client.file_dispute(&employee_b, &agreement_id);
     dispute_client.escalate_dispute(&employee_b, &agreement_id);
-    dispute_client.resolve_dispute(&dispute_admin, &agreement_id);
+    dispute_client.resolve_dispute(&dispute_admin, &agreement_id, &DisputeOutcome::UpholdPayment);
     payroll_client.resolve_dispute(&arbiter, &agreement_id, &600, &400);
 
     record_payment_as_payroll(
@@ -1413,6 +1463,7 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
         &payroll_id,
         &history_client,
         agreement_id,
+        2,
         &tok,
         300,
         &payroll_id,
@@ -1424,6 +1475,7 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
         &payroll_id,
         &history_client,
         agreement_id,
+        3,
         &tok,
         300,
         &payroll_id,
@@ -1435,6 +1487,7 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
         &payroll_id,
         &history_client,
         agreement_id,
+        4,
         &tok,
         400,
         &payroll_id,
@@ -1566,6 +1619,7 @@ fn test_cross_contract_workflow_failure_injection_preserves_state() {
         &payroll_id,
         &history_client,
         agreement_id,
+        1,
         &tok,
         1_000,
         &payroll_id,

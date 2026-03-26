@@ -164,6 +164,11 @@ pub enum StorageKey {
     PauseApprovals,
     /// Global admin allowed to update FX rates (e.g. an oracle contract)
     ExchangeRateAdmin,
+    /// Cumulative grace extension (seconds) applied on top of `Agreement::grace_period_seconds`
+    /// for cancelled agreements (`agreement_id` -> u64).
+    GracePeriodExtensionSeconds(u128),
+    /// Owner-configurable caps for `extend_grace_period` (singleton).
+    GracePeriodExtensionPolicy,
 }
 
 #[contracttype]
@@ -305,6 +310,24 @@ pub enum PayrollError {
     ExchangeRateOverflow = 29,
     /// Invalid FX rate (e.g. non-positive)
     ExchangeRateInvalid = 30,
+    /// Grace extension arguments invalid (zero, overflow, wrong status, unauthorized)
+    GraceExtensionInvalid = 31,
+    /// Extension would exceed owner-configured cumulative cap
+    GraceExtensionCapExceeded = 32,
+}
+
+/// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.
+///
+/// Extensions are stored separately from `Agreement::grace_period_seconds` so existing
+/// agreements keep their original base grace while allowing audited, bounded extensions.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GracePeriodExtensionPolicy {
+    /// Maximum cumulative extra seconds as basis points of the agreement's base
+    /// `grace_period_seconds` at extension time (e.g. `10000` = up to 100% extra).
+    pub max_cumulative_extension_bps: u32,
+    /// Upper bound on `additional_seconds` for a single `extend_grace_period` call.
+    pub max_extension_per_call_seconds: u64,
 }
 
 /// Emergency pause state

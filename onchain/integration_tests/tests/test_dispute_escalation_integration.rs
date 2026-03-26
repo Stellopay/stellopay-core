@@ -62,7 +62,7 @@ fn test_escalation_appeal_full_flow() {
     client.resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
     let d = client.get_dispute(&id).unwrap();
     assert_eq!(d.status, DisputeStatus::Finalised);
-    assert_eq!(d.outcome, Some(DisputeOutcome::GrantClaim));
+    assert_eq!(d.outcome, DisputeOutcome::GrantClaim);
 }
 
 /// Wrong caller cannot resolve.
