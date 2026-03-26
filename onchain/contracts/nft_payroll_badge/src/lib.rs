@@ -1,6 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, Env, Vec,
+};
 
 /// Errors for the NFT payroll badge contract.
 #[contracterror]
@@ -12,6 +14,7 @@ pub enum BadgeError {
     NotOwnerOrAdmin = 4,
     BadgeNotFound = 5,
     TransferNotAllowed = 6,
+    MetadataTooLong = 7,
 }
 
 /// Types of payroll badges issued by the contract.
@@ -26,6 +29,31 @@ pub enum BadgeKind {
     Custom(u32),
 }
 
+/// Events emitted by the NFT payroll badge contract.
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BadgeMinted {
+    pub id: u128,
+    pub owner: Address,
+    pub kind: BadgeKind,
+    pub transferable: bool,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BadgeBurned {
+    pub id: u128,
+    pub owner: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BadgeTransferred {
+    pub id: u128,
+    pub from: Address,
+    pub to: Address,
+}
+
 /// Represents a single NFT-style payroll badge.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -34,6 +62,7 @@ pub struct Badge {
     pub owner: Address,
     pub kind: BadgeKind,
     /// Arbitrary metadata URI or opaque bytes (e.g. IPFS CID).
+    /// @dev Recommended maximum size: 1024 bytes.
     pub metadata: Bytes,
     /// Whether this badge can be transferred by the holder.
     pub transferable: bool,
@@ -200,6 +229,10 @@ impl NftPayrollBadge {
         require_initialized(&env)?;
         require_admin(&env, &caller)?;
 
+        if metadata.len() > 1024 {
+            return Err(BadgeError::MetadataTooLong);
+        }
+
         let id = next_badge_id(&env);
         let badge = Badge {
             id,
@@ -213,11 +246,13 @@ impl NftPayrollBadge {
         write_badge(&env, &badge);
         push_badge_to_owner(&env, &to, id);
 
-        // Event: ("badge_minted", id) -> (owner, kind, transferable)
-        env.events().publish(
-            ("badge_minted", id),
-            (to, badge.kind.clone(), badge.transferable),
-        );
+        BadgeMinted {
+            id,
+            owner: to,
+            kind: badge.kind.clone(),
+            transferable: badge.transferable,
+        }
+        .publish(&env);
 
         Ok(id)
     }
@@ -241,8 +276,11 @@ impl NftPayrollBadge {
 
         remove_badge(&env, badge_id);
 
-        env.events()
-            .publish(("badge_burned", badge_id), badge.owner);
+        BadgeBurned {
+            id: badge_id,
+            owner: badge.owner,
+        }
+        .publish(&env);
 
         Ok(())
     }
@@ -277,8 +315,12 @@ impl NftPayrollBadge {
         write_badge(&env, &badge);
         push_badge_to_owner(&env, &to, badge_id);
 
-        env.events()
-            .publish(("badge_transferred", badge_id), (caller, to));
+        BadgeTransferred {
+            id: badge_id,
+            from: caller,
+            to,
+        }
+        .publish(&env);
 
         Ok(())
     }
