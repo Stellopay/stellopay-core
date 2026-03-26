@@ -34,9 +34,21 @@ jobs:
         working-directory: onchain
         run: cargo test -p integration_tests --verbose
 
+      - name: Run tests (template_versioning)
+        working-directory: onchain
+        run: cargo test -p template_versioning --verbose
+
       - name: Build Soroban contract (WASM)
         working-directory: onchain/contracts/stello_pay_contract
         run: stellar contract build --verbose
+
+      - name: Build template_versioning (WASM)
+        working-directory: onchain/contracts/template_versioning
+        run: stellar contract build --verbose
+
+      - name: Compile critical_paths benchmark (no run)
+        working-directory: onchain/contracts/stello_pay_contract
+        run: cargo bench --bench critical_paths --no-run --verbose
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
