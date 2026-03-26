@@ -2364,6 +2364,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "template_versioning"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
