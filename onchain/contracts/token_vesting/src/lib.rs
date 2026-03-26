@@ -103,6 +103,14 @@ fn write_schedule(env: &Env, schedule: &VestingSchedule) {
         .set(&StorageKey::Schedule(schedule.id), schedule);
 }
 
+/// Computes the cumulative vested amount for `schedule` at timestamp `now`.
+///
+/// For revoked schedules the clock is frozen at `revoked_at`.
+/// - **Linear**: proportional between `start_time` and `end_time`, gated by
+///   an optional `cliff_time` (nothing vests until the cliff is reached).
+/// - **Cliff**: 0 before `cliff_time`, 100% at or after `cliff_time`.
+/// - **Custom**: step function — returns the `cumulative_amount` of the last
+///   checkpoint whose `time <= now`, capped at `total_amount`.
 fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
     if schedule.total_amount <= 0 {
         return 0;
@@ -116,6 +124,8 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
     match schedule.kind {
         VestingKind::Linear => {
             if effective_now <= schedule.start_time {
+                0
+            } else if matches!(schedule.cliff_time, Some(cliff) if effective_now < cliff) {
                 0
             } else if effective_now >= schedule.end_time {
                 schedule.total_amount
@@ -157,6 +167,9 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
     }
 }
 
+/// Returns `vested - released_amount`, floored at 0.
+///
+/// This is the amount the beneficiary can currently withdraw via `claim`.
 fn compute_releasable(now: u64, schedule: &VestingSchedule) -> i128 {
     let vested = compute_vested_amount(now, schedule);
     let mut releasable = vested.checked_sub(schedule.released_amount).unwrap_or(0);
@@ -249,14 +262,15 @@ impl TokenVestingContract {
     }
 
     /// @notice Creates a cliff vesting schedule.
-    /// @dev All tokens vest at `cliff_time`.
-    /// @param employer employer parameter
-    /// @param beneficiary beneficiary parameter
-    /// @param token token parameter
-    /// @param total_amount total_amount parameter
-    /// @param cliff_time cliff_time parameter
-    /// @param revocable revocable parameter
-    /// @return u128
+    /// @dev All tokens vest at `cliff_time`; nothing is released before.
+    ///      Employer escrows the full `total_amount` at creation time.
+    /// @param employer Funding address; must authenticate.
+    /// @param beneficiary Employee/recipient of vested tokens.
+    /// @param token Token contract address used for vesting.
+    /// @param total_amount Total number of tokens to vest (must be > 0).
+    /// @param cliff_time Absolute timestamp at which 100% of tokens vest.
+    /// @param revocable Whether employer can revoke this schedule.
+    /// @return u128 Unique schedule identifier.
     pub fn create_cliff_schedule(
         env: Env,
         employer: Address,
@@ -296,14 +310,17 @@ impl TokenVestingContract {
     }
 
     /// @notice Creates a custom vesting schedule with arbitrary checkpoints.
-    /// @dev `checkpoints` must be sorted by `time` and end at `total_amount`.
-    /// @param employer employer parameter
-    /// @param beneficiary beneficiary parameter
-    /// @param token token parameter
-    /// @param total_amount total_amount parameter
-    /// @param checkpoints checkpoints parameter
-    /// @param revocable revocable parameter
-    /// @return u128
+    /// @dev `checkpoints` must be sorted ascending by `time`, with non-decreasing
+    ///      `cumulative_amount` values; the last checkpoint must equal `total_amount`.
+    ///      Employer escrows the full `total_amount` at creation time.
+    /// @param employer Funding address; must authenticate.
+    /// @param beneficiary Employee/recipient of vested tokens.
+    /// @param token Token contract address used for vesting.
+    /// @param total_amount Total number of tokens to vest (must be > 0).
+    /// @param checkpoints Ordered list of `CustomCheckpoint` entries defining the
+    ///        step-function vesting curve.
+    /// @param revocable Whether employer can revoke this schedule.
+    /// @return u128 Unique schedule identifier.
     pub fn create_custom_schedule(
         env: Env,
         employer: Address,
@@ -494,18 +511,18 @@ impl TokenVestingContract {
     }
 
     /// @notice Reads a vesting schedule by id.
-    /// @param schedule_id schedule_id parameter
-    /// @return `Option<VestingSchedule>`
-    /// @dev Requires caller authentication
+    /// @param schedule_id Unique identifier of the schedule to look up.
+    /// @return `Option<VestingSchedule>` — `None` if `schedule_id` does not exist.
+    /// @dev Read-only; no authentication required.
     pub fn get_schedule(env: Env, schedule_id: u128) -> Option<VestingSchedule> {
         env.storage()
             .persistent()
             .get(&StorageKey::Schedule(schedule_id))
     }
 
-    /// @notice Returns the amount currently vested for a schedule.
-    /// @param schedule_id schedule_id parameter
-    /// @dev Requires caller authentication
+    /// @notice Returns the cumulative amount vested so far for a schedule.
+    /// @param schedule_id Unique identifier of the schedule.
+    /// @dev Read-only; no authentication required.
     pub fn get_vested_amount(env: Env, schedule_id: u128) -> i128 {
         let schedule = read_schedule(&env, schedule_id);
         let now = env.ledger().timestamp();
@@ -513,8 +530,8 @@ impl TokenVestingContract {
     }
 
     /// @notice Returns the currently releasable (claimable) amount.
-    /// @param schedule_id schedule_id parameter
-    /// @dev Requires caller authentication
+    /// @param schedule_id Unique identifier of the schedule.
+    /// @dev Read-only; no authentication required. Equals vested minus already released.
     pub fn get_releasable_amount(env: Env, schedule_id: u128) -> i128 {
         let schedule = read_schedule(&env, schedule_id);
         let now = env.ledger().timestamp();
@@ -522,7 +539,7 @@ impl TokenVestingContract {
     }
 
     /// @notice Returns the contract owner/admin.
-    /// @dev Requires caller authentication
+    /// @dev Read-only; no authentication required.
     pub fn get_owner(env: Env) -> Option<Address> {
         env.storage().persistent().get(&StorageKey::Owner)
     }

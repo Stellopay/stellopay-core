@@ -57,6 +57,7 @@ Storage keys:
 
 - **Linear**
   - Vesting grows proportionally between `start_time` and `end_time`.
+  - If `cliff_time` is set, nothing vests until `now >= cliff_time`; once the cliff is reached, the normal linear formula applies retroactively from `start_time`.
   - Vested amount = `total * (now - start) / (end - start)`, capped at `total`.
 - **Cliff**
   - No vesting before `cliff_time`.
@@ -88,14 +89,87 @@ Storage keys:
 4. Admin can use `approve_early_release` to unlock part of the **unvested** portion ahead of schedule.
 5. Employer can call `revoke` on revocable schedules to reclaim unvested tokens when an employee is terminated; beneficiary can still claim any vested remainder.
 
+### Security Notes
+
+**Escrow-first design** — Tokens are transferred into the contract at schedule
+creation. There is no "promise to pay"; the contract always holds sufficient
+balance for active schedules.
+
+**Authentication model:**
+
+| Action | Authorized caller |
+|---|---|
+| `initialize` | Owner (one-time) |
+| `create_*_schedule` | Employer |
+| `claim` | Beneficiary only |
+| `approve_early_release` | Contract owner/admin only |
+| `revoke` | Employer that created the schedule |
+| `get_*` (read-only) | No auth required |
+
+**Invariants enforced:**
+
+- `released_amount` can never exceed `total_amount`; `claim` marks the schedule
+  `Completed` once equality is reached, preventing further claims.
+- Double-claim at the same timestamp returns 0 releasable and panics with
+  "Nothing to claim".
+- Revocation freezes the vesting clock at `revoked_at`; the beneficiary can
+  still claim the already-vested portion, but no further tokens accrue.
+- `approve_early_release` caps the released amount at the unvested remainder,
+  so the admin cannot over-release.
+- Schedule IDs are auto-incremented and never reused.
+
+**Input validation:**
+
+- `total_amount` must be > 0.
+- Linear: `end_time > start_time`; optional `cliff_time` must be within
+  `[start_time, end_time]`.
+- Custom: checkpoints must be sorted by time with non-decreasing cumulative
+  amounts; last checkpoint must equal `total_amount`.
+- All state-mutating functions require `require_initialized` before proceeding.
+
+**Known limitations:**
+
+- No event emission — unlike other contracts in this workspace, `token_vesting`
+  does not publish Soroban events. This limits off-chain indexing and
+  auditability. Recommended as a follow-up improvement.
+- No cross-contract integration tests with `stello_pay_contract` yet.
+
+### Bug Fixes
+
+- **Linear + cliff gate** (issue #198): The `VestingKind::Linear` branch previously
+  ignored `cliff_time`, allowing tokens to vest linearly before the cliff was
+  reached. A cliff guard was added so that `compute_vested_amount` returns 0
+  when `now < cliff_time`, matching the documented behavior for cliff schedules.
+
 ### Testing Focus
 
-The test suite covers:
+The test suite contains **42 tests** across 10 categories:
 
-- initialization and owner behavior
-- linear vesting progression and full completion
-- cliff vesting with revocation before vesting
-- custom checkpoint schedules
-- early release semantics and admin-only access
-- revocation behavior and refund calculation
+| Category | Count | What it covers |
+|---|---|---|
+| A. Initialization | 4 | `initialize` idempotency, pre-init guards, missing schedule, owner before init |
+| B. Linear | 7 | Exact start/end boundaries, past-end cap, cliff gate (before/at/after), full claim flow |
+| C. Cliff | 4 | 1 s before cliff (=0), exact cliff (=total), full claim, revoke-before-cliff refund |
+| D. Custom | 4 | Before first checkpoint, between checkpoints, at final checkpoint, early release |
+| E. Claim Security | 5 | Non-beneficiary rejected, double-claim fails, completed schedule rejected, released_amount accumulates, token balance verification |
+| F. Revocation | 4 | Non-revocable rejected, non-employer rejected, double-revoke rejected, partial-vesting split (employer refund + beneficiary claim remainder) |
+| G. Early Release | 3 | Non-owner rejected, amount capped at unvested, revoked schedule rejected |
+| H. State Consistency | 2 | Claim after revoke gets frozen vested remainder, schedule IDs are sequential |
+| I. Input Validation | 5 | Zero amount, end < start, cliff outside range, empty checkpoints, unsorted checkpoints |
+| J. Edge Cases | 3 | Minimal-duration linear schedule, custom vested cap, invalid schedule_id |
+
+### Edge Case Reference
+
+| Scenario | Kind | Expected result |
+|---|---|---|
+| `now == start_time` | Linear | 0 (boundary is `<=`) |
+| `now == end_time` | Linear | `total_amount` (boundary is `>=`) |
+| `now > end_time` | Linear | `total_amount` (capped) |
+| `now < cliff_time` (Linear w/ cliff) | Linear | 0 |
+| `now == cliff_time` (Linear w/ cliff) | Linear | proportional from `start_time` |
+| `now == cliff_time - 1` | Cliff | 0 |
+| `now == cliff_time` | Cliff | `total_amount` |
+| Before first checkpoint | Custom | 0 |
+| Between checkpoints | Custom | last passed `cumulative_amount` |
+| After revocation (`now > revoked_at`) | Any | vested amount frozen at `revoked_at` |
 
