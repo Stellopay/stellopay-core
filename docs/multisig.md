@@ -16,6 +16,7 @@ The contract focuses on **threshold-based approvals**, clear **event logs** for 
 
 - Contract: `onchain/contracts/multisig/src/lib.rs`
 - Tests: `onchain/contracts/multisig/tests/test_multisig.rs`
+- Edge case tests: `onchain/contracts/multisig/tests/test_multisig_edge_cases.rs`
 
 ### Security Model
 
@@ -74,21 +75,67 @@ Storage keys:
 5. Creator or owner can cancel a pending operation via `cancel_operation`.
 6. The emergency guardian can call `emergency_execute` to force execution of a pending operation in break-glass scenarios.
 
-### Testing Focus
+### Threshold Configurations
+
+| Config | Use Case |
+|--------|----------|
+| 1-of-1 | Single signer, auto-execute on propose |
+| 2-of-3 | Standard multisig (balanced safety/ops) |
+| 3-of-3 | Maximum security, all must agree |
+| 1-of-N with guardian | Operational with break-glass safety net |
+
+### Security Properties
+
+#### Replay Protection
+Each operation has a monotonically increasing ID. Once executed or cancelled, the status is immutable. Re-approving an executed operation is a no-op.
+
+#### Duplicate Approval Prevention
+The `has_approved` check ensures each signer can only contribute one approval per operation, regardless of how many times `approve_operation` is called.
+
+#### Threshold Integrity
+Threshold is checked at execution time using the current stored value. Approvals are stored independently of threshold changes.
+
+#### Authorization
+All state-changing functions require `require_auth()` on the caller. The Soroban host enforces cryptographic signature verification.
+
+#### Guardian Security
+- Guardian address should be a cold wallet or hardware-secured key
+- Guardian actions are logged via events for audit trails
+- Guardian cannot execute already-executed or cancelled operations
+
+### Events
+
+| Event | Fields | When Emitted |
+|-------|--------|--------------|
+| `operation_proposed` | `operation_id`, `creator` | On propose |
+| `operation_approved` | `operation_id`, `signer`, `approvals`, `threshold` | On each approval |
+| `operation_executed` | `operation_id` | On execution |
+| `operation_cancelled` | `operation_id` | On cancellation |
+
+### Testing
+
+Run the test suite:
+
+```bash
+cd onchain
+cargo test -p multisig
+```
+
+#### Test Coverage
 
 The test suite covers:
 
-- initialization invariants and threshold validation
-- proposal creation, auto-approval by proposer, and approval tracking
-- threshold-based execution for large token payments
-- guardian emergency execution path
-- cancellation rules (creator vs owner vs unauthorized)
-
-### Security Notes
-
-- Signer sets and thresholds should be chosen to balance **safety** (enough signatures required) and **operational usability**.
-- Guardian usage should be rare and closely monitored; it bypasses normal threshold checks.
-- For `ContractUpgrade` and `DisputeResolution` operations, off-chain services should:
-  - subscribe to `operation_proposed`, `operation_approved`, and `operation_executed` events
-  - verify that on-chain approvals meet policy before executing external actions (e.g., CLI upgrades, payroll dispute resolution).
-
+- Initialization validation (invalid threshold, duplicate signers, re-init)
+- 1-of-1 auto-execution
+- 3-of-3 all-approvals-required
+- 2-of-3 standard threshold flow
+- Duplicate approval prevention
+- Non-signer rejection (propose and approve)
+- Already-executed rejection
+- Cancel by creator and owner
+- Guardian-only rescue
+- Guardian cannot execute executed/cancelled ops
+- Multiple independent operations
+- Zero-amount payment rejection
+- ContractUpgrade and DisputeResolution flows
+- Query function correctness
