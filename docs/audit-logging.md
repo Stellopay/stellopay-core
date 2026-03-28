@@ -94,6 +94,29 @@ pub fn get_latest_logs(env: Env, limit: u32) -> Result<Vec<AuditLogEntry>, Audit
 
 ---
 
+### Security Properties
+
+#### Append-Only Guarantee
+Logs cannot be modified after creation. There are no update or delete entrypoints. The `AuditLogEntry` struct is immutable once stored.
+
+#### Tamper Evidence
+- Each entry has a monotonically increasing ID and ledger timestamp
+- IDs are assigned sequentially with no gaps possible within the retained window
+- Timestamps are sourced from the Soroban ledger and cannot be spoofed
+
+#### Access Control
+- `append_log` requires `actor.require_auth()` — only the authenticated actor can create a log entry attributed to them
+- `set_retention_limit` is owner-only — non-owners cannot change retention policy
+- `initialize` is one-time only (owner must auth)
+
+#### Retention as Pruning
+Old logs age out of the queryable window when retention is exceeded. Underlying storage entries remain but are logically invisible. This prevents unbounded storage growth while maintaining tamper evidence within the window.
+
+#### Log Injection Prevention
+Since `actor.require_auth()` is enforced, a malicious contract cannot impersonate another address to inject false log entries. Each entry is cryptographically attributed to the authenticating signer.
+
+---
+
 ### Usage Patterns
 
 - **Compliance auditing**:
@@ -102,4 +125,28 @@ pub fn get_latest_logs(env: Env, limit: u32) -> Result<Vec<AuditLogEntry>, Audit
   - Capture administrative actions (role assignments, rate changes, pause/resume) with `actor` and `subject` set appropriately.
 - **Forensics**:
   - Use `get_latest_logs` for dashboards and `get_logs` for paginated history views.
+
+---
+
+### Testing
+
+```bash
+cd onchain
+cargo test -p audit_logger
+```
+
+#### Test Coverage
+
+The test suite covers:
+- Initialization with default and zero retention
+- Append log returns monotonic IDs and increments count
+- All fields recorded correctly (actor, action, subject, amount, timestamp)
+- Negative amounts supported
+- Retention enforcement (unlimited, exact boundary, single-entry retention)
+- Pagination (empty, offset beyond count, partial pages, limit=0 error)
+- Latest logs ordering
+- Only owner can set retention
+- Log entries are immutable (tamper evidence)
+- Timestamps are monotonic
+- Multiple actors can append independently
 
