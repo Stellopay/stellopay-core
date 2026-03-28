@@ -26,4 +26,6 @@ pub enum StorageKey {
     Paused,
     /// Initialization guard — prevents re-initialization.
     Initialized,
+    /// Fee split routing policy (optional).
+    FeeSplit,
 }
