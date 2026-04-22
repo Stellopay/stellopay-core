@@ -66,6 +66,7 @@ fn full_setup(
         &500_000i128,   // min 0.5
         &5_000_000i128, // max 5.0
         &600u64,        // 10 min staleness
+        &1u32,          // quorum
     );
 
     (oracle_client, payroll_client, oracle_owner, source, base, quote)
@@ -171,6 +172,7 @@ fn test_configure_pair_and_read_config() {
         &1_000_000i128,
         &3_000_000i128,
         &300u64,
+        &1u32,
     );
 
     let cfg = oracle_client.get_pair_config(&base2, &quote2).unwrap();
@@ -193,6 +195,7 @@ fn test_configure_pair_same_base_quote_rejected() {
         &1_000_000i128,
         &2_000_000i128,
         &300u64,
+        &1u32,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -211,6 +214,7 @@ fn test_configure_pair_min_greater_than_max_rejected() {
         &3_000_000i128, // min > max
         &1_000_000i128,
         &300u64,
+        &1u32,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -229,6 +233,7 @@ fn test_configure_pair_zero_min_rate_rejected() {
         &0i128,
         &2_000_000i128,
         &300u64,
+        &1u32,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -247,6 +252,7 @@ fn test_configure_pair_negative_rate_rejected() {
         &-1i128,
         &2_000_000i128,
         &300u64,
+        &1u32,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -265,6 +271,7 @@ fn test_configure_pair_zero_staleness_rejected() {
         &1_000_000i128,
         &2_000_000i128,
         &0u64,
+        &1u32,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -284,6 +291,7 @@ fn test_non_owner_cannot_configure_pair() {
         &1_000_000i128,
         &2_000_000i128,
         &300u64,
+        &1u32,
     );
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 }
@@ -653,7 +661,7 @@ fn test_configure_pair_before_init_fails() {
     let b = Address::generate(&env);
     let c = Address::generate(&env);
 
-    let res = client.try_configure_pair(&a, &b, &c, &1i128, &2i128, &1u64);
+    let res = client.try_configure_pair(&a, &b, &c, &1i128, &2i128, &1u64, &1u32);
     assert_eq!(res, Err(Ok(OracleError::NotInitialized)));
 }
 
@@ -707,6 +715,7 @@ fn test_compromised_source_blast_radius() {
         &1i128,
         &999_000_000i128,
         &86400u64,
+        &1u32,
     );
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 
@@ -744,6 +753,7 @@ fn test_pair_isolation() {
         &100_000i128,
         &9_000_000i128,
         &600u64,
+        &1u32,
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -780,6 +790,7 @@ fn test_reconfigure_pair_tightens_bounds() {
         &1_000_000i128,
         &3_000_000i128,
         &600u64,
+        &1u32,
     );
 
     // Same rate now rejected.
@@ -798,4 +809,98 @@ fn test_pair_direction_matters() {
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     let res = oracle_client.try_push_price(&source, &quote, &base, &2_000_000i128, &1_000u64);
     assert_eq!(res, Err(Ok(OracleError::PairNotConfigured)));
+}
+
+// ===========================================================================
+// 11. Multi-source quorum mode
+// ===========================================================================
+
+#[test]
+fn test_multi_source_quorum_success() {
+    let env = create_env();
+    let (oracle_client, payroll_client, oracle_owner, source1, base, quote) = full_setup(&env);
+
+    let source2 = Address::generate(&env);
+    let source3 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+    oracle_client.add_source(&oracle_owner, &source3);
+
+    // Reconfigure for quorum = 2.
+    oracle_client.configure_pair(
+        &oracle_owner,
+        &base,
+        &quote,
+        &500_000i128,
+        &5_000_000i128,
+        &600u64,
+        &2u32,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    let rate = 2_000_000i128;
+
+    // Source 1 submits.
+    oracle_client.push_price(&source1, &base, &quote, &rate, &1_000u64);
+
+    // State should NOT be updated yet (quorum = 2).
+    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+
+    // Source 2 submits the SAME rate and timestamp.
+    oracle_client.push_price(&source2, &base, &quote, &rate, &1_000u64);
+
+    // Now quorum is met!
+    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    assert_eq!(state.rate, rate);
+    assert_eq!(state.last_source, source2); // The one that completed the quorum
+
+    // Payroll should be updated.
+    let converted = payroll_client.convert_currency(&base, &quote, &10i128);
+    assert_eq!(converted, 20);
+}
+
+#[test]
+fn test_multi_source_quorum_different_rates_do_not_count() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source1, base, quote) = full_setup(&env);
+
+    let source2 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+
+    oracle_client.configure_pair(
+        &oracle_owner,
+        &base,
+        &quote,
+        &500_000i128,
+        &5_000_000i128,
+        &600u64,
+        &2u32,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+    // Source 1 submits rate A.
+    oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // Source 2 submits rate B (different).
+    oracle_client.push_price(&source2, &base, &quote, &2_100_000i128, &1_000u64);
+
+    // Neither reached quorum of 2.
+    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+}
+
+#[test]
+fn test_quorum_rejection_on_zero_quorum() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, _, base, quote) = full_setup(&env);
+
+    let res = oracle_client.try_configure_pair(
+        &oracle_owner,
+        &base,
+        &quote,
+        &500_000i128,
+        &5_000_000i128,
+        &600u64,
+        &0u32, // Invalid
+    );
+    assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
