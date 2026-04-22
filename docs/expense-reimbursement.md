@@ -6,10 +6,10 @@ The Expense Reimbursement Contract provides a secure, auditable system for manag
 
 ## Features
 
-- **Expense Submission**: Employees submit expenses with receipt documentation (via off-chain hashes).
+- **Expense Submission**: Employees submit expenses with receipt payloads that are hashed on-chain.
 - **Escrowing**: Payer (Employer) locks the funds into the contract, maintaining strict guarantees over balances prior to approval.
 - **Approval Workflow**: Designated approvers review and approve/reject expenses. Includes support for partial approvals.
-- **Receipt Verification**: Hash-based receipt tracking for audit trails. NatSpec compliant hashes.
+- **Receipt Verification**: Domain-separated SHA-256 receipt hashing with replay protection across all requests.
 - **Role-Based Access**: Owner manages approvers, approvers handle approvals. Self-approval is explicitly disabled.
 - **Status Tracking**: Complete lifecycle management (Pending → Approved/Rejected/Cancelled → Paid).
 - **Refund Guarantees**: Escrowed funds dynamically return to the originator on rejection, cancellation, or partial approval surpluses.
@@ -39,11 +39,35 @@ The Expense Reimbursement Contract provides a secure, auditable system for manag
 3. **Employer funds expense** via `fund_expense`. Tokens are transferred to the contract's escrow.
 4. **Approver reviews** and validates `SHA256(retrieved_document) == stored_hash`.
 5. **Approver triggers approval** using `approve_expense`. (Can approve partially). Status enters `Approved`.
-6. **Payment released** via `pay_expense`. Employee gets their portion, Employer is refunded any unapproved surplus automatically. Status enters `Paid`.
+6. **Optional audit linkage**: if `audit_logger` is configured, approval writes `append_log(actor=approver, action="expense_approved", subject=submitter, amount=approved_amount)` and stores returned `audit_log_id`.
+7. **Payment released** via `pay_expense`. Employee gets their portion, Employer is refunded any unapproved surplus automatically. Status enters `Paid`.
+
+## Receipt Hashing Scheme
+
+- Hash function: `SHA-256`
+- Domain separation prefix: `stello.expense.receipt.v1`
+- Preimage format: `domain || 0x00 || XDR(receipt_payload_string)`
+- Stored value: `receipt_hash: BytesN<32>` per expense
+- Replay protection: each `receipt_hash` is unique globally in contract storage (`ReceiptHash(hash) -> expense_id`)
+
+This prevents reimbursing the same receipt payload twice, even when submitted by different users or in separate requests.
+
+## Privacy and Security Notes
+
+- Only the 32-byte commitment is stored on-chain; raw receipts should remain in off-chain systems.
+- Use high-entropy receipt payloads (e.g., canonical document digest or immutable URI+digest tuple) to reduce metadata leakage.
+- Collision resistance relies on SHA-256 security; practical second-preimage and collision attacks are infeasible for this use case.
+- Empty payloads are rejected.
+
+## Payload Size and Cost Limits
+
+- `MAX_RECEIPT_PAYLOAD_BYTES = 4096`
+- Oversized payloads are rejected to cap hashing cost and avoid unbounded compute usage.
+- Very short payloads are valid but can increase accidental replay collisions; use canonical, sufficiently specific receipt content.
 
 ## Gas Optimization and Edge Cases
 
-- **Duplicates**: Overlapping IDs are sidestepped by incremental counters. Same claim hashes are allowed uniquely scoped by IDs.
+- **Receipt Replay**: Duplicate receipt payloads now fail fast with `Receipt already reimbursed`.
 - **Zero Values**: Validations assert all fund operations involve strictly positive integers.
 
 ## Usage Commands (Integration Examples)

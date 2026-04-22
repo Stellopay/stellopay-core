@@ -1,6 +1,9 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, token, xdr::ToXdr, Address, Bytes, BytesN, Env,
+    IntoVal, String, Symbol, Val, Vec,
+};
 
 /// ExpenseReimbursementContract manages expense submissions with approval workflows
 /// and receipt verification with escrow capabilities for organizational expense management.
@@ -39,9 +42,10 @@ pub struct Expense {
     pub approved_amount: Option<i128>,
     pub payer: Option<Address>,
     pub status: ExpenseStatus,
-    /// NatSpec: `receipt_hash` is a deterministic commitment (e.g., SHA-256) of the 
+    /// NatSpec: `receipt_hash` is a deterministic commitment (e.g., SHA-256) of the
     /// receipt document, allowing off-chain auditing of original receipts corresponding to on-chain payouts.
-    pub receipt_hash: String,
+    pub receipt_hash: BytesN<32>,
+    pub audit_log_id: Option<u64>,
     pub description: String,
     pub submitted_at: u64,
 }
@@ -53,6 +57,8 @@ enum StorageKey {
     Owner,
     NextExpenseId,
     Expense(u128),
+    ReceiptHash(BytesN<32>),
+    AuditLogger,
     ApproverRole(Address),
 }
 
@@ -63,7 +69,7 @@ pub struct ExpenseSubmittedEvent {
     pub submitter: Address,
     pub approver: Address,
     pub amount: i128,
-    pub receipt_hash: String,
+    pub receipt_hash: BytesN<32>,
 }
 
 #[contracttype]
@@ -80,6 +86,8 @@ pub struct ExpenseApprovedEvent {
     pub expense_id: u128,
     pub approver: Address,
     pub approved_amount: i128,
+    pub receipt_hash: BytesN<32>,
+    pub audit_log_id: Option<u64>,
 }
 
 #[contracttype]
@@ -129,6 +137,46 @@ fn is_approver(env: &Env, addr: &Address) -> bool {
         .persistent()
         .get(&StorageKey::ApproverRole(addr.clone()))
         .unwrap_or(false)
+}
+
+const RECEIPT_HASH_DOMAIN: &[u8] = b"stello.expense.receipt.v1";
+const MAX_RECEIPT_PAYLOAD_BYTES: u32 = 4096;
+
+fn compute_receipt_hash(env: &Env, receipt_payload: &String) -> BytesN<32> {
+    let payload_len = receipt_payload.len();
+    assert!(payload_len > 0, "Receipt payload cannot be empty");
+    assert!(
+        payload_len <= MAX_RECEIPT_PAYLOAD_BYTES,
+        "Receipt payload too large"
+    );
+
+    let mut preimage = Bytes::new(env);
+    preimage.append(&Bytes::from_slice(env, RECEIPT_HASH_DOMAIN));
+    preimage.push_back(0u8);
+    preimage.append(&receipt_payload.clone().to_xdr(env));
+    env.crypto().sha256(&preimage).into()
+}
+
+fn append_approval_audit_log(
+    env: &Env,
+    approver: &Address,
+    subject: &Address,
+    approved_amount: i128,
+) -> Option<u64> {
+    let maybe_audit_logger: Option<Address> = env.storage().persistent().get(&StorageKey::AuditLogger);
+    maybe_audit_logger.map(|audit_logger| {
+        let mut args = Vec::<Val>::new(env);
+        args.push_back(approver.clone().into_val(env));
+        args.push_back(Symbol::new(env, "expense_approved").into_val(env));
+        args.push_back(Some(subject.clone()).into_val(env));
+        args.push_back(Some(approved_amount).into_val(env));
+
+        env.invoke_contract::<u64>(
+            &audit_logger,
+            &Symbol::new(env, "append_log"),
+            args,
+        )
+    })
 }
 
 #[contractimpl]
@@ -190,7 +238,7 @@ impl ExpenseReimbursementContract {
         approver: Address,
         token: Address,
         amount: i128,
-        receipt_hash: String,
+        receipt_payload: String,
         description: String,
     ) -> u128 {
         require_initialized(&env);
@@ -199,6 +247,14 @@ impl ExpenseReimbursementContract {
         assert!(amount > 0, "Amount must be positive");
         assert!(is_approver(&env, &approver), "Invalid approver");
         assert!(submitter != approver, "Approver cannot be submitter");
+
+        let receipt_hash = compute_receipt_hash(&env, &receipt_payload);
+        assert!(
+            !env.storage()
+                .persistent()
+                .has(&StorageKey::ReceiptHash(receipt_hash.clone())),
+            "Receipt already reimbursed"
+        );
 
         let expense_id: u128 = env
             .storage()
@@ -217,6 +273,7 @@ impl ExpenseReimbursementContract {
             payer: None,
             status: ExpenseStatus::Pending,
             receipt_hash: receipt_hash.clone(),
+            audit_log_id: None,
             description,
             submitted_at: env.ledger().timestamp(),
         };
@@ -224,6 +281,9 @@ impl ExpenseReimbursementContract {
         env.storage()
             .persistent()
             .set(&StorageKey::Expense(expense_id), &expense);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ReceiptHash(receipt_hash.clone()), &expense_id);
         env.storage()
             .persistent()
             .set(&StorageKey::NextExpenseId, &(expense_id + 1));
@@ -302,6 +362,13 @@ impl ExpenseReimbursementContract {
 
         expense.approved_amount = Some(approved_amount);
         expense.status = ExpenseStatus::Approved;
+        let audit_log_id = append_approval_audit_log(
+            &env,
+            &approver,
+            &expense.submitter,
+            approved_amount,
+        );
+        expense.audit_log_id = audit_log_id;
         env.storage()
             .persistent()
             .set(&StorageKey::Expense(expense_id), &expense);
@@ -312,6 +379,8 @@ impl ExpenseReimbursementContract {
                 expense_id,
                 approver,
                 approved_amount,
+                receipt_hash: expense.receipt_hash,
+                audit_log_id,
             },
         );
     }
@@ -453,5 +522,20 @@ impl ExpenseReimbursementContract {
     pub fn is_approver(env: Env, address: Address) -> bool {
         require_initialized(&env);
         is_approver(&env, &address)
+    }
+
+    /// Configure the optional external audit logger contract for approval traceability.
+    pub fn set_audit_logger(env: Env, owner: Address, audit_logger: Address) {
+        require_initialized(&env);
+        require_owner(&env, &owner);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::AuditLogger, &audit_logger);
+    }
+
+    /// Return currently configured audit logger contract address.
+    pub fn get_audit_logger(env: Env) -> Option<Address> {
+        require_initialized(&env);
+        env.storage().persistent().get(&StorageKey::AuditLogger)
     }
 }
