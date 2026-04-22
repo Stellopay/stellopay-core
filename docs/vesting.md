@@ -173,3 +173,47 @@ The test suite contains **42 tests** across 10 categories:
 | Between checkpoints | Custom | last passed `cumulative_amount` |
 | After revocation (`now > revoked_at`) | Any | vested amount frozen at `revoked_at` |
 
+### Soroban Events
+
+The contract emits events for key lifecycle actions to support off-chain indexing.
+
+#### `vesting_created`
+Emitted when a new linear, cliff, or custom schedule is successfully created and funded.
+- **Topic 1**: `Symbol("vesting_created")`
+- **Topic 2**: `schedule_id` (u128)
+- **Data**: `CreatedEvent` struct
+  - `id`: u128
+  - `employer`: Address
+  - `beneficiary`: Address
+  - `token`: Address
+  - `kind`: VestingKind (Linear, Cliff, or Custom)
+  - `amount`: i128 (Total vesting amount)
+
+#### `vesting_claimed`
+Emitted when a beneficiary claims vested tokens.
+- **Topic 1**: `Symbol("vesting_claimed")`
+- **Topic 2**: `schedule_id` (u128)
+- **Data**: `ClaimedEvent` struct
+  - `id`: u128
+  - `beneficiary`: Address
+  - `amount`: i128 (Amount just released)
+
+#### `vesting_revoked`
+Emitted when an employer revokes a revocable schedule.
+- **Topic 1**: `Symbol("vesting_revoked")`
+- **Topic 2**: `schedule_id` (u128)
+- **Data**: `RevokedEvent` struct
+  - `id`: u128
+  - `employer`: Address
+  - `refunded`: i128 (Amount returned to employer)
+  - `at`: u64 (Ledger timestamp of revocation)
+
+#### `vesting_early_release`
+Emitted when the contract owner approves an early release of unvested tokens.
+- **Topic 1**: `Symbol("vesting_early_release")`
+- **Topic 2**: `schedule_id` (u128)
+- **Data**: `EarlyReleaseEvent` struct
+  - `id`: u128
+  - `admin`: Address
+  - `amount`: i128 (Amount released ahead of schedule)
+
