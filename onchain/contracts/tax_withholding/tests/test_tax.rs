@@ -35,7 +35,7 @@ fn test_single_jurisdiction_withholding() {
     let employee = Address::generate(&env);
     let jurisdiction = Symbol::new(&env, "US_CA");
 
-    client.set_jurisdiction_rate(&owner, &jurisdiction, &1500u32);
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1500u32, &1);
 
     let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
@@ -47,6 +47,7 @@ fn test_single_jurisdiction_withholding() {
     assert_eq!(result.total_tax, 1_500);
     assert_eq!(result.net_amount, 8_500);
     assert_eq!(result.shares.len(), 1);
+    assert_eq!(result.ruleset_version, 1);
 
     let share = result.shares.get(0).unwrap();
     assert_eq!(share.jurisdiction, jurisdiction);
@@ -61,8 +62,8 @@ fn test_multi_jurisdiction_withholding() {
     let j1 = Symbol::new(&env, "US_FED");
     let j2 = Symbol::new(&env, "US_STATE");
 
-    client.set_jurisdiction_rate(&owner, &j1, &1000u32);
-    client.set_jurisdiction_rate(&owner, &j2, &500u32);
+    client.set_jurisdiction_rate(&owner, &j1, &1000u32, &1);
+    client.set_jurisdiction_rate(&owner, &j2, &500u32, &1);
 
     let jurisdictions = Vec::from_array(&env, [j1.clone(), j2.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
@@ -73,6 +74,7 @@ fn test_multi_jurisdiction_withholding() {
     assert_eq!(result.total_tax, 3_000);
     assert_eq!(result.net_amount, 17_000);
     assert_eq!(result.shares.len(), 2);
+    assert_eq!(result.ruleset_version, 1);
 }
 
 #[test]
@@ -91,7 +93,7 @@ fn test_zero_rate_jurisdiction() {
     let employee = Address::generate(&env);
     let jurisdiction = Symbol::new(&env, "ZERO");
 
-    client.set_jurisdiction_rate(&owner, &jurisdiction, &0u32);
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &0u32, &1);
 
     let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
@@ -106,7 +108,7 @@ fn test_invalid_rate_rejected() {
     let (env, owner, client) = setup();
 
     let jurisdiction = Symbol::new(&env, "OVER");
-    let res = client.try_set_jurisdiction_rate(&owner, &jurisdiction, &10_001u32);
+    let res = client.try_set_jurisdiction_rate(&owner, &jurisdiction, &10_001u32, &1);
     assert_eq!(res, Err(Ok(TaxError::InvalidRate)));
 }
 
@@ -117,7 +119,7 @@ fn test_max_rate_accepted() {
     let employee = Address::generate(&env);
     let jurisdiction = Symbol::new(&env, "MAX");
 
-    client.set_jurisdiction_rate(&owner, &jurisdiction, &10_000u32);
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &10_000u32, &1);
 
     let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
@@ -135,7 +137,7 @@ fn test_floor_rounding_protects_employee() {
     let jurisdiction = Symbol::new(&env, "US_CA");
 
     // 15% of 10_001 = 1500.15 → floored to 1500 (employee keeps the 0.15)
-    client.set_jurisdiction_rate(&owner, &jurisdiction, &1500u32);
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1500u32, &1);
 
     let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
@@ -189,7 +191,7 @@ fn test_accrue_withholding_basic() {
     let employee = Address::generate(&env);
     let jurisdiction = Symbol::new(&env, "US_FED");
 
-    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32); // 10%
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1); // 10%
     let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
 
@@ -209,7 +211,7 @@ fn test_accrue_withholding_accumulates_across_periods() {
     let employee = Address::generate(&env);
     let jurisdiction = Symbol::new(&env, "US_FED");
 
-    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32);
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
     let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
 
@@ -229,8 +231,8 @@ fn test_accrue_withholding_multi_jurisdiction() {
     let j1 = Symbol::new(&env, "US_FED");
     let j2 = Symbol::new(&env, "US_STATE");
 
-    client.set_jurisdiction_rate(&owner, &j1, &1000u32); // 10%
-    client.set_jurisdiction_rate(&owner, &j2, &500u32);  // 5%
+    client.set_jurisdiction_rate(&owner, &j1, &1000u32, &1); // 10%
+    client.set_jurisdiction_rate(&owner, &j2, &500u32, &1); // 5%
 
     let jurisdictions = Vec::from_array(&env, [j1.clone(), j2.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
@@ -249,7 +251,7 @@ fn test_accrue_withholding_unauthorized() {
     let employee = Address::generate(&env);
     let jurisdiction = Symbol::new(&env, "US_FED");
 
-    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32);
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
     let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
 
@@ -284,7 +286,7 @@ fn test_remit_withholding_transfers_to_treasury() {
     let treasury = Address::generate(&env);
     let jurisdiction = Symbol::new(&env, "US_FED");
 
-    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32);
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
     client.set_jurisdiction_treasury(&owner, &jurisdiction, &treasury);
     let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
@@ -317,7 +319,7 @@ fn test_remit_withholding_resets_balance_to_zero() {
     let treasury = Address::generate(&env);
     let jurisdiction = Symbol::new(&env, "US_FED");
 
-    client.set_jurisdiction_rate(&owner, &jurisdiction, &500u32);
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &500u32, &1);
     client.set_jurisdiction_treasury(&owner, &jurisdiction, &treasury);
     let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
@@ -339,7 +341,7 @@ fn test_remit_treasury_not_set() {
     let employee = Address::generate(&env);
     let jurisdiction = Symbol::new(&env, "US_FED");
 
-    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32);
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
     let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
 
@@ -393,7 +395,7 @@ fn test_remit_partial_then_accrue_and_remit_again() {
     let treasury = Address::generate(&env);
     let jurisdiction = Symbol::new(&env, "US_FED");
 
-    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32);
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
     client.set_jurisdiction_treasury(&owner, &jurisdiction, &treasury);
     let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
@@ -426,7 +428,7 @@ fn test_non_owner_cannot_set_jurisdiction_rate() {
     let non_owner = Address::generate(&env);
     let jurisdiction = Symbol::new(&env, "US_FED");
 
-    let res = client.try_set_jurisdiction_rate(&non_owner, &jurisdiction, &1000u32);
+    let res = client.try_set_jurisdiction_rate(&non_owner, &jurisdiction, &1000u32, &1);
     assert_eq!(res, Err(Ok(TaxError::Unauthorized)));
 }
 
@@ -454,7 +456,7 @@ fn test_withholding_destination_is_owner_controlled() {
     let attacker_treasury = Address::generate(&env);
     let jurisdiction = Symbol::new(&env, "US_FED");
 
-    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32);
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
     // Owner sets the legitimate treasury
     client.set_jurisdiction_treasury(&owner, &jurisdiction, &legitimate_treasury);
     let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
