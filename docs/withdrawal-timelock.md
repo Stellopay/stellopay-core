@@ -136,6 +136,54 @@ Read helpers:
     that certain actions be represented as timelocked operations, creating a
     two-stage safety net: governance approval followed by a timelocked delay.
 
+### Governance Integration Details
+
+When integrating with the governance contract for admin changes, follow this pattern:
+
+#### Payload Hash Computation
+
+For `AdminChange` operations triggered by governance, compute payload hashes deterministically:
+
+```rust
+fn create_admin_change_payload_hash(
+    env: &Env,
+    target_contract: &Address,
+    new_admin: &Address,
+    nonce: u64,
+) -> BytesN<32> {
+    let mut payload = Vec::new(env);
+    
+    // Domain separation prefix
+    payload.push_back(Symbol::new(env, "ADMIN_CHANGE").to_val());
+    
+    // Target contract address
+    payload.push_back(target_contract.to_val());
+    
+    // New admin address  
+    payload.push_back(new_admin.to_val());
+    
+    // Nonce for uniqueness
+    payload.push_back(nonce.to_val());
+    
+    // Compute SHA-256 hash
+    env.crypto().sha256(&payload)
+}
+```
+
+#### Integration Flow
+
+1. **Governance Proposal**: Create an admin change proposal in the governance contract
+2. **Vote & Queue**: Standard governance voting and queuing process
+3. **Timelock Queue**: After proposal success, queue an `AdminChange` operation
+4. **Execute**: After the timelock delay, execute the operation
+
+#### Security Benefits
+
+- **Double Timelock**: Governance timelock + withdrawal_timelock delay
+- **Domain Separation**: Payload hashes prevent collision attacks
+- **Deterministic Verification**: Off-chain tooling can verify payload hashes
+- **Access Control**: Only authorized governance execution can queue timelock ops
+
 ### Security Considerations
 
 - Protect the `admin` key with multisig or governance; compromise of this key
