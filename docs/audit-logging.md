@@ -126,6 +126,28 @@ Since `actor.require_auth()` is enforced, a malicious contract cannot impersonat
 - **Forensics**:
   - Use `get_latest_logs` for dashboards and `get_logs` for paginated history views.
 
+### Expense Reimbursement Approval Linkage
+
+The `expense_reimbursement` contract can be configured with an `audit_logger` address using:
+
+```rust
+set_audit_logger(owner, audit_logger_address)
+```
+
+When configured, each successful `approve_expense` call appends:
+
+- `actor = approver`
+- `action = "expense_approved"`
+- `subject = Some(submitter)`
+- `amount = Some(approved_amount)`
+
+The returned `log_id` is persisted in the expense record (`audit_log_id`) and emitted in the approval event payload, providing a stable on-chain linkage between the financial state transition and append-only audit history.
+
+#### Privacy Considerations for Expense Flows
+
+- Approval logs should include only operational metadata (`actor`, action, `subject`, amount).
+- Receipt material is not logged in plaintext by `audit_logger`; expense flows store only a domain-separated SHA-256 receipt commitment.
+
 ---
 
 ### Testing
