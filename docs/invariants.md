@@ -122,3 +122,30 @@ For fixed-amount payment splits:
   - `sum(fixed_amounts) == total_amount`
 - **No implicit absorber**
   - No recipient receives a rounded or absorbed remainder
+
+---
+
+### Slashing Penalty Invariants
+
+For `slashing_penalty` offender accounting:
+
+- **Non-negative stake accounting**
+  - `stake_balance >= 0` for every offender
+  - Slashing must never underflow stake balances
+- **Per-event cap safety**
+  - `0 < penalty_bps <= per_event_bps_cap <= 5000`
+  - Computed slash amount must be strictly positive or slash is rejected
+- **Period cap safety**
+  - For each offender accumulator and active period:
+    - `0 <= period_slashed <= per_period_amount_cap`
+- **Lifetime cap safety**
+  - For each offender accumulator:
+    - `0 <= lifetime_slashed <= lifetime_amount_cap`
+- **Config consistency**
+  - `period_secs > 0`
+  - `per_period_amount_cap > 0`
+  - `lifetime_amount_cap > 0`
+  - `per_period_amount_cap <= lifetime_amount_cap`
+- **Replay and burst resistance**
+  - A slash with duplicate `evidence_hash` is rejected
+  - Repeated or same-timestamp slash attempts must saturate at period/lifetime cap and reject overflow attempts

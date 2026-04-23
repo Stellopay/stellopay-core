@@ -1177,7 +1177,6 @@ version = "0.0.0"
 dependencies = [
  "bonus_system",
  "dispute_escalation",
- "employee_roles",
  "payment_history",
  "payment_retry",
  "payment_scheduler",
@@ -1185,6 +1184,7 @@ dependencies = [
  "rbac",
  "soroban-sdk",
  "stello_pay_contract",
+ "withdrawal_timelock",
 ]
 
 [[package]]

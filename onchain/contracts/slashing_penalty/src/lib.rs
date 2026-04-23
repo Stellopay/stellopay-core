@@ -52,12 +52,14 @@ const SLASH_REC: Symbol    = symbol_short!("SLASHREC");
 const USED_EV: Symbol      = symbol_short!("USEDEV");
 const ESCROW: Symbol       = symbol_short!("ESCROW");
 const TOKEN: Symbol        = symbol_short!("TOKEN");
+const CAPS: Symbol         = symbol_short!("CAPS");
+const SLASH_ACC: Symbol    = symbol_short!("SLASHACC");
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 /// Categories of misbehaviour that can be slashed.
 #[contracttype]
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum Offense {
     /// Validator signed two conflicting blocks at the same height.
     DoubleSigning,
@@ -69,7 +71,7 @@ pub enum Offense {
 
 /// Status of a slash record through its lifecycle.
 #[contracttype]
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum SlashStatus {
     /// Slash initiated; appeal window is open.
     Pending,
@@ -107,10 +109,36 @@ pub struct SlashRecord {
     pub attestors: Vec<Address>,
 }
 
+/// Global cap configuration for slashing safety.
+#[contracttype]
+#[derive(Clone)]
+pub struct PenaltyCaps {
+    /// Maximum per-slash penalty in basis points.
+    pub per_event_bps_cap: u32,
+    /// Maximum amount that can be slashed from one offender within a rolling period.
+    pub per_period_amount_cap: i128,
+    /// Maximum cumulative amount that can be slashed from one offender for contract lifetime.
+    pub lifetime_amount_cap: i128,
+    /// Rolling period length (seconds) used for the period cap.
+    pub period_secs: u64,
+}
+
+/// Per-offender slashing totals for cap enforcement.
+#[contracttype]
+#[derive(Clone)]
+pub struct PenaltyAccumulator {
+    /// Current rolling period start timestamp.
+    pub period_start_ts: u64,
+    /// Amount slashed from offender in current period.
+    pub period_slashed: i128,
+    /// Amount slashed from offender across contract lifetime.
+    pub lifetime_slashed: i128,
+}
+
 // ─── Errors ───────────────────────────────────────────────────────────────────
 
 #[contracterror]
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum SlashError {
     /// Caller does not hold the slasher role.
     Unauthorized        = 1,
@@ -136,6 +164,14 @@ pub enum SlashError {
     ZeroPenalty         = 11,
     /// Admin address already initialised.
     AlreadyInitialized  = 12,
+    /// Penalty cap configuration is invalid.
+    InvalidConfig       = 13,
+    /// Period cap would be exceeded.
+    PeriodCapExceeded   = 14,
+    /// Lifetime cap would be exceeded.
+    LifetimeCapExceeded = 15,
+    /// Arithmetic overflow/underflow protection.
+    ArithmeticOverflow  = 16,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -159,10 +195,20 @@ impl SlashingPenaltyContract {
         admin: Address,
         token: Address,
         quorum: u32,
+        per_event_bps_cap: u32,
+        per_period_amount_cap: i128,
+        lifetime_amount_cap: i128,
+        period_secs: u64,
     ) -> Result<(), SlashError> {
         if env.storage().instance().has(&ADMIN) {
             return Err(SlashError::AlreadyInitialized);
         }
+        Self::validate_caps(
+            per_event_bps_cap,
+            per_period_amount_cap,
+            lifetime_amount_cap,
+            period_secs,
+        )?;
         admin.require_auth();
         env.storage().instance().set(&ADMIN, &admin);
         env.storage().instance().set(&TOKEN, &token);
@@ -172,6 +218,37 @@ impl SlashingPenaltyContract {
         env.storage().instance().set(&SLASH_REC, &Map::<BytesN<32>, SlashRecord>::new(&env));
         env.storage().instance().set(&USED_EV, &Vec::<BytesN<32>>::new(&env));
         env.storage().instance().set(&ESCROW, &Map::<BytesN<32>, i128>::new(&env));
+        env.storage().instance().set(&SLASH_ACC, &Map::<Address, PenaltyAccumulator>::new(&env));
+        env.storage().instance().set(&CAPS, &PenaltyCaps {
+            per_event_bps_cap,
+            per_period_amount_cap,
+            lifetime_amount_cap,
+            period_secs,
+        });
+        Ok(())
+    }
+
+    /// Update penalty caps. Admin only.
+    pub fn set_penalty_caps(
+        env: Env,
+        per_event_bps_cap: u32,
+        per_period_amount_cap: i128,
+        lifetime_amount_cap: i128,
+        period_secs: u64,
+    ) -> Result<(), SlashError> {
+        Self::require_admin(&env)?;
+        Self::validate_caps(
+            per_event_bps_cap,
+            per_period_amount_cap,
+            lifetime_amount_cap,
+            period_secs,
+        )?;
+        env.storage().instance().set(&CAPS, &PenaltyCaps {
+            per_event_bps_cap,
+            per_period_amount_cap,
+            lifetime_amount_cap,
+            period_secs,
+        });
         Ok(())
     }
 
@@ -262,7 +339,8 @@ impl SlashingPenaltyContract {
         Self::check_evidence_unused(&env, &evidence_hash)?;
 
         let stake_amount = Self::get_stake(&env, &offender)?;
-        let slash_amount = Self::compute_slash(stake_amount, penalty_bps);
+        let slash_amount = Self::compute_slash(stake_amount, penalty_bps)?;
+        Self::enforce_and_record_caps(&env, &offender, slash_amount)?;
 
         Self::mark_evidence_used(&env, evidence_hash.clone());
         Self::move_to_escrow(&env, &offender, slash_amount, evidence_hash.clone())?;
@@ -329,7 +407,8 @@ impl SlashingPenaltyContract {
             // First attestor — create the record
             Self::check_evidence_unused(&env, &evidence_hash)?;
             let stake_amount = Self::get_stake(&env, &offender)?;
-            let slash_amount = Self::compute_slash(stake_amount, penalty_bps);
+            let slash_amount = Self::compute_slash(stake_amount, penalty_bps)?;
+            Self::enforce_and_record_caps(&env, &offender, slash_amount)?;
             Self::mark_evidence_used(&env, evidence_hash.clone());
             Self::move_to_escrow(&env, &offender, slash_amount, evidence_hash.clone())?;
 
@@ -407,6 +486,7 @@ impl SlashingPenaltyContract {
         if uphold {
             // Return escrowed funds to offender
             Self::release_escrow(&env, &record.offender, evidence_hash.clone())?;
+            Self::decrease_accumulator(&env, &record.offender, record.escrowed_amount)?;
             record.status = SlashStatus::Reversed;
         } else {
             // Burn / redistribute escrowed funds
@@ -485,6 +565,11 @@ impl SlashingPenaltyContract {
         env.storage().instance().get(&QUORUM).unwrap()
     }
 
+    /// Return current penalty cap configuration.
+    pub fn get_penalty_caps(env: Env) -> PenaltyCaps {
+        env.storage().instance().get(&CAPS).unwrap()
+    }
+
     // ── Internal Helpers ──────────────────────────────────────────────────────
 
     fn require_admin(env: &Env) -> Result<(), SlashError> {
@@ -503,11 +588,30 @@ impl SlashingPenaltyContract {
     }
 
     fn validate_penalty(_env: &Env, penalty_bps: u32) -> Result<(), SlashError> {
+        let caps: PenaltyCaps = _env.storage().instance().get(&CAPS).unwrap();
         if penalty_bps == 0 {
             return Err(SlashError::ZeroPenalty);
         }
-        if penalty_bps > MAX_PENALTY_BPS {
+        if penalty_bps > caps.per_event_bps_cap || penalty_bps > MAX_PENALTY_BPS {
             return Err(SlashError::PenaltyTooHigh);
+        }
+        Ok(())
+    }
+
+    fn validate_caps(
+        per_event_bps_cap: u32,
+        per_period_amount_cap: i128,
+        lifetime_amount_cap: i128,
+        period_secs: u64,
+    ) -> Result<(), SlashError> {
+        if per_event_bps_cap == 0 || per_event_bps_cap > MAX_PENALTY_BPS {
+            return Err(SlashError::InvalidConfig);
+        }
+        if per_period_amount_cap <= 0 || lifetime_amount_cap <= 0 || period_secs == 0 {
+            return Err(SlashError::InvalidConfig);
+        }
+        if per_period_amount_cap > lifetime_amount_cap {
+            return Err(SlashError::InvalidConfig);
         }
         Ok(())
     }
@@ -537,8 +641,69 @@ impl SlashingPenaltyContract {
         }
     }
 
-    fn compute_slash(stake: i128, penalty_bps: u32) -> i128 {
-        stake * penalty_bps as i128 / 10_000
+    fn compute_slash(stake: i128, penalty_bps: u32) -> Result<i128, SlashError> {
+        let numerator = stake
+            .checked_mul(penalty_bps as i128)
+            .ok_or(SlashError::ArithmeticOverflow)?;
+        let slash_amount = numerator / 10_000;
+        if slash_amount <= 0 {
+            return Err(SlashError::ZeroPenalty);
+        }
+        Ok(slash_amount)
+    }
+
+    fn enforce_and_record_caps(env: &Env, offender: &Address, slash_amount: i128) -> Result<(), SlashError> {
+        let caps: PenaltyCaps = env.storage().instance().get(&CAPS).unwrap();
+        let now = env.ledger().timestamp();
+        let mut accs: Map<Address, PenaltyAccumulator> = env.storage().instance().get(&SLASH_ACC).unwrap();
+
+        let mut acc = accs.get(offender.clone()).unwrap_or(PenaltyAccumulator {
+            period_start_ts: now,
+            period_slashed: 0,
+            lifetime_slashed: 0,
+        });
+
+        if now.saturating_sub(acc.period_start_ts) >= caps.period_secs {
+            acc.period_start_ts = now;
+            acc.period_slashed = 0;
+        }
+
+        let next_period = acc
+            .period_slashed
+            .checked_add(slash_amount)
+            .ok_or(SlashError::ArithmeticOverflow)?;
+        if next_period > caps.per_period_amount_cap {
+            return Err(SlashError::PeriodCapExceeded);
+        }
+
+        let next_lifetime = acc
+            .lifetime_slashed
+            .checked_add(slash_amount)
+            .ok_or(SlashError::ArithmeticOverflow)?;
+        if next_lifetime > caps.lifetime_amount_cap {
+            return Err(SlashError::LifetimeCapExceeded);
+        }
+
+        acc.period_slashed = next_period;
+        acc.lifetime_slashed = next_lifetime;
+        accs.set(offender.clone(), acc);
+        env.storage().instance().set(&SLASH_ACC, &accs);
+        Ok(())
+    }
+
+    fn decrease_accumulator(env: &Env, offender: &Address, amount: i128) -> Result<(), SlashError> {
+        let mut accs: Map<Address, PenaltyAccumulator> = env.storage().instance().get(&SLASH_ACC).unwrap();
+        let Some(mut acc) = accs.get(offender.clone()) else {
+            return Ok(());
+        };
+        if amount < 0 {
+            return Err(SlashError::ArithmeticOverflow);
+        }
+        acc.period_slashed = acc.period_slashed.saturating_sub(amount);
+        acc.lifetime_slashed = acc.lifetime_slashed.saturating_sub(amount);
+        accs.set(offender.clone(), acc);
+        env.storage().instance().set(&SLASH_ACC, &accs);
+        Ok(())
     }
 
     fn move_to_escrow(
