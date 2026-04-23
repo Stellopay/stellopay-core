@@ -75,6 +75,8 @@ pub enum StorageKey {
     Owner,
     /// Mapping: employee address -> Vec<BuiltInRole>
     EmployeeRoles(Address),
+    /// Linked RBAC contract address.
+    RbacAddress,
 }
 
 /// Employee Roles Contract
@@ -107,6 +109,21 @@ impl EmployeeRolesContract {
             panic!("Already initialized");
         }
         env.storage().persistent().set(&StorageKey::Owner, &owner);
+    }
+
+    /// Sets the linked RBAC contract address for centralized role checks.
+    ///
+    /// # Arguments
+    /// * `rbac_address` - Address of the RBAC contract.
+    ///
+    /// # Access Control
+    /// - Caller must be the contract owner.
+    pub fn set_rbac_address(env: Env, rbac_address: Address) {
+        let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        owner.require_auth();
+        env.storage()
+            .persistent()
+            .set(&StorageKey::RbacAddress, &rbac_address);
     }
 
     /// Assigns a built-in role to an employee.
@@ -232,10 +249,29 @@ impl EmployeeRolesContract {
         let roles: Vec<BuiltInRole> = env
             .storage()
             .persistent()
-            .get(&StorageKey::EmployeeRoles(employee))
+            .get(&StorageKey::EmployeeRoles(employee.clone()))
             .unwrap_or(Vec::new(&env));
 
-        roles.iter().any(|r| r == role)
+        if roles.iter().any(|r| r == role) {
+            return true;
+        }
+
+        // Fallback to RBAC if linked
+        if let Some(rbac_address) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&StorageKey::RbacAddress)
+        {
+            if let Some(rbac_role) = Self::map_to_rbac_role(role) {
+                let rbac_client = rbac::RbacContractClient::new(&env, &rbac_address);
+                // We use inheritance-aware check from RBAC if exact role not found locally
+                if rbac_client.has_role(&employee, &rbac_role) {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     /// Checks whether `employee` has at least the required role in the
@@ -251,11 +287,29 @@ impl EmployeeRolesContract {
         let roles: Vec<BuiltInRole> = env
             .storage()
             .persistent()
-            .get(&StorageKey::EmployeeRoles(employee))
+            .get(&StorageKey::EmployeeRoles(employee.clone()))
             .unwrap_or(Vec::new(&env));
 
         let required_level = required as u32;
-        roles.iter().any(|r| (r as u32) >= required_level)
+        if roles.iter().any(|r| (r as u32) >= required_level) {
+            return true;
+        }
+
+        // Fallback to RBAC if linked
+        if let Some(rbac_address) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&StorageKey::RbacAddress)
+        {
+            if let Some(rbac_role) = Self::map_to_rbac_role(required) {
+                let rbac_client = rbac::RbacContractClient::new(&env, &rbac_address);
+                if rbac_client.has_role(&employee, &rbac_role) {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     /// Checks whether `employee` can perform the given payroll action.
@@ -341,5 +395,14 @@ impl EmployeeRolesContract {
         }
 
         Ok(())
+    }
+
+    /// Maps a BuiltInRole to a centralized RBAC Role.
+    fn map_to_rbac_role(role: BuiltInRole) -> Option<rbac::Role> {
+        match role {
+            BuiltInRole::Employee => Some(rbac::Role::Employee),
+            BuiltInRole::Manager => Some(rbac::Role::Employer),
+            BuiltInRole::Admin => Some(rbac::Role::Admin),
+        }
     }
 }
