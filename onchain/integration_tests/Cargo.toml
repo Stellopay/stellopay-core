@@ -16,6 +16,8 @@ payment_history = { path = "../contracts/payment_history" }
 dispute_escalation = { path = "../contracts/dispute_escalation" }
 employee_roles = { path = "../contracts/employee_roles" }
 rbac = { path = "../contracts/rbac" }
+payment_scheduler = { path = "../contracts/payment_scheduler" }
+payment_retry = { path = "../contracts/payment_retry" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
