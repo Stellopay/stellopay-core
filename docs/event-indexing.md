@@ -52,6 +52,35 @@ The Stellopay contract uses the Soroban Event system to broadcast state changes.
 
 ---
 
+## Payment History Reconciliation
+
+To build a canonical payment ledger, normalize payment-producing events into the
+`payment_history.record_payment(agreement_id, payment_hash, token, amount, from, to, timestamp)` payload.
+
+### Required topics and normalization inputs
+
+| Source contract | Required topic | Event fields used | Additional reads/enrichment |
+|---|---|---|---|
+| `payment_scheduler` | `job_executed` | `job_id`, `amount` | `get_job(job_id)` for `employer`, `recipient`, `token`; agreement mapping from scheduler domain metadata |
+| `payroll_escrow` | `released` | `agreement_id`, `to`, `amount` | `get_agreement_employer(agreement_id)` for payer; token from escrow deployment config |
+| `bonus_system` | `incentive_claimed` | `incentive_id`, `employee`, `amount` | `get_incentive(incentive_id)` for employer and token; agreement mapping from bonus metadata |
+| `expense_reimbursement` | `expense_paid` | `expense_id`, `submitter`, `amount` | `get_expense(expense_id)` for token/payer context; agreement mapping from reimbursement metadata |
+
+### Canonical rules
+
+- `payment_hash`: use the source transaction hash (32 bytes).
+- `timestamp`: use ledger close time.
+- `amount`, `from`, `to`, `token`, `agreement_id`: use normalized output after event + enrichment reads.
+- Replay behavior: duplicates are safe because `payment_history` is idempotent by `payment_hash`.
+
+### Failure handling
+
+- Missing events: replay from last durable checkpoint minus a safety window.
+- Partial history after restart: replay unconfirmed ranges; duplicate writes are absorbed by idempotency.
+- Out-of-order delivery: accepted; use `payment_id` for deterministic ingest order and `timestamp` for source-time analysis.
+
+---
+
 ## Best Practices for Indexing
 
 ### 1. Idempotency and Replay Safety
