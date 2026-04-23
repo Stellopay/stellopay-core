@@ -30,6 +30,10 @@
 
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
 
+/// Maximum allowed depth of the department hierarchy (root = depth 0).
+/// A department at depth MAX_DEPTH cannot have children.
+pub const MAX_DEPTH: u32 = 10;
+
 #[contract]
 pub struct DepartmentManagerContract;
 
@@ -225,6 +229,8 @@ impl DepartmentManagerContract {
                 .get(&StorageKey::Department(pid))
                 .expect("Parent department not found");
             assert!(parent.org_id == org_id, "Parent must be in same org");
+            // child depth = parent depth + 1; must not exceed MAX_DEPTH
+            assert!(Self::dept_depth(&env, pid) + 1 <= MAX_DEPTH, "Max hierarchy depth exceeded");
         }
 
         let next_id: u128 = env
@@ -492,9 +498,151 @@ impl DepartmentManagerContract {
         (employees.len(), children, employees)
     }
 
+    /// Reparents a department to a new parent (or makes it top-level).
+    ///
+    /// # Arguments
+    /// * `caller`     - Must be the **org owner** (must authenticate).
+    /// * `dept_id`    - Department to move.
+    /// * `new_parent` - `Some(parent_dept_id)` or `None` for top-level.
+    ///
+    /// # Panics
+    /// - `"Organization not found"` – org not found.
+    /// - `"Not organization owner"` – caller is not the org owner.
+    /// - `"Department not found"` – dept_id does not exist.
+    /// - `"Parent department not found"` – new_parent does not exist.
+    /// - `"Parent must be in same org"` – new parent is in a different org.
+    /// - `"Max hierarchy depth exceeded"` – new depth would exceed MAX_DEPTH.
+    /// - `"Cycle detected"` – new parent is a descendant of dept_id.
+    ///
+    /// # Events
+    /// Publishes `("dept_mvd", dept_id)` on success.
+    pub fn update_department(
+        env: Env,
+        caller: Address,
+        dept_id: u128,
+        new_parent: Option<u128>,
+    ) {
+        caller.require_auth();
+        Self::require_initialized(&env);
+
+        let mut dept: Department = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Department(dept_id))
+            .expect("Department not found");
+
+        let org: Organization = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Organization(dept.org_id))
+            .expect("Organization not found");
+        assert!(org.owner == caller, "Not organization owner");
+
+        if let Some(pid) = new_parent {
+            let parent: Department = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::Department(pid))
+                .expect("Parent department not found");
+            assert!(parent.org_id == dept.org_id, "Parent must be in same org");
+            // child depth = parent depth + 1; must not exceed MAX_DEPTH
+            assert!(Self::dept_depth(&env, pid) + 1 <= MAX_DEPTH, "Max hierarchy depth exceeded");
+            assert!(!Self::has_cycle(&env, dept_id, pid), "Cycle detected");
+        }
+
+        // Remove dept_id from old parent's children list
+        if let Some(old_pid) = dept.parent_id {
+            let mut old_children: Vec<u128> = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::DepartmentChildren(old_pid))
+                .unwrap_or_else(|| Vec::new(&env));
+            let mut i = 0u32;
+            while i < old_children.len() {
+                if old_children.get(i) == Some(dept_id) {
+                    old_children.remove(i);
+                    break;
+                }
+                i += 1;
+            }
+            env.storage()
+                .persistent()
+                .set(&StorageKey::DepartmentChildren(old_pid), &old_children);
+        }
+
+        // Add dept_id to new parent's children list
+        if let Some(pid) = new_parent {
+            let mut new_children: Vec<u128> = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::DepartmentChildren(pid))
+                .unwrap_or_else(|| Vec::new(&env));
+            new_children.push_back(dept_id);
+            env.storage()
+                .persistent()
+                .set(&StorageKey::DepartmentChildren(pid), &new_children);
+        }
+
+        dept.parent_id = new_parent;
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Department(dept_id), &dept);
+
+        env.events()
+            .publish((symbol_short!("dept_mvd"), dept_id), dept_id);
+    }
+
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
+
+    /// Returns the depth of `dept_id` in the hierarchy (root = 0).
+    fn dept_depth(env: &Env, dept_id: u128) -> u32 {
+        let mut depth = 0u32;
+        let mut current = dept_id;
+        loop {
+            let dept: Department = match env
+                .storage()
+                .persistent()
+                .get(&StorageKey::Department(current))
+            {
+                Some(d) => d,
+                None => break,
+            };
+            match dept.parent_id {
+                None => break,
+                Some(pid) => {
+                    depth += 1;
+                    current = pid;
+                }
+            }
+        }
+        depth
+    }
+
+    /// Returns `true` if making `candidate` the parent of `dept_id` would
+    /// create a cycle (i.e., `candidate` is already a descendant of `dept_id`).
+    fn has_cycle(env: &Env, dept_id: u128, candidate: u128) -> bool {
+        // Walk up from candidate; if we reach dept_id, it's a cycle.
+        let mut current = candidate;
+        loop {
+            if current == dept_id {
+                return true;
+            }
+            let dept: Department = match env
+                .storage()
+                .persistent()
+                .get(&StorageKey::Department(current))
+            {
+                Some(d) => d,
+                None => return false,
+            };
+            match dept.parent_id {
+                None => return false,
+                Some(pid) => current = pid,
+            }
+        }
+    }
 
     /// Removes an employee from a department's employee list and membership flag.
     /// Does NOT update `EmployeeDepartment` – caller must handle that.
