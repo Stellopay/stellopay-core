@@ -23,7 +23,9 @@ The `slashing_penalty` Soroban contract encodes slashing rules for StelloPay val
 │                │  Pending → Reversed (appeal upheld)  │
 │                │  Pending → AppealRejected             │
 │                                                       │
-│  Safeguards    │  Max penalty: 50% of stake           │
+│  Safeguards    │  Max per-event penalty cap (bps)     │
+│                │  Per-period amount cap               │
+│                │  Lifetime amount cap                 │
 │                │  Appeal window: 7 days               │
 │                │  Replay protection: evidence hash    │
 │                │  Role separation: admin ≠ slasher    │
@@ -106,10 +108,14 @@ For **evidence-based slashes**, quorum is bypassed — a single slasher with a v
 
 This separation ensures no single actor can both slash and unilaterally decide appeals.
 
-### Proportionality
+### Proportionality and Saturating Caps
 - Penalties are expressed in **basis points** (bps) of the offender's current stake.
-- The hard ceiling is **5 000 bps (50%)** — no single slash can exceed half the offender's stake.
+- The hard protocol ceiling is **5 000 bps (50%)**.
+- A configurable `per_event_bps_cap` is enforced and must be `<= 5 000`.
+- A configurable `per_period_amount_cap` is enforced over a rolling `period_secs` window.
+- A configurable `lifetime_amount_cap` is enforced over full contract lifetime.
 - Zero-penalty slashes are rejected at the contract level.
+- Any slash exceeding cumulative caps is rejected (`PeriodCapExceeded` or `LifetimeCapExceeded`).
 
 ### Replay Protection
 - Each `evidence_hash` is stored in a `used_evidence` set after first use.
@@ -131,10 +137,30 @@ This separation ensures no single actor can both slash and unilaterally decide a
 ### Initialisation
 
 ```rust
-pub fn initialize(env: Env, admin: Address, token: Address, quorum: u32)
+pub fn initialize(
+    env: Env,
+    admin: Address,
+    token: Address,
+    quorum: u32,
+    per_event_bps_cap: u32,
+    per_period_amount_cap: i128,
+    lifetime_amount_cap: i128,
+    period_secs: u64,
+)
 ```
 
-Must be called once. Sets the admin, staking token, and attestation quorum.
+Must be called once. Sets the admin, staking token, attestation quorum, and slashing cap bounds.
+
+```rust
+pub fn set_penalty_caps(
+    env: Env,
+    per_event_bps_cap: u32,
+    per_period_amount_cap: i128,
+    lifetime_amount_cap: i128,
+    period_secs: u64,
+)
+pub fn get_penalty_caps(env: Env) -> PenaltyCaps
+```
 
 ### Role Management (Admin only)
 
@@ -216,7 +242,7 @@ pub fn get_quorum(env: Env) -> u32
 |------|-----------------------|----------------------------------------------------|
 | 1    | `Unauthorized`        | Caller does not hold the required role             |
 | 2    | `DuplicateEvidence`   | Evidence hash already used                         |
-| 3    | `PenaltyTooHigh`      | Penalty exceeds 50% (5 000 bps)                   |
+| 3    | `PenaltyTooHigh`      | Penalty exceeds configured/event maximum bps       |
 | 4    | `InsufficientStake`   | Offender has no stake or stake < slash amount      |
 | 5    | `AppealWindowOpen`    | Cannot execute — appeal window still active        |
 | 6    | `AppealWindowClosed`  | Cannot raise appeal — deadline passed              |
@@ -226,6 +252,10 @@ pub fn get_quorum(env: Env) -> u32
 | 10   | `AlreadyAttested`     | Slasher already countersigned this slash           |
 | 11   | `ZeroPenalty`         | Penalty basis points cannot be zero                |
 | 12   | `AlreadyInitialized`  | Contract has already been initialised              |
+| 13   | `InvalidConfig`       | Invalid cap config (zero/negative/inconsistent)    |
+| 14   | `PeriodCapExceeded`   | Cumulative slashing exceeds configured period cap   |
+| 15   | `LifetimeCapExceeded` | Cumulative slashing exceeds configured lifetime cap |
+| 16   | `ArithmeticOverflow`  | Overflow/underflow protection triggered             |
 
 ---
 
@@ -280,3 +310,5 @@ The test suite covers:
 3. **Burn address**: The current `burn_escrow()` implementation retains funds in the contract as a treasury. For production, replace with a transfer to a designated burn address or distribution logic.
 4. **Ledger timestamp**: All time comparisons use `env.ledger().timestamp()`. Validators control block timestamps within bounds — consider adding a tolerance margin for `offense_timestamp` validation.
 5. **Quorum replay**: A slasher removed from the role list after attesting still counts toward quorum for that slash record. Consider snapshotting the slasher list per slash if this is a concern.
+6. **Cap tuning**: Keep `per_period_amount_cap <= lifetime_amount_cap` and size caps below expected concentration risk to bound repeated-slash abuse.
+7. **Threat model**: Period/lifetime checks are applied at slash creation, so repeated events (including burst submissions in one ledger window) saturate and reject once caps are reached.
