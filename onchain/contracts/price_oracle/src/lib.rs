@@ -57,6 +57,8 @@ pub struct PairConfig {
     pub max_staleness_seconds: u64,
     /// Whether the pair accepts new price updates.
     pub enabled: bool,
+    /// Minimum number of unique authorized sources required to accept a price.
+    pub quorum: u32,
 }
 
 /// Last accepted rate for a `(base, quote)` pair.
@@ -84,6 +86,10 @@ enum DataKey {
     PairConfig(Address, Address),
     /// Last accepted state for a `(base, quote)` pair.
     PairState(Address, Address),
+    /// Tracking individual source votes for quorum: (base, quote, timestamp, rate, source).
+    QuorumVote(Address, Address, u64, i128, Address),
+    /// Tracking aggregate vote counts for quorum: (base, quote, timestamp, rate).
+    QuorumCount(Address, Address, u64, i128),
 }
 
 #[contract]
@@ -246,13 +252,14 @@ impl PriceOracleContract {
         min_rate: i128,
         max_rate: i128,
         max_staleness_seconds: u64,
+        quorum: u32,
     ) -> Result<(), OracleError> {
         require_admin(&env, &caller)?;
 
         if base == quote || min_rate <= 0 || max_rate <= 0 || min_rate > max_rate {
             return Err(OracleError::InvalidPairConfig);
         }
-        if max_staleness_seconds == 0 {
+        if max_staleness_seconds == 0 || quorum == 0 {
             return Err(OracleError::InvalidPairConfig);
         }
 
@@ -261,6 +268,7 @@ impl PriceOracleContract {
             max_rate,
             max_staleness_seconds,
             enabled: true,
+            quorum,
         };
 
         env.storage()
@@ -417,6 +425,34 @@ impl PriceOracleContract {
         {
             if source_timestamp <= state.last_updated_ts {
                 // Older or equal update; treat as no-op.
+                return Ok(());
+            }
+        }
+
+        // Quorum check if enabled (> 1).
+        if cfg.quorum > 1 {
+            let vote_key = DataKey::QuorumVote(
+                base.clone(),
+                quote.clone(),
+                source_timestamp,
+                rate,
+                source.clone(),
+            );
+            if env.storage().temporary().has(&vote_key) {
+                // Source already submitted this exact rate/timestamp; ignore.
+                return Ok(());
+            }
+
+            env.storage().temporary().set(&vote_key, &true);
+
+            let count_key =
+                DataKey::QuorumCount(base.clone(), quote.clone(), source_timestamp, rate);
+            let current_count: u32 = env.storage().temporary().get(&count_key).unwrap_or(0);
+            let new_count = current_count + 1;
+            env.storage().temporary().set(&count_key, &new_count);
+
+            if new_count < cfg.quorum {
+                // Quorum not yet reached.
                 return Ok(());
             }
         }
