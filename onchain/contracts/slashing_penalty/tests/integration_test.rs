@@ -2,7 +2,8 @@
 
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
-    Address, BytesN, Env, Vec,
+    token::StellarAssetClient,
+    Address, BytesN, Env,
 };
 
 use slashing_penalty::{
@@ -39,16 +40,18 @@ impl TestEnv {
         let slasher2 = Address::generate(&env);
         let slasher3 = Address::generate(&env);
         let offender = Address::generate(&env);
-        let token    = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+        let token_sac = StellarAssetClient::new(&env, &token);
+        token_sac.mint(&offender, &1_000_000i128);
 
-        client.initialize(&admin, &token, &2u32);
+        // Per-event cap: 50%, period cap: 6_000, lifetime cap: 9_000, period: 1 day.
+        client.initialize(&admin, &token, &2u32, &5_000u32, &6_000i128, &9_000i128, &86_400u64);
         client.add_slasher(&slasher1);
         client.add_slasher(&slasher2);
         client.add_slasher(&slasher3);
 
-        // Give offender a stake of 10_000 tokens
-        // (in real tests you'd use a mock token; here we seed the stakes map directly
-        //  by calling stake() which triggers a token transfer — mocked)
+        // Give offender an initial staked balance.
         client.stake(&offender, &10_000i128);
 
         TestEnv { env, client, admin, slasher1, slasher2, slasher3, offender, token }
@@ -81,7 +84,15 @@ fn test_initialize_sets_admin_and_quorum() {
 #[test]
 fn test_initialize_twice_fails() {
     let t = TestEnv::setup();
-    let result = t.client.try_initialize(&t.admin, &t.token, &2u32);
+    let result = t.client.try_initialize(
+        &t.admin,
+        &t.token,
+        &2u32,
+        &5_000u32,
+        &6_000i128,
+        &9_000i128,
+        &86_400u64,
+    );
     assert_eq!(result, Err(Ok(SlashError::AlreadyInitialized)));
 }
 
@@ -220,6 +231,27 @@ fn test_exceed_max_slash_fails() {
         &0u64,
     );
     assert_eq!(result, Err(Ok(SlashError::PenaltyTooHigh)));
+}
+
+#[test]
+fn test_invalid_cap_config_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SlashingPenaltyContract);
+    let client = SlashingPenaltyContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let init_bad = client.try_initialize(
+        &admin,
+        &token,
+        &2u32,
+        &5_000u32,
+        &10_000i128,
+        &5_000i128, // per-period cannot exceed lifetime
+        &86_400u64,
+    );
+    assert_eq!(init_bad, Err(Ok(SlashError::InvalidConfig)));
 }
 
 #[test]
@@ -418,6 +450,114 @@ fn test_repeated_offenses_with_different_evidence_hashes() {
         &t.slasher1, &t.offender, &Offense::MissedDuty, &1_000u32, &t.evidence_hash(41), &1u64,
     );
     assert_eq!(t.client.get_stake_balance(&t.offender), 8_100i128);
+}
+
+#[test]
+fn test_repeated_penalties_saturate_period_cap() {
+    let t = TestEnv::setup();
+
+    // 30% of 10_000 = 3_000 (within period cap 6_000)
+    t.client.slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::FraudProof, &3_000u32, &t.evidence_hash(42), &0u64,
+    );
+    // 30% of 7_000 = 2_100 (cumulative 5_100, still within cap)
+    t.client.slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::FraudProof, &3_000u32, &t.evidence_hash(43), &1u64,
+    );
+
+    // 30% of 4_900 = 1_470 would exceed period cap (5_100 + 1_470 > 6_000)
+    let result = t.client.try_slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::FraudProof, &3_000u32, &t.evidence_hash(44), &2u64,
+    );
+    assert_eq!(result, Err(Ok(SlashError::PeriodCapExceeded)));
+}
+
+#[test]
+fn test_boundary_conditions_at_caps() {
+    let t = TestEnv::setup();
+
+    // Exactly reach period cap: 60% of 10_000 is blocked by per-event cap,
+    // so use two events to hit period cap exactly.
+    t.client.slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::MissedDuty, &5_000u32, &t.evidence_hash(45), &0u64,
+    ); // 5_000
+    t.client.slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::MissedDuty, &2_000u32, &t.evidence_hash(46), &1u64,
+    ); // 1_000
+
+    // Now exactly at 6_000 period cap. Any additional positive slash in same period fails.
+    let same_period = t.client.try_slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::MissedDuty, &100u32, &t.evidence_hash(47), &2u64,
+    );
+    assert_eq!(same_period, Err(Ok(SlashError::PeriodCapExceeded)));
+
+    // Advance into next period to test lifetime boundary at 9_000.
+    t.advance_time(86_401);
+    t.client.slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::MissedDuty, &3_000u32, &t.evidence_hash(48), &3u64,
+    ); // 1_200 => cumulative 7_200
+    t.client.slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::MissedDuty, &5_000u32, &t.evidence_hash(49), &4u64,
+    ); // 1_400 => cumulative 8_600
+    t.client.slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::MissedDuty, &2_000u32, &t.evidence_hash(52), &5u64,
+    ); // 280 => cumulative 8_880
+
+    // This slash is still below lifetime cap.
+    t.client.slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::MissedDuty, &1_000u32, &t.evidence_hash(53), &6u64,
+    ); // 112 => cumulative 8_992
+
+    // Next slash crosses lifetime cap (8_992 + 11 > 9_000)
+    let over_lifetime = t.client.try_slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::MissedDuty, &100u32, &t.evidence_hash(60), &7u64,
+    );
+    assert_eq!(over_lifetime, Err(Ok(SlashError::LifetimeCapExceeded)));
+}
+
+#[test]
+fn test_minimal_balance_does_not_underflow_or_create_negative_accounting() {
+    let t = TestEnv::setup();
+    t.client.unstake(&t.offender, &9_999i128);
+    assert_eq!(t.client.get_stake_balance(&t.offender), 1i128);
+
+    // 1 bps of 1 rounds to 0 -> rejected.
+    let too_small = t.client.try_slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::MissedDuty, &1u32, &t.evidence_hash(54), &0u64,
+    );
+    assert_eq!(too_small, Err(Ok(SlashError::ZeroPenalty)));
+    assert_eq!(t.client.get_stake_balance(&t.offender), 1i128);
+
+    // 100% slash is still bounded by per-event cap (50%), so set 5_000 bps.
+    let ok = t.client.try_slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::MissedDuty, &5_000u32, &t.evidence_hash(55), &1u64,
+    );
+    assert_eq!(ok, Err(Ok(SlashError::ZeroPenalty)));
+    assert_eq!(t.client.get_stake_balance(&t.offender), 1i128);
+}
+
+#[test]
+fn test_simulated_concurrent_triggers_are_capped() {
+    let t = TestEnv::setup();
+
+    // Same ledger-time burst from different slashers with unique evidence hashes.
+    for (seed, slasher) in [
+        (56u8, &t.slasher1),
+        (57u8, &t.slasher2),
+        (58u8, &t.slasher3),
+        (59u8, &t.slasher1),
+    ] {
+        let _ = t.client.try_slash_with_evidence(
+            slasher, &t.offender, &Offense::FraudProof, &2_000u32, &t.evidence_hash(seed), &10u64,
+        );
+    }
+
+    // First four are accepted: 2_000 + 1_600 + 1_280 + 1_024 = 5_904 < period cap.
+    // Next trigger in the same burst would exceed period cap.
+    let result = t.client.try_slash_with_evidence(
+        &t.slasher2, &t.offender, &Offense::FraudProof, &2_000u32, &t.evidence_hash(61), &10u64,
+    );
+    assert_eq!(result, Err(Ok(SlashError::PeriodCapExceeded)));
 }
 
 #[test]
