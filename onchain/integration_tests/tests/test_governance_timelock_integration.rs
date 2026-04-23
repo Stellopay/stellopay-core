@@ -21,7 +21,7 @@
 
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    Address, Bytes, BytesN, Env, IntoVal, String, Symbol, Vec,
+    Address, Bytes, BytesN, Env,
 };
 
 use governance::{
@@ -35,14 +35,10 @@ use withdrawal_timelock::{
 // CONSTANTS
 // ============================================================================
 
-const ONE_HOUR: u64 = 3_600;
-const ONE_DAY: u64 = 86_400;
-const ONE_WEEK: u64 = 604_800;
-
-const QUORUM_BPS: u32 = 5_000; // 50%
-const VOTING_PERIOD: u64 = ONE_DAY;
-const TIMELOCK_DELAY: u64 = ONE_HOUR;
-const EXECUTION_WINDOW: u64 = ONE_DAY;
+const QUORUM_BPS: u32 = 5_000; // Test constants
+const VOTING_PERIOD: u64 = 86_400;      // 1 day
+const TIMELOCK_DELAY: u64 = 604_800;    // 1 week
+const EXECUTION_WINDOW: u64 = 86_400;   // 1 day
 
 const VOTING_POWER: i128 = 1_000;
 
@@ -65,11 +61,6 @@ fn addr(env: &Env) -> Address {
 /// Advances the ledger timestamp by `seconds`.
 fn advance(env: &Env, seconds: u64) {
     env.ledger().with_mut(|li| li.timestamp += seconds);
-}
-
-/// Sets the ledger timestamp to an absolute value.
-fn set_time(env: &Env, ts: u64) {
-    env.ledger().with_mut(|li| li.timestamp = ts);
 }
 
 /// Creates a deterministic payload hash for admin change operations.
@@ -107,7 +98,7 @@ fn create_admin_change_payload_hash(
 }
 
 /// Deploys and initializes both contracts with proper configuration.
-fn setup_contracts(env: &Env) -> (GovernanceContractClient, WithdrawalTimelockClient) {
+fn setup_contracts(env: &Env) -> (GovernanceContractClient<'_>, WithdrawalTimelockClient<'_>) {
     let gov_owner = addr(env);
     let timelock_admin = addr(env);
     
@@ -210,11 +201,18 @@ fn test_governance_timelock_admin_change_execute_flow() {
         _ => panic!("Expected AdminChange operation"),
     }
     
-    // Step 7: Advance past timelock delay
+    // Step 7: Execute the governance proposal first (before execution window expires)
+    gov_client.execute(&proposal_id);
+    
+    // Verify governance proposal is marked as executed
+    let proposal = gov_client.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, ProposalStatus::Executed);
+    
+    // Step 8: Advance past timelock delay
     advance(&env, TIMELOCK_DELAY + 1);
     
-    // Step 8: Execute timelock operation
-    timelock_client
+    // Step 9: Execute timelock operation
+    let _ = timelock_client
         .try_execute(&timelock_admin, &op_id)
         .expect("Should execute admin change operation");
     
@@ -222,13 +220,6 @@ fn test_governance_timelock_admin_change_execute_flow() {
     let operation = timelock_client.get_operation(&op_id).unwrap();
     assert_eq!(operation.status, OperationStatus::Executed);
     assert!(operation.executed_at.is_some());
-    
-    // Execute the governance proposal as well
-    gov_client.execute(&proposal_id);
-    
-    // Verify governance proposal is marked as executed
-    let proposal = gov_client.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.status, ProposalStatus::Executed);
 }
 
 #[test]
@@ -274,7 +265,7 @@ fn test_governance_timelock_admin_change_cancel_flow() {
     assert_eq!(operation.status, OperationStatus::Queued);
     
     // Step 6: Cancel timelock operation (admin-only)
-    timelock_client
+    let _ = timelock_client
         .try_cancel(&timelock_admin, &op_id)
         .expect("Should cancel admin change operation");
     
@@ -324,7 +315,7 @@ fn test_payload_hash_deterministic_verification() {
 #[test]
 fn test_delay_update_non_retroactivity() {
     let env = env();
-    let (gov_client, timelock_client) = setup_contracts(&env);
+    let (_gov_client, timelock_client) = setup_contracts(&env);
     let timelock_admin = timelock_client.get_config().0;
     
     let target_contract = addr(&env);
@@ -343,7 +334,7 @@ fn test_delay_update_non_retroactivity() {
     
     // Update delay to a longer period
     let new_delay = TIMELOCK_DELAY * 2;
-    timelock_client
+    let _ = timelock_client
         .try_update_delay(&timelock_admin, &new_delay)
         .expect("Should update delay");
     
@@ -432,7 +423,7 @@ fn test_duplicate_proposal_handling() {
 #[test]
 fn test_access_control_enforcement() {
     let env = env();
-    let (gov_client, timelock_client) = setup_contracts(&env);
+    let (_gov_client, timelock_client) = setup_contracts(&env);
     
     let unauthorized = addr(&env);
     let target_contract = addr(&env);
@@ -463,7 +454,7 @@ fn test_access_control_enforcement() {
     
     // Admin should be able to execute and cancel
     advance(&env, TIMELOCK_DELAY + 1);
-    timelock_client
+    let _ = timelock_client
         .try_execute(&timelock_admin, &op_id)
         .expect("Admin should execute operation");
     
@@ -473,7 +464,7 @@ fn test_access_control_enforcement() {
         &OperationKind::AdminChange(target_contract.clone(), payload_hash.clone()),
     );
     
-    timelock_client
+    let _ = timelock_client
         .try_cancel(&timelock_admin, &op_id2)
         .expect("Admin should cancel operation");
 }
@@ -514,7 +505,7 @@ fn test_execution_window_enforcement() {
     advance(&env, TIMELOCK_DELAY + 1);
     
     // Should be executable
-    timelock_client
+    let _ = timelock_client
         .try_execute(&timelock_admin, &op_id)
         .expect("Should execute within window");
     
@@ -529,8 +520,13 @@ fn test_execution_window_enforcement() {
         &OperationKind::AdminChange(target_contract2.clone(), payload_hash2.clone()),
     );
     
-    // Advance past execution window
-    advance(&env, EXECUTION_WINDOW + 1);
+    // Get the eta for op_id2 to know when it becomes executable
+    let operation2 = timelock_client.get_operation(&op_id2).unwrap();
+    let op_id2_eta = operation2.eta;
+    
+    // Advance past execution window but ensure op_id2 is executable
+    // We need to advance enough to exceed governance execution window
+    advance(&env, EXECUTION_WINDOW);
     
     // Should not be executable (window expired) - this tests governance execution window
     let result = gov_client.try_execute(&proposal_id);
@@ -541,7 +537,13 @@ fn test_execution_window_enforcement() {
     let proposal = gov_client.get_proposal(&proposal_id).unwrap();
     assert_eq!(proposal.status, ProposalStatus::Expired);
     
-    // Timelock operation should still be executable (timelock doesn't have execution window)
+    // Now advance enough time for op_id2 to be executable
+    let current_time = env.ledger().timestamp();
+    if current_time < op_id2_eta {
+        advance(&env, op_id2_eta - current_time + 1);
+    }
+    
+    // Timelock operation should now be executable
     let result = timelock_client.try_execute(&timelock_admin, &op_id2);
     assert!(result.is_ok());
 }
