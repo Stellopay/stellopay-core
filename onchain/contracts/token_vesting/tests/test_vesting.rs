@@ -1,13 +1,14 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, Vec,
+    Address, Env, IntoVal, Symbol, Vec, vec,
 };
 
 use token_vesting::{
-    CustomCheckpoint, TokenVestingContract, TokenVestingContractClient, VestingStatus,
+    ClaimedEvent, CreatedEvent, CustomCheckpoint, EarlyReleaseEvent, RevokedEvent,
+    TokenVestingContract, TokenVestingContractClient, VestingKind, VestingStatus,
 };
 
 // ---------------------------------------------------------------------------
@@ -1107,4 +1108,153 @@ fn claim_invalid_schedule_id_fails() {
     set_time(&env, 100);
     let res = client.try_claim(&beneficiary, &999u128);
     assert!(res.is_err());
+}
+
+// ===========================================================================
+// K. Events (4 tests)
+// ===========================================================================
+
+#[test]
+fn test_create_event_emitted() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 100);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &100u64,
+        &200u64,
+        &None,
+        &true,
+    );
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+
+    // Topics: ("vesting_created", sid)
+    assert_eq!(last_event.0, client.address);
+    assert_eq!(
+        last_event.1,
+        vec![
+            &env,
+            soroban_sdk::String::from_str(&env, "vesting_created").into_val(&env),
+            sid.into_val(&env)
+        ]
+    );
+
+    // Data should be CreatedEvent
+    let event: CreatedEvent = last_event.2.into_val(&env);
+    assert_eq!(event.id, sid);
+    assert_eq!(event.employer, employer);
+    assert_eq!(event.beneficiary, beneficiary);
+    assert_eq!(event.amount, 1_000);
+    assert_eq!(event.kind, VestingKind::Linear);
+}
+
+#[test]
+fn test_claim_event_emitted() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    set_time(&env, 50);
+    client.claim(&beneficiary, &sid);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(
+        last_event.1,
+        vec![
+            &env,
+            soroban_sdk::String::from_str(&env, "vesting_claimed").into_val(&env),
+            sid.into_val(&env)
+        ]
+    );
+    let event: ClaimedEvent = last_event.2.into_val(&env);
+    assert_eq!(event.id, sid);
+    assert_eq!(event.beneficiary, beneficiary);
+    assert_eq!(event.amount, 500);
+}
+
+#[test]
+fn test_revoke_event_emitted() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_cliff_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &400i128,
+        &100u64,
+        &true,
+    );
+
+    set_time(&env, 50);
+    client.revoke(&employer, &sid);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(
+        last_event.1,
+        vec![
+            &env,
+            soroban_sdk::String::from_str(&env, "vesting_revoked").into_val(&env),
+            sid.into_val(&env)
+        ]
+    );
+    let event: RevokedEvent = last_event.2.into_val(&env);
+    assert_eq!(event.id, sid);
+    assert_eq!(event.refunded, 400);
+    assert_eq!(event.at, 50);
+}
+
+#[test]
+fn test_early_release_event_emitted() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_cliff_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &500i128,
+        &100u64,
+        &true,
+    );
+
+    client.approve_early_release(&owner, &sid, &200i128);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(
+        last_event.1,
+        vec![
+            &env,
+            soroban_sdk::String::from_str(&env, "vesting_early_release").into_val(&env),
+            sid.into_val(&env)
+        ]
+    );
+    let event: EarlyReleaseEvent = last_event.2.into_val(&env);
+    assert_eq!(event.id, sid);
+    assert_eq!(event.amount, 200);
 }
