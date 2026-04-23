@@ -58,7 +58,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, xdr::ToXdr, Address, Bytes,
-    BytesN, Env, IntoVal, Symbol,
+    BytesN, Env, IntoVal, Symbol, Vec,
 };
 
 // ─── Error Types ─────────────────────────────────────────────────────────────
@@ -701,7 +701,7 @@ impl PaymentSchedulerContract {
                         
                         let retry_config = RetryConfig {
                             max_retries: job_mut.max_retries,
-                            retry_intervals: soroban_sdk::vec![&env, 30, 60, 120], // Default backoff
+                            retry_intervals: soroban_sdk::vec![&env, 30u64, 60u64, 120u64], // Default backoff
                         };
 
                         retry_client.schedule_retry(

@@ -67,7 +67,7 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, Vec};
 
 #[contract]
 pub struct PaymentRetryContract;
@@ -120,6 +120,10 @@ pub struct PaymentRequest {
     pub retry_intervals: Vec<u64>,
     /// Lifecycle state.
     pub state: RetryState,
+    /// Optional fallback destination.
+    pub alternate_payout: Option<Address>,
+    /// Address to notify on failure.
+    pub failure_notifier: Address,
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +147,7 @@ enum StorageKey {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaymentCreatedEvent {
-    pub payment_id: u128,
+    pub payment_id: BytesN<32>,
     pub payer: Address,
     pub recipient: Address,
     pub amount: i128,
@@ -153,7 +157,7 @@ pub struct PaymentCreatedEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RetryScheduledEvent {
-    pub payment_id: u128,
+    pub payment_id: BytesN<32>,
     pub retry_count: u32,
     pub next_retry_at: u64,
 }
@@ -162,7 +166,7 @@ pub struct RetryScheduledEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaymentSucceededEvent {
-    pub payment_id: u128,
+    pub payment_id: BytesN<32>,
     /// Actual destination address (may be `alternate_payout` if set).
     pub recipient: Address,
     pub amount: i128,
@@ -176,7 +180,7 @@ pub struct PaymentSucceededEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaymentFailedEvent {
-    pub payment_id: u128,
+    pub payment_id: BytesN<32>,
     pub retry_count: u32,
     pub max_retry_attempts: u32,
     /// Copied from the request so indexers can route the alert without an
@@ -377,11 +381,11 @@ impl PaymentRetryContract {
         token: Address,
         amount: i128,
         config: RetryConfig,
-    ) -> Result<(), RetryState> {
+    ) {
         require_initialized(&env);
         // Permissionless entry point, but we check if already exists
         if env.storage().persistent().has(&StorageKey::Payment(payment_id.clone())) {
-            return Ok(());
+            return;
         }
 
         assert!(amount > 0, "Amount must be positive");
@@ -401,16 +405,21 @@ impl PaymentRetryContract {
             max_retry_attempts: config.max_retries,
             retry_intervals: config.retry_intervals,
             state: RetryState::Scheduled,
+            alternate_payout: None,
+            failure_notifier: payer.clone(),
         };
 
         write_payment(&env, &payment);
 
         env.events().publish(
             ("retry_scheduled", payment_id.clone()),
-            payment_id,
+            PaymentCreatedEvent {
+                payment_id,
+                payer,
+                recipient,
+                amount,
+            },
         );
-
-        Ok(())
     }
 
     pub fn process_retry(env: Env, payment_id: BytesN<32>) {
@@ -452,7 +461,14 @@ impl PaymentRetryContract {
                 &payment.amount,
             );
 
-            env.events().publish(("payment_success", payment_id), payment.amount);
+            env.events().publish(
+                ("payment_success", payment_id.clone()),
+                PaymentSucceededEvent {
+                    payment_id,
+                    recipient: payment.alternate_payout.unwrap_or(payment.recipient),
+                    amount: payment.amount,
+                },
+            );
         } else {
             payment.retry_count = payment.retry_count.saturating_add(1);
             if payment.retry_count > payment.max_retry_attempts {
@@ -464,7 +480,26 @@ impl PaymentRetryContract {
             }
             write_payment(&env, &payment);
 
-            env.events().publish(("payment_retry_failed", payment_id), payment.retry_count);
+            env.events().publish(
+                ("payment_retry_failed", payment_id.clone()),
+                RetryScheduledEvent {
+                    payment_id,
+                    retry_count: payment.retry_count,
+                    next_retry_at: payment.next_retry_at,
+                },
+            );
+
+            if payment.state == RetryState::Failed {
+                env.events().publish(
+                    ("payment_failed", payment.id.clone()),
+                    PaymentFailedEvent {
+                        payment_id: payment.id,
+                        retry_count: payment.retry_count,
+                        max_retry_attempts: payment.max_retry_attempts,
+                        notifier: payment.failure_notifier,
+                    },
+                );
+            }
         }
     }
 
