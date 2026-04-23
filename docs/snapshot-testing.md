@@ -41,6 +41,36 @@ Snapshots currently cover:
     `approve_emergency_pause`, `is_emergency_paused`,
     `get_emergency_pause_state`
 
+### Regression Scenarios (lifecycle stability)
+
+The following scenarios were added to strengthen regression protection.
+Each pins the ledger timestamp and captures only stable (non-timestamp)
+fields so snapshots are fully deterministic across runs.
+
+| Scenario | Snapshot name | What it covers |
+|---|---|---|
+| 1 | `payroll_lifecycle_created_funded_first_claim` | Created → add employee → activate → fund → claim first period; idempotency of same-period re-claim |
+| 2 | `dispute_opened_escalation_resolution` | Cancel → raise dispute (mid-grace) → resolve; duplicate raise rejected; boundary: dispute after grace expires rejected |
+| 3 | `emergency_pause_blocks_and_unblocks_operations` | Emergency pause blocks payroll + milestone claims; unpause restores both |
+| 4 | `milestone_completion_all_claimed` | Claim while paused rejected; claim m1 → idempotency; claim m2 → auto-complete |
+| 5 | `pause_resume_preserves_agreement_fields` | Pause → resume is a no-op on all stable fields |
+| 6 | `repeated_transitions_rejected` | Double-activate, double-pause, double-resume, double-cancel all rejected |
+| 7 | `escrow_lifecycle_created_funded_first_claim` | Escrow created → activate → first period claim → all periods → auto-complete |
+
+### Security invariants asserted by snapshots
+
+- **Blocked operations during pause**: Scenarios 3 and 4 assert that
+  `claim_payroll` and `claim_milestone` both return errors while the
+  contract is paused (emergency or agreement-level). The snapshot value
+  `payroll_claim_blocked: true` / `milestone_claim_blocked: true` is
+  committed to disk and will fail CI if the guard is ever removed.
+- **Dispute idempotency**: Scenario 2 asserts `duplicate_raise_rejected: true`
+  — a second `raise_dispute` on an already-disputed agreement must fail.
+- **Grace boundary**: Scenario 2 asserts `dispute_outside_grace_rejected: true`
+  — disputes raised after the grace window expires must be rejected.
+- **Field preservation**: Scenario 5 asserts that pause → resume leaves all
+  stable agreement fields unchanged (`stable_fields_preserved_across_pause_resume: true`).
+
 Each snapshot test builds a representative state using existing public
 functions, then serializes a `Debug` representation into a deterministic,
 multi-line string for comparison.
