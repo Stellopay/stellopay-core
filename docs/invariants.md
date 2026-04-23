@@ -94,3 +94,31 @@ Payroll claims (`claim_payroll`, `batch_claim_payroll`,
 `claim_payroll_in_token`) and pause/resume flows must preserve these invariants
 even in the presence of failures or partial successes.
 
+---
+
+### Payment Splitter Invariants
+
+For percentage-based payment splits:
+
+- **Positive input amounts only**
+  - `total_amount > 0`
+- **Share conservation**
+  - `sum(recipient_amounts) == total_amount`
+- **Valid percentage configuration**
+  - Every percentage share is `> 0`
+  - Total percentage shares sum to `10000`
+- **Deterministic dust handling**
+  - Each recipient first receives `floor((bps * total_amount) / 10000)`
+  - Remaining dust is distributed one unit at a time to the largest fractional remainders
+  - Exact remainder ties are broken by canonical recipient address order
+- **Order-independence for ties**
+  - Reordering the input recipients must not change the final allocation per address
+
+For fixed-amount payment splits:
+
+- **Positive input amounts only**
+  - `total_amount > 0`
+- **Exact-match requirement**
+  - `sum(fixed_amounts) == total_amount`
+- **No implicit absorber**
+  - No recipient receives a rounded or absorbed remainder
