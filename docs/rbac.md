@@ -40,6 +40,17 @@ Admin ──▶ Employer ──▶ Employee
 - `Employer` implies `Employee` (an employer can do anything an employee can).
 - `Employee` and `Arbiter` are leaf roles with no further implications.
 
+### Employee Role Mapping
+
+The `rbac` contract serves as the source of truth for the `employee_roles` module. The following mapping is used:
+
+| RBAC Role | Employee Role |
+|-----------|---------------|
+| `Admin`    | `Admin`        |
+| `Employer` | `Manager`      |
+| `Employee` | `Employee`     |
+| `Arbiter`  | (N/A)          |
+
 When checking permissions, the contract evaluates whether any role assigned to an address implies the required role using these rules.
 
 ## API

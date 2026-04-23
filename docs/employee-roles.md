@@ -10,6 +10,16 @@ Roles are hierarchical:
 
 An account with a higher role level implicitly satisfies checks for all lower levels (e.g. Admin satisfies Manager and Employee).
 
+### Centralized RBAC Integration
+
+The `employee_roles` contract can be linked to the centralized `rbac` contract. When linked, role checks will query the RBAC contract as a fallback/centralized source of truth.
+
+| Employee Role | RBAC Role |
+|---------------|-----------|
+| `Employee`    | `Employee` |
+| `Manager`     | `Employer` |
+| `Admin`       | `Admin`    |
+
 ---
 
 ### Role-to-Capability Matrix (NatSpec)
@@ -138,6 +148,17 @@ if client.has_role_at_least(&employee, &BuiltInRole::Manager) {
     // Department-level configuration changes, approvals, etc.
 }
 ```
+
+---
+
+### Centralized Role Configuration
+
+```rust
+pub fn set_rbac_address(env: Env, rbac_address: Address)
+```
+
+- **Access control**: Only the contract `Owner` can set the RBAC address.
+- Once set, `has_role` and `has_role_at_least` (and by extension `can_perform`) will check the RBAC contract if the role is not found in local storage.
 
 ---
 
