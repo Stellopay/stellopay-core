@@ -1178,6 +1178,8 @@ dependencies = [
  "bonus_system",
  "dispute_escalation",
  "payment_history",
+ "payment_retry",
+ "payment_scheduler",
  "payroll_escrow",
  "rbac",
  "soroban-sdk",
