@@ -106,10 +106,11 @@ impl PaymentHistoryContract {
 
     /// Record a completed payment. Only callable by the registered payroll contract.
     ///
-    /// @notice Assigns a globally unique, monotonically increasing ID to the record,
-    /// writes the full `PaymentRecord` with the supplied hash, writes a reverse-lookup
-    /// entry from hash to ID, updates three append-only indices (agreement, employer,
-    /// employee), and emits a `payment_recorded` event.
+    /// @notice Idempotently records a completed payment keyed by `payment_hash`.
+    /// On first-seen hash: assigns a globally unique, monotonically increasing ID,
+    /// writes the full `PaymentRecord`, updates reverse/hash lookup and all three
+    /// append-only indices, then emits `payment_recorded`.
+    /// On duplicate hash: returns the existing ID without mutating storage.
     ///
     /// @dev Security: `payroll_contract.require_auth()` enforces that only the address
     /// registered at initialization may invoke this function. No other caller can write
@@ -127,7 +128,8 @@ impl PaymentHistoryContract {
     /// @param to            Employee address (payee).
     /// @param timestamp     Unix timestamp (seconds) provided by the payroll contract.
     ///
-    /// @return The newly assigned Global Payment ID (starts at 1, increments by 1).
+    /// @return The existing Global Payment ID for duplicate hash input, otherwise
+    ///         the newly assigned ID (starts at 1, increments by 1).
     ///
     /// @panics "HostError: Error(Auth, InvalidAction)" when called by any address
     ///         other than the registered payroll contract.
@@ -148,6 +150,16 @@ impl PaymentHistoryContract {
             .get(&StorageKey::PayrollContract)
             .unwrap();
         payroll_contract.require_auth();
+
+        // Idempotency guard: replaying the same payment hash must not create
+        // a new record or mutate indices.
+        let existing_id: Option<u128> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::PaymentByHash(payment_hash.clone()));
+        if let Some(id) = existing_id {
+            return id;
+        }
 
         // Assign a new globally unique, monotonically increasing ID.
         let mut global_count: u128 = env
