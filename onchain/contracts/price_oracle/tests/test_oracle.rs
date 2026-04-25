@@ -1,14 +1,15 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
-use price_oracle::{
-    OracleError, PriceOracleContract, PriceOracleContractClient,
-};
+use price_oracle::{OracleError, PriceOracleContract, PriceOracleContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env,
 };
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
+
+const DEFAULT_TOLERANCE_BPS: u32 = 0;
+const DEFAULT_QUORUM_WINDOW_SECONDS: u64 = 60;
 
 // ===========================================================================
 // Helpers
@@ -39,16 +40,41 @@ fn setup_oracle(
     (oracle_id, client, owner)
 }
 
+fn configure_pair_with_settings(
+    oracle_client: &PriceOracleContractClient<'static>,
+    oracle_owner: &Address,
+    base: &Address,
+    quote: &Address,
+    min_rate: i128,
+    max_rate: i128,
+    max_staleness_seconds: u64,
+    quorum_n: u32,
+    tolerance_bps: u32,
+    quorum_window_seconds: u64,
+) {
+    oracle_client.configure_pair(
+        oracle_owner,
+        base,
+        quote,
+        &min_rate,
+        &max_rate,
+        &max_staleness_seconds,
+        &quorum_n,
+        &tolerance_bps,
+        &quorum_window_seconds,
+    );
+}
+
 /// Full setup: payroll + oracle + FX admin registered + source + pair configured.
 fn full_setup(
     env: &Env,
 ) -> (
     PriceOracleContractClient<'static>,
     PayrollContractClient<'static>,
-    Address,       // oracle owner
-    Address,       // source
-    Address,       // base
-    Address,       // quote
+    Address, // oracle owner
+    Address, // source
+    Address, // base
+    Address, // quote
 ) {
     let (payroll_id, payroll_owner, payroll_client) = setup_payroll(env);
     let (oracle_id, oracle_client, oracle_owner) = setup_oracle(env, &payroll_id);
@@ -59,17 +85,27 @@ fn full_setup(
 
     let base = Address::generate(env);
     let quote = Address::generate(env);
-    oracle_client.configure_pair(
+    configure_pair_with_settings(
+        &oracle_client,
         &oracle_owner,
         &base,
         &quote,
-        &500_000i128,   // min 0.5
-        &5_000_000i128, // max 5.0
-        &600u64,        // 10 min staleness
-        &1u32,          // quorum
+        500_000i128,   // min 0.5
+        5_000_000i128, // max 5.0
+        600u64,        // 10 min staleness
+        1u32,          // quorum
+        DEFAULT_TOLERANCE_BPS,
+        DEFAULT_QUORUM_WINDOW_SECONDS,
     );
 
-    (oracle_client, payroll_client, oracle_owner, source, base, quote)
+    (
+        oracle_client,
+        payroll_client,
+        oracle_owner,
+        source,
+        base,
+        quote,
+    )
 }
 
 // ===========================================================================
@@ -173,6 +209,8 @@ fn test_configure_pair_and_read_config() {
         &3_000_000i128,
         &300u64,
         &1u32,
+        &DEFAULT_TOLERANCE_BPS,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
     );
 
     let cfg = oracle_client.get_pair_config(&base2, &quote2).unwrap();
@@ -180,6 +218,9 @@ fn test_configure_pair_and_read_config() {
     assert_eq!(cfg.max_rate, 3_000_000);
     assert_eq!(cfg.max_staleness_seconds, 300);
     assert!(cfg.enabled);
+    assert_eq!(cfg.quorum_n, 1);
+    assert_eq!(cfg.tolerance_bps, DEFAULT_TOLERANCE_BPS);
+    assert_eq!(cfg.quorum_window_seconds, DEFAULT_QUORUM_WINDOW_SECONDS);
 }
 
 #[test]
@@ -196,6 +237,8 @@ fn test_configure_pair_same_base_quote_rejected() {
         &2_000_000i128,
         &300u64,
         &1u32,
+        &DEFAULT_TOLERANCE_BPS,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -215,6 +258,8 @@ fn test_configure_pair_min_greater_than_max_rejected() {
         &1_000_000i128,
         &300u64,
         &1u32,
+        &DEFAULT_TOLERANCE_BPS,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -234,6 +279,8 @@ fn test_configure_pair_zero_min_rate_rejected() {
         &2_000_000i128,
         &300u64,
         &1u32,
+        &DEFAULT_TOLERANCE_BPS,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -253,6 +300,8 @@ fn test_configure_pair_negative_rate_rejected() {
         &2_000_000i128,
         &300u64,
         &1u32,
+        &DEFAULT_TOLERANCE_BPS,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -272,6 +321,29 @@ fn test_configure_pair_zero_staleness_rejected() {
         &2_000_000i128,
         &0u64,
         &1u32,
+        &DEFAULT_TOLERANCE_BPS,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
+    );
+    assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
+}
+
+#[test]
+fn test_configure_pair_zero_quorum_window_rejected() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, _, _, _) = full_setup(&env);
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+
+    let res = oracle_client.try_configure_pair(
+        &oracle_owner,
+        &base,
+        &quote,
+        &1_000_000i128,
+        &2_000_000i128,
+        &300u64,
+        &1u32,
+        &DEFAULT_TOLERANCE_BPS,
+        &0u64,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -292,6 +364,8 @@ fn test_non_owner_cannot_configure_pair() {
         &2_000_000i128,
         &300u64,
         &1u32,
+        &DEFAULT_TOLERANCE_BPS,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
     );
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 }
@@ -500,8 +574,13 @@ fn test_unconfigured_pair_rejected() {
     let unknown_quote = Address::generate(&env);
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
-    let res =
-        oracle_client.try_push_price(&source, &unknown_base, &unknown_quote, &2_000_000i128, &1_000u64);
+    let res = oracle_client.try_push_price(
+        &source,
+        &unknown_base,
+        &unknown_quote,
+        &2_000_000i128,
+        &1_000u64,
+    );
     assert_eq!(res, Err(Ok(OracleError::PairNotConfigured)));
 }
 
@@ -661,7 +740,17 @@ fn test_configure_pair_before_init_fails() {
     let b = Address::generate(&env);
     let c = Address::generate(&env);
 
-    let res = client.try_configure_pair(&a, &b, &c, &1i128, &2i128, &1u64, &1u32);
+    let res = client.try_configure_pair(
+        &a,
+        &b,
+        &c,
+        &1i128,
+        &2i128,
+        &1u64,
+        &1u32,
+        &DEFAULT_TOLERANCE_BPS,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
+    );
     assert_eq!(res, Err(Ok(OracleError::NotInitialized)));
 }
 
@@ -700,7 +789,7 @@ fn test_transfer_ownership_before_init_fails() {
 #[test]
 fn test_compromised_source_blast_radius() {
     let env = create_env();
-    let (oracle_client, _, oracle_owner, source, base, quote) = full_setup(&env);
+    let (oracle_client, _, _oracle_owner, source, base, quote) = full_setup(&env);
 
     // Source cannot add another source.
     let evil_source = Address::generate(&env);
@@ -716,6 +805,8 @@ fn test_compromised_source_blast_radius() {
         &999_000_000i128,
         &86400u64,
         &1u32,
+        &DEFAULT_TOLERANCE_BPS,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
     );
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 
@@ -754,6 +845,8 @@ fn test_pair_isolation() {
         &9_000_000i128,
         &600u64,
         &1u32,
+        &DEFAULT_TOLERANCE_BPS,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -791,6 +884,8 @@ fn test_reconfigure_pair_tightens_bounds() {
         &3_000_000i128,
         &600u64,
         &1u32,
+        &DEFAULT_TOLERANCE_BPS,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
     );
 
     // Same rate now rejected.
@@ -834,6 +929,8 @@ fn test_multi_source_quorum_success() {
         &5_000_000i128,
         &600u64,
         &2u32,
+        &50u32,
+        &60u64,
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -874,6 +971,8 @@ fn test_multi_source_quorum_different_rates_do_not_count() {
         &5_000_000i128,
         &600u64,
         &2u32,
+        &50u32,
+        &60u64,
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -885,6 +984,162 @@ fn test_multi_source_quorum_different_rates_do_not_count() {
     oracle_client.push_price(&source2, &base, &quote, &2_100_000i128, &1_000u64);
 
     // Neither reached quorum of 2.
+    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+}
+
+#[test]
+fn test_multi_source_quorum_tolerance_boundary_accepts() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source1, base, quote) = full_setup(&env);
+    let source2 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+
+    configure_pair_with_settings(
+        &oracle_client,
+        &oracle_owner,
+        &base,
+        &quote,
+        500_000i128,
+        5_000_000i128,
+        600u64,
+        2u32,
+        50u32,
+        60u64,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_005);
+    oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
+    oracle_client.push_price(&source2, &base, &quote, &2_010_000i128, &1_005u64);
+
+    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    assert_eq!(state.rate, 2_010_000);
+    assert_eq!(state.last_updated_ts, 1_005u64);
+    assert_eq!(state.last_source, source2);
+}
+
+#[test]
+fn test_multi_source_quorum_duplicate_vote_rejected() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source1, base, quote) = full_setup(&env);
+    let source2 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+
+    configure_pair_with_settings(
+        &oracle_client,
+        &oracle_owner,
+        &base,
+        &quote,
+        500_000i128,
+        5_000_000i128,
+        600u64,
+        2u32,
+        0u32,
+        60u64,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
+
+    let res = oracle_client.try_push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
+    assert_eq!(res, Err(Ok(OracleError::DuplicateVote)));
+    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+
+    oracle_client.push_price(&source2, &base, &quote, &2_000_000i128, &1_000u64);
+    assert_eq!(
+        oracle_client.get_pair_state(&base, &quote).unwrap().rate,
+        2_000_000
+    );
+}
+
+#[test]
+fn test_multi_source_quorum_dissenting_source_does_not_block_matching_cluster() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source1, base, quote) = full_setup(&env);
+    let source2 = Address::generate(&env);
+    let source3 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+    oracle_client.add_source(&oracle_owner, &source3);
+
+    configure_pair_with_settings(
+        &oracle_client,
+        &oracle_owner,
+        &base,
+        &quote,
+        500_000i128,
+        5_000_000i128,
+        600u64,
+        2u32,
+        50u32,
+        60u64,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
+    oracle_client.push_price(&source2, &base, &quote, &2_100_000i128, &1_000u64);
+    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+
+    oracle_client.push_price(&source3, &base, &quote, &2_000_000i128, &1_000u64);
+    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    assert_eq!(state.rate, 2_000_000);
+    assert_eq!(state.last_source, source3);
+}
+
+#[test]
+fn test_multi_source_quorum_window_rollover_resets_pending_votes() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source1, base, quote) = full_setup(&env);
+    let source2 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+
+    configure_pair_with_settings(
+        &oracle_client,
+        &oracle_owner,
+        &base,
+        &quote,
+        500_000i128,
+        5_000_000i128,
+        600u64,
+        2u32,
+        0u32,
+        60u64,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_060);
+    oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
+    oracle_client.push_price(&source2, &base, &quote, &2_000_000i128, &1_060u64);
+    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+
+    oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_060u64);
+    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    assert_eq!(state.rate, 2_000_000);
+    assert_eq!(state.last_updated_ts, 1_060u64);
+}
+
+#[test]
+fn test_removed_source_pending_vote_no_longer_counts_toward_quorum() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source1, base, quote) = full_setup(&env);
+    let source2 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+
+    configure_pair_with_settings(
+        &oracle_client,
+        &oracle_owner,
+        &base,
+        &quote,
+        500_000i128,
+        5_000_000i128,
+        600u64,
+        2u32,
+        0u32,
+        60u64,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
+    oracle_client.remove_source(&oracle_owner, &source1);
+
+    oracle_client.push_price(&source2, &base, &quote, &2_000_000i128, &1_000u64);
     assert!(oracle_client.get_pair_state(&base, &quote).is_none());
 }
 
@@ -901,6 +1156,8 @@ fn test_quorum_rejection_on_zero_quorum() {
         &5_000_000i128,
         &600u64,
         &0u32, // Invalid
+        &DEFAULT_TOLERANCE_BPS,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }

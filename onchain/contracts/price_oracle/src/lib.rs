@@ -1,9 +1,11 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Vec,
 };
 use stello_pay_contract::PayrollContractClient;
+
+const BPS_DENOMINATOR: i128 = 10_000;
 
 // ============================================================================
 // Errors
@@ -35,6 +37,8 @@ pub enum OracleError {
     ZeroRate = 9,
     /// Pair configuration parameters are invalid (e.g. min > max, zero staleness).
     InvalidPairConfig = 10,
+    /// The same source attempted to vote twice in the same active quorum bucket.
+    DuplicateVote = 11,
 }
 
 // ============================================================================
@@ -58,7 +62,11 @@ pub struct PairConfig {
     /// Whether the pair accepts new price updates.
     pub enabled: bool,
     /// Minimum number of unique authorized sources required to accept a price.
-    pub quorum: u32,
+    pub quorum_n: u32,
+    /// Maximum spread allowed between quorum-supporting rates, in basis points.
+    pub tolerance_bps: u32,
+    /// Time window used to group submissions into a single quorum bucket.
+    pub quorum_window_seconds: u64,
 }
 
 /// Last accepted rate for a `(base, quote)` pair.
@@ -71,6 +79,28 @@ pub struct PairState {
     pub last_updated_ts: u64,
     /// Address of the oracle source that submitted the accepted rate.
     pub last_source: Address,
+}
+
+/// A single source's pending vote within the active quorum bucket for a pair.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingSubmission {
+    /// Oracle source that submitted the vote.
+    pub source: Address,
+    /// Submitted scaled rate.
+    pub rate: i128,
+    /// Source timestamp carried with the vote.
+    pub source_timestamp: u64,
+}
+
+/// Pending quorum state for the current active bucket of a pair.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingBucketState {
+    /// Bucket identifier derived from `source_timestamp / quorum_window_seconds`.
+    pub timestamp_bucket: u64,
+    /// Distinct source votes recorded for the active bucket.
+    pub submissions: Vec<PendingSubmission>,
 }
 
 #[contracttype]
@@ -86,10 +116,8 @@ enum DataKey {
     PairConfig(Address, Address),
     /// Last accepted state for a `(base, quote)` pair.
     PairState(Address, Address),
-    /// Tracking individual source votes for quorum: (base, quote, timestamp, rate, source).
-    QuorumVote(Address, Address, u64, i128, Address),
-    /// Tracking aggregate vote counts for quorum: (base, quote, timestamp, rate).
-    QuorumCount(Address, Address, u64, i128),
+    /// Active pending quorum bucket for a `(base, quote)` pair.
+    PendingBucket(Address, Address),
 }
 
 #[contract]
@@ -142,6 +170,33 @@ fn require_admin(env: &Env, caller: &Address) -> Result<(), OracleError> {
     } else {
         Err(OracleError::NotAuthorized)
     }
+}
+
+fn bucket_for_timestamp(source_timestamp: u64, quorum_window_seconds: u64) -> u64 {
+    source_timestamp / quorum_window_seconds
+}
+
+fn within_tolerance(reference_rate: i128, candidate_rate: i128, tolerance_bps: u32) -> bool {
+    if reference_rate <= 0 || candidate_rate <= 0 {
+        return false;
+    }
+
+    let diff = if reference_rate >= candidate_rate {
+        reference_rate - candidate_rate
+    } else {
+        candidate_rate - reference_rate
+    };
+
+    let lhs = match diff.checked_mul(BPS_DENOMINATOR) {
+        Some(value) => value,
+        None => return false,
+    };
+    let rhs = match reference_rate.checked_mul(tolerance_bps as i128) {
+        Some(value) => value,
+        None => return false,
+    };
+
+    lhs <= rhs
 }
 
 // ============================================================================
@@ -244,6 +299,9 @@ impl PriceOracleContract {
     /// @param min_rate             Minimum allowed scaled rate (inclusive).
     /// @param max_rate             Maximum allowed scaled rate (inclusive).
     /// @param max_staleness_seconds Maximum allowed age of a rate update.
+    /// @param quorum_n             Minimum number of distinct sources required.
+    /// @param tolerance_bps        Maximum spread between quorum-supporting votes.
+    /// @param quorum_window_seconds Time window used to bucket pending votes.
     pub fn configure_pair(
         env: Env,
         caller: Address,
@@ -252,14 +310,16 @@ impl PriceOracleContract {
         min_rate: i128,
         max_rate: i128,
         max_staleness_seconds: u64,
-        quorum: u32,
+        quorum_n: u32,
+        tolerance_bps: u32,
+        quorum_window_seconds: u64,
     ) -> Result<(), OracleError> {
         require_admin(&env, &caller)?;
 
         if base == quote || min_rate <= 0 || max_rate <= 0 || min_rate > max_rate {
             return Err(OracleError::InvalidPairConfig);
         }
-        if max_staleness_seconds == 0 || quorum == 0 {
+        if max_staleness_seconds == 0 || quorum_n == 0 || quorum_window_seconds == 0 {
             return Err(OracleError::InvalidPairConfig);
         }
 
@@ -268,12 +328,17 @@ impl PriceOracleContract {
             max_rate,
             max_staleness_seconds,
             enabled: true,
-            quorum,
+            quorum_n,
+            tolerance_bps,
+            quorum_window_seconds,
         };
 
         env.storage()
             .instance()
             .set(&DataKey::PairConfig(base.clone(), quote.clone()), &cfg);
+        env.storage()
+            .temporary()
+            .remove(&DataKey::PendingBucket(base.clone(), quote.clone()));
 
         env.events().publish(
             (symbol_short!("oracle"), symbol_short!("cfgpair")),
@@ -307,6 +372,9 @@ impl PriceOracleContract {
         env.storage()
             .instance()
             .set(&DataKey::PairConfig(base.clone(), quote.clone()), &cfg);
+        env.storage()
+            .temporary()
+            .remove(&DataKey::PendingBucket(base.clone(), quote.clone()));
 
         env.events().publish(
             (symbol_short!("oracle"), symbol_short!("disable")),
@@ -362,8 +430,11 @@ impl PriceOracleContract {
     ///      6. Rejects stale timestamps (age > `max_staleness_seconds`).
     ///      7. Ignores updates older than or equal to the last accepted timestamp
     ///         (monotonic ordering).
-    ///      8. Persists the new `PairState`.
-    ///      9. Calls `set_exchange_rate` on the downstream payroll contract.
+    ///      8. In quorum mode, stores the vote in the active time bucket and
+    ///         only accepts once `quorum_n` distinct sources agree within
+    ///         `tolerance_bps`.
+    ///      9. Persists the new `PairState`.
+    ///      10. Calls `set_exchange_rate` on the downstream payroll contract.
     ///      Emits event `("oracle", "price")` with `(base, quote, rate)`.
     /// @param source           Oracle source address (must be pre-authorized).
     /// @param base             Base token address.
@@ -429,38 +500,68 @@ impl PriceOracleContract {
             }
         }
 
-        // Quorum check if enabled (> 1).
-        if cfg.quorum > 1 {
-            let vote_key = DataKey::QuorumVote(
-                base.clone(),
-                quote.clone(),
-                source_timestamp,
+        let accepted_timestamp = if cfg.quorum_n > 1 {
+            let bucket = bucket_for_timestamp(source_timestamp, cfg.quorum_window_seconds);
+            let pending_key = DataKey::PendingBucket(base.clone(), quote.clone());
+            let mut pending = match env
+                .storage()
+                .temporary()
+                .get::<_, PendingBucketState>(&pending_key)
+            {
+                Some(existing) if existing.timestamp_bucket > bucket => {
+                    // Ignore late votes from an older bucket once the pair has
+                    // moved on to a newer quorum window.
+                    return Ok(());
+                }
+                Some(existing) if existing.timestamp_bucket == bucket => existing,
+                _ => PendingBucketState {
+                    timestamp_bucket: bucket,
+                    submissions: Vec::new(&env),
+                },
+            };
+
+            for i in 0..pending.submissions.len() {
+                let existing = pending.submissions.get(i).unwrap();
+                if existing.source == source {
+                    return Err(OracleError::DuplicateVote);
+                }
+            }
+
+            pending.submissions.push_back(PendingSubmission {
+                source: source.clone(),
                 rate,
-                source.clone(),
-            );
-            if env.storage().temporary().has(&vote_key) {
-                // Source already submitted this exact rate/timestamp; ignore.
+                source_timestamp,
+            });
+
+            let mut matching_votes = 0u32;
+            let mut cluster_max_timestamp = source_timestamp;
+            for i in 0..pending.submissions.len() {
+                let existing = pending.submissions.get(i).unwrap();
+                if is_source(&env, &existing.source)
+                    && within_tolerance(rate, existing.rate, cfg.tolerance_bps)
+                {
+                    matching_votes += 1;
+                    if existing.source_timestamp > cluster_max_timestamp {
+                        cluster_max_timestamp = existing.source_timestamp;
+                    }
+                }
+            }
+
+            if matching_votes < cfg.quorum_n {
+                env.storage().temporary().set(&pending_key, &pending);
                 return Ok(());
             }
 
-            env.storage().temporary().set(&vote_key, &true);
-
-            let count_key =
-                DataKey::QuorumCount(base.clone(), quote.clone(), source_timestamp, rate);
-            let current_count: u32 = env.storage().temporary().get(&count_key).unwrap_or(0);
-            let new_count = current_count + 1;
-            env.storage().temporary().set(&count_key, &new_count);
-
-            if new_count < cfg.quorum {
-                // Quorum not yet reached.
-                return Ok(());
-            }
-        }
+            env.storage().temporary().remove(&pending_key);
+            cluster_max_timestamp
+        } else {
+            source_timestamp
+        };
 
         // Persist new state.
         let new_state = PairState {
             rate,
-            last_updated_ts: source_timestamp,
+            last_updated_ts: accepted_timestamp,
             last_source: source.clone(),
         };
         env.storage()
