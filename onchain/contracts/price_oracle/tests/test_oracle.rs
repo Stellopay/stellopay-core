@@ -1116,6 +1116,63 @@ fn test_multi_source_quorum_window_rollover_resets_pending_votes() {
 }
 
 #[test]
+fn test_multi_source_quorum_older_bucket_vote_is_ignored_after_rollover() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source1, base, quote) = full_setup(&env);
+    let source2 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+
+    configure_pair_with_settings(
+        &oracle_client,
+        &oracle_owner,
+        &base,
+        &quote,
+        500_000i128,
+        5_000_000i128,
+        600u64,
+        2u32,
+        0u32,
+        60u64,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_060);
+    oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_060u64);
+
+    let res = oracle_client.try_push_price(&source2, &base, &quote, &2_000_000i128, &1_000u64);
+    assert!(res.is_ok());
+    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+}
+
+#[test]
+fn test_multi_source_quorum_uses_max_supporting_timestamp() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source1, base, quote) = full_setup(&env);
+    let source2 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+
+    configure_pair_with_settings(
+        &oracle_client,
+        &oracle_owner,
+        &base,
+        &quote,
+        500_000i128,
+        5_000_000i128,
+        600u64,
+        2u32,
+        100u32,
+        60u64,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_005);
+    oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_005u64);
+    oracle_client.push_price(&source2, &base, &quote, &2_000_500i128, &1_000u64);
+
+    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    assert_eq!(state.rate, 2_000_500i128);
+    assert_eq!(state.last_updated_ts, 1_005u64);
+}
+
+#[test]
 fn test_removed_source_pending_vote_no_longer_counts_toward_quorum() {
     let env = create_env();
     let (oracle_client, _, oracle_owner, source1, base, quote) = full_setup(&env);
@@ -1141,6 +1198,34 @@ fn test_removed_source_pending_vote_no_longer_counts_toward_quorum() {
 
     oracle_client.push_price(&source2, &base, &quote, &2_000_000i128, &1_000u64);
     assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+}
+
+#[test]
+fn test_push_price_returns_fx_update_failed_when_payroll_rejects_update() {
+    let env = create_env();
+    let (payroll_id, _, _) = setup_payroll(&env);
+    let (_, oracle_client, oracle_owner) = setup_oracle(&env, &payroll_id);
+    let source = Address::generate(&env);
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+
+    oracle_client.add_source(&oracle_owner, &source);
+    configure_pair_with_settings(
+        &oracle_client,
+        &oracle_owner,
+        &base,
+        &quote,
+        500_000i128,
+        5_000_000i128,
+        600u64,
+        1u32,
+        DEFAULT_TOLERANCE_BPS,
+        DEFAULT_QUORUM_WINDOW_SECONDS,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    let res = oracle_client.try_push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+    assert_eq!(res, Err(Ok(OracleError::FxUpdateFailed)));
 }
 
 #[test]

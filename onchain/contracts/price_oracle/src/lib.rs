@@ -199,6 +199,31 @@ fn within_tolerance(reference_rate: i128, candidate_rate: i128, tolerance_bps: u
     lhs <= rhs
 }
 
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn test_within_tolerance_rejects_non_positive_inputs() {
+        assert!(!within_tolerance(0, 1, 10));
+        assert!(!within_tolerance(1, 0, 10));
+    }
+
+    #[test]
+    fn test_within_tolerance_rejects_diff_overflow() {
+        assert!(!within_tolerance(i128::MAX, 1, 10));
+    }
+
+    #[test]
+    fn test_within_tolerance_rejects_rhs_overflow() {
+        assert!(!within_tolerance(
+            i128::MAX / 2 + 1,
+            i128::MAX / 2 + 1,
+            u32::MAX
+        ));
+    }
+}
+
 // ============================================================================
 // Contract implementation
 // ============================================================================

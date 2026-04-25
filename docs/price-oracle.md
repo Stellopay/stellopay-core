@@ -236,7 +236,7 @@ This model keeps the implementation small and storage bounded while still reduci
 | `("oracle", "price")`     | `(base, quote, rate)`   | `push_price`         |
 | `("oracle", "owner")`     | `new_owner`             | `transfer_ownership` |
 
-## Test coverage (54 tests)
+## Test coverage (57 tests)
 
 - **Initialization** (2): owner set, double-init blocked
 - **Source management** (4): add/remove, non-owner blocked, removed source can't push
@@ -248,4 +248,5 @@ This model keeps the implementation small and storage bounded while still reduci
 - **Ownership transfer** (4): success, new owner works, old owner blocked, non-owner blocked
 - **Uninitialized guards** (5): all admin/source functions revert before init
 - **Security scenarios** (4): compromised source blast radius, pair isolation, reconfigure tightens bounds, pair direction matters
-- **Quorum-specific edge cases** (12): quorum success, dissent without quorum, duplicate-vote rejection, tolerance-boundary acceptance, bucket rollover reset, removed-source pending vote invalidation, and invalid zero-quorum configuration
+- **Quorum-specific edge cases** (15): quorum success, dissent without quorum, duplicate-vote rejection, tolerance-boundary acceptance, max-supporting-timestamp selection, older-bucket no-op after rollover, removed-source pending vote invalidation, FX forward failure handling, and invalid zero-quorum configuration
+- **Helper-path coverage** (3): non-positive tolerance input and arithmetic overflow guards in the tolerance matcher
