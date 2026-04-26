@@ -40,6 +40,14 @@ fn test_valid_transition_allows_activate_created_to_active() {
 
     assert_eq!(decision.decision, Decision::Allow);
     assert_eq!(decision.reason, ReasonCode::Allowed);
+    
+    // Verify traces: 
+    // 1. EmergencyPause: Allow
+    // 2. TerminalState: Allow
+    // 3. InvalidCurrentState: Allow
+    // 4. InvalidTargetState: Allow
+    // (GracePeriodRequired skipped for ActivateAgreement)
+    assert_eq!(decision.traces.len(), 4);
 }
 
 #[test]

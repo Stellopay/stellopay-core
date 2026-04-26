@@ -69,12 +69,21 @@ pub enum ReasonCode {
     GracePeriodRequired,
 }
 
-/// Result payload returned by rule evaluation.
+/// Trace entry for a single rule evaluation.
 #[contracttype]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TraceEntry {
+    pub rule: ReasonCode,
+    pub result: Decision,
+}
+
+/// Result payload returned by rule evaluation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComplianceDecision {
     pub decision: Decision,
     pub reason: ReasonCode,
+    pub traces: soroban_sdk::Vec<TraceEntry>,
 }
 
 #[contractimpl]
@@ -162,40 +171,78 @@ impl ComplianceCheckerContract {
             executor.require_auth();
         }
 
-        if env
+        let mut traces = soroban_sdk::Vec::new(&env);
+
+        // 1. Emergency Pause check
+        let is_paused = env
             .storage()
             .persistent()
             .get::<_, bool>(&StorageKey::EmergencyPause)
-            .unwrap_or(false)
-        {
-            return Self::deny(ReasonCode::EmergencyPaused);
+            .unwrap_or(false);
+        
+        let pause_result = if is_paused { Decision::Deny } else { Decision::Allow };
+        traces.push_back(TraceEntry { rule: ReasonCode::EmergencyPaused, result: pause_result });
+        
+        if is_paused {
+            return Self::make_decision(Decision::Deny, ReasonCode::EmergencyPaused, traces);
         }
 
-        if executor != actor && !Self::is_auxiliary_allowed(env.clone(), executor) {
-            return Self::deny(ReasonCode::AuxiliaryNotAllowed);
+        // 2. Auxiliary Not Allowed check
+        if executor != actor {
+            let is_allowed = Self::is_auxiliary_allowed(env.clone(), executor);
+            let aux_result = if is_allowed { Decision::Allow } else { Decision::Deny };
+            traces.push_back(TraceEntry { rule: ReasonCode::AuxiliaryNotAllowed, result: aux_result });
+            if !is_allowed {
+                return Self::make_decision(Decision::Deny, ReasonCode::AuxiliaryNotAllowed, traces);
+            }
         }
 
-        if current_state == AgreementStatus::Completed {
-            return Self::deny(ReasonCode::TerminalState);
+        // 3. Terminal State check
+        let is_terminal = current_state == AgreementStatus::Completed;
+        let terminal_result = if is_terminal { Decision::Deny } else { Decision::Allow };
+        traces.push_back(TraceEntry { rule: ReasonCode::TerminalState, result: terminal_result });
+        if is_terminal {
+            return Self::make_decision(Decision::Deny, ReasonCode::TerminalState, traces);
         }
 
-        if !Self::is_action_allowed_from_state(action, current_state) {
-            return Self::deny(ReasonCode::InvalidCurrentState);
+        // 4. Invalid Current State check
+        let is_current_valid = Self::is_action_allowed_from_state(action, current_state);
+        let current_valid_result = if is_current_valid { Decision::Allow } else { Decision::Deny };
+        traces.push_back(TraceEntry { rule: ReasonCode::InvalidCurrentState, result: current_valid_result });
+        if !is_current_valid {
+            return Self::make_decision(Decision::Deny, ReasonCode::InvalidCurrentState, traces);
         }
 
+        // 5. Invalid Target State check
         let expected_target = Self::expected_target_state(action, current_state);
-        if target_state != expected_target {
-            return Self::deny(ReasonCode::InvalidTargetState);
+        let is_target_valid = target_state == expected_target;
+        let target_valid_result = if is_target_valid { Decision::Allow } else { Decision::Deny };
+        traces.push_back(TraceEntry { rule: ReasonCode::InvalidTargetState, result: target_valid_result });
+        if !is_target_valid {
+            return Self::make_decision(Decision::Deny, ReasonCode::InvalidTargetState, traces);
         }
 
+        // 6. Grace Period Required check
         let is_claim_action = action == PayrollAction::ClaimPayroll
             || action == PayrollAction::ClaimTimeBased
             || action == PayrollAction::ClaimMilestone;
-        if is_claim_action && current_state == AgreementStatus::Cancelled && !grace_period_active {
-            return Self::deny(ReasonCode::GracePeriodRequired);
+        if is_claim_action && current_state == AgreementStatus::Cancelled {
+            let grace_result = if grace_period_active { Decision::Allow } else { Decision::Deny };
+            traces.push_back(TraceEntry { rule: ReasonCode::GracePeriodRequired, result: grace_result });
+            if !grace_period_active {
+                return Self::make_decision(Decision::Deny, ReasonCode::GracePeriodRequired, traces);
+            }
         }
 
-        Self::allow()
+        Self::make_decision(Decision::Allow, ReasonCode::Allowed, traces)
+    }
+
+    fn make_decision(decision: Decision, reason: ReasonCode, traces: soroban_sdk::Vec<TraceEntry>) -> ComplianceDecision {
+        ComplianceDecision {
+            decision,
+            reason,
+            traces,
+        }
     }
 
     fn expected_target_state(action: PayrollAction, current_state: AgreementStatus) -> AgreementStatus {
@@ -257,17 +304,19 @@ impl ComplianceCheckerContract {
         assert!(*caller == admin, "Not admin");
     }
 
-    fn allow() -> ComplianceDecision {
+    fn allow(env: &Env) -> ComplianceDecision {
         ComplianceDecision {
             decision: Decision::Allow,
             reason: ReasonCode::Allowed,
+            traces: soroban_sdk::Vec::new(env),
         }
     }
 
-    fn deny(reason: ReasonCode) -> ComplianceDecision {
+    fn deny(reason: ReasonCode, traces: soroban_sdk::Vec<TraceEntry>) -> ComplianceDecision {
         ComplianceDecision {
             decision: Decision::Deny,
             reason,
+            traces,
         }
     }
 }
