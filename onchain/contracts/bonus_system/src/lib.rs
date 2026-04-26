@@ -1,4 +1,7 @@
 #![no_std]
+#![allow(clippy::too_many_arguments)]
+#![allow(deprecated)] // Soroban SDK uses deprecated publish method
+#![allow(clippy::needless_borrows_for_generic_args)]
 
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
 
@@ -46,6 +49,15 @@ enum StorageKey {
     Owner,
     NextIncentiveId,
     Incentive(u128),
+    // Bonus cap system
+    EmployeeBonusCap(Address),
+    PeriodBonusCap(u64),
+    EmployeeBonusTotal((Address, u64)),
+    PeriodBonusTotal(u64),
+    // Termination tracking
+    EmployeeTerminated(Address),
+    // Clawback tracking
+    ClawbackTotal(u128),
 }
 
 #[contracttype]
@@ -89,6 +101,41 @@ pub struct IncentiveCancelledEvent {
     pub incentive_id: u128,
     pub employer: Address,
     pub refunded_amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BonusCapSetEvent {
+    pub admin: Address,
+    pub employee: Option<Address>,
+    pub cap_amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClawbackExecutedEvent {
+    pub admin: Address,
+    pub employee: Address,
+    pub incentive_id: u128,
+    pub clawback_amount: i128,
+    pub reason_hash: u128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmployeeTerminatedEvent {
+    pub admin: Address,
+    pub employee: Address,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapEnforcementEvent {
+    pub employee: Address,
+    pub requested_amount: i128,
+    pub remaining_cap: i128,
+    pub period: u64,
 }
 
 fn require_initialized(env: &Env) {
@@ -150,6 +197,130 @@ fn vested_payouts(now: u64, start_time: u64, interval_seconds: u64, total_payout
     }
 }
 
+// Helper: Calculate current period (30-day periods)
+fn get_current_period(env: &Env) -> u64 {
+    const SECONDS_PER_PERIOD: u64 = 2_592_000; // 30 days
+    env.ledger().timestamp() / SECONDS_PER_PERIOD
+}
+
+// Helper: Get per-employee bonus cap
+fn get_employee_cap(env: &Env, employee: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::EmployeeBonusCap(employee.clone()))
+        .unwrap_or(0)
+}
+
+// Helper: Get period bonus cap
+fn get_period_cap(env: &Env) -> i128 {
+    let period = get_current_period(env);
+    env.storage()
+        .persistent()
+        .get(&StorageKey::PeriodBonusCap(period))
+        .unwrap_or(0)
+}
+
+// Helper: Get employee's total bonuses in current period
+fn get_employee_bonus_total(env: &Env, employee: &Address) -> i128 {
+    let period = get_current_period(env);
+    env.storage()
+        .persistent()
+        .get(&StorageKey::EmployeeBonusTotal((employee.clone(), period)))
+        .unwrap_or(0)
+}
+
+// Helper: Get period's total bonuses
+fn get_period_bonus_total(env: &Env) -> i128 {
+    let period = get_current_period(env);
+    env.storage()
+        .persistent()
+        .get(&StorageKey::PeriodBonusTotal(period))
+        .unwrap_or(0)
+}
+
+// Helper: Check if employee is terminated
+fn is_employee_terminated(env: &Env, employee: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::EmployeeTerminated(employee.clone()))
+        .unwrap_or(false)
+}
+
+// Helper: Enforce bonus caps
+fn check_and_enforce_cap(env: &Env, employee: &Address, amount: i128) {
+    let employee_cap = get_employee_cap(env, employee);
+    let period_cap = get_period_cap(env);
+    let period = get_current_period(env);
+
+    // Check employee cap
+    if employee_cap > 0 {
+        let employee_total = get_employee_bonus_total(env, employee);
+        let new_total = employee_total
+            .checked_add(amount)
+            .expect("Employee bonus total overflow");
+
+        if new_total > employee_cap {
+            let remaining = employee_cap.saturating_sub(employee_total);
+            env.events().publish(
+                ("cap_enforced",),
+                CapEnforcementEvent {
+                    employee: employee.clone(),
+                    requested_amount: amount,
+                    remaining_cap: remaining,
+                    period,
+                },
+            );
+            panic!("Bonus exceeds employee cap");
+        }
+    }
+
+    // Check period cap
+    if period_cap > 0 {
+        let period_total = get_period_bonus_total(env);
+        let new_period_total = period_total
+            .checked_add(amount)
+            .expect("Period bonus total overflow");
+
+        if new_period_total > period_cap {
+            let remaining = period_cap.saturating_sub(period_total);
+            env.events().publish(
+                ("cap_enforced",),
+                CapEnforcementEvent {
+                    employee: employee.clone(),
+                    requested_amount: amount,
+                    remaining_cap: remaining,
+                    period,
+                },
+            );
+            panic!("Bonus exceeds period cap");
+        }
+    }
+}
+
+// Helper: Update bonus totals after successful creation
+fn update_bonus_totals(env: &Env, employee: &Address, amount: i128) {
+    let period = get_current_period(env);
+
+    // Update employee total
+    let employee_total = get_employee_bonus_total(env, employee);
+    let new_employee_total = employee_total
+        .checked_add(amount)
+        .expect("Employee bonus total overflow");
+    env.storage().persistent().set(
+        &StorageKey::EmployeeBonusTotal((employee.clone(), period)),
+        &new_employee_total,
+    );
+
+    // Update period total
+    let period_total = get_period_bonus_total(env);
+    let new_period_total = period_total
+        .checked_add(amount)
+        .expect("Period bonus total overflow");
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PeriodBonusTotal(period), &new_period_total);
+}
+
 #[contractimpl]
 impl BonusSystemContract {
     /// @notice Initializes the bonus and incentive contract.
@@ -193,6 +364,15 @@ impl BonusSystemContract {
         employer.require_auth();
         assert!(amount > 0, "Amount must be positive");
 
+        // Check termination status
+        assert!(
+            !is_employee_terminated(&env, &employee),
+            "Cannot create bonus for terminated employee"
+        );
+
+        // Enforce bonus caps
+        check_and_enforce_cap(&env, &employee, amount);
+
         let incentive_id = next_incentive_id(&env);
         let incentive = Incentive {
             id: incentive_id,
@@ -216,6 +396,10 @@ impl BonusSystemContract {
         );
 
         write_incentive(&env, &incentive);
+
+        // Update bonus totals
+        update_bonus_totals(&env, &employee, amount);
+
         env.events().publish(
             ("incentive_created", incentive_id),
             IncentiveCreatedEvent {
@@ -261,6 +445,16 @@ impl BonusSystemContract {
         assert!(interval_seconds > 0, "Interval must be positive");
 
         let escrowed_amount = checked_mul_amount(amount_per_payout, total_payouts);
+
+        // Check termination status
+        assert!(
+            !is_employee_terminated(&env, &employee),
+            "Cannot create incentive for terminated employee"
+        );
+
+        // Enforce bonus caps
+        check_and_enforce_cap(&env, &employee, escrowed_amount);
+
         let incentive_id = next_incentive_id(&env);
         let incentive = Incentive {
             id: incentive_id,
@@ -279,11 +473,15 @@ impl BonusSystemContract {
 
         token::Client::new(&env, &token).transfer(
             &employer,
-            &env.current_contract_address(),
+            env.current_contract_address(),
             &escrowed_amount,
         );
 
         write_incentive(&env, &incentive);
+
+        // Update bonus totals
+        update_bonus_totals(&env, &employee, escrowed_amount);
+
         env.events().publish(
             ("incentive_created", incentive_id),
             IncentiveCreatedEvent {
@@ -518,5 +716,194 @@ impl BonusSystemContract {
     /// @dev Requires caller authentication
     pub fn get_owner(env: Env) -> Option<Address> {
         env.storage().persistent().get(&StorageKey::Owner)
+    }
+
+    /// @notice Sets bonus cap for employee or period.
+    /// @dev Admin-only function. If employee is None, sets period cap.
+    /// @param admin Admin address (must be owner).
+    /// @param employee Optional employee address (None = period cap).
+    /// @param cap_amount Cap amount (must be positive).
+    pub fn set_bonus_cap(env: Env, admin: Address, employee: Option<Address>, cap_amount: i128) {
+        admin.require_auth();
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Owner)
+            .expect("Owner not set");
+        assert!(admin == owner, "Only owner can set caps");
+        assert!(cap_amount > 0, "Cap amount must be positive");
+
+        if let Some(emp) = employee.clone() {
+            env.storage()
+                .persistent()
+                .set(&StorageKey::EmployeeBonusCap(emp), &cap_amount);
+        } else {
+            let period = get_current_period(&env);
+            env.storage()
+                .persistent()
+                .set(&StorageKey::PeriodBonusCap(period), &cap_amount);
+        }
+
+        env.events().publish(
+            ("bonus_cap_set",),
+            BonusCapSetEvent {
+                admin,
+                employee,
+                cap_amount,
+            },
+        );
+    }
+
+    /// @notice Returns employee bonus cap.
+    /// @param employee Employee address.
+    /// @return cap_amount Cap amount (0 = uncapped).
+    pub fn get_employee_cap(env: Env, employee: Address) -> i128 {
+        get_employee_cap(&env, &employee)
+    }
+
+    /// @notice Returns current period bonus cap.
+    /// @return cap_amount Cap amount (0 = uncapped).
+    pub fn get_period_cap(env: Env) -> i128 {
+        get_period_cap(&env)
+    }
+
+    /// @notice Returns employee's total bonuses in current period.
+    /// @param employee Employee address.
+    /// @return total Total bonus amount issued in current period.
+    pub fn get_employee_bonus_total(env: Env, employee: Address) -> i128 {
+        get_employee_bonus_total(&env, &employee)
+    }
+
+    /// @notice Executes clawback of previously claimed bonus.
+    /// @dev Admin-only, requires reason hash for audit trail.
+    ///       Employee must approve the clawback transfer since funds are in their possession.
+    /// @param admin Admin address (must be owner).
+    /// @param employee Employee address (must approve transfer).
+    /// @param incentive_id Incentive identifier.
+    /// @param clawback_amount Amount to claw back.
+    /// @param reason_hash Immutable reason hash for audit.
+    /// @return clawback_amount Amount clawed back.
+    pub fn execute_clawback(
+        env: Env,
+        admin: Address,
+        employee: Address,
+        incentive_id: u128,
+        clawback_amount: i128,
+        reason_hash: u128,
+    ) -> i128 {
+        admin.require_auth();
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Owner)
+            .expect("Owner not set");
+        assert!(admin == owner, "Only owner can execute clawback");
+        assert!(clawback_amount > 0, "Clawback amount must be positive");
+
+        let incentive = read_incentive(&env, incentive_id);
+        assert!(incentive.employee == employee, "Employee mismatch");
+
+        // Calculate claimed amount
+        let claimed_amount =
+            checked_mul_amount(incentive.amount_per_payout, incentive.claimed_payouts);
+
+        // Get total already clawed back for this incentive
+        let already_clawed: i128 = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::ClawbackTotal(incentive_id))
+            .unwrap_or(0);
+
+        // Calculate remaining claimable amount
+        let remaining_claimed = claimed_amount
+            .checked_sub(already_clawed)
+            .expect("Clawback overflow");
+
+        assert!(
+            clawback_amount <= remaining_claimed,
+            "Clawback exceeds claimed amount"
+        );
+
+        // Employee must approve the clawback transfer
+        employee.require_auth();
+
+        // Execute transfer from employee back to employer
+        token::Client::new(&env, &incentive.token).transfer(
+            &employee,
+            &incentive.employer,
+            &clawback_amount,
+        );
+
+        // Update clawback total
+        let new_clawback_total = already_clawed
+            .checked_add(clawback_amount)
+            .expect("Clawback total overflow");
+        env.storage().persistent().set(
+            &StorageKey::ClawbackTotal(incentive_id),
+            &new_clawback_total,
+        );
+
+        // Emit event
+        env.events().publish(
+            ("clawback_executed", incentive_id),
+            ClawbackExecutedEvent {
+                admin,
+                employee,
+                incentive_id,
+                clawback_amount,
+                reason_hash,
+            },
+        );
+
+        clawback_amount
+    }
+
+    /// @notice Terminates employee, blocking new bonuses.
+    /// @dev Admin-only function.
+    /// @param admin Admin address (must be owner).
+    /// @param employee Employee address.
+    pub fn terminate_employee(env: Env, admin: Address, employee: Address) {
+        admin.require_auth();
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Owner)
+            .expect("Owner not set");
+        assert!(admin == owner, "Only owner can terminate employee");
+        assert!(
+            !is_employee_terminated(&env, &employee),
+            "Employee already terminated"
+        );
+
+        let timestamp = env.ledger().timestamp();
+        env.storage()
+            .persistent()
+            .set(&StorageKey::EmployeeTerminated(employee.clone()), &true);
+
+        env.events().publish(
+            ("employee_terminated",),
+            EmployeeTerminatedEvent {
+                admin,
+                employee,
+                timestamp,
+            },
+        );
+    }
+
+    /// @notice Checks if employee is terminated.
+    /// @param employee Employee address.
+    /// @return terminated True if employee is terminated.
+    pub fn is_employee_terminated(env: Env, employee: Address) -> bool {
+        is_employee_terminated(&env, &employee)
+    }
+
+    /// @notice Returns total clawed back for an incentive.
+    /// @param incentive_id Incentive identifier.
+    /// @return clawback_total Total amount clawed back.
+    pub fn get_clawback_total(env: Env, incentive_id: u128) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ClawbackTotal(incentive_id))
+            .unwrap_or(0)
     }
 }

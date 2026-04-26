@@ -16,6 +16,7 @@ The Payment History Contract provides an immutable, indexed ledger of all comple
 - [Events](#events)
 - [Storage Key Reference](#storage-key-reference)
 - [Indexer Integration Guide](#indexer-integration-guide)
+- [Canonical Reconciliation](#canonical-reconciliation)
 - [Edge Cases and Known Boundaries](#edge-cases-and-known-boundaries)
 - [Test Output](#test-output)
 - [Security Notes](#security-notes)
@@ -29,6 +30,7 @@ The Payment History Contract provides an immutable, indexed ledger of all comple
 - **O(1) Hash Lookup** — A reverse-lookup index (`PaymentByHash`) maps any 32-byte hash directly to the corresponding `PaymentRecord` without scanning sequential data.
 - **Three Parallel Sequential Indices** — Every payment is simultaneously indexed by Agreement ID, Employer address, and Employee address, enabling O(n) paginated reads per entity.
 - **Bounded Page Reads** — Page size is hard-capped at `MAX_PAGE_SIZE` (100) to prevent resource exhaustion.
+- **Idempotent Ingestion** — Replaying the same `payment_hash` returns the existing payment ID and does not mutate indices or emit duplicate history events.
 - **Event-Driven Indexing** — A `payment_recorded` event carries both `payment_id` and `payment_hash` so indexers can key their tables by either dimension without polling storage.
 
 ---
@@ -75,6 +77,7 @@ All reads ultimately dereference to the canonical `Payment(global_id)` record, w
 | Unauthorized pruning | Index counts are monotonically increasing and can only grow. There is no decrement path, so entries cannot be soft-deleted from the pagination range. |
 | Re-initialization | `initialize` checks for an existing `Owner` key and panics with "Already initialized" on any subsequent call. |
 | Resource exhaustion via large pages | `limit` is silently capped at `MAX_PAGE_SIZE` (100) before any storage read loop executes. |
+| Duplicate source event replay | `record_payment` is idempotent by `payment_hash`; duplicate replay returns existing ID and performs no write. |
 | ID aliasing | The global counter is incremented and flushed to storage _before_ any index writes, so a partial failure cannot cause two records to share the same ID. |
 | Hash integrity | `payment_hash` is stored verbatim from the payroll contract. Its content is not verified on-chain; integrity depends on the trustworthy payroll caller. Indexers should cross-verify the hash against the Stellar ledger if non-repudiation is required. |
 
@@ -131,13 +134,11 @@ Restricted to the payroll contract registered at initialization.
 | `to` | `Address` | Employee (payee). |
 | `timestamp` | `u64` | Unix timestamp (seconds) as provided by the payroll contract. |
 
-**Returns:** The newly assigned Global Payment ID (starts at 1, increments by 1).
+**Returns:** The existing Global Payment ID for duplicate `payment_hash` input; otherwise the newly assigned Global Payment ID (starts at 1, increments by 1).
 
 **Side effects:**
-- Persists a `PaymentRecord` under `Payment(id)`.
-- Writes a reverse-lookup entry under `PaymentByHash(payment_hash)`.
-- Appends to the agreement, employer, and employee sequential indices.
-- Emits a `payment_recorded` event.
+- For first-seen `payment_hash`: persists a `PaymentRecord` under `Payment(id)`, writes `PaymentByHash(payment_hash)`, appends all three sequential indices, and emits `payment_recorded`.
+- For duplicate `payment_hash`: returns existing ID with no storage mutation and no new event.
 
 **Panics:** `"HostError: Error(Auth, InvalidAction)"` if called by any address other than the registered payroll contract.
 
@@ -312,6 +313,58 @@ After backfilling, verify `get_agreement_payment_count(agreement_id)` matches th
 
 ---
 
+## Canonical Reconciliation
+
+Payment-producing contracts expose different event shapes. The canonical reconciliation flow is:
+
+1. Consume source event.
+2. Enrich missing fields from source contract read APIs and deployment metadata.
+3. Derive `payment_hash` from the Stellar transaction hash.
+4. Submit normalized payload to `record_payment`.
+
+### Required source topics and minimum fields
+
+| Source contract | Required event topic | Required event fields | Required enrichment before `record_payment` |
+|---|---|---|---|
+| `payment_scheduler` | `job_executed` | `job_id`, `amount` | Read `get_job(job_id)` for `from` (`employer`), `to` (`recipient`), and `token`; derive `agreement_id` from scheduler-to-agreement mapping; set `timestamp` from ledger close time; set `payment_hash` from tx hash. |
+| `payroll_escrow` | `released` | `agreement_id`, `to`, `amount` | Read `get_agreement_employer(agreement_id)` for `from`; use escrow token from deployment configuration; set `timestamp` from ledger close time; set `payment_hash` from tx hash. |
+| `bonus_system` | `incentive_claimed` | `incentive_id`, `employee`, `amount` | Read `get_incentive(incentive_id)` for `from` (`employer`) and `token`; derive `agreement_id` from bonus-to-agreement mapping; set `timestamp` from ledger close time; set `payment_hash` from tx hash. |
+| `expense_reimbursement` | `expense_paid` | `expense_id`, `submitter`, `amount` | Read `get_expense(expense_id)` for `token` and payer context; derive canonical `from` and `agreement_id` from reimbursement policy mapping; set `timestamp` from ledger close time; set `payment_hash` from tx hash. |
+
+### Example indexer normalization logic
+
+```typescript
+async function reconcileToPaymentHistory(srcEvent) {
+  const txHash = srcEvent.txHash; // 32-byte tx hash
+  const ts = srcEvent.ledgerCloseTime;
+
+  const normalized = await normalizeSourceEvent(srcEvent);
+  // normalized: { agreement_id, token, amount, from, to }
+
+  // Idempotent by payment_hash: duplicate replay returns existing id.
+  const paymentId = await paymentHistory.record_payment(
+    normalized.agreement_id,
+    txHash,
+    normalized.token,
+    normalized.amount,
+    normalized.from,
+    normalized.to,
+    ts,
+  );
+
+  return paymentId;
+}
+```
+
+### Failure handling
+
+- Duplicate event replay: Safe. `record_payment` returns the existing ID for the same `payment_hash`.
+- Out-of-order ingestion: Safe. Use `payment_id` as canonical ingestion order and `timestamp` for domain time.
+- Missing events: Re-scan source ledgers from the last durable checkpoint minus a safety window, then replay through `record_payment`.
+- Partial history after crash: Resume from checkpoint and replay unconfirmed ledgers; idempotency prevents double writes.
+
+---
+
 ## Edge Cases and Known Boundaries
 
 | Case | Behavior |
@@ -324,6 +377,8 @@ After backfilling, verify `get_agreement_payment_count(agreement_id)` matches th
 | `get_payment_by_id(0)` | Returns `None`; ID 0 is never assigned. |
 | `get_payment_by_id(n > global_count)` | Returns `None`. |
 | `get_payment_by_hash(unknown)` | Returns `None`. |
+| Duplicate `record_payment` with same `payment_hash` | Returns existing ID; no new record, index entry, or event. |
+| Out-of-order source event arrival | Accepted; `payment_id` reflects ingestion order while `timestamp` preserves source time. |
 | No payments recorded | All count functions return `0`; all queries return empty. |
 | Same address as both employer and employee | Both employer and employee indices are updated; the record appears in both. |
 
@@ -331,59 +386,20 @@ After backfilling, verify `get_agreement_payment_count(agreement_id)` matches th
 
 ## Test Output
 
-All 43 tests pass with zero failures. Run with:
+All 46 tests pass with zero failures. Run with:
 
 ```
-cargo test -p payment_history
+cargo test -p payment_history -- --nocapture
 ```
 
 ```
-running 43 tests
-test test_agreement_count_before_and_after ..................... ok
-test test_agreement_indices_are_independent ................... ok
-test test_different_payments_have_independent_hash_entries .... ok
-test test_employee_count_before_and_after ..................... ok
-test test_employee_indices_are_independent .................... ok
-test test_employer_count_before_and_after ..................... ok
-test test_employer_indices_are_independent .................... ok
-test test_get_payment_by_hash_returns_correct_record .......... ok
-test test_get_payment_by_hash_unknown_returns_none ............ ok
-test test_get_payment_by_id_existing .......................... ok
-test test_get_payment_by_id_nonexistent_returns_none .......... ok
-test test_get_payment_by_id_zero_returns_none ................. ok
-test test_get_payments_by_agreement_empty_history_returns_empty ok
-test test_get_payments_by_agreement_exact_boundary_read ....... ok
-test test_get_payments_by_agreement_full_pagination ........... ok
-test test_get_payments_by_agreement_limit_capped_at_max_page_size ok
-test test_get_payments_by_agreement_single_record ............. ok
-test test_get_payments_by_agreement_start_index_above_count_returns_empty ok
-test test_get_payments_by_agreement_start_index_zero_returns_empty ok
-test test_get_payments_by_employee_empty_history_returns_empty  ok
-test test_get_payments_by_employee_pagination ................. ok
-test test_get_payments_by_employee_start_index_above_count_returns_empty ok
-test test_get_payments_by_employee_start_index_zero_returns_empty ok
-test test_get_payments_by_employer_empty_history_returns_empty  ok
-test test_get_payments_by_employer_pagination ................. ok
-test test_get_payments_by_employer_start_index_above_count_returns_empty ok
-test test_get_payments_by_employer_start_index_zero_returns_empty ok
-test test_global_count_starts_at_zero ......................... ok
-test test_global_count_tracks_all_agreements .................. ok
-test test_hash_index_written_atomically ....................... ok
-test test_index_counts_only_increase .......................... ok
-test test_initialize_double_init_rejected ..................... ok
-test test_initialize_happy_path ............................... ok
-test test_large_history_boundary_reads ........................ ok
-test test_multiple_agreements_large_history_independent ....... ok
-test test_record_payment_emits_event_with_correct_topic ....... ok
-test test_record_payment_increments_global_count .............. ok
-test test_record_payment_persists_all_fields .................. ok
-test test_record_payment_returns_sequential_ids ............... ok
-test test_record_payment_unauthorized_no_auth - should panic .. ok
-test test_record_payment_updates_all_three_sequential_indices . ok
-test test_records_are_immutable_after_recording ............... ok
-test test_same_payment_visible_in_all_five_query_paths ........ ok
-
-test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured
+running 46 tests
+...
+test test_event_based_reconciliation_across_payment_sources ... ok
+test test_record_payment_duplicate_hash_is_idempotent ... ok
+test test_reconciliation_out_of_order_events_are_stable ... ok
+...
+test result: ok. 46 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 ```
 
 ---
@@ -407,3 +423,6 @@ The `PaymentByHash` reverse index and the primary `Payment(id)` record are writt
 
 ### 6. Payment hash trust boundary
 `payment_hash` is stored verbatim from the payroll contract. The history contract does not compute or verify it. This is an intentional design decision: the payroll contract is the trusted caller, and forcing an on-chain hash computation would increase ledger costs without adding verifiability (the payroll contract could still pass any bytes). Indexers that require non-repudiation should cross-verify `payment_hash` against the Stellar Horizon API independently.
+
+### 7. Replay idempotency
+Duplicate event replays keyed by the same `payment_hash` return the existing payment ID and do not mutate counts or sequential indices. This prevents replay amplification from creating duplicate ledger history entries. Validated by `test_record_payment_duplicate_hash_is_idempotent`.

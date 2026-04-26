@@ -15,6 +15,10 @@ pub enum BadgeError {
     BadgeNotFound = 5,
     TransferNotAllowed = 6,
     MetadataTooLong = 7,
+    BadgeRevoked = 8,
+    BadgeExpired = 9,
+    MetadataFrozen = 10,
+    AlreadyRevoked = 11,
 }
 
 /// Types of payroll badges issued by the contract.
@@ -27,6 +31,15 @@ pub enum BadgeKind {
     Employee,
     /// Custom badge for integrations or UI labels.
     Custom(u32),
+}
+
+/// Lifecycle states for a badge.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BadgeState {
+    Active,
+    Revoked,
+    Expired,
 }
 
 /// Events emitted by the NFT payroll badge contract.
@@ -54,6 +67,30 @@ pub struct BadgeTransferred {
     pub to: Address,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BadgeMetadataUpdated {
+    pub id: u128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BadgeMetadataFrozen {
+    pub id: u128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BadgeRevokedEvent {
+    pub id: u128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BadgeExpiredEvent {
+    pub id: u128,
+}
+
 /// Represents a single NFT-style payroll badge.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,6 +104,12 @@ pub struct Badge {
     /// Whether this badge can be transferred by the holder.
     pub transferable: bool,
     pub created_at: u64,
+    /// Timestamp when the badge organically expires. 0 means never.
+    pub expires_at: u64,
+    /// Whether the badge has been permanently revoked.
+    pub revoked: bool,
+    /// Whether the metadata is permanently locked from updates.
+    pub metadata_frozen: bool,
 }
 
 /// Storage keys for the badge contract.
@@ -217,6 +260,7 @@ impl NftPayrollBadge {
     /// @param kind Badge kind (Employer, Employee, or Custom).
     /// @param metadata Arbitrary metadata bytes (e.g. URI, IPFS hash).
     /// @param transferable Whether the badge may be transferred by the holder.
+    /// @param expires_at Timestamp when the badge expires (0 for never).
     /// @return badge_id Newly minted badge identifier.
     pub fn mint(
         env: Env,
@@ -225,6 +269,7 @@ impl NftPayrollBadge {
         kind: BadgeKind,
         metadata: Bytes,
         transferable: bool,
+        expires_at: u64,
     ) -> Result<u128, BadgeError> {
         require_initialized(&env)?;
         require_admin(&env, &caller)?;
@@ -241,6 +286,9 @@ impl NftPayrollBadge {
             metadata,
             transferable,
             created_at: env.ledger().timestamp(),
+            expires_at,
+            revoked: false,
+            metadata_frozen: false,
         };
 
         write_badge(&env, &badge);
@@ -255,6 +303,88 @@ impl NftPayrollBadge {
         .publish(&env);
 
         Ok(id)
+    }
+
+    /// @notice Updates the metadata of an existing badge if it hasn't been frozen.
+    pub fn update_metadata(
+        env: Env,
+        caller: Address,
+        badge_id: u128,
+        metadata: Bytes,
+    ) -> Result<(), BadgeError> {
+        require_initialized(&env)?;
+        require_admin(&env, &caller)?;
+
+        let mut badge = read_badge(&env, badge_id)?;
+        if badge.metadata_frozen {
+            return Err(BadgeError::MetadataFrozen);
+        }
+        if metadata.len() > 1024 {
+            return Err(BadgeError::MetadataTooLong);
+        }
+
+        badge.metadata = metadata;
+        write_badge(&env, &badge);
+
+        BadgeMetadataUpdated { id: badge_id }.publish(&env);
+
+        Ok(())
+    }
+
+    /// @notice Permanently freezes the metadata of a given badge.
+    pub fn freeze_metadata(env: Env, caller: Address, badge_id: u128) -> Result<(), BadgeError> {
+        require_initialized(&env)?;
+        require_admin(&env, &caller)?;
+
+        let mut badge = read_badge(&env, badge_id)?;
+        if badge.metadata_frozen {
+            return Err(BadgeError::MetadataFrozen);
+        }
+
+        badge.metadata_frozen = true;
+        write_badge(&env, &badge);
+
+        BadgeMetadataFrozen { id: badge_id }.publish(&env);
+
+        Ok(())
+    }
+
+    /// @notice Revokes a badge permanently (e.g. employee termination).
+    pub fn revoke(env: Env, caller: Address, badge_id: u128) -> Result<(), BadgeError> {
+        require_initialized(&env)?;
+        require_admin(&env, &caller)?;
+
+        let mut badge = read_badge(&env, badge_id)?;
+        if badge.revoked {
+            return Err(BadgeError::AlreadyRevoked);
+        }
+
+        badge.revoked = true;
+        write_badge(&env, &badge);
+
+        BadgeRevokedEvent { id: badge_id }.publish(&env);
+
+        Ok(())
+    }
+
+    /// @notice Manually marks a badge as expired right now.
+    pub fn expire(env: Env, caller: Address, badge_id: u128) -> Result<(), BadgeError> {
+        require_initialized(&env)?;
+        require_admin(&env, &caller)?;
+
+        let mut badge = read_badge(&env, badge_id)?;
+        let current_time = env.ledger().timestamp();
+        
+        if badge.expires_at != 0 && current_time >= badge.expires_at {
+            return Err(BadgeError::BadgeExpired);
+        }
+
+        badge.expires_at = current_time;
+        write_badge(&env, &badge);
+
+        BadgeExpiredEvent { id: badge_id }.publish(&env);
+
+        Ok(())
     }
 
     /// @notice Burns an existing badge, removing it from circulation.
@@ -286,7 +416,7 @@ impl NftPayrollBadge {
     }
 
     /// @notice Transfers a badge to a new owner if it is marked transferable.
-    /// @dev Caller must be current owner; non-transferable badges cannot be moved.
+    /// @dev Caller must be current owner; non-transferable or inactive badges cannot be moved.
     /// @param caller Current owner; must authenticate.
     /// @param badge_id Identifier of the badge to transfer.
     /// @param to New owner address.
@@ -309,6 +439,14 @@ impl NftPayrollBadge {
             return Err(BadgeError::NotOwnerOrAdmin);
         }
 
+        // Check lifecycle state before allowing transfer
+        if badge.revoked {
+            return Err(BadgeError::BadgeRevoked);
+        }
+        if badge.expires_at != 0 && env.ledger().timestamp() >= badge.expires_at {
+            return Err(BadgeError::BadgeExpired);
+        }
+
         // Remove from current owner and add to new owner.
         remove_badge(&env, badge_id);
         badge.owner = to.clone();
@@ -327,14 +465,24 @@ impl NftPayrollBadge {
 
     /// @notice Returns the badge data for a given id.
     /// @param badge_id badge_id parameter
-    /// @dev Requires caller authentication
     pub fn get_badge(env: Env, badge_id: u128) -> Option<Badge> {
         env.storage().persistent().get(&StorageKey::Badge(badge_id))
     }
 
+    /// @notice Computes the current lifecycle state of a badge.
+    pub fn get_state(env: Env, badge_id: u128) -> Result<BadgeState, BadgeError> {
+        let badge = read_badge(&env, badge_id)?;
+        if badge.revoked {
+            return Ok(BadgeState::Revoked);
+        }
+        if badge.expires_at != 0 && env.ledger().timestamp() >= badge.expires_at {
+            return Ok(BadgeState::Expired);
+        }
+        Ok(BadgeState::Active)
+    }
+
     /// @notice Returns the owner of a badge, if it exists.
     /// @param badge_id badge_id parameter
-    /// @dev Requires caller authentication
     pub fn owner_of(env: Env, badge_id: u128) -> Option<Address> {
         env.storage()
             .persistent()
@@ -343,7 +491,6 @@ impl NftPayrollBadge {
 
     /// @notice Returns all badge ids currently owned by an address.
     /// @param owner owner parameter
-    /// @dev Requires caller authentication
     pub fn badges_of(env: Env, owner: Address) -> Vec<u128> {
         env.storage()
             .persistent()
@@ -352,7 +499,6 @@ impl NftPayrollBadge {
     }
 
     /// @notice Returns the configured admin address.
-    /// @dev Requires caller authentication
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().persistent().get(&StorageKey::Admin)
     }

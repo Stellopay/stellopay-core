@@ -34,10 +34,9 @@ Keeper / Anyone
   └─ process_due_payments(max_jobs)
        │
        ├─ For each due Active job:
-       │    ├─ balance >= amount?  ──► write Completed/Active, transfer tokens, emit job_executed
-       │    └─ balance < amount?   ──► increment retry_count
-       │         ├─ retry_count <= max_retries  ──► reschedule, emit job_failed
-       │         └─ retry_count >  max_retries  ──► write Failed, emit job_failed
+       │    ├─ balance >= amount?  ──► transfer tokens, advance schedule, emit job_executed
+       │    └─ balance < amount?   ──► compute payment_id, call payment_retry::schedule_retry(...)
+       │         └─ emit payment_failed
        └─ return count processed
 ```
 
@@ -99,11 +98,12 @@ This fingerprint is stored under `StorageKey::ScheduleId(schedule_id)`, mapping 
 
 ## Public API
 
-### `initialize(env, owner) → Result<(), SchedulerError>`
+### `initialize(env, owner, retry_contract) → Result<(), SchedulerError>`
 
 > @notice Initializes the payment scheduler contract.  
 > @dev One-time call. Requires `owner` authentication.  
 > @param owner Admin/owner address.  
+> @param retry_contract Address of the `payment_retry` contract for handling failures.
 > @return `Err(AlreadyInitialized)` if called more than once.
 
 ---
@@ -240,6 +240,8 @@ This fingerprint is stored under `StorageKey::ScheduleId(schedule_id)`, mapping 
 | `("job_executed", job_id)` | `JobExecutedEvent { job_id, execution_index, amount }` | On successful transfer |
 | `("job_failed", job_id)` | `JobFailedEvent { job_id, retry_count, max_retries }` | On insufficient-funds attempt |
 | `("job_cancelled", job_id)` | `JobCancelledEvent { job_id, employer }` | On `cancel_job` success |
+| `("payment_failed", payment_id)` | `BytesN<32>` | On insufficient-funds; offloaded to retry contract |
+
 
 ---
 

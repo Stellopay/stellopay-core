@@ -61,6 +61,46 @@ enum StorageKey {
     Schedule(u128),
 }
 
+// ============================================================================
+// EVENTS
+// ============================================================================
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreatedEvent {
+    pub id: u128,
+    pub employer: Address,
+    pub beneficiary: Address,
+    pub token: Address,
+    pub kind: VestingKind,
+    pub amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimedEvent {
+    pub id: u128,
+    pub beneficiary: Address,
+    pub amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevokedEvent {
+    pub id: u128,
+    pub employer: Address,
+    pub refunded: i128,
+    pub at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EarlyReleaseEvent {
+    pub id: u128,
+    pub admin: Address,
+    pub amount: i128,
+}
+
 fn require_initialized(env: &Env) {
     let initialized = env
         .storage()
@@ -243,9 +283,9 @@ impl TokenVestingContract {
         let id = next_schedule_id(&env);
         let schedule = VestingSchedule {
             id,
-            employer,
-            beneficiary,
-            token,
+            employer: employer.clone(),
+            beneficiary: beneficiary.clone(),
+            token: token.clone(),
             kind: VestingKind::Linear,
             total_amount,
             released_amount: 0,
@@ -258,6 +298,19 @@ impl TokenVestingContract {
             revoked_at: None,
         };
         write_schedule(&env, &schedule);
+
+        env.events().publish(
+            ("vesting_created", id),
+            CreatedEvent {
+                id,
+                employer,
+                beneficiary,
+                token,
+                kind: VestingKind::Linear,
+                amount: total_amount,
+            },
+        );
+
         id
     }
 
@@ -291,9 +344,9 @@ impl TokenVestingContract {
         let id = next_schedule_id(&env);
         let schedule = VestingSchedule {
             id,
-            employer,
-            beneficiary,
-            token,
+            employer: employer.clone(),
+            beneficiary: beneficiary.clone(),
+            token: token.clone(),
             kind: VestingKind::Cliff,
             total_amount,
             released_amount: 0,
@@ -306,6 +359,19 @@ impl TokenVestingContract {
             revoked_at: None,
         };
         write_schedule(&env, &schedule);
+
+        env.events().publish(
+            ("vesting_created", id),
+            CreatedEvent {
+                id,
+                employer,
+                beneficiary,
+                token,
+                kind: VestingKind::Cliff,
+                amount: total_amount,
+            },
+        );
+
         id
     }
 
@@ -359,9 +425,9 @@ impl TokenVestingContract {
         let id = next_schedule_id(&env);
         let schedule = VestingSchedule {
             id,
-            employer,
-            beneficiary,
-            token,
+            employer: employer.clone(),
+            beneficiary: beneficiary.clone(),
+            token: token.clone(),
             kind: VestingKind::Custom,
             total_amount,
             released_amount: 0,
@@ -374,6 +440,19 @@ impl TokenVestingContract {
             revoked_at: None,
         };
         write_schedule(&env, &schedule);
+
+        env.events().publish(
+            ("vesting_created", id),
+            CreatedEvent {
+                id,
+                employer,
+                beneficiary,
+                token,
+                kind: VestingKind::Custom,
+                amount: total_amount,
+            },
+        );
+
         id
     }
 
@@ -414,6 +493,16 @@ impl TokenVestingContract {
         write_schedule(&env, &schedule);
         let token_client = token::Client::new(&env, &schedule.token);
         token_client.transfer(&env.current_contract_address(), &beneficiary, &amount);
+
+        env.events().publish(
+            ("vesting_claimed", schedule_id),
+            ClaimedEvent {
+                id: schedule_id,
+                beneficiary,
+                amount,
+            },
+        );
+
         amount
     }
 
@@ -473,6 +562,16 @@ impl TokenVestingContract {
             &schedule.beneficiary,
             &release_amount,
         );
+
+        env.events().publish(
+            ("vesting_early_release", schedule_id),
+            EarlyReleaseEvent {
+                id: schedule_id,
+                admin,
+                amount: release_amount,
+            },
+        );
+
         release_amount
     }
 
@@ -506,6 +605,16 @@ impl TokenVestingContract {
             let token_client = token::Client::new(&env, &schedule.token);
             token_client.transfer(&env.current_contract_address(), &employer, &unvested);
         }
+
+        env.events().publish(
+            ("vesting_revoked", schedule_id),
+            RevokedEvent {
+                id: schedule_id,
+                employer,
+                refunded: unvested,
+                at: now,
+            },
+        );
 
         unvested
     }

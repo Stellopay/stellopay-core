@@ -536,3 +536,322 @@ fn test_get_department_employees_empty_initial() {
     let employees = client.get_department_employees(&dept_id);
     assert_eq!(employees.len(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Hierarchical constraint tests
+// ---------------------------------------------------------------------------
+
+#[test]
+#[should_panic(expected = "Max hierarchy depth exceeded")]
+fn test_depth_limit_enforced() {
+    use department_manager::MAX_DEPTH;
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Deep"));
+    // Build a chain of MAX_DEPTH+1 departments (depths 0..MAX_DEPTH are valid)
+    let mut parent: Option<u128> = None;
+    for _ in 0..=MAX_DEPTH {
+        let id = client.create_department(&owner, &org_id, &symbol_short!("D"), &parent);
+        parent = Some(id);
+    }
+    // This one would be at depth MAX_DEPTH+1 — must panic
+    client.create_department(&owner, &org_id, &symbol_short!("D"), &parent);
+}
+
+#[test]
+fn test_depth_limit_boundary_ok() {
+    use department_manager::MAX_DEPTH;
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Deep"));
+    let mut parent: Option<u128> = None;
+    // MAX_DEPTH+1 departments: depths 0..MAX_DEPTH (all valid)
+    for _ in 0..=MAX_DEPTH {
+        let id = client.create_department(&owner, &org_id, &symbol_short!("D"), &parent);
+        parent = Some(id);
+    }
+    // Verify the last created dept exists
+    let last_id = parent.unwrap();
+    let dept = client.get_department(&last_id);
+    assert_eq!(dept.org_id, org_id);
+}
+
+// ---------------------------------------------------------------------------
+// update_department (reparent) tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_reparent_department() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let a = client.create_department(&owner, &org_id, &symbol_short!("A"), &None);
+    let b = client.create_department(&owner, &org_id, &symbol_short!("B"), &None);
+    let c = client.create_department(&owner, &org_id, &symbol_short!("C"), &Some(a));
+
+    // Move C from under A to under B
+    client.update_department(&owner, &c, &Some(b));
+
+    let dept_c = client.get_department(&c);
+    assert_eq!(dept_c.parent_id, Some(b));
+    // A no longer has C as child
+    assert_eq!(client.get_child_departments(&a).len(), 0);
+    // B now has C as child
+    let b_children = client.get_child_departments(&b);
+    assert_eq!(b_children.len(), 1);
+    assert_eq!(b_children.get(0), Some(c));
+}
+
+#[test]
+fn test_reparent_to_top_level() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let a = client.create_department(&owner, &org_id, &symbol_short!("A"), &None);
+    let b = client.create_department(&owner, &org_id, &symbol_short!("B"), &Some(a));
+
+    client.update_department(&owner, &b, &None);
+
+    let dept_b = client.get_department(&b);
+    assert_eq!(dept_b.parent_id, None);
+    assert_eq!(client.get_child_departments(&a).len(), 0);
+}
+
+#[test]
+#[should_panic(expected = "Cycle detected")]
+fn test_reparent_direct_cycle_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let a = client.create_department(&owner, &org_id, &symbol_short!("A"), &None);
+    let b = client.create_department(&owner, &org_id, &symbol_short!("B"), &Some(a));
+    // A -> B exists; making A a child of B would create A -> B -> A
+    client.update_department(&owner, &a, &Some(b));
+}
+
+#[test]
+#[should_panic(expected = "Cycle detected")]
+fn test_reparent_indirect_cycle_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let a = client.create_department(&owner, &org_id, &symbol_short!("A"), &None);
+    let b = client.create_department(&owner, &org_id, &symbol_short!("B"), &Some(a));
+    let c = client.create_department(&owner, &org_id, &symbol_short!("C"), &Some(b));
+    // Chain: A -> B -> C; making A a child of C would create A -> B -> C -> A
+    client.update_department(&owner, &a, &Some(c));
+}
+
+#[test]
+#[should_panic(expected = "Cycle detected")]
+fn test_reparent_self_cycle_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let a = client.create_department(&owner, &org_id, &symbol_short!("A"), &None);
+    // A cannot be its own parent
+    client.update_department(&owner, &a, &Some(a));
+}
+
+#[test]
+#[should_panic(expected = "Not organization owner")]
+fn test_reparent_non_owner_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let other = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let a = client.create_department(&owner, &org_id, &symbol_short!("A"), &None);
+    let b = client.create_department(&owner, &org_id, &symbol_short!("B"), &None);
+    client.update_department(&other, &a, &Some(b));
+}
+
+#[test]
+#[should_panic(expected = "Max hierarchy depth exceeded")]
+fn test_reparent_exceeds_depth_fails() {
+    use department_manager::MAX_DEPTH;
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    // Build a chain of MAX_DEPTH+1 depts (depths 0..MAX_DEPTH — all valid)
+    let mut parent: Option<u128> = None;
+    let mut last = 0u128;
+    for _ in 0..=MAX_DEPTH {
+        last = client.create_department(&owner, &org_id, &symbol_short!("D"), &parent);
+        parent = Some(last);
+    }
+    // Create a standalone dept and try to attach it under `last` (depth MAX_DEPTH)
+    // That would place standalone at depth MAX_DEPTH+1 — must panic
+    let standalone = client.create_department(&owner, &org_id, &symbol_short!("S"), &None);
+    client.update_department(&owner, &standalone, &Some(last));
+}
+
+// ---------------------------------------------------------------------------
+// Property / fuzz-style tests
+// ---------------------------------------------------------------------------
+
+/// Property: a linear chain of N departments always has correct parent links.
+#[test]
+fn prop_linear_chain_parent_links() {
+    use department_manager::MAX_DEPTH;
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Prop"));
+
+    // Build the maximum valid chain: MAX_DEPTH+1 nodes (depths 0..MAX_DEPTH)
+    let mut ids: soroban_sdk::Vec<u128> = soroban_sdk::Vec::new(&env);
+    let mut parent: Option<u128> = None;
+    for _ in 0..=MAX_DEPTH {
+        let id = client.create_department(&owner, &org_id, &symbol_short!("D"), &parent);
+        ids.push_back(id);
+        parent = Some(id);
+    }
+
+    // Verify each dept's parent_id matches the previous dept
+    for i in 0..ids.len() {
+        let id = ids.get(i).unwrap();
+        let dept = client.get_department(&id);
+        if i == 0 {
+            assert_eq!(dept.parent_id, None);
+        } else {
+            assert_eq!(dept.parent_id, Some(ids.get(i - 1).unwrap()));
+        }
+    }
+}
+
+/// Property: after a series of reparent operations the tree remains acyclic.
+/// Simulates a sequence of valid moves and verifies no cycle is introduced.
+#[test]
+fn prop_reparent_sequence_no_cycle() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Prop"));
+
+    // Create 5 top-level departments
+    let a = client.create_department(&owner, &org_id, &symbol_short!("A"), &None);
+    let b = client.create_department(&owner, &org_id, &symbol_short!("B"), &None);
+    let c = client.create_department(&owner, &org_id, &symbol_short!("C"), &None);
+    let d = client.create_department(&owner, &org_id, &symbol_short!("D"), &None);
+    let e = client.create_department(&owner, &org_id, &symbol_short!("E"), &None);
+
+    // Valid reparent sequence: build A -> B -> C -> D -> E
+    client.update_department(&owner, &b, &Some(a));
+    client.update_department(&owner, &c, &Some(b));
+    client.update_department(&owner, &d, &Some(c));
+    client.update_department(&owner, &e, &Some(d));
+
+    // Verify the chain
+    assert_eq!(client.get_department(&b).parent_id, Some(a));
+    assert_eq!(client.get_department(&c).parent_id, Some(b));
+    assert_eq!(client.get_department(&d).parent_id, Some(c));
+    assert_eq!(client.get_department(&e).parent_id, Some(d));
+
+    // Flatten back: move E to top-level, then D under E
+    client.update_department(&owner, &e, &None);
+    client.update_department(&owner, &d, &Some(e));
+
+    assert_eq!(client.get_department(&e).parent_id, None);
+    assert_eq!(client.get_department(&d).parent_id, Some(e));
+    // C no longer has D as child
+    assert_eq!(client.get_child_departments(&c).len(), 0);
+}
+
+/// Property: all attempted cycle-creating reparents are rejected.
+/// Exhaustively tries to create cycles in a 4-node chain.
+#[test]
+fn prop_all_cycle_attempts_rejected() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Prop"));
+
+    // Build chain: root -> n1 -> n2 -> n3
+    let root = client.create_department(&owner, &org_id, &symbol_short!("R"), &None);
+    let n1 = client.create_department(&owner, &org_id, &symbol_short!("N1"), &Some(root));
+    let n2 = client.create_department(&owner, &org_id, &symbol_short!("N2"), &Some(n1));
+    let n3 = client.create_department(&owner, &org_id, &symbol_short!("N3"), &Some(n2));
+
+    // Each of these would create a cycle; verify they all panic
+    let cycle_attempts: &[(u128, u128)] = &[
+        (root, n1), // root -> n1 -> root
+        (root, n2), // root -> n1 -> n2 -> root
+        (root, n3), // root -> n1 -> n2 -> n3 -> root
+        (n1, n2),   // n1 -> n2 -> n1
+        (n1, n3),   // n1 -> n2 -> n3 -> n1
+        (n2, n3),   // n2 -> n3 -> n2
+    ];
+
+    for &(ancestor, descendant) in cycle_attempts {
+        // We need a fresh env per attempt since panics unwind the test
+        let env2 = create_env();
+        let (_cid2, client2) = setup_contract(&env2);
+        let owner2 = Address::generate(&env2);
+        let org2 = client2.create_organization(&owner2, &symbol_short!("P"));
+        let r = client2.create_department(&owner2, &org2, &symbol_short!("R"), &None);
+        let x1 = client2.create_department(&owner2, &org2, &symbol_short!("N1"), &Some(r));
+        let x2 = client2.create_department(&owner2, &org2, &symbol_short!("N2"), &Some(x1));
+        let x3 = client2.create_department(&owner2, &org2, &symbol_short!("N3"), &Some(x2));
+
+        // Map original IDs to new IDs
+        let map_id = |id: u128| -> u128 {
+            if id == root { r }
+            else if id == n1 { x1 }
+            else if id == n2 { x2 }
+            else { x3 }
+        };
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client2.update_department(&owner2, &map_id(ancestor), &Some(map_id(descendant)));
+        }));
+        assert!(
+            result.is_err(),
+            "Expected cycle detection to panic for ({ancestor}, {descendant})"
+        );
+    }
+}
+
+/// Property: subtree move preserves all descendant relationships.
+#[test]
+fn prop_subtree_move_preserves_descendants() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Prop"));
+
+    // Tree: root -> [a -> [a1, a2], b]
+    let root = client.create_department(&owner, &org_id, &symbol_short!("R"), &None);
+    let a = client.create_department(&owner, &org_id, &symbol_short!("A"), &Some(root));
+    let a1 = client.create_department(&owner, &org_id, &symbol_short!("A1"), &Some(a));
+    let a2 = client.create_department(&owner, &org_id, &symbol_short!("A2"), &Some(a));
+    let b = client.create_department(&owner, &org_id, &symbol_short!("B"), &Some(root));
+
+    // Move subtree A (with children a1, a2) under B
+    client.update_department(&owner, &a, &Some(b));
+
+    // A is now under B
+    assert_eq!(client.get_department(&a).parent_id, Some(b));
+    // A's children are unchanged
+    let a_children = client.get_child_departments(&a);
+    assert_eq!(a_children.len(), 2);
+    // root no longer has A as direct child
+    let root_children = client.get_child_departments(&root);
+    assert_eq!(root_children.len(), 1);
+    assert_eq!(root_children.get(0), Some(b));
+    // B now has A as child
+    let b_children = client.get_child_departments(&b);
+    assert_eq!(b_children.len(), 1);
+    assert_eq!(b_children.get(0), Some(a));
+    // a1 and a2 still point to a
+    assert_eq!(client.get_department(&a1).parent_id, Some(a));
+    assert_eq!(client.get_department(&a2).parent_id, Some(a));
+}

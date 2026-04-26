@@ -16,21 +16,24 @@ The `payment_retry` contract provides a configurable retry policy for failed tok
 ### Payment Request Lifecycle
 
 ```
-create_payment_request()
-        │
-        ▼
-   [Pending] ─── fund_payment() ──► escrow balance increases
-        │
-        │  process_due_payments() called when next_retry_at ≤ now
-        │
-        ├─ escrow balance ≥ amount ──► [Completed] + payment_succeeded event
-        │
-        └─ escrow balance < amount
-               │
-               ├─ retry_count ≤ max_retry_attempts
-               │      └──► update next_retry_at, emit retry_scheduled
-               │
-               └─ retry_count > max_retry_attempts ──► [Failed] + payment_failed event
+    [payment_scheduler failure]
+         │
+         ▼
+    schedule_retry()
+         │
+         ▼
+    [Scheduled] ─── fund_payment() ──► escrow balance increases
+         │
+         │  process_retry() called periodically
+         │
+         ├─ escrow balance ≥ amount ──► [Success] + payment_success event
+         │
+         └─ escrow balance < amount
+                │
+                ├─ retry_count ≤ max_retries
+                │      └──► [Retrying], update next_retry_at, emit payment_retry_failed
+                │
+                └─ retry_count > max_retries ──► [Failed] + payment_retry_failed event
 ```
 
 Payers can also cancel a `Pending` request at any time via `cancel_payment()`, transitioning it to the terminal `Cancelled` state.
@@ -45,22 +48,28 @@ Initialises the contract. Can only be called once. The `owner` must authenticate
 
 ---
 
-### `create_payment_request(...) -> u128`
+### `schedule_retry(payment_id, payer, recipient, token, amount, config)`
 
-Creates a new payment request and returns its unique `payment_id`.
+Schedules a retry for a failed payment. Deterministic `payment_id` prevents duplicates.
 
-| Parameter             | Type              | Description |
-|-----------------------|-------------------|-------------|
-| `payer`               | `Address`         | Funds escrow; owns the request (must authenticate) |
-| `recipient`           | `Address`         | Primary transfer destination |
-| `token`               | `Address`         | Token contract for the payment |
-| `amount`              | `i128`            | Positive token amount |
-| `max_retry_attempts`  | `u32`             | Max failed attempts before `Failed` state (≤ 100) |
-| `retry_intervals`     | `Vec<u64>`        | Per-attempt delays in seconds (required if `max_retry_attempts > 0`) |
-| `failure_notifier`    | `Address`         | Included in `PaymentFailedEvent` for alert routing |
-| `alternate_payout`    | `Option<Address>` | Optional fallback destination; overrides `recipient` on success |
+| Parameter    | Type           | Description |
+|--------------|----------------|-------------|
+| `payment_id` | `BytesN<32>`   | Deterministic ID: hash(employer + employee + amount + timestamp) |
+| `payer`      | `Address`      | Employer address |
+| `recipient`  | `Address`      | Destination address |
+| `token`      | `Address`      | Token address |
+| `amount`     | `i128`         | Payment amount |
+| `config`     | `RetryConfig`  | Retry parameters (max_retries, intervals) |
 
-**Panics**: `"Amount must be positive"`, `"Too many retry attempts"`, `"Retry intervals required when retries are enabled"`, `"Retry interval must be positive"`, `"Retry interval too large"`.
+---
+
+### `process_retry(payment_id: BytesN<32>)`
+
+Attempts to execute a scheduled retry.
+
+- **Idempotency**: checks `processed_payments` map; no-op if already successful.
+- **Success**: transfers tokens, marks `Success`, records in `processed_payments`.
+- **Failure**: increments `retry_count`; marks `Failed` if limits reached, otherwise updates `next_retry_at`.
 
 ---
 

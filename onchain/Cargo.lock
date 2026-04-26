@@ -842,6 +842,7 @@ dependencies = [
 name = "employee_roles"
 version = "0.0.0"
 dependencies = [
+ "rbac",
  "soroban-sdk",
  "stellar-contract-utils",
  "stellar-macros",
@@ -1177,9 +1178,13 @@ dependencies = [
  "bonus_system",
  "dispute_escalation",
  "payment_history",
+ "payment_retry",
+ "payment_scheduler",
  "payroll_escrow",
+ "rbac",
  "soroban-sdk",
  "stello_pay_contract",
+ "withdrawal_timelock",
 ]
 
 [[package]]

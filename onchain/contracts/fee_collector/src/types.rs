@@ -51,6 +51,24 @@ pub struct FeeTier {
 // Config snapshot
 // ---------------------------------------------------------------------------
 
+/// Fee routing policy for splitting collected fees.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FeeSplit {
+    /// All fees go to a single treasury address (default).
+    Treasury(Address),
+    /// All fees are sent to a burn address (effectively removed from circulation).
+    Burn(Address),
+    /// Fees are split between treasury and burn.
+    /// `treasury_bps` + `burn_bps` must equal `BPS_DENOMINATOR` (10,000).
+    Split {
+        treasury: Address,
+        burn: Address,
+        treasury_bps: u32,
+        burn_bps: u32,
+    },
+}
+
 /// Read-only snapshot of the current fee configuration.
 ///
 /// Returned by [`crate::FeeCollectorContract::get_config`].
@@ -69,4 +87,6 @@ pub struct FeeConfig {
     pub tiered_schedule: soroban_sdk::Vec<FeeTier>,
     /// Whether fee collection is currently paused.
     pub paused: bool,
+    /// Fee routing split policy (if configured).
+    pub split: Option<FeeSplit>,
 }
