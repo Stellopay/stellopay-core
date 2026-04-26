@@ -42,7 +42,7 @@ mod types;
 
 pub use events::{
     AdminTransferredEvent, FeeCollectedEvent, FeeConfigUpdatedEvent, PauseStateChangedEvent,
-    RecipientUpdatedEvent,
+    RecipientUpdatedEvent, TieredScheduleUpdatedEvent,
 };
 pub use storage::StorageKey;
 pub use types::{FeeConfig, FeeMode, FeeSplit};
@@ -156,9 +156,10 @@ impl FeeCollectorContract {
             .instance()
             .set(&StorageKey::TotalFeesCollected, &0i128);
         env.storage().instance().set(&StorageKey::Paused, &false);
+        env.storage().instance().set(&StorageKey::Initialized, &true);
         env.storage()
             .instance()
-            .set(&StorageKey::Initialized, &true);
+            .set(&StorageKey::TieredSchedule, &soroban_sdk::Vec::<FeeTier>::new(&env));
 
         // Establish initial TTL for the contract instance.
         bump_ttl(&env);
@@ -395,6 +396,40 @@ impl FeeCollectorContract {
         );
     }
 
+    /// Updates the tiered fee schedule.
+    ///
+    /// The schedule is a list of thresholds; the first threshold that is greater
+    /// than or equal to the gross amount determines the fee rate.
+    pub fn update_tiered_schedule(
+        env: Env,
+        admin: Address,
+        new_schedule: soroban_sdk::Vec<FeeTier>,
+    ) {
+        require_initialized(&env);
+        bump_ttl(&env);
+        admin.require_auth();
+        require_admin(&env, &admin);
+
+        for tier in new_schedule.iter() {
+            assert!(
+                tier.fee_bps <= MAX_FEE_BPS,
+                "Fee in tier exceeds maximum allowed"
+            );
+        }
+
+        env.storage()
+            .instance()
+            .set(&StorageKey::TieredSchedule, &new_schedule);
+
+        env.events().publish(
+            ("tiered_schedule_updated",),
+            TieredScheduleUpdatedEvent {
+                admin,
+                new_schedule,
+            },
+        );
+    }
+
     /// Updates the fee recipient (treasury) address.
     ///
     /// All future fee collections will be routed to `new_recipient`. Fees already
@@ -578,6 +613,11 @@ impl FeeCollectorContract {
                 .instance()
                 .get(&StorageKey::FeeMode)
                 .expect("FeeMode not set"),
+            tiered_schedule: env
+                .storage()
+                .instance()
+                .get(&StorageKey::TieredSchedule)
+                .unwrap_or_else(|| soroban_sdk::Vec::new(&env)),
             paused: env
                 .storage()
                 .instance()

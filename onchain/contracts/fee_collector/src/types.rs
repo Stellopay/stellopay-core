@@ -25,6 +25,26 @@ pub enum FeeMode {
     ///
     /// The fee is automatically capped at `gross_amount` so `net` never goes below 0.
     Flat,
+
+    /// Tiered fee schedule based on the gross amount.
+    ///
+    /// Selects a basis point rate from a list of thresholds.
+    Tiered,
+}
+
+// ---------------------------------------------------------------------------
+// Fee tier
+// ---------------------------------------------------------------------------
+
+/// Defines a fee threshold and its associated rate.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeTier {
+    /// Upper limit of the gross amount for this tier (inclusive).
+    /// Use `i128::MAX` for the catch-all final tier.
+    pub limit: i128,
+    /// Fee rate in basis points for this tier (0 – 1 000).
+    pub fee_bps: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -63,6 +83,8 @@ pub struct FeeConfig {
     pub flat_fee: i128,
     /// Currently active fee mode.
     pub mode: FeeMode,
+    /// Currently active tiered schedule. Only active when `mode = Tiered`.
+    pub tiered_schedule: soroban_sdk::Vec<FeeTier>,
     /// Whether fee collection is currently paused.
     pub paused: bool,
     /// Fee routing split policy (if configured).

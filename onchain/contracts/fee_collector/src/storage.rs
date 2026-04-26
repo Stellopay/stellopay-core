@@ -20,6 +20,8 @@ pub enum StorageKey {
     FlatFee,
     /// Currently active fee mode.
     FeeMode,
+    /// Tiered fee schedule (Vec<FeeTier>).
+    TieredSchedule,
     /// Cumulative fees collected since initialization (saturates at `i128::MAX`).
     TotalFeesCollected,
     /// Emergency pause flag — when `true`, `collect_fee` panics.
