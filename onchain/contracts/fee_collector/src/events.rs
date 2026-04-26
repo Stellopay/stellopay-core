@@ -51,6 +51,16 @@ pub struct FeeConfigUpdatedEvent {
     pub new_mode: FeeMode,
 }
 
+/// Emitted when the admin updates the tiered fee schedule.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TieredScheduleUpdatedEvent {
+    /// Admin who performed the update.
+    pub admin: Address,
+    /// New tiered schedule.
+    pub new_schedule: soroban_sdk::Vec<crate::types::FeeTier>,
+}
+
 /// Emitted when the fee recipient (treasury) address is changed.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
