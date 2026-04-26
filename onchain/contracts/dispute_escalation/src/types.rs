@@ -55,8 +55,17 @@ pub enum DisputeOutcome {
 /// │      │                                                         │    │
 /// │      │ appeal window passes → de-facto binding                │    │
 /// │                                                                │    │
-/// │  resolve_dispute (admin, Level3)                               │    │
-/// │      │◄───────────────────────────────────────────────────────     │
+/// │                              keeper_advance_stage              │    │
+/// │                                      │◄───────────────────────     │
+/// │                                      ▼                              │
+/// │                               PendingReview                         │
+/// │                         (admin review window open)                  │
+/// │                                      │                              │
+/// │                       resolve_dispute (admin, Level3)               │
+/// │                                      │                              │
+/// │                                      ▼                              │
+/// │  resolve_dispute (admin, Level3)◄────┘                             │
+/// │      │                                                              │
 /// │      ▼                                                              │
 /// │  Finalised ─── no further appeal (AlreadyFinalised)                │
 /// │  (terminal)                                                         │
@@ -75,6 +84,12 @@ pub enum DisputeStatus {
     Escalated,
     /// A party has appealed a previous ruling.
     Appealed,
+    /// The keeper has advanced an appealed dispute into admin review.
+    /// The admin has a bounded window (`PendingReviewTimeLimit`) to issue a
+    /// final ruling before the dispute can be expired. Only one call to
+    /// `keeper_advance_stage` is permitted per dispute; a second call returns
+    /// `AlreadyPendingReview`.
+    PendingReview,
     /// Admin has issued a ruling (appeal window is open for Level1/2).
     Resolved,
     /// Level3 resolution — truly final, no further appeal possible.
@@ -113,6 +128,9 @@ pub enum StorageKey {
     Dispute(u128),
     /// Max time allowed per escalation level in seconds.
     LevelTimeLimit(EscalationLevel),
+    /// Time window (in seconds) the admin has to act once a dispute enters
+    /// `PendingReview`. Defaults to 3 days (259_200 s) if not explicitly set.
+    PendingReviewTimeLimit,
 }
 
 /// Errors specific to the dispute escalation logic.
@@ -140,4 +158,6 @@ pub enum DisputeError {
     DeadlineNotPassed = 9,
     /// Dispute is already in a terminal state (Finalised or Expired).
     AlreadyTerminal = 10,
+    /// Dispute is already in PendingReview state; keeper_advance_stage cannot be called again.
+    AlreadyPendingReview = 11,
 }

@@ -58,7 +58,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, xdr::ToXdr, Address, Bytes,
-    BytesN, Env,
+    BytesN, Env, IntoVal, Symbol, Vec,
 };
 
 // ─── Error Types ─────────────────────────────────────────────────────────────
@@ -101,16 +101,66 @@ pub enum SchedulerError {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum JobStatus {
-    /// Job is active and will be processed when due.
     Active,
-    /// Job processing is suspended; it will not be executed until resumed.
     Paused,
-    /// All retries exhausted; insufficient funds prevented execution.
     Failed,
-    /// All scheduled executions completed successfully.
     Completed,
-    /// Employer permanently cancelled this job.
     Cancelled,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RetryState {
+    Pending,
+    Scheduled,
+    Retrying,
+    Success,
+    Failed,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetryConfig {
+    pub max_retries: u32,
+    pub retry_intervals: Vec<u64>,
+}
+
+pub struct RetryContractClient<'a> {
+    pub env: Env,
+    pub contract_id: Address,
+}
+
+impl<'a> RetryContractClient<'a> {
+    pub fn new(env: &Env, contract_id: &Address) -> Self {
+        Self {
+            env: env.clone(),
+            contract_id: contract_id.clone(),
+        }
+    }
+
+    pub fn schedule_retry(
+        &self,
+        payment_id: &BytesN<32>,
+        payer: &Address,
+        recipient: &Address,
+        token: &Address,
+        amount: &i128,
+        config: &RetryConfig,
+    ) {
+        self.env.invoke_contract::<()>(
+            &self.contract_id,
+            &Symbol::new(&self.env, "schedule_retry"),
+            soroban_sdk::vec![
+                &self.env,
+                payment_id.clone().into_val(&self.env),
+                payer.clone().into_val(&self.env),
+                recipient.clone().into_val(&self.env),
+                token.clone().into_val(&self.env),
+                amount.clone().into_val(&self.env),
+                config.clone().into_val(&self.env),
+            ],
+        );
+    }
 }
 
 /// A payment job record stored on-chain.
@@ -170,6 +220,8 @@ enum StorageKey {
     /// Idempotency sentinel keyed by deterministic `schedule_id`.
     /// Stores the sequential job id (`u128`) assigned at creation time.
     ScheduleId(BytesN<32>),
+    /// Address of the payment retry contract.
+    RetryContract,
 }
 
 // ─── Events ───────────────────────────────────────────────────────────────────
@@ -297,6 +349,30 @@ fn compute_schedule_id(
     env.crypto().sha256(&buf).into()
 }
 
+fn compute_payment_id(
+    env: &Env,
+    employer: &Address,
+    employee: &Address,
+    amount: i128,
+    timestamp: u64,
+) -> BytesN<32> {
+    let mut buf = Bytes::new(env);
+    buf.append(&employer.to_xdr(env));
+    buf.append(&employee.to_xdr(env));
+    
+    let amount_bytes = amount.to_le_bytes();
+    for byte in amount_bytes.iter() {
+        buf.push_back(*byte);
+    }
+
+    let time_bytes = timestamp.to_le_bytes();
+    for byte in time_bytes.iter() {
+        buf.push_back(*byte);
+    }
+
+    env.crypto().sha256(&buf).into()
+}
+
 // ─── Contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -313,7 +389,7 @@ impl PaymentSchedulerContract {
     /// @return Ok(()) on success.
     /// @security Requires `owner` authentication to prevent unauthorized
     ///           initialization of a newly deployed contract.
-    pub fn initialize(env: Env, owner: Address) -> Result<(), SchedulerError> {
+    pub fn initialize(env: Env, owner: Address, retry_contract: Address) -> Result<(), SchedulerError> {
         let already = env
             .storage()
             .persistent()
@@ -326,6 +402,7 @@ impl PaymentSchedulerContract {
         owner.require_auth();
 
         env.storage().persistent().set(&StorageKey::Owner, &owner);
+        env.storage().persistent().set(&StorageKey::RetryContract, &retry_contract);
         env.storage()
             .persistent()
             .set(&StorageKey::Initialized, &true);
@@ -610,25 +687,39 @@ impl PaymentSchedulerContract {
                             },
                         );
                     } else {
-                        // Insufficient funds: schedule retry or mark failed.
-                        job_mut.retry_count = job_mut.retry_count.saturating_add(1);
+                        // Insufficient funds: offload to payment_retry contract.
+                        let payment_id = compute_payment_id(
+                            &env,
+                            &job_mut.employer,
+                            &job_mut.recipient,
+                            job_mut.amount,
+                            job_mut.next_scheduled_time,
+                        );
 
-                        if job_mut.retry_count > job_mut.max_retries {
-                            job_mut.status = JobStatus::Failed;
-                        } else {
-                            job_mut.next_scheduled_time =
-                                now.saturating_add(job_mut.interval_seconds);
-                        }
+                        let retry_addr = env.storage().persistent().get::<_, Address>(&StorageKey::RetryContract).unwrap();
+                        let retry_client = RetryContractClient::new(&env, &retry_addr);
+                        
+                        let retry_config = RetryConfig {
+                            max_retries: job_mut.max_retries,
+                            retry_intervals: soroban_sdk::vec![&env, 30u64, 60u64, 120u64], // Default backoff
+                        };
 
+                        retry_client.schedule_retry(
+                            &payment_id,
+                            &job_mut.employer,
+                            &job_mut.recipient,
+                            &job_mut.token,
+                            &job_mut.amount,
+                            &retry_config,
+                        );
+
+                        // Advance the job to the next period as the retry is now managed externally
+                        job_mut.next_scheduled_time = now.saturating_add(job_mut.interval_seconds);
                         write_job(&env, &job_mut);
 
                         env.events().publish(
-                            ("job_failed", job_mut.id),
-                            JobFailedEvent {
-                                job_id: job_mut.id,
-                                retry_count: job_mut.retry_count,
-                                max_retries: job_mut.max_retries,
-                            },
+                            ("payment_failed", payment_id.clone()),
+                            payment_id,
                         );
                     }
                     processed = processed.saturating_add(1);

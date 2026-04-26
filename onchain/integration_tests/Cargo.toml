@@ -14,6 +14,10 @@ payroll_escrow = { path = "../contracts/payroll_escrow" }
 bonus_system = { path = "../contracts/bonus_system" }
 payment_history = { path = "../contracts/payment_history" }
 dispute_escalation = { path = "../contracts/dispute_escalation" }
+employee_roles = { path = "../contracts/employee_roles" }
+rbac = { path = "../contracts/rbac" }
+governance = { path = "../contracts/governance" }
+withdrawal_timelock = { path = "../contracts/withdrawal_timelock" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }

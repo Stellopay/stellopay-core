@@ -6,11 +6,11 @@
 //! percentage-based (basis points) or fixed-amount splits.
 //!
 //! Hardened with:
-//! - Rounding discipline (remainder absorber pattern)
+//! - Deterministic rounding discipline (largest-remainder dust distribution)
 //! - Arithmetic safety (checked operations)
 //! - Validation helpers (duplicate recipient checks, zero-weight prevention)
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, xdr::ToXdr, Address, Bytes, Env, Vec};
 
 #[contract]
 pub struct PaymentSplitterContract;
@@ -151,6 +151,8 @@ impl PaymentSplitterContract {
     /// For Percent splits: always true if sum is 100% (already checked at creation).
     /// For Fixed splits: sum of fixed amounts must equal total_amount.
     pub fn validate_split_for_amount(env: Env, split_id: u128, total_amount: i128) -> bool {
+        assert!(total_amount > 0, "Total amount must be > 0");
+
         let def: SplitDefinition = env
             .storage()
             .persistent()
@@ -172,46 +174,87 @@ impl PaymentSplitterContract {
     }
 
     /// Computes the amount for each recipient given a total amount.
-    /// Uses a "remainder absorber" approach to handle rounding errors.
+    ///
+    /// Percent splits use largest-remainder apportionment:
+    /// 1. Floor each exact percentage slice.
+    /// 2. Distribute the remaining dust one unit at a time to the recipients
+    ///    with the largest fractional remainder.
+    /// 3. Break exact remainder ties using canonical recipient address order.
     ///
     /// # Returns
     /// `Vec<(Address, i128)>` where each tuple is a recipient and their share.
     pub fn compute_split(env: Env, split_id: u128, total_amount: i128) -> Vec<(Address, i128)> {
+        assert!(total_amount > 0, "Total amount must be > 0");
+
         let def: SplitDefinition = env
             .storage()
             .persistent()
             .get(&StorageKey::Split(split_id))
             .expect("Split not found");
 
+        if !def.is_percent {
+            assert!(
+                Self::validate_split_for_amount(env.clone(), split_id, total_amount),
+                "Fixed split total must equal sum of fixed amounts"
+            );
+        }
+
         let mut out: Vec<(Address, i128)> = Vec::new(&env);
-        let mut total_allocated: i128 = 0;
         let recipient_count = def.recipients.len();
 
-        for i in 0..recipient_count {
-            let r = def.recipients.get_unchecked(i);
-            
-            let amt = if i == recipient_count - 1 {
-                // Remainder absorber: last recipient gets the rest of the bucket
-                total_amount.checked_sub(total_allocated).expect("Allocation underflow")
-            } else {
-                let slice = match r.kind {
-                    ShareKind::Percent(bps) => {
-                        // (bps * total_amount) / 10000
-                        let bps_u128 = i128::from(bps);
-                        bps_u128.checked_mul(total_amount)
-                            .expect("Mul overflow")
-                            .checked_div(10000)
-                            .expect("Div error")
-                    }
-                    ShareKind::Fixed(a) => a,
-                };
-                total_allocated = total_allocated.checked_add(slice).expect("Total allocated overflow");
-                slice
-            };
+        if def.is_percent {
+            let mut floored_amounts = Vec::<i128>::new(&env);
+            let mut remainders = Vec::<i128>::new(&env);
+            let mut awarded_dust = Vec::<u32>::new(&env);
+            let mut total_allocated: i128 = 0;
 
-            // Sanity check: ensure no negative allocations for the absorber
-            assert!(amt >= 0, "Negative allocation detected (check fixed sums)");
-            out.push_back((r.recipient.clone(), amt));
+            for i in 0..recipient_count {
+                let r = def.recipients.get_unchecked(i);
+                let bps = match r.kind {
+                    ShareKind::Percent(bps) => bps,
+                    ShareKind::Fixed(_) => unreachable!(),
+                };
+
+                let exact_numerator = i128::from(bps)
+                    .checked_mul(total_amount)
+                    .expect("Mul overflow");
+                let floored = exact_numerator.checked_div(10000).expect("Div error");
+                let remainder = exact_numerator.checked_rem(10000).expect("Rem error");
+
+                floored_amounts.push_back(floored);
+                remainders.push_back(remainder);
+                total_allocated = total_allocated
+                    .checked_add(floored)
+                    .expect("Total allocated overflow");
+            }
+
+            let dust = total_amount
+                .checked_sub(total_allocated)
+                .expect("Dust underflow");
+            assert!(dust >= 0, "Negative dust detected");
+
+            for _ in 0..dust {
+                let best = Self::select_next_dust_recipient(&env, &def.recipients, &remainders, &awarded_dust);
+                awarded_dust.push_back(best);
+            }
+
+            for i in 0..recipient_count {
+                let r = def.recipients.get_unchecked(i);
+                let mut amount = floored_amounts.get_unchecked(i);
+                if Self::contains_index(&awarded_dust, i) {
+                    amount = amount.checked_add(1).expect("Dust allocation overflow");
+                }
+                out.push_back((r.recipient.clone(), amount));
+            }
+        } else {
+            for i in 0..recipient_count {
+                let r = def.recipients.get_unchecked(i);
+                let amount = match r.kind {
+                    ShareKind::Fixed(amount) => amount,
+                    ShareKind::Percent(_) => unreachable!(),
+                };
+                out.push_back((r.recipient.clone(), amount));
+            }
         }
         out
     }
@@ -231,5 +274,74 @@ impl PaymentSplitterContract {
             .get(&StorageKey::Initialized)
             .unwrap_or(false);
         assert!(init, "Contract not initialized");
+    }
+
+    fn select_next_dust_recipient(
+        env: &Env,
+        recipients: &Vec<RecipientShare>,
+        remainders: &Vec<i128>,
+        awarded_dust: &Vec<u32>,
+    ) -> u32 {
+        let mut best_index = 0u32;
+        let mut best_remainder = -1i128;
+
+        for i in 0..recipients.len() {
+            if Self::contains_index(awarded_dust, i) {
+                continue;
+            }
+
+            let remainder = remainders.get_unchecked(i);
+            if remainder > best_remainder {
+                best_index = i;
+                best_remainder = remainder;
+                continue;
+            }
+
+            if remainder == best_remainder
+                && Self::compare_addresses(env, &recipients.get_unchecked(i).recipient, &recipients.get_unchecked(best_index).recipient) < 0
+            {
+                best_index = i;
+            }
+        }
+
+        best_index
+    }
+
+    fn contains_index(indexes: &Vec<u32>, needle: u32) -> bool {
+        for i in 0..indexes.len() {
+            if indexes.get_unchecked(i) == needle {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn compare_addresses(env: &Env, left: &Address, right: &Address) -> i32 {
+        let left_xdr: Bytes = left.clone().to_xdr(env);
+        let right_xdr: Bytes = right.clone().to_xdr(env);
+        let min_len = if left_xdr.len() < right_xdr.len() {
+            left_xdr.len()
+        } else {
+            right_xdr.len()
+        };
+
+        for i in 0..min_len {
+            let left_byte = left_xdr.get_unchecked(i);
+            let right_byte = right_xdr.get_unchecked(i);
+            if left_byte < right_byte {
+                return -1;
+            }
+            if left_byte > right_byte {
+                return 1;
+            }
+        }
+
+        if left_xdr.len() < right_xdr.len() {
+            -1
+        } else if left_xdr.len() > right_xdr.len() {
+            1
+        } else {
+            0
+        }
     }
 }

@@ -109,6 +109,55 @@ fn record(
     client.record_payment(&agreement_id, &hash, token, &amount, from, to, &timestamp)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReconciliationSource {
+    SchedulerExecution,
+    EscrowRelease,
+    BonusPayment,
+    ExpenseReimbursement,
+}
+
+impl ReconciliationSource {
+    fn topic(self) -> &'static str {
+        match self {
+            ReconciliationSource::SchedulerExecution => "job_executed",
+            ReconciliationSource::EscrowRelease => "released",
+            ReconciliationSource::BonusPayment => "incentive_claimed",
+            ReconciliationSource::ExpenseReimbursement => "expense_paid",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ReconciliationFixture {
+    source: ReconciliationSource,
+    source_event_id: u128,
+    agreement_id: u128,
+    hash_seed: u8,
+    token: Address,
+    amount: i128,
+    from: Address,
+    to: Address,
+    timestamp: u64,
+}
+
+fn reconcile_fixture(
+    client: &PaymentHistoryContractClient<'_>,
+    env: &Env,
+    fixture: &ReconciliationFixture,
+) -> u128 {
+    let hash = make_hash(env, fixture.hash_seed);
+    client.record_payment(
+        &fixture.agreement_id,
+        &hash,
+        &fixture.token,
+        &fixture.amount,
+        &fixture.from,
+        &fixture.to,
+        &fixture.timestamp,
+    )
+}
+
 // ─── Initialization ───────────────────────────────────────────────────────────
 
 #[test]
@@ -234,6 +283,53 @@ fn test_record_payment_updates_all_three_sequential_indices() {
     assert_eq!(client.get_agreement_payment_count(&7u128), 1u32);
     assert_eq!(client.get_employer_payment_count(&employer), 1u32);
     assert_eq!(client.get_employee_payment_count(&employee), 1u32);
+}
+
+#[test]
+fn test_record_payment_duplicate_hash_is_idempotent() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    let agreement_id = 77u128;
+    let hash = make_hash(&env, 0x77);
+
+    let id1 = client.record_payment(
+        &agreement_id,
+        &hash,
+        &token,
+        &1_000i128,
+        &employer,
+        &employee,
+        &1_000u64,
+    );
+
+    let id2 = client.record_payment(
+        &agreement_id,
+        &hash,
+        &token,
+        &1_000i128,
+        &employer,
+        &employee,
+        &1_000u64,
+    );
+
+    assert_eq!(id1, id2, "duplicate hash must return existing payment ID");
+    assert_eq!(client.get_global_payment_count(), 1u128);
+    assert_eq!(client.get_agreement_payment_count(&agreement_id), 1u32);
+    assert_eq!(client.get_employer_payment_count(&employer), 1u32);
+    assert_eq!(client.get_employee_payment_count(&employee), 1u32);
+
+    let by_hash = client.get_payment_by_hash(&hash).expect("record must exist");
+    assert_eq!(by_hash.id, id1);
+    assert_eq!(by_hash.amount, 1_000i128);
+
+    let agg_page = client.get_payments_by_agreement(&agreement_id, &1u32, &10u32);
+    assert_eq!(agg_page.len(), 1u32, "agreement index must not duplicate");
 }
 
 // ─── record_payment: unauthorized ────────────────────────────────────────────
@@ -915,4 +1011,145 @@ fn test_multiple_agreements_large_history_independent() {
     assert_eq!(agg2.len(), 5u32);
     assert_eq!(agg2.get(0).unwrap().amount, 100i128);
     assert_eq!(agg2.get(4).unwrap().amount, 140i128);
+}
+
+// ─── Event-based reconciliation fixtures ─────────────────────────────────────
+
+#[test]
+fn test_event_based_reconciliation_across_payment_sources() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let scheduler_employer = Address::generate(&env);
+    let escrow_manager = Address::generate(&env);
+    let bonus_employer = Address::generate(&env);
+    let expense_payer = Address::generate(&env);
+    let worker = Address::generate(&env);
+
+    let fixtures = [
+        ReconciliationFixture {
+            source: ReconciliationSource::SchedulerExecution,
+            source_event_id: 11,
+            agreement_id: 7001,
+            hash_seed: 0x11,
+            token: token.clone(),
+            amount: 500,
+            from: scheduler_employer.clone(),
+            to: worker.clone(),
+            timestamp: 1_001,
+        },
+        ReconciliationFixture {
+            source: ReconciliationSource::EscrowRelease,
+            source_event_id: 22,
+            agreement_id: 7002,
+            hash_seed: 0x22,
+            token: token.clone(),
+            amount: 800,
+            from: escrow_manager.clone(),
+            to: worker.clone(),
+            timestamp: 1_002,
+        },
+        ReconciliationFixture {
+            source: ReconciliationSource::BonusPayment,
+            source_event_id: 33,
+            agreement_id: 7003,
+            hash_seed: 0x33,
+            token: token.clone(),
+            amount: 300,
+            from: bonus_employer.clone(),
+            to: worker.clone(),
+            timestamp: 1_003,
+        },
+        ReconciliationFixture {
+            source: ReconciliationSource::ExpenseReimbursement,
+            source_event_id: 44,
+            agreement_id: 7004,
+            hash_seed: 0x44,
+            token: token.clone(),
+            amount: 650,
+            from: expense_payer.clone(),
+            to: worker.clone(),
+            timestamp: 1_004,
+        },
+    ];
+
+    for (idx, fixture) in fixtures.iter().enumerate() {
+        assert!(!fixture.source.topic().is_empty(), "source topic must be defined");
+        assert!(fixture.source_event_id > 0, "source event id must be non-zero");
+
+        let id = reconcile_fixture(&client, &env, fixture);
+        assert_eq!(id, (idx as u128) + 1);
+
+        let hash = make_hash(&env, fixture.hash_seed);
+        let rec = client
+            .get_payment_by_hash(&hash)
+            .expect("record must be queryable by hash");
+
+        assert_eq!(rec.id, id);
+        assert_eq!(rec.agreement_id, fixture.agreement_id);
+        assert_eq!(rec.token, fixture.token);
+        assert_eq!(rec.amount, fixture.amount);
+        assert_eq!(rec.from, fixture.from);
+        assert_eq!(rec.to, fixture.to);
+        assert_eq!(rec.timestamp, fixture.timestamp);
+    }
+
+    assert_eq!(client.get_global_payment_count(), fixtures.len() as u128);
+}
+
+#[test]
+fn test_reconciliation_out_of_order_events_are_stable() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let agreement_id = 9001u128;
+
+    // Simulate indexer ingestion arriving out of chronological timestamp order.
+    let newer_hash = make_hash(&env, 0x90);
+    let older_hash = make_hash(&env, 0x91);
+
+    let id1 = client.record_payment(
+        &agreement_id,
+        &newer_hash,
+        &token,
+        &1_000i128,
+        &employer,
+        &employee,
+        &2_000u64,
+    );
+    let id2 = client.record_payment(
+        &agreement_id,
+        &older_hash,
+        &token,
+        &900i128,
+        &employer,
+        &employee,
+        &1_000u64,
+    );
+
+    assert_eq!(id1, 1u128);
+    assert_eq!(id2, 2u128);
+
+    let newer = client
+        .get_payment_by_hash(&newer_hash)
+        .expect("newer payment must exist");
+    let older = client
+        .get_payment_by_hash(&older_hash)
+        .expect("older payment must exist");
+
+    assert_eq!(newer.id, id1);
+    assert_eq!(older.id, id2);
+    assert_eq!(newer.timestamp, 2_000u64);
+    assert_eq!(older.timestamp, 1_000u64);
+
+    let page = client.get_payments_by_agreement(&agreement_id, &1u32, &10u32);
+    assert_eq!(page.len(), 2u32);
+    assert_eq!(page.get(0).unwrap().id, id1);
+    assert_eq!(page.get(1).unwrap().id, id2);
 }
