@@ -6,7 +6,7 @@ use salary_adjustment::{
     DEFAULT_MAX_SALARY,
 };
 use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, BytesN, Env, Symbol};
 
 // ============================================================================
 // TEST HELPERS
@@ -27,6 +27,12 @@ fn set_time(env: &Env, timestamp: u64) {
     env.ledger().with_mut(|ledger| {
         ledger.timestamp = timestamp;
     });
+}
+
+fn reason_hash(env: &Env, marker: u8) -> BytesN<32> {
+    let mut bytes = [0u8; 32];
+    bytes[0] = marker;
+    BytesN::from_array(env, &bytes)
 }
 
 // ============================================================================
@@ -234,6 +240,161 @@ fn test_effective_date_equals_current_time_allowed() {
     assert!(client.get_adjustment(&id).is_some());
 }
 
+#[test]
+fn test_retroactive_adjustment_blocked_by_default() {
+    let env = create_env();
+    set_time(&env, 1_000);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let result =
+        client.try_create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &999);
+    assert!(result.is_err());
+    assert_eq!(client.get_audit_log_count(), 0);
+}
+
+#[test]
+fn test_authorized_retroactive_adjustment_works_and_is_logged() {
+    let env = create_env();
+    set_time(&env, 1_000);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let raw_reason_hash = reason_hash(&env, 7);
+
+    client.initialize(&owner);
+
+    let id = client.create_retroactive_adjustment(
+        &owner,
+        &employer,
+        &employee,
+        &approver,
+        &5_000,
+        &6_000,
+        &500,
+        &raw_reason_hash,
+    );
+
+    let stored = client.get_adjustment(&id).unwrap();
+    assert!(stored.retroactive);
+    assert_eq!(stored.retroactive_approved_by, Some(owner.clone()));
+    assert!(stored.reason_hash.is_some());
+    assert_ne!(stored.reason_hash.clone().unwrap(), raw_reason_hash);
+    assert_eq!(stored.created_at, 1_000);
+    assert_eq!(stored.effective_date, 500);
+
+    assert_eq!(client.get_audit_log_count(), 1);
+    let audit = client.get_audit_log(&1).unwrap();
+    assert_eq!(audit.adjustment_id, Some(id));
+    assert_eq!(audit.actor, employer.clone());
+    assert_eq!(audit.action, Symbol::new(&env, "adjustment_created"));
+    assert_eq!(audit.employee, Some(employee.clone()));
+    assert_eq!(audit.amount, Some(6_000));
+    assert_eq!(audit.reason_hash, stored.reason_hash.clone());
+
+    client.approve_adjustment(&approver, &id);
+    client.apply_adjustment(&employer, &id);
+
+    let applied = client.get_adjustment(&id).unwrap();
+    assert_eq!(applied.status, AdjustmentStatus::Applied);
+    assert_eq!(applied.reason_hash, stored.reason_hash);
+    assert_eq!(client.get_employee_salary(&employee), Some(6_000));
+    assert_eq!(client.get_audit_log_count(), 3);
+}
+
+#[test]
+fn test_non_owner_cannot_authorize_retroactive_adjustment() {
+    let env = create_env();
+    set_time(&env, 1_000);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let result = client.try_create_retroactive_adjustment(
+        &attacker,
+        &employer,
+        &employee,
+        &approver,
+        &5_000,
+        &6_000,
+        &500,
+        &reason_hash(&env, 8),
+    );
+    assert!(result.is_err());
+    assert_eq!(client.get_audit_log_count(), 0);
+}
+
+#[test]
+fn test_zero_retroactive_reason_hash_rejected() {
+    let env = create_env();
+    set_time(&env, 1_000);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let zero_hash = BytesN::from_array(&env, &[0; 32]);
+
+    client.initialize(&owner);
+
+    let result = client.try_create_retroactive_adjustment(
+        &owner, &employer, &employee, &approver, &5_000, &6_000, &500, &zero_hash,
+    );
+    assert!(result.is_err());
+    assert_eq!(client.get_audit_log_count(), 0);
+}
+
+#[test]
+fn test_conflicting_same_employee_effective_date_rejected() {
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let first = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    assert_eq!(first, 1);
+
+    let result =
+        client.try_create_adjustment(&employer, &employee, &approver, &6_000, &7_000, &200);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_same_employee_distinct_effective_dates_allowed() {
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let first = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    let second = client.create_adjustment(&employer, &employee, &approver, &6_000, &7_000, &201);
+
+    assert_eq!(second, first + 1);
+    assert_eq!(client.get_audit_log_count(), 2);
+}
+
 // ============================================================================
 // SALARY CAP TESTS
 // ============================================================================
@@ -352,7 +513,8 @@ fn test_updated_cap_is_respected() {
     client.set_salary_cap(&owner, &12_000);
 
     // 15_000 now exceeds new cap — must fail
-    let result = client.try_create_adjustment(&employer, &employee, &approver, &5_000, &15_000, &200);
+    let result =
+        client.try_create_adjustment(&employer, &employee, &approver, &5_000, &15_000, &200);
     assert!(result.is_err());
 }
 

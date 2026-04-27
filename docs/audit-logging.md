@@ -148,6 +148,27 @@ The returned `log_id` is persisted in the expense record (`audit_log_id`) and em
 - Approval logs should include only operational metadata (`actor`, action, `subject`, amount).
 - Receipt material is not logged in plaintext by `audit_logger`; expense flows store only a domain-separated SHA-256 receipt commitment.
 
+### Salary Adjustment Audit Stream
+
+The `salary_adjustment` contract maintains a contract-local append-only audit stream in parallel with its lifecycle events. Each successful mutating action appends a `SalaryAdjustmentAuditEntry` and emits `("salary_adjustment_audit", audit_id)`.
+
+Logged actions include:
+
+- `adjustment_created`
+- `adjustment_approved`
+- `adjustment_rejected`
+- `adjustment_applied`
+- `adjustment_cancelled`
+- `salary_cap_set`
+
+Retroactive salary adjustments require the dedicated `create_retroactive_adjustment` path. The contract stores a domain-separated SHA-256 reason commitment rather than plaintext rationale:
+
+```text
+sha256("salary_adjustment:retroactive:v1" || actor and adjustment fields || caller_supplied_reason_hash)
+```
+
+This lets compliance teams prove that a reason existed and was bound to the immutable adjustment fields without exposing sensitive HR details on-chain.
+
 ---
 
 ### Testing
@@ -171,4 +192,3 @@ The test suite covers:
 - Log entries are immutable (tamper evidence)
 - Timestamps are monotonic
 - Multiple actors can append independently
-
