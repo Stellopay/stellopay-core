@@ -3,11 +3,11 @@
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, BytesN, Env,
+    Address, Env,
 };
 
-use payment_scheduler::{PaymentSchedulerContract, PaymentSchedulerContractClient};
 use payment_retry::{PaymentRetryContract, PaymentRetryContractClient, RetryState};
+use payment_scheduler::{PaymentSchedulerContract, PaymentSchedulerContractClient};
 
 fn env() -> Env {
     let e = Env::default();
@@ -24,14 +24,18 @@ fn token(env: &Env) -> Address {
     env.register_stellar_asset_contract_v2(admin).address()
 }
 
-fn deploy_scheduler(env: &Env, owner: &Address, retry_addr: &Address) -> (Address, PaymentSchedulerContractClient<'_>) {
+fn deploy_scheduler<'a>(
+    env: &'a Env,
+    owner: &Address,
+    retry_addr: &Address,
+) -> (Address, PaymentSchedulerContractClient<'a>) {
     let id = env.register_contract(None, PaymentSchedulerContract);
     let client = PaymentSchedulerContractClient::new(env, &id);
     client.initialize(owner, retry_addr);
     (id, client)
 }
 
-fn deploy_retry(env: &Env, owner: &Address) -> (Address, PaymentRetryContractClient<'_>) {
+fn deploy_retry<'a>(env: &'a Env, owner: &Address) -> (Address, PaymentRetryContractClient<'a>) {
     let id = env.register_contract(None, PaymentRetryContract);
     let client = PaymentRetryContractClient::new(env, &id);
     client.initialize(owner);
@@ -59,7 +63,7 @@ fn test_retry_orchestration_e2e() {
 
     let amount = 1000i128;
     let start_time = env.ledger().timestamp();
-    
+
     // 1. Create Job
     let _job_id = sched_client.create_job(
         &employer,
@@ -79,12 +83,16 @@ fn test_retry_orchestration_e2e() {
     let payment_id = {
         use soroban_sdk::xdr::ToXdr;
         let mut buf = soroban_sdk::Bytes::new(&env);
-        buf.append(&employer.to_xdr(&env));
-        buf.append(&recipient.to_xdr(&env));
+        buf.append(&employer.clone().to_xdr(&env));
+        buf.append(&recipient.clone().to_xdr(&env));
         let amount_bytes = amount.to_le_bytes();
-        for b in amount_bytes.iter() { buf.push_back(*b); }
+        for b in amount_bytes.iter() {
+            buf.push_back(*b);
+        }
         let time_bytes = start_time.to_le_bytes();
-        for b in time_bytes.iter() { buf.push_back(*b); }
+        for b in time_bytes.iter() {
+            buf.push_back(*b);
+        }
         env.crypto().sha256(&buf).into()
     };
 
@@ -106,7 +114,7 @@ fn test_retry_orchestration_e2e() {
     retry_client.process_retry(&payment_id);
     let payment = retry_client.get_payment(&payment_id).unwrap();
     assert_eq!(payment.state, RetryState::Success);
-    
+
     // 7. Verify recipient balance
     let bal = TokenClient::new(&env, &tok_addr).balance(&recipient);
     assert_eq!(bal, amount);
@@ -130,29 +138,48 @@ fn test_retry_orchestration_max_retries() {
 
     let amount = 1000i128;
     let start_time = env.ledger().timestamp();
-    
-    sched_client.create_job(&employer, &recipient, &tok_addr, &amount, &3600, &start_time, &Some(1), &1); // max_retries = 1
+
+    sched_client.create_job(
+        &employer,
+        &recipient,
+        &tok_addr,
+        &amount,
+        &3600,
+        &start_time,
+        &Some(1),
+        &1,
+    ); // max_retries = 1
 
     sched_client.process_due_payments(&1);
 
     let payment_id = {
         use soroban_sdk::xdr::ToXdr;
         let mut buf = soroban_sdk::Bytes::new(&env);
-        buf.append(&employer.to_xdr(&env));
-        buf.append(&recipient.to_xdr(&env));
+        buf.append(&employer.clone().to_xdr(&env));
+        buf.append(&recipient.clone().to_xdr(&env));
         let amount_bytes = amount.to_le_bytes();
-        for b in amount_bytes.iter() { buf.push_back(*b); }
+        for b in amount_bytes.iter() {
+            buf.push_back(*b);
+        }
         let time_bytes = start_time.to_le_bytes();
-        for b in time_bytes.iter() { buf.push_back(*b); }
+        for b in time_bytes.iter() {
+            buf.push_back(*b);
+        }
         env.crypto().sha256(&buf).into()
     };
 
     // Attempt 1
     retry_client.process_retry(&payment_id);
-    assert_eq!(retry_client.get_payment(&payment_id).unwrap().state, RetryState::Retrying);
+    assert_eq!(
+        retry_client.get_payment(&payment_id).unwrap().state,
+        RetryState::Retrying
+    );
 
     // Attempt 2 -> Exceeds max_retries (1)
     advance(&env, 120);
     retry_client.process_retry(&payment_id);
-    assert_eq!(retry_client.get_payment(&payment_id).unwrap().state, RetryState::Failed);
+    assert_eq!(
+        retry_client.get_payment(&payment_id).unwrap().state,
+        RetryState::Failed
+    );
 }

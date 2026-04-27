@@ -125,12 +125,12 @@ pub struct RetryConfig {
     pub retry_intervals: Vec<u64>,
 }
 
-pub struct RetryContractClient<'a> {
+pub struct RetryContractClient {
     pub env: Env,
     pub contract_id: Address,
 }
 
-impl<'a> RetryContractClient<'a> {
+impl RetryContractClient {
     pub fn new(env: &Env, contract_id: &Address) -> Self {
         Self {
             env: env.clone(),
