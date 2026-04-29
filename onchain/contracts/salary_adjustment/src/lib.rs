@@ -1,6 +1,8 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, Symbol,
+};
 
 // ============================================================================
 // CONTRACT STRUCT
@@ -43,6 +45,22 @@ pub struct SalaryAdjustment {
     pub new_salary: i128,
     pub effective_date: u64,
     pub created_at: u64,
+    pub retroactive: bool,
+    pub retroactive_approved_by: Option<Address>,
+    pub reason_hash: Option<BytesN<32>>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SalaryAdjustmentAuditEntry {
+    pub id: u128,
+    pub adjustment_id: Option<u128>,
+    pub actor: Address,
+    pub action: Symbol,
+    pub employee: Option<Address>,
+    pub amount: Option<i128>,
+    pub reason_hash: Option<BytesN<32>>,
+    pub timestamp: u64,
 }
 
 // ============================================================================
@@ -60,6 +78,12 @@ enum StorageKey {
     SalaryCap,
     /// Tracks the last applied salary per employee for payroll visibility.
     EmployeeSalary(Address),
+    /// Monotonic audit id for append-only salary adjustment audit records.
+    NextAuditLogId,
+    /// Append-only audit record keyed by id.
+    AuditLog(u128),
+    /// Prevents conflicting unresolved adjustments for the same employee/effective timestamp.
+    EmployeeEffectiveAdjustment(Address, u64),
 }
 
 // ============================================================================
@@ -76,6 +100,8 @@ pub struct AdjustmentCreatedEvent {
     pub current_salary: i128,
     pub new_salary: i128,
     pub effective_date: u64,
+    pub retroactive: bool,
+    pub reason_hash: Option<BytesN<32>>,
 }
 
 #[contracttype]
@@ -115,6 +141,18 @@ pub struct SalaryCapSetEvent {
     pub cap: i128,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdjustmentAuditEvent {
+    pub audit_id: u128,
+    pub adjustment_id: Option<u128>,
+    pub actor: Address,
+    pub action: Symbol,
+    pub employee: Option<Address>,
+    pub amount: Option<i128>,
+    pub reason_hash: Option<BytesN<32>>,
+}
+
 // ============================================================================
 // CONSTANTS
 // ============================================================================
@@ -122,6 +160,8 @@ pub struct SalaryCapSetEvent {
 /// Default maximum allowable salary (1 trillion stroops) used when no
 /// explicit cap has been configured by the owner.
 pub const DEFAULT_MAX_SALARY: i128 = 1_000_000_000_000;
+
+const RETRO_REASON_DOMAIN: &[u8] = b"salary_adjustment:retroactive:v1";
 
 // ============================================================================
 // INTERNAL HELPERS
@@ -162,12 +202,217 @@ fn next_adjustment_id(env: &Env) -> u128 {
     next
 }
 
+fn next_audit_id(env: &Env) -> u128 {
+    let current = env
+        .storage()
+        .persistent()
+        .get::<_, u128>(&StorageKey::NextAuditLogId)
+        .unwrap_or(0);
+    let next = current.checked_add(1).expect("Audit id overflow");
+    env.storage()
+        .persistent()
+        .set(&StorageKey::NextAuditLogId, &next);
+    next
+}
+
 /// Returns the configured salary cap, falling back to DEFAULT_MAX_SALARY.
 fn effective_salary_cap(env: &Env) -> i128 {
     env.storage()
         .persistent()
         .get::<_, i128>(&StorageKey::SalaryCap)
         .unwrap_or(DEFAULT_MAX_SALARY)
+}
+
+fn domain_separated_reason_hash(
+    env: &Env,
+    admin: &Address,
+    employer: &Address,
+    employee: &Address,
+    current_salary: i128,
+    new_salary: i128,
+    effective_date: u64,
+    reason_hash: &BytesN<32>,
+) -> BytesN<32> {
+    let mut bytes = Bytes::new(env);
+    for byte in RETRO_REASON_DOMAIN.iter() {
+        bytes.push_back(*byte);
+    }
+    bytes.append(&admin.clone().to_xdr(env));
+    bytes.append(&employer.clone().to_xdr(env));
+    bytes.append(&employee.clone().to_xdr(env));
+    for byte in current_salary.to_le_bytes().iter() {
+        bytes.push_back(*byte);
+    }
+    for byte in new_salary.to_le_bytes().iter() {
+        bytes.push_back(*byte);
+    }
+    for byte in effective_date.to_le_bytes().iter() {
+        bytes.push_back(*byte);
+    }
+    bytes.append(&reason_hash.clone().to_xdr(env));
+    env.crypto().sha256(&bytes).into()
+}
+
+fn assert_adjustment_inputs(
+    env: &Env,
+    current_salary: i128,
+    new_salary: i128,
+    effective_date: u64,
+    allow_retroactive: bool,
+) {
+    assert!(current_salary > 0, "Current salary must be positive");
+    assert!(new_salary > 0, "New salary must be positive");
+    assert!(
+        new_salary != current_salary,
+        "New salary must differ from current salary"
+    );
+
+    let cap = effective_salary_cap(env);
+    assert!(new_salary <= cap, "New salary exceeds salary cap");
+
+    let now = env.ledger().timestamp();
+    if !allow_retroactive {
+        assert!(
+            effective_date >= now,
+            "Effective date cannot be in the past"
+        );
+    }
+}
+
+fn assert_no_conflicting_adjustment(env: &Env, employee: &Address, effective_date: u64) {
+    let existing =
+        env.storage()
+            .persistent()
+            .get::<_, u128>(&StorageKey::EmployeeEffectiveAdjustment(
+                employee.clone(),
+                effective_date,
+            ));
+    assert!(existing.is_none(), "Conflicting adjustment exists");
+}
+
+fn reserve_adjustment_slot(
+    env: &Env,
+    employee: &Address,
+    effective_date: u64,
+    adjustment_id: u128,
+) {
+    env.storage().persistent().set(
+        &StorageKey::EmployeeEffectiveAdjustment(employee.clone(), effective_date),
+        &adjustment_id,
+    );
+}
+
+fn append_audit(
+    env: &Env,
+    actor: Address,
+    action: Symbol,
+    adjustment_id: Option<u128>,
+    employee: Option<Address>,
+    amount: Option<i128>,
+    reason_hash: Option<BytesN<32>>,
+) -> u128 {
+    let audit_id = next_audit_id(env);
+    let entry = SalaryAdjustmentAuditEntry {
+        id: audit_id,
+        adjustment_id,
+        actor: actor.clone(),
+        action: action.clone(),
+        employee: employee.clone(),
+        amount,
+        reason_hash: reason_hash.clone(),
+        timestamp: env.ledger().timestamp(),
+    };
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::AuditLog(audit_id), &entry);
+    env.events().publish(
+        ("salary_adjustment_audit", audit_id),
+        AdjustmentAuditEvent {
+            audit_id,
+            adjustment_id,
+            actor,
+            action,
+            employee,
+            amount,
+            reason_hash,
+        },
+    );
+    audit_id
+}
+
+fn create_adjustment_internal(
+    env: &Env,
+    employer: Address,
+    employee: Address,
+    approver: Address,
+    current_salary: i128,
+    new_salary: i128,
+    effective_date: u64,
+    retroactive_approved_by: Option<Address>,
+    reason_hash: Option<BytesN<32>>,
+) -> u128 {
+    let retroactive = effective_date < env.ledger().timestamp();
+    assert_adjustment_inputs(
+        env,
+        current_salary,
+        new_salary,
+        effective_date,
+        retroactive_approved_by.is_some(),
+    );
+    assert_no_conflicting_adjustment(env, &employee, effective_date);
+
+    let kind = if new_salary > current_salary {
+        AdjustmentKind::Increase
+    } else {
+        AdjustmentKind::Decrease
+    };
+
+    let adjustment_id = next_adjustment_id(env);
+
+    let adjustment = SalaryAdjustment {
+        id: adjustment_id,
+        employer: employer.clone(),
+        employee: employee.clone(),
+        approver: approver.clone(),
+        kind: kind.clone(),
+        status: AdjustmentStatus::Pending,
+        current_salary,
+        new_salary,
+        effective_date,
+        created_at: env.ledger().timestamp(),
+        retroactive,
+        retroactive_approved_by,
+        reason_hash: reason_hash.clone(),
+    };
+
+    write_adjustment(env, &adjustment);
+    reserve_adjustment_slot(env, &employee, effective_date, adjustment_id);
+    env.events().publish(
+        ("adjustment_created", adjustment_id),
+        AdjustmentCreatedEvent {
+            adjustment_id,
+            employer: employer.clone(),
+            employee: employee.clone(),
+            kind,
+            current_salary,
+            new_salary,
+            effective_date,
+            retroactive,
+            reason_hash: reason_hash.clone(),
+        },
+    );
+    append_audit(
+        env,
+        employer,
+        Symbol::new(env, "adjustment_created"),
+        Some(adjustment_id),
+        Some(employee),
+        Some(new_salary),
+        reason_hash,
+    );
+
+    adjustment_id
 }
 
 // ============================================================================
@@ -217,12 +462,24 @@ impl SalaryAdjustmentContract {
         assert!(owner == stored_owner, "Only owner can set salary cap");
         assert!(cap > 0, "Salary cap must be positive");
 
-        env.storage()
-            .persistent()
-            .set(&StorageKey::SalaryCap, &cap);
+        env.storage().persistent().set(&StorageKey::SalaryCap, &cap);
 
-        env.events()
-            .publish(("salary_cap_set", cap), SalaryCapSetEvent { owner, cap });
+        env.events().publish(
+            ("salary_cap_set", cap),
+            SalaryCapSetEvent {
+                owner: owner.clone(),
+                cap,
+            },
+        );
+        append_audit(
+            &env,
+            owner,
+            Symbol::new(&env, "salary_cap_set"),
+            None,
+            None,
+            Some(cap),
+            None,
+        );
     }
 
     /// @notice Creates a salary adjustment request.
@@ -259,58 +516,81 @@ impl SalaryAdjustmentContract {
     ) -> u128 {
         require_initialized(&env);
         employer.require_auth();
-        assert!(current_salary > 0, "Current salary must be positive");
-        assert!(new_salary > 0, "New salary must be positive");
-        assert!(
-            new_salary != current_salary,
-            "New salary must differ from current salary"
-        );
-
-        let cap = effective_salary_cap(&env);
-        assert!(new_salary <= cap, "New salary exceeds salary cap");
-
-        let now = env.ledger().timestamp();
-        assert!(
-            effective_date >= now,
-            "Effective date cannot be in the past"
-        );
-
-        let kind = if new_salary > current_salary {
-            AdjustmentKind::Increase
-        } else {
-            AdjustmentKind::Decrease
-        };
-
-        let adjustment_id = next_adjustment_id(&env);
-
-        let adjustment = SalaryAdjustment {
-            id: adjustment_id,
-            employer: employer.clone(),
-            employee: employee.clone(),
-            approver: approver.clone(),
-            kind: kind.clone(),
-            status: AdjustmentStatus::Pending,
+        create_adjustment_internal(
+            &env,
+            employer,
+            employee,
+            approver,
             current_salary,
             new_salary,
             effective_date,
-            created_at: now,
-        };
+            None,
+            None,
+        )
+    }
 
-        write_adjustment(&env, &adjustment);
-        env.events().publish(
-            ("adjustment_created", adjustment_id),
-            AdjustmentCreatedEvent {
-                adjustment_id,
-                employer,
-                employee,
-                kind,
-                current_salary,
-                new_salary,
-                effective_date,
-            },
+    /// @notice Creates a retroactive salary adjustment with explicit owner approval.
+    /// @dev Requires both the employer and contract owner to authenticate. The provided
+    ///      reason hash is domain-separated with the adjustment details before storage.
+    ///
+    /// # Panics
+    /// * `"Only owner can authorize retroactive adjustment"`
+    /// * `"Retroactive reason hash required"`
+    /// * Standard create validation panics.
+    pub fn create_retroactive_adjustment(
+        env: Env,
+        owner: Address,
+        employer: Address,
+        employee: Address,
+        approver: Address,
+        current_salary: i128,
+        new_salary: i128,
+        effective_date: u64,
+        reason_hash: BytesN<32>,
+    ) -> u128 {
+        require_initialized(&env);
+        owner.require_auth();
+        employer.require_auth();
+
+        let stored_owner: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Owner)
+            .expect("Owner not set");
+        assert!(
+            owner == stored_owner,
+            "Only owner can authorize retroactive adjustment"
+        );
+        assert!(
+            effective_date < env.ledger().timestamp(),
+            "Use create_adjustment for forward adjustments"
         );
 
-        adjustment_id
+        let zero = BytesN::from_array(&env, &[0; 32]);
+        assert!(reason_hash != zero, "Retroactive reason hash required");
+
+        let stored_reason_hash = domain_separated_reason_hash(
+            &env,
+            &owner,
+            &employer,
+            &employee,
+            current_salary,
+            new_salary,
+            effective_date,
+            &reason_hash,
+        );
+
+        create_adjustment_internal(
+            &env,
+            employer,
+            employee,
+            approver,
+            current_salary,
+            new_salary,
+            effective_date,
+            Some(owner),
+            Some(stored_reason_hash),
+        )
     }
 
     /// @notice Approves a pending salary adjustment.
@@ -343,8 +623,17 @@ impl SalaryAdjustmentContract {
             ("adjustment_approved", adjustment_id),
             AdjustmentApprovedEvent {
                 adjustment_id,
-                approver,
+                approver: approver.clone(),
             },
+        );
+        append_audit(
+            &env,
+            approver,
+            Symbol::new(&env, "adjustment_approved"),
+            Some(adjustment_id),
+            Some(adjustment.employee),
+            Some(adjustment.new_salary),
+            adjustment.reason_hash,
         );
     }
 
@@ -378,8 +667,17 @@ impl SalaryAdjustmentContract {
             ("adjustment_rejected", adjustment_id),
             AdjustmentRejectedEvent {
                 adjustment_id,
-                approver,
+                approver: approver.clone(),
             },
+        );
+        append_audit(
+            &env,
+            approver,
+            Symbol::new(&env, "adjustment_rejected"),
+            Some(adjustment_id),
+            Some(adjustment.employee),
+            Some(adjustment.new_salary),
+            adjustment.reason_hash,
         );
     }
 
@@ -419,9 +717,10 @@ impl SalaryAdjustmentContract {
         write_adjustment(&env, &adjustment);
 
         // Update tracked salary so payroll claiming logic can read the latest effective salary.
-        env.storage()
-            .persistent()
-            .set(&StorageKey::EmployeeSalary(adjustment.employee.clone()), &adjustment.new_salary);
+        env.storage().persistent().set(
+            &StorageKey::EmployeeSalary(adjustment.employee.clone()),
+            &adjustment.new_salary,
+        );
 
         env.events().publish(
             ("adjustment_applied", adjustment_id),
@@ -430,6 +729,15 @@ impl SalaryAdjustmentContract {
                 employee: adjustment.employee.clone(),
                 new_salary: adjustment.new_salary,
             },
+        );
+        append_audit(
+            &env,
+            employer,
+            Symbol::new(&env, "adjustment_applied"),
+            Some(adjustment_id),
+            Some(adjustment.employee),
+            Some(adjustment.new_salary),
+            adjustment.reason_hash,
         );
     }
 
@@ -464,8 +772,17 @@ impl SalaryAdjustmentContract {
             ("adjustment_cancelled", adjustment_id),
             AdjustmentCancelledEvent {
                 adjustment_id,
-                employer,
+                employer: employer.clone(),
             },
+        );
+        append_audit(
+            &env,
+            employer,
+            Symbol::new(&env, "adjustment_cancelled"),
+            Some(adjustment_id),
+            Some(adjustment.employee),
+            Some(adjustment.new_salary),
+            adjustment.reason_hash,
         );
     }
 
@@ -501,5 +818,21 @@ impl SalaryAdjustmentContract {
         env.storage()
             .persistent()
             .get(&StorageKey::EmployeeSalary(employee))
+    }
+
+    /// @notice Returns an append-only audit record by id.
+    /// @param audit_id Audit record identifier.
+    pub fn get_audit_log(env: Env, audit_id: u128) -> Option<SalaryAdjustmentAuditEntry> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::AuditLog(audit_id))
+    }
+
+    /// @notice Returns the number of audit records written so far.
+    pub fn get_audit_log_count(env: Env) -> u128 {
+        env.storage()
+            .persistent()
+            .get::<_, u128>(&StorageKey::NextAuditLogId)
+            .unwrap_or(0)
     }
 }
