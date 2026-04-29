@@ -10,9 +10,12 @@ doctest = false
 [dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
 stello_pay_contract = { path = "../contracts/stello_pay_contract" }
+token_vesting = { path = "../contracts/token_vesting" }
 payroll_escrow = { path = "../contracts/payroll_escrow" }
 bonus_system = { path = "../contracts/bonus_system" }
 payment_history = { path = "../contracts/payment_history" }
+payment_retry = { path = "../contracts/payment_retry" }
+payment_scheduler = { path = "../contracts/payment_scheduler" }
 dispute_escalation = { path = "../contracts/dispute_escalation" }
 employee_roles = { path = "../contracts/employee_roles" }
 rbac = { path = "../contracts/rbac" }
