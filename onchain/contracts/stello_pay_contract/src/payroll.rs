@@ -173,12 +173,17 @@ fn sum_unclaimed_milestones(env: &Env, agreement_id: u128) -> i128 {
         .unwrap_or(0);
     let mut sum = 0i128;
     for i in 1..=count {
+        let approved: bool = env
+            .storage()
+            .instance()
+            .get(&MilestoneKey::MilestoneApproved(agreement_id, i))
+            .unwrap_or(false);
         let claimed: bool = env
             .storage()
             .instance()
             .get(&MilestoneKey::MilestoneClaimed(agreement_id, i))
             .unwrap_or(false);
-        if !claimed {
+        if approved && !claimed {
             sum += env
                 .storage()
                 .instance()
@@ -230,23 +235,20 @@ pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         .unwrap_or(false);
     assert!(!already_approved, "Milestone already approved");
 
-    // Invariant: Escrow balance must cover all unclaimed milestones (including this one being approved)
-    // Note: older system doesn't have explicit AgreementEscrowBalance, but if it did, 
-    // we would check it here. The prompt says "escrow balance >= sum of unclaimed milestones".
-    // Since MilestoneKey agreements don't use AgreementEscrowBalance, we check contract token balance.
-    let token: Address = env
-        .storage()
-        .instance()
-        .get(&MilestoneKey::Token(agreement_id))
-        .expect("Token not found");
-    let contract_balance = token::Client::new(&env, &token).balance(&env.current_contract_address());
-    let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
-    assert!(contract_balance >= unclaimed_sum, "Insufficient contract balance for unclaimed milestones");
-
     env.storage().instance().set(
         &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
         &true,
     );
+
+    // Invariant: Escrow balance must cover all unclaimed milestones (including this one just approved)
+    let token_address: Address = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Token(agreement_id))
+        .expect("Token not found");
+    let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
+    let contract_balance = TokenClient::new(&env, &token_address).balance(&env.current_contract_address());
+    assert!(contract_balance >= unclaimed_sum, "Insufficient contract balance for unclaimed milestones");
 
     MilestoneApproved {
         agreement_id,
@@ -314,12 +316,12 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
 
     // Invariant check before claim
     let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
-    let token: Address = env
+    let token_address: Address = env
         .storage()
         .instance()
         .get(&MilestoneKey::Token(agreement_id))
         .expect("Token not found");
-    let contract_balance = token::Client::new(&env, &token).balance(&env.current_contract_address());
+    let contract_balance = TokenClient::new(&env, &token_address).balance(&env.current_contract_address());
     assert!(contract_balance >= unclaimed_sum, "Invariant violation: escrow balance < sum of unclaimed milestones");
 
     let amount: i128 = env
