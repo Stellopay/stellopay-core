@@ -197,6 +197,9 @@ impl PayrollContract {
 
     /// Approves a milestone for payment.
     ///
+    /// # Invariants
+    /// - `escrow balance >= sum of all unclaimed milestone amounts`
+    ///
     /// # Arguments
     /// * `agreement_id` - ID of the agreement
     /// * `milestone_id` - ID of the milestone to approve
@@ -210,6 +213,9 @@ impl PayrollContract {
     }
 
     /// Claims payment for an approved milestone.
+    ///
+    /// # Invariants
+    /// - `escrow balance >= sum of all unclaimed milestone amounts`
     ///
     /// # Arguments
     /// * `agreement_id` - ID of the agreement
@@ -507,6 +513,9 @@ impl PayrollContract {
     }
 
     /// Claim payroll for an employee
+    ///
+    /// # Invariants
+    /// - `claimed_periods <= num_periods` (if `num_periods` is defined for the agreement)
     ///
     /// # Arguments
     /// * `env` - Contract environment
