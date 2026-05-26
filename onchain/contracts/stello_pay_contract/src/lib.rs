@@ -4,7 +4,7 @@ mod payroll;
 pub mod storage;
 
 use events::{emit_contract_migrated, ContractMigratedEvent};
-use rbac::{RbacContractClient, Role};
+use rbac_interface::{RbacContractClient, Role};
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
 use storage::{
     Agreement, BatchEscrowCreateResult, BatchMilestoneResult, BatchPayrollCreateResult,
