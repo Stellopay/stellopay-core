@@ -151,7 +151,7 @@ fn snapshot_payroll_claim_and_batch_result() {
     advance_time(&env, 86400 + 1);
 
     let batch: BatchPayrollResult = client
-        .batch_claim_payroll(&e1, &agreement_id, &Vec::from_array(&env, [0u32, 1u32]))
+        .batch_claim_payroll(&e1, &agreement_id, &Vec::from_array(&env, [0u32, 1u32]), &None::<u128>)
         .unwrap();
 
     let claimed_e1 = client.get_employee_claimed_periods(&agreement_id, &0u32);
@@ -207,7 +207,7 @@ fn snapshot_dispute_and_fx_helpers() {
         DataKey::set_agreement_escrow_balance(&env, agreement_id, &base, total);
     });
     client
-        .resolve_dispute(&arbiter, &agreement_id, &1_000i128, &1_000i128)
+        .resolve_dispute(&arbiter, &agreement_id, &1_000i128, &1_000i128, &None::<u128>)
         .unwrap();
     let after = client.get_dispute_status(&agreement_id);
 
@@ -387,12 +387,12 @@ fn snapshot_payroll_lifecycle_created_funded_first_claim() {
     tick(&env, PERIOD + 1);
 
     let claimed_before = client.get_employee_claimed_periods(&id, &0u32);
-    client.claim_payroll(&employee, &id, &0u32).unwrap();
+    client.claim_payroll(&employee, &id, &0u32, &None::<u128>).unwrap();
     let claimed_after = client.get_employee_claimed_periods(&id, &0u32);
     let after_claim = client.get_agreement(&id).unwrap();
 
     // Idempotency: second claim in same period must fail
-    let second_claim_rejected = client.try_claim_payroll(&employee, &id, &0u32).is_err();
+    let second_claim_rejected = client.try_claim_payroll(&employee, &id, &0u32, &None::<u128>).is_err();
 
     let snapshot = format!(
         "=== PHASE: after_create ===\n{}\
@@ -461,7 +461,7 @@ fn snapshot_dispute_opened_escalation_resolution() {
     // Phase 4: Resolve dispute
     let pay_employee: i128 = escrow_total / 2;
     let refund_employer: i128 = escrow_total / 2;
-    client.resolve_dispute(&arbiter, &id, &pay_employee, &refund_employer).unwrap();
+    client.resolve_dispute(&arbiter, &id, &pay_employee, &refund_employer, &None::<u128>).unwrap();
     let after_resolve = client.get_agreement(&id).unwrap();
     let dispute_after = client.get_dispute_status(&id);
 
@@ -558,7 +558,7 @@ fn snapshot_emergency_pause_blocks_and_unblocks_operations() {
     );
 
     // Security: both claim types must be blocked
-    let payroll_blocked = client.try_claim_payroll(&employee, &payroll_id, &0u32).is_err();
+    let payroll_blocked = client.try_claim_payroll(&employee, &payroll_id, &0u32, &None::<u128>).is_err();
     let milestone_blocked = client.try_claim_milestone(&ms_id, &1u32).is_err();
 
     // Phase 3: Unpause
@@ -566,7 +566,7 @@ fn snapshot_emergency_pause_blocks_and_unblocks_operations() {
     let paused_after_unpause = client.is_emergency_paused();
 
     // Phase 4: Claims succeed after unpause
-    let payroll_claim_ok = client.try_claim_payroll(&employee, &payroll_id, &0u32).is_ok();
+    let payroll_claim_ok = client.try_claim_payroll(&employee, &payroll_id, &0u32, &None::<u128>).is_ok();
     let milestone_claim_ok = client.try_claim_milestone(&ms_id, &1u32).is_ok();
 
     let snapshot = format!(

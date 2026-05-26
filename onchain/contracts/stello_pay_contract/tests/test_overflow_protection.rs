@@ -63,7 +63,7 @@ fn test_claim_payroll_amount_multiplication_overflow_guard() {
         li.timestamp = 3;
     });
 
-    let result = client.try_claim_payroll(&employee, &agreement_id, &0u32);
+    let result = client.try_claim_payroll(&employee, &agreement_id, &0u32, &None::<u128>);
     assert_eq!(result, Err(Ok(PayrollError::InvalidData)));
 }
 
@@ -103,6 +103,6 @@ fn test_claim_payroll_paid_amount_addition_overflow_guard() {
         li.timestamp = 1;
     });
 
-    let result = client.try_claim_payroll(&employee, &agreement_id, &0u32);
+    let result = client.try_claim_payroll(&employee, &agreement_id, &0u32, &None::<u128>);
     assert_eq!(result, Err(Ok(PayrollError::InvalidData)));
 }

@@ -45,6 +45,19 @@ pub struct Operation {
     pub executed_at: Option<u64>,
 }
 
+/// Per-operation-kind approval thresholds.
+///
+/// When set, these override the global `Threshold` for the matching operation
+/// kind, allowing stricter M-of-N requirements for high-risk operations.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationThresholds {
+    /// Minimum approvals required for `LargePayment` operations.
+    pub large_payment: u32,
+    /// Minimum approvals required for `DisputeResolution` operations.
+    pub dispute_resolution: u32,
+}
+
 #[contracttype]
 #[derive(Clone)]
 enum StorageKey {
@@ -56,6 +69,8 @@ enum StorageKey {
     OperationCounter,
     Operation(u128),
     Approvals(u128),
+    /// Optional per-kind threshold overrides.
+    OperationThresholds,
 }
 
 #[contracttype]
@@ -184,12 +199,27 @@ fn is_emergency_guardian(env: &Env, addr: &Address) -> bool {
     }
 }
 
+fn effective_threshold(env: &Env, kind: &OperationKind) -> u32 {
+    let global = read_threshold(env);
+    let overrides: Option<OperationThresholds> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::OperationThresholds);
+    match overrides {
+        Some(t) => match kind {
+            OperationKind::LargePayment(_, _, _) => t.large_payment.max(global),
+            OperationKind::DisputeResolution(_, _, _, _) => t.dispute_resolution.max(global),
+            _ => global,
+        },
+        None => global,
+    }
+}
+
 fn execute_if_threshold_met(env: &Env, operation_id: u128) {
-    let threshold = read_threshold(env);
+    let op = read_operation(env, operation_id);
+    let threshold = effective_threshold(env, &op.kind);
     let approvals = approval_count(env, operation_id);
     if approvals >= threshold {
-        // Execute without additional signer auth (they already authenticated
-        // when approving). Execution itself is a pure state transition.
         perform_execute(env, operation_id);
     }
 }
@@ -444,5 +474,58 @@ impl MultisigContract {
     /// @dev Requires caller authentication
     pub fn get_approvals(env: Env, operation_id: u128) -> Vec<Address> {
         read_approvals(&env, operation_id)
+    }
+
+    /// @notice Sets per-operation-kind approval thresholds.
+    /// @dev Only the owner can update thresholds. Each kind threshold must be
+    ///      >= 1 and <= the current signer count. The effective threshold for
+    ///      an operation is `max(global_threshold, kind_threshold)`.
+    /// @param caller Owner address (must authenticate).
+    /// @param thresholds New per-kind threshold values.
+    pub fn set_operation_thresholds(env: Env, caller: Address, thresholds: OperationThresholds) {
+        require_initialized(&env);
+        caller.require_auth();
+
+        let owner = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&StorageKey::Owner)
+            .expect("Owner not set");
+        assert!(caller == owner, "Only owner can set thresholds");
+
+        let signer_count = read_signers(&env).len();
+        assert!(
+            thresholds.large_payment >= 1 && thresholds.large_payment <= signer_count,
+            "Invalid large_payment threshold"
+        );
+        assert!(
+            thresholds.dispute_resolution >= 1 && thresholds.dispute_resolution <= signer_count,
+            "Invalid dispute_resolution threshold"
+        );
+
+        env.storage()
+            .persistent()
+            .set(&StorageKey::OperationThresholds, &thresholds);
+    }
+
+    /// @notice Returns the configured per-kind thresholds, if any.
+    pub fn get_operation_thresholds(env: Env) -> Option<OperationThresholds> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::OperationThresholds)
+    }
+
+    /// @notice Returns true if the operation has been executed (threshold met and action taken).
+    /// @dev Used by external contracts (e.g. stello_pay) to gate high-value actions.
+    /// @param operation_id Operation identifier.
+    pub fn is_operation_approved(env: Env, operation_id: u128) -> bool {
+        match env
+            .storage()
+            .persistent()
+            .get::<_, Operation>(&StorageKey::Operation(operation_id))
+        {
+            Some(op) => op.status == OperationStatus::Executed,
+            None => false,
+        }
     }
 }

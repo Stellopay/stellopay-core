@@ -119,7 +119,7 @@ fn test_claim_blocked_when_paused() {
     client.pause_agreement(&agreement_id);
 
     // Try to claim - should fail
-    client.claim_payroll(&agreement_id, &employee);
+    let _ = client.try_claim_payroll(&employee, &agreement_id, &0u32, &None::<u128>);
 }
 
 #[test]
