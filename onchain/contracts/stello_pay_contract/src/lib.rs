@@ -1,4 +1,5 @@
 #![no_std]
+pub mod backup;
 pub mod events;
 mod payroll;
 pub mod storage;
@@ -903,5 +904,73 @@ impl PayrollContract {
     /// Requires caller authentication
     pub fn get_emergency_pause_state(env: Env) -> Option<storage::EmergencyPause> {
         payroll::get_emergency_pause_state(&env)
+    }
+
+    // ============================================================================
+    // Encrypted Backup & Recovery
+    // ============================================================================
+
+    /// Admin-only: restore an `Agreement` from a pre-decrypted struct.
+    ///
+    /// Use this when the operator has already decrypted and verified the backup
+    /// off-chain and simply needs to re-write the state into persistent storage.
+    ///
+    /// # Arguments
+    /// * `caller`    – must be the contract owner.
+    /// * `agreement` – the `Agreement` to write back.
+    ///
+    /// # Access Control
+    /// Requires owner authentication.
+    pub fn admin_restore_agreement(
+        env: Env,
+        caller: Address,
+        agreement: storage::Agreement,
+    ) -> Result<(), storage::PayrollError> {
+        caller.require_auth();
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&storage::StorageKey::Owner)
+            .ok_or(storage::PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(storage::PayrollError::Unauthorized);
+        }
+        backup::admin_restore_agreement(&env, agreement);
+        Ok(())
+    }
+
+    /// Admin-only: decrypt an encrypted backup envelope and restore the
+    /// contained `Agreement` into persistent storage in a single call.
+    ///
+    /// # Arguments
+    /// * `caller`     – must be the contract owner.
+    /// * `envelope`   – encrypted backup bytes (version | salt | nonce | ciphertext).
+    /// * `passphrase` – decryption passphrase; never stored on-chain.
+    ///
+    /// # Returns
+    /// The restored `agreement_id` on success.
+    ///
+    /// # Errors
+    /// Returns `PayrollError::InvalidData` if decryption or deserialisation fails.
+    /// Returns `PayrollError::Unauthorized` if caller is not the owner.
+    ///
+    /// # Access Control
+    /// Requires owner authentication.
+    pub fn admin_restore_from_encrypted(
+        env: Env,
+        caller: Address,
+        envelope: soroban_sdk::Bytes,
+        passphrase: soroban_sdk::Bytes,
+    ) -> Result<u128, storage::PayrollError> {
+        caller.require_auth();
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&storage::StorageKey::Owner)
+            .ok_or(storage::PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(storage::PayrollError::Unauthorized);
+        }
+        backup::admin_restore_from_encrypted(&env, envelope, passphrase)
     }
 }
