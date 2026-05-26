@@ -1,67 +1,73 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, BytesN, Env, Symbol};
+use core::cmp::Ordering;
 
-/// Basis points denominator used for quorum configuration (100% = 10_000 bps).
-const BPS_DENOMINATOR: u32 = 10_000;
+use multisig::MultisigContractClient;
+use rbac::{RbacContractClient, Role};
+use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
+    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, IntoVal, Symbol,
+    Val, Vec,
+};
+use withdrawal_timelock::{
+    OperationKind as TimelockOperationKind, OperationStatus as TimelockOperationStatus,
+    TimelockedOperation, WithdrawalTimelockClient,
+};
 
-/// Errors for the governance contract.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Errors returned by the governance contract.
+#[contracterror]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u32)]
 pub enum GovernanceError {
-    NotInitialized,
-    AlreadyInitialized,
-    NotOwner,
-    InvalidQuorum,
-    InvalidVotingPeriod,
-    InvalidTimelock,
-    UnknownProposal,
-    VotingClosed,
-    VotingNotStarted,
-    AlreadyVoted,
-    NoVotingPower,
-    ProposalNotSucceeded,
-    TimelockNotExpired,
-    ProposalNotActive,
+    NotInitialized = 1,
+    AlreadyInitialized = 2,
+    NotOwner = 3,
+    InvalidQuorum = 4,
+    InvalidVotingPeriod = 5,
+    ProposalNotFound = 6,
+    ProposalNotActive = 7,
+    VotingStillOpen = 8,
+    VotingClosed = 9,
+    AlreadyVoted = 10,
+    NotEligibleVoter = 11,
+    ProposalNotSucceeded = 12,
+    TimelockNotReady = 13,
+    UnauthorizedExecutor = 14,
+    TimelockQueueFailed = 15,
+    TimelockExecutionFailed = 16,
+    TimelockCancellationFailed = 17,
 }
 
-/// Type of a governance proposal.
+/// Types of governance actions supported by the contract.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProposalKind {
-    /// Generic parameter change stored under the given key.
-    /// Tuple layout: (key, value)
+    /// Store a generic integer parameter under a symbol key.
+    ///
+    /// Layout: `(key, value)`.
     ParameterChange(Symbol, i128),
-    /// Governance approval for a contract upgrade. The actual upgrade
-    /// execution is expected to be handled by off-chain tooling or a
-    /// separate upgrade executor contract.
-    /// Tuple layout: (target, new_wasm_hash)
+    /// Record an approved upgrade hash for a target contract.
+    ///
+    /// Layout: `(target, new_wasm_hash)`.
     UpgradeContract(Address, BytesN<32>),
-    /// Arbiter address change for downstream contracts or off-chain
-    /// dispute-resolution flows.
-    /// Tuple layout: (new_arbiter)
+    /// Record an approved downstream arbiter address.
+    ///
+    /// Layout: `(new_arbiter)`.
     ArbiterChange(Address),
 }
 
-/// Status of a governance proposal.
+/// Lifecycle status for a proposal.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ProposalStatus {
-    /// Proposal is open for voting.
     Active,
-    /// Proposal voting finished and it met quorum and approval threshold.
     Succeeded,
-    /// Proposal voting finished but did not meet quorum or was rejected.
     Defeated,
-    /// Proposal was cancelled by the owner before execution.
     Cancelled,
-    /// Proposal has been executed after the timelock.
     Executed,
-    /// Proposal was not executed within the allowed window.
-    Expired,
 }
 
-/// Vote choices for a proposal.
+/// Supported vote options.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum VoteChoice {
@@ -70,7 +76,7 @@ pub enum VoteChoice {
     Abstain,
 }
 
-/// Proposal data stored on-chain.
+/// Stored proposal data.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Proposal {
@@ -78,77 +84,91 @@ pub struct Proposal {
     pub proposer: Address,
     pub kind: ProposalKind,
     pub status: ProposalStatus,
-    pub for_votes: i128,
-    pub against_votes: i128,
-    pub abstain_votes: i128,
+    pub for_votes: u32,
+    pub against_votes: u32,
+    pub abstain_votes: u32,
     pub start_time: u64,
     pub end_time: u64,
-    /// Earliest timestamp at which the proposal can be executed.
+    /// Timelock operation created when the proposal succeeds.
+    pub timelock_operation_id: Option<u128>,
+    /// Earliest execution timestamp returned by the timelock contract.
     pub eta: Option<u64>,
-    /// Total voting power at the time of proposal creation (snapshot).
-    pub total_power_at_propose: i128,
 }
 
-/// Storage keys for governance state.
+/// Persistent storage keys.
 #[contracttype]
 #[derive(Clone)]
 pub enum StorageKey {
     Initialized,
     Owner,
-    /// Total voting power across all voters.
-    TotalVotingPower,
-    /// Voter-specific voting power: Address -> i128.
-    VoterPower(Address),
-    /// Next proposal id sequence.
-    NextProposalId,
-    /// Stored proposal by id.
-    Proposal(u128),
-    /// Tracks that an address has voted on a proposal:
-    /// (proposal_id, voter) -> VoteChoice.
-    Vote(u128, Address),
-    /// Quorum in basis points (1-10_000).
-    QuorumBps,
-    /// Voting period in seconds.
+    RbacContract,
+    MultisigContract,
+    TimelockContract,
+    QuorumVotes,
     VotingPeriodSeconds,
-    /// Execution timelock in seconds applied after proposal success.
-    TimelockSeconds,
-    /// Window after timelock during which a proposal is executable.
-    ExecutionWindowSeconds,
-    /// Parameter storage for `ParameterChange` proposals: key -> value.
+    NextProposalId,
+    Proposal(u128),
+    Vote(u128, Address),
     Parameter(Symbol),
-    /// Last approved arbiter address from `ArbiterChange` proposals.
     Arbiter,
-    /// Last approved upgrade hash for a target contract: target -> hash.
     ApprovedUpgrade(Address),
 }
 
-fn require_initialized(env: &Env) {
-    let initialized: bool = env
+fn require_initialized(env: &Env) -> Result<(), GovernanceError> {
+    let initialized = env
         .storage()
         .persistent()
-        .get(&StorageKey::Initialized)
+        .get::<_, bool>(&StorageKey::Initialized)
         .unwrap_or(false);
-    assert!(initialized, "governance not initialized");
+    if initialized {
+        Ok(())
+    } else {
+        Err(GovernanceError::NotInitialized)
+    }
 }
 
-fn read_owner(env: &Env) -> Address {
+fn read_owner(env: &Env) -> Result<Address, GovernanceError> {
     env.storage()
         .persistent()
         .get::<_, Address>(&StorageKey::Owner)
-        .expect("owner not set")
+        .ok_or(GovernanceError::NotInitialized)
 }
 
-fn require_owner(env: &Env, caller: &Address) {
+fn require_owner(env: &Env, caller: &Address) -> Result<(), GovernanceError> {
     caller.require_auth();
-    let owner = read_owner(env);
-    assert!(owner == *caller, "only owner");
+    if read_owner(env)? == *caller {
+        Ok(())
+    } else {
+        Err(GovernanceError::NotOwner)
+    }
+}
+
+fn read_address(env: &Env, key: &StorageKey) -> Result<Address, GovernanceError> {
+    env.storage()
+        .persistent()
+        .get::<_, Address>(key)
+        .ok_or(GovernanceError::NotInitialized)
+}
+
+fn read_quorum_votes(env: &Env) -> Result<u32, GovernanceError> {
+    env.storage()
+        .persistent()
+        .get::<_, u32>(&StorageKey::QuorumVotes)
+        .ok_or(GovernanceError::NotInitialized)
+}
+
+fn read_voting_period(env: &Env) -> Result<u64, GovernanceError> {
+    env.storage()
+        .persistent()
+        .get::<_, u64>(&StorageKey::VotingPeriodSeconds)
+        .ok_or(GovernanceError::NotInitialized)
 }
 
 fn next_proposal_id(env: &Env) -> u128 {
-    let current: u128 = env
+    let current = env
         .storage()
         .persistent()
-        .get(&StorageKey::NextProposalId)
+        .get::<_, u128>(&StorageKey::NextProposalId)
         .unwrap_or(0);
     let next = current.checked_add(1).expect("proposal id overflow");
     env.storage()
@@ -157,11 +177,11 @@ fn next_proposal_id(env: &Env) -> u128 {
     next
 }
 
-fn read_proposal(env: &Env, proposal_id: u128) -> Proposal {
+fn read_proposal(env: &Env, proposal_id: u128) -> Result<Proposal, GovernanceError> {
     env.storage()
         .persistent()
         .get::<_, Proposal>(&StorageKey::Proposal(proposal_id))
-        .expect("proposal not found")
+        .ok_or(GovernanceError::ProposalNotFound)
 }
 
 fn write_proposal(env: &Env, proposal: &Proposal) {
@@ -170,58 +190,135 @@ fn write_proposal(env: &Env, proposal: &Proposal) {
         .set(&StorageKey::Proposal(proposal.id), proposal);
 }
 
-fn read_voter_power(env: &Env, voter: &Address) -> i128 {
-    env.storage()
-        .persistent()
-        .get::<_, i128>(&StorageKey::VoterPower(voter.clone()))
-        .unwrap_or(0)
+fn is_eligible_voter(env: &Env, voter: &Address) -> Result<bool, GovernanceError> {
+    let rbac_address = read_address(env, &StorageKey::RbacContract)?;
+    let client = RbacContractClient::new(env, &rbac_address);
+    Ok(client.has_role(voter, &Role::Admin) || client.has_role(voter, &Role::Employer))
 }
 
-fn write_voter_power(env: &Env, voter: &Address, power: i128) {
-    env.storage()
-        .persistent()
-        .set(&StorageKey::VoterPower(voter.clone()), &power);
+fn require_eligible_voter(env: &Env, voter: &Address) -> Result<(), GovernanceError> {
+    if is_eligible_voter(env, voter)? {
+        Ok(())
+    } else {
+        Err(GovernanceError::NotEligibleVoter)
+    }
 }
 
-fn read_total_power(env: &Env) -> i128 {
-    env.storage()
-        .persistent()
-        .get::<_, i128>(&StorageKey::TotalVotingPower)
-        .unwrap_or(0)
+fn is_multisig_signer(env: &Env, signer: &Address) -> Result<bool, GovernanceError> {
+    let multisig_address = read_address(env, &StorageKey::MultisigContract)?;
+    let client = MultisigContractClient::new(env, &multisig_address);
+    let signers = client.get_signers();
+    for idx in 0..signers.len() {
+        if signers.get(idx).unwrap() == *signer {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
-fn write_total_power(env: &Env, power: i128) {
-    env.storage()
-        .persistent()
-        .set(&StorageKey::TotalVotingPower, &power);
+fn authorize_timelock_call(
+    env: &Env,
+    fn_name: &str,
+    args: Vec<Val>,
+) -> Result<(), GovernanceError> {
+    let timelock_address = read_address(env, &StorageKey::TimelockContract)?;
+    env.authorize_as_current_contract(Vec::from_array(
+        env,
+        [InvokerContractAuthEntry::Contract(SubContractInvocation {
+            context: ContractContext {
+                contract: timelock_address,
+                fn_name: Symbol::new(env, fn_name),
+                args,
+            },
+            sub_invocations: Vec::new(env),
+        })],
+    ));
+    Ok(())
 }
 
-fn get_quorum_bps(env: &Env) -> u32 {
-    env.storage()
-        .persistent()
-        .get::<_, u32>(&StorageKey::QuorumBps)
-        .unwrap_or(0)
+fn timelock_queue_kind(env: &Env, proposal_id: u128) -> TimelockOperationKind {
+    TimelockOperationKind::AdminChange(
+        env.current_contract_address(),
+        proposal_payload_hash(env, proposal_id),
+    )
 }
 
-fn get_voting_period(env: &Env) -> u64 {
-    env.storage()
-        .persistent()
-        .get::<_, u64>(&StorageKey::VotingPeriodSeconds)
-        .unwrap_or(0)
+fn proposal_payload_hash(env: &Env, proposal_id: u128) -> BytesN<32> {
+    let mut payload = [0u8; 32];
+    payload[16..].copy_from_slice(&proposal_id.to_be_bytes());
+    BytesN::from_array(env, &payload)
 }
 
-fn get_timelock(env: &Env) -> u64 {
-    env.storage()
-        .persistent()
-        .get::<_, u64>(&StorageKey::TimelockSeconds)
-        .unwrap_or(0)
+fn queue_timelock_operation(
+    env: &Env,
+    proposal_id: u128,
+) -> Result<TimelockedOperation, GovernanceError> {
+    let timelock_address = read_address(env, &StorageKey::TimelockContract)?;
+    let timelock_client = WithdrawalTimelockClient::new(env, &timelock_address);
+    let caller = env.current_contract_address();
+    let kind = timelock_queue_kind(env, proposal_id);
+
+    authorize_timelock_call(
+        env,
+        "queue",
+        Vec::from_array(
+            env,
+            [caller.clone().into_val(env), kind.clone().into_val(env)],
+        ),
+    )?;
+
+    let op_id = timelock_client.queue(&caller, &kind);
+
+    timelock_client
+        .get_operation(&op_id)
+        .ok_or(GovernanceError::TimelockQueueFailed)
 }
 
-fn get_execution_window(env: &Env) -> u64 {
-    env.storage()
-        .persistent()
-        .get::<_, u64>(&StorageKey::ExecutionWindowSeconds)
-        .unwrap_or(0)
+fn execute_timelock_operation(env: &Env, op_id: u128) -> Result<(), GovernanceError> {
+    let timelock_address = read_address(env, &StorageKey::TimelockContract)?;
+    let timelock_client = WithdrawalTimelockClient::new(env, &timelock_address);
+    let caller = env.current_contract_address();
+    let operation = timelock_client
+        .get_operation(&op_id)
+        .ok_or(GovernanceError::TimelockExecutionFailed)?;
+
+    if operation.status != TimelockOperationStatus::Queued {
+        return Err(GovernanceError::TimelockExecutionFailed);
+    }
+    if env.ledger().timestamp() < operation.eta {
+        return Err(GovernanceError::TimelockNotReady);
+    }
+
+    authorize_timelock_call(
+        env,
+        "execute",
+        Vec::from_array(env, [caller.clone().into_val(env), op_id.into_val(env)]),
+    )?;
+
+    timelock_client.execute(&caller, &op_id);
+    Ok(())
+}
+
+fn cancel_timelock_operation(env: &Env, op_id: u128) -> Result<(), GovernanceError> {
+    let timelock_address = read_address(env, &StorageKey::TimelockContract)?;
+    let timelock_client = WithdrawalTimelockClient::new(env, &timelock_address);
+    let caller = env.current_contract_address();
+    let operation = timelock_client
+        .get_operation(&op_id)
+        .ok_or(GovernanceError::TimelockCancellationFailed)?;
+
+    if operation.status != TimelockOperationStatus::Queued {
+        return Err(GovernanceError::TimelockCancellationFailed);
+    }
+
+    authorize_timelock_call(
+        env,
+        "cancel",
+        Vec::from_array(env, [caller.clone().into_val(env), op_id.into_val(env)]),
+    )?;
+
+    timelock_client.cancel(&caller, &op_id);
+    Ok(())
 }
 
 #[contract]
@@ -229,134 +326,111 @@ pub struct GovernanceContract;
 
 #[contractimpl]
 impl GovernanceContract {
-    /// @notice Initializes the governance contract.
-    /// @dev Can only be called once by the designated owner.
-    /// @param owner Address that controls configuration and can manage voter weights.
-    /// @param quorum_bps Quorum requirement in basis points (1-10_000).
-    /// @param voting_period_seconds Duration of the voting period in seconds.
-    /// @param timelock_seconds Delay between proposal success and execution.
-    /// @param execution_window_seconds Window after timelock during which a proposal remains executable.
+    /// @notice Initializes the governance contract and links its external dependencies.
+    /// @dev Can only be called once. The linked timelock must already be configured
+    ///      to treat this governance contract address as its admin.
+    /// @param owner Address allowed to update configuration and cancel proposals.
+    /// @param rbac_contract RBAC contract used to determine proposal and voting eligibility.
+    /// @param multisig_contract Multisig contract whose signer set authorizes execution.
+    /// @param timelock_contract Timelock contract that queues passed proposals before execution.
+    /// @param quorum_votes Minimum number of votes required for a proposal to pass quorum.
+    /// @param voting_period_seconds Duration of the voting window in seconds.
     pub fn initialize(
         env: Env,
         owner: Address,
-        quorum_bps: u32,
+        rbac_contract: Address,
+        multisig_contract: Address,
+        timelock_contract: Address,
+        quorum_votes: u32,
         voting_period_seconds: u64,
-        timelock_seconds: u64,
-        execution_window_seconds: u64,
-    ) {
+    ) -> Result<(), GovernanceError> {
         owner.require_auth();
 
-        let initialized: bool = env
+        if env
             .storage()
             .persistent()
-            .get(&StorageKey::Initialized)
-            .unwrap_or(false);
-        assert!(!initialized, "already initialized");
-
-        assert!(
-            quorum_bps > 0 && quorum_bps <= BPS_DENOMINATOR,
-            "invalid quorum"
-        );
-        assert!(voting_period_seconds > 0, "invalid voting period");
-        assert!(execution_window_seconds > 0, "invalid execution window");
+            .get::<_, bool>(&StorageKey::Initialized)
+            .unwrap_or(false)
+        {
+            return Err(GovernanceError::AlreadyInitialized);
+        }
+        if quorum_votes == 0 {
+            return Err(GovernanceError::InvalidQuorum);
+        }
+        if voting_period_seconds == 0 {
+            return Err(GovernanceError::InvalidVotingPeriod);
+        }
 
         env.storage().persistent().set(&StorageKey::Owner, &owner);
         env.storage()
             .persistent()
-            .set(&StorageKey::QuorumBps, &quorum_bps);
+            .set(&StorageKey::RbacContract, &rbac_contract);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::MultisigContract, &multisig_contract);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::TimelockContract, &timelock_contract);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::QuorumVotes, &quorum_votes);
         env.storage()
             .persistent()
             .set(&StorageKey::VotingPeriodSeconds, &voting_period_seconds);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::TimelockSeconds, &timelock_seconds);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::ExecutionWindowSeconds, &execution_window_seconds);
         env.storage()
             .persistent()
             .set(&StorageKey::Initialized, &true);
+        Ok(())
     }
 
-    /// @notice Updates governance configuration parameters.
-    /// @dev Only callable by the owner.
-    /// @param caller Owner address; must authenticate.
-    /// @param quorum_bps New quorum in basis points (1-10_000).
-    /// @param voting_period_seconds New voting period in seconds.
-    /// @param timelock_seconds New timelock in seconds.
-    /// @param execution_window_seconds New execution window in seconds.
+    /// @notice Updates the governance quorum and voting period.
+    /// @dev Owner-only. Dependency contract addresses remain fixed after initialization.
+    /// @param caller Owner address.
+    /// @param quorum_votes New minimum number of participating votes required.
+    /// @param voting_period_seconds New voting window length.
     pub fn update_config(
         env: Env,
         caller: Address,
-        quorum_bps: u32,
+        quorum_votes: u32,
         voting_period_seconds: u64,
-        timelock_seconds: u64,
-        execution_window_seconds: u64,
-    ) {
-        require_initialized(&env);
-        require_owner(&env, &caller);
-
-        assert!(
-            quorum_bps > 0 && quorum_bps <= BPS_DENOMINATOR,
-            "invalid quorum"
-        );
-        assert!(voting_period_seconds > 0, "invalid voting period");
-        assert!(execution_window_seconds > 0, "invalid execution window");
+    ) -> Result<(), GovernanceError> {
+        require_initialized(&env)?;
+        require_owner(&env, &caller)?;
+        if quorum_votes == 0 {
+            return Err(GovernanceError::InvalidQuorum);
+        }
+        if voting_period_seconds == 0 {
+            return Err(GovernanceError::InvalidVotingPeriod);
+        }
 
         env.storage()
             .persistent()
-            .set(&StorageKey::QuorumBps, &quorum_bps);
+            .set(&StorageKey::QuorumVotes, &quorum_votes);
         env.storage()
             .persistent()
             .set(&StorageKey::VotingPeriodSeconds, &voting_period_seconds);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::TimelockSeconds, &timelock_seconds);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::ExecutionWindowSeconds, &execution_window_seconds);
+        Ok(())
     }
 
-    /// @notice Sets or updates the voting power for a voter.
-    /// @dev Owner-only. Adjusts the global total voting power accordingly.
-    /// @param caller Owner address; must authenticate.
-    /// @param voter Address whose voting power is being updated.
-    /// @param power New voting power (must be >= 0).
-    pub fn set_voter_power(env: Env, caller: Address, voter: Address, power: i128) {
-        require_initialized(&env);
-        require_owner(&env, &caller);
-        assert!(power >= 0, "negative power");
-
-        let prev = read_voter_power(&env, &voter);
-        let mut total = read_total_power(&env);
-        total = total.checked_sub(prev).expect("total power underflow");
-        total = total.checked_add(power).expect("total power overflow");
-
-        write_voter_power(&env, &voter, power);
-        write_total_power(&env, total);
-    }
-
-    /// @notice Creates a new governance proposal.
-    /// @dev Proposer must have non-zero voting power.
-    /// @param proposer Address creating the proposal; must authenticate.
-    /// @param kind Encoded proposal kind and payload.
+    /// @notice Creates a proposal if the caller has the RBAC `Admin` or `Employer` role.
+    /// @dev Eligibility is checked at proposal creation time by querying the linked RBAC contract.
+    /// @param proposer Address creating the proposal.
+    /// @param kind Encoded proposal action and payload.
     /// @return proposal_id Newly created proposal identifier.
-    pub fn propose(env: Env, proposer: Address, kind: ProposalKind) -> u128 {
-        require_initialized(&env);
+    pub fn create_proposal(
+        env: Env,
+        proposer: Address,
+        kind: ProposalKind,
+    ) -> Result<u128, GovernanceError> {
+        require_initialized(&env)?;
         proposer.require_auth();
+        require_eligible_voter(&env, &proposer)?;
 
-        let power = read_voter_power(&env, &proposer);
-        assert!(power > 0, "no voting power");
-
-        let voting_period = get_voting_period(&env);
-        assert!(voting_period > 0, "voting period not set");
-
+        let voting_period = read_voting_period(&env)?;
         let now = env.ledger().timestamp();
-        let id = next_proposal_id(&env);
-        let total_power = read_total_power(&env);
-
+        let proposal_id = next_proposal_id(&env);
         let proposal = Proposal {
-            id,
+            id: proposal_id,
             proposer,
             kind,
             status: ProposalStatus::Active,
@@ -364,143 +438,124 @@ impl GovernanceContract {
             against_votes: 0,
             abstain_votes: 0,
             start_time: now,
-            end_time: now.checked_add(voting_period).expect("voting end overflow"),
+            end_time: now
+                .checked_add(voting_period)
+                .ok_or(GovernanceError::InvalidVotingPeriod)?,
+            timelock_operation_id: None,
             eta: None,
-            total_power_at_propose: total_power,
         };
 
         write_proposal(&env, &proposal);
-        id
+        Ok(proposal_id)
     }
 
-    /// @notice Casts a vote on an active proposal.
-    /// @dev Each voter may vote at most once per proposal.
-    /// @param voter Address casting the vote; must authenticate.
+    /// @notice Casts a single vote on an active proposal.
+    /// @dev Only addresses with the RBAC `Admin` or `Employer` role may vote.
+    /// @param voter Address casting the vote.
     /// @param proposal_id Proposal identifier.
-    /// @param choice Vote choice (For, Against, Abstain).
-    pub fn vote(env: Env, voter: Address, proposal_id: u128, choice: VoteChoice) {
-        require_initialized(&env);
+    /// @param choice Vote choice (`For`, `Against`, or `Abstain`).
+    pub fn cast_vote(
+        env: Env,
+        voter: Address,
+        proposal_id: u128,
+        choice: VoteChoice,
+    ) -> Result<(), GovernanceError> {
+        require_initialized(&env)?;
         voter.require_auth();
+        require_eligible_voter(&env, &voter)?;
 
-        let power = read_voter_power(&env, &voter);
-        assert!(power > 0, "no voting power");
-
-        let mut proposal = read_proposal(&env, proposal_id);
-        assert!(
-            proposal.status == ProposalStatus::Active,
-            "proposal not active"
-        );
+        let mut proposal = read_proposal(&env, proposal_id)?;
+        if proposal.status != ProposalStatus::Active {
+            return Err(GovernanceError::ProposalNotActive);
+        }
 
         let now = env.ledger().timestamp();
-        assert!(now >= proposal.start_time, "voting not started");
-        assert!(now <= proposal.end_time, "voting closed");
+        if now > proposal.end_time {
+            return Err(GovernanceError::VotingClosed);
+        }
 
-        let vote_key = StorageKey::Vote(proposal_id, voter.clone());
-        let already_voted: Option<VoteChoice> = env.storage().persistent().get(&vote_key);
-        assert!(already_voted.is_none(), "already voted");
+        let vote_key = StorageKey::Vote(proposal_id, voter);
+        if env.storage().persistent().has(&vote_key) {
+            return Err(GovernanceError::AlreadyVoted);
+        }
 
         match choice {
-            VoteChoice::For => {
-                proposal.for_votes = proposal
-                    .for_votes
-                    .checked_add(power)
-                    .expect("for_votes overflow");
-            }
+            VoteChoice::For => proposal.for_votes = proposal.for_votes.saturating_add(1),
             VoteChoice::Against => {
-                proposal.against_votes = proposal
-                    .against_votes
-                    .checked_add(power)
-                    .expect("against_votes overflow");
+                proposal.against_votes = proposal.against_votes.saturating_add(1)
             }
             VoteChoice::Abstain => {
-                proposal.abstain_votes = proposal
-                    .abstain_votes
-                    .checked_add(power)
-                    .expect("abstain_votes overflow");
+                proposal.abstain_votes = proposal.abstain_votes.saturating_add(1)
             }
         }
 
         env.storage().persistent().set(&vote_key, &choice);
         write_proposal(&env, &proposal);
+        Ok(())
     }
 
-    /// @notice Queues a proposal for execution if it has succeeded.
-    /// @dev Anyone can call this after the voting period has ended. This
-    ///      computes quorum and approval and, if satisfied, marks the
-    ///      proposal as `Succeeded` and sets the execution ETA based on
-    ///      the configured timelock.
+    /// @notice Finalizes a proposal after voting closes and queues timelocked execution if it passed.
+    /// @dev A proposal passes when total participation reaches quorum and `for_votes > against_votes`.
+    /// @param env Contract environment.
     /// @param proposal_id Proposal identifier.
-    pub fn queue(env: Env, proposal_id: u128) {
-        require_initialized(&env);
-
-        let mut proposal = read_proposal(&env, proposal_id);
-        assert!(
-            proposal.status == ProposalStatus::Active,
-            "proposal not active"
-        );
+    pub fn finalize_proposal(env: Env, proposal_id: u128) -> Result<(), GovernanceError> {
+        require_initialized(&env)?;
+        let mut proposal = read_proposal(&env, proposal_id)?;
+        if proposal.status != ProposalStatus::Active {
+            return Err(GovernanceError::ProposalNotActive);
+        }
 
         let now = env.ledger().timestamp();
-        assert!(now > proposal.end_time, "voting still in progress");
+        if now <= proposal.end_time {
+            return Err(GovernanceError::VotingStillOpen);
+        }
 
-        let total_power = proposal.total_power_at_propose;
-        let quorum_bps = get_quorum_bps(&env);
-
-        let total_participation = proposal
+        let total_votes = proposal
             .for_votes
-            .checked_add(proposal.against_votes)
-            .and_then(|v| v.checked_add(proposal.abstain_votes))
-            .expect("participation overflow");
+            .saturating_add(proposal.against_votes)
+            .saturating_add(proposal.abstain_votes);
+        let quorum_votes = read_quorum_votes(&env)?;
+        let outcome = proposal.for_votes.cmp(&proposal.against_votes);
 
-        let mut succeeded = false;
-
-        if total_power > 0 && quorum_bps > 0 {
-            // quorum requirement: participation >= total_power * quorum_bps / BPS_DENOMINATOR
-            let quorum_threshold =
-                (total_power * i128::from(quorum_bps as i64)) / i128::from(BPS_DENOMINATOR as i64);
-            let has_quorum = total_participation >= quorum_threshold;
-            let approved = proposal.for_votes > proposal.against_votes;
-
-            if has_quorum && approved {
-                succeeded = true;
-            }
-        }
-
-        if succeeded {
-            let timelock = get_timelock(&env);
-            let eta = now.checked_add(timelock).expect("eta overflow");
-            proposal.status = ProposalStatus::Succeeded;
-            proposal.eta = Some(eta);
-        } else {
+        if total_votes < quorum_votes || outcome != Ordering::Greater {
             proposal.status = ProposalStatus::Defeated;
+            write_proposal(&env, &proposal);
+            return Ok(());
         }
 
+        let timelock_operation = queue_timelock_operation(&env, proposal_id)?;
+        proposal.status = ProposalStatus::Succeeded;
+        proposal.timelock_operation_id = Some(timelock_operation.id);
+        proposal.eta = Some(timelock_operation.eta);
         write_proposal(&env, &proposal);
+        Ok(())
     }
 
-    /// @notice Executes a previously succeeded proposal after the timelock.
-    /// @dev For `ParameterChange`, the key/value pair is written to storage.
-    ///      For `ArbiterChange` and `UpgradeContract`, the intent is recorded
-    ///      in storage for downstream contracts or off-chain tooling to act on.
+    /// @notice Executes a passed proposal after the timelock has matured.
+    /// @dev Execution is restricted to addresses present in the linked multisig signer set.
+    /// @param executor Multisig signer authorizing execution.
     /// @param proposal_id Proposal identifier.
-    pub fn execute(env: Env, proposal_id: u128) {
-        require_initialized(&env);
+    pub fn execute_proposal(
+        env: Env,
+        executor: Address,
+        proposal_id: u128,
+    ) -> Result<(), GovernanceError> {
+        require_initialized(&env)?;
+        executor.require_auth();
 
-        let mut proposal = read_proposal(&env, proposal_id);
-        assert!(
-            proposal.status == ProposalStatus::Succeeded,
-            "proposal not succeeded"
-        );
-
-        let eta = proposal.eta.expect("eta not set");
-        let now = env.ledger().timestamp();
-        assert!(now >= eta, "timelock not expired");
-
-        let execution_window = get_execution_window(&env);
-        if now > eta.checked_add(execution_window).expect("window overflow") {
-            // We don't update status to Expired here because a panic would revert it.
-            // Status update is handled by the dedicated `mark_expired` function.
-            panic!("execution window expired");
+        if !is_multisig_signer(&env, &executor)? {
+            return Err(GovernanceError::UnauthorizedExecutor);
         }
+
+        let mut proposal = read_proposal(&env, proposal_id)?;
+        if proposal.status != ProposalStatus::Succeeded {
+            return Err(GovernanceError::ProposalNotSucceeded);
+        }
+
+        let timelock_operation_id = proposal
+            .timelock_operation_id
+            .ok_or(GovernanceError::TimelockExecutionFailed)?;
+        execute_timelock_operation(&env, timelock_operation_id)?;
 
         match &proposal.kind {
             ProposalKind::ParameterChange(key, value) => {
@@ -508,124 +563,129 @@ impl GovernanceContract {
                     .persistent()
                     .set(&StorageKey::Parameter(key.clone()), value);
             }
-            ProposalKind::ArbiterChange(new_arbiter) => {
-                env.storage()
-                    .persistent()
-                    .set(&StorageKey::Arbiter, new_arbiter);
-            }
             ProposalKind::UpgradeContract(target, new_wasm_hash) => {
                 env.storage()
                     .persistent()
                     .set(&StorageKey::ApprovedUpgrade(target.clone()), new_wasm_hash);
             }
+            ProposalKind::ArbiterChange(new_arbiter) => {
+                env.storage()
+                    .persistent()
+                    .set(&StorageKey::Arbiter, new_arbiter);
+            }
         }
 
         proposal.status = ProposalStatus::Executed;
         write_proposal(&env, &proposal);
+        Ok(())
     }
 
     /// @notice Cancels a proposal that has not yet been executed.
-    /// @dev Only the owner can cancel; typically used for emergency overrides.
-    /// @param caller Owner address; must authenticate.
+    /// @dev Owner-only. If a passed proposal already queued a timelock operation, that
+    ///      operation is cancelled first so execution cannot later proceed.
+    /// @param caller Owner address.
     /// @param proposal_id Proposal identifier.
-    pub fn cancel(env: Env, caller: Address, proposal_id: u128) {
-        require_initialized(&env);
-        require_owner(&env, &caller);
+    pub fn cancel_proposal(
+        env: Env,
+        caller: Address,
+        proposal_id: u128,
+    ) -> Result<(), GovernanceError> {
+        require_initialized(&env)?;
+        require_owner(&env, &caller)?;
 
-        let mut proposal = read_proposal(&env, proposal_id);
-        assert!(
-            proposal.status == ProposalStatus::Active
-                || proposal.status == ProposalStatus::Succeeded,
-            "cannot cancel"
-        );
+        let mut proposal = read_proposal(&env, proposal_id)?;
+        if proposal.status == ProposalStatus::Executed
+            || proposal.status == ProposalStatus::Defeated
+        {
+            return Err(GovernanceError::ProposalNotActive);
+        }
+
+        if proposal.status == ProposalStatus::Succeeded {
+            if let Some(op_id) = proposal.timelock_operation_id {
+                cancel_timelock_operation(&env, op_id)?;
+            }
+        }
 
         proposal.status = ProposalStatus::Cancelled;
         write_proposal(&env, &proposal);
+        Ok(())
     }
 
-    /// @notice Marks a successful proposal as expired if the execution window has passed.
-    /// @param proposal_id Proposal identifier.
-    pub fn mark_expired(env: Env, proposal_id: u128) {
-        require_initialized(&env);
+    /// @notice Backward-compatible alias for `create_proposal`.
+    pub fn propose(
+        env: Env,
+        proposer: Address,
+        kind: ProposalKind,
+    ) -> Result<u128, GovernanceError> {
+        Self::create_proposal(env, proposer, kind)
+    }
 
-        let mut proposal = read_proposal(&env, proposal_id);
-        assert!(
-            proposal.status == ProposalStatus::Succeeded,
-            "proposal not succeeded"
-        );
+    /// @notice Backward-compatible alias for `cast_vote`.
+    pub fn vote(
+        env: Env,
+        voter: Address,
+        proposal_id: u128,
+        choice: VoteChoice,
+    ) -> Result<(), GovernanceError> {
+        Self::cast_vote(env, voter, proposal_id, choice)
+    }
 
-        let eta = proposal.eta.expect("eta not set");
-        let now = env.ledger().timestamp();
-        let execution_window = get_execution_window(&env);
+    /// @notice Backward-compatible alias for `finalize_proposal`.
+    pub fn queue(env: Env, proposal_id: u128) -> Result<(), GovernanceError> {
+        Self::finalize_proposal(env, proposal_id)
+    }
 
-        assert!(
-            now > eta.checked_add(execution_window).expect("window overflow"),
-            "window not yet expired"
-        );
+    /// @notice Backward-compatible alias for `execute_proposal`.
+    pub fn execute(env: Env, executor: Address, proposal_id: u128) -> Result<(), GovernanceError> {
+        Self::execute_proposal(env, executor, proposal_id)
+    }
 
-        proposal.status = ProposalStatus::Expired;
-        write_proposal(&env, &proposal);
+    /// @notice Backward-compatible alias for `cancel_proposal`.
+    pub fn cancel(env: Env, caller: Address, proposal_id: u128) -> Result<(), GovernanceError> {
+        Self::cancel_proposal(env, caller, proposal_id)
     }
 
     /// @notice Returns the current governance configuration.
-    /// @return owner, quorum_bps, voting_period_seconds, timelock_seconds, execution_window_seconds.
-    pub fn get_config(env: Env) -> (Address, u32, u64, u64, u64) {
-        require_initialized(&env);
-        let owner = read_owner(&env);
-        let quorum_bps = get_quorum_bps(&env);
-        let voting_period = get_voting_period(&env);
-        let timelock = get_timelock(&env);
-        let execution_window = get_execution_window(&env);
-        (owner, quorum_bps, voting_period, timelock, execution_window)
+    /// @return owner, rbac_contract, multisig_contract, timelock_contract, quorum_votes, voting_period_seconds.
+    pub fn get_config(
+        env: Env,
+    ) -> Result<(Address, Address, Address, Address, u32, u64), GovernanceError> {
+        require_initialized(&env)?;
+        Ok((
+            read_owner(&env)?,
+            read_address(&env, &StorageKey::RbacContract)?,
+            read_address(&env, &StorageKey::MultisigContract)?,
+            read_address(&env, &StorageKey::TimelockContract)?,
+            read_quorum_votes(&env)?,
+            read_voting_period(&env)?,
+        ))
     }
 
-    /// @notice Returns the voting power for a given voter.
-    /// @param voter voter parameter
-    /// @dev Requires caller authentication
-    pub fn get_voter_power(env: Env, voter: Address) -> i128 {
-        read_voter_power(&env, &voter)
-    }
-
-    /// @notice Returns the total voting power across all voters.
-    /// @dev Requires caller authentication
-    pub fn get_total_voting_power(env: Env) -> i128 {
-        read_total_power(&env)
-    }
-
-    /// @notice Returns a stored proposal by id, if any.
-    /// @param proposal_id proposal_id parameter
-    /// @dev Requires caller authentication
+    /// @notice Returns a proposal by id if it exists.
     pub fn get_proposal(env: Env, proposal_id: u128) -> Option<Proposal> {
         env.storage()
             .persistent()
             .get(&StorageKey::Proposal(proposal_id))
     }
 
-    /// @notice Returns whether a voter has already voted on a proposal.
-    /// @param proposal_id proposal_id parameter
-    /// @param voter voter parameter
-    /// @dev Requires caller authentication
+    /// @notice Returns the vote choice cast by a voter on a proposal, if any.
     pub fn get_vote(env: Env, proposal_id: u128, voter: Address) -> Option<VoteChoice> {
         env.storage()
             .persistent()
             .get(&StorageKey::Vote(proposal_id, voter))
     }
 
-    /// @notice Returns a parameter value previously set via a `ParameterChange` proposal.
-    /// @dev Requires caller authentication
+    /// @notice Returns a stored governance parameter.
     pub fn get_parameter(env: Env, key: Symbol) -> Option<i128> {
         env.storage().persistent().get(&StorageKey::Parameter(key))
     }
 
-    /// @notice Returns the last approved arbiter address, if any.
-    /// @dev Requires caller authentication
+    /// @notice Returns the last approved arbiter address.
     pub fn get_arbiter(env: Env) -> Option<Address> {
         env.storage().persistent().get(&StorageKey::Arbiter)
     }
 
-    /// @notice Returns the last approved upgrade hash for a target contract, if any.
-    /// @param target target parameter
-    /// @dev Requires caller authentication
+    /// @notice Returns the last approved upgrade hash for a target contract.
     pub fn get_approved_upgrade(env: Env, target: Address) -> Option<BytesN<32>> {
         env.storage()
             .persistent()
