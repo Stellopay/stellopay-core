@@ -44,7 +44,7 @@ use alloc::vec::Vec as StdVec;
 
 use aes_gcm::{
     aead::{Aead, KeyInit},
-    Aes256Gcm, Key, Nonce,
+    Aes256Gcm, Nonce,
 };
 use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
@@ -151,14 +151,12 @@ pub fn serialize_agreement(env: &Env, agreement: &Agreement) -> StdVec<u8> {
     buf.extend_from_slice(&agreement.id.to_le_bytes());
 
     // employer address bytes
-    let emp_bytes = agreement.employer.to_string().into_bytes();
-    let emp_raw: StdVec<u8> = emp_bytes.iter().collect();
+    let emp_raw: StdVec<u8> = agreement.employer.to_string().to_bytes().iter().collect();
     buf.extend_from_slice(&(emp_raw.len() as u32).to_le_bytes());
     buf.extend_from_slice(&emp_raw);
 
     // token address bytes
-    let tok_bytes = agreement.token.to_string().into_bytes();
-    let tok_raw: StdVec<u8> = tok_bytes.iter().collect();
+    let tok_raw: StdVec<u8> = agreement.token.to_string().to_bytes().iter().collect();
     buf.extend_from_slice(&(tok_raw.len() as u32).to_le_bytes());
     buf.extend_from_slice(&tok_raw);
 
@@ -323,10 +321,8 @@ pub fn encrypt_backup(env: &Env, plaintext: &[u8], passphrase: &[u8]) -> StdVec<
     let nonce_bytes: [u8; NONCE_LEN] = nonce_bn.to_array();
 
     let key_bytes = derive_key(passphrase, &salt);
-    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-
+    let cipher = Aes256Gcm::new_from_slice(&key_bytes).expect("key length is always 32 bytes");
+    let nonce = Nonce::from(nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, plaintext)
         .expect("AES-GCM encryption must not fail for valid inputs");
@@ -370,9 +366,10 @@ pub fn decrypt_backup(envelope: &[u8], passphrase: &[u8]) -> Result<StdVec<u8>, 
     let ciphertext = &envelope[pos..];
 
     let key_bytes = derive_key(passphrase, salt);
-    let key = Key::<Aes256Gcm>::from_slice(&key_bytes);
-    let cipher = Aes256Gcm::new(key);
-    let nonce = Nonce::from_slice(nonce_bytes);
+    let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|_| BackupError::DecryptionFailed)?;
+    let mut nonce_arr = [0u8; NONCE_LEN];
+    nonce_arr.copy_from_slice(nonce_bytes);
+    let nonce = Nonce::from(nonce_arr);
 
     cipher
         .decrypt(nonce, ciphertext)
