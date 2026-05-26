@@ -1182,6 +1182,7 @@ dependencies = [
  "dispute_escalation",
  "employee_roles",
  "governance",
+ "multisig",
  "payment_history",
  "payment_retry",
  "payment_scheduler",
