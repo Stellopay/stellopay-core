@@ -1,16 +1,17 @@
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{Address, Env, Vec};
 
+use crate::audit::{record_entry, AuditEvent};
 use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
     emit_employee_added, emit_grace_period_extended, emit_grace_period_finalized,
     emit_payment_received, emit_payment_sent, emit_payroll_claimed, emit_set_arbiter,
-    AgreementActivatedEvent, AgreementCancelledEvent, GracePeriodExtendedEvent,
-    AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent,
-    BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent,
-    EmployeeAddedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
-    MilestoneClaimed, PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
+    AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent,
+    AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent,
+    DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, GracePeriodExtendedEvent,
+    GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved, MilestoneClaimed,
+    PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
@@ -589,9 +590,17 @@ fn create_payroll_agreement_internal(
         env,
         AgreementCreatedEvent {
             agreement_id,
-            employer,
+            employer: employer.clone(),
             mode: AgreementMode::Payroll,
         },
+    );
+    record_entry(
+        env,
+        employer,
+        AuditEvent::AgreementCreated,
+        agreement_id,
+        None,
+        Some(0),
     );
 
     agreement_id
@@ -933,6 +942,14 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
         .set(&StorageKey::Agreement(agreement_id), &agreement);
 
     emit_agreement_activated(env, AgreementActivatedEvent { agreement_id });
+    record_entry(
+        env,
+        agreement.employer,
+        AuditEvent::AgreementActivated,
+        agreement_id,
+        None,
+        Some(agreement.total_amount),
+    );
 }
 
 /// Set Arbiter
@@ -1009,7 +1026,8 @@ pub fn set_grace_extension_policy(
     if policy.max_cumulative_extension_bps > MAX_BPS {
         return Err(PayrollError::GraceExtensionInvalid);
     }
-    if policy.max_extension_per_call_seconds == 0 || policy.max_extension_per_call_seconds > MAX_PER_CALL
+    if policy.max_extension_per_call_seconds == 0
+        || policy.max_extension_per_call_seconds > MAX_PER_CALL
     {
         return Err(PayrollError::GraceExtensionInvalid);
     }
@@ -1063,9 +1081,7 @@ pub fn extend_grace_period(
         .ok_or(PayrollError::GraceExtensionInvalid)?;
 
     let base = agreement.grace_period_seconds as u128;
-    let max_extra = (base
-        .saturating_mul(policy.max_cumulative_extension_bps as u128))
-        / 10000;
+    let max_extra = (base.saturating_mul(policy.max_cumulative_extension_bps as u128)) / 10000;
 
     if (new_total as u128) > max_extra {
         return Err(PayrollError::GraceExtensionCapExceeded);
@@ -1131,7 +1147,11 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
     };
 
     let grace_window_seconds = if agreement.status == AgreementStatus::Cancelled {
-        effective_cancelled_grace_duration_seconds(env, agreement_id, agreement.grace_period_seconds)
+        effective_cancelled_grace_duration_seconds(
+            env,
+            agreement_id,
+            agreement.grace_period_seconds,
+        )
     } else {
         agreement.grace_period_seconds
     };
@@ -1152,6 +1172,14 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
         .set(&StorageKey::Agreement(agreement_id), &agreement);
 
     emit_dsipute_raised(env, DisputeRaisedEvent { agreement_id });
+    record_entry(
+        env,
+        caller,
+        AuditEvent::DisputeRaised,
+        agreement_id,
+        Some(agreement.employer),
+        Some(agreement.total_amount),
+    );
 
     Ok(())
 }
@@ -1239,6 +1267,14 @@ pub fn resolve_dispute(
             pay_contributor: pay_employee,
             refund_employer,
         },
+    );
+    record_entry(
+        &env,
+        caller,
+        AuditEvent::DisputeResolved,
+        agreement_id,
+        Some(agreement.employer),
+        Some(pay_employee + refund_employer),
     );
 
     Ok(())
@@ -2519,6 +2555,14 @@ pub fn cancel_agreement(env: &Env, agreement_id: u128) {
         .set(&StorageKey::Agreement(agreement_id), &agreement);
 
     emit_agreement_cancelled(env, AgreementCancelledEvent { agreement_id });
+    record_entry(
+        env,
+        agreement.employer,
+        AuditEvent::AgreementCancelled,
+        agreement_id,
+        None,
+        Some(agreement.total_amount),
+    );
 }
 
 /// Finalizes the grace period and allows refund of remaining balance.

@@ -1,8 +1,10 @@
 #![no_std]
+pub mod audit;
 pub mod events;
 mod payroll;
 pub mod storage;
 
+use audit::LifecycleAuditEntry;
 use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
@@ -363,6 +365,29 @@ impl PayrollContract {
     /// Requires caller authentication
     pub fn get_arbiter(env: Env) -> Option<Address> {
         payroll::get_arbiter(&env)
+    }
+
+    /// @notice Configures the shared audit logger used for lifecycle audit entries.
+    /// @dev Only the initialized contract owner can set this address. Once configured,
+    /// successful lifecycle mutations append to the local audit stream and call the
+    /// external audit logger's append-only entrypoint.
+    pub fn set_audit_logger(env: Env, owner: Address, audit_logger: Address) {
+        audit::set_audit_logger(&env, owner, audit_logger);
+    }
+
+    /// @notice Returns the configured shared audit logger address, if one is set.
+    pub fn get_audit_logger(env: Env) -> Option<Address> {
+        audit::get_audit_logger(&env)
+    }
+
+    /// @notice Returns the number of lifecycle audit entries appended locally.
+    pub fn get_audit_entry_count(env: Env) -> u64 {
+        audit::get_audit_entry_count(&env)
+    }
+
+    /// @notice Returns a lifecycle audit entry by append-only id.
+    pub fn get_audit_entry(env: Env, audit_id: u64) -> Option<LifecycleAuditEntry> {
+        audit::get_audit_entry(&env, audit_id)
     }
 
     /// Raise Dispute
