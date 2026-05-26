@@ -48,7 +48,7 @@ use aes_gcm::{
 };
 use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
-use soroban_sdk::{contracttype, Address, Bytes, BytesN, Env};
+use soroban_sdk::{contracttype, Address, Bytes, Env};
 
 use crate::storage::{Agreement, AgreementMode, AgreementStatus, DisputeStatus, StorageKey};
 
@@ -305,33 +305,30 @@ pub fn derive_key(passphrase: &[u8], salt: &[u8]) -> [u8; KEY_LEN] {
 
 /// Encrypt `plaintext` with AES-256-GCM.
 ///
-/// Returns the envelope:
-/// `[ version(1) | salt(16) | nonce(12) | ciphertext ]`
+/// Returns the envelope: `[ version(1) | salt(16) | nonce(12) | ciphertext ]`
 ///
-/// # Arguments
-/// * `env`        – Soroban environment (used for PRNG).
-/// * `plaintext`  – serialised agreement bytes.
-/// * `passphrase` – encryption passphrase; never stored on-chain.
-pub fn encrypt_backup(env: &Env, plaintext: &[u8], passphrase: &[u8]) -> StdVec<u8> {
-    // Generate random salt and nonce from the Soroban PRNG.
-    let salt_bn: BytesN<16> = env.prng().gen();
-    let nonce_bn: BytesN<12> = env.prng().gen();
-
-    let salt: StdVec<u8> = salt_bn.to_array().to_vec();
-    let nonce_bytes: [u8; NONCE_LEN] = nonce_bn.to_array();
-
-    let key_bytes = derive_key(passphrase, &salt);
+/// Salt and nonce are caller-supplied so this function works both inside a
+/// Soroban contract (use `env.prng().gen()`) and in off-chain / test contexts
+/// (use any CSPRNG or fixed test vectors).
+pub fn encrypt_backup(
+    plaintext: &[u8],
+    passphrase: &[u8],
+    salt: &[u8; SALT_LEN],
+    nonce_bytes: &[u8; NONCE_LEN],
+) -> StdVec<u8> {
+    let key_bytes = derive_key(passphrase, salt);
     let cipher = Aes256Gcm::new_from_slice(&key_bytes).expect("key length is always 32 bytes");
-    let nonce = Nonce::from(nonce_bytes);
+    let nonce = Nonce::from(*nonce_bytes);
+
     let ciphertext = cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(&nonce, plaintext)
         .expect("AES-GCM encryption must not fail for valid inputs");
 
-    // Build envelope
-    let mut envelope: StdVec<u8> = StdVec::with_capacity(1 + SALT_LEN + NONCE_LEN + ciphertext.len());
+    let mut envelope: StdVec<u8> =
+        StdVec::with_capacity(1 + SALT_LEN + NONCE_LEN + ciphertext.len());
     envelope.push(BACKUP_VERSION);
-    envelope.extend_from_slice(&salt);
-    envelope.extend_from_slice(&nonce_bytes);
+    envelope.extend_from_slice(salt);
+    envelope.extend_from_slice(nonce_bytes);
     envelope.extend_from_slice(&ciphertext);
     envelope
 }
@@ -372,7 +369,7 @@ pub fn decrypt_backup(envelope: &[u8], passphrase: &[u8]) -> Result<StdVec<u8>, 
     let nonce = Nonce::from(nonce_arr);
 
     cipher
-        .decrypt(nonce, ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|_| BackupError::DecryptionFailed)
 }
 
@@ -382,31 +379,22 @@ pub fn decrypt_backup(envelope: &[u8], passphrase: &[u8]) -> Result<StdVec<u8>, 
 
 /// Produce an encrypted backup envelope for a single `Agreement`.
 ///
-/// The caller is responsible for storing the returned bytes off-chain and
-/// managing the passphrase securely.
-///
-/// # Arguments
-/// * `env`        – Soroban environment.
-/// * `agreement`  – agreement to back up.
-/// * `passphrase` – encryption passphrase (raw bytes).
-pub fn backup_agreement(env: &Env, agreement: &Agreement, passphrase: &[u8]) -> StdVec<u8> {
+/// Salt and nonce must be unique random bytes per backup. Inside a contract
+/// use `env.prng().gen::<BytesN<16>>().to_array()` etc. In tests or off-chain
+/// tooling use any CSPRNG.
+pub fn backup_agreement(
+    env: &Env,
+    agreement: &Agreement,
+    passphrase: &[u8],
+    salt: &[u8; SALT_LEN],
+    nonce: &[u8; NONCE_LEN],
+) -> StdVec<u8> {
     let plaintext = serialize_agreement(env, agreement);
-    encrypt_backup(env, &plaintext, passphrase)
+    encrypt_backup(&plaintext, passphrase, salt, nonce)
 }
 
 /// Decrypt and deserialise an agreement backup envelope.
-///
-/// Returns the reconstructed `Agreement` on success.
-///
-/// # Arguments
-/// * `env`        – Soroban environment.
-/// * `envelope`   – encrypted backup bytes.
-/// * `passphrase` – must match the passphrase used during [`backup_agreement`].
-pub fn restore_agreement(
-    env: &Env,
-    envelope: &[u8],
-    passphrase: &[u8],
-) -> Result<Agreement, BackupError> {
+pub fn restore_agreement(env: &Env, envelope: &[u8], passphrase: &[u8]) -> Result<Agreement, BackupError> {
     let plaintext = decrypt_backup(envelope, passphrase)?;
     deserialize_agreement(env, &plaintext)
 }
@@ -432,12 +420,8 @@ pub fn admin_restore_agreement(env: &Env, agreement: Agreement) {
 
 /// Admin-only: restore an agreement directly from an encrypted envelope.
 ///
-/// Combines decryption, deserialisation, and storage write in one call.
 /// The passphrase is passed as a `Bytes` value so it can be supplied from
 /// an off-chain signer without being stored on-chain.
-///
-/// # Access control
-/// Caller must be the contract owner (enforced in `lib.rs`).
 pub fn admin_restore_from_encrypted(
     env: &Env,
     envelope: Bytes,
