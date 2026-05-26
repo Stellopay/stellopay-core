@@ -809,7 +809,7 @@ fn test_payroll_claim_blocked_before_first_period() {
     );
 
     // No time advance — zero periods elapsed.
-    let result = client.try_claim_payroll(&employee, &_agreement_id, &0u32);
+    let result = client.try_claim_payroll(&employee, &_agreement_id, &0u32, &None::<u128>);
     assert!(result.is_err());
 }
 
@@ -829,7 +829,7 @@ fn test_payroll_claim_after_one_period_correct_amount() {
     );
 
     advance_time(&env, ONE_DAY);
-    client.claim_payroll(&employee, &agreement_id, &0u32);
+    client.claim_payroll(&employee, &agreement_id, &0u32, &None::<u128>);
 
     assert_eq!(balance(&env, &token, &employee), STANDARD_SALARY);
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &0u32), 1);
@@ -863,15 +863,15 @@ fn test_payroll_batch_distributes_to_multiple_employees() {
     // so each employee claims their own index individually.
     let mut idx0 = Vec::new(&env);
     idx0.push_back(0u32);
-    let b0 = client.batch_claim_payroll(&e0, &agreement_id, &idx0);
+    let b0 = client.batch_claim_payroll(&e0, &agreement_id, &idx0, &None::<u128>);
 
     let mut idx1 = Vec::new(&env);
     idx1.push_back(1u32);
-    let b1 = client.batch_claim_payroll(&e1, &agreement_id, &idx1);
+    let b1 = client.batch_claim_payroll(&e1, &agreement_id, &idx1, &None::<u128>);
 
     let mut idx2 = Vec::new(&env);
     idx2.push_back(2u32);
-    let b2 = client.batch_claim_payroll(&e2, &agreement_id, &idx2);
+    let b2 = client.batch_claim_payroll(&e2, &agreement_id, &idx2, &None::<u128>);
 
     assert_eq!(b0.successful_claims, 1);
     assert_eq!(b1.successful_claims, 1);
@@ -898,7 +898,7 @@ fn test_payroll_wrong_employee_index_rejected() {
     );
 
     advance_time(&env, ONE_DAY);
-    let result = client.try_claim_payroll(&employee, &agreement_id, &99u32);
+    let result = client.try_claim_payroll(&employee, &agreement_id, &99u32, &None::<u128>);
     assert!(result.is_err());
 }
 
@@ -916,7 +916,7 @@ fn test_payroll_claim_blocked_if_agreement_not_active() {
     client.add_employee_to_agreement(&agreement_id, &employee, &STANDARD_SALARY);
     // Intentionally not activated.
 
-    let result = client.try_claim_payroll(&employee, &agreement_id, &0u32);
+    let result = client.try_claim_payroll(&employee, &agreement_id, &0u32, &None::<u128>);
     assert!(result.is_err());
 }
 
@@ -959,7 +959,7 @@ fn test_payroll_claim_blocked_after_grace_period_expired() {
     advance_time(&env, grace_period + ONE_SECOND);
     assert!(!client.is_grace_period_active(&agreement_id));
 
-    let result = client.try_claim_payroll(&employee, &agreement_id, &0u32);
+    let result = client.try_claim_payroll(&employee, &agreement_id, &0u32, &None::<u128>);
     assert!(result.is_err());
 }
 
@@ -1076,7 +1076,7 @@ fn test_composite_emergency_pause_blocks_all_trigger_types() {
 
     // All three must fail.
     assert!(client.try_claim_time_based(&escrow_id).is_err());
-    assert!(client.try_claim_payroll(&employee, &payroll_id, &0u32).is_err());
+    assert!(client.try_claim_payroll(&employee, &payroll_id, &0u32, &None::<u128>).is_err());
     assert!(client.try_claim_milestone(&ms_id, &1u32).is_err());
 }
 
@@ -1105,7 +1105,7 @@ fn test_composite_dispute_blocks_payroll_claims() {
     );
 
     // Payroll claim must now fail.
-    let result = client.try_claim_payroll(&employee, &agreement_id, &0u32);
+    let result = client.try_claim_payroll(&employee, &agreement_id, &0u32, &None::<u128>);
     assert!(result.is_err());
 }
 
@@ -1146,7 +1146,7 @@ fn test_composite_grace_period_claim_succeeds_then_expires() {
     assert!(client.is_grace_period_active(&agreement_id));
 
     // Claim within grace period must succeed.
-    client.claim_payroll(&employee, &agreement_id, &0u32);
+    client.claim_payroll(&employee, &agreement_id, &0u32, &None::<u128>);
     assert_eq!(balance(&env, &token, &employee), STANDARD_SALARY);
 
     // Advance past grace period.
@@ -1155,6 +1155,6 @@ fn test_composite_grace_period_claim_succeeds_then_expires() {
 
     // A second claim (for the same period) must fail — both because all
     // claimable periods are exhausted and because the grace window closed.
-    let result = client.try_claim_payroll(&employee, &agreement_id, &0u32);
+    let result = client.try_claim_payroll(&employee, &agreement_id, &0u32, &None::<u128>);
     assert!(result.is_err());
 }

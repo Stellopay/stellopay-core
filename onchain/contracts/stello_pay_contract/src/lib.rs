@@ -396,6 +396,8 @@ impl PayrollContract {
     /// * `agreement_id` - ID of the agreement to raise dispute for
     /// * `pay_employee` - Amount to pay the employee
     /// * `refund_employer` - Amount to refund the employer
+    /// * `multisig_operation_id` - Executed multisig operation ID (required when
+    ///   total payout >= configured `dispute_threshold`)
     ///
     /// # Access Control
     /// Requires arbiter authentication
@@ -411,8 +413,9 @@ impl PayrollContract {
         agreement_id: u128,
         pay_employee: i128,
         refund_employer: i128,
+        multisig_operation_id: Option<u128>,
     ) -> Result<(), PayrollError> {
-        payroll::resolve_dispute(env, caller, agreement_id, pay_employee, refund_employer)
+        payroll::resolve_dispute(env, caller, agreement_id, pay_employee, refund_employer, multisig_operation_id)
     }
 
     /// Retrieves current dispute status for an agreement by ID
@@ -427,6 +430,30 @@ impl PayrollContract {
     /// Requires caller authentication
     pub fn get_dispute_status(env: Env, agreement_id: u128) -> DisputeStatus {
         payroll::get_dispute_status(env, agreement_id)
+    }
+
+    /// Configures the multisig integration.
+    ///
+    /// When set, `claim_payroll` and `resolve_dispute` require a pre-approved
+    /// multisig operation for amounts at or above the respective threshold.
+    ///
+    /// # Arguments
+    /// * `caller` - Contract owner (must authenticate)
+    /// * `config` - Multisig contract address and per-operation thresholds
+    ///
+    /// # Access Control
+    /// Owner only
+    pub fn set_multisig_config(
+        env: Env,
+        caller: Address,
+        config: storage::MultisigConfig,
+    ) -> Result<(), PayrollError> {
+        payroll::set_multisig_config(&env, caller, config)
+    }
+
+    /// Returns the current multisig config, if set.
+    pub fn get_multisig_config(env: Env) -> Option<storage::MultisigConfig> {
+        payroll::get_multisig_config(&env)
     }
 
     /// Sets the global FX rate admin address that is allowed to update
@@ -513,6 +540,8 @@ impl PayrollContract {
     /// * `caller` - Address of the caller
     /// * `agreement_id` - ID of the agreement
     /// * `employee_index` - Index of the employee in the agreement
+    /// * `multisig_operation_id` - Executed multisig operation ID (required when
+    ///   claim amount >= configured `large_payment_threshold`)
     ///
     /// # Access Control
     /// Requires caller to be the employee
@@ -527,8 +556,9 @@ impl PayrollContract {
         caller: Address,
         agreement_id: u128,
         employee_index: u32,
+        multisig_operation_id: Option<u128>,
     ) -> Result<(), PayrollError> {
-        payroll::claim_payroll(&env, &caller, agreement_id, employee_index)
+        payroll::claim_payroll(&env, &caller, agreement_id, employee_index, multisig_operation_id)
     }
 
     /// Claims payroll for an employee, but settles the transfer in a
@@ -580,8 +610,9 @@ impl PayrollContract {
         caller: Address,
         agreement_id: u128,
         employee_indices: Vec<u32>,
+        multisig_operation_id: Option<u128>,
     ) -> Result<BatchPayrollResult, PayrollError> {
-        payroll::batch_claim_payroll(&env, &caller, agreement_id, employee_indices)
+        payroll::batch_claim_payroll(&env, &caller, agreement_id, employee_indices, multisig_operation_id)
     }
 
     /// Get claimed periods for an employee

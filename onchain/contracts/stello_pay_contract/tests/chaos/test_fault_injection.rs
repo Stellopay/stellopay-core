@@ -86,7 +86,7 @@ fn chaos_token_transfer_failure_does_not_corrupt_state() {
 
     // Attempting a claim should panic inside the token contract due to missing
     // on-chain balance; catch the error via try_ wrapper.
-    let res = client.try_claim_payroll(&employee, &agreement_id, &0u32);
+    let res = client.try_claim_payroll(&employee, &agreement_id, &0u32, &None::<u128>);
     assert!(res.is_err());
 
     let status_after = client.get_agreement(&agreement_id).unwrap().status;
@@ -132,7 +132,7 @@ fn chaos_escrow_misconfiguration_then_recovery() {
 
     advance_time(&env, ONE_DAY + 1);
 
-    let first = client.try_claim_payroll(&employee, &agreement_id, &0u32);
+    let first = client.try_claim_payroll(&employee, &agreement_id, &0u32, &None::<u128>);
     assert_eq!(first, Err(Ok(PayrollError::InsufficientEscrowBalance)));
 
     // "Recover" by correcting escrow balance and retrying.
@@ -140,7 +140,7 @@ fn chaos_escrow_misconfiguration_then_recovery() {
         DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, 10_000);
     });
 
-    let second = client.try_claim_payroll(&employee, &agreement_id, &0u32);
+    let second = client.try_claim_payroll(&employee, &agreement_id, &0u32, &None::<u128>);
     assert!(second.is_ok());
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &0u32), 1);
 }
@@ -182,7 +182,7 @@ fn chaos_batch_partial_completion_and_rollback() {
 
     let indices = soroban_sdk::Vec::from_array(&env, [0u32, 1u32]);
     let batch = client
-        .batch_claim_payroll(&e1, &agreement_id, &indices)
+        .batch_claim_payroll(&e1, &agreement_id, &indices, &None::<u128>)
         .unwrap();
 
     assert_eq!(batch.successful_claims, 1);

@@ -286,7 +286,7 @@ fn test_invariants_payroll_create_claim_flow() {
     });
 
     client
-        .try_claim_payroll(&employee, &agreement_id, &0u32)
+        .try_claim_payroll(&employee, &agreement_id, &0u32, &None::<u128>)
         .unwrap();
 
     // Invariants must still hold after the claim.
@@ -389,7 +389,7 @@ fn test_invariants_dispute_raise_and_resolve() {
     let refund_employer = total_locked - pay_employee;
 
     client
-        .resolve_dispute(&arbiter, &agreement_id, &pay_employee, &refund_employer)
+        .resolve_dispute(&arbiter, &agreement_id, &pay_employee, &refund_employer, &None::<u128>)
         .unwrap();
 
     // After resolution, accounting and dispute flags must remain consistent.
@@ -440,7 +440,7 @@ fn test_invariants_pause_and_resume_flow() {
     // Resume and perform a claim; invariants must still hold.
     client.resume_agreement(&agreement_id);
     client
-        .try_claim_payroll(&employee, &agreement_id, &0u32)
+        .try_claim_payroll(&employee, &agreement_id, &0u32, &None::<u128>)
         .unwrap();
 
     assert_agreement_core_invariants(&env, &contract_id, agreement_id);

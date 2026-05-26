@@ -154,7 +154,7 @@ fn test_payroll_batch_claim_rejected_before_activation() {
 
     // Neither employee should be able to claim before the employer activates.
     let indices = Vec::from_array(&env, [0u32, 1u32]);
-    let result = client.try_batch_claim_payroll(&employer, &agreement_id, &indices);
+    let result = client.try_batch_claim_payroll(&employer, &agreement_id, &indices, &None::<u128>);
 
     // Agreement is in `Created` status → claim must fail.
     assert_eq!(result, Err(Ok(PayrollError::InvalidData)));
@@ -423,19 +423,19 @@ fn test_concurrent_dispute_resolutions() {
 
     // --- Scenario 8: unauthorized resolution ---
     let random_user = Address::generate(&env);
-    let unauth_resolve = client.try_resolve_dispute(&random_user, &agreement_id, &500, &500);
+    let unauth_resolve = client.try_resolve_dispute(&random_user, &agreement_id, &500, &500, &None::<u128>, &None::<u128>);
     assert_eq!(unauth_resolve, Err(Ok(PayrollError::NotArbiter)));
 
     // --- Scenario 9: double-resolve ---
     // Fund contract to satisfy transfer during resolution.
     mint(&env, &token, &client.address, 1000);
-    client.resolve_dispute(&arbiter, &agreement_id, &500, &500);
+    client.resolve_dispute(&arbiter, &agreement_id, &500, &500, &None::<u128>);
     assert_eq!(
         client.get_dispute_status(&agreement_id),
         DisputeStatus::Resolved
     );
 
-    let double_resolve = client.try_resolve_dispute(&arbiter, &agreement_id, &500, &500);
+    let double_resolve = client.try_resolve_dispute(&arbiter, &agreement_id, &500, &500, &None::<u128>, &None::<u128>);
     assert_eq!(double_resolve, Err(Ok(PayrollError::NoDispute)));
 }
 
@@ -685,7 +685,7 @@ fn test_separate_agreements_do_not_interfere() {
 
     // Resolve dispute on id2.
     mint(&env, &token, &client.address, 4000);
-    client.resolve_dispute(&arbiter, &id2, &1000, &1000);
+    client.resolve_dispute(&arbiter, &id2, &1000, &1000, &None::<u128>);
     assert_eq!(client.get_dispute_status(&id2), DisputeStatus::Resolved);
 
     // id1 milestone 3 is still available and uncorrupted after dispute resolution on id2.

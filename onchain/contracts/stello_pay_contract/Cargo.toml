@@ -21,9 +21,11 @@ stellar-access = "0.6.0"
 stellar-contract-utils = "0.6.0"
 stellar-macros = "0.6.0"
 stellar-tokens = "0.6.0"
+multisig = { path = "../multisig" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
+multisig = { path = "../multisig" }
 proptest = "1.10.0"
 criterion = { version = "0.8.2", features = ["html_reports"] }
 

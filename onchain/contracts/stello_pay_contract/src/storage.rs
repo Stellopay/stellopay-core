@@ -169,6 +169,8 @@ pub enum StorageKey {
     GracePeriodExtensionSeconds(u128),
     /// Owner-configurable caps for `extend_grace_period` (singleton).
     GracePeriodExtensionPolicy,
+    /// Optional multisig integration config (singleton).
+    MultisigConfig,
 }
 
 #[contracttype]
@@ -314,6 +316,10 @@ pub enum PayrollError {
     GraceExtensionInvalid = 31,
     /// Extension would exceed owner-configured cumulative cap
     GraceExtensionCapExceeded = 32,
+    /// A multisig-approved operation is required before this action can proceed
+    MultisigApprovalRequired = 33,
+    /// The multisig operation parameters do not match the requested action
+    MultisigOperationMismatch = 34,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.
@@ -328,6 +334,24 @@ pub struct GracePeriodExtensionPolicy {
     pub max_cumulative_extension_bps: u32,
     /// Upper bound on `additional_seconds` for a single `extend_grace_period` call.
     pub max_extension_per_call_seconds: u64,
+}
+
+/// Multisig integration configuration.
+///
+/// When set, `resolve_dispute` and `claim_payroll` (for amounts at or above
+/// the respective threshold) require a corresponding multisig operation to be
+/// in `Executed` state before the action proceeds.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultisigConfig {
+    /// Address of the deployed multisig contract.
+    pub contract: Address,
+    /// Minimum payment amount (inclusive) that requires multisig approval.
+    /// Set to `i128::MAX` to effectively disable the check.
+    pub large_payment_threshold: i128,
+    /// Minimum total dispute payout (pay_employee + refund_employer, inclusive)
+    /// that requires multisig approval.
+    pub dispute_threshold: i128,
 }
 
 /// Emergency pause state

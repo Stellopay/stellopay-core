@@ -183,7 +183,7 @@ fn test_paused_blocks_claims() {
     let _ = client.emergency_pause();
 
     // Attempt to claim should fail
-    let result = client.try_claim_payroll(&employee, &agreement_id, &0);
+    let result = client.try_claim_payroll(&employee, &agreement_id, &0, &None::<u128>);
     assert!(result.is_err());
 }
 

@@ -16,16 +16,59 @@ use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
     BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
     EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
-    MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
-    PayrollCreateResult, PayrollError, StorageKey,
+    MilestoneClaimResult, MilestoneKey, MultisigConfig, PaymentType, PayrollClaimResult,
+    PayrollCreateParams, PayrollCreateResult, PayrollError, StorageKey,
 };
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     token, IntoVal, Symbol, Val,
 };
+use multisig::MultisigContractClient;
 
 /// Fixed-point scaling factor for FX rates: 1e6 precision.
 const FX_SCALE: i128 = 1_000_000;
+
+// ============================================================================
+// Multisig integration helpers
+// ============================================================================
+
+/// Stores the multisig integration config. Owner-only.
+pub fn set_multisig_config(env: &Env, caller: Address, config: MultisigConfig) -> Result<(), PayrollError> {
+    let owner: Address = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::Owner)
+        .ok_or(PayrollError::Unauthorized)?;
+    caller.require_auth();
+    if caller != owner {
+        return Err(PayrollError::Unauthorized);
+    }
+    assert!(config.large_payment_threshold > 0, "large_payment_threshold must be positive");
+    assert!(config.dispute_threshold > 0, "dispute_threshold must be positive");
+    env.storage()
+        .persistent()
+        .set(&StorageKey::MultisigConfig, &config);
+    Ok(())
+}
+
+/// Returns the current multisig config, if set.
+pub fn get_multisig_config(env: &Env) -> Option<MultisigConfig> {
+    env.storage().persistent().get(&StorageKey::MultisigConfig)
+}
+
+/// Checks that a multisig operation with the given ID has been executed.
+/// Returns `Ok(())` if no multisig config is set (check is opt-in).
+fn require_multisig_approved(env: &Env, operation_id: u128) -> Result<(), PayrollError> {
+    let config = match get_multisig_config(env) {
+        Some(c) => c,
+        None => return Ok(()), // multisig not configured — skip check
+    };
+    let client = MultisigContractClient::new(env, &config.contract);
+    if !client.is_operation_approved(&operation_id) {
+        return Err(PayrollError::MultisigApprovalRequired);
+    }
+    Ok(())
+}
 
 pub fn create_milestone_agreement(
     env: Env,
@@ -1172,6 +1215,7 @@ pub fn resolve_dispute(
     agreement_id: u128,
     pay_employee: i128,
     refund_employer: i128,
+    multisig_operation_id: Option<u128>,
 ) -> Result<(), PayrollError> {
     caller.require_auth();
 
@@ -1193,6 +1237,16 @@ pub fn resolve_dispute(
     let total_locked = agreement.total_amount;
     if pay_employee + refund_employer > total_locked {
         return Err(PayrollError::InvalidPayout);
+    }
+
+    // Multisig gate: if a config is set and the total payout meets the
+    // dispute threshold, a pre-approved multisig operation is required.
+    if let Some(config) = get_multisig_config(&env) {
+        let total_payout = pay_employee.saturating_add(refund_employer);
+        if total_payout >= config.dispute_threshold {
+            let op_id = multisig_operation_id.ok_or(PayrollError::MultisigApprovalRequired)?;
+            require_multisig_approved(&env, op_id)?;
+        }
     }
 
     let token = TokenClient::new(&env, &agreement.token);
@@ -1394,6 +1448,7 @@ pub fn claim_payroll(
     caller: &Address,
     agreement_id: u128,
     employee_index: u32,
+    multisig_operation_id: Option<u128>,
 ) -> Result<(), PayrollError> {
     // Check emergency pause
     if is_emergency_paused(env) {
@@ -1489,6 +1544,15 @@ pub fn claim_payroll(
     let escrow_balance = DataKey::get_agreement_escrow_balance(env, agreement_id, &token);
     if escrow_balance < amount {
         return Err(PayrollError::InsufficientEscrowBalance);
+    }
+
+    // Multisig gate: if configured and amount meets the large-payment threshold,
+    // a pre-approved multisig LargePayment operation is required.
+    if let Some(config) = get_multisig_config(env) {
+        if amount >= config.large_payment_threshold {
+            let op_id = multisig_operation_id.ok_or(PayrollError::MultisigApprovalRequired)?;
+            require_multisig_approved(env, op_id)?;
+        }
     }
 
     // Get contract address (this contract)
@@ -1637,7 +1701,7 @@ pub fn claim_payroll_in_token(
 
     // Shortcut to the single-currency path if payout token == base token.
     if payout_token == base_token {
-        return claim_payroll(env, caller, agreement_id, employee_index);
+        return claim_payroll(env, caller, agreement_id, employee_index, None);
     }
 
     // Get current timestamp
@@ -1791,6 +1855,7 @@ pub fn batch_claim_payroll(
     caller: &Address,
     agreement_id: u128,
     employee_indices: Vec<u32>,
+    multisig_operation_id: Option<u128>,
 ) -> Result<BatchPayrollResult, PayrollError> {
     caller.require_auth();
 
@@ -1953,6 +2018,36 @@ pub fn batch_claim_payroll(
                 error_code: PayrollError::InsufficientEscrowBalance as u32,
             });
             continue;
+        }
+
+        // Multisig gate: check once per item that meets the threshold.
+        if let Some(config) = get_multisig_config(env) {
+            if amount >= config.large_payment_threshold {
+                match multisig_operation_id {
+                    Some(op_id) => {
+                        if let Err(e) = require_multisig_approved(env, op_id) {
+                            failed_claims += 1;
+                            results.push_back(PayrollClaimResult {
+                                employee_index,
+                                success: false,
+                                amount_claimed: 0,
+                                error_code: e as u32,
+                            });
+                            continue;
+                        }
+                    }
+                    None => {
+                        failed_claims += 1;
+                        results.push_back(PayrollClaimResult {
+                            employee_index,
+                            success: false,
+                            amount_claimed: 0,
+                            error_code: PayrollError::MultisigApprovalRequired as u32,
+                        });
+                        continue;
+                    }
+                }
+            }
         }
 
         env.authorize_as_current_contract(Vec::from_array(

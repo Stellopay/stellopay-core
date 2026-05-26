@@ -65,7 +65,7 @@ fn test_full_dispute_flow_resolved_by_arbiter() {
     // 3. Resolve Dispute by Arbiter
     let employer_refund = 600_i128; // 60% refund
     let employee_payout = 400_i128; // 40% payout
-    payroll_client.resolve_dispute(&arbiter, &agreement_id, &employee_payout, &employer_refund);
+    payroll_client.resolve_dispute(&arbiter, &agreement_id, &employee_payout, &employer_refund, &None::<u128>);
 
     // Verify state changed to Resolved
     let final_status = payroll_client.get_dispute_status(&agreement_id);
@@ -113,7 +113,7 @@ fn test_resolve_dispute_invalid_amounts() {
     payroll_client.raise_dispute(&employer, &agreement_id);
 
     // Amounts sum to 1100, but escrow is only 1000
-    let result = payroll_client.try_resolve_dispute(&arbiter, &agreement_id, &600_i128, &500_i128);
+    let result = payroll_client.try_resolve_dispute(&arbiter, &agreement_id, &600_i128, &500_i128, &None::<u128>, &None::<u128>);
     assert_eq!(result, Err(Ok(PayrollError::InvalidPayout)));
 }
 
@@ -141,7 +141,7 @@ fn test_multi_employee_payout_split() {
     payroll_client.raise_dispute(&employer, &agreement_id);
 
     // Arbiter resolves, employee pool gets 150, employer gets 50
-    payroll_client.resolve_dispute(&arbiter, &agreement_id, &150_i128, &50_i128);
+    payroll_client.resolve_dispute(&arbiter, &agreement_id, &150_i128, &50_i128, &None::<u128>);
 
     assert_eq!(payroll_client.get_dispute_status(&agreement_id), DisputeStatus::Resolved);
     // Pay is split equally among employees (150 / 2 = 75)

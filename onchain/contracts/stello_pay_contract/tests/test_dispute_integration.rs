@@ -41,7 +41,7 @@ fn test_dispute_payroll_multi_employee_split() {
     tok_admin.mint(&cid, &200);
 
     client.raise_dispute(&employer, &aid);
-    client.resolve_dispute(&arbiter, &aid, &150, &50);
+    client.resolve_dispute(&arbiter, &aid, &150, &50, &None::<u128>);
 
     assert_eq!(tok_client.balance(&e1), 75);
     assert_eq!(tok_client.balance(&e2), 75);
@@ -69,7 +69,7 @@ fn test_dispute_escrow_funded_resolve_split() {
     tok_admin.mint(&cid, &1000);
 
     client.raise_dispute(&employer, &aid);
-    client.resolve_dispute(&arbiter, &aid, &600, &400);
+    client.resolve_dispute(&arbiter, &aid, &600, &400, &None::<u128>);
 
     assert_eq!(tok_client.balance(&contributor), 600);
     assert_eq!(tok_client.balance(&employer), 400);

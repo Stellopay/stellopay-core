@@ -389,7 +389,7 @@ fn test_disputed_to_completed_via_resolve_dispute() {
     );
 
     let half = SALARY / 2;
-    client.resolve_dispute(&arbiter, &id, &half, &half);
+    client.resolve_dispute(&arbiter, &id, &half, &half, &None::<u128>);
 
     let a = client.get_agreement(&id).unwrap();
     assert_eq!(a.status, AgreementStatus::Completed);

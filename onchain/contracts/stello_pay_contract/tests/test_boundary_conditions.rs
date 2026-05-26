@@ -536,7 +536,7 @@ fn test_resolve_dispute_payout_exceeds_total_rejected() {
     client.raise_dispute(&employer, &agreement_id);
 
     // Attempt resolve with payout sum (60 + 50 = 110) exceeding total (100)
-    let result = client.try_resolve_dispute(&arbiter, &agreement_id, &60i128, &50i128);
+    let result = client.try_resolve_dispute(&arbiter, &agreement_id, &60i128, &50i128, &None::<u128>, &None::<u128>);
     assert!(result.is_err());
 }
 
@@ -565,7 +565,7 @@ fn test_resolve_dispute_zero_payouts_succeeds() {
     client.raise_dispute(&employer, &agreement_id);
 
     // Resolve with zero payouts — no token transfers occur
-    client.resolve_dispute(&arbiter, &agreement_id, &0i128, &0i128);
+    client.resolve_dispute(&arbiter, &agreement_id, &0i128, &0i128, &None::<u128>);
 
     // Verify dispute is resolved and agreement completed
     assert_eq!(
@@ -664,7 +664,7 @@ fn test_claim_payroll_invalid_employee_index_max_u32() {
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
 
     // DataKey employee count defaults to 0; u32::MAX >= 0 → InvalidEmployeeIndex
-    let result = client.try_claim_payroll(&caller, &agreement_id, &u32::MAX);
+    let result = client.try_claim_payroll(&caller, &agreement_id, &u32::MAX, &None::<u128>);
     assert!(result.is_err());
 }
 
@@ -683,7 +683,7 @@ fn test_claim_payroll_index_zero_with_no_employees() {
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
 
     // DataKey employee count defaults to 0; index 0 >= 0 → InvalidEmployeeIndex
-    let result = client.try_claim_payroll(&caller, &agreement_id, &0u32);
+    let result = client.try_claim_payroll(&caller, &agreement_id, &0u32, &None::<u128>);
     assert!(result.is_err());
 }
 

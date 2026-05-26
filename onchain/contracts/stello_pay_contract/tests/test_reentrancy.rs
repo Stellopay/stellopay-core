@@ -90,13 +90,13 @@ fn test_claim_payroll_state_updated_prevents_double_claim() {
 
     advance_time(&env, ONE_DAY + 1);
 
-    let res = client.try_claim_payroll(&employee, &agreement_id, &0);
+    let res = client.try_claim_payroll(&employee, &agreement_id, &0, &None::<u128>);
     assert!(res.is_ok());
 
     let claimed = client.get_employee_claimed_periods(&agreement_id, &0);
     assert_eq!(claimed, 1);
 
-    let res2 = client.try_claim_payroll(&employee, &agreement_id, &0);
+    let res2 = client.try_claim_payroll(&employee, &agreement_id, &0, &None::<u128>);
     assert!(
         res2.is_err() || res2.as_ref().ok().and_then(|r| r.as_ref().err()).is_some(),
         "second claim must fail (no periods to claim)"

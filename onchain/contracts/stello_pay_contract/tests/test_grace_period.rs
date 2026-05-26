@@ -698,10 +698,10 @@ fn test_claim_payroll_during_grace_period() {
     client.cancel_agreement(&agreement_id);
 
     // Both employees claim during grace period
-    let result1 = client.try_claim_payroll(&employee1, &agreement_id, &0);
+    let result1 = client.try_claim_payroll(&employee1, &agreement_id, &0, &None::<u128>);
     assert!(result1.is_ok());
 
-    let result2 = client.try_claim_payroll(&employee2, &agreement_id, &1);
+    let result2 = client.try_claim_payroll(&employee2, &agreement_id, &1, &None::<u128>);
     assert!(result2.is_ok());
 
     // Verify balances
@@ -787,7 +787,7 @@ fn test_cannot_claim_after_grace_period() {
     advance_time(&env, ONE_HOUR + 1);
 
     // Attempt claim - should fail
-    let result = client.try_claim_payroll(&employee, &agreement_id, &0);
+    let result = client.try_claim_payroll(&employee, &agreement_id, &0, &None::<u128>);
     assert!(result.is_err());
 }
 
@@ -817,7 +817,7 @@ fn test_cannot_claim_if_not_cancelled() {
     advance_time(&env, ONE_DAY);
 
     // Claim should work normally
-    let result = client.try_claim_payroll(&employee, &agreement_id, &0);
+    let result = client.try_claim_payroll(&employee, &agreement_id, &0, &None::<u128>);
     assert!(result.is_ok());
 
     // Verify claim
@@ -990,7 +990,7 @@ fn test_finalize_refunds_remaining() {
 
     // Employee claims 1000
     client
-        .try_claim_payroll(&employee, &agreement_id, &0)
+        .try_claim_payroll(&employee, &agreement_id, &0, &None::<u128>)
         .unwrap();
 
     // Advance beyond grace
