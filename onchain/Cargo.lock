@@ -2305,6 +2305,7 @@ dependencies = [
  "criterion",
  "hmac",
  "proptest",
+ "rbac",
  "sha1",
  "sha2",
  "soroban-sdk",

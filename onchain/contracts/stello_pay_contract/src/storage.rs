@@ -142,6 +142,10 @@ pub struct EmployeeInfo {
 pub enum StorageKey {
     /// Contract owner
     Owner,
+    /// Linked RBAC contract address (source of truth for Admin authorization).
+    RbacContract,
+    /// Storage schema version for upgrade/migration coordination.
+    ContractVersion,
     /// Agreement by ID
     Agreement(u128),
     /// List of employees for an agreement

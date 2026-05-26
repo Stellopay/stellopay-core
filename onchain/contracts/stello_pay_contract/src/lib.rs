@@ -3,9 +3,9 @@ pub mod events;
 mod payroll;
 pub mod storage;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
-use stellar_contract_utils::upgradeable::UpgradeableInternal;
-use stellar_macros::Upgradeable;
+use events::{emit_contract_migrated, ContractMigratedEvent};
+use rbac::{RbacContractClient, Role};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
 use storage::{
     Agreement, BatchEscrowCreateResult, BatchMilestoneResult, BatchPayrollCreateResult,
     BatchPayrollResult, DisputeStatus, EscrowCreateParams, GracePeriodExtensionPolicy, Milestone,
@@ -21,22 +21,31 @@ use storage::{
 /// - Employee-initiated payroll claiming based on elapsed time periods
 /// - Secure escrow fund release
 /// - Grace period support for claims
-#[derive(Upgradeable)]
 #[contract]
 pub struct PayrollContract;
 
-/// UpgradeableInternal implementation for PayrollContract
-///
-///
-impl UpgradeableInternal for PayrollContract {
-    fn _require_auth(e: &Env, _operator: &Address) {
-        let owner: Address = e.storage().persistent().get(&StorageKey::Owner).unwrap();
-        owner.require_auth();
-    }
-}
-
 #[contractimpl]
 impl PayrollContract {
+    fn require_upgrade_admin(env: &Env, operator: &Address) {
+        if let Some(rbac_addr) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&StorageKey::RbacContract)
+        {
+            operator.require_auth();
+            let rbac = RbacContractClient::new(env, &rbac_addr);
+            assert!(
+                rbac.has_role(operator, &Role::Admin),
+                "Missing required role"
+            );
+            return;
+        }
+
+        let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        operator.require_auth();
+        assert!(*operator == owner, "Unauthorized");
+    }
+
     ///
     /// # Arguments
     ///
@@ -47,7 +56,90 @@ impl PayrollContract {
     /// Requires caller authentication
     pub fn initialize(env: Env, owner: Address) {
         owner.require_auth();
+        if env.storage().persistent().has(&StorageKey::Owner) {
+            panic!("Already initialized");
+        }
         env.storage().persistent().set(&StorageKey::Owner, &owner);
+    }
+
+    /// Sets the linked RBAC contract address used for admin-gated operations (e.g. upgrades).
+    ///
+    /// # Arguments
+    /// * `owner` - owner parameter
+    /// * `rbac_contract` - rbac_contract parameter
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn set_rbac_contract(env: Env, owner: Address, rbac_contract: Address) {
+        let stored_owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        owner.require_auth();
+        assert!(owner == stored_owner, "Unauthorized");
+        env.storage()
+            .persistent()
+            .set(&StorageKey::RbacContract, &rbac_contract);
+    }
+
+    /// Upgrades the contract's WASM code to the given hash.
+    ///
+    /// # Arguments
+    /// * `new_wasm_hash` - new_wasm_hash parameter
+    /// * `operator` - operator parameter
+    ///
+    /// # Access Control
+    /// - If RBAC is configured via `set_rbac_contract`, `operator` must have the `Admin` role.
+    /// - Otherwise, `operator` must be the stored contract owner.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>, operator: Address) {
+        Self::require_upgrade_admin(&env, &operator);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
+    /// Migrates persistent storage state from a previous schema version.
+    ///
+    /// # Arguments
+    /// * `operator` - operator parameter
+    /// * `from_version` - from_version parameter
+    ///
+    /// # Access Control
+    /// Requires admin authorization via RBAC when configured (or owner auth when RBAC is unset).
+    pub fn migrate_state(env: Env, operator: Address, from_version: u32) {
+        Self::require_upgrade_admin(&env, &operator);
+
+        let current: u32 = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::ContractVersion)
+            .unwrap_or(0u32);
+        assert!(from_version == current, "Invalid migration version");
+
+        // v0 -> v1: first explicit version marker. No schema changes yet.
+        if from_version == 0 {
+            let next_id: u128 = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::NextAgreementId)
+                .unwrap_or(0u128);
+            let cap: u128 = if next_id > 10 { 10 } else { next_id };
+            let mut i: u128 = 0;
+            while i < cap {
+                let _maybe: Option<Agreement> =
+                    env.storage().persistent().get(&StorageKey::Agreement(i));
+                i += 1;
+            }
+
+            env.storage()
+                .persistent()
+                .set(&StorageKey::ContractVersion, &1u32);
+            emit_contract_migrated(
+                &env,
+                ContractMigratedEvent {
+                    from_version,
+                    to_version: 1,
+                },
+            );
+            return;
+        }
+
+        panic!("Unsupported migration version");
     }
 
     /// Creates a payroll agreement for multiple employees.
