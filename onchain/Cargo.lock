@@ -993,7 +993,10 @@ dependencies = [
 name = "governance"
 version = "0.0.0"
 dependencies = [
+ "multisig",
+ "rbac",
  "soroban-sdk",
+ "withdrawal_timelock",
 ]
 
 [[package]]
@@ -1179,6 +1182,7 @@ dependencies = [
  "dispute_escalation",
  "employee_roles",
  "governance",
+ "multisig",
  "payment_history",
  "payment_retry",
  "payment_scheduler",
