@@ -20,6 +20,7 @@ dispute_escalation = { path = "../contracts/dispute_escalation" }
 employee_roles = { path = "../contracts/employee_roles" }
 rbac = { path = "../contracts/rbac" }
 governance = { path = "../contracts/governance" }
+multisig = { path = "../contracts/multisig" }
 withdrawal_timelock = { path = "../contracts/withdrawal_timelock" }
 
 [dev-dependencies]

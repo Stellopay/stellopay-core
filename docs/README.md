@@ -11,7 +11,8 @@ Welcome to the comprehensive documentation for the StellopayCore smart contract 
 5. [Developer Tools](./dev-tools/README.md) - CLI tools and utilities
 6. [Architecture](./architecture/README.md) - System design and architecture
 7. [Migrations](./migrations.md) - Contract upgrade procedures, rollback, and data compatibility
-8. [Building on Windows](./windows-build.md) - Fixing "export ordinal too large" (MinGW) and WASM-only build
+8. [Upgrade & migration strategy](./upgrade-migration-strategy.md) - RBAC-admin-gated upgrades and `migrate_state`
+9. [Building on Windows](./windows-build.md) - Fixing "export ordinal too large" (MinGW) and WASM-only build
 
 ## Quick Start
 

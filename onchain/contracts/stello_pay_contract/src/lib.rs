@@ -1,11 +1,12 @@
 #![no_std]
+pub mod backup;
 pub mod events;
 mod payroll;
 pub mod storage;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
-use stellar_contract_utils::upgradeable::UpgradeableInternal;
-use stellar_macros::Upgradeable;
+use events::{emit_contract_migrated, ContractMigratedEvent};
+use rbac_interface::{RbacContractClient, Role};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
 use storage::{
     Agreement, BatchEscrowCreateResult, BatchMilestoneResult, BatchPayrollCreateResult,
     BatchPayrollResult, DisputeStatus, EscrowCreateParams, GracePeriodExtensionPolicy, Milestone,
@@ -20,30 +21,37 @@ use storage::{
 /// - Exchange rate admins are trusted to provide accurate price data.
 /// - Employers are responsible for the accuracy of agreement parameters.
 ///
-/// # Security Invariants
-/// - Only the owner can upgrade the contract or set emergency guardians.
-/// - Only the employer of an agreement can activate, pause, resume, or cancel it.
-/// - Only the contributor/employee can claim payments from their respective agreements.
-/// - Funds are only released according to the agreement's terms and state.
-/// - Reentrancy is mitigated by updating state before external token transfers.
-#[derive(Upgradeable)]
+/// This contract supports:
+/// - Multiple employees per agreement with individual salary tracking
+/// - Per-employee period tracking for claimed salaries
+/// - Employee-initiated payroll claiming based on elapsed time periods
+/// - Secure escrow fund release
+/// - Grace period support for claims
 #[contract]
 pub struct PayrollContract;
 
-/// UpgradeableInternal implementation for PayrollContract
-///
-/// # Security
-/// Gates contract upgrades to the stored owner address.
-impl UpgradeableInternal for PayrollContract {
-    fn _require_auth(e: &Env, _operator: &Address) {
-        let owner: Address = e.storage().persistent().get(&StorageKey::Owner).unwrap();
-        owner.require_auth();
-    }
-}
-
 #[contractimpl]
 impl PayrollContract {
-    /// Initializes the contract with an owner.
+    fn require_upgrade_admin(env: &Env, operator: &Address) {
+        if let Some(rbac_addr) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&StorageKey::RbacContract)
+        {
+            operator.require_auth();
+            let rbac = RbacContractClient::new(env, &rbac_addr);
+            assert!(
+                rbac.has_role(operator, &Role::Admin),
+                "Missing required role"
+            );
+            return;
+        }
+
+        let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        operator.require_auth();
+        assert!(*operator == owner, "Unauthorized");
+    }
+
     ///
     /// # Arguments
     ///
@@ -58,7 +66,90 @@ impl PayrollContract {
     /// Sets the initial administrative authority for the contract.
     pub fn initialize(env: Env, owner: Address) {
         owner.require_auth();
+        if env.storage().persistent().has(&StorageKey::Owner) {
+            panic!("Already initialized");
+        }
         env.storage().persistent().set(&StorageKey::Owner, &owner);
+    }
+
+    /// Sets the linked RBAC contract address used for admin-gated operations (e.g. upgrades).
+    ///
+    /// # Arguments
+    /// * `owner` - owner parameter
+    /// * `rbac_contract` - rbac_contract parameter
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn set_rbac_contract(env: Env, owner: Address, rbac_contract: Address) {
+        let stored_owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        owner.require_auth();
+        assert!(owner == stored_owner, "Unauthorized");
+        env.storage()
+            .persistent()
+            .set(&StorageKey::RbacContract, &rbac_contract);
+    }
+
+    /// Upgrades the contract's WASM code to the given hash.
+    ///
+    /// # Arguments
+    /// * `new_wasm_hash` - new_wasm_hash parameter
+    /// * `operator` - operator parameter
+    ///
+    /// # Access Control
+    /// - If RBAC is configured via `set_rbac_contract`, `operator` must have the `Admin` role.
+    /// - Otherwise, `operator` must be the stored contract owner.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>, operator: Address) {
+        Self::require_upgrade_admin(&env, &operator);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
+    /// Migrates persistent storage state from a previous schema version.
+    ///
+    /// # Arguments
+    /// * `operator` - operator parameter
+    /// * `from_version` - from_version parameter
+    ///
+    /// # Access Control
+    /// Requires admin authorization via RBAC when configured (or owner auth when RBAC is unset).
+    pub fn migrate_state(env: Env, operator: Address, from_version: u32) {
+        Self::require_upgrade_admin(&env, &operator);
+
+        let current: u32 = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::ContractVersion)
+            .unwrap_or(0u32);
+        assert!(from_version == current, "Invalid migration version");
+
+        // v0 -> v1: first explicit version marker. No schema changes yet.
+        if from_version == 0 {
+            let next_id: u128 = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::NextAgreementId)
+                .unwrap_or(0u128);
+            let cap: u128 = if next_id > 10 { 10 } else { next_id };
+            let mut i: u128 = 0;
+            while i < cap {
+                let _maybe: Option<Agreement> =
+                    env.storage().persistent().get(&StorageKey::Agreement(i));
+                i += 1;
+            }
+
+            env.storage()
+                .persistent()
+                .set(&StorageKey::ContractVersion, &1u32);
+            emit_contract_migrated(
+                &env,
+                ContractMigratedEvent {
+                    from_version,
+                    to_version: 1,
+                },
+            );
+            return;
+        }
+
+        panic!("Unsupported migration version");
     }
 
     /// Creates a payroll agreement for multiple employees.
@@ -209,6 +300,9 @@ impl PayrollContract {
 
     /// Approves a milestone for payment.
     ///
+    /// # Invariants
+    /// - `escrow balance >= sum of all unclaimed milestone amounts`
+    ///
     /// # Arguments
     /// * `agreement_id` - ID of the agreement
     /// * `milestone_id` - ID of the milestone to approve
@@ -222,6 +316,9 @@ impl PayrollContract {
     }
 
     /// Claims payment for an approved milestone.
+    ///
+    /// # Invariants
+    /// - `escrow balance >= sum of all unclaimed milestone amounts`
     ///
     /// # Arguments
     /// * `agreement_id` - ID of the agreement
@@ -519,6 +616,9 @@ impl PayrollContract {
     }
 
     /// Claim payroll for an employee
+    ///
+    /// # Invariants
+    /// - `claimed_periods <= num_periods` (if `num_periods` is defined for the agreement)
     ///
     /// # Arguments
     /// * `env` - Contract environment
@@ -919,5 +1019,73 @@ impl PayrollContract {
     /// Requires caller authentication
     pub fn get_emergency_pause_state(env: Env) -> Option<storage::EmergencyPause> {
         payroll::get_emergency_pause_state(&env)
+    }
+
+    // ============================================================================
+    // Encrypted Backup & Recovery
+    // ============================================================================
+
+    /// Admin-only: restore an `Agreement` from a pre-decrypted struct.
+    ///
+    /// Use this when the operator has already decrypted and verified the backup
+    /// off-chain and simply needs to re-write the state into persistent storage.
+    ///
+    /// # Arguments
+    /// * `caller`    – must be the contract owner.
+    /// * `agreement` – the `Agreement` to write back.
+    ///
+    /// # Access Control
+    /// Requires owner authentication.
+    pub fn admin_restore_agreement(
+        env: Env,
+        caller: Address,
+        agreement: storage::Agreement,
+    ) -> Result<(), storage::PayrollError> {
+        caller.require_auth();
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&storage::StorageKey::Owner)
+            .ok_or(storage::PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(storage::PayrollError::Unauthorized);
+        }
+        backup::admin_restore_agreement(&env, agreement);
+        Ok(())
+    }
+
+    /// Admin-only: decrypt an encrypted backup envelope and restore the
+    /// contained `Agreement` into persistent storage in a single call.
+    ///
+    /// # Arguments
+    /// * `caller`     – must be the contract owner.
+    /// * `envelope`   – encrypted backup bytes (version | salt | nonce | ciphertext).
+    /// * `passphrase` – decryption passphrase; never stored on-chain.
+    ///
+    /// # Returns
+    /// The restored `agreement_id` on success.
+    ///
+    /// # Errors
+    /// Returns `PayrollError::InvalidData` if decryption or deserialisation fails.
+    /// Returns `PayrollError::Unauthorized` if caller is not the owner.
+    ///
+    /// # Access Control
+    /// Requires owner authentication.
+    pub fn admin_restore_from_encrypted(
+        env: Env,
+        caller: Address,
+        envelope: soroban_sdk::Bytes,
+        passphrase: soroban_sdk::Bytes,
+    ) -> Result<u128, storage::PayrollError> {
+        caller.require_auth();
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&storage::StorageKey::Owner)
+            .ok_or(storage::PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(storage::PayrollError::Unauthorized);
+        }
+        backup::admin_restore_from_encrypted(&env, envelope, passphrase)
     }
 }
