@@ -2308,6 +2308,7 @@ dependencies = [
  "base64 0.21.7",
  "criterion",
  "hmac",
+ "price_oracle",
  "proptest",
  "sha1",
  "sha2",

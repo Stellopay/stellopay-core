@@ -26,6 +26,7 @@ stellar-tokens = "0.6.0"
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
 proptest = "1.10.0"
 criterion = { version = "0.8.2", features = ["html_reports"] }
+price_oracle = { path = "../price_oracle" }
 
 [[bench]]
 name = "performance_benchmarks"
