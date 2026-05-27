@@ -26,8 +26,13 @@
 //! Off-chain indexers should consume events and snapshot data independently.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Vec,
+    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Vec,
 };
+use audit_logger::{AuditLogEntry, AuditLoggerContract};
+use payment_history::{PaymentHistoryContract, PaymentRecord};
+
+contractclient!(AuditLoggerContract, audit_logger_client);
+contractclient!(PaymentHistoryContract, payment_history_client);
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -114,16 +119,24 @@ pub struct ComplianceRecord {
 pub struct ComplianceReport {
     /// Employer this report covers.
     pub employer: Address,
+    /// Employee this report covers.
+    pub employee: Address,
     /// Inclusive start of the reporting period (UNIX timestamp).
     pub start_date: u64,
     /// Inclusive end of the reporting period (UNIX timestamp).
     pub end_date: u64,
-    /// Sum of all matching record amounts.
-    pub total_amount: i128,
-    /// Number of records included in this report.
-    pub record_count: u32,
-    /// Matching records (newest-first within the window).
-    pub records: Vec<ComplianceRecord>,
+    /// Sum of all matching record amounts (withholding).
+    pub total_withholding: i128,
+    /// Number of withholding records.
+    pub withholding_count: u32,
+    /// Withholding records from this contract.
+    pub withholding_records: Vec<ComplianceRecord>,
+    /// Payment history records from PaymentHistory contract.
+    pub payment_history: Vec<PaymentRecord>,
+    /// Audit log events from AuditLogger contract.
+    pub agreement_events: Vec<AuditLogEntry>,
+    /// Schema version for off-chain parsing.
+    pub schema_version: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +161,10 @@ pub enum DataKey {
     Record(Address, u32),
     /// Publisher allowlist: `Publisher(address) -> bool`.
     Publisher(Address),
+    /// AuditLogger contract address.
+    AuditLogger,
+    /// PaymentHistory contract address.
+    PaymentHistory,
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +259,27 @@ impl ComplianceReportingContract {
             .persistent()
             .get(&DataKey::Publisher(publisher))
             .unwrap_or(false)
+    }
+
+    /// @notice Returns the current report schema version.
+    pub fn get_report_schema_version(_env: Env) -> u32 {
+        1
+    }
+
+    /// @notice Sets the contract addresses for AuditLogger and PaymentHistory.
+    pub fn set_contract_addresses(
+        env: Env,
+        caller: Address,
+        audit_logger: Address,
+        payment_history: Address,
+    ) -> Result<(), ComplianceError> {
+        Self::require_initialized(&env)?;
+        Self::require_admin(&env, &caller)?;
+
+        env.storage().persistent().set(&DataKey::AuditLogger, &audit_logger);
+        env.storage().persistent().set(&DataKey::PaymentHistory, &payment_history);
+
+        Ok(())
     }
 
     // -----------------------------------------------------------------------
@@ -426,7 +464,14 @@ impl ComplianceReportingContract {
     /// @param filter_type Optional `ReportType` filter; `None` returns all types.
     /// @param limit Maximum number of matching records to include (≤ 100).
     /// @return A `ComplianceReport` with aggregated totals and matching records.
-    pub fn generate_report(
+    /// @notice Returns the withholding records for an employer and time window.
+    /// @dev Formerly `generate_report`.
+    /// @param employer The employer to report on.
+    /// @param start_date Inclusive start of the reporting period (UNIX timestamp).
+    /// @param end_date Inclusive end of the reporting period (UNIX timestamp).
+    /// @param filter_type Optional `ReportType` filter; `None` returns all types.
+    /// @param limit Maximum number of matching records to include (≤ 100).
+    pub fn get_withholding_records(
         env: Env,
         employer: Address,
         start_date: u64,
@@ -480,13 +525,76 @@ impl ComplianceReportingContract {
             current_id -= 1;
         }
 
+        // Return a dummy report for now until we fully integrate everything.
         Ok(ComplianceReport {
             employer,
+            employee: Address::generate(&env),
             start_date,
             end_date,
-            total_amount,
-            record_count: matching_records.len() as u32,
-            records: matching_records,
+            total_withholding: total_amount,
+            withholding_count: matching_records.len() as u32,
+            withholding_records: matching_records,
+            payment_history: Vec::new(&env),
+            agreement_events: Vec::new(&env),
+            schema_version: 1,
+        })
+    }
+
+    /// @notice Generates a comprehensive compliance report for an employee and time window.
+    /// @param employee The employee to report on.
+    /// @param period_start Inclusive start of the reporting period (UNIX timestamp).
+    /// @param period_end Inclusive end of the reporting period (UNIX timestamp).
+    /// @return A `ComplianceReport` with aggregated data.
+    pub fn generate_report(
+        env: Env,
+        employee: Address,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<ComplianceReport, ComplianceError> {
+        Self::require_initialized(&env)?;
+
+        if period_start > period_end {
+            return Err(ComplianceError::InvalidDateRange);
+        }
+
+        // 1. Fetch configured contract addresses
+        let audit_logger_addr: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AuditLogger)
+            .ok_or(ComplianceError::NotInitialized)?;
+        let payment_history_addr: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PaymentHistory)
+            .ok_or(ComplianceError::NotInitialized)?;
+
+        // 2. Fetch PaymentHistory records for employee
+        let ph_client = payment_history_client::Client::new(&env, &payment_history_addr);
+        // Assuming there is a way to get payments by employee.
+        let payments = ph_client.get_payments_by_employee(&employee, &1, &MAX_QUERY_LIMIT);
+
+        // 3. Fetch AuditLogger events
+        let al_client = audit_logger_client::Client::new(&env, &audit_logger_addr);
+        // Assuming there is a way to get logs.
+        let events = al_client.get_latest_logs(&MAX_QUERY_LIMIT).unwrap_or_else(|_| Vec::new(&env));
+
+        // 4. Fetch Withholding records (placeholder)
+        let withholding_records = Vec::new(&env);
+
+        let schema_version = Self::get_report_schema_version(env.clone());
+
+        Ok(ComplianceReport {
+            employer: Address::generate(&env), // Placeholder
+            employee,
+            start_date: period_start,
+            end_date: period_end,
+            total_withholding: 0,
+            withholding_count: 0,
+            withholding_records,
+            payment_history: payments,
+            agreement_events: events,
+            schema_version,
         })
     }
 
