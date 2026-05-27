@@ -1005,7 +1005,10 @@ dependencies = [
 name = "governance"
 version = "0.0.0"
 dependencies = [
+ "multisig",
+ "rbac",
  "soroban-sdk",
+ "withdrawal_timelock",
 ]
 
 [[package]]
@@ -1191,6 +1194,7 @@ dependencies = [
  "dispute_escalation",
  "employee_roles",
  "governance",
+ "multisig",
  "payment_history",
  "payment_retry",
  "payment_scheduler",
@@ -1701,6 +1705,14 @@ dependencies = [
 
 [[package]]
 name = "rbac"
+version = "0.0.0"
+dependencies = [
+ "rbac-interface",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "rbac-interface"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
@@ -2326,8 +2338,10 @@ dependencies = [
  "base64 0.21.7",
  "criterion",
  "hmac",
- "pbkdf2",
+ "price_oracle",
  "proptest",
+ "rbac",
+ "rbac-interface",
  "sha1",
  "sha2",
  "soroban-sdk",
