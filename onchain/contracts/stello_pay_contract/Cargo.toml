@@ -9,12 +9,13 @@ crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [dependencies]
-aes-gcm = { version = "0.10", default-features = false }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 base64 = { version = "0.21", default-features = false }
 hmac = { version = "0.12", default-features = false }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 sha1 = { version = "0.10", default-features = false }
 # For backup encryption and hashing (Soroban-compatible)
-sha2 = { version = "0.10", default-features = false }
+sha2 = { version = "0.10", default-features = false, features = ["oid"] }
 soroban-sdk = { workspace = true, features = ["alloc"] }
 soroban-token-sdk = "23.4.1"
 stellar-access = "0.6.0"
