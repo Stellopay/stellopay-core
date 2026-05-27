@@ -94,6 +94,18 @@ pub struct PaymentReceivedEvent {
     pub token: Address,
 }
 
+/// Event: Contract storage migration applied
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ContractMigratedEvent {
+    pub from_version: u32,
+    pub to_version: u32,
+}
+
+pub fn emit_contract_migrated(env: &Env, event: ContractMigratedEvent) {
+    event.publish(env);
+}
+
 pub fn emit_agreement_created(env: &Env, event: AgreementCreatedEvent) {
     event.publish(env);
 }

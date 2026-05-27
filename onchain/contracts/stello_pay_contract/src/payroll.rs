@@ -134,12 +134,65 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
         .instance()
         .set(&MilestoneKey::TotalAmount(agreement_id), &(total + amount));
 
+    // Post-invariant: total amount should equal sum of milestones
+    #[cfg(debug_assertions)]
+    {
+        let total_sum = sum_all_milestones(&env, agreement_id);
+        assert!(total_sum == total + amount, "Total amount mismatch after adding milestone");
+    }
+
     MilestoneAdded {
         agreement_id,
         milestone_id,
         amount,
     }
     .publish(&env);
+}
+
+fn sum_all_milestones(env: &Env, agreement_id: u128) -> i128 {
+    let count: u32 = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
+        .unwrap_or(0);
+    let mut sum = 0i128;
+    for i in 1..=count {
+        sum += env
+            .storage()
+            .instance()
+            .get::<_, i128>(&MilestoneKey::MilestoneAmount(agreement_id, i))
+            .unwrap_or(0);
+    }
+    sum
+}
+
+fn sum_unclaimed_milestones(env: &Env, agreement_id: u128) -> i128 {
+    let count: u32 = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
+        .unwrap_or(0);
+    let mut sum = 0i128;
+    for i in 1..=count {
+        let approved: bool = env
+            .storage()
+            .instance()
+            .get(&MilestoneKey::MilestoneApproved(agreement_id, i))
+            .unwrap_or(false);
+        let claimed: bool = env
+            .storage()
+            .instance()
+            .get(&MilestoneKey::MilestoneClaimed(agreement_id, i))
+            .unwrap_or(false);
+        if approved && !claimed {
+            sum += env
+                .storage()
+                .instance()
+                .get::<_, i128>(&MilestoneKey::MilestoneAmount(agreement_id, i))
+                .unwrap_or(0);
+        }
+    }
+    sum
 }
 
 /// Approves a milestone for payment
@@ -187,6 +240,16 @@ pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
         &true,
     );
+
+    // Invariant: Escrow balance must cover all unclaimed milestones (including this one just approved)
+    let token_address: Address = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Token(agreement_id))
+        .expect("Token not found");
+    let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
+    let contract_balance = TokenClient::new(&env, &token_address).balance(&env.current_contract_address());
+    assert!(contract_balance >= unclaimed_sum, "Insufficient contract balance for unclaimed milestones");
 
     MilestoneApproved {
         agreement_id,
@@ -251,6 +314,16 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
         .unwrap_or(false);
     assert!(!already_claimed, "Milestone already claimed");
+
+    // Invariant check before claim
+    let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
+    let token_address: Address = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Token(agreement_id))
+        .expect("Token not found");
+    let contract_balance = TokenClient::new(&env, &token_address).balance(&env.current_contract_address());
+    assert!(contract_balance >= unclaimed_sum, "Invariant violation: escrow balance < sum of unclaimed milestones");
 
     let amount: i128 = env
         .storage()
@@ -1505,6 +1578,11 @@ pub fn claim_payroll(
     // Get employee's claimed periods
     let claimed_periods = DataKey::get_employee_claimed_periods(env, agreement_id, employee_index);
 
+    // Invariant check: claimed_periods <= num_periods (if defined)
+    if let Some(num_periods) = agreement.num_periods {
+        assert!(claimed_periods <= num_periods, "Invariant violation: claimed_periods > num_periods");
+    }
+
     // Calculate periods to pay
     if total_elapsed_periods <= claimed_periods {
         return Err(PayrollError::NoPeriodsToClaim);
@@ -1935,6 +2013,12 @@ pub fn batch_claim_payroll(
         // Must have unclaimed periods
         let claimed_periods =
             DataKey::get_employee_claimed_periods(env, agreement_id, employee_index);
+        
+        // Invariant check: claimed_periods <= num_periods (if defined)
+        if let Some(num_periods) = agreement.num_periods {
+            assert!(claimed_periods <= num_periods, "Invariant violation: claimed_periods > num_periods");
+        }
+
         if total_elapsed_periods <= claimed_periods {
             failed_claims += 1;
             results.push_back(PayrollClaimResult {
@@ -2155,6 +2239,9 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollErro
     if claimed_periods >= num_periods {
         return Err(PayrollError::AllPeriodsClaimed);
     }
+
+    // Invariant check
+    assert!(claimed_periods <= num_periods, "Invariant violation: claimed_periods > num_periods");
 
     // Allow claims if:
     // 1. Agreement is Active, OR

@@ -2,35 +2,7 @@
 
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
 
-// ---------------------------------------------------------------------------
-// Roles
-// ---------------------------------------------------------------------------
-
-/// Core roles supported by the RBAC contract.
-///
-/// Roles are intentionally small and composable. Access control for a given
-/// function can be expressed in terms of one or more of these roles.
-///
-/// ## Inheritance
-///
-/// | Granted   | Implies                              |
-/// |-----------|--------------------------------------|
-/// | Admin     | Admin, Employer, Employee, Arbiter   |
-/// | Employer  | Employer, Employee                   |
-/// | Employee  | Employee                             |
-/// | Arbiter   | Arbiter                              |
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Role {
-    /// Global administrator; implicitly has all roles.
-    Admin,
-    /// Employer role; implicitly grants `Employee` permissions.
-    Employer,
-    /// Employee role; base role for payroll participants.
-    Employee,
-    /// Arbiter role; used for dispute resolution flows.
-    Arbiter,
-}
+pub use rbac_interface::Role;
 
 // ---------------------------------------------------------------------------
 // Storage
