@@ -1685,6 +1685,14 @@ dependencies = [
 name = "rbac"
 version = "0.0.0"
 dependencies = [
+ "rbac-interface",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "rbac-interface"
+version = "0.0.0"
+dependencies = [
  "soroban-sdk",
 ]
 
@@ -2310,6 +2318,8 @@ dependencies = [
  "hmac",
  "price_oracle",
  "proptest",
+ "rbac",
+ "rbac-interface",
  "sha1",
  "sha2",
  "soroban-sdk",
