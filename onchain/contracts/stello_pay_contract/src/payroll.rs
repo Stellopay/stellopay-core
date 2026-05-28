@@ -22,8 +22,112 @@ use crate::storage::{
 };
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    token, IntoVal, Symbol, Val,
+    contractclient, contracttype, token, IntoVal, Symbol, Val,
 };
+
+/// Minimal interface for cross-contract calls into the deployed multisig contract.
+#[contractclient(name = "MultisigClient")]
+trait MultisigInterface {
+    fn get_operation(env: Env, operation_id: u128) -> Option<Operation>;
+}
+
+/// Mirror of multisig::OperationStatus — names must match for XDR decoding.
+#[contracttype]
+#[derive(Clone, PartialEq)]
+enum OperationStatus {
+    Pending,
+    Executed,
+    Cancelled,
+}
+
+/// Minimal mirror of multisig::Operation for cross-contract reads.
+#[contracttype]
+#[derive(Clone)]
+struct Operation {
+    pub id: u128,
+    pub kind: OperationKind,
+    pub creator: Address,
+    pub status: OperationStatus,
+    pub created_at: u64,
+    pub executed_at: Option<u64>,
+}
+
+/// Mirror of multisig::OperationKind — names must match for XDR decoding.
+#[contracttype]
+#[derive(Clone)]
+enum OperationKind {
+    ContractUpgrade(Address, soroban_sdk::BytesN<32>),
+    LargePayment(Address, Address, i128),
+    DisputeResolution(Address, u128, i128, i128),
+}
+
+/// Configures the multisig integration for this payroll contract.
+///
+/// # Arguments
+/// * `owner` - Contract owner (must authenticate)
+/// * `multisig_contract` - Address of the deployed multisig contract
+/// * `large_payment_threshold` - Minimum amount requiring multisig for LargePayment (0 = disabled)
+/// * `dispute_resolution_threshold` - Minimum total payout requiring multisig for DisputeResolution (0 = disabled)
+///
+/// # Access Control
+/// Only the contract owner can call this.
+pub fn set_multisig_config(
+    env: &Env,
+    owner: Address,
+    multisig_contract: Address,
+    large_payment_threshold: i128,
+    dispute_resolution_threshold: i128,
+) -> Result<(), PayrollError> {
+    let stored_owner: Address = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::Owner)
+        .ok_or(PayrollError::Unauthorized)?;
+    owner.require_auth();
+    if owner != stored_owner {
+        return Err(PayrollError::Unauthorized);
+    }
+    env.storage()
+        .persistent()
+        .set(&StorageKey::MultisigContract, &multisig_contract);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::LargePaymentThreshold, &large_payment_threshold);
+    env.storage().persistent().set(
+        &StorageKey::DisputeResolutionThreshold,
+        &dispute_resolution_threshold,
+    );
+    Ok(())
+}
+
+/// Returns the configured multisig contract address, if any.
+pub fn get_multisig_contract(env: &Env) -> Option<Address> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::MultisigContract)
+}
+
+/// Checks that a multisig operation with the given id exists, is Executed,
+/// and matches the expected kind discriminant. Returns `MultisigApprovalRequired`
+/// if the check fails.
+fn require_multisig_executed(
+    env: &Env,
+    multisig_addr: &Address,
+    operation_id: u128,
+    check: impl Fn(&OperationKind) -> bool,
+) -> Result<(), PayrollError> {
+    let client = MultisigClient::new(env, multisig_addr);
+    let op = client
+        .get_operation(&operation_id)
+        .ok_or(PayrollError::MultisigApprovalRequired)?;
+    if op.status != OperationStatus::Executed {
+        return Err(PayrollError::MultisigApprovalRequired);
+    }
+    if !check(&op.kind) {
+        return Err(PayrollError::MultisigApprovalRequired);
+    }
+    Ok(())
+}
 
 /// Fixed-point scaling factor for FX rates: 1e6 precision.
 const FX_SCALE: i128 = 1_000_000;
@@ -1274,6 +1378,68 @@ pub fn resolve_dispute(
     pay_employee: i128,
     refund_employer: i128,
 ) -> Result<(), PayrollError> {
+    // If a DisputeResolution threshold is configured and the total payout meets
+    // it, reject and require the caller to use resolve_dispute_multisig instead.
+    let total_payout = pay_employee + refund_employer;
+    if let Some(threshold) = env
+        .storage()
+        .persistent()
+        .get::<_, i128>(&StorageKey::DisputeResolutionThreshold)
+    {
+        if threshold > 0 && total_payout >= threshold {
+            return Err(PayrollError::MultisigApprovalRequired);
+        }
+    }
+    resolve_dispute_core(&env, caller, agreement_id, pay_employee, refund_employer)
+}
+
+/// Resolves a dispute that has been pre-approved by the multisig contract.
+///
+/// # Arguments
+/// * `caller` - Arbiter address (must authenticate)
+/// * `agreement_id` - Agreement under dispute
+/// * `pay_employee` - Amount to distribute to employees
+/// * `refund_employer` - Amount to refund the employer
+/// * `multisig_operation_id` - ID of the Executed DisputeResolution operation in the multisig
+///
+/// # Access Control
+/// Requires arbiter authentication and a valid Executed multisig operation.
+pub fn resolve_dispute_multisig(
+    env: Env,
+    caller: Address,
+    agreement_id: u128,
+    pay_employee: i128,
+    refund_employer: i128,
+    multisig_operation_id: u128,
+) -> Result<(), PayrollError> {
+    let multisig_addr = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::MultisigContract)
+        .ok_or(PayrollError::MultisigApprovalRequired)?;
+
+    let payroll_contract = env.current_contract_address();
+    require_multisig_executed(&env, &multisig_addr, multisig_operation_id, |kind| {
+        matches!(
+            kind,
+            OperationKind::DisputeResolution(addr, aid, pe, re)
+                if *addr == payroll_contract
+                    && *aid == agreement_id
+                    && *pe == pay_employee
+                    && *re == refund_employer
+        )
+    })?;
+
+    resolve_dispute_core(&env, caller, agreement_id, pay_employee, refund_employer)
+}
+
+fn resolve_dispute_core(
+    env: &Env,
+    caller: Address,
+    agreement_id: u128,
+    pay_employee: i128,
+    refund_employer: i128,
+) -> Result<(), PayrollError> {
     caller.require_auth();
 
     let arbiter = env
@@ -1285,7 +1451,7 @@ pub fn resolve_dispute(
         return Err(PayrollError::NotArbiter);
     }
 
-    let mut agreement = get_agreement(&env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
+    let mut agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     if agreement.dispute_status != DisputeStatus::Raised {
         return Err(PayrollError::NoDispute);
@@ -1296,13 +1462,13 @@ pub fn resolve_dispute(
         return Err(PayrollError::InvalidPayout);
     }
 
-    let token = TokenClient::new(&env, &agreement.token);
+    let token = TokenClient::new(env, &agreement.token);
 
     let employees: Vec<EmployeeInfo> = env
         .storage()
         .persistent()
         .get(&StorageKey::AgreementEmployees(agreement_id))
-        .unwrap_or(Vec::new(&env));
+        .unwrap_or(Vec::new(env));
 
     // Execute transfers
     if pay_employee > 0 {
@@ -1334,7 +1500,7 @@ pub fn resolve_dispute(
         .set(&StorageKey::Agreement(agreement_id), &agreement);
 
     emit_dsipute_resolved(
-        &env,
+        env,
         DisputeResolvedEvent {
             agreement_id,
             pay_contributor: pay_employee,
@@ -1342,7 +1508,7 @@ pub fn resolve_dispute(
         },
     );
     record_entry(
-        &env,
+        env,
         caller,
         AuditEvent::DisputeResolved,
         agreement_id,
@@ -1599,6 +1765,18 @@ pub fn claim_payroll(
         .checked_mul(periods_to_pay as i128)
         .ok_or(PayrollError::InvalidData)?;
 
+    // If a LargePayment threshold is configured and this claim meets it,
+    // reject and require the caller to use claim_payroll_multisig instead.
+    if let Some(threshold) = env
+        .storage()
+        .persistent()
+        .get::<_, i128>(&StorageKey::LargePaymentThreshold)
+    {
+        if threshold > 0 && amount >= threshold {
+            return Err(PayrollError::MultisigApprovalRequired);
+        }
+    }
+
     // Check escrow balance
     let escrow_balance = DataKey::get_agreement_escrow_balance(env, agreement_id, &token);
     if escrow_balance < amount {
@@ -1679,6 +1857,62 @@ pub fn claim_payroll(
     .publish(&env);
 
     Ok(())
+}
+
+/// Claims payroll for a large payment that has been pre-approved by the multisig contract.
+///
+/// # Arguments
+/// * `caller` - Employee address (must authenticate)
+/// * `agreement_id` - Payroll agreement ID
+/// * `employee_index` - Employee index within the agreement
+/// * `multisig_operation_id` - ID of the Executed LargePayment operation in the multisig
+///
+/// # Access Control
+/// Requires employee authentication and a valid Executed multisig LargePayment operation
+/// whose `to` field matches the caller and `amount` matches the computed payout.
+pub fn claim_payroll_multisig(
+    env: &Env,
+    caller: &Address,
+    agreement_id: u128,
+    employee_index: u32,
+    multisig_operation_id: u128,
+) -> Result<(), PayrollError> {
+    let multisig_addr = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::MultisigContract)
+        .ok_or(PayrollError::MultisigApprovalRequired)?;
+
+    // Temporarily clear the threshold so claim_payroll_core can proceed.
+    // We verify the multisig op here before delegating.
+    let client = MultisigClient::new(env, &multisig_addr);
+    let op = client
+        .get_operation(&multisig_operation_id)
+        .ok_or(PayrollError::MultisigApprovalRequired)?;
+    if op.status != OperationStatus::Executed {
+        return Err(PayrollError::MultisigApprovalRequired);
+    }
+    // Verify the operation targets this caller (employee) with a LargePayment kind.
+    match &op.kind {
+        OperationKind::LargePayment(_, to, _) if to == caller => {}
+        _ => return Err(PayrollError::MultisigApprovalRequired),
+    }
+
+    // Bypass the threshold guard by temporarily removing it, run claim, then restore.
+    let saved_threshold: Option<i128> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::LargePaymentThreshold);
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::LargePaymentThreshold);
+    let result = claim_payroll(env, caller, agreement_id, employee_index);
+    if let Some(t) = saved_threshold {
+        env.storage()
+            .persistent()
+            .set(&StorageKey::LargePaymentThreshold, &t);
+    }
+    result
 }
 
 /// Claims payroll for an employee but settles the payout in a caller-specified

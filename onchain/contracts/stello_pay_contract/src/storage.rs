@@ -173,6 +173,12 @@ pub enum StorageKey {
     GracePeriodExtensionSeconds(u128),
     /// Owner-configurable caps for `extend_grace_period` (singleton).
     GracePeriodExtensionPolicy,
+    /// Address of the deployed multisig contract used for threshold checks.
+    MultisigContract,
+    /// Minimum payout amount (inclusive) that requires multisig approval for LargePayment.
+    LargePaymentThreshold,
+    /// Minimum total payout amount (inclusive) that requires multisig approval for DisputeResolution.
+    DisputeResolutionThreshold,
 }
 
 #[contracttype]
@@ -308,6 +314,7 @@ pub enum PayrollError {
     NotGuardian = 25,
     TimelockActive = 26,
     InvalidTimelock = 27,
+    MultisigApprovalRequired = 28,
     /// Missing or unconfigured FX rate for a currency pair
     ExchangeRateNotFound = 28,
     /// Arithmetic overflow/underflow during FX conversion

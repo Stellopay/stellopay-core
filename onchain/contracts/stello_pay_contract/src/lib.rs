@@ -547,6 +547,60 @@ impl PayrollContract {
         payroll::resolve_dispute(env, caller, agreement_id, pay_employee, refund_employer)
     }
 
+    /// Resolves a dispute that has been pre-approved by the multisig contract.
+    ///
+    /// # Arguments
+    /// * `caller` - Arbiter address (must authenticate)
+    /// * `agreement_id` - Agreement under dispute
+    /// * `pay_employee` - Amount to distribute to employees
+    /// * `refund_employer` - Amount to refund the employer
+    /// * `multisig_operation_id` - ID of the Executed DisputeResolution operation in the multisig
+    pub fn resolve_dispute_multisig(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        pay_employee: i128,
+        refund_employer: i128,
+        multisig_operation_id: u128,
+    ) -> Result<(), PayrollError> {
+        payroll::resolve_dispute_multisig(
+            env,
+            caller,
+            agreement_id,
+            pay_employee,
+            refund_employer,
+            multisig_operation_id,
+        )
+    }
+
+    /// Configures the multisig integration thresholds.
+    ///
+    /// # Arguments
+    /// * `owner` - Contract owner (must authenticate)
+    /// * `multisig_contract` - Address of the deployed multisig contract
+    /// * `large_payment_threshold` - Min amount requiring multisig for LargePayment (0 = disabled)
+    /// * `dispute_resolution_threshold` - Min total payout requiring multisig for DisputeResolution (0 = disabled)
+    pub fn set_multisig_config(
+        env: Env,
+        owner: Address,
+        multisig_contract: Address,
+        large_payment_threshold: i128,
+        dispute_resolution_threshold: i128,
+    ) -> Result<(), PayrollError> {
+        payroll::set_multisig_config(
+            &env,
+            owner,
+            multisig_contract,
+            large_payment_threshold,
+            dispute_resolution_threshold,
+        )
+    }
+
+    /// Returns the configured multisig contract address, if any.
+    pub fn get_multisig_contract(env: Env) -> Option<Address> {
+        payroll::get_multisig_contract(&env)
+    }
+
     /// Retrieves current dispute status for an agreement by ID
     ///
     /// # Returns
@@ -666,6 +720,23 @@ impl PayrollContract {
         employee_index: u32,
     ) -> Result<(), PayrollError> {
         payroll::claim_payroll(&env, &caller, agreement_id, employee_index)
+    }
+
+    /// Claims payroll for a large payment pre-approved by the multisig contract.
+    ///
+    /// # Arguments
+    /// * `caller` - Employee address (must authenticate)
+    /// * `agreement_id` - Payroll agreement ID
+    /// * `employee_index` - Employee index within the agreement
+    /// * `multisig_operation_id` - ID of the Executed LargePayment operation in the multisig
+    pub fn claim_payroll_multisig(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        employee_index: u32,
+        multisig_operation_id: u128,
+    ) -> Result<(), PayrollError> {
+        payroll::claim_payroll_multisig(&env, &caller, agreement_id, employee_index, multisig_operation_id)
     }
 
     /// Claims payroll for an employee, but settles the transfer in a
