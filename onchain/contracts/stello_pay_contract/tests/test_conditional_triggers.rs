@@ -531,7 +531,7 @@ fn test_milestone_claim_blocked_before_approval() {
     let (_contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
@@ -545,13 +545,17 @@ fn test_milestone_claim_blocked_before_approval() {
 #[test]
 fn test_milestone_approval_does_not_transfer_funds() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
+    
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, STANDARD_SALARY);
+
     client.approve_milestone(&agreement_id, &1u32);
 
     let milestone = client.get_milestone(&agreement_id, &1u32).unwrap();
@@ -564,13 +568,17 @@ fn test_milestone_approval_does_not_transfer_funds() {
 #[test]
 fn test_milestone_claim_succeeds_immediately_after_approval() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
+
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, STANDARD_SALARY);
+
     client.approve_milestone(&agreement_id, &1u32);
     client.claim_milestone(&agreement_id, &1u32);
 
@@ -585,13 +593,17 @@ fn test_milestone_claim_succeeds_immediately_after_approval() {
 #[should_panic(expected = "Milestone already claimed")]
 fn test_milestone_double_claim_rejected() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
+
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, STANDARD_SALARY);
+
     client.approve_milestone(&agreement_id, &1u32);
     client.claim_milestone(&agreement_id, &1u32);
     client.claim_milestone(&agreement_id, &1u32); // must panic
@@ -602,15 +614,18 @@ fn test_milestone_double_claim_rejected() {
 #[test]
 fn test_milestone_out_of_order_approval_and_claim() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &100i128);
     client.add_milestone(&agreement_id, &200i128);
     client.add_milestone(&agreement_id, &300i128);
+
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, 600i128);
 
     // Approve and claim milestone 3 first.
     client.approve_milestone(&agreement_id, &3u32);
@@ -632,13 +647,17 @@ fn test_milestone_out_of_order_approval_and_claim() {
 #[should_panic]
 fn test_milestone_wrong_caller_cannot_claim() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
+
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, STANDARD_SALARY);
+
     client.approve_milestone(&agreement_id, &1u32);
 
     env.mock_auths(&[]); // strip all auth — claim must fail
@@ -651,13 +670,16 @@ fn test_milestone_wrong_caller_cannot_claim() {
 #[should_panic]
 fn test_milestone_wrong_caller_cannot_approve() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
+
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, STANDARD_SALARY);
 
     env.mock_auths(&[]); // strip all auth — approve must fail
     client.approve_milestone(&agreement_id, &1u32);
@@ -669,13 +691,17 @@ fn test_milestone_wrong_caller_cannot_approve() {
 #[should_panic(expected = "Cannot claim when agreement is paused")]
 fn test_milestone_claim_blocked_when_paused() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
+
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, STANDARD_SALARY);
+
     client.approve_milestone(&agreement_id, &1u32);
     client.pause_agreement(&agreement_id);
     client.claim_milestone(&agreement_id, &1u32); // must panic
@@ -779,13 +805,17 @@ fn test_milestone_batch_claim_partial_success_correct_counts() {
 #[should_panic(expected = "Invalid milestone ID")]
 fn test_milestone_invalid_id_rejected() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
+    
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, STANDARD_SALARY);
+
     client.approve_milestone(&agreement_id, &99u32); // does not exist
 }
 

@@ -316,15 +316,15 @@ pub enum PayrollError {
     InvalidTimelock = 27,
     MultisigApprovalRequired = 28,
     /// Missing or unconfigured FX rate for a currency pair
-    ExchangeRateNotFound = 28,
+    ExchangeRateNotFound = 29,
     /// Arithmetic overflow/underflow during FX conversion
-    ExchangeRateOverflow = 29,
+    ExchangeRateOverflow = 30,
     /// Invalid FX rate (e.g. non-positive)
-    ExchangeRateInvalid = 30,
+    ExchangeRateInvalid = 31,
     /// Grace extension arguments invalid (zero, overflow, wrong status, unauthorized)
-    GraceExtensionInvalid = 31,
+    GraceExtensionInvalid = 32,
     /// Extension would exceed owner-configured cumulative cap
-    GraceExtensionCapExceeded = 32,
+    GraceExtensionCapExceeded = 33,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.

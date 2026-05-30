@@ -1,6 +1,9 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, token, Address, Env, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    token, Address, Env, Vec,
+};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 fn create_token_contract<'a>(env: &Env, admin: &Address) -> token::StellarAssetClient<'a> {
@@ -19,6 +22,7 @@ fn setup_contract(
     Address,
     Address,
 ) {
+    env.mock_all_auths();
     let contract_id = env.register(PayrollContract, ());
     let client = PayrollContractClient::new(env, &contract_id);
 
@@ -42,9 +46,6 @@ fn test_security_initialization_auth() {
     // Verify initialization requires owner auth
     env.mock_all_auths();
     client.initialize(&owner);
-    
-    // Attempting to re-initialize should fail or at least be auth-gated
-    // In Soroban, initialize patterns usually check if state already exists.
 }
 
 #[test]
@@ -52,19 +53,18 @@ fn test_security_unauthorized_upgrade() {
     let env = Env::default();
     let (client, _owner, _, _, _) = setup_contract(&env);
     let attacker = Address::generate(&env);
+    let random_hash = soroban_sdk::BytesN::from_array(&env, &[0u8; 32]);
 
-    // Attacker tries to upgrade (implicitly via UpgradeableInternal)
-    // We can't easily test the 'upgrade' function itself without a WASM, 
-    // but we can check that _require_auth fails for non-owners.
-    
-    // In a real test, we'd call the upgrade function and expect it to fail if not authorized.
+    // Attacker tries to upgrade - should fail
+    env.mock_auths(&[]);
+    let result = client.try_upgrade(&random_hash, &attacker);
+    assert!(result.is_err());
 }
 
 #[test]
 fn test_security_unauthorized_pause() {
     let env = Env::default();
     let (client, _owner, _, _, _) = setup_contract(&env);
-    let attacker = Address::generate(&env);
 
     // attacker tries to pause
     env.mock_auths(&[]); // No auths
@@ -76,8 +76,6 @@ fn test_security_unauthorized_pause() {
 #[test]
 fn test_security_unauthorized_claim() {
     let env = Env::default();
-    env.mock_all_auths();
-
     let (client, _owner, _, _, _) = setup_contract(&env);
 
     let token_admin = Address::generate(&env);
@@ -92,7 +90,26 @@ fn test_security_unauthorized_claim() {
 
     token.mint(&client.address, &10000);
 
+    // Populate required legacy storage keys so the call does not fail with InvalidEmployeeIndex
+    env.as_contract(&client.address, || {
+        use stello_pay_contract::storage::DataKey;
+        DataKey::set_agreement_activation_time(&env, agreement_id, env.ledger().timestamp());
+        DataKey::set_agreement_period_duration(&env, agreement_id, 86400);
+        DataKey::set_agreement_token(&env, agreement_id, &token.address);
+        DataKey::set_employee(&env, agreement_id, 0, &employee);
+        DataKey::set_employee_salary(&env, agreement_id, 0, 1000);
+        DataKey::set_employee_claimed_periods(&env, agreement_id, 0, 0);
+        DataKey::set_employee_count(&env, agreement_id, 1);
+        DataKey::set_agreement_escrow_balance(&env, agreement_id, &token.address, 10000);
+    });
+
+    // Advance time
+    env.ledger().with_mut(|li| {
+        li.timestamp += 86401;
+    });
+
     // Attacker tries to claim for employee
+    env.mock_auths(&[]);
     let result = client.try_claim_payroll(&attacker, &agreement_id, &0);
     assert!(result.is_err());
 }
@@ -140,8 +157,6 @@ fn test_security_grace_period_boundaries() {
 #[test]
 fn test_security_reentrancy_mitigation_simulation() {
     let env = Env::default();
-    env.mock_all_auths();
-
     let (client, _owner, _, _, _) = setup_contract(&env);
 
     let token_admin = Address::generate(&env);
@@ -155,11 +170,25 @@ fn test_security_reentrancy_mitigation_simulation() {
 
     token.mint(&client.address, &10000);
 
+    // Populate required legacy storage keys so the call does not fail with InvalidEmployeeIndex
+    env.as_contract(&client.address, || {
+        use stello_pay_contract::storage::DataKey;
+        DataKey::set_agreement_activation_time(&env, agreement_id, env.ledger().timestamp());
+        DataKey::set_agreement_period_duration(&env, agreement_id, 86400);
+        DataKey::set_agreement_token(&env, agreement_id, &token.address);
+        DataKey::set_employee(&env, agreement_id, 0, &employee);
+        DataKey::set_employee_salary(&env, agreement_id, 0, 1000);
+        DataKey::set_employee_claimed_periods(&env, agreement_id, 0, 0);
+        DataKey::set_employee_count(&env, agreement_id, 1);
+        DataKey::set_agreement_escrow_balance(&env, agreement_id, &token.address, 10000);
+    });
+
+    // Advance time to allow one period to be claimable
+    env.ledger().with_mut(|li| {
+        li.timestamp += 86401;
+    });
+
     // Claim payroll
-    // In lib.rs, we've documented that state is updated BEFORE token transfer.
-    // While we can't easily hook the token transfer to re-enter in this simple test,
-    // we can verify that after a successful claim, the claimed periods are updated.
-    
     client.claim_payroll(&employee, &agreement_id, &0);
     
     let claimed = client.get_employee_claimed_periods(&agreement_id, &0);

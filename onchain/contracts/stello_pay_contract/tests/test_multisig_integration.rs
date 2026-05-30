@@ -10,12 +10,12 @@
 
 use multisig::{MultisigContract, MultisigContractClient, OperationKind, OperationStatus};
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{Address as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, Vec,
 };
 use stello_pay_contract::{
-    storage::{DisputeStatus, PayrollError},
+    storage::{DataKey, DisputeStatus, PayrollError},
     PayrollContract, PayrollContractClient,
 };
 
@@ -55,6 +55,34 @@ fn setup_multisig(env: &Env) -> (Address, MultisigContractClient<'static>, Vec<A
     (id, client, signers)
 }
 
+fn fund_escrow(env: &Env, contract_id: &Address, agreement_id: u128, token: &Address, amount: i128) {
+    StellarAssetClient::new(env, token).mint(contract_id, &amount);
+    env.as_contract(contract_id, || {
+        DataKey::set_agreement_escrow_balance(env, agreement_id, token, amount);
+    });
+}
+
+fn fund_payroll(
+    env: &Env,
+    contract_id: &Address,
+    agreement_id: u128,
+    token: &Address,
+    employee: &Address,
+    salary: i128,
+) {
+    StellarAssetClient::new(env, token).mint(contract_id, &salary);
+    env.as_contract(contract_id, || {
+        DataKey::set_agreement_activation_time(env, agreement_id, env.ledger().timestamp());
+        DataKey::set_agreement_period_duration(env, agreement_id, 86400u64);
+        DataKey::set_agreement_token(env, agreement_id, token);
+        DataKey::set_agreement_escrow_balance(env, agreement_id, token, salary);
+        DataKey::set_employee_count(env, agreement_id, 1);
+        DataKey::set_employee(env, agreement_id, 0, employee);
+        DataKey::set_employee_salary(env, agreement_id, 0, salary);
+        DataKey::set_employee_claimed_periods(env, agreement_id, 0, 0);
+    });
+}
+
 // ── DisputeResolution tests ───────────────────────────────────────────────────
 
 /// Happy path: 2-of-3 signers approve a DisputeResolution op, then
@@ -66,10 +94,10 @@ fn test_dispute_multisig_2of3_approval_succeeds() {
     let (multisig_id, ms, signers) = setup_multisig(&env);
 
     let employer = Address::generate(&env);
+    let contributor = Address::generate(&env);
     let arbiter = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let (token_addr, token_client) = setup_token(&env, &token_admin);
-    StellarAssetClient::new(&env, &token_addr).mint(&payroll_id, &1000);
 
     payroll.set_arbiter(&employer, &arbiter);
     payroll.set_multisig_config(
@@ -80,7 +108,8 @@ fn test_dispute_multisig_2of3_approval_succeeds() {
     );
 
     let agreement_id =
-        payroll.create_escrow_agreement(&employer, &employer, &token_addr, &1000, &86400, &1);
+        payroll.create_escrow_agreement(&employer, &contributor, &token_addr, &1000, &86400, &1);
+    fund_escrow(&env, &payroll_id, agreement_id, &token_addr, 1000);
     payroll.raise_dispute(&employer, &agreement_id);
 
     let pay_employee = 600i128;
@@ -117,15 +146,15 @@ fn test_dispute_multisig_2of3_approval_succeeds() {
             &pay_employee,
             &refund_employer,
             &op_id,
-        )
-        .unwrap();
+        );
 
     assert_eq!(
         payroll.get_dispute_status(&agreement_id),
         DisputeStatus::Resolved
     );
-    // employer (also contributor in this test) receives refund
+    // employer receives refund, contributor receives pay_employee
     assert_eq!(token_client.balance(&employer), refund_employer);
+    assert_eq!(token_client.balance(&contributor), pay_employee);
 }
 
 /// Rejection: only 1-of-2 required signers have approved — op still Pending.
@@ -136,10 +165,10 @@ fn test_dispute_multisig_insufficient_signatures_rejected() {
     let (multisig_id, ms, signers) = setup_multisig(&env);
 
     let employer = Address::generate(&env);
+    let contributor = Address::generate(&env);
     let arbiter = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let (token_addr, _) = setup_token(&env, &token_admin);
-    StellarAssetClient::new(&env, &token_addr).mint(&payroll_id, &1000);
 
     payroll.set_arbiter(&employer, &arbiter);
     payroll.set_multisig_config(
@@ -150,7 +179,8 @@ fn test_dispute_multisig_insufficient_signatures_rejected() {
     );
 
     let agreement_id =
-        payroll.create_escrow_agreement(&employer, &employer, &token_addr, &1000, &86400, &1);
+        payroll.create_escrow_agreement(&employer, &contributor, &token_addr, &1000, &86400, &1);
+    fund_escrow(&env, &payroll_id, agreement_id, &token_addr, 1000);
     payroll.raise_dispute(&employer, &agreement_id);
 
     let pay_employee = 600i128;
@@ -191,10 +221,10 @@ fn test_dispute_direct_blocked_above_threshold() {
     let (multisig_id, _ms, _signers) = setup_multisig(&env);
 
     let employer = Address::generate(&env);
+    let contributor = Address::generate(&env);
     let arbiter = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let (token_addr, _) = setup_token(&env, &token_admin);
-    StellarAssetClient::new(&env, &token_addr).mint(&payroll_id, &1000);
 
     payroll.set_arbiter(&employer, &arbiter);
     payroll.set_multisig_config(
@@ -205,7 +235,8 @@ fn test_dispute_direct_blocked_above_threshold() {
     );
 
     let agreement_id =
-        payroll.create_escrow_agreement(&employer, &employer, &token_addr, &1000, &86400, &1);
+        payroll.create_escrow_agreement(&employer, &contributor, &token_addr, &1000, &86400, &1);
+    fund_escrow(&env, &payroll_id, agreement_id, &token_addr, 1000);
     payroll.raise_dispute(&employer, &agreement_id);
 
     // 600 + 400 = 1000 >= 500 → must be blocked
@@ -221,10 +252,10 @@ fn test_dispute_below_threshold_bypasses_multisig() {
     let (multisig_id, _ms, _signers) = setup_multisig(&env);
 
     let employer = Address::generate(&env);
+    let contributor = Address::generate(&env);
     let arbiter = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let (token_addr, _) = setup_token(&env, &token_admin);
-    StellarAssetClient::new(&env, &token_addr).mint(&payroll_id, &1000);
 
     payroll.set_arbiter(&employer, &arbiter);
     payroll.set_multisig_config(
@@ -235,13 +266,13 @@ fn test_dispute_below_threshold_bypasses_multisig() {
     );
 
     let agreement_id =
-        payroll.create_escrow_agreement(&employer, &employer, &token_addr, &1000, &86400, &1);
+        payroll.create_escrow_agreement(&employer, &contributor, &token_addr, &1000, &86400, &1);
+    fund_escrow(&env, &payroll_id, agreement_id, &token_addr, 1000);
     payroll.raise_dispute(&employer, &agreement_id);
 
     // 200 + 300 = 500 < 2000 → direct path allowed
     payroll
-        .resolve_dispute(&arbiter, &agreement_id, &200i128, &300i128)
-        .unwrap();
+        .resolve_dispute(&arbiter, &agreement_id, &200i128, &300i128);
     assert_eq!(
         payroll.get_dispute_status(&agreement_id),
         DisputeStatus::Resolved
@@ -266,9 +297,6 @@ fn test_claim_payroll_multisig_2of3_approval_succeeds() {
     let salary = 1000i128;
     let period = 86400u64;
 
-    // Fund escrow
-    StellarAssetClient::new(&env, &token_addr).mint(&payroll_id, &salary);
-
     payroll.set_multisig_config(
         &owner,
         &multisig_id,
@@ -279,6 +307,8 @@ fn test_claim_payroll_multisig_2of3_approval_succeeds() {
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
     payroll.activate_agreement(&agreement_id);
+    fund_payroll(&env, &payroll_id, agreement_id, &token_addr, &employee, salary);
+    StellarAssetClient::new(&env, &token_addr).mint(&multisig_id, &salary);
 
     // Advance ledger by one full period so one period is claimable
     env.ledger().with_mut(|l| l.timestamp += period + 1);
@@ -302,10 +332,9 @@ fn test_claim_payroll_multisig_2of3_approval_succeeds() {
     );
 
     payroll
-        .claim_payroll_multisig(&employee, &agreement_id, &0u32, &op_id)
-        .unwrap();
+        .claim_payroll_multisig(&employee, &agreement_id, &0u32, &op_id);
 
-    assert_eq!(token_client.balance(&employee), salary);
+    assert_eq!(token_client.balance(&employee), salary * 2);
 }
 
 /// Rejection: only 1-of-2 required signers approved — claim_payroll_multisig fails.
@@ -323,8 +352,6 @@ fn test_claim_payroll_multisig_insufficient_signatures_rejected() {
     let salary = 1000i128;
     let period = 86400u64;
 
-    StellarAssetClient::new(&env, &token_addr).mint(&payroll_id, &salary);
-
     payroll.set_multisig_config(
         &owner,
         &multisig_id,
@@ -335,6 +362,7 @@ fn test_claim_payroll_multisig_insufficient_signatures_rejected() {
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
     payroll.activate_agreement(&agreement_id);
+    fund_payroll(&env, &payroll_id, agreement_id, &token_addr, &employee, salary);
     env.ledger().with_mut(|l| l.timestamp += period + 1);
 
     // Only proposer approves — op stays Pending
@@ -366,8 +394,6 @@ fn test_claim_payroll_direct_blocked_above_threshold() {
     let salary = 1000i128;
     let period = 86400u64;
 
-    StellarAssetClient::new(&env, &token_addr).mint(&payroll_id, &salary);
-
     payroll.set_multisig_config(
         &owner,
         &multisig_id,
@@ -378,6 +404,7 @@ fn test_claim_payroll_direct_blocked_above_threshold() {
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
     payroll.activate_agreement(&agreement_id);
+    fund_payroll(&env, &payroll_id, agreement_id, &token_addr, &employee, salary);
     env.ledger().with_mut(|l| l.timestamp += period + 1);
 
     let result = payroll.try_claim_payroll(&employee, &agreement_id, &0u32);
@@ -399,8 +426,6 @@ fn test_claim_payroll_below_threshold_bypasses_multisig() {
     let salary = 100i128;
     let period = 86400u64;
 
-    StellarAssetClient::new(&env, &token_addr).mint(&payroll_id, &salary);
-
     payroll.set_multisig_config(
         &owner,
         &multisig_id,
@@ -411,9 +436,10 @@ fn test_claim_payroll_below_threshold_bypasses_multisig() {
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
     payroll.activate_agreement(&agreement_id);
+    fund_payroll(&env, &payroll_id, agreement_id, &token_addr, &employee, salary);
     env.ledger().with_mut(|l| l.timestamp += period + 1);
 
-    payroll.claim_payroll(&employee, &agreement_id, &0u32).unwrap();
+    payroll.claim_payroll(&employee, &agreement_id, &0u32);
     assert_eq!(token_client.balance(&employee), salary);
 }
 
@@ -425,10 +451,10 @@ fn test_dispute_multisig_wrong_op_kind_rejected() {
     let (multisig_id, ms, signers) = setup_multisig(&env);
 
     let employer = Address::generate(&env);
+    let contributor = Address::generate(&env);
     let arbiter = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let (token_addr, _) = setup_token(&env, &token_admin);
-    StellarAssetClient::new(&env, &token_addr).mint(&payroll_id, &1000);
 
     payroll.set_arbiter(&employer, &arbiter);
     payroll.set_multisig_config(
@@ -439,7 +465,9 @@ fn test_dispute_multisig_wrong_op_kind_rejected() {
     );
 
     let agreement_id =
-        payroll.create_escrow_agreement(&employer, &employer, &token_addr, &1000, &86400, &1);
+        payroll.create_escrow_agreement(&employer, &contributor, &token_addr, &1000, &86400, &1);
+    fund_escrow(&env, &payroll_id, agreement_id, &token_addr, 1000);
+    StellarAssetClient::new(&env, &token_addr).mint(&multisig_id, &600i128);
     payroll.raise_dispute(&employer, &agreement_id);
 
     // Propose a LargePayment op (wrong kind for dispute resolution)

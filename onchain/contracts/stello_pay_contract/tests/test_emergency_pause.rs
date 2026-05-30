@@ -202,10 +202,11 @@ fn test_paused_blocks_milestone_claims() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token.address);
     client.add_milestone(&agreement_id, &1000);
-    client.approve_milestone(&agreement_id, &1);
 
-    // Mint tokens
+    // Mint tokens first so invariant check in approve_milestone passes
     token.mint(&client.address, &10000);
+
+    client.approve_milestone(&agreement_id, &1);
 
     // Emergency pause
     let _ = client.emergency_pause();
@@ -230,9 +231,11 @@ fn test_unpause_restores_functionality() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token.address);
     client.add_milestone(&agreement_id, &1000);
-    client.approve_milestone(&agreement_id, &1);
 
+    // Mint tokens first so invariant check in approve_milestone passes
     token.mint(&client.address, &10000);
+
+    client.approve_milestone(&agreement_id, &1);
 
     // Pause
     let _ = client.emergency_pause();
