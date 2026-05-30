@@ -68,7 +68,7 @@ fn test_security_unauthorized_pause() {
 
     // attacker tries to pause
     env.mock_auths(&[]); // No auths
-    
+
     let result = client.try_emergency_pause();
     assert!(result.is_err());
 }
@@ -149,7 +149,7 @@ fn test_security_grace_period_boundaries() {
     // Advance time to exactly grace period end
     env.ledger().set_timestamp(grace_period);
     assert!(!client.is_grace_period_active(&agreement_id));
-    
+
     // Finalize should now work
     client.finalize_grace_period(&agreement_id);
 }
@@ -190,7 +190,7 @@ fn test_security_reentrancy_mitigation_simulation() {
 
     // Claim payroll
     client.claim_payroll(&employee, &agreement_id, &0);
-    
+
     let claimed = client.get_employee_claimed_periods(&agreement_id, &0);
     assert!(claimed > 0);
 }
@@ -208,14 +208,14 @@ fn test_security_overflow_protection() {
 
     // Try to create an agreement with extremely large grace period if it could cause issues
     // Or try to add milestones with negative amounts (should be caught by validation)
-    
+
     let result = client.try_create_escrow_agreement(
-        &employer, 
-        &Address::generate(&env), 
-        &token.address, 
+        &employer,
+        &Address::generate(&env),
+        &token.address,
         &-1, // Negative amount
-        &3600, 
-        &12
+        &3600,
+        &12,
     );
     assert!(result.is_err());
 }

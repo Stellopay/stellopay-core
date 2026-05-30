@@ -62,7 +62,7 @@ impl PayrollContract {
     /// * `owner` - The contract owner address
     ///
     /// # Access Control
-    /// Requires caller authentication. Only callable once (implicitly via storage check if needed, 
+    /// Requires caller authentication. Only callable once (implicitly via storage check if needed,
     /// though usually handled by deployment scripts).
     ///
     /// # Security
@@ -747,7 +747,13 @@ impl PayrollContract {
         employee_index: u32,
         multisig_operation_id: u128,
     ) -> Result<(), PayrollError> {
-        payroll::claim_payroll_multisig(&env, &caller, agreement_id, employee_index, multisig_operation_id)
+        payroll::claim_payroll_multisig(
+            &env,
+            &caller,
+            agreement_id,
+            employee_index,
+            multisig_operation_id,
+        )
     }
 
     /// Claims payroll for an employee, but settles the transfer in a

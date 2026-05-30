@@ -27,7 +27,9 @@ fn create_test_env() -> (
     let client = PayrollContractClient::new(&env, &contract_id);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = env.register_stellar_asset_contract_v2(Address::generate(&env)).address();
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
     (env, employer, contributor, token, client)
 }
 

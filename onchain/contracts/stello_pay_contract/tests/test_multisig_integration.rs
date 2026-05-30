@@ -28,7 +28,9 @@ fn setup_env() -> Env {
 }
 
 fn setup_token<'a>(env: &'a Env, admin: &Address) -> (Address, TokenClient<'a>) {
-    let addr = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let addr = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
     let client = TokenClient::new(env, &addr);
     (addr, client)
 }
@@ -55,7 +57,13 @@ fn setup_multisig(env: &Env) -> (Address, MultisigContractClient<'static>, Vec<A
     (id, client, signers)
 }
 
-fn fund_escrow(env: &Env, contract_id: &Address, agreement_id: u128, token: &Address, amount: i128) {
+fn fund_escrow(
+    env: &Env,
+    contract_id: &Address,
+    agreement_id: u128,
+    token: &Address,
+    amount: i128,
+) {
     StellarAssetClient::new(env, token).mint(contract_id, &amount);
     env.as_contract(contract_id, || {
         DataKey::set_agreement_escrow_balance(env, agreement_id, token, amount);
@@ -103,8 +111,8 @@ fn test_dispute_multisig_2of3_approval_succeeds() {
     payroll.set_multisig_config(
         &owner,
         &multisig_id,
-        &0i128,    // large_payment_threshold: disabled
-        &500i128,  // dispute_resolution_threshold: 500
+        &0i128,   // large_payment_threshold: disabled
+        &500i128, // dispute_resolution_threshold: 500
     );
 
     let agreement_id =
@@ -139,14 +147,13 @@ fn test_dispute_multisig_2of3_approval_succeeds() {
     );
 
     // Now resolve via multisig path
-    payroll
-        .resolve_dispute_multisig(
-            &arbiter,
-            &agreement_id,
-            &pay_employee,
-            &refund_employer,
-            &op_id,
-        );
+    payroll.resolve_dispute_multisig(
+        &arbiter,
+        &agreement_id,
+        &pay_employee,
+        &refund_employer,
+        &op_id,
+    );
 
     assert_eq!(
         payroll.get_dispute_status(&agreement_id),
@@ -171,12 +178,7 @@ fn test_dispute_multisig_insufficient_signatures_rejected() {
     let (token_addr, _) = setup_token(&env, &token_admin);
 
     payroll.set_arbiter(&employer, &arbiter);
-    payroll.set_multisig_config(
-        &owner,
-        &multisig_id,
-        &0i128,
-        &500i128,
-    );
+    payroll.set_multisig_config(&owner, &multisig_id, &0i128, &500i128);
 
     let agreement_id =
         payroll.create_escrow_agreement(&employer, &contributor, &token_addr, &1000, &86400, &1);
@@ -271,8 +273,7 @@ fn test_dispute_below_threshold_bypasses_multisig() {
     payroll.raise_dispute(&employer, &agreement_id);
 
     // 200 + 300 = 500 < 2000 → direct path allowed
-    payroll
-        .resolve_dispute(&arbiter, &agreement_id, &200i128, &300i128);
+    payroll.resolve_dispute(&arbiter, &agreement_id, &200i128, &300i128);
     assert_eq!(
         payroll.get_dispute_status(&agreement_id),
         DisputeStatus::Resolved
@@ -307,7 +308,14 @@ fn test_claim_payroll_multisig_2of3_approval_succeeds() {
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
     payroll.activate_agreement(&agreement_id);
-    fund_payroll(&env, &payroll_id, agreement_id, &token_addr, &employee, salary);
+    fund_payroll(
+        &env,
+        &payroll_id,
+        agreement_id,
+        &token_addr,
+        &employee,
+        salary,
+    );
     StellarAssetClient::new(&env, &token_addr).mint(&multisig_id, &salary);
 
     // Advance ledger by one full period so one period is claimable
@@ -331,8 +339,7 @@ fn test_claim_payroll_multisig_2of3_approval_succeeds() {
         OperationStatus::Executed
     );
 
-    payroll
-        .claim_payroll_multisig(&employee, &agreement_id, &0u32, &op_id);
+    payroll.claim_payroll_multisig(&employee, &agreement_id, &0u32, &op_id);
 
     assert_eq!(token_client.balance(&employee), salary * 2);
 }
@@ -352,17 +359,19 @@ fn test_claim_payroll_multisig_insufficient_signatures_rejected() {
     let salary = 1000i128;
     let period = 86400u64;
 
-    payroll.set_multisig_config(
-        &owner,
-        &multisig_id,
-        &500i128,
-        &0i128,
-    );
+    payroll.set_multisig_config(&owner, &multisig_id, &500i128, &0i128);
 
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
     payroll.activate_agreement(&agreement_id);
-    fund_payroll(&env, &payroll_id, agreement_id, &token_addr, &employee, salary);
+    fund_payroll(
+        &env,
+        &payroll_id,
+        agreement_id,
+        &token_addr,
+        &employee,
+        salary,
+    );
     env.ledger().with_mut(|l| l.timestamp += period + 1);
 
     // Only proposer approves — op stays Pending
@@ -404,7 +413,14 @@ fn test_claim_payroll_direct_blocked_above_threshold() {
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
     payroll.activate_agreement(&agreement_id);
-    fund_payroll(&env, &payroll_id, agreement_id, &token_addr, &employee, salary);
+    fund_payroll(
+        &env,
+        &payroll_id,
+        agreement_id,
+        &token_addr,
+        &employee,
+        salary,
+    );
     env.ledger().with_mut(|l| l.timestamp += period + 1);
 
     let result = payroll.try_claim_payroll(&employee, &agreement_id, &0u32);
@@ -436,7 +452,14 @@ fn test_claim_payroll_below_threshold_bypasses_multisig() {
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
     payroll.activate_agreement(&agreement_id);
-    fund_payroll(&env, &payroll_id, agreement_id, &token_addr, &employee, salary);
+    fund_payroll(
+        &env,
+        &payroll_id,
+        agreement_id,
+        &token_addr,
+        &employee,
+        salary,
+    );
     env.ledger().with_mut(|l| l.timestamp += period + 1);
 
     payroll.claim_payroll(&employee, &agreement_id, &0u32);
@@ -457,12 +480,7 @@ fn test_dispute_multisig_wrong_op_kind_rejected() {
     let (token_addr, _) = setup_token(&env, &token_admin);
 
     payroll.set_arbiter(&employer, &arbiter);
-    payroll.set_multisig_config(
-        &owner,
-        &multisig_id,
-        &0i128,
-        &500i128,
-    );
+    payroll.set_multisig_config(&owner, &multisig_id, &0i128, &500i128);
 
     let agreement_id =
         payroll.create_escrow_agreement(&employer, &contributor, &token_addr, &1000, &86400, &1);
@@ -482,12 +500,7 @@ fn test_dispute_multisig_wrong_op_kind_rejected() {
     );
 
     // Should fail — op kind is LargePayment, not DisputeResolution
-    let result = payroll.try_resolve_dispute_multisig(
-        &arbiter,
-        &agreement_id,
-        &600i128,
-        &400i128,
-        &op_id,
-    );
+    let result =
+        payroll.try_resolve_dispute_multisig(&arbiter, &agreement_id, &600i128, &400i128, &op_id);
     assert_eq!(result, Err(Ok(PayrollError::MultisigApprovalRequired)));
 }

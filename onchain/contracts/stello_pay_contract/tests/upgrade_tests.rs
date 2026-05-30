@@ -115,7 +115,7 @@ proptest! {
         if intruder != owner {
             let arbitrary_hash = BytesN::from_array(&env, &seed_hash);
             let result = client.try_upgrade(&arbitrary_hash, &intruder);
-            
+
             // Should fail with an auth error
             prop_assert!(result.is_err());
         }
