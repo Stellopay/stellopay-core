@@ -1,4 +1,5 @@
 #![no_std]
+pub mod audit;
 pub mod backup;
 pub mod events;
 mod payroll;
@@ -12,6 +13,8 @@ use storage::{
     BatchPayrollResult, DisputeStatus, EscrowCreateParams, GracePeriodExtensionPolicy, Milestone,
     PayrollCreateParams, PayrollError, StorageKey,
 };
+
+use crate::audit::LifecycleAuditEntry;
 
 /// Payroll Contract for managing payroll agreements with employee claiming functionality.
 ///
@@ -59,7 +62,7 @@ impl PayrollContract {
     /// * `owner` - The contract owner address
     ///
     /// # Access Control
-    /// Requires caller authentication. Only callable once (implicitly via storage check if needed, 
+    /// Requires caller authentication. Only callable once (implicitly via storage check if needed,
     /// though usually handled by deployment scripts).
     ///
     /// # Security
@@ -89,15 +92,23 @@ impl PayrollContract {
             .set(&StorageKey::RbacContract, &rbac_contract);
     }
 
-    /// Upgrades the contract's WASM code to the given hash.
+    /// @notice Upgrades the contract's WASM code to a new version.
+    /// @dev Highly critical administrative function to alter contract bytecode.
+    /// Gated strictly by require_upgrade_admin logic.
     ///
     /// # Arguments
-    /// * `new_wasm_hash` - new_wasm_hash parameter
-    /// * `operator` - operator parameter
+    /// * `env` - The Soroban environment.
+    /// * `new_wasm_hash` - The 32-byte SHA-256 hash of the uploaded new WASM code.
+    /// * `operator` - The address initiating the upgrade, which must possess administrative authority.
     ///
     /// # Access Control
-    /// - If RBAC is configured via `set_rbac_contract`, `operator` must have the `Admin` role.
-    /// - Otherwise, `operator` must be the stored contract owner.
+    /// - If an RBAC contract is configured, the `operator` must possess the `Admin` role.
+    /// - Otherwise, the `operator` must be the stored contract owner.
+    /// - `operator.require_auth()` is called to verify authorization signature.
+    ///
+    /// # Security Assumptions
+    /// - The `new_wasm_hash` must represent a valid, pre-uploaded WASM blob.
+    /// - The new bytecode must correctly preserve existing storage keys/layouts to prevent state corruption.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>, operator: Address) {
         Self::require_upgrade_admin(&env, &operator);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
@@ -736,7 +747,13 @@ impl PayrollContract {
         employee_index: u32,
         multisig_operation_id: u128,
     ) -> Result<(), PayrollError> {
-        payroll::claim_payroll_multisig(&env, &caller, agreement_id, employee_index, multisig_operation_id)
+        payroll::claim_payroll_multisig(
+            &env,
+            &caller,
+            agreement_id,
+            employee_index,
+            multisig_operation_id,
+        )
     }
 
     /// Claims payroll for an employee, but settles the transfer in a

@@ -35,6 +35,15 @@ fn create_test_address(env: &Env) -> Address {
     Address::generate(env)
 }
 
+fn create_token(env: &Env) -> Address {
+    let admin = Address::generate(env);
+    env.register_stellar_asset_contract_v2(admin).address()
+}
+
+fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
+    soroban_sdk::token::StellarAssetClient::new(env, token).mint(to, &amount);
+}
+
 /// Sets up the contract and returns contract ID and client
 fn setup_contract(env: &Env) -> (Address, PayrollContractClient<'static>) {
     #[allow(deprecated)]
@@ -346,17 +355,17 @@ fn test_milestone_added_event() {
     assert_eq!(event_amount, amount);
 }
 
-/// Test: milestone_approved event is emitted when approving a milestone
 #[test]
 fn test_milestone_approved_event() {
     let env = create_test_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let contributor = create_test_address(&env);
-    let token = create_test_address(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &5000);
+    mint(&env, &token, &contract_id, 5000);
     client.approve_milestone(&agreement_id, &1);
 
     assert!(has_event(&env, "milestone_approved"));
@@ -369,18 +378,18 @@ fn test_milestone_approved_event() {
     assert_eq!(event_milestone_id, 1);
 }
 
-/// Test: milestone_claimed event is emitted when claiming a milestone
 #[test]
 fn test_milestone_claimed_event() {
     let env = create_test_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let contributor = create_test_address(&env);
-    let token = create_test_address(&env);
+    let token = create_token(&env);
     let amount = 5000i128;
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &amount);
+    mint(&env, &token, &contract_id, amount);
     client.approve_milestone(&agreement_id, &1);
     client.claim_milestone(&agreement_id, &1);
 
@@ -540,14 +549,13 @@ fn test_event_ordering_agreement_lifecycle() {
     );
 }
 
-/// Test: Events are emitted in correct order during milestone workflow
 #[test]
 fn test_event_ordering_milestone_workflow() {
     let env = create_test_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let contributor = create_test_address(&env);
-    let token = create_test_address(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
 
@@ -557,6 +565,7 @@ fn test_event_ordering_milestone_workflow() {
         "milestone_added not found"
     );
 
+    mint(&env, &token, &contract_id, 5000);
     client.approve_milestone(&agreement_id, &1);
     assert!(
         has_event(&env, "milestone_approved"),
@@ -624,14 +633,13 @@ fn test_complete_payroll_workflow_events() {
     );
 }
 
-/// Test: Complete milestone workflow emits all expected events
 #[test]
 fn test_complete_milestone_workflow_events() {
     let env = create_test_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let contributor = create_test_address(&env);
-    let token = create_test_address(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
 
@@ -647,6 +655,7 @@ fn test_complete_milestone_workflow_events() {
         "Second milestone_added not found"
     );
 
+    mint(&env, &token, &contract_id, 3000);
     client.approve_milestone(&agreement_id, &1);
     assert!(
         has_event(&env, "milestone_approved"),

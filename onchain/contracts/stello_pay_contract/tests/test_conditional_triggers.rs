@@ -179,8 +179,7 @@ fn setup_active_payroll(
     period_seconds: u64,
     employees: &[(Address, i128)],
 ) -> u128 {
-    let agreement_id =
-        client.create_payroll_agreement(employer, token, &ONE_WEEK);
+    let agreement_id = client.create_payroll_agreement(employer, token, &ONE_WEEK);
 
     for (emp, salary) in employees.iter() {
         client.add_employee_to_agreement(&agreement_id, emp, salary);
@@ -226,8 +225,15 @@ fn test_time_based_claim_after_one_period() {
     let token = create_token(&env);
 
     let agreement_id = setup_active_escrow(
-        &env, &contract_id, &client, &employer, &contributor, &token,
-        STANDARD_SALARY, ONE_DAY, 4,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        STANDARD_SALARY,
+        ONE_DAY,
+        4,
     );
 
     advance_time(&env, ONE_DAY);
@@ -251,8 +257,15 @@ fn test_time_based_claim_blocked_before_first_period() {
     let token = create_token(&env);
 
     let agreement_id = setup_active_escrow(
-        &env, &contract_id, &client, &employer, &contributor, &token,
-        STANDARD_SALARY, ONE_DAY, 4,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        STANDARD_SALARY,
+        ONE_DAY,
+        4,
     );
 
     // Advance only 23 hours — not yet a full day.
@@ -276,8 +289,15 @@ fn test_time_based_boundary_last_second_before_period_end() {
     set_time(&env, start);
 
     let agreement_id = setup_active_escrow(
-        &env, &contract_id, &client, &employer, &contributor, &token,
-        STANDARD_SALARY, ONE_DAY, 4,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        STANDARD_SALARY,
+        ONE_DAY,
+        4,
     );
 
     // One second before the period boundary.
@@ -300,8 +320,15 @@ fn test_time_based_boundary_first_second_after_period_end() {
     set_time(&env, start);
 
     let agreement_id = setup_active_escrow(
-        &env, &contract_id, &client, &employer, &contributor, &token,
-        STANDARD_SALARY, ONE_DAY, 4,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        STANDARD_SALARY,
+        ONE_DAY,
+        4,
     );
 
     // Exactly at the period boundary.
@@ -323,8 +350,15 @@ fn test_time_based_multiple_periods_accumulate() {
     let token = create_token(&env);
 
     let agreement_id = setup_active_escrow(
-        &env, &contract_id, &client, &employer, &contributor, &token,
-        STANDARD_SALARY, ONE_DAY, 5,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        STANDARD_SALARY,
+        ONE_DAY,
+        5,
     );
 
     advance_time(&env, ONE_DAY * 3);
@@ -349,8 +383,15 @@ fn test_time_based_cannot_over_claim_beyond_num_periods() {
     let num_periods = 3u32;
 
     let agreement_id = setup_active_escrow(
-        &env, &contract_id, &client, &employer, &contributor, &token,
-        STANDARD_SALARY, ONE_DAY, num_periods,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        STANDARD_SALARY,
+        ONE_DAY,
+        num_periods,
     );
 
     // Advance far past all periods.
@@ -377,8 +418,15 @@ fn test_time_based_sequential_claims_correct_amounts() {
     let token = create_token(&env);
 
     let agreement_id = setup_active_escrow(
-        &env, &contract_id, &client, &employer, &contributor, &token,
-        STANDARD_SALARY, ONE_DAY, 4,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        STANDARD_SALARY,
+        ONE_DAY,
+        4,
     );
 
     // First period.
@@ -406,8 +454,15 @@ fn test_time_based_claim_blocked_on_paused_agreement() {
     let token = create_token(&env);
 
     let agreement_id = setup_active_escrow(
-        &env, &contract_id, &client, &employer, &contributor, &token,
-        STANDARD_SALARY, ONE_DAY, 4,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        STANDARD_SALARY,
+        ONE_DAY,
+        4,
     );
 
     advance_time(&env, ONE_DAY);
@@ -429,8 +484,15 @@ fn test_time_based_claim_blocked_during_emergency_pause() {
     let token = create_token(&env);
 
     let agreement_id = setup_active_escrow(
-        &env, &contract_id, &client, &employer, &contributor, &token,
-        STANDARD_SALARY, ONE_DAY, 4,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        STANDARD_SALARY,
+        ONE_DAY,
+        4,
     );
 
     advance_time(&env, ONE_DAY);
@@ -454,8 +516,15 @@ fn test_time_based_partial_period_not_claimable() {
     let token = create_token(&env);
 
     let agreement_id = setup_active_escrow(
-        &env, &contract_id, &client, &employer, &contributor, &token,
-        STANDARD_SALARY, ONE_DAY, 4,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        STANDARD_SALARY,
+        ONE_DAY,
+        4,
     );
 
     // Advance 1.5 days — only 1 complete period.
@@ -481,8 +550,15 @@ fn test_time_based_large_period_boundary() {
     set_time(&env, start);
 
     let agreement_id = setup_active_escrow(
-        &env, &contract_id, &client, &employer, &contributor, &token,
-        STANDARD_SALARY, period_seconds, 2,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        STANDARD_SALARY,
+        period_seconds,
+        2,
     );
 
     // One second before expiry — no claim.
@@ -492,7 +568,10 @@ fn test_time_based_large_period_boundary() {
     // Exactly at expiry — one period claimable.
     set_time(&env, start + period_seconds);
     client.claim_time_based(&agreement_id);
-    assert_eq!(client.get_agreement(&agreement_id).unwrap().claimed_periods, Some(1));
+    assert_eq!(
+        client.get_agreement(&agreement_id).unwrap().claimed_periods,
+        Some(1)
+    );
 }
 
 /// @notice Escrow transitions to Completed when all periods are claimed.
@@ -507,8 +586,15 @@ fn test_time_based_escrow_completes_after_all_periods() {
     let num_periods = 2u32;
 
     let agreement_id = setup_active_escrow(
-        &env, &contract_id, &client, &employer, &contributor, &token,
-        STANDARD_SALARY, ONE_DAY, num_periods,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        STANDARD_SALARY,
+        ONE_DAY,
+        num_periods,
     );
 
     advance_time(&env, ONE_DAY * num_periods as u64);
@@ -531,7 +617,7 @@ fn test_milestone_claim_blocked_before_approval() {
     let (_contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
@@ -545,13 +631,17 @@ fn test_milestone_claim_blocked_before_approval() {
 #[test]
 fn test_milestone_approval_does_not_transfer_funds() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
+
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, STANDARD_SALARY);
+
     client.approve_milestone(&agreement_id, &1u32);
 
     let milestone = client.get_milestone(&agreement_id, &1u32).unwrap();
@@ -564,13 +654,17 @@ fn test_milestone_approval_does_not_transfer_funds() {
 #[test]
 fn test_milestone_claim_succeeds_immediately_after_approval() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
+
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, STANDARD_SALARY);
+
     client.approve_milestone(&agreement_id, &1u32);
     client.claim_milestone(&agreement_id, &1u32);
 
@@ -585,13 +679,17 @@ fn test_milestone_claim_succeeds_immediately_after_approval() {
 #[should_panic(expected = "Milestone already claimed")]
 fn test_milestone_double_claim_rejected() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
+
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, STANDARD_SALARY);
+
     client.approve_milestone(&agreement_id, &1u32);
     client.claim_milestone(&agreement_id, &1u32);
     client.claim_milestone(&agreement_id, &1u32); // must panic
@@ -602,15 +700,18 @@ fn test_milestone_double_claim_rejected() {
 #[test]
 fn test_milestone_out_of_order_approval_and_claim() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &100i128);
     client.add_milestone(&agreement_id, &200i128);
     client.add_milestone(&agreement_id, &300i128);
+
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, 600i128);
 
     // Approve and claim milestone 3 first.
     client.approve_milestone(&agreement_id, &3u32);
@@ -632,13 +733,17 @@ fn test_milestone_out_of_order_approval_and_claim() {
 #[should_panic]
 fn test_milestone_wrong_caller_cannot_claim() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
+
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, STANDARD_SALARY);
+
     client.approve_milestone(&agreement_id, &1u32);
 
     env.mock_auths(&[]); // strip all auth — claim must fail
@@ -651,13 +756,16 @@ fn test_milestone_wrong_caller_cannot_claim() {
 #[should_panic]
 fn test_milestone_wrong_caller_cannot_approve() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
+
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, STANDARD_SALARY);
 
     env.mock_auths(&[]); // strip all auth — approve must fail
     client.approve_milestone(&agreement_id, &1u32);
@@ -669,13 +777,17 @@ fn test_milestone_wrong_caller_cannot_approve() {
 #[should_panic(expected = "Cannot claim when agreement is paused")]
 fn test_milestone_claim_blocked_when_paused() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
+
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, STANDARD_SALARY);
+
     client.approve_milestone(&agreement_id, &1u32);
     client.pause_agreement(&agreement_id);
     client.claim_milestone(&agreement_id, &1u32); // must panic
@@ -779,13 +891,17 @@ fn test_milestone_batch_claim_partial_success_correct_counts() {
 #[should_panic(expected = "Invalid milestone ID")]
 fn test_milestone_invalid_id_rejected() {
     let env = create_env();
-    let (_contract_id, client) = setup_contract(&env);
+    let (contract_id, client) = setup_contract(&env);
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
-    let token = Address::generate(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
+
+    // Mint token to contract so invariant check passes
+    mint(&env, &token, &contract_id, STANDARD_SALARY);
+
     client.approve_milestone(&agreement_id, &99u32); // does not exist
 }
 
@@ -804,8 +920,13 @@ fn test_payroll_claim_blocked_before_first_period() {
     let token = create_token(&env);
 
     let _agreement_id = setup_active_payroll(
-        &env, &contract_id, &client, &employer, &token,
-        ONE_DAY, &[(employee.clone(), STANDARD_SALARY)],
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &token,
+        ONE_DAY,
+        &[(employee.clone(), STANDARD_SALARY)],
     );
 
     // No time advance — zero periods elapsed.
@@ -824,8 +945,13 @@ fn test_payroll_claim_after_one_period_correct_amount() {
     let token = create_token(&env);
 
     let agreement_id = setup_active_payroll(
-        &env, &contract_id, &client, &employer, &token,
-        ONE_DAY, &[(employee.clone(), STANDARD_SALARY)],
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &token,
+        ONE_DAY,
+        &[(employee.clone(), STANDARD_SALARY)],
     );
 
     advance_time(&env, ONE_DAY);
@@ -848,7 +974,11 @@ fn test_payroll_batch_distributes_to_multiple_employees() {
     let token = create_token(&env);
 
     let agreement_id = setup_active_payroll(
-        &env, &contract_id, &client, &employer, &token,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &token,
         ONE_DAY,
         &[
             (e0.clone(), 1_000i128),
@@ -876,7 +1006,10 @@ fn test_payroll_batch_distributes_to_multiple_employees() {
     assert_eq!(b0.successful_claims, 1);
     assert_eq!(b1.successful_claims, 1);
     assert_eq!(b2.successful_claims, 1);
-    assert_eq!(b0.total_claimed + b1.total_claimed + b2.total_claimed, 6_000i128);
+    assert_eq!(
+        b0.total_claimed + b1.total_claimed + b2.total_claimed,
+        6_000i128
+    );
     assert_eq!(balance(&env, &token, &e0), 1_000i128);
     assert_eq!(balance(&env, &token, &e1), 2_000i128);
     assert_eq!(balance(&env, &token, &e2), 3_000i128);
@@ -893,8 +1026,13 @@ fn test_payroll_wrong_employee_index_rejected() {
     let token = create_token(&env);
 
     let agreement_id = setup_active_payroll(
-        &env, &contract_id, &client, &employer, &token,
-        ONE_DAY, &[(employee.clone(), STANDARD_SALARY)],
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &token,
+        ONE_DAY,
+        &[(employee.clone(), STANDARD_SALARY)],
     );
 
     advance_time(&env, ONE_DAY);
@@ -1026,8 +1164,15 @@ fn test_composite_pause_resume_time_trigger_fires_after_resume() {
     let token = create_token(&env);
 
     let agreement_id = setup_active_escrow(
-        &env, &contract_id, &client, &employer, &contributor, &token,
-        STANDARD_SALARY, ONE_DAY, 4,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        STANDARD_SALARY,
+        ONE_DAY,
+        4,
     );
 
     advance_time(&env, ONE_DAY);
@@ -1039,7 +1184,10 @@ fn test_composite_pause_resume_time_trigger_fires_after_resume() {
     // Resume and retry — must succeed.
     client.resume_agreement(&agreement_id);
     client.claim_time_based(&agreement_id);
-    assert_eq!(client.get_agreement(&agreement_id).unwrap().claimed_periods, Some(1));
+    assert_eq!(
+        client.get_agreement(&agreement_id).unwrap().claimed_periods,
+        Some(1)
+    );
 }
 
 /// @notice Emergency pause blocks time-based, milestone, and payroll triggers.
@@ -1055,13 +1203,25 @@ fn test_composite_emergency_pause_blocks_all_trigger_types() {
 
     // Set up one agreement of each type.
     let escrow_id = setup_active_escrow(
-        &env, &contract_id, &client, &employer, &contributor, &token,
-        STANDARD_SALARY, ONE_DAY, 4,
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        STANDARD_SALARY,
+        ONE_DAY,
+        4,
     );
 
     let payroll_id = setup_active_payroll(
-        &env, &contract_id, &client, &employer, &token,
-        ONE_DAY, &[(employee.clone(), STANDARD_SALARY)],
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &token,
+        ONE_DAY,
+        &[(employee.clone(), STANDARD_SALARY)],
     );
 
     let ms_id = client.create_milestone_agreement(&employer, &contributor, &token);
@@ -1076,7 +1236,9 @@ fn test_composite_emergency_pause_blocks_all_trigger_types() {
 
     // All three must fail.
     assert!(client.try_claim_time_based(&escrow_id).is_err());
-    assert!(client.try_claim_payroll(&employee, &payroll_id, &0u32).is_err());
+    assert!(client
+        .try_claim_payroll(&employee, &payroll_id, &0u32)
+        .is_err());
     assert!(client.try_claim_milestone(&ms_id, &1u32).is_err());
 }
 
@@ -1091,8 +1253,13 @@ fn test_composite_dispute_blocks_payroll_claims() {
     let token = create_token(&env);
 
     let agreement_id = setup_active_payroll(
-        &env, &contract_id, &client, &employer, &token,
-        ONE_DAY, &[(employee.clone(), STANDARD_SALARY)],
+        &env,
+        &contract_id,
+        &client,
+        &employer,
+        &token,
+        ONE_DAY,
+        &[(employee.clone(), STANDARD_SALARY)],
     );
 
     advance_time(&env, ONE_DAY);
