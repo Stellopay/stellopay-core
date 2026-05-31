@@ -344,20 +344,31 @@ impl PayrollContract {
         payroll::claim_milestone(env, agreement_id, milestone_id);
     }
 
-    /// Batch Claim Milestones
+    /// Claims payment for multiple approved milestones in a single transaction.
+    ///
+    /// This is a high-frequency disbursement path. Instruction cost scales
+    /// linearly with the number of milestones in `milestone_ids` (one token
+    /// transfer and storage write per successful claim). Baselines are tracked
+    /// in `benchmarks/stello_pay_contract_gas.json` and enforced in CI via
+    /// `tests/gas_benchmarks.rs`.
     ///
     /// # Arguments
-    /// * `agreement_id` - agreement_id parameter
-    /// * `milestone_ids` - milestone_ids parameter
+    /// * `agreement_id` - ID of the milestone agreement
+    /// * `milestone_ids` - 1-based milestone IDs to claim (must be non-empty)
     ///
     /// # Returns
-    /// BatchMilestoneResult
+    /// `BatchMilestoneResult` with per-milestone success/failure details.
+    /// Partial success is supported: invalid or duplicate IDs are recorded as
+    /// failures without aborting the batch.
     ///
-    /// # Errors
-    /// Returns an error if validation fails
+    /// # Security
+    /// - Requires the milestone **contributor** to authenticate (`require_auth`).
+    /// - Marks each milestone claimed **before** the token transfer (CEI pattern).
+    /// - Rejects claims when the agreement is paused.
+    /// - Empty `milestone_ids` panics at the contract boundary.
     ///
-    /// # Access Control
-    /// Requires caller authentication
+    /// # Gas
+    /// Benchmarked at N = 1, 5, 20 milestones. See `docs/gas-benchmarks.md`.
     pub fn batch_claim_milestones(
         env: Env,
         agreement_id: u128,
@@ -703,27 +714,35 @@ impl PayrollContract {
         payroll::convert_currency(&env, from_token, to_token, amount)
     }
 
-    /// Claim payroll for an employee
+    /// Claims accrued payroll for a single employee in a payroll agreement.
+    ///
+    /// This is the highest-frequency on-chain operation. The employee receives
+    /// salary for all unclaimed elapsed periods in one transfer. Instruction
+    /// cost is **O(1)** in the number of backlog periods because period
+    /// arithmetic is constant-time and only one token transfer is executed.
+    /// Baselines are tracked in `benchmarks/stello_pay_contract_gas.json`
+    /// and enforced in CI via `tests/gas_benchmarks.rs`.
     ///
     /// # Invariants
-    /// - `claimed_periods <= num_periods` (if `num_periods` is defined for the agreement)
+    /// - `claimed_periods <= num_periods` when `num_periods` is set on the agreement.
+    /// - Escrow balance must cover `salary_per_period * periods_to_pay`.
     ///
     /// # Arguments
-    /// * `env` - Contract environment
-    /// * `caller` - Address of the caller
-    /// * `agreement_id` - ID of the agreement
-    /// * `employee_index` - Index of the employee in the agreement
+    /// * `caller` - Employee address (must match `employee_index`)
+    /// * `agreement_id` - Payroll agreement ID
+    /// * `employee_index` - 0-based index of the employee within the agreement
     ///
     /// # Security
-    /// - Requires `caller` to be the specific employee at `employee_index`.
-    /// - Updates internal accounting (claimed periods) before token transfer to prevent reentrancy.
-    /// - Checks if the contract or agreement is paused.
+    /// - Requires `caller` to be the employee at `employee_index` (`Unauthorized` otherwise).
+    /// - Rejects claims when the contract is emergency-paused or the agreement is paused.
+    /// - Large payments above `LargePaymentThreshold` require `claim_payroll_multisig`.
+    /// - Updates escrow balance and claimed-period counters before token transfer (CEI).
     ///
-    /// # Access Control
-    /// Requires caller to be the employee
+    /// # Gas
+    /// Benchmarked at 1, 10, and 50 elapsed payroll periods. See `docs/gas-benchmarks.md`.
     ///
     /// # Returns
-    /// Result<(), PayrollError>
+    /// `Ok(())` on success, or `PayrollError` on validation or transfer failure.
     pub fn claim_payroll(
         env: Env,
         caller: Address,
