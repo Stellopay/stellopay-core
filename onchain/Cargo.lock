@@ -439,6 +439,8 @@ dependencies = [
 name = "compliance_reporting"
 version = "0.0.0"
 dependencies = [
+ "audit_logger",
+ "payment_history",
  "soroban-sdk",
 ]
 
@@ -2338,6 +2340,8 @@ dependencies = [
  "base64 0.21.7",
  "criterion",
  "hmac",
+ "multisig",
+ "pbkdf2",
  "price_oracle",
  "proptest",
  "rbac",
