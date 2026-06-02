@@ -811,13 +811,13 @@ fn test_batch_milestone_error_codes() {
     client.add_milestone(&agreement_id, &700);
 
     // Approve and claim milestone 1.
-    client.approve_milestone(&agreement_id, &1u32);
     mint(&env, &token, &client.address, 500);
+    client.approve_milestone(&agreement_id, &1u32);
     client.claim_milestone(&agreement_id, &1u32);
 
     // Approve milestone 2 (unclaimed).
-    client.approve_milestone(&agreement_id, &2u32);
     mint(&env, &token, &client.address, 600);
+    client.approve_milestone(&agreement_id, &2u32);
 
     // Milestone 3 is NOT approved.
 
@@ -1465,8 +1465,8 @@ fn test_milestone_claim_on_paused_agreement() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &1000);
-    client.approve_milestone(&agreement_id, &1u32);
     mint(&env, &token, &client.address, 1000);
+    client.approve_milestone(&agreement_id, &1u32);
 
     // Pause the agreement.
     client.pause_agreement(&agreement_id);
@@ -1509,8 +1509,8 @@ fn test_milestone_double_claim() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &1000);
-    client.approve_milestone(&agreement_id, &1u32);
     mint(&env, &token, &client.address, 2000);
+    client.approve_milestone(&agreement_id, &1u32);
 
     client.claim_milestone(&agreement_id, &1u32);
 
