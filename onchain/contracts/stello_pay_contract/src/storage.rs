@@ -168,6 +168,13 @@ pub enum StorageKey {
     PauseApprovals,
     /// Global admin allowed to update FX rates (e.g. an oracle contract)
     ExchangeRateAdmin,
+    /// Optional max age (seconds) for using an FX rate. If set, any rate older
+    /// than this value (based on stored `updated_at`) will be considered stale.
+    ExchangeRateMaxAgeSeconds,
+    /// Optional max single-update deviation expressed in basis points (10000 = 100%).
+    /// If set, a new update that changes the rate by more than this fraction
+    /// relative to the previous stored rate will be rejected.
+    ExchangeRateMaxDeviationBps,
     /// Cumulative grace extension (seconds) applied on top of `Agreement::grace_period_seconds`
     /// for cancelled agreements (`agreement_id` -> u64).
     GracePeriodExtensionSeconds(u128),
@@ -253,6 +260,13 @@ pub struct PayrollCreateResult {
     pub success: bool,
     /// Mirrors PayrollError discriminant where applicable; 0 = success
     pub error_code: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExchangeRateInfo {
+    pub rate: i128,
+    pub updated_at: u64,
 }
 
 #[contracttype]
@@ -407,7 +421,7 @@ pub enum DataKey {
     /// multi-currency conversion helpers.
     ///
     /// Key: ExchangeRate(Address, Address)
-    /// Value: i128 (scaled rate)
+    /// Value: ExchangeRateInfo { rate: i128, updated_at: u64 }
     ExchangeRate(Address, Address),
 }
 
@@ -532,8 +546,13 @@ impl DataKey {
 
     /// Get the configured FX rate for a `(base, quote)` currency pair, if any.
     ///
-    /// The returned value is the fixed-point rate `quote_per_base * FX_SCALE`.
-    pub fn get_exchange_rate(env: &Env, base: &Address, quote: &Address) -> Option<i128> {
+    /// The returned value is an `ExchangeRateInfo` containing the fixed-point
+    /// rate `quote_per_base * FX_SCALE` and the `updated_at` ledger timestamp.
+    pub fn get_exchange_rate(
+        env: &Env,
+        base: &Address,
+        quote: &Address,
+    ) -> Option<ExchangeRateInfo> {
         let key: DataKey = DataKey::ExchangeRate(base.clone(), quote.clone());
         env.storage().persistent().get(&key)
     }
@@ -541,9 +560,41 @@ impl DataKey {
     /// Set the FX rate for a `(base, quote)` currency pair.
     ///
     /// Callers are responsible for enforcing any necessary access control;
-    /// this helper only performs the storage write.
+    /// this helper writes the rate together with the current ledger timestamp.
     pub fn set_exchange_rate(env: &Env, base: &Address, quote: &Address, rate: i128) {
         let key: DataKey = DataKey::ExchangeRate(base.clone(), quote.clone());
-        env.storage().persistent().set(&key, &rate);
+        let info = ExchangeRateInfo {
+            rate,
+            updated_at: env.ledger().timestamp(),
+        };
+        env.storage().persistent().set(&key, &info);
+    }
+
+    /// Get optional configured max-age (seconds) for FX rates.
+    pub fn get_exchange_rate_max_age_seconds(env: &Env) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ExchangeRateMaxAgeSeconds)
+    }
+
+    /// Set optional configured max-age (seconds) for FX rates.
+    pub fn set_exchange_rate_max_age_seconds(env: &Env, seconds: u64) {
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ExchangeRateMaxAgeSeconds, &seconds);
+    }
+
+    /// Get optional configured max single-update deviation in basis points.
+    pub fn get_exchange_rate_max_deviation_bps(env: &Env) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ExchangeRateMaxDeviationBps)
+    }
+
+    /// Set optional configured max single-update deviation in basis points.
+    pub fn set_exchange_rate_max_deviation_bps(env: &Env, bps: u32) {
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ExchangeRateMaxDeviationBps, &bps);
     }
 }
