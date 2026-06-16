@@ -92,6 +92,28 @@ impl PayrollContract {
             .set(&StorageKey::RbacContract, &rbac_contract);
     }
 
+    /// Sets the linked Rate Limiter contract address used to throttle claims.
+    ///
+    /// # Arguments
+    /// * `owner` - Owner of the contract
+    /// * `rate_limiter` - Rate limiter contract address
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn set_rate_limiter_contract(env: Env, owner: Address, rate_limiter: Address) {
+        let stored_owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        owner.require_auth();
+        assert!(owner == stored_owner, "Unauthorized");
+        env.storage()
+            .persistent()
+            .set(&StorageKey::RateLimiterContract, &rate_limiter);
+    }
+
+    /// Gets the linked Rate Limiter contract address, if any.
+    pub fn get_rate_limiter_contract(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&StorageKey::RateLimiterContract)
+    }
+
     /// @notice Upgrades the contract's WASM code to a new version.
     /// @dev Highly critical administrative function to alter contract bytecode.
     /// Gated strictly by require_upgrade_admin logic.

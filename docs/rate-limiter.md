@@ -46,7 +46,17 @@ A "bucket" is initialized with a **Burst Capacity** (maximum tokens). Every seco
 
 Other contracts can integrate the rate limiter by storing its contract ID and calling `check_and_consume(caller)` at the start of protected functions.
 
+For example, the `stello_pay_contract` integrates the Rate Limiter by optionally storing its address via `set_rate_limiter_contract(owner, addr)`. When configured, the `claim_payroll`, `claim_payroll_in_token`, and `batch_claim_payroll` entrypoints will invoke `try_check_and_consume(&caller)` to throttle spam. If the user exceeds their token bucket quota, these entrypoints reject the request with `PayrollError::RateLimited` (error code 34).
+
 ```rust
-let rate_limiter = RateLimiterClient::new(&env, &rate_limiter_id);
-rate_limiter.check_and_consume(&env.invoker());
+#[contractclient(name = "RateLimiterClient")]
+trait RateLimiterInterface {
+    fn check_and_consume(env: Env, subject: Address) -> u32;
+}
+
+// In the protected function
+let client = RateLimiterClient::new(&env, &rate_limiter_id);
+if client.try_check_and_consume(&caller).is_err() {
+    return Err(PayrollError::RateLimited);
+}
 ```

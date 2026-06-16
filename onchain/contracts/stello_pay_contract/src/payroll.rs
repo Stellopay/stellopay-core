@@ -31,6 +31,11 @@ trait MultisigInterface {
     fn get_operation(env: Env, operation_id: u128) -> Option<Operation>;
 }
 
+#[contractclient(name = "RateLimiterClient")]
+trait RateLimiterInterface {
+    fn check_and_consume(env: Env, subject: Address) -> u32;
+}
+
 /// Mirror of multisig::OperationStatus — names must match for XDR decoding.
 #[contracttype]
 #[derive(Clone, PartialEq)]
@@ -125,6 +130,16 @@ fn require_multisig_executed(
     }
     if !check(&op.kind) {
         return Err(PayrollError::MultisigApprovalRequired);
+    }
+    Ok(())
+}
+
+fn enforce_rate_limit(env: &Env, caller: &Address) -> Result<(), PayrollError> {
+    if let Some(rate_limiter_addr) = env.storage().persistent().get::<_, Address>(&StorageKey::RateLimiterContract) {
+        let client = RateLimiterClient::new(env, &rate_limiter_addr);
+        if client.try_check_and_consume(caller).is_err() {
+            return Err(PayrollError::RateLimited);
+        }
     }
     Ok(())
 }
@@ -1670,6 +1685,8 @@ pub fn claim_payroll(
     agreement_id: u128,
     employee_index: u32,
 ) -> Result<(), PayrollError> {
+    enforce_rate_limit(env, caller)?;
+
     // Check emergency pause
     if is_emergency_paused(env) {
         return Err(PayrollError::EmergencyPaused);
@@ -1930,6 +1947,8 @@ pub fn claim_payroll_in_token(
     employee_index: u32,
     payout_token: Address,
 ) -> Result<(), PayrollError> {
+    enforce_rate_limit(env, caller)?;
+
     // Validate employee index
     let employee_count = DataKey::get_employee_count(env, agreement_id);
     if employee_index >= employee_count {
@@ -2141,6 +2160,10 @@ pub fn batch_claim_payroll(
     employee_indices: Vec<u32>,
 ) -> Result<BatchPayrollResult, PayrollError> {
     caller.require_auth();
+
+    if let Err(e) = enforce_rate_limit(env, caller) {
+        return Err(e);
+    }
 
     if employee_indices.is_empty() {
         return Err(PayrollError::InvalidData);
