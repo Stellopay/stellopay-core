@@ -28,6 +28,14 @@ cargo llvm-cov test -p stello_pay_contract --fail-under-lines 95
 
 after validating numbers in your environment.
 
+### Disabled tests
+
+Tests on `main` must be either active or deleted. Do not leave Rust test files
+with a `.disabled` suffix or similar opt-out extension in contract test
+directories. If a test breaks during SDK or API migration, either update it in
+the same change, merge the still-useful cases into an active suite, or delete it
+when active coverage already supersedes it.
+
 ## Local environment
 
 Align with CI for reproducible runs:
