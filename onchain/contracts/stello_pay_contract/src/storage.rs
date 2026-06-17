@@ -186,6 +186,8 @@ pub enum StorageKey {
     LargePaymentThreshold,
     /// Minimum total payout amount (inclusive) that requires multisig approval for DisputeResolution.
     DisputeResolutionThreshold,
+    /// Optional rate limiter contract address for throttling claims.
+    RateLimiterContract,
 }
 
 #[contracttype]
@@ -339,6 +341,8 @@ pub enum PayrollError {
     GraceExtensionInvalid = 32,
     /// Extension would exceed owner-configured cumulative cap
     GraceExtensionCapExceeded = 33,
+    /// Caller has exceeded their rate limit quota
+    RateLimited = 34,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.

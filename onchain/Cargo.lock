@@ -2344,6 +2344,7 @@ dependencies = [
  "pbkdf2",
  "price_oracle",
  "proptest",
+ "rate_limiter",
  "rbac",
  "rbac-interface",
  "sha1",
