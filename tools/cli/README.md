@@ -188,14 +188,14 @@ tests/
 The CLI automatically detects and uses the contract WASM from the onchain workspace:
 
 ```
-../../onchain/target/wasm32v1-none/release/stello_pay_contract.wasm
+../../onchain/target/wasm32-unknown-unknown/release/stello_pay_contract.wasm
 ```
 
 Make sure to build the contract first:
 
 ```bash
 cd ../../onchain
-soroban contract build
+stellar contract build
 ```
 
 ## Error Handling
@@ -249,14 +249,14 @@ stellopay-cli --config ./mainnet-config.toml deploy --network mainnet --owner GA
 1. **Soroban CLI not found**
    ```bash
    # Install Soroban CLI
-   cargo install --locked soroban-cli
+   cargo install stellar-cli --locked
    ```
 
 2. **Contract WASM not found**
    ```bash
    # Build the contract
    cd ../../onchain
-   soroban contract build
+   stellar contract build
    ```
 
 3. **Network connectivity issues**
