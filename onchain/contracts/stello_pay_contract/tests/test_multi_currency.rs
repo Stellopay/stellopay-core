@@ -72,7 +72,7 @@ fn test_exchange_rate_staleness_rejected() {
     // advance ledger far beyond max age
     env.ledger().with_mut(|li| li.timestamp += 10u64);
 
-    let res = client.convert_currency(&base, &quote, &10i128);
+    let res = client.try_convert_currency(&base, &quote, &10i128);
     assert!(res.is_err());
 }
 
@@ -92,7 +92,7 @@ fn test_exchange_rate_deviation_rejected() {
 
     // attempt a >1% update should be rejected
     let r2 = r1 + (r1 / 50); // +2%
-    let res = client.set_exchange_rate(&owner, &base, &quote, &r2);
+    let res = client.try_set_exchange_rate(&owner, &base, &quote, &r2);
     assert!(res.is_err());
 }
 

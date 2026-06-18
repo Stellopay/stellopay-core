@@ -358,14 +358,15 @@ fn test_milestone_added_event() {
 #[test]
 fn test_milestone_approved_event() {
     let env = create_test_env();
-    let (contract_id, client) = setup_contract(&env);
+    let (_contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let contributor = create_test_address(&env);
     let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &5000);
-    mint(&env, &token, &contract_id, 5000);
+    mint(&env, &token, &employer, 5000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &5000);
     client.approve_milestone(&agreement_id, &1);
 
     assert!(has_event(&env, "milestone_approved"));
@@ -381,7 +382,7 @@ fn test_milestone_approved_event() {
 #[test]
 fn test_milestone_claimed_event() {
     let env = create_test_env();
-    let (contract_id, client) = setup_contract(&env);
+    let (_contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let contributor = create_test_address(&env);
     let token = create_token(&env);
@@ -389,7 +390,8 @@ fn test_milestone_claimed_event() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &amount);
-    mint(&env, &token, &contract_id, amount);
+    mint(&env, &token, &employer, amount);
+    client.fund_milestone_agreement(&agreement_id, &employer, &amount);
     client.approve_milestone(&agreement_id, &1);
     client.claim_milestone(&agreement_id, &1);
 
@@ -552,7 +554,7 @@ fn test_event_ordering_agreement_lifecycle() {
 #[test]
 fn test_event_ordering_milestone_workflow() {
     let env = create_test_env();
-    let (contract_id, client) = setup_contract(&env);
+    let (_contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let contributor = create_test_address(&env);
     let token = create_token(&env);
@@ -565,7 +567,8 @@ fn test_event_ordering_milestone_workflow() {
         "milestone_added not found"
     );
 
-    mint(&env, &token, &contract_id, 5000);
+    mint(&env, &token, &employer, 5000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &5000);
     client.approve_milestone(&agreement_id, &1);
     assert!(
         has_event(&env, "milestone_approved"),
@@ -636,7 +639,7 @@ fn test_complete_payroll_workflow_events() {
 #[test]
 fn test_complete_milestone_workflow_events() {
     let env = create_test_env();
-    let (contract_id, client) = setup_contract(&env);
+    let (_contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let contributor = create_test_address(&env);
     let token = create_token(&env);
@@ -655,7 +658,8 @@ fn test_complete_milestone_workflow_events() {
         "Second milestone_added not found"
     );
 
-    mint(&env, &token, &contract_id, 3000);
+    mint(&env, &token, &employer, 3000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &3000);
     client.approve_milestone(&agreement_id, &1);
     assert!(
         has_event(&env, "milestone_approved"),

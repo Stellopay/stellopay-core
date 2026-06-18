@@ -6,12 +6,13 @@ use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
     emit_employee_added, emit_grace_period_extended, emit_grace_period_finalized,
-    emit_payment_received, emit_payment_sent, emit_payroll_claimed, emit_set_arbiter,
-    AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent,
-    AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent,
-    DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, GracePeriodExtendedEvent,
-    GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved, MilestoneClaimed,
-    PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
+    emit_milestone_funded, emit_payment_received, emit_payment_sent, emit_payroll_claimed,
+    emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
+    AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
+    BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
+    GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
+    MilestoneClaimed, MilestoneFundedEvent, PaymentReceivedEvent, PaymentSentEvent,
+    PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
@@ -194,6 +195,106 @@ pub fn create_milestone_agreement(
     agreement_id
 }
 
+/// Deposits tokens from `from` into the contract for the specified milestone
+/// agreement, crediting the accounted escrow balance.
+///
+/// # Why this exists
+/// `approve_milestone` and `claim_milestone` assert that the contract holds
+/// enough tokens to cover unclaimed milestones. Without a dedicated funding
+/// entrypoint the only way to satisfy that invariant is to send tokens
+/// out-of-band, which is undiscoverable and unauditable. This function
+/// provides a first-class, authenticated, on-chain funding path.
+///
+/// # Arguments
+/// * `env`          - Contract environment.
+/// * `agreement_id` - ID of the milestone agreement to fund.
+/// * `from`         - Address to pull tokens from; must be the agreement's
+///                    employer and must pass `require_auth`.
+/// * `amount`       - Number of tokens to deposit; must be strictly positive.
+///
+/// # Access Control
+/// `from` must equal the employer stored for the agreement, and
+/// `from.require_auth()` is called before any state mutation or transfer.
+///
+/// # State changes — O(1)
+/// - Reads + writes `MilestoneKey::MilestoneEscrowBalance(agreement_id)` once.
+/// - Executes exactly one `token.transfer(from, contract_address, amount)`.
+///
+/// # Errors / panics
+/// - "Agreement not found" — `agreement_id` does not correspond to a known milestone agreement.
+/// - "Unauthorized: only the employer can fund a milestone agreement" — `from` ≠ stored employer.
+/// - "Amount must be positive" — `amount` is zero or negative.
+/// - "Cannot fund a Cancelled agreement" — agreement status is `Cancelled`.
+/// - "Cannot fund a Completed agreement" — agreement status is `Completed`.
+/// - "Escrow balance overflow" — cumulative funded amount would overflow `i128`.
+/// - Token-transfer panics propagated from the Soroban token host.
+///
+/// # Security
+/// The accounted balance (`MilestoneEscrowBalance`) is the sole source of
+/// truth used by `approve_milestone` and `claim_milestone` invariant checks.
+/// Raw `token.balance()` of the contract is intentionally **not** consulted
+/// so that third-party deposits cannot inflate claimable funds.
+pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, amount: i128) {
+    let employer: Address = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Employer(agreement_id))
+        .expect("Agreement not found");
+
+    // Only the agreement's employer may fund it.
+    assert!(
+        from == employer,
+        "Unauthorized: only the employer can fund a milestone agreement"
+    );
+    from.require_auth();
+
+    assert!(amount > 0, "Amount must be positive");
+
+    let status: AgreementStatus = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Status(agreement_id))
+        .expect("Agreement not found");
+    assert!(
+        status != AgreementStatus::Cancelled,
+        "Cannot fund a Cancelled agreement"
+    );
+    assert!(
+        status != AgreementStatus::Completed,
+        "Cannot fund a Completed agreement"
+    );
+
+    let current_balance: i128 = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+        .unwrap_or(0i128);
+    let new_balance = current_balance
+        .checked_add(amount)
+        .expect("Escrow balance overflow");
+    env.storage()
+        .instance()
+        .set(&MilestoneKey::MilestoneEscrowBalance(agreement_id), &new_balance);
+
+    let token_address: Address = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Token(agreement_id))
+        .expect("Token not found");
+    TokenClient::new(env, &token_address)
+        .transfer(&from, &env.current_contract_address(), &amount);
+
+    emit_milestone_funded(
+        env,
+        MilestoneFundedEvent {
+            agreement_id,
+            from,
+            amount,
+            total_escrow_balance: new_balance,
+        },
+    );
+}
+
 /// Adds a milestone to an agreement
 ///
 /// # Arguments
@@ -360,15 +461,19 @@ pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         &true,
     );
 
-    // Invariant: Escrow balance must cover all unclaimed milestones (including this one just approved)
-    let token_address: Address = env
+    // Invariant: accounted escrow balance must cover all unclaimed milestones
+    // (including the one just approved). Uses the accounted balance rather than
+    // raw token.balance() so that unrelated deposits cannot satisfy this check.
+    let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
+    let escrow_balance: i128 = env
         .storage()
         .instance()
-        .get(&MilestoneKey::Token(agreement_id))
-        .expect("Token not found");
-    let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
-    let contract_balance = TokenClient::new(&env, &token_address).balance(&env.current_contract_address());
-    assert!(contract_balance >= unclaimed_sum, "Insufficient contract balance for unclaimed milestones");
+        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+        .unwrap_or(0i128);
+    assert!(
+        escrow_balance >= unclaimed_sum,
+        "Insufficient funded escrow balance for unclaimed milestones"
+    );
 
     MilestoneApproved {
         agreement_id,
@@ -434,15 +539,19 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         .unwrap_or(false);
     assert!(!already_claimed, "Milestone already claimed");
 
-    // Invariant check before claim
+    // Invariant check: accounted escrow balance must cover all unclaimed
+    // milestones before we allow the transfer. Using the accounted balance
+    // prevents third-party token transfers from inflating claimable funds.
     let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
-    let token_address: Address = env
+    let escrow_balance: i128 = env
         .storage()
         .instance()
-        .get(&MilestoneKey::Token(agreement_id))
-        .expect("Token not found");
-    let contract_balance = TokenClient::new(&env, &token_address).balance(&env.current_contract_address());
-    assert!(contract_balance >= unclaimed_sum, "Invariant violation: escrow balance < sum of unclaimed milestones");
+        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+        .unwrap_or(0i128);
+    assert!(
+        escrow_balance >= unclaimed_sum,
+        "Invariant violation: funded escrow balance < sum of unclaimed milestones"
+    );
 
     let amount: i128 = env
         .storage()
@@ -450,16 +559,32 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
         .expect("Milestone amount not found");
 
+    let token_address: Address = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Token(agreement_id))
+        .expect("Token not found");
+
+    // Checks-Effects-Interactions: update all state before the external transfer.
     env.storage().instance().set(
         &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
         &true,
     );
 
-    let _token: Address = env
+    // Decrement the accounted escrow balance so subsequent invariant checks
+    // reflect the reduced available balance.
+    let escrow_balance: i128 = env
         .storage()
         .instance()
-        .get(&MilestoneKey::Token(agreement_id))
-        .expect("Token not found");
+        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+        .unwrap_or(0i128);
+    env.storage().instance().set(
+        &MilestoneKey::MilestoneEscrowBalance(agreement_id),
+        &escrow_balance.saturating_sub(amount),
+    );
+
+    TokenClient::new(&env, &token_address)
+        .transfer(&env.current_contract_address(), &contributor, &amount);
 
     MilestoneClaimed {
         agreement_id,
@@ -601,10 +726,22 @@ pub fn batch_claim_milestones(
             .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
             .expect("Milestone amount not found");
 
-        // Checks-Effects-Interactions: mark claimed BEFORE transfer
+        // Checks-Effects-Interactions: update all state before the external transfer.
         env.storage().instance().set(
             &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
             &true,
+        );
+
+        // Decrement the accounted escrow balance to keep invariants consistent
+        // across subsequent iterations of this batch.
+        let escrow_balance: i128 = env
+            .storage()
+            .instance()
+            .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+            .unwrap_or(0i128);
+        env.storage().instance().set(
+            &MilestoneKey::MilestoneEscrowBalance(agreement_id),
+            &escrow_balance.saturating_sub(amount),
         );
 
         token_client.transfer(&contract_address, &contributor, &amount);

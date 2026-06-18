@@ -255,7 +255,9 @@ fn setup_funded_milestones(
         client.add_milestone(&agreement_id, &amount);
     }
 
-    StellarAssetClient::new(env, &token).mint(contract_id, &(amount * n as i128));
+    let total_amount = amount * n as i128;
+    StellarAssetClient::new(env, &token).mint(&employer, &total_amount);
+    client.fund_milestone_agreement(&agreement_id, &employer, &total_amount);
 
     for i in 1..=(n as u32) {
         client.approve_milestone(&agreement_id, &i);

@@ -54,8 +54,7 @@ fn create_funded_time_based_agreement(
             &amount_per_period,
             &PERIOD_SECONDS,
             &num_periods,
-        )
-        .unwrap();
+        );
     let total = amount_per_period * i128::from(num_periods);
 
     StellarAssetClient::new(env, token).mint(&client.address, &total);
@@ -67,7 +66,7 @@ fn create_funded_time_based_agreement(
 }
 
 fn advance_time(env: &Env, seconds: u64) {
-    env.ledger().with_mut(|ledger: &mut Ledger| {
+    env.ledger().with_mut(|ledger| {
         ledger.timestamp += seconds;
     });
 }
@@ -109,7 +108,7 @@ fn time_based_claim_pays_all_elapsed_unclaimed_periods() {
 
     client.activate_agreement(&agreement_id);
     advance_time(&env, PERIOD_SECONDS * 3);
-    client.claim_time_based(&agreement_id).unwrap();
+    client.claim_time_based(&agreement_id);
 
     let agreement = client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agreement.claimed_periods, Some(3));
@@ -155,7 +154,7 @@ fn time_based_claim_completes_when_final_period_is_claimed() {
 
     client.activate_agreement(&agreement_id);
     advance_time(&env, PERIOD_SECONDS * 10);
-    client.claim_time_based(&agreement_id).unwrap();
+    client.claim_time_based(&agreement_id);
 
     let agreement = client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agreement.claimed_periods, Some(2));
@@ -182,7 +181,7 @@ fn time_based_claim_during_grace_period_still_pays_elapsed_periods() {
     client.activate_agreement(&agreement_id);
     advance_time(&env, PERIOD_SECONDS * 2);
     client.cancel_agreement(&agreement_id);
-    client.claim_time_based(&agreement_id).unwrap();
+    client.claim_time_based(&agreement_id);
 
     let agreement = client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agreement.claimed_periods, Some(2));
