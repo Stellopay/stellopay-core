@@ -263,10 +263,10 @@ set -e
 
 echo "Building contract..."
 cd onchain/contracts/stello_pay_contract
-soroban contract build
+stellar contract build
 
 echo "Deploying to testnet..."
-CONTRACT_ID=$(soroban contract deploy \
+CONTRACT_ID=$(stellar contract deploy \
   --wasm target/wasm32-unknown-unknown/release/stello_pay_contract.wasm \
   --source-account $DEPLOY_ACCOUNT \
   --rpc-url https://soroban-testnet.stellar.org:443 \
@@ -275,7 +275,7 @@ CONTRACT_ID=$(soroban contract deploy \
 echo "Contract deployed: $CONTRACT_ID"
 
 echo "Initializing contract..."
-soroban contract invoke \
+stellar contract invoke \
   --id $CONTRACT_ID \
   --source-account $DEPLOY_ACCOUNT \
   --rpc-url https://soroban-testnet.stellar.org:443 \
