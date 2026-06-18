@@ -98,7 +98,7 @@ fn create_funded_payroll(
 }
 
 fn advance_time(env: &Env, seconds: u64) {
-    env.ledger().with_mut(|ledger: &mut Ledger| {
+    env.ledger().with_mut(|ledger| {
         ledger.timestamp += seconds;
     });
 }

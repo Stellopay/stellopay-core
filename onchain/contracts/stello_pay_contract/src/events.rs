@@ -238,3 +238,21 @@ pub struct BatchMilestoneClaimedEvent {
 pub fn emit_batch_milestone_claimed(env: &Env, event: BatchMilestoneClaimedEvent) {
     event.publish(env);
 }
+
+/// Event: Milestone agreement funded by employer.
+///
+/// Emitted when an employer deposits tokens into the contract for a specific
+/// milestone agreement via `fund_milestone_agreement`. The `total_escrow_balance`
+/// field reflects the new accounted balance after this deposit.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MilestoneFundedEvent {
+    pub agreement_id: u128,
+    pub from: Address,
+    pub amount: i128,
+    pub total_escrow_balance: i128,
+}
+
+pub fn emit_milestone_funded(env: &Env, event: MilestoneFundedEvent) {
+    event.publish(env);
+}

@@ -1,6 +1,6 @@
-//! Comprehensive test suite for milestone-based payment functionality (#162).
+//! Comprehensive test suite for milestone-based payment functionality (#162, #486).
 //!
-//! Covers: agreement creation, adding milestones, approving, claiming,
+//! Covers: agreement creation, funding, adding milestones, approving, claiming,
 //! access control, edge cases, and event emissions.
 
 #![cfg(test)]
@@ -33,7 +33,11 @@ fn create_test_env() -> (
     (env, employer, contributor, token, client)
 }
 
-/// Create a milestone agreement and return its ID.
+/// Mint tokens to `employer`, create a milestone agreement, and fund it via
+/// `fund_milestone_agreement` so that approve/claim invariants can pass.
+///
+/// Uses a large pre-funded pool (`i128::MAX / 2`) so existing tests do not
+/// need to know the exact amounts of milestones added afterwards.
 fn setup_milestone_agreement(
     env: &Env,
     client: &PayrollContractClient,
@@ -41,8 +45,10 @@ fn setup_milestone_agreement(
     contributor: &Address,
     token: &Address,
 ) -> u128 {
+    let fund_amount: i128 = i128::MAX / 2;
+    soroban_sdk::token::StellarAssetClient::new(env, token).mint(employer, &fund_amount);
     let id = client.create_milestone_agreement(employer, contributor, token);
-    soroban_sdk::token::StellarAssetClient::new(env, token).mint(&client.address, &(i128::MAX / 2));
+    client.fund_milestone_agreement(&id, employer, &fund_amount);
     id
 }
 
@@ -75,6 +81,173 @@ fn test_initial_milestone_count_zero() {
     let (env, employer, contributor, token, client) = create_test_env();
     let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
     assert_eq!(client.get_milestone_count(&agreement_id), 0);
+}
+
+// fund_milestone_agreement — happy path
+
+/// Funding moves tokens from the employer's wallet to the contract address.
+#[test]
+fn test_fund_transfers_tokens_to_contract() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let asset_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    asset_client.mint(&employer, &5_000i128);
+
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    client.fund_milestone_agreement(&agreement_id, &employer, &5_000i128);
+
+    let token_client = soroban_sdk::token::TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&client.address), 5_000i128);
+    assert_eq!(token_client.balance(&employer), 0i128);
+}
+
+/// Multiple funding calls accumulate into the accounted escrow balance.
+#[test]
+fn test_fund_accumulates_across_multiple_deposits() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let asset_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    asset_client.mint(&employer, &3_000i128);
+
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1_000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &2_000i128);
+
+    let token_client = soroban_sdk::token::TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&client.address), 3_000i128);
+}
+
+/// Full lifecycle: fund → add milestone → approve → claim, with token-balance assertions.
+#[test]
+fn test_fund_then_approve_then_claim_transfers_to_contributor() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let asset_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    asset_client.mint(&employer, &1_000i128);
+
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1_000i128);
+    client.add_milestone(&agreement_id, &1_000i128);
+    client.approve_milestone(&agreement_id, &1);
+    client.claim_milestone(&agreement_id, &1);
+
+    let token_client = soroban_sdk::token::TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&contributor), 1_000i128);
+    assert_eq!(token_client.balance(&client.address), 0i128);
+}
+
+/// Funding with exactly the total sum of all milestones satisfies the approve invariant.
+#[test]
+fn test_fund_exact_total_allows_approve() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let asset_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    asset_client.mint(&employer, &300i128);
+
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    client.add_milestone(&agreement_id, &100i128);
+    client.add_milestone(&agreement_id, &200i128);
+    // Fund after adding milestones — order should not matter.
+    client.fund_milestone_agreement(&agreement_id, &employer, &300i128);
+
+    client.approve_milestone(&agreement_id, &1);
+    client.approve_milestone(&agreement_id, &2);
+
+    assert!(client.get_milestone(&agreement_id, &1).unwrap().approved);
+    assert!(client.get_milestone(&agreement_id, &2).unwrap().approved);
+}
+
+/// Escrow balance decreases correctly after each claim, keeping the invariant tight.
+#[test]
+fn test_escrow_balance_decrements_after_each_claim() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let asset_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    asset_client.mint(&employer, &300i128);
+
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    client.fund_milestone_agreement(&agreement_id, &employer, &300i128);
+    client.add_milestone(&agreement_id, &100i128);
+    client.add_milestone(&agreement_id, &200i128);
+    client.approve_milestone(&agreement_id, &1);
+    client.approve_milestone(&agreement_id, &2);
+
+    // After claiming milestone 1 (100), contract should hold 200.
+    client.claim_milestone(&agreement_id, &1);
+    let token_client = soroban_sdk::token::TokenClient::new(&env, &token);
+    assert_eq!(token_client.balance(&client.address), 200i128);
+
+    // After claiming milestone 2 (200), contract should hold 0.
+    client.claim_milestone(&agreement_id, &2);
+    assert_eq!(token_client.balance(&client.address), 0i128);
+    assert_eq!(token_client.balance(&contributor), 300i128);
+}
+
+// fund_milestone_agreement — rejection cases
+
+/// Funding with a zero amount must fail.
+#[test]
+#[should_panic(expected = "Amount must be positive")]
+fn test_fund_zero_amount_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    client.fund_milestone_agreement(&agreement_id, &employer, &0i128);
+}
+
+/// Funding with a negative amount must fail.
+#[test]
+#[should_panic(expected = "Amount must be positive")]
+fn test_fund_negative_amount_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    client.fund_milestone_agreement(&agreement_id, &employer, &-1i128);
+}
+
+/// A non-employer address cannot fund a milestone agreement.
+#[test]
+#[should_panic(expected = "Unauthorized: only the employer can fund a milestone agreement")]
+fn test_fund_non_employer_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let stranger = Address::generate(&env);
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    client.fund_milestone_agreement(&agreement_id, &stranger, &500i128);
+}
+
+/// The contributor cannot fund the agreement — only the employer can.
+#[test]
+#[should_panic(expected = "Unauthorized: only the employer can fund a milestone agreement")]
+fn test_fund_contributor_cannot_fund_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    client.fund_milestone_agreement(&agreement_id, &contributor, &500i128);
+}
+
+/// Funding a non-existent agreement ID must fail.
+#[test]
+#[should_panic(expected = "Agreement not found")]
+fn test_fund_nonexistent_agreement_fails() {
+    let (env, employer, _contributor, _token, client) = create_test_env();
+    client.fund_milestone_agreement(&999u128, &employer, &500i128);
+}
+
+/// Approving a milestone without prior funding must fail the balance invariant.
+#[test]
+#[should_panic(expected = "Insufficient funded escrow balance for unclaimed milestones")]
+fn test_approve_without_funding_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    client.add_milestone(&agreement_id, &1_000i128);
+    // No fund_milestone_agreement call — must be rejected.
+    client.approve_milestone(&agreement_id, &1);
+}
+
+/// Funding less than the total milestone sum must cause approve to fail.
+#[test]
+#[should_panic(expected = "Insufficient funded escrow balance for unclaimed milestones")]
+fn test_approve_underfunded_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let asset_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    asset_client.mint(&employer, &499i128);
+
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    client.add_milestone(&agreement_id, &1_000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &499i128); // short by 501
+    client.approve_milestone(&agreement_id, &1);
 }
 
 // -----------------------------------------------------------------------------
