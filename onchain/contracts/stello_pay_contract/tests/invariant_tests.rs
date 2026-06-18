@@ -69,7 +69,7 @@ fn test_invariant_escrow_claimed_periods_limit() {
 }
 
 #[test]
-#[should_panic(expected = "Insufficient contract balance for unclaimed milestones")]
+#[should_panic(expected = "Insufficient funded escrow balance for unclaimed milestones")]
 fn test_invariant_milestone_balance_insufficient() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -102,22 +102,20 @@ fn test_invariant_milestone_balance_sufficient() {
     client.add_milestone(&agreement_id, &1000i128);
     
     // Fund contract
-    token_admin_client.mint(&contract_id, &1000i128);
-    env.as_contract(&contract_id, || {
-        DataKey::set_agreement_escrow_balance(&env, agreement_id, &token_id, 1000i128);
-    });
+    token_admin_client.mint(&employer, &1000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1000i128);
     
     // Should succeed
     client.approve_milestone(&agreement_id, &1u32);
 }
 
 #[test]
-#[should_panic(expected = "Invariant violation: escrow balance < sum of unclaimed milestones")]
+#[should_panic(expected = "Invariant violation: funded escrow balance < sum of unclaimed milestones")]
 fn test_invariant_milestone_claim_insufficient_balance() {
     let env = create_test_env();
     let (contract_id, client) = setup_contract(&env);
     let token_admin = Address::generate(&env);
-    let (token_id, token_client, token_admin_client) = setup_token(&env, &token_admin);
+    let (token_id, _token_client, token_admin_client) = setup_token(&env, &token_admin);
     
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
@@ -126,16 +124,17 @@ fn test_invariant_milestone_claim_insufficient_balance() {
     client.add_milestone(&agreement_id, &1000i128);
     
     // Fund contract
-    token_admin_client.mint(&contract_id, &1000i128);
-    env.as_contract(&contract_id, || {
-        DataKey::set_agreement_escrow_balance(&env, agreement_id, &token_id, 1000i128);
-    });
+    token_admin_client.mint(&employer, &1000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1000i128);
     client.approve_milestone(&agreement_id, &1u32);
     
-    // Now someone steals the funds from the contract (mocked by transfer and manual balance update)
-    token_client.transfer(&contract_id, &Address::generate(&env), &1000i128);
+    // Now someone steals the funds from the contract (mocked by manual balance update)
     env.as_contract(&contract_id, || {
-        DataKey::set_agreement_escrow_balance(&env, agreement_id, &token_id, 0);
+        use stello_pay_contract::storage::MilestoneKey;
+        env.storage().instance().set(
+            &MilestoneKey::MilestoneEscrowBalance(agreement_id),
+            &0i128,
+        );
     });
     
     // Claim should fail due to invariant

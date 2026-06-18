@@ -58,6 +58,12 @@ pub enum MilestoneKey {
     MilestoneApproved(u128, u32),
     /// Milestone claim status: (agreement_id, milestone_id) -> bool
     MilestoneClaimed(u128, u32),
+    /// Accounted escrow balance for a milestone agreement: agreement_id -> i128
+    ///
+    /// Tracks only tokens explicitly deposited via `fund_milestone_agreement`.
+    /// Invariant checks use this value so that unrelated token transfers into
+    /// the contract address cannot inflate claimable funds.
+    MilestoneEscrowBalance(u128),
 }
 
 impl Milestone {
