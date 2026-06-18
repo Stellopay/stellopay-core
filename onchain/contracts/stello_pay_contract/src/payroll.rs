@@ -1604,6 +1604,26 @@ pub fn set_exchange_rate(
         return Err(PayrollError::Unauthorized);
     }
 
+    // Enforce max-deviation if configured: compare with previous rate.
+    if let Some(max_dev_bps) = DataKey::get_exchange_rate_max_deviation_bps(env) {
+        if let Some(prev) = DataKey::get_exchange_rate(env, &base, &quote) {
+            // compute allowed delta = prev.rate * max_dev_bps / 10000
+            let prev_rate = prev.rate;
+            // Avoid negative or zero prev_rate (shouldn't happen)
+            if prev_rate > 0 {
+                let allowed_delta = (prev_rate
+                    .checked_mul(max_dev_bps as i128)
+                    .unwrap_or(i128::MAX))
+                    .checked_div(10_000i128)
+                    .unwrap_or(i128::MAX);
+                let diff = if rate > prev_rate { rate - prev_rate } else { prev_rate - rate };
+                if diff > allowed_delta {
+                    return Err(PayrollError::ExchangeRateInvalid);
+                }
+            }
+        }
+    }
+
     DataKey::set_exchange_rate(env, &base, &quote, rate);
 
     Ok(())
@@ -2659,11 +2679,24 @@ fn convert_amount(
         return Ok(amount);
     }
 
-    let rate = DataKey::get_exchange_rate(env, from_token, to_token)
+    let info = DataKey::get_exchange_rate(env, from_token, to_token)
         .ok_or(PayrollError::ExchangeRateNotFound)?;
 
+    let rate = info.rate;
     if rate <= 0 {
         return Err(PayrollError::ExchangeRateInvalid);
+    }
+
+    // Enforce staleness (max-age) if configured
+    if let Some(max_age) = DataKey::get_exchange_rate_max_age_seconds(env) {
+        let now = env.ledger().timestamp();
+        // Protect against underflow
+        if now < info.updated_at {
+            return Err(PayrollError::ExchangeRateInvalid);
+        }
+        if now - info.updated_at > max_age {
+            return Err(PayrollError::ExchangeRateNotFound);
+        }
     }
 
     let scaled = amount
