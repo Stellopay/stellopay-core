@@ -355,6 +355,7 @@ impl PayrollContract {
     /// # Arguments
     /// * `agreement_id` - ID of the milestone agreement
     /// * `milestone_ids` - 1-based milestone IDs to claim (must be non-empty)
+    ///   and no longer than `storage::MAX_BATCH_SIZE`.
     ///
     /// # Returns
     /// `BatchMilestoneResult` with per-milestone success/failure details.
@@ -366,14 +367,16 @@ impl PayrollContract {
     /// - Marks each milestone claimed **before** the token transfer (CEI pattern).
     /// - Rejects claims when the agreement is paused.
     /// - Empty `milestone_ids` panics at the contract boundary.
+    /// - Oversized batches fail up front with `PayrollError::BatchTooLarge`.
     ///
     /// # Gas
-    /// Benchmarked at N = 1, 5, 20 milestones. See `docs/gas-benchmarks.md`.
+    /// Benchmarked at N = 1, 5, 20 milestones in `tests/gas_benchmarks.rs`.
+    /// N = 20 is the documented ceiling for all batch entrypoints.
     pub fn batch_claim_milestones(
         env: Env,
         agreement_id: u128,
         milestone_ids: Vec<u32>,
-    ) -> BatchMilestoneResult {
+    ) -> Result<BatchMilestoneResult, PayrollError> {
         payroll::batch_claim_milestones(&env, agreement_id, milestone_ids)
     }
 

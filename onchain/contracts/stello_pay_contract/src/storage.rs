@@ -1,5 +1,14 @@
 use soroban_sdk::{contracterror, contracttype, Address, Env, Vec};
 
+/// Maximum caller-supplied batch size accepted by batch entrypoints.
+///
+/// The ceiling is intentionally set to 20 because `tests/gas_benchmarks.rs`
+/// measures `batch_claim_milestones` at N = 20 and keeps that path under the
+/// committed regression threshold. Keeping all batch creation and claim
+/// entrypoints at the same cap gives callers one documented limit and prevents
+/// late Soroban resource exhaustion after partial state changes.
+pub const MAX_BATCH_SIZE: u32 = 20;
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Milestone {
@@ -325,6 +334,8 @@ pub enum PayrollError {
     GraceExtensionInvalid = 32,
     /// Extension would exceed owner-configured cumulative cap
     GraceExtensionCapExceeded = 33,
+    /// Caller supplied more than `MAX_BATCH_SIZE` batch items.
+    BatchTooLarge = 34,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.

@@ -46,6 +46,21 @@ See [docs/windows-build.md](../docs/windows-build.md) for Option A (MSVC) and te
 
 The Payroll Escrow Contract allows employers to deposit salaries into an escrow account. The funds are released to employees at predefined intervals (weekly, monthly, etc.).
 
+### Batch Size Ceiling
+
+All public batch entrypoints are capped by `storage::MAX_BATCH_SIZE` (`20` items):
+`batch_claim_payroll`, `batch_claim_milestones`,
+`batch_create_payroll_agreements`, and `batch_create_escrow_agreements`.
+Oversized batches fail before item processing with `PayrollError::BatchTooLarge`.
+
+The ceiling is tied to `onchain/contracts/stello_pay_contract/tests/gas_benchmarks.rs`,
+which records the cost of `batch_claim_milestones` at the max size and asserts it
+stays under the documented instruction threshold. Run:
+
+```sh
+cargo test -p stello_pay_contract gas_benchmark -- --nocapture
+```
+
 ## Getting Started
 
 To get started with the Payroll Smart Contract, follow the instructions below:

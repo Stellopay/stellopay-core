@@ -18,7 +18,7 @@ use crate::storage::{
     BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
     EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
     MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
-    PayrollCreateResult, PayrollError, StorageKey,
+    PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE,
 };
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
@@ -472,14 +472,23 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
 /// * `agreement_id`  - ID of the milestone agreement
 /// * `milestone_ids` - 1-based milestone IDs to claim.
 ///   Duplicates are detected in-memory and skipped.
+///   At most `MAX_BATCH_SIZE` IDs are accepted.
 ///
 /// # Returns
-/// `BatchMilestoneResult` — always returns (never panics at batch level).
+/// `Ok(BatchMilestoneResult)` with per-milestone results.
+///
+/// # Batch-level errors
+/// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` IDs.
+///
+/// # Gas rationale
+/// `MAX_BATCH_SIZE` is 20 because `tests/gas_benchmarks.rs` measures the
+/// milestone batch path at that size and enforces the committed gas ceiling.
+/// The bound is checked before milestone state updates or token transfers.
 pub fn batch_claim_milestones(
     env: &Env,
     agreement_id: u128,
     milestone_ids: Vec<u32>,
-) -> BatchMilestoneResult {
+) -> Result<BatchMilestoneResult, PayrollError> {
     let contributor: Address = env
         .storage()
         .instance()
@@ -488,6 +497,9 @@ pub fn batch_claim_milestones(
     contributor.require_auth();
 
     assert!(!milestone_ids.is_empty(), "No milestone IDs provided");
+    if milestone_ids.len() > MAX_BATCH_SIZE {
+        return Err(PayrollError::BatchTooLarge);
+    }
 
     // Shared pre-flight
     let status: AgreementStatus = env
@@ -533,6 +545,7 @@ pub fn batch_claim_milestones(
             });
             continue;
         }
+        processed.push_back(milestone_id);
 
         // Bounds check (1-based, mirrors claim_milestone)
         if milestone_id == 0 || milestone_id > count {
@@ -614,7 +627,6 @@ pub fn batch_claim_milestones(
             error_code: 0,
         });
 
-        processed.push_back(milestone_id);
     }
 
     if all_milestones_claimed(env, agreement_id, count) {
@@ -633,13 +645,13 @@ pub fn batch_claim_milestones(
     }
     .publish(&env);
 
-    BatchMilestoneResult {
+    Ok(BatchMilestoneResult {
         agreement_id,
         total_claimed,
         successful_claims,
         failed_claims,
         results,
-    }
+    })
 }
 
 pub fn get_milestone_count(env: Env, agreement_id: u128) -> u32 {
@@ -789,10 +801,19 @@ fn create_payroll_agreement_internal(
 /// * `env` - Contract environment
 /// * `employer` - Address of the employer creating the agreements
 /// * `items` - Vector of payroll creation parameters
+///   At most `MAX_BATCH_SIZE` items are accepted.
 ///
 /// # Returns
 /// `Ok(BatchPayrollCreateResult)` — always succeeds at the batch level
 /// unless `items` is empty; inspect per-item results for failures.
+///
+/// # Batch-level errors
+/// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` items.
+///
+/// # Gas rationale
+/// `MAX_BATCH_SIZE` is 20, matching the largest batch size measured in
+/// `tests/gas_benchmarks.rs`; the cap avoids late Soroban resource exhaustion
+/// after partially creating agreements.
 pub fn batch_create_payroll_agreements(
     env: &Env,
     employer: Address,
@@ -802,6 +823,9 @@ pub fn batch_create_payroll_agreements(
 
     if items.is_empty() {
         return Err(PayrollError::InvalidData);
+    }
+    if items.len() > MAX_BATCH_SIZE {
+        return Err(PayrollError::BatchTooLarge);
     }
 
     let mut agreement_ids: Vec<u128> = Vec::new(env);
@@ -956,10 +980,19 @@ fn create_escrow_agreement_internal(
 /// * `env` - Contract environment
 /// * `employer` - Address of the employer
 /// * `items` - Vector of escrow creation parameters
+///   At most `MAX_BATCH_SIZE` items are accepted.
 ///
 /// # Returns
 /// `Ok(BatchEscrowCreateResult)` — always succeeds at the batch level
 /// unless `items` is empty; inspect per-item `results` for failures.
+///
+/// # Batch-level errors
+/// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` items.
+///
+/// # Gas rationale
+/// `MAX_BATCH_SIZE` is 20, matching the largest batch size measured in
+/// `tests/gas_benchmarks.rs`; the cap avoids late Soroban resource exhaustion
+/// after partially creating agreements.
 pub fn batch_create_escrow_agreements(
     env: &Env,
     employer: Address,
@@ -969,6 +1002,9 @@ pub fn batch_create_escrow_agreements(
 
     if items.is_empty() {
         return Err(PayrollError::InvalidData);
+    }
+    if items.len() > MAX_BATCH_SIZE {
+        return Err(PayrollError::BatchTooLarge);
     }
 
     let mut agreement_ids: Vec<u128> = Vec::new(env);
@@ -2118,6 +2154,7 @@ pub fn claim_payroll_in_token(
 /// * `agreement_id` - ID of the payroll agreement
 /// * `employee_indices` - 0-based employee indices to claim for.
 ///   Duplicates are detected in-memory and skipped.
+///   At most `MAX_BATCH_SIZE` indices are accepted.
 ///
 /// # Returns
 /// `Ok(BatchPayrollResult)` — always succeeds at the batch level; inspect
@@ -2128,6 +2165,13 @@ pub fn claim_payroll_in_token(
 /// * `PayrollError::AgreementNotFound` — agreement does not exist
 /// * `PayrollError::InvalidAgreementMode` — agreement is not Payroll mode
 /// * `PayrollError::AgreementNotActivated` — activation timestamp missing
+/// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` indices
+///
+/// # Gas rationale
+/// `MAX_BATCH_SIZE` is 20 because `tests/gas_benchmarks.rs` records the batch
+/// ceiling and enforces the committed gas threshold. The bound is checked
+/// before payroll state updates or token transfers, preserving partial-success
+/// semantics for only bounded batches.
 ///
 /// # Gas optimisations
 /// * Agreement metadata (token, activation time, period duration) read once.
@@ -2144,6 +2188,9 @@ pub fn batch_claim_payroll(
 
     if employee_indices.is_empty() {
         return Err(PayrollError::InvalidData);
+    }
+    if employee_indices.len() > MAX_BATCH_SIZE {
+        return Err(PayrollError::BatchTooLarge);
     }
 
     let agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
@@ -2204,6 +2251,7 @@ pub fn batch_claim_payroll(
             });
             continue;
         }
+        processed.push_back(employee_index);
 
         // Bounds check
         if employee_index >= employee_count {
@@ -2380,8 +2428,6 @@ pub fn batch_claim_payroll(
             amount_claimed: amount,
             error_code: 0,
         });
-
-        processed.push_back(employee_index);
     }
 
     DataKey::set_agreement_escrow_balance(env, agreement_id, &token, escrow_balance);
