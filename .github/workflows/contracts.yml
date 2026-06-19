@@ -8,6 +8,7 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: stable
 
 jobs:
   contracts:
@@ -19,6 +20,17 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
+
+      # Cache downloaded crates and workspace build outputs only; tool binaries
+      # are installed fresh so restored cache contents are revalidated by Cargo.
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            onchain/target
+          key: ${{ runner.os }}-cargo-contracts-${{ env.RUST_TOOLCHAIN }}-llvm-tools-wasm-${{ hashFiles('onchain/Cargo.lock', '**/rust-toolchain', '**/rust-toolchain.toml') }}
 
       - name: Install system dependencies
         run: |

@@ -15,6 +15,33 @@ It performs:
 4. **WASM build** — `stellar contract build` in `onchain/contracts/stello_pay_contract` and `onchain/contracts/template_versioning`.
 5. **Coverage** — `cargo llvm-cov` over the same two packages; produces `onchain/codecov.json` and uploads it as a workflow artifact.
 
+## Rust cache
+
+`contracts.yml` and `security-scan.yml` cache Cargo downloads and the
+`onchain/target` build directory with `actions/cache@v4`. The cache paths are
+limited to:
+
+- `~/.cargo/registry`
+- `~/.cargo/git`
+- `onchain/target`
+
+The cache key includes the runner OS, workflow purpose, the Rust toolchain
+marker (`stable`), and a hash of `onchain/Cargo.lock` plus any
+`rust-toolchain`/`rust-toolchain.toml` files. Changing dependencies, pinning a
+different toolchain file, or moving a workflow to a different toolchain marker
+creates a new cache entry instead of reusing old build artifacts.
+
+The cache intentionally excludes `~/.cargo/bin`, so tools such as
+`stellar-cli`, `cargo-audit`, and `cargo-llvm-cov` are installed or provisioned
+by their workflow steps instead of restored from cache. GitHub Actions also
+scopes caches by branch and pull request merge ref; untrusted fork PRs can read
+eligible base-branch caches but cannot replace the trusted `main` cache used by
+pushes to `main`. The workflows use `pull_request`, not `pull_request_target`,
+so forked PRs do not receive repository secrets.
+
+The legacy manual `.github/workflows/ci.yml` workflow does not run Cargo and
+therefore has no Rust cache step.
+
 ### Optional Codecov
 
 To publish reports to [Codecov](https://codecov.io), add a repository secret `CODECOV_TOKEN` and uncomment (or enable) the Codecov step in `contracts.yml`. The job is configured so missing token does not fail the workflow by default.
