@@ -17,18 +17,28 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Run cargo-deny (dependency policy)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          rust-version: stable
+          manifest-path: ./onchain/Cargo.toml
+          command: check advisories bans licenses sources
+          arguments: --all-features
+
       - name: Install cargo-audit
         run: |
           cargo install cargo-audit --locked || echo "cargo-audit already installed"
 
       - name: Run cargo-audit (dependency vulnerability scan)
+        working-directory: onchain
         run: |
           cargo audit || true
 
       - name: Run Clippy (static analysis)
+        working-directory: onchain
         run: |
           cargo clippy --all-targets --all-features -- -D warnings || true
 
       - name: Security scan summary
         run: |
-          echo "Static security scans completed (cargo-audit, clippy)."
+          echo "Static security scans completed (cargo-deny, cargo-audit, clippy)."
