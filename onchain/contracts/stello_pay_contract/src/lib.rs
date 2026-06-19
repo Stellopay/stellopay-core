@@ -92,6 +92,28 @@ impl PayrollContract {
             .set(&StorageKey::RbacContract, &rbac_contract);
     }
 
+    /// Sets the linked Rate Limiter contract address used to throttle claims.
+    ///
+    /// # Arguments
+    /// * `owner` - Owner of the contract
+    /// * `rate_limiter` - Rate limiter contract address
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn set_rate_limiter_contract(env: Env, owner: Address, rate_limiter: Address) {
+        let stored_owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        owner.require_auth();
+        assert!(owner == stored_owner, "Unauthorized");
+        env.storage()
+            .persistent()
+            .set(&StorageKey::RateLimiterContract, &rate_limiter);
+    }
+
+    /// Gets the linked Rate Limiter contract address, if any.
+    pub fn get_rate_limiter_contract(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&StorageKey::RateLimiterContract)
+    }
+
     /// @notice Upgrades the contract's WASM code to a new version.
     /// @dev Highly critical administrative function to alter contract bytecode.
     /// Gated strictly by require_upgrade_admin logic.
@@ -295,6 +317,38 @@ impl PayrollContract {
         payroll::create_milestone_agreement(env, employer, contributor, token)
     }
 
+    /// Deposits tokens from `from` into the contract to fund a milestone agreement.
+    ///
+    /// This is the only supported way to bring tokens into scope for a milestone
+    /// agreement. The function records an **accounted escrow balance** separate
+    /// from the raw on-chain `token.balance()` of the contract address, so that
+    /// `approve_milestone` and `claim_milestone` invariant checks cannot be
+    /// satisfied by unrelated deposits.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the milestone agreement to fund.
+    /// * `from`         - Address transferring the tokens; must be the stored employer.
+    /// * `amount`       - Strictly-positive token amount to deposit.
+    ///
+    /// # State Transition
+    /// No status change. `MilestoneKey::MilestoneEscrowBalance` is incremented by `amount`.
+    ///
+    /// # Access Control
+    /// - `from` must equal the employer stored for `agreement_id`.
+    /// - `from.require_auth()` is enforced.
+    ///
+    /// # Errors
+    /// Panics with descriptive messages for: unknown agreement, wrong caller,
+    /// non-positive amount, `Cancelled` or `Completed` status, arithmetic overflow.
+    pub fn fund_milestone_agreement(
+        env: Env,
+        agreement_id: u128,
+        from: Address,
+        amount: i128,
+    ) {
+        payroll::fund_milestone_agreement(&env, agreement_id, from, amount);
+    }
+
     /// Adds a milestone to a milestone-based agreement.
     ///
     /// # Arguments
@@ -308,6 +362,7 @@ impl PayrollContract {
     pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
         payroll::add_milestone(env, agreement_id, amount);
     }
+
 
     /// Approves a milestone for payment.
     ///

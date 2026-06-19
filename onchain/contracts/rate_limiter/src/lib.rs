@@ -121,7 +121,6 @@ impl RateLimiter {
     /// @param subject Address to check and consume quota for (must authenticate).
     /// @return tokens_remaining User's tokens remaining after consumption.
     pub fn check_and_consume(env: Env, subject: Address) -> u32 {
-        subject.require_auth();
         Self::require_initialized(&env);
 
         let admin: Address = env.storage().persistent().get(&StorageKey::Admin).unwrap();

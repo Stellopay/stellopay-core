@@ -6,12 +6,13 @@ use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
     emit_employee_added, emit_grace_period_extended, emit_grace_period_finalized,
-    emit_payment_received, emit_payment_sent, emit_payroll_claimed, emit_set_arbiter,
-    AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent,
-    AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent,
-    DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, GracePeriodExtendedEvent,
-    GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved, MilestoneClaimed,
-    PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
+    emit_milestone_funded, emit_payment_received, emit_payment_sent, emit_payroll_claimed,
+    emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
+    AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
+    BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
+    GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
+    MilestoneClaimed, MilestoneFundedEvent, PaymentReceivedEvent, PaymentSentEvent,
+    PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
@@ -29,6 +30,11 @@ use soroban_sdk::{
 #[contractclient(name = "MultisigClient")]
 trait MultisigInterface {
     fn get_operation(env: Env, operation_id: u128) -> Option<Operation>;
+}
+
+#[contractclient(name = "RateLimiterClient")]
+trait RateLimiterInterface {
+    fn check_and_consume(env: Env, subject: Address) -> u32;
 }
 
 /// Mirror of multisig::OperationStatus — names must match for XDR decoding.
@@ -129,6 +135,16 @@ fn require_multisig_executed(
     Ok(())
 }
 
+fn enforce_rate_limit(env: &Env, caller: &Address) -> Result<(), PayrollError> {
+    if let Some(rate_limiter_addr) = env.storage().persistent().get::<_, Address>(&StorageKey::RateLimiterContract) {
+        let client = RateLimiterClient::new(env, &rate_limiter_addr);
+        if client.try_check_and_consume(caller).is_err() {
+            return Err(PayrollError::RateLimited);
+        }
+    }
+    Ok(())
+}
+
 /// Fixed-point scaling factor for FX rates: 1e6 precision.
 const FX_SCALE: i128 = 1_000_000;
 
@@ -177,6 +193,106 @@ pub fn create_milestone_agreement(
         .set(&MilestoneKey::MilestoneCount(agreement_id), &0u32);
 
     agreement_id
+}
+
+/// Deposits tokens from `from` into the contract for the specified milestone
+/// agreement, crediting the accounted escrow balance.
+///
+/// # Why this exists
+/// `approve_milestone` and `claim_milestone` assert that the contract holds
+/// enough tokens to cover unclaimed milestones. Without a dedicated funding
+/// entrypoint the only way to satisfy that invariant is to send tokens
+/// out-of-band, which is undiscoverable and unauditable. This function
+/// provides a first-class, authenticated, on-chain funding path.
+///
+/// # Arguments
+/// * `env`          - Contract environment.
+/// * `agreement_id` - ID of the milestone agreement to fund.
+/// * `from`         - Address to pull tokens from; must be the agreement's
+///                    employer and must pass `require_auth`.
+/// * `amount`       - Number of tokens to deposit; must be strictly positive.
+///
+/// # Access Control
+/// `from` must equal the employer stored for the agreement, and
+/// `from.require_auth()` is called before any state mutation or transfer.
+///
+/// # State changes — O(1)
+/// - Reads + writes `MilestoneKey::MilestoneEscrowBalance(agreement_id)` once.
+/// - Executes exactly one `token.transfer(from, contract_address, amount)`.
+///
+/// # Errors / panics
+/// - "Agreement not found" — `agreement_id` does not correspond to a known milestone agreement.
+/// - "Unauthorized: only the employer can fund a milestone agreement" — `from` ≠ stored employer.
+/// - "Amount must be positive" — `amount` is zero or negative.
+/// - "Cannot fund a Cancelled agreement" — agreement status is `Cancelled`.
+/// - "Cannot fund a Completed agreement" — agreement status is `Completed`.
+/// - "Escrow balance overflow" — cumulative funded amount would overflow `i128`.
+/// - Token-transfer panics propagated from the Soroban token host.
+///
+/// # Security
+/// The accounted balance (`MilestoneEscrowBalance`) is the sole source of
+/// truth used by `approve_milestone` and `claim_milestone` invariant checks.
+/// Raw `token.balance()` of the contract is intentionally **not** consulted
+/// so that third-party deposits cannot inflate claimable funds.
+pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, amount: i128) {
+    let employer: Address = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Employer(agreement_id))
+        .expect("Agreement not found");
+
+    // Only the agreement's employer may fund it.
+    assert!(
+        from == employer,
+        "Unauthorized: only the employer can fund a milestone agreement"
+    );
+    from.require_auth();
+
+    assert!(amount > 0, "Amount must be positive");
+
+    let status: AgreementStatus = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Status(agreement_id))
+        .expect("Agreement not found");
+    assert!(
+        status != AgreementStatus::Cancelled,
+        "Cannot fund a Cancelled agreement"
+    );
+    assert!(
+        status != AgreementStatus::Completed,
+        "Cannot fund a Completed agreement"
+    );
+
+    let current_balance: i128 = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+        .unwrap_or(0i128);
+    let new_balance = current_balance
+        .checked_add(amount)
+        .expect("Escrow balance overflow");
+    env.storage()
+        .instance()
+        .set(&MilestoneKey::MilestoneEscrowBalance(agreement_id), &new_balance);
+
+    let token_address: Address = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Token(agreement_id))
+        .expect("Token not found");
+    TokenClient::new(env, &token_address)
+        .transfer(&from, &env.current_contract_address(), &amount);
+
+    emit_milestone_funded(
+        env,
+        MilestoneFundedEvent {
+            agreement_id,
+            from,
+            amount,
+            total_escrow_balance: new_balance,
+        },
+    );
 }
 
 /// Adds a milestone to an agreement
@@ -345,15 +461,19 @@ pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         &true,
     );
 
-    // Invariant: Escrow balance must cover all unclaimed milestones (including this one just approved)
-    let token_address: Address = env
+    // Invariant: accounted escrow balance must cover all unclaimed milestones
+    // (including the one just approved). Uses the accounted balance rather than
+    // raw token.balance() so that unrelated deposits cannot satisfy this check.
+    let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
+    let escrow_balance: i128 = env
         .storage()
         .instance()
-        .get(&MilestoneKey::Token(agreement_id))
-        .expect("Token not found");
-    let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
-    let contract_balance = TokenClient::new(&env, &token_address).balance(&env.current_contract_address());
-    assert!(contract_balance >= unclaimed_sum, "Insufficient contract balance for unclaimed milestones");
+        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+        .unwrap_or(0i128);
+    assert!(
+        escrow_balance >= unclaimed_sum,
+        "Insufficient funded escrow balance for unclaimed milestones"
+    );
 
     MilestoneApproved {
         agreement_id,
@@ -419,15 +539,19 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         .unwrap_or(false);
     assert!(!already_claimed, "Milestone already claimed");
 
-    // Invariant check before claim
+    // Invariant check: accounted escrow balance must cover all unclaimed
+    // milestones before we allow the transfer. Using the accounted balance
+    // prevents third-party token transfers from inflating claimable funds.
     let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
-    let token_address: Address = env
+    let escrow_balance: i128 = env
         .storage()
         .instance()
-        .get(&MilestoneKey::Token(agreement_id))
-        .expect("Token not found");
-    let contract_balance = TokenClient::new(&env, &token_address).balance(&env.current_contract_address());
-    assert!(contract_balance >= unclaimed_sum, "Invariant violation: escrow balance < sum of unclaimed milestones");
+        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+        .unwrap_or(0i128);
+    assert!(
+        escrow_balance >= unclaimed_sum,
+        "Invariant violation: funded escrow balance < sum of unclaimed milestones"
+    );
 
     let amount: i128 = env
         .storage()
@@ -435,16 +559,32 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
         .expect("Milestone amount not found");
 
+    let token_address: Address = env
+        .storage()
+        .instance()
+        .get(&MilestoneKey::Token(agreement_id))
+        .expect("Token not found");
+
+    // Checks-Effects-Interactions: update all state before the external transfer.
     env.storage().instance().set(
         &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
         &true,
     );
 
-    let _token: Address = env
+    // Decrement the accounted escrow balance so subsequent invariant checks
+    // reflect the reduced available balance.
+    let escrow_balance: i128 = env
         .storage()
         .instance()
-        .get(&MilestoneKey::Token(agreement_id))
-        .expect("Token not found");
+        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+        .unwrap_or(0i128);
+    env.storage().instance().set(
+        &MilestoneKey::MilestoneEscrowBalance(agreement_id),
+        &escrow_balance.saturating_sub(amount),
+    );
+
+    TokenClient::new(&env, &token_address)
+        .transfer(&env.current_contract_address(), &contributor, &amount);
 
     MilestoneClaimed {
         agreement_id,
@@ -599,10 +739,22 @@ pub fn batch_claim_milestones(
             .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
             .expect("Milestone amount not found");
 
-        // Checks-Effects-Interactions: mark claimed BEFORE transfer
+        // Checks-Effects-Interactions: update all state before the external transfer.
         env.storage().instance().set(
             &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
             &true,
+        );
+
+        // Decrement the accounted escrow balance to keep invariants consistent
+        // across subsequent iterations of this batch.
+        let escrow_balance: i128 = env
+            .storage()
+            .instance()
+            .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+            .unwrap_or(0i128);
+        env.storage().instance().set(
+            &MilestoneKey::MilestoneEscrowBalance(agreement_id),
+            &escrow_balance.saturating_sub(amount),
         );
 
         token_client.transfer(&contract_address, &contributor, &amount);
@@ -1625,6 +1777,26 @@ pub fn set_exchange_rate(
         return Err(PayrollError::Unauthorized);
     }
 
+    // Enforce max-deviation if configured: compare with previous rate.
+    if let Some(max_dev_bps) = DataKey::get_exchange_rate_max_deviation_bps(env) {
+        if let Some(prev) = DataKey::get_exchange_rate(env, &base, &quote) {
+            // compute allowed delta = prev.rate * max_dev_bps / 10000
+            let prev_rate = prev.rate;
+            // Avoid negative or zero prev_rate (shouldn't happen)
+            if prev_rate > 0 {
+                let allowed_delta = (prev_rate
+                    .checked_mul(max_dev_bps as i128)
+                    .unwrap_or(i128::MAX))
+                    .checked_div(10_000i128)
+                    .unwrap_or(i128::MAX);
+                let diff = if rate > prev_rate { rate - prev_rate } else { prev_rate - rate };
+                if diff > allowed_delta {
+                    return Err(PayrollError::ExchangeRateInvalid);
+                }
+            }
+        }
+    }
+
     DataKey::set_exchange_rate(env, &base, &quote, rate);
 
     Ok(())
@@ -1706,6 +1878,8 @@ pub fn claim_payroll(
     agreement_id: u128,
     employee_index: u32,
 ) -> Result<(), PayrollError> {
+    enforce_rate_limit(env, caller)?;
+
     // Check emergency pause
     if is_emergency_paused(env) {
         return Err(PayrollError::EmergencyPaused);
@@ -1966,6 +2140,8 @@ pub fn claim_payroll_in_token(
     employee_index: u32,
     payout_token: Address,
 ) -> Result<(), PayrollError> {
+    enforce_rate_limit(env, caller)?;
+
     // Validate employee index
     let employee_count = DataKey::get_employee_count(env, agreement_id);
     if employee_index >= employee_count {
@@ -2185,6 +2361,10 @@ pub fn batch_claim_payroll(
     employee_indices: Vec<u32>,
 ) -> Result<BatchPayrollResult, PayrollError> {
     caller.require_auth();
+
+    if let Err(e) = enforce_rate_limit(env, caller) {
+        return Err(e);
+    }
 
     if employee_indices.is_empty() {
         return Err(PayrollError::InvalidData);
@@ -2682,11 +2862,24 @@ fn convert_amount(
         return Ok(amount);
     }
 
-    let rate = DataKey::get_exchange_rate(env, from_token, to_token)
+    let info = DataKey::get_exchange_rate(env, from_token, to_token)
         .ok_or(PayrollError::ExchangeRateNotFound)?;
 
+    let rate = info.rate;
     if rate <= 0 {
         return Err(PayrollError::ExchangeRateInvalid);
+    }
+
+    // Enforce staleness (max-age) if configured
+    if let Some(max_age) = DataKey::get_exchange_rate_max_age_seconds(env) {
+        let now = env.ledger().timestamp();
+        // Protect against underflow
+        if now < info.updated_at {
+            return Err(PayrollError::ExchangeRateInvalid);
+        }
+        if now - info.updated_at > max_age {
+            return Err(PayrollError::ExchangeRateNotFound);
+        }
     }
 
     let scaled = amount

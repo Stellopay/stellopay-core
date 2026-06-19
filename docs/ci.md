@@ -6,12 +6,13 @@ The GitHub Actions workflow **Contracts CI** (`.github/workflows/contracts.yml`)
 
 It performs:
 
-1. **Rust toolchain** — stable channel, `wasm32v1-none` target, `llvm-tools-preview` (for coverage instrumentation).
+1. **Rust toolchain** — stable channel, `wasm32-unknown-unknown` target, `llvm-tools-preview` (for coverage instrumentation).
 2. **Stellar CLI** — `cargo install stellar-cli --locked` for `stellar contract build`.
 3. **Unit / integration tests**
    - `cargo test -p stello_pay_contract --verbose`
    - `cargo test -p integration_tests --verbose`
-4. **WASM build** — `stellar contract build` in `onchain/contracts/stello_pay_contract`.
+   - `cargo test -p template_versioning --verbose`
+4. **WASM build** — `stellar contract build` in `onchain/contracts/stello_pay_contract` and `onchain/contracts/template_versioning`.
 5. **Coverage** — `cargo llvm-cov` over the same two packages; produces `onchain/codecov.json` and uploads it as a workflow artifact.
 
 ### Optional Codecov
@@ -28,6 +29,14 @@ cargo llvm-cov test -p stello_pay_contract --fail-under-lines 95
 
 after validating numbers in your environment.
 
+### Disabled tests
+
+Tests on `main` must be either active or deleted. Do not leave Rust test files
+with a `.disabled` suffix or similar opt-out extension in contract test
+directories. If a test breaks during SDK or API migration, either update it in
+the same change, merge the still-useful cases into an active suite, or delete it
+when active coverage already supersedes it.
+
 ## Local environment
 
 Align with CI for reproducible runs:
@@ -35,7 +44,7 @@ Align with CI for reproducible runs:
 | Requirement | Notes |
 |-------------|--------|
 | Rust | Stable, edition 2021 (see workspace `Cargo.toml`). |
-| Target | `rustup target add wasm32v1-none` |
+| Target | `rustup target add wasm32-unknown-unknown` |
 | Stellar CLI | Same major line as Soroban SDK in the workspace (e.g. install via `cargo install stellar-cli --locked`). |
 | Coverage | `rustup component add llvm-tools-preview` and `cargo install cargo-llvm-cov` |
 
