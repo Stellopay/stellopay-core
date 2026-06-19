@@ -730,3 +730,125 @@ fn test_release_full_and_refund_fails() {
     // Refund should now fail
     client.refund_remaining(&manager, &1);
 }
+
+// ============================================================================
+// Conservation invariant helpers and edge-case coverage
+// ============================================================================
+
+/// Asserts the escrow conservation invariant for a single agreement:
+/// `total_funded == total_released + total_refunded + remaining_balance`.
+fn assert_escrow_conservation(
+    client: &PayrollEscrowContractClient<'_>,
+    agreement_id: u128,
+    total_funded: i128,
+    total_released: i128,
+    total_refunded: i128,
+) {
+    let remaining = client.get_agreement_balance(&agreement_id);
+    let outflow = total_released + total_refunded;
+    assert_eq!(
+        total_funded,
+        outflow + remaining,
+        "conservation violated: funded={total_funded} released={total_released} refunded={total_refunded} remaining={remaining}"
+    );
+    assert!(outflow <= total_funded, "outflow must not exceed funded deposits");
+}
+
+#[test]
+fn test_escrow_conservation_invariant_multi_step() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &10_000);
+
+    let agreement_id = 99u128;
+    client.fund_agreement(&employer, &agreement_id, &employer, &1000);
+    client.fund_agreement(&employer, &agreement_id, &employer, &500);
+    assert_escrow_conservation(&client, agreement_id, 1500, 0, 0);
+
+    client.release(&manager, &agreement_id, &recipient, &400);
+    assert_escrow_conservation(&client, agreement_id, 1500, 400, 0);
+
+    client.refund_remaining(&manager, &agreement_id);
+    assert_escrow_conservation(&client, agreement_id, 1500, 400, 1100);
+    assert_eq!(client.get_agreement_balance(&agreement_id), 0);
+}
+
+#[test]
+fn test_release_to_non_employee_recipient() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let arbitrary_recipient = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &1000);
+    client.fund_agreement(&employer, &1, &employer, &800);
+
+    client.release(&manager, &1, &arbitrary_recipient, &300);
+
+    assert_eq!(token.balance(&arbitrary_recipient), 300);
+    assert_eq!(client.get_agreement_balance(&1), 500);
+}
+
+#[test]
+#[should_panic(expected = "No balance to refund")]
+fn test_double_refund_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &1000);
+    client.fund_agreement(&employer, &1, &employer, &500);
+
+    client.refund_remaining(&manager, &1);
+    client.refund_remaining(&manager, &1);
+}
+
+#[test]
+#[should_panic(expected = "Insufficient balance")]
+fn test_release_after_refund_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &1000);
+    client.fund_agreement(&employer, &1, &employer, &500);
+
+    client.refund_remaining(&manager, &1);
+    client.release(&manager, &1, &recipient, &100);
+}

@@ -31,6 +31,10 @@ jobs:
       - name: Install Stellar CLI
         run: cargo install stellar-cli --locked
 
+      - name: Run tests (payroll_escrow)
+        working-directory: onchain
+        run: cargo test -p payroll_escrow --verbose
+
       - name: Run tests (stello_pay_contract)
         working-directory: onchain
         run: cargo test -p stello_pay_contract --verbose

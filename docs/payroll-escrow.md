@@ -27,6 +27,15 @@ All fund movements are protected by checked arithmetic. The `AgreementBalance` i
 ### 5. Atomic Refunds
 The `refund_remaining` operation is atomic: it transfers the entire remaining balance of an agreement back to the registered employer and resets the internal balance to zero in a single transaction.
 
+### 6. Escrow Conservation Invariant
+For each `agreement_id`, the contract maintains:
+
+```text
+total_funded == total_released + total_refunded + remaining_balance
+```
+
+Property-based fuzz tests in `onchain/contracts/payroll_escrow/tests/fuzz/test_fuzzing.rs` generate randomized fund / release / refund sequences and assert this invariant after every successful step. Integration tests in `onchain/integration_tests` verify the same property across a multi-contract lifecycle (fund → partial release → refund).
+
 ## Interaction Flow
 
 1. **Initialization**: Admin sets the token address and the Manager contract address.
