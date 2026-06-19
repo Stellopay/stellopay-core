@@ -394,6 +394,41 @@ fn test_compute_split_extreme_recipient_count() {
 }
 
 #[test]
+fn test_property_conservation_and_bound_many_recipients() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+
+    let mut recipients = Vec::new(&env);
+    let mut total_bps = 0;
+
+    for _ in 1..=49u32 {
+        recipients.push_back(RecipientShare {
+            recipient: Address::generate(&env),
+            kind: ShareKind::Percent(100),
+        });
+        total_bps += 100;
+    }
+    // Remaining bps to ensure it sums to 10000
+    recipients.push_back(RecipientShare {
+        recipient: Address::generate(&env),
+        kind: ShareKind::Percent(10000 - total_bps),
+    });
+
+    let id = client.create_split(&creator, &recipients);
+
+    // Property: for various amounts, sum(parts) == total
+    // and dust bound is never violated (the contract won't panic).
+    let test_amounts = [1, 10, 199, 200, 201, 1000, 9999, 10000, 10001, 123456789];
+
+    for amount in test_amounts.iter() {
+        let out = client.compute_split(&id, amount);
+        let sum: i128 = out.iter().map(|entry| entry.1).sum();
+        assert_eq!(sum, *amount, "Conservation failed for amount: {}", amount);
+    }
+}
+
+#[test]
 #[should_panic(expected = "Already initialized")]
 fn test_reinitialize_fails() {
     let env = create_env();
