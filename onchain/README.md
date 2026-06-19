@@ -224,12 +224,22 @@ See [tools/cli/README.md](../tools/cli/README.md) for full usage.
 
 ### `tools/doc_checker` — Documentation Checker
 
-Scans all `#[contractimpl]` public functions for missing doc comments (params, returns, access control).
+Scans contract Rust sources for public API documentation gaps:
+
+- public `#[contractimpl]` functions with no doc comments;
+- public `#[contractimpl]` functions whose doc comments omit params, returns, or access-control notes;
+- variants of public `#[contracterror]` enums with no doc comments.
 
 ```bash
 cd tools/doc_checker
 cargo run
+cargo run -- --severity fail
 ```
+
+By default the checker reports warnings and exits successfully. Use
+`--severity fail` or `--fail` in CI to return a nonzero exit status when any
+documentation findings are present. Use `--contracts-dir <PATH>` to scan a
+different contract source tree.
 
 ---
 
