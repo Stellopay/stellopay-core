@@ -369,6 +369,18 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
     .publish(&env);
 }
 
+/// Returns the total configured amount across all milestones for an agreement.
+///
+/// # Arguments
+/// * `env` - Contract environment used to read milestone count and amounts from instance storage.
+/// * `agreement_id` - Milestone agreement identifier whose milestone amounts should be summed.
+///
+/// # Returns
+/// Sum of every stored milestone amount for the agreement, treating missing amount entries as zero.
+///
+/// # Cost
+/// O(n) in the stored milestone count for `agreement_id`, where `n` is bounded by the
+/// milestones created for that agreement.
 fn sum_all_milestones(env: &Env, agreement_id: u128) -> i128 {
     let count: u32 = env
         .storage()
@@ -386,6 +398,18 @@ fn sum_all_milestones(env: &Env, agreement_id: u128) -> i128 {
     sum
 }
 
+/// Returns the total amount still locked for unclaimed milestones.
+///
+/// # Arguments
+/// * `env` - Contract environment used to read approval, claim, count, and amount entries.
+/// * `agreement_id` - Milestone agreement identifier whose unclaimed milestones are inspected.
+///
+/// # Returns
+/// Sum of milestone amounts that have not been claimed, treating missing boolean or amount entries as false/zero.
+///
+/// # Cost
+/// O(n) in the stored milestone count for `agreement_id`, with one approval lookup,
+/// one claimed lookup, and at most one amount lookup per milestone.
 fn sum_unclaimed_milestones(env: &Env, agreement_id: u128) -> i128 {
     let count: u32 = env
         .storage()
@@ -835,6 +859,19 @@ pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<
     })
 }
 
+/// Reports whether every milestone up to `count` has been claimed.
+///
+/// # Arguments
+/// * `env` - Contract environment used to read claimed flags from instance storage.
+/// * `agreement_id` - Milestone agreement identifier whose claim flags should be checked.
+/// * `count` - Number of milestones to scan, usually the stored `MilestoneCount` for the agreement.
+///
+/// # Returns
+/// `true` when all milestone IDs from `1..=count` are marked claimed; otherwise `false`.
+///
+/// # Cost
+/// O(n) in `count`. The scan short-circuits on the first unclaimed milestone and is
+/// bounded by the caller-supplied milestone count.
 fn all_milestones_claimed(env: &Env, agreement_id: u128, count: u32) -> bool {
     for i in 1..=count {
         let claimed: bool = env
@@ -2928,8 +2965,11 @@ pub fn resume_agreement(env: &Env, agreement_id: u128) {
 /// Pauses a milestone-based agreement, preventing claims
 ///
 /// # Arguments
-/// * `env` - Contract environment
-/// * `agreement_id` - ID of the milestone agreement to pause
+/// * `env` - Contract environment used to authenticate the employer and update the stored agreement status.
+/// * `agreement_id` - ID of the milestone agreement to pause; must resolve to existing employer and status records.
+///
+/// # Returns
+/// No value. Emits `AgreementPausedEvent` after writing the paused status.
 ///
 /// # State Transition
 /// Active -> Paused, or Created -> Paused (if has approved milestones)
@@ -2975,8 +3015,11 @@ pub fn pause_milestone_agreement(env: Env, agreement_id: u128) {
 /// Resumes a paused milestone-based agreement, allowing claims again
 ///
 /// # Arguments
-/// * `env` - Contract environment
-/// * `agreement_id` - ID of the milestone agreement to resume
+/// * `env` - Contract environment used to authenticate the employer and update the stored agreement status.
+/// * `agreement_id` - ID of the paused milestone agreement to resume; must resolve to existing employer and status records.
+///
+/// # Returns
+/// No value. Emits `AgreementResumedEvent` after writing the active status.
 ///
 /// # State Transition
 /// Paused -> Active (or Paused -> Created if it was Created before)
