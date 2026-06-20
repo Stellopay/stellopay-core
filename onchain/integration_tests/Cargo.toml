@@ -22,6 +22,9 @@ rbac = { path = "../contracts/rbac" }
 governance = { path = "../contracts/governance" }
 multisig = { path = "../contracts/multisig" }
 withdrawal_timelock = { path = "../contracts/withdrawal_timelock" }
+salary_adjustment = { path = "../contracts/salary_adjustment" }
+audit_logger = { path = "../contracts/audit_logger" }
+expense_reimbursement = { path = "../contracts/expense_reimbursement" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
