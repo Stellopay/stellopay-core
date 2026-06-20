@@ -1358,3 +1358,23 @@ fn test_cannot_escalate_from_resolved_state() {
     let res = client.try_escalate_dispute(&user, &id);
     assert_eq!(res, Err(Ok(DisputeError::AlreadyResolved)));
 }
+
+
+#[test]
+fn test_keeper_advance_stage_overflow_returns_distinct_error() {
+    // When pending_review_time_limit is set to u64::MAX, now + limit overflows
+    // and should return SlaDeadlineOverflow, not a silent wraparound.
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1401u128;
+
+    client.file_dispute(&user, &id);
+
+    // Advance past the deadline so keeper_advance_stage is callable
+    advance(&env, DEFAULT_LEVEL_LIMIT + 1);
+
+    // Set a time limit that will overflow when added to the current timestamp
+    client.set_pending_review_time_limit(&admin, &u64::MAX);
+
+    let res = client.try_keeper_advance_stage(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::SlaDeadlineOverflow)));
+}
