@@ -9,6 +9,7 @@ It performs:
 1. **Rust toolchain** — stable channel, `wasm32-unknown-unknown` target, `llvm-tools-preview` (for coverage instrumentation).
 2. **Stellar CLI** — `cargo install stellar-cli --locked` for `stellar contract build`.
 3. **Unit / integration tests**
+   - `cargo test -p payroll_escrow --verbose`
    - `cargo test -p stello_pay_contract --verbose`
    - `cargo test -p integration_tests --verbose`
    - `cargo test -p template_versioning --verbose`
@@ -52,6 +53,7 @@ Align with CI for reproducible runs:
 
 ```bash
 cd onchain
+cargo test -p payroll_escrow --verbose
 cargo test -p stello_pay_contract --verbose
 cargo test -p integration_tests --verbose
 cd contracts/stello_pay_contract && stellar contract build --verbose
