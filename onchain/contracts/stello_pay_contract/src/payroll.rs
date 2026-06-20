@@ -19,7 +19,7 @@ use crate::storage::{
     BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
     EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
     MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
-    PayrollCreateResult, PayrollError, StorageKey,
+    PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE,
 };
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
@@ -369,6 +369,18 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
     .publish(&env);
 }
 
+/// Returns the total configured amount across all milestones for an agreement.
+///
+/// # Arguments
+/// * `env` - Contract environment used to read milestone count and amounts from instance storage.
+/// * `agreement_id` - Milestone agreement identifier whose milestone amounts should be summed.
+///
+/// # Returns
+/// Sum of every stored milestone amount for the agreement, treating missing amount entries as zero.
+///
+/// # Cost
+/// O(n) in the stored milestone count for `agreement_id`, where `n` is bounded by the
+/// milestones created for that agreement.
 fn sum_all_milestones(env: &Env, agreement_id: u128) -> i128 {
     let count: u32 = env
         .storage()
@@ -386,6 +398,18 @@ fn sum_all_milestones(env: &Env, agreement_id: u128) -> i128 {
     sum
 }
 
+/// Returns the total amount still locked for unclaimed milestones.
+///
+/// # Arguments
+/// * `env` - Contract environment used to read approval, claim, count, and amount entries.
+/// * `agreement_id` - Milestone agreement identifier whose unclaimed milestones are inspected.
+///
+/// # Returns
+/// Sum of milestone amounts that have not been claimed, treating missing boolean or amount entries as false/zero.
+///
+/// # Cost
+/// O(n) in the stored milestone count for `agreement_id`, with one approval lookup,
+/// one claimed lookup, and at most one amount lookup per milestone.
 fn sum_unclaimed_milestones(env: &Env, agreement_id: u128) -> i128 {
     let count: u32 = env
         .storage()
@@ -612,14 +636,23 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
 /// * `agreement_id`  - ID of the milestone agreement
 /// * `milestone_ids` - 1-based milestone IDs to claim.
 ///   Duplicates are detected in-memory and skipped.
+///   At most `MAX_BATCH_SIZE` IDs are accepted.
 ///
 /// # Returns
-/// `BatchMilestoneResult` — always returns (never panics at batch level).
+/// `Ok(BatchMilestoneResult)` with per-milestone results.
+///
+/// # Batch-level errors
+/// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` IDs.
+///
+/// # Gas rationale
+/// `MAX_BATCH_SIZE` is 20 because `tests/gas_benchmarks.rs` measures the
+/// milestone batch path at that size and enforces the committed gas ceiling.
+/// The bound is checked before milestone state updates or token transfers.
 pub fn batch_claim_milestones(
     env: &Env,
     agreement_id: u128,
     milestone_ids: Vec<u32>,
-) -> BatchMilestoneResult {
+) -> Result<BatchMilestoneResult, PayrollError> {
     let contributor: Address = env
         .storage()
         .instance()
@@ -628,6 +661,9 @@ pub fn batch_claim_milestones(
     contributor.require_auth();
 
     assert!(!milestone_ids.is_empty(), "No milestone IDs provided");
+    if milestone_ids.len() > MAX_BATCH_SIZE {
+        return Err(PayrollError::BatchTooLarge);
+    }
 
     // Shared pre-flight
     let status: AgreementStatus = env
@@ -673,6 +709,7 @@ pub fn batch_claim_milestones(
             });
             continue;
         }
+        processed.push_back(milestone_id);
 
         // Bounds check (1-based, mirrors claim_milestone)
         if milestone_id == 0 || milestone_id > count {
@@ -766,7 +803,6 @@ pub fn batch_claim_milestones(
             error_code: 0,
         });
 
-        processed.push_back(milestone_id);
     }
 
     if all_milestones_claimed(env, agreement_id, count) {
@@ -785,13 +821,13 @@ pub fn batch_claim_milestones(
     }
     .publish(&env);
 
-    BatchMilestoneResult {
+    Ok(BatchMilestoneResult {
         agreement_id,
         total_claimed,
         successful_claims,
         failed_claims,
         results,
-    }
+    })
 }
 
 pub fn get_milestone_count(env: Env, agreement_id: u128) -> u32 {
@@ -835,6 +871,19 @@ pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<
     })
 }
 
+/// Reports whether every milestone up to `count` has been claimed.
+///
+/// # Arguments
+/// * `env` - Contract environment used to read claimed flags from instance storage.
+/// * `agreement_id` - Milestone agreement identifier whose claim flags should be checked.
+/// * `count` - Number of milestones to scan, usually the stored `MilestoneCount` for the agreement.
+///
+/// # Returns
+/// `true` when all milestone IDs from `1..=count` are marked claimed; otherwise `false`.
+///
+/// # Cost
+/// O(n) in `count`. The scan short-circuits on the first unclaimed milestone and is
+/// bounded by the caller-supplied milestone count.
 fn all_milestones_claimed(env: &Env, agreement_id: u128, count: u32) -> bool {
     for i in 1..=count {
         let claimed: bool = env
@@ -941,10 +990,19 @@ fn create_payroll_agreement_internal(
 /// * `env` - Contract environment
 /// * `employer` - Address of the employer creating the agreements
 /// * `items` - Vector of payroll creation parameters
+///   At most `MAX_BATCH_SIZE` items are accepted.
 ///
 /// # Returns
 /// `Ok(BatchPayrollCreateResult)` — always succeeds at the batch level
 /// unless `items` is empty; inspect per-item results for failures.
+///
+/// # Batch-level errors
+/// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` items.
+///
+/// # Gas rationale
+/// `MAX_BATCH_SIZE` is 20, matching the largest batch size measured in
+/// `tests/gas_benchmarks.rs`; the cap avoids late Soroban resource exhaustion
+/// after partially creating agreements.
 pub fn batch_create_payroll_agreements(
     env: &Env,
     employer: Address,
@@ -954,6 +1012,9 @@ pub fn batch_create_payroll_agreements(
 
     if items.is_empty() {
         return Err(PayrollError::InvalidData);
+    }
+    if items.len() > MAX_BATCH_SIZE {
+        return Err(PayrollError::BatchTooLarge);
     }
 
     let mut agreement_ids: Vec<u128> = Vec::new(env);
@@ -1108,10 +1169,19 @@ fn create_escrow_agreement_internal(
 /// * `env` - Contract environment
 /// * `employer` - Address of the employer
 /// * `items` - Vector of escrow creation parameters
+///   At most `MAX_BATCH_SIZE` items are accepted.
 ///
 /// # Returns
 /// `Ok(BatchEscrowCreateResult)` — always succeeds at the batch level
 /// unless `items` is empty; inspect per-item `results` for failures.
+///
+/// # Batch-level errors
+/// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` items.
+///
+/// # Gas rationale
+/// `MAX_BATCH_SIZE` is 20, matching the largest batch size measured in
+/// `tests/gas_benchmarks.rs`; the cap avoids late Soroban resource exhaustion
+/// after partially creating agreements.
 pub fn batch_create_escrow_agreements(
     env: &Env,
     employer: Address,
@@ -1121,6 +1191,9 @@ pub fn batch_create_escrow_agreements(
 
     if items.is_empty() {
         return Err(PayrollError::InvalidData);
+    }
+    if items.len() > MAX_BATCH_SIZE {
+        return Err(PayrollError::BatchTooLarge);
     }
 
     let mut agreement_ids: Vec<u128> = Vec::new(env);
@@ -2294,6 +2367,7 @@ pub fn claim_payroll_in_token(
 /// * `agreement_id` - ID of the payroll agreement
 /// * `employee_indices` - 0-based employee indices to claim for.
 ///   Duplicates are detected in-memory and skipped.
+///   At most `MAX_BATCH_SIZE` indices are accepted.
 ///
 /// # Returns
 /// `Ok(BatchPayrollResult)` — always succeeds at the batch level; inspect
@@ -2304,6 +2378,13 @@ pub fn claim_payroll_in_token(
 /// * `PayrollError::AgreementNotFound` — agreement does not exist
 /// * `PayrollError::InvalidAgreementMode` — agreement is not Payroll mode
 /// * `PayrollError::AgreementNotActivated` — activation timestamp missing
+/// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` indices
+///
+/// # Gas rationale
+/// `MAX_BATCH_SIZE` is 20 because `tests/gas_benchmarks.rs` records the batch
+/// ceiling and enforces the committed gas threshold. The bound is checked
+/// before payroll state updates or token transfers, preserving partial-success
+/// semantics for only bounded batches.
 ///
 /// # Gas optimisations
 /// * Agreement metadata (token, activation time, period duration) read once.
@@ -2324,6 +2405,9 @@ pub fn batch_claim_payroll(
 
     if employee_indices.is_empty() {
         return Err(PayrollError::InvalidData);
+    }
+    if employee_indices.len() > MAX_BATCH_SIZE {
+        return Err(PayrollError::BatchTooLarge);
     }
 
     let agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
@@ -2384,6 +2468,7 @@ pub fn batch_claim_payroll(
             });
             continue;
         }
+        processed.push_back(employee_index);
 
         // Bounds check
         if employee_index >= employee_count {
@@ -2560,8 +2645,6 @@ pub fn batch_claim_payroll(
             amount_claimed: amount,
             error_code: 0,
         });
-
-        processed.push_back(employee_index);
     }
 
     DataKey::set_agreement_escrow_balance(env, agreement_id, &token, escrow_balance);
@@ -2928,8 +3011,11 @@ pub fn resume_agreement(env: &Env, agreement_id: u128) {
 /// Pauses a milestone-based agreement, preventing claims
 ///
 /// # Arguments
-/// * `env` - Contract environment
-/// * `agreement_id` - ID of the milestone agreement to pause
+/// * `env` - Contract environment used to authenticate the employer and update the stored agreement status.
+/// * `agreement_id` - ID of the milestone agreement to pause; must resolve to existing employer and status records.
+///
+/// # Returns
+/// No value. Emits `AgreementPausedEvent` after writing the paused status.
 ///
 /// # State Transition
 /// Active -> Paused, or Created -> Paused (if has approved milestones)
@@ -2975,8 +3061,11 @@ pub fn pause_milestone_agreement(env: Env, agreement_id: u128) {
 /// Resumes a paused milestone-based agreement, allowing claims again
 ///
 /// # Arguments
-/// * `env` - Contract environment
-/// * `agreement_id` - ID of the milestone agreement to resume
+/// * `env` - Contract environment used to authenticate the employer and update the stored agreement status.
+/// * `agreement_id` - ID of the paused milestone agreement to resume; must resolve to existing employer and status records.
+///
+/// # Returns
+/// No value. Emits `AgreementResumedEvent` after writing the active status.
 ///
 /// # State Transition
 /// Paused -> Active (or Paused -> Created if it was Created before)

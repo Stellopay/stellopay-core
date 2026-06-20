@@ -5,7 +5,9 @@ use soroban_sdk::{
     testutils::{Address as _, Events},
     Address, Env, Symbol, TryFromVal, Vec,
 };
-use stello_pay_contract::storage::{EscrowCreateParams, PayrollCreateParams, PayrollError};
+use stello_pay_contract::storage::{
+    EscrowCreateParams, PayrollCreateParams, PayrollError, MAX_BATCH_SIZE,
+};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 fn create_test_env() -> Env {
@@ -87,6 +89,25 @@ fn batch_create_payroll_empty_err() {
 }
 
 #[test]
+fn batch_create_payroll_over_limit_errs_before_creating() {
+    let env = create_test_env();
+    let (_id, client) = setup(&env);
+
+    let employer = addr(&env);
+    let token = addr(&env);
+    let mut items = soroban_sdk::Vec::<PayrollCreateParams>::new(&env);
+    for _ in 0..=MAX_BATCH_SIZE {
+        items.push_back(PayrollCreateParams {
+            token: token.clone(),
+            grace_period_seconds: 3600,
+        });
+    }
+
+    let result = client.try_batch_create_payroll_agreements(&employer, &items);
+    assert_eq!(result, Err(Ok(PayrollError::BatchTooLarge)));
+}
+
+#[test]
 fn batch_create_escrow_partial_success() {
     let env = create_test_env();
     let (_id, client) = setup(&env);
@@ -158,4 +179,27 @@ fn batch_create_escrow_partial_success() {
         })
         .count();
     assert!(employee_added_events >= 1);
+}
+
+#[test]
+fn batch_create_escrow_over_limit_errs_before_creating() {
+    let env = create_test_env();
+    let (_id, client) = setup(&env);
+
+    let employer = addr(&env);
+    let contributor = addr(&env);
+    let token = addr(&env);
+    let mut items = soroban_sdk::Vec::<EscrowCreateParams>::new(&env);
+    for _ in 0..=MAX_BATCH_SIZE {
+        items.push_back(EscrowCreateParams {
+            contributor: contributor.clone(),
+            token: token.clone(),
+            amount_per_period: 1000,
+            period_seconds: 3600,
+            num_periods: 4,
+        });
+    }
+
+    let result = client.try_batch_create_escrow_agreements(&employer, &items);
+    assert_eq!(result, Err(Ok(PayrollError::BatchTooLarge)));
 }

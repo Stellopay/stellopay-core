@@ -27,7 +27,7 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env,
 };
-use stello_pay_contract::storage::DataKey;
+use stello_pay_contract::storage::{DataKey, MAX_BATCH_SIZE};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 // ---------------------------------------------------------------------------
@@ -45,7 +45,11 @@ const BASELINE_PATH: &str = concat!(
 );
 
 const CLAIM_PAYROLL_PERIODS: [u32; 3] = [1, 10, 50];
-const BATCH_CLAIM_MILESTONES: [usize; 3] = [1, 5, 20];
+const BATCH_CLAIM_MILESTONES: [usize; 3] = [1, 5, MAX_BATCH_SIZE as usize];
+/// Documented ceiling for max-size milestone batches. This is intentionally
+/// higher than the committed baseline tolerance so the test records both the
+/// exact regression baseline and an absolute safe ceiling for `MAX_BATCH_SIZE`.
+const MAX_BATCH_CLAIM_MILESTONE_INSTRUCTIONS: u64 = 3_000_000;
 
 // ---------------------------------------------------------------------------
 // Baseline I/O
@@ -318,8 +322,10 @@ fn gas_benchmark_claim_payroll() {
     }
 }
 
-/// @notice Measures CPU instruction cost of `batch_claim_milestones` at 1, 5, and 20 milestones.
+/// @notice Measures CPU instruction cost of `batch_claim_milestones` at 1, 5, and MAX_BATCH_SIZE milestones.
 /// @dev Cost scales linearly with N (one transfer + storage write per milestone).
+/// MAX_BATCH_SIZE is the enforced public ceiling and must stay under
+/// MAX_BATCH_CLAIM_MILESTONE_INSTRUCTIONS.
 #[test]
 fn gas_benchmark_batch_claim_milestones() {
     let baselines = load_baselines();
@@ -348,6 +354,12 @@ fn gas_benchmark_batch_claim_milestones() {
         if !update {
             let baseline = baselines.batch_claim_milestones[idx].instructions;
             assert_within_tolerance("batch_claim_milestones", n as u32, instructions, baseline);
+            if n == MAX_BATCH_SIZE as usize {
+                assert!(
+                    instructions <= MAX_BATCH_CLAIM_MILESTONE_INSTRUCTIONS,
+                    "batch_claim_milestones at MAX_BATCH_SIZE={MAX_BATCH_SIZE}: measured {instructions} exceeds documented ceiling {MAX_BATCH_CLAIM_MILESTONE_INSTRUCTIONS}"
+                );
+            }
         }
     }
 
