@@ -410,11 +410,17 @@ impl FeeCollectorContract {
         admin.require_auth();
         require_admin(&env, &admin);
 
+        let mut prev_limit: i128 = 0;
         for tier in new_schedule.iter() {
+            assert!(
+                tier.limit > prev_limit,
+                "Tier limits must be strictly increasing and positive"
+            );
             assert!(
                 tier.fee_bps <= MAX_FEE_BPS,
                 "Fee in tier exceeds maximum allowed"
             );
+            prev_limit = tier.limit;
         }
 
         env.storage()
