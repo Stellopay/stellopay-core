@@ -1,5 +1,9 @@
 # Payment History Contract
 
+> **Source files:**
+> [`onchain/contracts/payment_history/src/lib.rs`](../onchain/contracts/payment_history/src/lib.rs) ·
+> [`onchain/contracts/payment_history/src/storage.rs`](../onchain/contracts/payment_history/src/storage.rs)
+
 The Payment History Contract provides an immutable, indexed ledger of all completed payments within the StelloPay ecosystem. It exposes a stable query surface — keyed by **hash**, **global ID**, agreement, employer, and employee — so off-chain indexers and UI clients can reconstruct full payment histories without recomputing any payroll math.
 
 ## Table of Contents
