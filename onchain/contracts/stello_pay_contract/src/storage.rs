@@ -356,8 +356,10 @@ pub enum PayrollError {
     GraceExtensionInvalid = 32,
     /// Extension would exceed owner-configured cumulative cap
     GraceExtensionCapExceeded = 33,
+    /// Rate limiter rejected the call (too many requests for the caller).
+    RateLimited = 34,
     /// Caller supplied more than `MAX_BATCH_SIZE` batch items.
-    BatchTooLarge = 34,
+    BatchTooLarge = 35,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.
