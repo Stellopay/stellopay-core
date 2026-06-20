@@ -31,7 +31,7 @@ private = { ignore = true }
 
 [bans]
 multiple-versions = "warn"
-wildcards = "warn"
+wildcards = "deny"
 
 [sources]
 unknown-registry = "deny"
