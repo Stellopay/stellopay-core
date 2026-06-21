@@ -778,7 +778,7 @@ fn test_milestone_wrong_caller_cannot_approve() {
 }
 
 /// @notice Milestone claim is blocked while the agreement is Paused.
-/// @dev Pausing before claim_milestone triggers "Cannot claim when agreement is paused".
+/// @dev Pausing before claim_milestone makes it return PayrollError::AgreementPaused.
 #[test]
 fn test_milestone_claim_blocked_when_paused() {
     let env = create_env();
