@@ -680,7 +680,17 @@ pub fn claim_milestone(
 /// `Ok(BatchMilestoneResult)` with per-milestone results.
 ///
 /// # Batch-level errors
+/// These stop the whole batch before any state mutation or transfer:
+/// * `PayrollError::AgreementNotFound` — no such agreement (contributor,
+///   status, or token record missing).
+/// * `PayrollError::InvalidData` — the milestone ID list is empty.
 /// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` IDs.
+/// * `PayrollError::AgreementPaused` — the agreement is paused.
+/// * `PayrollError::MilestoneNotFound` — the agreement has no milestones.
+///
+/// # Per-milestone `error_code` (in each `MilestoneClaimResult`)
+/// `0` = success | `1` = duplicate in this batch | `2` = invalid/unknown
+/// milestone ID | `3` = not approved | `4` = already claimed.
 ///
 /// # Gas rationale
 /// `MAX_BATCH_SIZE` is 20 because `tests/gas_benchmarks.rs` measures the
@@ -695,10 +705,12 @@ pub fn batch_claim_milestones(
         .storage()
         .instance()
         .get(&MilestoneKey::Contributor(agreement_id))
-        .expect("Contributor not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
     contributor.require_auth();
 
-    assert!(!milestone_ids.is_empty(), "No milestone IDs provided");
+    if milestone_ids.is_empty() {
+        return Err(PayrollError::InvalidData);
+    }
     if milestone_ids.len() > MAX_BATCH_SIZE {
         return Err(PayrollError::BatchTooLarge);
     }
@@ -708,24 +720,23 @@ pub fn batch_claim_milestones(
         .storage()
         .instance()
         .get(&MilestoneKey::Status(agreement_id))
-        .expect("Agreement not found");
-    assert!(
-        status != AgreementStatus::Paused,
-        "Cannot claim when agreement is paused"
-    );
+        .ok_or(PayrollError::AgreementNotFound)?;
+    if status == AgreementStatus::Paused {
+        return Err(PayrollError::AgreementPaused);
+    }
 
     let count: u32 = env
         .storage()
         .instance()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .expect("No milestones found");
+        .ok_or(PayrollError::MilestoneNotFound)?;
 
     // Token client created once and reused
     let token: Address = env
         .storage()
         .instance()
         .get(&MilestoneKey::Token(agreement_id))
-        .expect("Token not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
     let token_client = TokenClient::new(env, &token);
     let contract_address = env.current_contract_address();
 
@@ -795,11 +806,26 @@ pub fn batch_claim_milestones(
             continue;
         }
 
-        let amount: i128 = env
+        let amount: i128 = match env
             .storage()
             .instance()
             .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
-            .expect("Milestone amount not found");
+        {
+            Some(amount) => amount,
+            None => {
+                // Record a per-item failure and continue: an early return here
+                // would abort the batch after earlier milestones in this loop
+                // had already transferred funds.
+                failed_claims += 1;
+                results.push_back(MilestoneClaimResult {
+                    milestone_id,
+                    success: false,
+                    amount_claimed: 0,
+                    error_code: 2, // amount/milestone not found
+                });
+                continue;
+            }
+        };
 
         // Checks-Effects-Interactions: update all state before the external transfer.
         env.storage().instance().set(

@@ -588,3 +588,85 @@ fn test_very_large_milestone_amounts() {
     );
     assert!(client.get_milestone(&agreement_id, &1).unwrap().claimed);
 }
+
+// -----------------------------------------------------------------------------
+// batch_claim_milestones
+// -----------------------------------------------------------------------------
+
+/// An empty milestone list is rejected up front with a typed error rather than
+/// panicking.
+#[test]
+fn test_batch_claim_empty_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
+    client.add_milestone(&agreement_id, &100);
+    client.approve_milestone(&agreement_id, &1);
+
+    let result = client.try_batch_claim_milestones(&agreement_id, &soroban_sdk::Vec::<u32>::new(&env));
+    assert_eq!(result, Err(Ok(PayrollError::InvalidData)));
+}
+
+/// Claiming against an unknown agreement returns AgreementNotFound instead of a
+/// host trap.
+#[test]
+fn test_batch_claim_unknown_agreement_fails() {
+    let (env, _employer, _contributor, _token, client) = create_test_env();
+    let ids = soroban_sdk::vec![&env, 1u32];
+    let result = client.try_batch_claim_milestones(&999u128, &ids);
+    assert_eq!(result, Err(Ok(PayrollError::AgreementNotFound)));
+}
+
+/// A paused agreement rejects batch claims with AgreementPaused.
+#[test]
+fn test_batch_claim_paused_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
+    client.add_milestone(&agreement_id, &100);
+    client.approve_milestone(&agreement_id, &1);
+    client.pause_agreement(&agreement_id);
+
+    let ids = soroban_sdk::vec![&env, 1u32];
+    let result = client.try_batch_claim_milestones(&agreement_id, &ids);
+    assert_eq!(result, Err(Ok(PayrollError::AgreementPaused)));
+}
+
+/// All approved milestones in the batch are claimed and accounted for.
+#[test]
+fn test_batch_claim_success() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
+    client.add_milestone(&agreement_id, &100);
+    client.add_milestone(&agreement_id, &200);
+    client.approve_milestone(&agreement_id, &1);
+    client.approve_milestone(&agreement_id, &2);
+
+    let ids = soroban_sdk::vec![&env, 1u32, 2u32];
+    let result = client.batch_claim_milestones(&agreement_id, &ids);
+    assert_eq!(result.successful_claims, 2);
+    assert_eq!(result.failed_claims, 0);
+    assert_eq!(result.total_claimed, 300);
+    assert!(client.get_milestone(&agreement_id, &1).unwrap().claimed);
+    assert!(client.get_milestone(&agreement_id, &2).unwrap().claimed);
+}
+
+/// A mixed batch reports per-item error codes: success (0), not approved (3),
+/// and duplicate (1) - without aborting the whole batch.
+#[test]
+fn test_batch_claim_mixed_reports_error_codes() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
+    client.add_milestone(&agreement_id, &100);
+    client.add_milestone(&agreement_id, &200);
+    client.approve_milestone(&agreement_id, &1);
+
+    // [1 approved, 2 not approved, 1 duplicate]
+    let ids = soroban_sdk::vec![&env, 1u32, 2u32, 1u32];
+    let result = client.batch_claim_milestones(&agreement_id, &ids);
+
+    assert_eq!(result.successful_claims, 1);
+    assert_eq!(result.failed_claims, 2);
+    assert_eq!(result.total_claimed, 100);
+    assert_eq!(result.results.get(0).unwrap().error_code, 0); // success
+    assert_eq!(result.results.get(1).unwrap().error_code, 3); // not approved
+    assert_eq!(result.results.get(2).unwrap().error_code, 1); // duplicate
+}
