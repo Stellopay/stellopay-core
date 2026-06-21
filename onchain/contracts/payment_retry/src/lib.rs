@@ -258,7 +258,12 @@ fn validate_retry_configuration(max_retry_attempts: u32, retry_intervals: &Vec<u
         "Too many retry intervals"
     );
 
-    if max_retry_attempts > 0 {
+    if max_retry_attempts == 0 {
+        assert!(
+            retry_intervals.len() == 0,
+            "Retry intervals require at least one retry attempt"
+        );
+    } else {
         assert!(
             retry_intervals.len() > 0,
             "Retry intervals required when retries are enabled"

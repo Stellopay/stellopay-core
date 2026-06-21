@@ -214,6 +214,33 @@ fn test_create_payment_request_zero_retries_no_intervals_allowed() {
 }
 
 #[test]
+fn test_create_payment_request_zero_retries_with_intervals_rejected() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    client.initialize(&owner);
+
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let notifier = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+
+    // zero retries with non-empty intervals is contradictory
+    let result = client.try_create_payment_request(
+        &payer,
+        &recipient,
+        &token.address,
+        &100i128,
+        &0u32,
+        &vec![&env, 5u64],
+        &notifier,
+        &None,
+    );
+    assert!(result.is_err());
+}
+
+#[test]
 fn test_create_payment_request_interval_too_large_rejected() {
     let env = create_env();
     let (_id, client) = register_contract(&env);
