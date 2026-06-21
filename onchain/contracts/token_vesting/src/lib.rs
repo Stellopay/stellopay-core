@@ -146,11 +146,30 @@ fn write_schedule(env: &Env, schedule: &VestingSchedule) {
 /// Computes the cumulative vested amount for `schedule` at timestamp `now`.
 ///
 /// For revoked schedules the clock is frozen at `revoked_at`.
-/// - **Linear**: proportional between `start_time` and `end_time`, gated by
-///   an optional `cliff_time` (nothing vests until the cliff is reached).
-/// - **Cliff**: 0 before `cliff_time`, 100% at or after `cliff_time`.
+///
+/// # Vesting kinds
+///
+/// - **Linear**: proportional interpolation between `start_time` and `end_time`,
+///   gated by an optional `cliff_time` (nothing vests until the cliff is reached).
+///   cliff+linear interaction: before the cliff the result is 0 even after start;
+///   at and after the cliff, linear interpolation applies from `start_time`.
+/// - **Cliff**: 0 before `cliff_time`, 100% of `total_amount` at or after `cliff_time`.
 /// - **Custom**: step function — returns the `cumulative_amount` of the last
 ///   checkpoint whose `time <= now`, capped at `total_amount`.
+///
+/// # Arguments
+///
+/// * `now` - Current ledger timestamp (or `revoked_at` for revoked schedules).
+/// * `schedule` - The vesting schedule to evaluate.
+///
+/// # Returns
+///
+/// The cumulative amount vested at `now`, as an `i128`. Never exceeds
+/// `schedule.total_amount`.
+///
+/// # Panics
+///
+/// Never. Pure computation — does not access storage or require auth.
 fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
     if schedule.total_amount <= 0 {
         return 0;
