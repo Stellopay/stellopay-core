@@ -372,3 +372,21 @@ fn test_finalize_after_extended_grace() {
 
     client.finalize_grace_period(&aid);
 }
+
+
+#[test]
+fn test_set_grace_extension_policy_rejects_zero_bps() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_id, client, owner) = setup(&env);
+    let p = GracePeriodExtensionPolicy {
+        max_cumulative_extension_bps: 0,
+        max_extension_per_call_seconds: 3600,
+    };
+    let e = client
+        .try_set_grace_extension_policy(&owner, &p)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(e, PayrollError::GraceExtensionInvalid);
+}
