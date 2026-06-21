@@ -114,6 +114,10 @@ pub enum StorageKey {
     ApprovedUpgrade(Address),
 }
 
+/// Maximum voting period in seconds (30 days).
+/// Prevents admin from setting near-u64::MAX values that would trap proposals in perpetual voting.
+const MAX_VOTING_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60; // 30 days in seconds
+
 fn require_initialized(env: &Env) -> Result<(), GovernanceError> {
     let initialized = env
         .storage()
@@ -360,6 +364,9 @@ impl GovernanceContract {
         if voting_period_seconds == 0 {
             return Err(GovernanceError::InvalidVotingPeriod);
         }
+        if voting_period_seconds > MAX_VOTING_PERIOD_SECONDS {
+            return Err(GovernanceError::InvalidVotingPeriod);
+        }
 
         env.storage().persistent().set(&StorageKey::Owner, &owner);
         env.storage()
@@ -400,6 +407,9 @@ impl GovernanceContract {
             return Err(GovernanceError::InvalidQuorum);
         }
         if voting_period_seconds == 0 {
+            return Err(GovernanceError::InvalidVotingPeriod);
+        }
+        if voting_period_seconds > MAX_VOTING_PERIOD_SECONDS {
             return Err(GovernanceError::InvalidVotingPeriod);
         }
 

@@ -26,6 +26,15 @@ Stellopay. It is designed to work with three existing contracts:
 6. Governance executes the timelock operation and then applies the proposal’s
    state change.
 
+### Voting Period Bounds
+
+`voting_period_seconds` is bounded to prevent perpetual voting windows:
+
+- Minimum: 1 second
+- Maximum: 30 days (`2_592_000` seconds)
+
+Both `initialize` and `update_config` reject values outside this range with `GovernanceError::InvalidVotingPeriod`.
+
 ### Proposal Types
 
 - `ParameterChange(Symbol, i128)`

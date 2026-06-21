@@ -362,3 +362,119 @@ fn losing_employer_role_blocks_future_votes() {
         .try_cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
     assert_eq!(res, Err(Ok(GovernanceError::NotEligibleVoter)));
 }
+
+#[test]
+fn initialize_rejects_zero_voting_period() {
+    let env = create_env();
+    let rbac_id = env.register_contract(None, RbacContract);
+    let multisig_id = env.register_contract(None, MultisigContract);
+    let timelock_id = env.register_contract(None, WithdrawalTimelock);
+    let governance_id = env.register_contract(None, GovernanceContract);
+
+    let governance = GovernanceContractClient::new(&env, &governance_id);
+    let rbac = RbacContractClient::new(&env, &rbac_id);
+    let owner = Address::generate(&env);
+
+    rbac.initialize(&owner);
+
+    let result = governance.try_initialize(
+        &owner,
+        &rbac_id,
+        &multisig_id,
+        &timelock_id,
+        &2u32,
+        &0u64,
+    );
+
+    assert_eq!(result, Err(Ok(GovernanceError::InvalidVotingPeriod)));
+}
+
+#[test]
+fn initialize_rejects_voting_period_above_max() {
+    let env = create_env();
+    let rbac_id = env.register_contract(None, RbacContract);
+    let multisig_id = env.register_contract(None, MultisigContract);
+    let timelock_id = env.register_contract(None, WithdrawalTimelock);
+    let governance_id = env.register_contract(None, GovernanceContract);
+
+    let governance = GovernanceContractClient::new(&env, &governance_id);
+    let rbac = RbacContractClient::new(&env, &rbac_id);
+    let owner = Address::generate(&env);
+
+    rbac.initialize(&owner);
+
+    let over_max = 30 * 24 * 60 * 60 + 1; // 30 days + 1 second
+
+    let result = governance.try_initialize(
+        &owner,
+        &rbac_id,
+        &multisig_id,
+        &timelock_id,
+        &2u32,
+        &over_max,
+    );
+
+    assert_eq!(result, Err(Ok(GovernanceError::InvalidVotingPeriod)));
+}
+
+#[test]
+fn initialize_accepts_max_voting_period() {
+    let env = create_env();
+    let rbac_id = env.register_contract(None, RbacContract);
+    let multisig_id = env.register_contract(None, MultisigContract);
+    let timelock_id = env.register_contract(None, WithdrawalTimelock);
+    let governance_id = env.register_contract(None, GovernanceContract);
+
+    let governance = GovernanceContractClient::new(&env, &governance_id);
+    let rbac = RbacContractClient::new(&env, &rbac_id);
+    let owner = Address::generate(&env);
+
+    rbac.initialize(&owner);
+
+    let max_period = 30 * 24 * 60 * 60; // 30 days
+
+    governance.initialize(
+        &owner,
+        &rbac_id,
+        &multisig_id,
+        &timelock_id,
+        &2u32,
+        &max_period,
+    );
+
+    let (_, _, _, _, _, voting_period) = governance.get_config().unwrap();
+    assert_eq!(voting_period, max_period);
+}
+
+#[test]
+fn update_config_rejects_voting_period_above_max() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let over_max = 30 * 24 * 60 * 60 + 1; // 30 days + 1 second
+
+    let result = setup.governance.try_update_config(
+        &setup.owner,
+        &2u32,
+        &over_max,
+    );
+
+    assert_eq!(result, Err(Ok(GovernanceError::InvalidVotingPeriod)));
+}
+
+#[test]
+fn update_config_accepts_max_voting_period() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let max_period = 30 * 24 * 60 * 60; // 30 days
+
+    setup.governance.update_config(
+        &setup.owner,
+        &2u32,
+        &max_period,
+    );
+
+    let (_, _, _, _, _, voting_period) = setup.governance.get_config().unwrap();
+    assert_eq!(voting_period, max_period);
+}
