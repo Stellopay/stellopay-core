@@ -806,7 +806,7 @@ fn test_claim_milestone_id_zero_panics() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &1000i128);
-    
+
     // Fund contract to satisfy invariant during approval
     token_client.mint(&_contract_id, &1000i128);
     client.approve_milestone(&agreement_id, &1u32);

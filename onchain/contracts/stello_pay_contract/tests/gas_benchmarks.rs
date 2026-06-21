@@ -427,5 +427,8 @@ fn gas_benchmark_edge_unauthorized_caller() {
         .try_claim_payroll(&impostor, &agreement_id, &0u32)
         .unwrap_err()
         .unwrap();
-    assert_eq!(err, stello_pay_contract::storage::PayrollError::Unauthorized);
+    assert_eq!(
+        err,
+        stello_pay_contract::storage::PayrollError::Unauthorized
+    );
 }

@@ -751,7 +751,10 @@ fn assert_escrow_conservation(
         outflow + remaining,
         "conservation violated: funded={total_funded} released={total_released} refunded={total_refunded} remaining={remaining}"
     );
-    assert!(outflow <= total_funded, "outflow must not exceed funded deposits");
+    assert!(
+        outflow <= total_funded,
+        "outflow must not exceed funded deposits"
+    );
 }
 
 #[test]

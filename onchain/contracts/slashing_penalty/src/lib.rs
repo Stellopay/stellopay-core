@@ -26,9 +26,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror,
-    Address, BytesN, Env, Map, Vec, Symbol, symbol_short,
-    token,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
+    Map, Symbol, Vec,
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -44,16 +43,16 @@ const DEFAULT_QUORUM: u32 = 2;
 
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
 
-const ADMIN: Symbol        = symbol_short!("ADMIN");
-const QUORUM: Symbol       = symbol_short!("QUORUM");
-const SLASHERS: Symbol     = symbol_short!("SLASHERS");
-const STAKES: Symbol       = symbol_short!("STAKES");
-const SLASH_REC: Symbol    = symbol_short!("SLASHREC");
-const USED_EV: Symbol      = symbol_short!("USEDEV");
-const ESCROW: Symbol       = symbol_short!("ESCROW");
-const TOKEN: Symbol        = symbol_short!("TOKEN");
-const CAPS: Symbol         = symbol_short!("CAPS");
-const SLASH_ACC: Symbol    = symbol_short!("SLASHACC");
+const ADMIN: Symbol = symbol_short!("ADMIN");
+const QUORUM: Symbol = symbol_short!("QUORUM");
+const SLASHERS: Symbol = symbol_short!("SLASHERS");
+const STAKES: Symbol = symbol_short!("STAKES");
+const SLASH_REC: Symbol = symbol_short!("SLASHREC");
+const USED_EV: Symbol = symbol_short!("USEDEV");
+const ESCROW: Symbol = symbol_short!("ESCROW");
+const TOKEN: Symbol = symbol_short!("TOKEN");
+const CAPS: Symbol = symbol_short!("CAPS");
+const SLASH_ACC: Symbol = symbol_short!("SLASHACC");
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -141,37 +140,37 @@ pub struct PenaltyAccumulator {
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum SlashError {
     /// Caller does not hold the slasher role.
-    Unauthorized        = 1,
+    Unauthorized = 1,
     /// Evidence hash has already been used.
-    DuplicateEvidence   = 2,
+    DuplicateEvidence = 2,
     /// Penalty exceeds the allowed maximum.
-    PenaltyTooHigh      = 3,
+    PenaltyTooHigh = 3,
     /// Offender has insufficient staked balance.
-    InsufficientStake   = 4,
+    InsufficientStake = 4,
     /// Appeal window has not yet closed.
-    AppealWindowOpen    = 5,
+    AppealWindowOpen = 5,
     /// Appeal window has already closed.
-    AppealWindowClosed  = 6,
+    AppealWindowClosed = 6,
     /// Slash record not found.
-    RecordNotFound      = 7,
+    RecordNotFound = 7,
     /// Slash is not in a state that allows this operation.
-    InvalidState        = 8,
+    InvalidState = 8,
     /// Quorum of attestors not yet reached.
-    QuorumNotMet        = 9,
+    QuorumNotMet = 9,
     /// Slasher already attested to this slash.
-    AlreadyAttested     = 10,
+    AlreadyAttested = 10,
     /// Penalty basis points cannot be zero.
-    ZeroPenalty         = 11,
+    ZeroPenalty = 11,
     /// Admin address already initialised.
-    AlreadyInitialized  = 12,
+    AlreadyInitialized = 12,
     /// Penalty cap configuration is invalid.
-    InvalidConfig       = 13,
+    InvalidConfig = 13,
     /// Period cap would be exceeded.
-    PeriodCapExceeded   = 14,
+    PeriodCapExceeded = 14,
     /// Lifetime cap would be exceeded.
     LifetimeCapExceeded = 15,
     /// Arithmetic overflow/underflow protection.
-    ArithmeticOverflow  = 16,
+    ArithmeticOverflow = 16,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -181,7 +180,6 @@ pub struct SlashingPenaltyContract;
 
 #[contractimpl]
 impl SlashingPenaltyContract {
-
     // ── Initialisation ────────────────────────────────────────────────────────
 
     /// Initialise the contract. Can only be called once.
@@ -212,19 +210,36 @@ impl SlashingPenaltyContract {
         admin.require_auth();
         env.storage().instance().set(&ADMIN, &admin);
         env.storage().instance().set(&TOKEN, &token);
-        env.storage().instance().set(&QUORUM, &quorum.max(DEFAULT_QUORUM));
-        env.storage().instance().set(&SLASHERS, &Vec::<Address>::new(&env));
-        env.storage().instance().set(&STAKES, &Map::<Address, i128>::new(&env));
-        env.storage().instance().set(&SLASH_REC, &Map::<BytesN<32>, SlashRecord>::new(&env));
-        env.storage().instance().set(&USED_EV, &Vec::<BytesN<32>>::new(&env));
-        env.storage().instance().set(&ESCROW, &Map::<BytesN<32>, i128>::new(&env));
-        env.storage().instance().set(&SLASH_ACC, &Map::<Address, PenaltyAccumulator>::new(&env));
-        env.storage().instance().set(&CAPS, &PenaltyCaps {
-            per_event_bps_cap,
-            per_period_amount_cap,
-            lifetime_amount_cap,
-            period_secs,
-        });
+        env.storage()
+            .instance()
+            .set(&QUORUM, &quorum.max(DEFAULT_QUORUM));
+        env.storage()
+            .instance()
+            .set(&SLASHERS, &Vec::<Address>::new(&env));
+        env.storage()
+            .instance()
+            .set(&STAKES, &Map::<Address, i128>::new(&env));
+        env.storage()
+            .instance()
+            .set(&SLASH_REC, &Map::<BytesN<32>, SlashRecord>::new(&env));
+        env.storage()
+            .instance()
+            .set(&USED_EV, &Vec::<BytesN<32>>::new(&env));
+        env.storage()
+            .instance()
+            .set(&ESCROW, &Map::<BytesN<32>, i128>::new(&env));
+        env.storage()
+            .instance()
+            .set(&SLASH_ACC, &Map::<Address, PenaltyAccumulator>::new(&env));
+        env.storage().instance().set(
+            &CAPS,
+            &PenaltyCaps {
+                per_event_bps_cap,
+                per_period_amount_cap,
+                lifetime_amount_cap,
+                period_secs,
+            },
+        );
         Ok(())
     }
 
@@ -243,12 +258,15 @@ impl SlashingPenaltyContract {
             lifetime_amount_cap,
             period_secs,
         )?;
-        env.storage().instance().set(&CAPS, &PenaltyCaps {
-            per_event_bps_cap,
-            per_period_amount_cap,
-            lifetime_amount_cap,
-            period_secs,
-        });
+        env.storage().instance().set(
+            &CAPS,
+            &PenaltyCaps {
+                per_event_bps_cap,
+                per_period_amount_cap,
+                lifetime_amount_cap,
+                period_secs,
+            },
+        );
         Ok(())
     }
 
@@ -433,10 +451,8 @@ impl SlashingPenaltyContract {
 
         env.storage().instance().set(&SLASH_REC, &records);
 
-        env.events().publish(
-            (symbol_short!("ATTESTED"), attestor),
-            evidence_hash.clone(),
-        );
+        env.events()
+            .publish((symbol_short!("ATTESTED"), attestor), evidence_hash.clone());
 
         Ok(())
     }
@@ -445,11 +461,17 @@ impl SlashingPenaltyContract {
 
     /// The offender raises an appeal during the appeal window.
     /// This does not automatically reverse the slash — admin must review.
-    pub fn raise_appeal(env: Env, offender: Address, evidence_hash: BytesN<32>) -> Result<(), SlashError> {
+    pub fn raise_appeal(
+        env: Env,
+        offender: Address,
+        evidence_hash: BytesN<32>,
+    ) -> Result<(), SlashError> {
         offender.require_auth();
         let records: Map<BytesN<32>, SlashRecord> =
             env.storage().instance().get(&SLASH_REC).unwrap();
-        let record = records.get(evidence_hash.clone()).ok_or(SlashError::RecordNotFound)?;
+        let record = records
+            .get(evidence_hash.clone())
+            .ok_or(SlashError::RecordNotFound)?;
 
         if record.status != SlashStatus::Pending {
             return Err(SlashError::InvalidState);
@@ -459,10 +481,8 @@ impl SlashingPenaltyContract {
             return Err(SlashError::AppealWindowClosed);
         }
 
-        env.events().publish(
-            (symbol_short!("APPEALED"), offender),
-            evidence_hash,
-        );
+        env.events()
+            .publish((symbol_short!("APPEALED"), offender), evidence_hash);
 
         Ok(())
     }
@@ -477,7 +497,9 @@ impl SlashingPenaltyContract {
 
         let mut records: Map<BytesN<32>, SlashRecord> =
             env.storage().instance().get(&SLASH_REC).unwrap();
-        let mut record = records.get(evidence_hash.clone()).ok_or(SlashError::RecordNotFound)?;
+        let mut record = records
+            .get(evidence_hash.clone())
+            .ok_or(SlashError::RecordNotFound)?;
 
         if record.status != SlashStatus::Pending {
             return Err(SlashError::InvalidState);
@@ -497,10 +519,8 @@ impl SlashingPenaltyContract {
         records.set(evidence_hash.clone(), record);
         env.storage().instance().set(&SLASH_REC, &records);
 
-        env.events().publish(
-            (symbol_short!("RESOLVED"), uphold),
-            evidence_hash,
-        );
+        env.events()
+            .publish((symbol_short!("RESOLVED"), uphold), evidence_hash);
 
         Ok(())
     }
@@ -510,7 +530,9 @@ impl SlashingPenaltyContract {
     pub fn execute_slash(env: Env, evidence_hash: BytesN<32>) -> Result<(), SlashError> {
         let mut records: Map<BytesN<32>, SlashRecord> =
             env.storage().instance().get(&SLASH_REC).unwrap();
-        let mut record = records.get(evidence_hash.clone()).ok_or(SlashError::RecordNotFound)?;
+        let mut record = records
+            .get(evidence_hash.clone())
+            .ok_or(SlashError::RecordNotFound)?;
 
         if record.status != SlashStatus::Pending {
             return Err(SlashError::InvalidState);
@@ -652,10 +674,15 @@ impl SlashingPenaltyContract {
         Ok(slash_amount)
     }
 
-    fn enforce_and_record_caps(env: &Env, offender: &Address, slash_amount: i128) -> Result<(), SlashError> {
+    fn enforce_and_record_caps(
+        env: &Env,
+        offender: &Address,
+        slash_amount: i128,
+    ) -> Result<(), SlashError> {
         let caps: PenaltyCaps = env.storage().instance().get(&CAPS).unwrap();
         let now = env.ledger().timestamp();
-        let mut accs: Map<Address, PenaltyAccumulator> = env.storage().instance().get(&SLASH_ACC).unwrap();
+        let mut accs: Map<Address, PenaltyAccumulator> =
+            env.storage().instance().get(&SLASH_ACC).unwrap();
 
         let mut acc = accs.get(offender.clone()).unwrap_or(PenaltyAccumulator {
             period_start_ts: now,
@@ -692,7 +719,8 @@ impl SlashingPenaltyContract {
     }
 
     fn decrease_accumulator(env: &Env, offender: &Address, amount: i128) -> Result<(), SlashError> {
-        let mut accs: Map<Address, PenaltyAccumulator> = env.storage().instance().get(&SLASH_ACC).unwrap();
+        let mut accs: Map<Address, PenaltyAccumulator> =
+            env.storage().instance().get(&SLASH_ACC).unwrap();
         let Some(mut acc) = accs.get(offender.clone()) else {
             return Ok(());
         };

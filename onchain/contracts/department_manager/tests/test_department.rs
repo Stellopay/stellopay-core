@@ -458,7 +458,10 @@ fn test_remove_one_leaves_others() {
     let remaining = client.get_department_employees(&dept_id);
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining.get(0), Some(emp2.clone()));
-    assert_eq!(client.get_employee_department(&emp2, &org_id), Some(dept_id));
+    assert_eq!(
+        client.get_employee_department(&emp2, &org_id),
+        Some(dept_id)
+    );
 }
 
 #[test]
@@ -804,10 +807,15 @@ fn prop_all_cycle_attempts_rejected() {
 
         // Map original IDs to new IDs
         let map_id = |id: u128| -> u128 {
-            if id == root { r }
-            else if id == n1 { x1 }
-            else if id == n2 { x2 }
-            else { x3 }
+            if id == root {
+                r
+            } else if id == n1 {
+                x1
+            } else if id == n2 {
+                x2
+            } else {
+                x3
+            }
         };
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

@@ -941,10 +941,8 @@ fn test_batch_milestone_duplicate_invalid_id_processed_once() {
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &500);
 
-    let batch = client.batch_claim_milestones(
-        &agreement_id,
-        &Vec::from_array(&env, [99u32, 99u32, 1u32]),
-    );
+    let batch =
+        client.batch_claim_milestones(&agreement_id, &Vec::from_array(&env, [99u32, 99u32, 1u32]));
 
     assert_eq!(batch.successful_claims, 0);
     assert_eq!(batch.failed_claims, 3);

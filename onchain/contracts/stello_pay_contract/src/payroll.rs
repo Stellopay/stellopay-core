@@ -136,7 +136,11 @@ fn require_multisig_executed(
 }
 
 fn enforce_rate_limit(env: &Env, caller: &Address) -> Result<(), PayrollError> {
-    if let Some(rate_limiter_addr) = env.storage().persistent().get::<_, Address>(&StorageKey::RateLimiterContract) {
+    if let Some(rate_limiter_addr) = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::RateLimiterContract)
+    {
         let client = RateLimiterClient::new(env, &rate_limiter_addr);
         if client.try_check_and_consume(caller).is_err() {
             return Err(PayrollError::RateLimited);
@@ -272,17 +276,17 @@ pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, am
     let new_balance = current_balance
         .checked_add(amount)
         .expect("Escrow balance overflow");
-    env.storage()
-        .instance()
-        .set(&MilestoneKey::MilestoneEscrowBalance(agreement_id), &new_balance);
+    env.storage().instance().set(
+        &MilestoneKey::MilestoneEscrowBalance(agreement_id),
+        &new_balance,
+    );
 
     let token_address: Address = env
         .storage()
         .instance()
         .get(&MilestoneKey::Token(agreement_id))
         .expect("Token not found");
-    TokenClient::new(env, &token_address)
-        .transfer(&from, &env.current_contract_address(), &amount);
+    TokenClient::new(env, &token_address).transfer(&from, &env.current_contract_address(), &amount);
 
     emit_milestone_funded(
         env,
@@ -358,7 +362,10 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
     #[cfg(debug_assertions)]
     {
         let total_sum = sum_all_milestones(&env, agreement_id);
-        assert!(total_sum == total + amount, "Total amount mismatch after adding milestone");
+        assert!(
+            total_sum == total + amount,
+            "Total amount mismatch after adding milestone"
+        );
     }
 
     MilestoneAdded {
@@ -607,8 +614,11 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         &escrow_balance.saturating_sub(amount),
     );
 
-    TokenClient::new(&env, &token_address)
-        .transfer(&env.current_contract_address(), &contributor, &amount);
+    TokenClient::new(&env, &token_address).transfer(
+        &env.current_contract_address(),
+        &contributor,
+        &amount,
+    );
 
     MilestoneClaimed {
         agreement_id,
@@ -802,7 +812,6 @@ pub fn batch_claim_milestones(
             amount_claimed: amount,
             error_code: 0,
         });
-
     }
 
     if all_milestones_claimed(env, agreement_id, count) {
@@ -1824,9 +1833,13 @@ pub fn set_exchange_rate(
                 let allowed_delta = (prev_rate
                     .checked_mul(max_dev_bps as i128)
                     .unwrap_or(i128::MAX))
-                    .checked_div(10_000i128)
-                    .unwrap_or(i128::MAX);
-                let diff = if rate > prev_rate { rate - prev_rate } else { prev_rate - rate };
+                .checked_div(10_000i128)
+                .unwrap_or(i128::MAX);
+                let diff = if rate > prev_rate {
+                    rate - prev_rate
+                } else {
+                    prev_rate - rate
+                };
                 if diff > allowed_delta {
                     return Err(PayrollError::ExchangeRateInvalid);
                 }
@@ -1993,7 +2006,10 @@ pub fn claim_payroll(
 
     // Invariant check: claimed_periods <= num_periods (if defined)
     if let Some(num_periods) = agreement.num_periods {
-        assert!(claimed_periods <= num_periods, "Invariant violation: claimed_periods > num_periods");
+        assert!(
+            claimed_periods <= num_periods,
+            "Invariant violation: claimed_periods > num_periods"
+        );
     }
 
     // Calculate periods to pay
@@ -2512,10 +2528,13 @@ pub fn batch_claim_payroll(
         // Must have unclaimed periods
         let claimed_periods =
             DataKey::get_employee_claimed_periods(env, agreement_id, employee_index);
-        
+
         // Invariant check: claimed_periods <= num_periods (if defined)
         if let Some(num_periods) = agreement.num_periods {
-            assert!(claimed_periods <= num_periods, "Invariant violation: claimed_periods > num_periods");
+            assert!(
+                claimed_periods <= num_periods,
+                "Invariant violation: claimed_periods > num_periods"
+            );
         }
 
         if total_elapsed_periods <= claimed_periods {
@@ -2738,7 +2757,10 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollErro
     }
 
     // Invariant check
-    assert!(claimed_periods <= num_periods, "Invariant violation: claimed_periods > num_periods");
+    assert!(
+        claimed_periods <= num_periods,
+        "Invariant violation: claimed_periods > num_periods"
+    );
 
     // Allow claims if:
     // 1. Agreement is Active, OR

@@ -937,7 +937,6 @@ fn test_payer_is_payment_recipient_still_pays_fee() {
     assert_eq!(tok.balance(&user), 990); // net returned to same address
 }
 
-
 // ─── calculate_fee no-auth verification ─────────────────────────────────
 
 #[test]

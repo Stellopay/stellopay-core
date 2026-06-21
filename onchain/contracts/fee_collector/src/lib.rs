@@ -156,10 +156,13 @@ impl FeeCollectorContract {
             .instance()
             .set(&StorageKey::TotalFeesCollected, &0i128);
         env.storage().instance().set(&StorageKey::Paused, &false);
-        env.storage().instance().set(&StorageKey::Initialized, &true);
         env.storage()
             .instance()
-            .set(&StorageKey::TieredSchedule, &soroban_sdk::Vec::<FeeTier>::new(&env));
+            .set(&StorageKey::Initialized, &true);
+        env.storage().instance().set(
+            &StorageKey::TieredSchedule,
+            &soroban_sdk::Vec::<FeeTier>::new(&env),
+        );
 
         // Establish initial TTL for the contract instance.
         bump_ttl(&env);

@@ -15,7 +15,7 @@ use soroban_sdk::{
     Address, Env, String, Symbol,
 };
 
-use audit_logger::{AuditLoggerContract, AuditLoggerContractClient, AuditLogEntry};
+use audit_logger::{AuditLogEntry, AuditLoggerContract, AuditLoggerContractClient};
 use expense_reimbursement::{
     ExpenseReimbursementContract, ExpenseReimbursementContractClient, ExpenseStatus,
 };
@@ -114,7 +114,8 @@ fn test_expense_approval_records_audit_log() {
     let audit_log_id = expense.audit_log_id.expect("audit_log_id should be Some");
     assert!(audit_log_id > 0, "audit_log_id should be positive");
 
-    let log_entry = audit_client.get_log(&audit_log_id)
+    let log_entry = audit_client
+        .get_log(&audit_log_id)
         .expect("Audit log entry should exist");
     assert_eq!(log_entry.actor, approver);
     assert_eq!(log_entry.action, Symbol::new(&env, "expense_approved"));
@@ -154,7 +155,10 @@ fn test_expense_rejection_does_not_create_audit_log() {
     expense_client.reject_expense(&approver, &eid);
     let expense = expense_client.get_expense(&eid).unwrap();
     assert_eq!(expense.status, ExpenseStatus::Rejected);
-    assert_eq!(expense.audit_log_id, None, "Rejected expense should not have audit_log_id");
+    assert_eq!(
+        expense.audit_log_id, None,
+        "Rejected expense should not have audit_log_id"
+    );
 }
 
 /// Verifies that approving without audit logger configured still works (no crash).
@@ -190,5 +194,8 @@ fn test_expense_approval_without_audit_logger() {
     expense_client.approve_expense(&approver, &eid, &500);
     let expense = expense_client.get_expense(&eid).unwrap();
     assert_eq!(expense.status, ExpenseStatus::Approved);
-    assert_eq!(expense.audit_log_id, None, "No audit logger means no audit_log_id");
+    assert_eq!(
+        expense.audit_log_id, None,
+        "No audit logger means no audit_log_id"
+    );
 }

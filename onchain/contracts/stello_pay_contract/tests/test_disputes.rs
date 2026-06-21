@@ -1,9 +1,6 @@
 #![cfg(test)]
 
-use soroban_sdk::{
-    testutils::Address as _,
-    token, Address, Env,
-};
+use soroban_sdk::{testutils::Address as _, token, Address, Env};
 use stello_pay_contract::storage::{DisputeStatus, PayrollError};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
@@ -42,7 +39,7 @@ fn test_full_dispute_flow_resolved_by_arbiter() {
     let contributor = Address::generate(&env);
 
     payroll_client.set_arbiter(&employer, &arbiter);
-    
+
     // 1. Create Escrow
     let amount_per_period = 1000_i128;
     let agreement_id = payroll_client.create_escrow_agreement(
@@ -70,7 +67,7 @@ fn test_full_dispute_flow_resolved_by_arbiter() {
     // Verify state changed to Resolved
     let final_status = payroll_client.get_dispute_status(&agreement_id);
     assert_eq!(final_status, DisputeStatus::Resolved);
-    
+
     assert_eq!(token_client.balance(&contributor), 400);
     assert_eq!(token_client.balance(&employer), 600);
 }
@@ -86,10 +83,11 @@ fn test_raise_dispute_wrong_caller() {
     let contributor = Address::generate(&env);
     let token = Address::generate(&env);
 
-    let agreement_id = payroll_client.create_escrow_agreement(&employer, &contributor, &token, &1000, &86400, &1);
+    let agreement_id =
+        payroll_client.create_escrow_agreement(&employer, &contributor, &token, &1000, &86400, &1);
 
     let malicious_actor = Address::generate(&env);
-    
+
     // Should fail with NotParty error
     let result = payroll_client.try_raise_dispute(&malicious_actor, &agreement_id);
     assert_eq!(result, Err(Ok(PayrollError::NotParty)));
@@ -108,8 +106,9 @@ fn test_resolve_dispute_invalid_amounts() {
     let token = Address::generate(&env);
 
     payroll_client.set_arbiter(&employer, &arbiter);
-    
-    let agreement_id = payroll_client.create_escrow_agreement(&employer, &contributor, &token, &1000, &86400, &1);
+
+    let agreement_id =
+        payroll_client.create_escrow_agreement(&employer, &contributor, &token, &1000, &86400, &1);
     payroll_client.raise_dispute(&employer, &agreement_id);
 
     // Amounts sum to 1100, but escrow is only 1000
@@ -132,7 +131,7 @@ fn test_multi_employee_payout_split() {
     let employee2 = Address::generate(&env);
 
     payroll_client.set_arbiter(&employer, &arbiter);
-    
+
     let agreement_id = payroll_client.create_payroll_agreement(&employer, &token_address, &86400);
     payroll_client.add_employee_to_agreement(&agreement_id, &employee1, &100);
     payroll_client.add_employee_to_agreement(&agreement_id, &employee2, &100);
@@ -143,7 +142,10 @@ fn test_multi_employee_payout_split() {
     // Arbiter resolves, employee pool gets 150, employer gets 50
     payroll_client.resolve_dispute(&arbiter, &agreement_id, &150_i128, &50_i128);
 
-    assert_eq!(payroll_client.get_dispute_status(&agreement_id), DisputeStatus::Resolved);
+    assert_eq!(
+        payroll_client.get_dispute_status(&agreement_id),
+        DisputeStatus::Resolved
+    );
     // Pay is split equally among employees (150 / 2 = 75)
     assert_eq!(token_client.balance(&employee1), 75);
     assert_eq!(token_client.balance(&employee2), 75);

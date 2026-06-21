@@ -40,8 +40,8 @@ fn test_valid_transition_allows_activate_created_to_active() {
 
     assert_eq!(decision.decision, Decision::Allow);
     assert_eq!(decision.reason, ReasonCode::Allowed);
-    
-    // Verify traces: 
+
+    // Verify traces:
     // 1. EmergencyPause: Allow
     // 2. TerminalState: Allow
     // 3. InvalidCurrentState: Allow
@@ -143,7 +143,11 @@ fn test_invalid_current_state_matrix_is_denied() {
     let actor = Address::generate(&env);
 
     let deny_cases = [
-        (PayrollAction::AddEmployee, AgreementStatus::Active, AgreementStatus::Created),
+        (
+            PayrollAction::AddEmployee,
+            AgreementStatus::Active,
+            AgreementStatus::Created,
+        ),
         (
             PayrollAction::ActivateAgreement,
             AgreementStatus::Paused,
@@ -248,8 +252,7 @@ fn test_invalid_target_state_is_denied() {
     ];
 
     for (action, current, bad_target) in cases {
-        let decision =
-            client.check_action(&actor, &actor, &action, &current, &bad_target, &false);
+        let decision = client.check_action(&actor, &actor, &action, &current, &bad_target, &false);
         assert_eq!(decision.decision, Decision::Deny);
         assert_eq!(decision.reason, ReasonCode::InvalidTargetState);
     }

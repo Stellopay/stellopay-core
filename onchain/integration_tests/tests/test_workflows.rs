@@ -1529,14 +1529,21 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
     let incentive_id =
         bonus_client.create_one_time_bonus(&employer, &employee_b, &approver, &tok, &250, &1_000);
     bonus_client.approve_incentive(&approver, &incentive_id);
-    assert_eq!(bonus_client.claim_incentive(&employee_b, &incentive_id), 250);
+    assert_eq!(
+        bonus_client.claim_incentive(&employee_b, &incentive_id),
+        250
+    );
 
     // Mirror the payroll dispute into the escalation module so the integration
     // test covers the off-chain coordination sequence as well as token effects.
     payroll_client.raise_dispute(&employee_b, &agreement_id);
     dispute_client.file_dispute(&employee_b, &agreement_id);
     dispute_client.escalate_dispute(&employee_b, &agreement_id);
-    dispute_client.resolve_dispute(&dispute_admin, &agreement_id, &DisputeOutcome::UpholdPayment);
+    dispute_client.resolve_dispute(
+        &dispute_admin,
+        &agreement_id,
+        &DisputeOutcome::UpholdPayment,
+    );
     payroll_client.resolve_dispute(&arbiter, &agreement_id, &600, &400);
 
     record_payment_as_payroll(
@@ -1576,7 +1583,10 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
         env.ledger().timestamp(),
     );
 
-    assert_eq!(payroll_client.get_dispute_status(&agreement_id), DisputeStatus::Resolved);
+    assert_eq!(
+        payroll_client.get_dispute_status(&agreement_id),
+        DisputeStatus::Resolved
+    );
     assert_eq!(
         payroll_client.get_agreement(&agreement_id).unwrap().status,
         AgreementStatus::Completed
@@ -1651,11 +1661,8 @@ fn test_cross_contract_workflow_failure_injection_preserves_state() {
     );
     escrow_client.fund_agreement(&employer, &agreement_id, &employer, &600);
 
-    let unauthorized_admin = dispute_client.try_set_level_time_limit(
-        &outsider,
-        &EscalationLevel::Level1,
-        &60,
-    );
+    let unauthorized_admin =
+        dispute_client.try_set_level_time_limit(&outsider, &EscalationLevel::Level1, &60);
     assert_eq!(
         unauthorized_admin,
         Err(Ok(EscalationError::Unauthorized.into()))

@@ -102,7 +102,10 @@ fn test_serialize_deserialize_payroll_agreement() {
     assert_eq!(recovered.created_at, original.created_at);
     assert_eq!(recovered.activated_at, original.activated_at);
     assert_eq!(recovered.cancelled_at, original.cancelled_at);
-    assert_eq!(recovered.grace_period_seconds, original.grace_period_seconds);
+    assert_eq!(
+        recovered.grace_period_seconds,
+        original.grace_period_seconds
+    );
     assert_eq!(recovered.dispute_status, original.dispute_status);
     assert_eq!(recovered.dispute_raised_at, original.dispute_raised_at);
     assert_eq!(recovered.amount_per_period, original.amount_per_period);
@@ -482,7 +485,10 @@ fn test_two_backups_produce_different_envelopes() {
     let envelope1 = backup_agreement(&env, &agreement, passphrase, &TEST_SALT, &TEST_NONCE);
     let envelope2 = backup_agreement(&env, &agreement, passphrase, &TEST_SALT_2, &TEST_NONCE_2);
 
-    assert_ne!(envelope1, envelope2, "different salt/nonce must produce distinct envelopes");
+    assert_ne!(
+        envelope1, envelope2,
+        "different salt/nonce must produce distinct envelopes"
+    );
 }
 
 #[test]

@@ -230,7 +230,10 @@ impl DepartmentManagerContract {
                 .expect("Parent department not found");
             assert!(parent.org_id == org_id, "Parent must be in same org");
             // child depth = parent depth + 1; must not exceed MAX_DEPTH
-            assert!(Self::dept_depth(&env, pid) + 1 <= MAX_DEPTH, "Max hierarchy depth exceeded");
+            assert!(
+                Self::dept_depth(&env, pid) + 1 <= MAX_DEPTH,
+                "Max hierarchy depth exceeded"
+            );
         }
 
         let next_id: u128 = env
@@ -516,12 +519,7 @@ impl DepartmentManagerContract {
     ///
     /// # Events
     /// Publishes `("dept_mvd", dept_id)` on success.
-    pub fn update_department(
-        env: Env,
-        caller: Address,
-        dept_id: u128,
-        new_parent: Option<u128>,
-    ) {
+    pub fn update_department(env: Env, caller: Address, dept_id: u128, new_parent: Option<u128>) {
         caller.require_auth();
         Self::require_initialized(&env);
 
@@ -546,7 +544,10 @@ impl DepartmentManagerContract {
                 .expect("Parent department not found");
             assert!(parent.org_id == dept.org_id, "Parent must be in same org");
             // child depth = parent depth + 1; must not exceed MAX_DEPTH
-            assert!(Self::dept_depth(&env, pid) + 1 <= MAX_DEPTH, "Max hierarchy depth exceeded");
+            assert!(
+                Self::dept_depth(&env, pid) + 1 <= MAX_DEPTH,
+                "Max hierarchy depth exceeded"
+            );
             assert!(!Self::has_cycle(&env, dept_id, pid), "Cycle detected");
         }
 

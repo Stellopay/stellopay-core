@@ -6,8 +6,8 @@ use soroban_sdk::{
     Address, Env, Vec,
 };
 
-use stello_pay_contract::storage::{DataKey, PayrollError};
 use stello_pay_contract::storage::ExchangeRateInfo;
+use stello_pay_contract::storage::{DataKey, PayrollError};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 /// Create a fresh test environment with a deployed payroll contract, owner,

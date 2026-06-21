@@ -1359,7 +1359,6 @@ fn test_cannot_escalate_from_resolved_state() {
     assert_eq!(res, Err(Ok(DisputeError::AlreadyResolved)));
 }
 
-
 #[test]
 fn test_keeper_advance_stage_overflow_returns_distinct_error() {
     // When pending_review_time_limit is set to u64::MAX, now + limit overflows

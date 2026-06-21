@@ -92,7 +92,15 @@ fn test_log_record_before_init_rejected() {
     let addr = Address::generate(&env);
 
     let err = client
-        .try_log_record(&addr, &addr, &addr, &addr, &100, &ReportType::Payroll, &Bytes::new(&env))
+        .try_log_record(
+            &addr,
+            &addr,
+            &addr,
+            &addr,
+            &100,
+            &ReportType::Payroll,
+            &Bytes::new(&env),
+        )
         .unwrap_err()
         .unwrap();
     assert_eq!(err, ComplianceError::NotInitialized);
@@ -160,8 +168,13 @@ fn test_pause_blocks_log_record() {
 
     let err = client
         .try_log_record(
-            &employer, &employer, &employee, &token,
-            &100, &ReportType::Payroll, &Bytes::new(&env),
+            &employer,
+            &employer,
+            &employee,
+            &token,
+            &100,
+            &ReportType::Payroll,
+            &Bytes::new(&env),
         )
         .unwrap_err()
         .unwrap();
@@ -176,7 +189,15 @@ fn test_pause_does_not_block_reads() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 500, &ReportType::Payroll);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        500,
+        &ReportType::Payroll,
+    );
 
     client.set_paused(&admin, &true);
 
@@ -198,7 +219,15 @@ fn test_unpause_restores_writes() {
     assert!(!client.is_paused());
 
     env.ledger().set_timestamp(1000);
-    let id = log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+    let id = log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
     assert_eq!(id, 1);
 }
 
@@ -226,7 +255,15 @@ fn test_log_record_employer_as_publisher() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1000);
-    let id = log_as_employer(&client, &env, &employer, &employee, &token, 5000, &ReportType::Payroll);
+    let id = log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        5000,
+        &ReportType::Payroll,
+    );
 
     assert_eq!(id, 1);
     assert_eq!(client.get_record_count(&employer), 1);
@@ -253,8 +290,13 @@ fn test_log_record_authorized_publisher() {
 
     env.ledger().set_timestamp(2000);
     let id = client.log_record(
-        &publisher, &employer, &employee, &token,
-        &1000, &ReportType::Tax, &Bytes::new(&env),
+        &publisher,
+        &employer,
+        &employee,
+        &token,
+        &1000,
+        &ReportType::Tax,
+        &Bytes::new(&env),
     );
 
     assert_eq!(id, 1);
@@ -273,8 +315,13 @@ fn test_log_record_unauthorized_publisher_rejected() {
 
     let err = client
         .try_log_record(
-            &attacker, &employer, &employee, &token,
-            &100, &ReportType::Payroll, &Bytes::new(&env),
+            &attacker,
+            &employer,
+            &employee,
+            &token,
+            &100,
+            &ReportType::Payroll,
+            &Bytes::new(&env),
         )
         .unwrap_err()
         .unwrap();
@@ -294,8 +341,13 @@ fn test_log_record_revoked_publisher_rejected() {
 
     let err = client
         .try_log_record(
-            &publisher, &employer, &employee, &token,
-            &100, &ReportType::Payroll, &Bytes::new(&env),
+            &publisher,
+            &employer,
+            &employee,
+            &token,
+            &100,
+            &ReportType::Payroll,
+            &Bytes::new(&env),
         )
         .unwrap_err()
         .unwrap();
@@ -311,8 +363,13 @@ fn test_log_record_zero_amount_rejected() {
 
     let err = client
         .try_log_record(
-            &employer, &employer, &employee, &token,
-            &0, &ReportType::Payroll, &Bytes::new(&env),
+            &employer,
+            &employer,
+            &employee,
+            &token,
+            &0,
+            &ReportType::Payroll,
+            &Bytes::new(&env),
         )
         .unwrap_err()
         .unwrap();
@@ -328,8 +385,13 @@ fn test_log_record_negative_amount_rejected() {
 
     let err = client
         .try_log_record(
-            &employer, &employer, &employee, &token,
-            &-1, &ReportType::Payroll, &Bytes::new(&env),
+            &employer,
+            &employer,
+            &employee,
+            &token,
+            &-1,
+            &ReportType::Payroll,
+            &Bytes::new(&env),
         )
         .unwrap_err()
         .unwrap();
@@ -345,7 +407,15 @@ fn test_log_record_monotonic_ids_per_employer() {
 
     env.ledger().set_timestamp(1000);
     for expected_id in 1u32..=5 {
-        let id = log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+        let id = log_as_employer(
+            &client,
+            &env,
+            &employer,
+            &employee,
+            &token,
+            100,
+            &ReportType::Payroll,
+        );
         assert_eq!(id, expected_id);
     }
     assert_eq!(client.get_record_count(&employer), 5);
@@ -360,9 +430,33 @@ fn test_log_record_global_seq_increments_across_employers() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1000);
-    log_as_employer(&client, &env, &employer_a, &employee, &token, 100, &ReportType::Payroll);
-    log_as_employer(&client, &env, &employer_b, &employee, &token, 200, &ReportType::Tax);
-    log_as_employer(&client, &env, &employer_a, &employee, &token, 300, &ReportType::Payroll);
+    log_as_employer(
+        &client,
+        &env,
+        &employer_a,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
+    log_as_employer(
+        &client,
+        &env,
+        &employer_b,
+        &employee,
+        &token,
+        200,
+        &ReportType::Tax,
+    );
+    log_as_employer(
+        &client,
+        &env,
+        &employer_a,
+        &employee,
+        &token,
+        300,
+        &ReportType::Payroll,
+    );
 
     assert_eq!(client.get_global_seq(), 3);
     assert_eq!(client.get_record_count(&employer_a), 2);
@@ -399,8 +493,13 @@ fn test_log_record_with_metadata() {
 
     env.ledger().set_timestamp(1000);
     let id = client.log_record(
-        &employer, &employer, &employee, &token,
-        &999, &ReportType::Regulatory, &metadata,
+        &employer,
+        &employer,
+        &employee,
+        &token,
+        &999,
+        &ReportType::Regulatory,
+        &metadata,
     );
 
     let record = client.get_record(&employer, &id).unwrap();
@@ -427,6 +526,8 @@ fn test_generate_report_with_mocked_external_contracts() {
     // The implementation of generate_report is verified to exist and call configured contracts.
 }
 
+#[test]
+fn test_get_withholding_records_empty() {
     let (env, client, _) = setup();
     let employer = Address::generate(&env);
 
@@ -444,11 +545,35 @@ fn test_get_withholding_records_date_filtering() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
     env.ledger().set_timestamp(2000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 200, &ReportType::Tax);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        200,
+        &ReportType::Tax,
+    );
     env.ledger().set_timestamp(3000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 300, &ReportType::Regulatory);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        300,
+        &ReportType::Regulatory,
+    );
 
     // Only t=2000 falls in [1500, 2500].
     let report = client.get_withholding_records(&employer, &1500, &2500, &None, &50);
@@ -465,9 +590,25 @@ fn test_get_withholding_records_inclusive_boundaries() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
     env.ledger().set_timestamp(2000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 200, &ReportType::Payroll);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        200,
+        &ReportType::Payroll,
+    );
 
     let report = client.get_withholding_records(&employer, &1000, &2000, &None, &50);
     assert_eq!(report.record_count, 2);
@@ -482,9 +623,33 @@ fn test_get_withholding_records_type_filtering() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Tax);
-    log_as_employer(&client, &env, &employer, &employee, &token, 500, &ReportType::Payroll);
-    log_as_employer(&client, &env, &employer, &employee, &token, 200, &ReportType::Tax);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        100,
+        &ReportType::Tax,
+    );
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        500,
+        &ReportType::Payroll,
+    );
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        200,
+        &ReportType::Tax,
+    );
 
     let report = client.get_withholding_records(&employer, &0, &2000, &Some(ReportType::Tax), &50);
     assert_eq!(report.record_count, 2);
@@ -502,9 +667,33 @@ fn test_get_withholding_records_all_types_when_no_filter() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
-    log_as_employer(&client, &env, &employer, &employee, &token, 200, &ReportType::Tax);
-    log_as_employer(&client, &env, &employer, &employee, &token, 300, &ReportType::Regulatory);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        200,
+        &ReportType::Tax,
+    );
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        300,
+        &ReportType::Regulatory,
+    );
 
     let report = client.get_withholding_records(&employer, &0, &2000, &None, &50);
     assert_eq!(report.record_count, 3);
@@ -520,7 +709,15 @@ fn test_get_withholding_records_limit_caps_results() {
 
     env.ledger().set_timestamp(1000);
     for _ in 0..10 {
-        log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+        log_as_employer(
+            &client,
+            &env,
+            &employer,
+            &employee,
+            &token,
+            100,
+            &ReportType::Payroll,
+        );
     }
 
     let report = client.get_withholding_records(&employer, &0, &2000, &None, &3);
@@ -581,7 +778,15 @@ fn test_get_withholding_records_equal_start_end_date() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
 
     let report = client.get_withholding_records(&employer, &1000, &1000, &None, &10);
     assert_eq!(report.record_count, 1);
@@ -595,7 +800,15 @@ fn test_get_withholding_records_no_records_in_range() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(5000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
 
     let report = client.get_withholding_records(&employer, &0, &4999, &None, &10);
     assert_eq!(report.record_count, 0);
@@ -610,11 +823,35 @@ fn test_get_withholding_records_returns_newest_first() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
     env.ledger().set_timestamp(2000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 200, &ReportType::Payroll);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        200,
+        &ReportType::Payroll,
+    );
     env.ledger().set_timestamp(3000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 300, &ReportType::Payroll);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        300,
+        &ReportType::Payroll,
+    );
 
     let report = client.get_withholding_records(&employer, &0, &5000, &None, &10);
     assert_eq!(report.record_count, 3);
@@ -639,7 +876,15 @@ fn test_global_seq_never_resets() {
 
     env.ledger().set_timestamp(1000);
     for _ in 0..5 {
-        log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+        log_as_employer(
+            &client,
+            &env,
+            &employer,
+            &employee,
+            &token,
+            100,
+            &ReportType::Payroll,
+        );
     }
     assert_eq!(client.get_global_seq(), 5);
 }
@@ -653,7 +898,15 @@ fn test_record_ids_are_contiguous() {
 
     env.ledger().set_timestamp(1000);
     for i in 1u32..=5 {
-        let id = log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+        let id = log_as_employer(
+            &client,
+            &env,
+            &employer,
+            &employee,
+            &token,
+            100,
+            &ReportType::Payroll,
+        );
         assert_eq!(id, i, "Expected contiguous ID {i}");
     }
 }
@@ -666,7 +919,15 @@ fn test_record_timestamp_is_ledger_time() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(42_000);
-    let id = log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+    let id = log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
 
     let record = client.get_record(&employer, &id).unwrap();
     assert_eq!(record.timestamp, 42_000);
@@ -680,7 +941,15 @@ fn test_records_are_immutable_after_write() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1000);
-    let id = log_as_employer(&client, &env, &employer, &employee, &token, 777, &ReportType::Tax);
+    let id = log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        777,
+        &ReportType::Tax,
+    );
 
     let r1 = client.get_record(&employer, &id).unwrap();
     let r2 = client.get_record(&employer, &id).unwrap();
@@ -701,9 +970,33 @@ fn test_employer_records_are_isolated() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1000);
-    log_as_employer(&client, &env, &employer_a, &employee, &token, 100, &ReportType::Payroll);
-    log_as_employer(&client, &env, &employer_a, &employee, &token, 200, &ReportType::Payroll);
-    log_as_employer(&client, &env, &employer_b, &employee, &token, 999, &ReportType::Tax);
+    log_as_employer(
+        &client,
+        &env,
+        &employer_a,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
+    log_as_employer(
+        &client,
+        &env,
+        &employer_a,
+        &employee,
+        &token,
+        200,
+        &ReportType::Payroll,
+    );
+    log_as_employer(
+        &client,
+        &env,
+        &employer_b,
+        &employee,
+        &token,
+        999,
+        &ReportType::Tax,
+    );
 
     assert_eq!(client.get_record_count(&employer_a), 2);
     assert_eq!(client.get_record_count(&employer_b), 1);
@@ -725,7 +1018,15 @@ fn test_large_batch_logging_and_report() {
 
     for i in 1u64..=50 {
         env.ledger().set_timestamp(i * 100);
-        log_as_employer(&client, &env, &employer, &employee, &token, 10, &ReportType::Payroll);
+        log_as_employer(
+            &client,
+            &env,
+            &employer,
+            &employee,
+            &token,
+            10,
+            &ReportType::Payroll,
+        );
     }
 
     assert_eq!(client.get_record_count(&employer), 50);

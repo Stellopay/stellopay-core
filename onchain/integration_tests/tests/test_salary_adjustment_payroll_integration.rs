@@ -15,9 +15,7 @@ use soroban_sdk::{
     Address, Env,
 };
 
-use salary_adjustment::{
-    SalaryAdjustmentContract, SalaryAdjustmentContractClient,
-};
+use salary_adjustment::{SalaryAdjustmentContract, SalaryAdjustmentContractClient};
 use stello_pay_contract::storage::DataKey;
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
@@ -173,8 +171,14 @@ fn test_salary_adjustment_apply_updates_payroll_salary() {
     payroll_client.claim_payroll(&employee, &agreement_id, &0);
 
     // 3 periods at INITIAL_SALARY (3,000) + 1 period at NEW_SALARY (2,500) = 5,500
-    assert_eq!(balance(&env, &tok, &employee), INITIAL_SALARY * 3 + NEW_SALARY * 1);
-    assert_eq!(payroll_client.get_employee_claimed_periods(&agreement_id, &0), 4);
+    assert_eq!(
+        balance(&env, &tok, &employee),
+        INITIAL_SALARY * 3 + NEW_SALARY * 1
+    );
+    assert_eq!(
+        payroll_client.get_employee_claimed_periods(&agreement_id, &0),
+        4
+    );
 }
 
 /// Verifies that a decrease adjustment is also reflected in the payroll claim.
@@ -221,8 +225,12 @@ fn test_salary_decrease_affects_payroll_claim() {
     let decreased: i128 = 500;
     let effective_date = env.ledger().timestamp() + ONE_DAY;
     let adjustment_id = salary_client.create_adjustment(
-        &employer, &employee, &approver,
-        &INITIAL_SALARY, &decreased, &effective_date,
+        &employer,
+        &employee,
+        &approver,
+        &INITIAL_SALARY,
+        &decreased,
+        &effective_date,
     );
     salary_client.approve_adjustment(&approver, &adjustment_id);
     advance(&env, ONE_DAY * 2);
@@ -236,7 +244,10 @@ fn test_salary_decrease_affects_payroll_claim() {
     payroll_client.claim_payroll(&employee, &agreement_id, &0);
 
     // 2 periods at 1,000 + 1 period at 500 = 2,500
-    assert_eq!(balance(&env, &tok, &employee), INITIAL_SALARY * 2 + decreased * 1);
+    assert_eq!(
+        balance(&env, &tok, &employee),
+        INITIAL_SALARY * 2 + decreased * 1
+    );
 }
 
 /// Verifies that get_employee_salary returns None before any adjustment is applied.

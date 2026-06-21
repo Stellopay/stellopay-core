@@ -363,7 +363,8 @@ pub fn decrypt_backup(envelope: &[u8], passphrase: &[u8]) -> Result<StdVec<u8>, 
     let ciphertext = &envelope[pos..];
 
     let key_bytes = derive_key(passphrase, salt);
-    let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|_| BackupError::DecryptionFailed)?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key_bytes).map_err(|_| BackupError::DecryptionFailed)?;
     let mut nonce_arr = [0u8; NONCE_LEN];
     nonce_arr.copy_from_slice(nonce_bytes);
     let nonce = Nonce::from(nonce_arr);
@@ -394,7 +395,11 @@ pub fn backup_agreement(
 }
 
 /// Decrypt and deserialise an agreement backup envelope.
-pub fn restore_agreement(env: &Env, envelope: &[u8], passphrase: &[u8]) -> Result<Agreement, BackupError> {
+pub fn restore_agreement(
+    env: &Env,
+    envelope: &[u8],
+    passphrase: &[u8],
+) -> Result<Agreement, BackupError> {
     let plaintext = decrypt_backup(envelope, passphrase)?;
     deserialize_agreement(env, &plaintext)
 }

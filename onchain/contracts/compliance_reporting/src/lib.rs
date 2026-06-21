@@ -25,11 +25,12 @@
 //! ensuring ledger TTL extensions if long-term on-chain retention is required.
 //! Off-chain indexers should consume events and snapshot data independently.
 
-use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Vec,
-};
 use audit_logger::{AuditLogEntry, AuditLoggerContract};
 use payment_history::{PaymentHistoryContract, PaymentRecord};
+use soroban_sdk::{
+    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address,
+    Bytes, Env, Vec,
+};
 
 contractclient!(AuditLoggerContract, audit_logger_client);
 contractclient!(PaymentHistoryContract, payment_history_client);
@@ -212,10 +213,7 @@ impl ComplianceReportingContract {
             .persistent()
             .set(&DataKey::Publisher(admin.clone()), &true);
 
-        env.events().publish(
-            (symbol_short!("init"),),
-            (admin,),
-        );
+        env.events().publish((symbol_short!("init"),), (admin,));
 
         Ok(())
     }
@@ -244,10 +242,8 @@ impl ComplianceReportingContract {
             .persistent()
             .set(&DataKey::Publisher(publisher.clone()), &authorized);
 
-        env.events().publish(
-            (symbol_short!("pub_set"),),
-            (publisher, authorized),
-        );
+        env.events()
+            .publish((symbol_short!("pub_set"),), (publisher, authorized));
 
         Ok(())
     }
@@ -276,8 +272,12 @@ impl ComplianceReportingContract {
         Self::require_initialized(&env)?;
         Self::require_admin(&env, &caller)?;
 
-        env.storage().persistent().set(&DataKey::AuditLogger, &audit_logger);
-        env.storage().persistent().set(&DataKey::PaymentHistory, &payment_history);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AuditLogger, &audit_logger);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PaymentHistory, &payment_history);
 
         Ok(())
     }
@@ -298,10 +298,7 @@ impl ComplianceReportingContract {
 
         env.storage().instance().set(&DataKey::Paused, &paused);
 
-        env.events().publish(
-            (symbol_short!("paused"),),
-            (paused,),
-        );
+        env.events().publish((symbol_short!("paused"),), (paused,));
 
         Ok(())
     }
@@ -367,12 +364,7 @@ impl ComplianceReportingContract {
 
         // Assign per-employer ID.
         let count_key = DataKey::RecordCount(employer.clone());
-        let next_id: u32 = env
-            .storage()
-            .persistent()
-            .get(&count_key)
-            .unwrap_or(0u32)
-            + 1;
+        let next_id: u32 = env.storage().persistent().get(&count_key).unwrap_or(0u32) + 1;
 
         // Assign global sequence number.
         let global_seq: u64 = env
@@ -577,7 +569,9 @@ impl ComplianceReportingContract {
         // 3. Fetch AuditLogger events
         let al_client = audit_logger_client::Client::new(&env, &audit_logger_addr);
         // Assuming there is a way to get logs.
-        let events = al_client.get_latest_logs(&MAX_QUERY_LIMIT).unwrap_or_else(|_| Vec::new(&env));
+        let events = al_client
+            .get_latest_logs(&MAX_QUERY_LIMIT)
+            .unwrap_or_else(|_| Vec::new(&env));
 
         // 4. Fetch Withholding records (placeholder)
         let withholding_records = Vec::new(&env);

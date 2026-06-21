@@ -5,12 +5,14 @@ use soroban_sdk::{
     Address, Bytes, Env,
 };
 
-use nft_payroll_badge::{Badge, BadgeError, BadgeKind, BadgeState, NftPayrollBadge, NftPayrollBadgeClient};
+use nft_payroll_badge::{
+    Badge, BadgeError, BadgeKind, BadgeState, NftPayrollBadge, NftPayrollBadgeClient,
+};
 
 fn create_env() -> Env {
     let env = Env::default();
     env.mock_all_auths();
-    
+
     // Set a non-zero timestamp. In Soroban tests, the default timestamp is 0.
     // Because our contract treats `expires_at == 0` as "never expires",
     // calling `expire()` when the ledger time is 0 creates a logical conflict.
@@ -275,7 +277,7 @@ fn metadata_update_and_freeze() {
     // Try update again -> error
     let res = client.try_update_metadata(&admin, &badge_id, &bytes_from_str(&env, "meta3"));
     assert_eq!(res, Err(Ok(BadgeError::MetadataFrozen)));
-    
+
     // Try freeze again -> error
     let res2 = client.try_freeze_metadata(&admin, &badge_id);
     assert_eq!(res2, Err(Ok(BadgeError::MetadataFrozen)));
@@ -327,11 +329,11 @@ fn explicit_expiry() {
     // Expire
     client.expire(&admin, &badge_id);
     assert_eq!(client.get_state(&badge_id), BadgeState::Expired);
-    
+
     // Repeated expire -> error
     let res = client.try_expire(&admin, &badge_id);
     assert_eq!(res, Err(Ok(BadgeError::BadgeExpired)));
-    
+
     // Transfer expired -> error
     let res_transfer = client.try_transfer(&employee, &badge_id, &admin);
     assert_eq!(res_transfer, Err(Ok(BadgeError::BadgeExpired)));
@@ -378,13 +380,13 @@ fn non_admin_update_revoke_fails() {
     // Employer is not admin, should fail to update/revoke/expire
     let res1 = client.try_update_metadata(&employer, &badge_id, &bytes_from_str(&env, "new"));
     assert!(res1.is_err());
-    
+
     let res2 = client.try_revoke(&employer, &badge_id);
     assert!(res2.is_err());
-    
+
     let res3 = client.try_expire(&employer, &badge_id);
     assert!(res3.is_err());
-    
+
     let res4 = client.try_freeze_metadata(&employer, &badge_id);
     assert!(res4.is_err());
 }

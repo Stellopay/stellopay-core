@@ -612,26 +612,17 @@ fn test_backoff_uses_last_interval_when_retry_count_exceeds_list() {
 
     // Retry 1: next_retry_at = 0 + 7 = 7
     client.process_due_payments(&1u32);
-    assert_eq!(
-        client.get_payment(&payment_id).unwrap().next_retry_at,
-        7
-    );
+    assert_eq!(client.get_payment(&payment_id).unwrap().next_retry_at, 7);
 
     // Retry 2: next_retry_at = 7 + 7 = 14
     env.ledger().with_mut(|li| li.timestamp = 7);
     client.process_due_payments(&1u32);
-    assert_eq!(
-        client.get_payment(&payment_id).unwrap().next_retry_at,
-        14
-    );
+    assert_eq!(client.get_payment(&payment_id).unwrap().next_retry_at, 14);
 
     // Retry 3: next_retry_at = 14 + 7 = 21
     env.ledger().with_mut(|li| li.timestamp = 14);
     client.process_due_payments(&1u32);
-    assert_eq!(
-        client.get_payment(&payment_id).unwrap().next_retry_at,
-        21
-    );
+    assert_eq!(client.get_payment(&payment_id).unwrap().next_retry_at, 21);
 }
 
 #[test]
@@ -662,10 +653,7 @@ fn test_backoff_uses_stepped_intervals() {
 
     // Retry 1 → interval[0] = 10
     client.process_due_payments(&1u32);
-    assert_eq!(
-        client.get_payment(&payment_id).unwrap().next_retry_at,
-        10
-    );
+    assert_eq!(client.get_payment(&payment_id).unwrap().next_retry_at, 10);
 
     // Retry 2 → interval[1] = 30
     env.ledger().with_mut(|li| li.timestamp = 10);

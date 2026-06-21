@@ -111,7 +111,9 @@ impl PayrollContract {
 
     /// Gets the linked Rate Limiter contract address, if any.
     pub fn get_rate_limiter_contract(env: Env) -> Option<Address> {
-        env.storage().persistent().get(&StorageKey::RateLimiterContract)
+        env.storage()
+            .persistent()
+            .get(&StorageKey::RateLimiterContract)
     }
 
     /// @notice Upgrades the contract's WASM code to a new version.
@@ -340,12 +342,7 @@ impl PayrollContract {
     /// # Errors
     /// Panics with descriptive messages for: unknown agreement, wrong caller,
     /// non-positive amount, `Cancelled` or `Completed` status, arithmetic overflow.
-    pub fn fund_milestone_agreement(
-        env: Env,
-        agreement_id: u128,
-        from: Address,
-        amount: i128,
-    ) {
+    pub fn fund_milestone_agreement(env: Env, agreement_id: u128, from: Address, amount: i128) {
         payroll::fund_milestone_agreement(&env, agreement_id, from, amount);
     }
 
@@ -362,7 +359,6 @@ impl PayrollContract {
     pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
         payroll::add_milestone(env, agreement_id, amount);
     }
-
 
     /// Approves a milestone for payment.
     ///

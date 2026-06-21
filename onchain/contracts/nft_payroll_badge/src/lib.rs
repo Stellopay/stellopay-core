@@ -374,7 +374,7 @@ impl NftPayrollBadge {
 
         let mut badge = read_badge(&env, badge_id)?;
         let current_time = env.ledger().timestamp();
-        
+
         if badge.expires_at != 0 && current_time >= badge.expires_at {
             return Err(BadgeError::BadgeExpired);
         }

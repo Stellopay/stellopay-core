@@ -547,13 +547,8 @@ impl PriceOracleContract {
 
         // Per-source submission rate limit.
         if cfg.min_submit_interval_secs > 0 {
-            let last_key =
-                DataKey::LastSubmission(source.clone(), base.clone(), quote.clone());
-            if let Some(last_ts) = env
-                .storage()
-                .temporary()
-                .get::<_, u64>(&last_key)
-            {
+            let last_key = DataKey::LastSubmission(source.clone(), base.clone(), quote.clone());
+            if let Some(last_ts) = env.storage().temporary().get::<_, u64>(&last_key) {
                 let elapsed = source_timestamp.saturating_sub(last_ts);
                 if elapsed < cfg.min_submit_interval_secs {
                     return Err(OracleError::SubmissionRateLimited);

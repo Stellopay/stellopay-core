@@ -14,17 +14,26 @@ fn test_tiered_fee_selection() {
 
     client.initialize(&admin, &treasury, &0, &0, &FeeMode::Percentage);
 
-    // Setup schedule: 
+    // Setup schedule:
     // Tier 1: up to 1000 -> 500 bps (5%)
     // Tier 2: up to 5000 -> 250 bps (2.5%)
     // Tier 3: above 5000 -> 100 bps (1%)
     let mut schedule = Vec::new(&env);
-    schedule.push_back(FeeTier { limit: 1000, fee_bps: 500 });
-    schedule.push_back(FeeTier { limit: 5000, fee_bps: 250 });
-    schedule.push_back(FeeTier { limit: i128::MAX, fee_bps: 100 });
+    schedule.push_back(FeeTier {
+        limit: 1000,
+        fee_bps: 500,
+    });
+    schedule.push_back(FeeTier {
+        limit: 5000,
+        fee_bps: 250,
+    });
+    schedule.push_back(FeeTier {
+        limit: i128::MAX,
+        fee_bps: 100,
+    });
 
     client.update_tiered_schedule(&admin, &schedule);
-    
+
     // Switch to Tiered mode
     let config = client.get_config();
     client.update_fee_config(&admin, &config.fee_bps, &config.flat_fee, &FeeMode::Tiered);
@@ -94,7 +103,6 @@ fn test_update_tiered_schedule_unauthorized() {
     client.update_tiered_schedule(&attacker, &schedule);
 }
 
-
 #[test]
 #[should_panic(expected = "Tier limits must be strictly increasing and positive")]
 fn test_update_tiered_schedule_negative_limit_rejected() {
@@ -108,7 +116,10 @@ fn test_update_tiered_schedule_negative_limit_rejected() {
     client.initialize(&admin, &treasury, &0, &0, &FeeMode::Percentage);
 
     let mut schedule = Vec::new(&env);
-    schedule.push_back(FeeTier { limit: -100, fee_bps: 500 });
+    schedule.push_back(FeeTier {
+        limit: -100,
+        fee_bps: 500,
+    });
 
     client.update_tiered_schedule(&admin, &schedule);
 }
@@ -126,7 +137,10 @@ fn test_update_tiered_schedule_zero_limit_rejected() {
     client.initialize(&admin, &treasury, &0, &0, &FeeMode::Percentage);
 
     let mut schedule = Vec::new(&env);
-    schedule.push_back(FeeTier { limit: 0, fee_bps: 500 });
+    schedule.push_back(FeeTier {
+        limit: 0,
+        fee_bps: 500,
+    });
 
     client.update_tiered_schedule(&admin, &schedule);
 }
@@ -144,8 +158,14 @@ fn test_update_tiered_schedule_non_increasing_rejected() {
     client.initialize(&admin, &treasury, &0, &0, &FeeMode::Percentage);
 
     let mut schedule = Vec::new(&env);
-    schedule.push_back(FeeTier { limit: 1000, fee_bps: 500 });
-    schedule.push_back(FeeTier { limit: 500, fee_bps: 250 }); // lower than previous
+    schedule.push_back(FeeTier {
+        limit: 1000,
+        fee_bps: 500,
+    });
+    schedule.push_back(FeeTier {
+        limit: 500,
+        fee_bps: 250,
+    }); // lower than previous
 
     client.update_tiered_schedule(&admin, &schedule);
 }
@@ -163,8 +183,14 @@ fn test_update_tiered_schedule_duplicate_limit_rejected() {
     client.initialize(&admin, &treasury, &0, &0, &FeeMode::Percentage);
 
     let mut schedule = Vec::new(&env);
-    schedule.push_back(FeeTier { limit: 1000, fee_bps: 500 });
-    schedule.push_back(FeeTier { limit: 1000, fee_bps: 250 }); // same as previous
+    schedule.push_back(FeeTier {
+        limit: 1000,
+        fee_bps: 500,
+    });
+    schedule.push_back(FeeTier {
+        limit: 1000,
+        fee_bps: 250,
+    }); // same as previous
 
     client.update_tiered_schedule(&admin, &schedule);
 }
@@ -181,9 +207,18 @@ fn test_update_tiered_schedule_valid_limits_accepted() {
     client.initialize(&admin, &treasury, &0, &0, &FeeMode::Percentage);
 
     let mut schedule = Vec::new(&env);
-    schedule.push_back(FeeTier { limit: 1000, fee_bps: 500 });
-    schedule.push_back(FeeTier { limit: 5000, fee_bps: 250 });
-    schedule.push_back(FeeTier { limit: i128::MAX, fee_bps: 100 });
+    schedule.push_back(FeeTier {
+        limit: 1000,
+        fee_bps: 500,
+    });
+    schedule.push_back(FeeTier {
+        limit: 5000,
+        fee_bps: 250,
+    });
+    schedule.push_back(FeeTier {
+        limit: i128::MAX,
+        fee_bps: 100,
+    });
 
     client.update_tiered_schedule(&admin, &schedule);
 }

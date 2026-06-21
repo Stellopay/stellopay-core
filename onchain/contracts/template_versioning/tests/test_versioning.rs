@@ -2,7 +2,9 @@ use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
     Address, BytesN, Env, String,
 };
-use template_versioning::{AgreementBinding, TemplateVersionRecord, TemplateVersioning, TemplateVersioningClient};
+use template_versioning::{
+    AgreementBinding, TemplateVersionRecord, TemplateVersioning, TemplateVersioningClient,
+};
 
 fn ledger_ts(env: &Env, ts: u64) {
     env.ledger().set(LedgerInfo {
@@ -33,10 +35,7 @@ fn template_version_lifecycle() {
     client.initialize(&admin);
 
     let tid = client
-        .try_register_template(
-            &employer,
-            &String::from_str(&env, "Standard payroll"),
-        )
+        .try_register_template(&employer, &String::from_str(&env, "Standard payroll"))
         .unwrap()
         .unwrap();
 
@@ -66,29 +65,15 @@ fn template_version_lifecycle() {
         .unwrap();
     assert_eq!(v2, 2);
 
-    assert_eq!(
-        client.try_latest_version(&tid).unwrap().unwrap(),
-        2
-    );
+    assert_eq!(client.try_latest_version(&tid).unwrap().unwrap(), 2);
 
-    let r1: TemplateVersionRecord = client
-        .try_get_version(&tid, &1)
-        .unwrap()
-        .unwrap();
+    let r1: TemplateVersionRecord = client.try_get_version(&tid, &1).unwrap().unwrap();
     assert_eq!(r1.schema_hash, h1);
-    let r2: TemplateVersionRecord = client
-        .try_get_version(&tid, &2)
-        .unwrap()
-        .unwrap();
+    let r2: TemplateVersionRecord = client.try_get_version(&tid, &2).unwrap().unwrap();
     assert_eq!(r2.version, 2);
 
     let aid = client
-        .try_create_agreement(
-            &employer,
-            &tid,
-            &1,
-            &String::from_str(&env, "Q1-2025"),
-        )
+        .try_create_agreement(&employer, &tid, &1, &String::from_str(&env, "Q1-2025"))
         .unwrap()
         .unwrap();
     let ag: AgreementBinding = client.try_get_agreement(&aid).unwrap().unwrap();
@@ -99,30 +84,15 @@ fn template_version_lifecycle() {
         .try_deprecate_version(&employer, &tid, &1)
         .unwrap()
         .unwrap();
-    let dep: TemplateVersionRecord = client
-        .try_get_version(&tid, &1)
-        .unwrap()
-        .unwrap();
+    let dep: TemplateVersionRecord = client.try_get_version(&tid, &1).unwrap().unwrap();
     assert!(dep.deprecated);
 
-    assert!(
-        client
-            .try_create_agreement(
-                &employer,
-                &tid,
-                &1,
-                &String::from_str(&env, "should fail"),
-            )
-            .is_err()
-    );
+    assert!(client
+        .try_create_agreement(&employer, &tid, &1, &String::from_str(&env, "should fail"),)
+        .is_err());
 
     let aid2 = client
-        .try_create_agreement(
-            &employer,
-            &tid,
-            &2,
-            &String::from_str(&env, "Q2-2025"),
-        )
+        .try_create_agreement(&employer, &tid, &2, &String::from_str(&env, "Q2-2025"))
         .unwrap()
         .unwrap();
     let ag2 = client.try_get_agreement(&aid2).unwrap().unwrap();
@@ -143,23 +113,12 @@ fn non_owner_cannot_publish() {
 
     client.initialize(&admin);
     let tid = client
-        .try_register_template(
-            &employer,
-            &String::from_str(&env, "T"),
-        )
+        .try_register_template(&employer, &String::from_str(&env, "T"))
         .unwrap()
         .unwrap();
 
     let h = BytesN::from_array(&env, &[9u8; 32]);
-    assert!(
-        client
-            .try_publish_template_version(
-                &attacker,
-                &tid,
-                &h,
-                &String::from_str(&env, "x"),
-                &false,
-            )
-            .is_err()
-    );
+    assert!(client
+        .try_publish_template_version(&attacker, &tid, &h, &String::from_str(&env, "x"), &false,)
+        .is_err());
 }

@@ -7,8 +7,7 @@ use soroban_sdk::{
 };
 
 use slashing_penalty::{
-    SlashingPenaltyContract, SlashingPenaltyContractClient,
-    Offense, SlashStatus, SlashError,
+    Offense, SlashError, SlashStatus, SlashingPenaltyContract, SlashingPenaltyContractClient,
 };
 
 // ─── Test Helpers ─────────────────────────────────────────────────────────────
@@ -35,18 +34,22 @@ impl TestEnv {
         let contract_id = env.register_contract(None, SlashingPenaltyContract);
         let client = SlashingPenaltyContractClient::new(&env, &contract_id);
 
-        let admin    = Address::generate(&env);
+        let admin = Address::generate(&env);
         let slasher1 = Address::generate(&env);
         let slasher2 = Address::generate(&env);
         let slasher3 = Address::generate(&env);
         let offender = Address::generate(&env);
         let token_admin = Address::generate(&env);
-        let token = env.register_stellar_asset_contract_v2(token_admin).address();
+        let token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
         let token_sac = StellarAssetClient::new(&env, &token);
         token_sac.mint(&offender, &1_000_000i128);
 
         // Per-event cap: 50%, period cap: 6_000, lifetime cap: 9_000, period: 1 day.
-        client.initialize(&admin, &token, &2u32, &5_000u32, &6_000i128, &9_000i128, &86_400u64);
+        client.initialize(
+            &admin, &token, &2u32, &5_000u32, &6_000i128, &9_000i128, &86_400u64,
+        );
         client.add_slasher(&slasher1);
         client.add_slasher(&slasher2);
         client.add_slasher(&slasher3);
@@ -54,7 +57,16 @@ impl TestEnv {
         // Give offender an initial staked balance.
         client.stake(&offender, &10_000i128);
 
-        TestEnv { env, client, admin, slasher1, slasher2, slasher3, offender, token }
+        TestEnv {
+            env,
+            client,
+            admin,
+            slasher1,
+            slasher2,
+            slasher3,
+            offender,
+            token,
+        }
     }
 
     fn evidence_hash(&self, seed: u8) -> BytesN<32> {
@@ -85,13 +97,7 @@ fn test_initialize_sets_admin_and_quorum() {
 fn test_initialize_twice_fails() {
     let t = TestEnv::setup();
     let result = t.client.try_initialize(
-        &t.admin,
-        &t.token,
-        &2u32,
-        &5_000u32,
-        &6_000i128,
-        &9_000i128,
-        &86_400u64,
+        &t.admin, &t.token, &2u32, &5_000u32, &6_000i128, &9_000i128, &86_400u64,
     );
     assert_eq!(result, Err(Ok(SlashError::AlreadyInitialized)));
 }
@@ -259,10 +265,20 @@ fn test_duplicate_evidence_fails() {
     let t = TestEnv::setup();
     let hash = t.evidence_hash(6);
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::DoubleSigning, &1_000u32, &hash, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
     );
     let result = t.client.try_slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::DoubleSigning, &1_000u32, &hash, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
     );
     assert_eq!(result, Err(Ok(SlashError::DuplicateEvidence)));
 }
@@ -291,7 +307,12 @@ fn test_attestation_requires_quorum_before_execute() {
 
     // Only one attestor — quorum is 2
     t.client.attest_slash(
-        &t.slasher1, &t.offender, &Offense::DoubleSigning, &1_000u32, &hash, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
     );
 
     t.advance_time(APPEAL_WINDOW + 1);
@@ -306,10 +327,20 @@ fn test_attestation_quorum_met_allows_execute() {
     let hash = t.evidence_hash(11);
 
     t.client.attest_slash(
-        &t.slasher1, &t.offender, &Offense::DoubleSigning, &1_000u32, &hash, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
     );
     t.client.attest_slash(
-        &t.slasher2, &t.offender, &Offense::DoubleSigning, &1_000u32, &hash, &0u64,
+        &t.slasher2,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
     );
 
     t.advance_time(APPEAL_WINDOW + 1);
@@ -325,10 +356,20 @@ fn test_double_attestation_by_same_slasher_fails() {
     let hash = t.evidence_hash(12);
 
     t.client.attest_slash(
-        &t.slasher1, &t.offender, &Offense::DoubleSigning, &1_000u32, &hash, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
     );
     let result = t.client.try_attest_slash(
-        &t.slasher1, &t.offender, &Offense::DoubleSigning, &1_000u32, &hash, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
     );
     assert_eq!(result, Err(Ok(SlashError::AlreadyAttested)));
 }
@@ -340,7 +381,12 @@ fn test_execute_before_appeal_window_fails() {
     let t = TestEnv::setup();
     let hash = t.evidence_hash(20);
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::DoubleSigning, &1_000u32, &hash, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
     );
     let result = t.client.try_execute_slash(&hash);
     assert_eq!(result, Err(Ok(SlashError::AppealWindowOpen)));
@@ -351,7 +397,12 @@ fn test_execute_after_appeal_window_succeeds() {
     let t = TestEnv::setup();
     let hash = t.evidence_hash(21);
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::DoubleSigning, &1_000u32, &hash, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
     );
     t.advance_time(APPEAL_WINDOW + 1);
     t.client.execute_slash(&hash);
@@ -364,7 +415,12 @@ fn test_raise_appeal_within_window() {
     let t = TestEnv::setup();
     let hash = t.evidence_hash(22);
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &500u32, &hash, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &500u32,
+        &hash,
+        &0u64,
     );
     // Should not panic — event emitted
     t.client.raise_appeal(&t.offender, &hash);
@@ -375,7 +431,12 @@ fn test_raise_appeal_after_window_fails() {
     let t = TestEnv::setup();
     let hash = t.evidence_hash(23);
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &500u32, &hash, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &500u32,
+        &hash,
+        &0u64,
     );
     t.advance_time(APPEAL_WINDOW + 1);
     let result = t.client.try_raise_appeal(&t.offender, &hash);
@@ -391,7 +452,12 @@ fn test_appeal_upheld_returns_funds() {
     let before = t.client.get_stake_balance(&t.offender);
 
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::DoubleSigning, &1_000u32, &hash, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
     );
     assert_eq!(t.client.get_stake_balance(&t.offender), before - 1_000);
 
@@ -409,7 +475,12 @@ fn test_appeal_rejected_burns_funds() {
     let t = TestEnv::setup();
     let hash = t.evidence_hash(31);
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::FraudProof, &2_000u32, &hash, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::FraudProof,
+        &2_000u32,
+        &hash,
+        &0u64,
     );
     t.client.raise_appeal(&t.offender, &hash);
     t.client.resolve_appeal(&hash, &false);
@@ -425,7 +496,12 @@ fn test_cannot_resolve_already_resolved_appeal() {
     let t = TestEnv::setup();
     let hash = t.evidence_hash(32);
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::DoubleSigning, &1_000u32, &hash, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
     );
     t.client.resolve_appeal(&hash, &true);
     let result = t.client.try_resolve_appeal(&hash, &false);
@@ -440,14 +516,24 @@ fn test_repeated_offenses_with_different_evidence_hashes() {
 
     // First offense: 10%
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &1_000u32, &t.evidence_hash(40), &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &1_000u32,
+        &t.evidence_hash(40),
+        &0u64,
     );
     assert_eq!(t.client.get_stake_balance(&t.offender), 9_000i128);
 
     // Second offense: another 10% of remaining stake
     // (stake is now 9_000; 10% = 900)
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &1_000u32, &t.evidence_hash(41), &1u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &1_000u32,
+        &t.evidence_hash(41),
+        &1u64,
     );
     assert_eq!(t.client.get_stake_balance(&t.offender), 8_100i128);
 }
@@ -458,16 +544,31 @@ fn test_repeated_penalties_saturate_period_cap() {
 
     // 30% of 10_000 = 3_000 (within period cap 6_000)
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::FraudProof, &3_000u32, &t.evidence_hash(42), &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::FraudProof,
+        &3_000u32,
+        &t.evidence_hash(42),
+        &0u64,
     );
     // 30% of 7_000 = 2_100 (cumulative 5_100, still within cap)
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::FraudProof, &3_000u32, &t.evidence_hash(43), &1u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::FraudProof,
+        &3_000u32,
+        &t.evidence_hash(43),
+        &1u64,
     );
 
     // 30% of 4_900 = 1_470 would exceed period cap (5_100 + 1_470 > 6_000)
     let result = t.client.try_slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::FraudProof, &3_000u32, &t.evidence_hash(44), &2u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::FraudProof,
+        &3_000u32,
+        &t.evidence_hash(44),
+        &2u64,
     );
     assert_eq!(result, Err(Ok(SlashError::PeriodCapExceeded)));
 }
@@ -479,38 +580,78 @@ fn test_boundary_conditions_at_caps() {
     // Exactly reach period cap: 60% of 10_000 is blocked by per-event cap,
     // so use two events to hit period cap exactly.
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &5_000u32, &t.evidence_hash(45), &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &5_000u32,
+        &t.evidence_hash(45),
+        &0u64,
     ); // 5_000
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &2_000u32, &t.evidence_hash(46), &1u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &2_000u32,
+        &t.evidence_hash(46),
+        &1u64,
     ); // 1_000
 
     // Now exactly at 6_000 period cap. Any additional positive slash in same period fails.
     let same_period = t.client.try_slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &100u32, &t.evidence_hash(47), &2u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &100u32,
+        &t.evidence_hash(47),
+        &2u64,
     );
     assert_eq!(same_period, Err(Ok(SlashError::PeriodCapExceeded)));
 
     // Advance into next period to test lifetime boundary at 9_000.
     t.advance_time(86_401);
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &3_000u32, &t.evidence_hash(48), &3u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &3_000u32,
+        &t.evidence_hash(48),
+        &3u64,
     ); // 1_200 => cumulative 7_200
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &5_000u32, &t.evidence_hash(49), &4u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &5_000u32,
+        &t.evidence_hash(49),
+        &4u64,
     ); // 1_400 => cumulative 8_600
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &2_000u32, &t.evidence_hash(52), &5u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &2_000u32,
+        &t.evidence_hash(52),
+        &5u64,
     ); // 280 => cumulative 8_880
 
     // This slash is still below lifetime cap.
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &1_000u32, &t.evidence_hash(53), &6u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &1_000u32,
+        &t.evidence_hash(53),
+        &6u64,
     ); // 112 => cumulative 8_992
 
     // Next slash crosses lifetime cap (8_992 + 11 > 9_000)
     let over_lifetime = t.client.try_slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &100u32, &t.evidence_hash(60), &7u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &100u32,
+        &t.evidence_hash(60),
+        &7u64,
     );
     assert_eq!(over_lifetime, Err(Ok(SlashError::LifetimeCapExceeded)));
 }
@@ -523,14 +664,24 @@ fn test_minimal_balance_does_not_underflow_or_create_negative_accounting() {
 
     // 1 bps of 1 rounds to 0 -> rejected.
     let too_small = t.client.try_slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &1u32, &t.evidence_hash(54), &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &1u32,
+        &t.evidence_hash(54),
+        &0u64,
     );
     assert_eq!(too_small, Err(Ok(SlashError::ZeroPenalty)));
     assert_eq!(t.client.get_stake_balance(&t.offender), 1i128);
 
     // 100% slash is still bounded by per-event cap (50%), so set 5_000 bps.
     let ok = t.client.try_slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &5_000u32, &t.evidence_hash(55), &1u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &5_000u32,
+        &t.evidence_hash(55),
+        &1u64,
     );
     assert_eq!(ok, Err(Ok(SlashError::ZeroPenalty)));
     assert_eq!(t.client.get_stake_balance(&t.offender), 1i128);
@@ -548,14 +699,24 @@ fn test_simulated_concurrent_triggers_are_capped() {
         (59u8, &t.slasher1),
     ] {
         let _ = t.client.try_slash_with_evidence(
-            slasher, &t.offender, &Offense::FraudProof, &2_000u32, &t.evidence_hash(seed), &10u64,
+            slasher,
+            &t.offender,
+            &Offense::FraudProof,
+            &2_000u32,
+            &t.evidence_hash(seed),
+            &10u64,
         );
     }
 
     // First four are accepted: 2_000 + 1_600 + 1_280 + 1_024 = 5_904 < period cap.
     // Next trigger in the same burst would exceed period cap.
     let result = t.client.try_slash_with_evidence(
-        &t.slasher2, &t.offender, &Offense::FraudProof, &2_000u32, &t.evidence_hash(61), &10u64,
+        &t.slasher2,
+        &t.offender,
+        &Offense::FraudProof,
+        &2_000u32,
+        &t.evidence_hash(61),
+        &10u64,
     );
     assert_eq!(result, Err(Ok(SlashError::PeriodCapExceeded)));
 }
@@ -566,7 +727,12 @@ fn test_execute_then_re_slash_uses_new_hash() {
     let hash1 = t.evidence_hash(50);
 
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::DoubleSigning, &1_000u32, &hash1, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash1,
+        &0u64,
     );
     t.advance_time(APPEAL_WINDOW + 1);
     t.client.execute_slash(&hash1);
@@ -574,7 +740,12 @@ fn test_execute_then_re_slash_uses_new_hash() {
     // New offense with a different hash — should succeed
     let hash2 = t.evidence_hash(51);
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::DoubleSigning, &1_000u32, &hash2, &1u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash2,
+        &1u64,
     );
     let record = t.client.get_slash_record(&hash2).unwrap();
     assert_eq!(record.status, SlashStatus::Pending);
@@ -599,7 +770,9 @@ fn test_execute_nonexistent_slash_fails() {
 #[test]
 fn test_appeal_nonexistent_slash_fails() {
     let t = TestEnv::setup();
-    let result = t.client.try_raise_appeal(&t.offender, &t.evidence_hash(101));
+    let result = t
+        .client
+        .try_raise_appeal(&t.offender, &t.evidence_hash(101));
     assert_eq!(result, Err(Ok(SlashError::RecordNotFound)));
 }
 
@@ -608,7 +781,12 @@ fn test_slash_exactly_at_appeal_deadline_still_open() {
     let t = TestEnv::setup();
     let hash = t.evidence_hash(60);
     t.client.slash_with_evidence(
-        &t.slasher1, &t.offender, &Offense::MissedDuty, &500u32, &hash, &0u64,
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &500u32,
+        &hash,
+        &0u64,
     );
     // Advance to exactly the deadline — window still open (>)
     t.advance_time(APPEAL_WINDOW);

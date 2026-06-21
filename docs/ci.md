@@ -7,14 +7,27 @@ The GitHub Actions workflow **Contracts CI** (`.github/workflows/contracts.yml`)
 It performs:
 
 1. **Rust toolchain** — stable channel, `wasm32-unknown-unknown` target, `llvm-tools-preview` (for coverage instrumentation).
-2. **Stellar CLI** — `cargo install stellar-cli --locked` for `stellar contract build`.
-3. **Unit / integration tests**
+2. **Formatting gate** — `cargo fmt --all --check` from `onchain/`, using the repository-level `rustfmt.toml`.
+3. **Stellar CLI** — `cargo install stellar-cli --locked` for `stellar contract build`.
+4. **Unit / integration tests**
    - `cargo test -p payroll_escrow --verbose`
    - `cargo test -p stello_pay_contract --verbose`
    - `cargo test -p integration_tests --verbose`
    - `cargo test -p template_versioning --verbose`
-4. **WASM build** — `stellar contract build` in `onchain/contracts/stello_pay_contract` and `onchain/contracts/template_versioning`.
-5. **Coverage** — `cargo llvm-cov` over the same two packages; produces `onchain/codecov.json` and uploads it as a workflow artifact.
+5. **WASM build** — `stellar contract build` in `onchain/contracts/stello_pay_contract` and `onchain/contracts/template_versioning`.
+6. **Coverage** — `cargo llvm-cov` over the same two packages; produces `onchain/codecov.json` and uploads it as a workflow artifact.
+
+## Formatting and lint conventions
+
+The repository root contains `rustfmt.toml` and `clippy.toml`. Keep these files
+at the root so every contract crate in `onchain/` inherits the same formatting
+and lint thresholds when commands run from the Cargo workspace.
+
+- Run `cargo fmt --all --check` from `onchain/` before opening a PR.
+- Run `cargo clippy --workspace --all-targets` from `onchain/` when changing Rust logic.
+- Prefer updating the root config over adding per-crate formatting or lint exceptions.
+- Document any future threshold changes here so reviewers know whether the change is
+  a style policy update or a source-code fix.
 
 ### Optional Codecov
 
@@ -53,6 +66,7 @@ Align with CI for reproducible runs:
 
 ```bash
 cd onchain
+cargo fmt --all --check
 cargo test -p payroll_escrow --verbose
 cargo test -p stello_pay_contract --verbose
 cargo test -p integration_tests --verbose
@@ -62,4 +76,4 @@ cd ../.. && cargo llvm-cov test -p stello_pay_contract -p integration_tests --ht
 
 ## Legacy workflow
 
-`.github/workflows/ci.yml` is limited to **manual** runs (`workflow_dispatch`) so PRs are not duplicated. Use **Contracts CI** for branch protection checks.
+`.github/workflows/ci.yml` is limited to **manual** runs (`workflow_dispatch`) so PRs are not duplicated. Its formatting job mirrors the automated **Contracts CI** formatting gate for maintainers who want an on-demand check.

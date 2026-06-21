@@ -112,7 +112,11 @@ fn test_duplicate_grant_is_noop() {
     client.grant_role(&admin, &user, &Role::Employee);
 
     let roles = client.get_roles(&user);
-    assert_eq!(roles.len(), 1, "Duplicate grant should not add a second entry");
+    assert_eq!(
+        roles.len(),
+        1,
+        "Duplicate grant should not add a second entry"
+    );
 }
 
 #[test]
@@ -264,10 +268,10 @@ fn test_role_inheritance_full_matrix() {
     // Employee   F       F         T         F
     // Arbiter    F       F         F         T
     let expected: [[bool; 4]; 4] = [
-        [true, true, true, true],     // Admin grants
-        [false, true, true, false],   // Employer grants
-        [false, false, true, false],  // Employee grants
-        [false, false, false, true],  // Arbiter grants
+        [true, true, true, true],    // Admin grants
+        [false, true, true, false],  // Employer grants
+        [false, false, true, false], // Employee grants
+        [false, false, false, true], // Arbiter grants
     ];
 
     for (gi, granted) in all_roles.iter().enumerate() {

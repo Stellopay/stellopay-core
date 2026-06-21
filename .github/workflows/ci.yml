@@ -7,8 +7,14 @@ on:
   workflow_dispatch:
 
 jobs:
-  noop:
+  formatting:
     runs-on: ubuntu-latest
     steps:
-      - name: Skipped
-        run: echo "Use workflow Contracts CI (.github/workflows/contracts.yml) for automated runs."
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Rust formatting
+        working-directory: onchain
+        run: cargo fmt --all --check

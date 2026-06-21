@@ -384,7 +384,11 @@ impl PaymentRetryContract {
     ) {
         require_initialized(&env);
         // Permissionless entry point, but we check if already exists
-        if env.storage().persistent().has(&StorageKey::Payment(payment_id.clone())) {
+        if env
+            .storage()
+            .persistent()
+            .has(&StorageKey::Payment(payment_id.clone()))
+        {
             return;
         }
 

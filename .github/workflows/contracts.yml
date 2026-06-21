@@ -28,6 +28,10 @@ jobs:
       - name: Add WASM target
         run: rustup target add wasm32-unknown-unknown
 
+      - name: Check Rust formatting
+        working-directory: onchain
+        run: cargo fmt --all --check
+
       - name: Install Stellar CLI
         run: cargo install stellar-cli --locked
 

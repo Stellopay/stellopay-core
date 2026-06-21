@@ -25,7 +25,15 @@ fn setup_token(env: &Env) -> (Address, Address) {
     (token, admin)
 }
 
-fn setup(env: &Env) -> (Address, PayrollContractClient<'static>, RateLimiterClient<'static>, Address, Address) {
+fn setup(
+    env: &Env,
+) -> (
+    Address,
+    PayrollContractClient<'static>,
+    RateLimiterClient<'static>,
+    Address,
+    Address,
+) {
     let payroll_id = env.register_contract(None, PayrollContract);
     let payroll_client = PayrollContractClient::new(env, &payroll_id);
     let owner = addr(env);
@@ -33,7 +41,7 @@ fn setup(env: &Env) -> (Address, PayrollContractClient<'static>, RateLimiterClie
 
     let rl_id = env.register_contract(None, RateLimiter);
     let rl_client = RateLimiterClient::new(env, &rl_id);
-    
+
     // Initialize rate limiter: 2 token burst, 0 refill
     rl_client.initialize(&owner, &2, &0, &false);
 
@@ -48,10 +56,10 @@ fn test_rate_limited_claim() {
     let env = create_test_env();
     let (payroll_id, client, rl_client, owner, _) = setup(&env);
     let (token, _token_admin) = setup_token(&env);
-    
+
     let employer = addr(&env);
     let employee = addr(&env);
-    
+
     // Create payroll
     let agreement_id = client.create_payroll_agreement(&employer, &token, &3600);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
@@ -59,17 +67,35 @@ fn test_rate_limited_claim() {
 
     // Setup DataKey storage for claiming
     env.as_contract(&payroll_id, || {
-        stello_pay_contract::storage::DataKey::set_agreement_activation_time(&env, agreement_id, env.ledger().timestamp());
-        stello_pay_contract::storage::DataKey::set_agreement_period_duration(&env, agreement_id, 3600);
+        stello_pay_contract::storage::DataKey::set_agreement_activation_time(
+            &env,
+            agreement_id,
+            env.ledger().timestamp(),
+        );
+        stello_pay_contract::storage::DataKey::set_agreement_period_duration(
+            &env,
+            agreement_id,
+            3600,
+        );
         stello_pay_contract::storage::DataKey::set_agreement_token(&env, agreement_id, &token);
-        
+
         stello_pay_contract::storage::DataKey::set_employee(&env, agreement_id, 0, &employee);
         stello_pay_contract::storage::DataKey::set_employee_salary(&env, agreement_id, 0, 1000);
-        stello_pay_contract::storage::DataKey::set_employee_claimed_periods(&env, agreement_id, 0, 0);
-        
+        stello_pay_contract::storage::DataKey::set_employee_claimed_periods(
+            &env,
+            agreement_id,
+            0,
+            0,
+        );
+
         stello_pay_contract::storage::DataKey::set_employee_count(&env, agreement_id, 1);
-        
-        stello_pay_contract::storage::DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, 10000000);
+
+        stello_pay_contract::storage::DataKey::set_agreement_escrow_balance(
+            &env,
+            agreement_id,
+            &token,
+            10000000,
+        );
     });
 
     // Fund it
@@ -79,22 +105,24 @@ fn test_rate_limited_claim() {
     // Advance time by 3 periods (simulate 1 period = 30 days roughly, though period defaults to month if not escrow)
 
     // Wait, payroll agreement periods logic: 30 days is default period if not escrow
-    env.ledger().with_mut(|li| li.timestamp = li.timestamp + 30 * 24 * 3600);
+    env.ledger()
+        .with_mut(|li| li.timestamp = li.timestamp + 30 * 24 * 3600);
 
-    
     // First claim should succeed (consumes 1 rate limit token)
     let res1 = client.try_claim_payroll(&employee, &agreement_id, &0);
     assert_eq!(res1, Ok(Ok(())));
-    
+
     // Advance time again to accrue more payroll
-    env.ledger().with_mut(|li| li.timestamp = li.timestamp + 30 * 24 * 3600);
+    env.ledger()
+        .with_mut(|li| li.timestamp = li.timestamp + 30 * 24 * 3600);
 
     // Second claim should succeed (consumes 2nd rate limit token)
     let res2 = client.try_claim_payroll(&employee, &agreement_id, &0);
     assert_eq!(res2, Ok(Ok(())));
 
     // Advance time again to accrue more payroll
-    env.ledger().with_mut(|li| li.timestamp = li.timestamp + 30 * 24 * 3600);
+    env.ledger()
+        .with_mut(|li| li.timestamp = li.timestamp + 30 * 24 * 3600);
 
     // Third claim should fail (0 rate limit tokens left)
     let res3 = client.try_claim_payroll(&employee, &agreement_id, &0);
@@ -106,12 +134,12 @@ fn test_batch_claim_rate_limited() {
     let env = create_test_env();
     let (payroll_id, client, _, _owner, _) = setup(&env);
     let (token, _token_admin) = setup_token(&env);
-    
+
     let employer = addr(&env);
     let employee1 = addr(&env);
     let employee2 = addr(&env);
     let employee3 = addr(&env);
-    
+
     // Create payroll
     let agreement_id = client.create_payroll_agreement(&employer, &token, &3600);
     client.add_employee_to_agreement(&agreement_id, &employee1, &1000);
@@ -121,25 +149,53 @@ fn test_batch_claim_rate_limited() {
 
     // Setup DataKey storage for claiming
     env.as_contract(&payroll_id, || {
-        stello_pay_contract::storage::DataKey::set_agreement_activation_time(&env, agreement_id, env.ledger().timestamp());
-        stello_pay_contract::storage::DataKey::set_agreement_period_duration(&env, agreement_id, 3600);
+        stello_pay_contract::storage::DataKey::set_agreement_activation_time(
+            &env,
+            agreement_id,
+            env.ledger().timestamp(),
+        );
+        stello_pay_contract::storage::DataKey::set_agreement_period_duration(
+            &env,
+            agreement_id,
+            3600,
+        );
         stello_pay_contract::storage::DataKey::set_agreement_token(&env, agreement_id, &token);
-        
+
         stello_pay_contract::storage::DataKey::set_employee(&env, agreement_id, 0, &employee1);
         stello_pay_contract::storage::DataKey::set_employee_salary(&env, agreement_id, 0, 1000);
-        stello_pay_contract::storage::DataKey::set_employee_claimed_periods(&env, agreement_id, 0, 0);
+        stello_pay_contract::storage::DataKey::set_employee_claimed_periods(
+            &env,
+            agreement_id,
+            0,
+            0,
+        );
 
         stello_pay_contract::storage::DataKey::set_employee(&env, agreement_id, 1, &employee2);
         stello_pay_contract::storage::DataKey::set_employee_salary(&env, agreement_id, 1, 1000);
-        stello_pay_contract::storage::DataKey::set_employee_claimed_periods(&env, agreement_id, 1, 0);
+        stello_pay_contract::storage::DataKey::set_employee_claimed_periods(
+            &env,
+            agreement_id,
+            1,
+            0,
+        );
 
         stello_pay_contract::storage::DataKey::set_employee(&env, agreement_id, 2, &employee3);
         stello_pay_contract::storage::DataKey::set_employee_salary(&env, agreement_id, 2, 1000);
-        stello_pay_contract::storage::DataKey::set_employee_claimed_periods(&env, agreement_id, 2, 0);
-        
+        stello_pay_contract::storage::DataKey::set_employee_claimed_periods(
+            &env,
+            agreement_id,
+            2,
+            0,
+        );
+
         stello_pay_contract::storage::DataKey::set_employee_count(&env, agreement_id, 3);
-        
-        stello_pay_contract::storage::DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, 1000000);
+
+        stello_pay_contract::storage::DataKey::set_agreement_escrow_balance(
+            &env,
+            agreement_id,
+            &token,
+            1000000,
+        );
     });
 
     // Fund it
@@ -147,17 +203,28 @@ fn test_batch_claim_rate_limited() {
     TokenClient::new(&env, &token).transfer(&employer, &client.address, &3000000);
 
     // Fast forward
-    env.ledger().with_mut(|li| li.timestamp = li.timestamp + 30 * 24 * 3600);
-    
+    env.ledger()
+        .with_mut(|li| li.timestamp = li.timestamp + 30 * 24 * 3600);
+
     let mut indices = Vec::new(&env);
     indices.push_back(0);
 
     // Claim 1
-    assert_eq!(client.try_batch_claim_payroll(&employee1, &agreement_id, &indices).is_ok(), true);
-    
+    assert_eq!(
+        client
+            .try_batch_claim_payroll(&employee1, &agreement_id, &indices)
+            .is_ok(),
+        true
+    );
+
     // Claim 2
-    assert_eq!(client.try_batch_claim_payroll(&employee1, &agreement_id, &indices).is_ok(), true);
-    
+    assert_eq!(
+        client
+            .try_batch_claim_payroll(&employee1, &agreement_id, &indices)
+            .is_ok(),
+        true
+    );
+
     // Claim 3 -> limited
     let res3 = client.try_batch_claim_payroll(&employee1, &agreement_id, &indices);
     assert_eq!(res3, Err(Ok(PayrollError::RateLimited)));

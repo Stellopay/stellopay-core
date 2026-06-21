@@ -3,7 +3,7 @@
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, IntoVal, Symbol, Vec, vec,
+    vec, Address, Env, IntoVal, Symbol, Vec,
 };
 
 use token_vesting::{
@@ -1288,8 +1288,8 @@ fn cliff_plus_linear_full_spectrum() {
     );
 
     let cases = [
-        (0, 0),    // before start + cliff
-        (10, 0),   // after start, before cliff
+        (0, 0),  // before start + cliff
+        (10, 0), // after start, before cliff
         (20, 0),
         (30, 300), // exactly at cliff -> 1000 * 30/100 = 300
         (40, 400),

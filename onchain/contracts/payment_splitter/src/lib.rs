@@ -97,10 +97,13 @@ impl PaymentSplitterContract {
 
         for i in 0..recipients.len() {
             let r = recipients.get_unchecked(i);
-            
+
             // 1. Uniqueness check
             for seen in 0..seen_addresses.len() {
-                assert!(seen_addresses.get_unchecked(seen) != r.recipient, "Duplicate recipient address");
+                assert!(
+                    seen_addresses.get_unchecked(seen) != r.recipient,
+                    "Duplicate recipient address"
+                );
             }
             seen_addresses.push_back(r.recipient.clone());
 
@@ -118,11 +121,17 @@ impl PaymentSplitterContract {
         }
 
         // 2. Mutual exclusivity check (Percent vs Fixed)
-        assert!(has_percent != has_fixed, "Split must be either all Percentage or all Fixed");
+        assert!(
+            has_percent != has_fixed,
+            "Split must be either all Percentage or all Fixed"
+        );
 
         // 3. Percentage sum validation
         if has_percent {
-            assert!(total_bps == 10000, "Percentage shares must sum to 10000 (100%)");
+            assert!(
+                total_bps == 10000,
+                "Percentage shares must sum to 10000 (100%)"
+            );
         }
 
         let next_id: u128 = env
@@ -233,7 +242,7 @@ impl PaymentSplitterContract {
                 .expect("Dust underflow");
             assert!(dust >= 0, "Negative dust detected");
 
-            // Mathematical bound: dust = sum(remainders) / 10000. 
+            // Mathematical bound: dust = sum(remainders) / 10000.
             // Since each remainder < 10000, sum(remainders) < 10000 * recipient_count.
             // Therefore, dust < recipient_count.
             assert!(
@@ -247,7 +256,12 @@ impl PaymentSplitterContract {
                 if (i as i128) >= dust {
                     break;
                 }
-                let best = Self::select_next_dust_recipient(&env, &def.recipients, &remainders, &awarded_dust);
+                let best = Self::select_next_dust_recipient(
+                    &env,
+                    &def.recipients,
+                    &remainders,
+                    &awarded_dust,
+                );
                 awarded_dust.push_back(best);
             }
 
@@ -311,7 +325,11 @@ impl PaymentSplitterContract {
             }
 
             if remainder == best_remainder
-                && Self::compare_addresses(env, &recipients.get_unchecked(i).recipient, &recipients.get_unchecked(best_index).recipient) < 0
+                && Self::compare_addresses(
+                    env,
+                    &recipients.get_unchecked(i).recipient,
+                    &recipients.get_unchecked(best_index).recipient,
+                ) < 0
             {
                 best_index = i;
             }

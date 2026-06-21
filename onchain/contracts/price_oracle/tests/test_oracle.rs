@@ -1,4 +1,4 @@
-﻿#![cfg(test)]
+#![cfg(test)]
 #![allow(deprecated)]
 
 use price_oracle::{OracleError, PriceOracleContract, PriceOracleContractClient};
