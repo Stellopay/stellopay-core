@@ -3,7 +3,7 @@
 #![cfg(test)]
 
 use soroban_sdk::{testutils::Address as _, token, Address, Env};
-use stello_pay_contract::storage::{AgreementStatus, DisputeStatus};
+use stello_pay_contract::storage::{AgreementStatus, DataKey, DisputeStatus};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 fn env_client() -> (Env, Address, PayrollContractClient<'static>) {
@@ -39,6 +39,9 @@ fn test_dispute_payroll_multi_employee_split() {
     client.add_employee_to_agreement(&aid, &e1, &100);
     client.add_employee_to_agreement(&aid, &e2, &100);
     tok_admin.mint(&cid, &200);
+    env.as_contract(&cid, || {
+        DataKey::set_agreement_escrow_balance(&env, aid, &tok, 200);
+    });
 
     client.raise_dispute(&employer, &aid);
     client.resolve_dispute(&arbiter, &aid, &150, &50);
@@ -67,6 +70,9 @@ fn test_dispute_escrow_funded_resolve_split() {
     client.set_arbiter(&employer, &arbiter);
     let aid = client.create_escrow_agreement(&employer, &contributor, &tok, &1000, &3600, &1);
     tok_admin.mint(&cid, &1000);
+    env.as_contract(&cid, || {
+        DataKey::set_agreement_escrow_balance(&env, aid, &tok, 1000);
+    });
 
     client.raise_dispute(&employer, &aid);
     client.resolve_dispute(&arbiter, &aid, &600, &400);

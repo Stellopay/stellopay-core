@@ -65,7 +65,9 @@ fn test_exchange_rate_staleness_rejected() {
     let rate: i128 = 1_000_000;
 
     // configure max age to 1 second
-    DataKey::set_exchange_rate_max_age_seconds(&env, 1u64);
+    env.as_contract(&client.address, || {
+        DataKey::set_exchange_rate_max_age_seconds(&env, 1u64);
+    });
 
     client.set_exchange_rate(&owner, &base, &quote, &rate);
 
@@ -88,7 +90,9 @@ fn test_exchange_rate_deviation_rejected() {
     client.set_exchange_rate(&owner, &base, &quote, &r1);
 
     // set max deviation to 100 bps (1%)
-    DataKey::set_exchange_rate_max_deviation_bps(&env, 100u32);
+    env.as_contract(&client.address, || {
+        DataKey::set_exchange_rate_max_deviation_bps(&env, 100u32);
+    });
 
     // attempt a >1% update should be rejected
     let r2 = r1 + (r1 / 50); // +2%

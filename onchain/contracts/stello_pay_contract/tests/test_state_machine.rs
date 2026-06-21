@@ -381,6 +381,9 @@ fn test_disputed_to_completed_via_resolve_dispute() {
 
     client.set_arbiter(&employer, &arbiter);
     mint(&env, &token, &cid, SALARY);
+    env.as_contract(&cid, || {
+        DataKey::set_agreement_escrow_balance(&env, id, &token, SALARY);
+    });
 
     client.raise_dispute(&employer, &id);
     assert_eq!(
@@ -456,11 +459,14 @@ fn test_milestone_complete_on_last_claim() {
     let (cid, client) = setup_contract(&env);
     let employer = create_address(&env);
     let contributor = create_address(&env);
-    let token = create_address(&env);
+    let token = create_token(&env);
 
     let ms_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&ms_id, &1000i128);
     client.add_milestone(&ms_id, &2000i128);
+
+    mint(&env, &token, &employer, 3000);
+    client.fund_milestone_agreement(&ms_id, &employer, &3000);
 
     client.approve_milestone(&ms_id, &1u32);
     client.approve_milestone(&ms_id, &2u32);

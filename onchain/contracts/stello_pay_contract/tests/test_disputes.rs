@@ -4,7 +4,7 @@ use soroban_sdk::{
     testutils::Address as _,
     token, Address, Env,
 };
-use stello_pay_contract::storage::{DisputeStatus, PayrollError};
+use stello_pay_contract::storage::{DataKey, DisputeStatus, PayrollError};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 /// Helper to set up the main payroll contract
@@ -54,6 +54,14 @@ fn test_full_dispute_flow_resolved_by_arbiter() {
         &1,
     );
     token_admin_client.mint(&payroll_id, &amount_per_period);
+    env.as_contract(&payroll_id, || {
+        DataKey::set_agreement_escrow_balance(
+            &env,
+            agreement_id,
+            &token_address,
+            amount_per_period,
+        );
+    });
 
     // 2. Raise Dispute
     payroll_client.raise_dispute(&employer, &agreement_id);
@@ -137,6 +145,9 @@ fn test_multi_employee_payout_split() {
     payroll_client.add_employee_to_agreement(&agreement_id, &employee1, &100);
     payroll_client.add_employee_to_agreement(&agreement_id, &employee2, &100);
     token_admin_client.mint(&payroll_id, &200);
+    env.as_contract(&payroll_id, || {
+        DataKey::set_agreement_escrow_balance(&env, agreement_id, &token_address, 200);
+    });
 
     payroll_client.raise_dispute(&employer, &agreement_id);
 

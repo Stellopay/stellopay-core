@@ -203,8 +203,9 @@ fn test_paused_blocks_milestone_claims() {
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token.address);
     client.add_milestone(&agreement_id, &1000);
 
-    // Mint tokens first so invariant check in approve_milestone passes
-    token.mint(&client.address, &10000);
+    // Fund through the public API so milestone escrow accounting is populated.
+    token.mint(&employer, &10000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &10000);
 
     client.approve_milestone(&agreement_id, &1);
 
@@ -232,8 +233,9 @@ fn test_unpause_restores_functionality() {
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token.address);
     client.add_milestone(&agreement_id, &1000);
 
-    // Mint tokens first so invariant check in approve_milestone passes
-    token.mint(&client.address, &10000);
+    // Fund through the public API so milestone escrow accounting is populated.
+    token.mint(&employer, &10000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &10000);
 
     client.approve_milestone(&agreement_id, &1);
 

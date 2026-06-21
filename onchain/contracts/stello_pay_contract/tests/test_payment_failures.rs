@@ -841,10 +841,9 @@ fn test_batch_payroll_duplicate_index_processed_once() {
         batch.results.get(1).unwrap().error_code,
         PayrollError::InvalidData as u32
     );
-    assert_eq!(
-        DataKey::get_employee_claimed_periods(&env, agreement_id, 0),
-        1
-    );
+    let claimed_periods =
+        env.as_contract(&contract_id, || DataKey::get_employee_claimed_periods(&env, agreement_id, 0));
+    assert_eq!(claimed_periods, 1);
 }
 
 // ============================================================================
@@ -869,12 +868,14 @@ fn test_batch_milestone_error_codes() {
     client.add_milestone(&agreement_id, &700);
 
     // Approve and claim milestone 1.
-    mint(&env, &token, &client.address, 500);
+    mint(&env, &token, &employer, 500);
+    client.fund_milestone_agreement(&agreement_id, &employer, &500);
     client.approve_milestone(&agreement_id, &1u32);
     client.claim_milestone(&agreement_id, &1u32);
 
     // Approve milestone 2 (unclaimed).
-    mint(&env, &token, &client.address, 600);
+    mint(&env, &token, &employer, 600);
+    client.fund_milestone_agreement(&agreement_id, &employer, &600);
     client.approve_milestone(&agreement_id, &2u32);
 
     // Milestone 3 is NOT approved.
@@ -1563,7 +1564,8 @@ fn test_milestone_claim_on_paused_agreement() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &1000);
-    mint(&env, &token, &client.address, 1000);
+    mint(&env, &token, &employer, 1000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1000);
     client.approve_milestone(&agreement_id, &1u32);
 
     // Pause the agreement.
@@ -1607,7 +1609,8 @@ fn test_milestone_double_claim() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &1000);
-    mint(&env, &token, &client.address, 2000);
+    mint(&env, &token, &employer, 2000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &2000);
     client.approve_milestone(&agreement_id, &1u32);
 
     client.claim_milestone(&agreement_id, &1u32);

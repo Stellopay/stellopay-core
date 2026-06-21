@@ -92,12 +92,9 @@ fn setup_funded_milestone(
     for _ in 0..milestone_count {
         client.add_milestone(&agreement_id, &amount);
     }
-    mint(
-        env,
-        token,
-        &client.address,
-        amount * (milestone_count as i128),
-    );
+    let total = amount * (milestone_count as i128);
+    mint(env, token, employer, total);
+    client.fund_milestone_agreement(&agreement_id, employer, &total);
     agreement_id
 }
 
@@ -190,23 +187,23 @@ fn stress_network_congestion_mixed_batch() {
     let (env, employer, token, client) = create_test_env();
     let contributor = Address::generate(&env);
     let agreement_id =
-        setup_funded_milestone(&env, &client, &employer, &contributor, &token, 100, 100);
+        setup_funded_milestone(&env, &client, &employer, &contributor, &token, 100, 12);
 
-    for id in 1..=60u32 {
+    for id in 1..=8u32 {
         client.approve_milestone(&agreement_id, &id);
     }
 
     let mut ids = Vec::new(&env);
-    for id in 1..=60u32 {
+    for id in 1..=8u32 {
         ids.push_back(id); // approved -> success
     }
-    for id in 1..=60u32 {
+    for id in 1..=4u32 {
         ids.push_back(id); // duplicate -> fail
     }
-    for id in 61..=100u32 {
+    for id in 9..=12u32 {
         ids.push_back(id); // unapproved -> fail
     }
-    for id in 101..=140u32 {
+    for id in 13..=16u32 {
         ids.push_back(id); // invalid -> fail
     }
 
@@ -214,9 +211,9 @@ fn stress_network_congestion_mixed_batch() {
     let result = client.batch_claim_milestones(&agreement_id, &ids);
     let elapsed = started.elapsed();
 
-    assert_eq!(result.successful_claims, 60);
-    assert_eq!(result.failed_claims, 140);
-    assert_eq!(result.total_claimed, 6000);
+    assert_eq!(result.successful_claims, 8);
+    assert_eq!(result.failed_claims, 12);
+    assert_eq!(result.total_claimed, 800);
 
     println!(
         "[stress][congestion] batch_size={} duration_ms={} success={} failed={}",

@@ -1682,12 +1682,13 @@ fn resolve_dispute_core(
         return Err(PayrollError::NoDispute);
     }
 
-    let total_locked = agreement.total_amount;
+    let total_locked = DataKey::get_agreement_escrow_balance(env, agreement_id, &agreement.token);
     if pay_employee + refund_employer > total_locked {
         return Err(PayrollError::InvalidPayout);
     }
 
     let token = TokenClient::new(env, &agreement.token);
+    let contract_address = env.current_contract_address();
 
     let employees: Vec<EmployeeInfo> = env
         .storage()
@@ -1700,23 +1701,70 @@ fn resolve_dispute_core(
         let num_employees = employees.len() as i128;
         if num_employees > 0 {
             let amount_per_employee = pay_employee / num_employees;
-            for employee in employees.iter() {
-                token.transfer(
-                    &env.current_contract_address(),
-                    &employee.address,
-                    &amount_per_employee,
-                );
+            let mut distributed_to_employees = 0i128;
+            for i in 0..employees.len() {
+                let employee = employees.get(i).unwrap();
+                let amount = if i == employees.len() - 1 {
+                    pay_employee - distributed_to_employees
+                } else {
+                    amount_per_employee
+                };
+
+                if amount > 0 {
+                    env.authorize_as_current_contract(Vec::from_array(
+                        env,
+                        [InvokerContractAuthEntry::Contract(SubContractInvocation {
+                            context: ContractContext {
+                                contract: agreement.token.clone(),
+                                fn_name: Symbol::new(env, "transfer"),
+                                args: Vec::<Val>::from_array(
+                                    env,
+                                    [
+                                        contract_address.clone().into_val(env),
+                                        employee.address.clone().into_val(env),
+                                        amount.into_val(env),
+                                    ],
+                                ),
+                            },
+                            sub_invocations: Vec::new(env),
+                        })],
+                    ));
+                    token.transfer(&contract_address, &employee.address, &amount);
+                    distributed_to_employees += amount;
+                }
             }
         }
     }
 
     if refund_employer > 0 {
-        token.transfer(
-            &env.current_contract_address(),
-            &agreement.employer,
-            &refund_employer,
-        );
+        env.authorize_as_current_contract(Vec::from_array(
+            env,
+            [InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: agreement.token.clone(),
+                    fn_name: Symbol::new(env, "transfer"),
+                    args: Vec::<Val>::from_array(
+                        env,
+                        [
+                            contract_address.clone().into_val(env),
+                            agreement.employer.clone().into_val(env),
+                            refund_employer.into_val(env),
+                        ],
+                    ),
+                },
+                sub_invocations: Vec::new(env),
+            })],
+        ));
+        token.transfer(&contract_address, &agreement.employer, &refund_employer);
     }
+
+    let remaining_escrow = total_locked - pay_employee - refund_employer;
+    DataKey::set_agreement_escrow_balance(env, agreement_id, &agreement.token, remaining_escrow);
+    let current_paid = DataKey::get_agreement_paid_amount(env, agreement_id);
+    let new_paid = current_paid
+        .checked_add(pay_employee)
+        .ok_or(PayrollError::InvalidData)?;
+    DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
 
     agreement.dispute_status = DisputeStatus::Resolved;
     agreement.status = AgreementStatus::Completed;
@@ -2824,6 +2872,11 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollErro
     claimed_periods += periods_to_pay;
     agreement.claimed_periods = Some(claimed_periods);
     agreement.paid_amount += amount;
+    let current_paid = DataKey::get_agreement_paid_amount(env, agreement_id);
+    let new_paid = current_paid
+        .checked_add(amount)
+        .ok_or(PayrollError::InvalidData)?;
+    DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
 
     if claimed_periods >= num_periods {
         agreement.status = AgreementStatus::Completed;
