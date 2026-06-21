@@ -90,6 +90,8 @@ impl RateLimiter {
     /// @param refill_rate Global tokens added per second.
     pub fn set_global_limit(env: Env, enabled: bool, burst: u32, refill_rate: u32) {
         Self::require_admin_auth(&env);
+        assert!(burst > 0, "burst must be positive");
+        assert!(refill_rate > 0, "refill_rate must be positive");
         env.storage().persistent().set(&StorageKey::GlobalLimitEnabled, &enabled);
         env.storage().persistent().set(&StorageKey::GlobalBurst, &burst);
         env.storage().persistent().set(&StorageKey::GlobalRefillRate, &refill_rate);
@@ -103,6 +105,8 @@ impl RateLimiter {
     /// @param refill_rate Tokens added per second for this address.
     pub fn set_limit_for(env: Env, addr: Address, burst: u32, refill_rate: u32) {
         Self::require_admin_auth(&env);
+        assert!(burst > 0, "burst must be positive");
+        assert!(refill_rate > 0, "refill_rate must be positive");
         env.storage().persistent().set(&StorageKey::Limit(addr), &LimitConfig { burst, refill_rate });
     }
 
