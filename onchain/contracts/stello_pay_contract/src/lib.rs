@@ -484,6 +484,31 @@ impl PayrollContract {
         payroll::add_employee_to_agreement(&env, agreement_id, employee, salary_per_period);
     }
 
+    /// Updates an employee salary in an active payroll agreement.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the agreement
+    /// * `employee_index` - Index of the employee in the agreement
+    /// * `new_salary_per_period` - New salary per period
+    ///
+    /// # Requirements
+    /// - Agreement must be in Active status
+    /// - Agreement must be Payroll mode
+    /// - Caller must be the employer
+    pub fn update_employee_salary(
+        env: Env,
+        agreement_id: u128,
+        employee_index: u32,
+        new_salary_per_period: i128,
+    ) {
+        payroll::update_employee_salary(
+            &env,
+            agreement_id,
+            employee_index,
+            new_salary_per_period,
+        );
+    }
+
     /// Activates an agreement, making it ready for payments.
     ///
     /// # Arguments

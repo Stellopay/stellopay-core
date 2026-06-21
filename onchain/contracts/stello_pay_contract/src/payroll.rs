@@ -1303,6 +1303,70 @@ pub fn add_employee_to_agreement(
     );
 }
 
+/// Updates an employee salary in a payroll agreement.
+///
+/// # Arguments
+/// * `env` - Contract environment
+/// * `agreement_id` - ID of the payroll agreement
+/// * `employee_index` - Index of the employee to update
+/// * `new_salary_per_period` - New salary per period
+///
+/// # Access Control
+/// Requires employer authentication.
+pub fn update_employee_salary(
+    env: &Env,
+    agreement_id: u128,
+    employee_index: u32,
+    new_salary_per_period: i128,
+) {
+    let mut agreement = get_agreement(env, agreement_id).expect("Agreement not found");
+
+    agreement.employer.require_auth();
+
+    assert!(
+        agreement.mode == AgreementMode::Payroll,
+        "Can only update salaries on Payroll agreements"
+    );
+    assert!(
+        agreement.status == AgreementStatus::Active,
+        "Can only update salaries on Active agreements"
+    );
+    assert!(new_salary_per_period > 0, "Salary must be positive");
+
+    let mut employees: Vec<EmployeeInfo> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::AgreementEmployees(agreement_id))
+        .unwrap_or(Vec::new(env));
+
+    assert!(
+        employee_index < employees.len(),
+        "Employee index out of bounds"
+    );
+
+    let mut employee_info = employees
+        .get(employee_index)
+        .expect("Employee index out of bounds");
+    let old_salary = employee_info.salary_per_period;
+
+    employee_info.salary_per_period = new_salary_per_period;
+    employees.set(employee_index, employee_info);
+
+    agreement.total_amount = agreement
+        .total_amount
+        .checked_sub(old_salary)
+        .and_then(|amount| amount.checked_add(new_salary_per_period))
+        .expect("Invalid salary total");
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Agreement(agreement_id), &agreement);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::AgreementEmployees(agreement_id), &employees);
+    DataKey::set_employee_salary(env, agreement_id, employee_index, new_salary_per_period);
+}
+
 /// Activates an agreement
 ///
 /// # Arguments

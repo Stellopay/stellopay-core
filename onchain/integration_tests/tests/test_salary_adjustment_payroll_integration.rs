@@ -1,12 +1,13 @@
 //! Cross-contract integration test verifying that salary_adjustment's
-//! apply_adjustment updates the salary value read by payroll claims.
+//! apply_adjustment records the adjusted salary, then payroll can sync that
+//! approved salary into the agreement value read by payroll claims.
 //!
 //! This test deploys both SalaryAdjustmentContract and PayrollContract,
 //! creates a payroll agreement with an employee, then creates, approves,
 //! and applies a salary adjustment, and verifies that the payroll claim
-//! logic can read the updated salary via get_employee_salary.
+//! logic can read the updated salary after the employer syncs it.
 //!
-//! Scope: test only — no runtime logic, storage schema, or APIs are changed.
+//! Scope: integration coverage for the salary adjustment to payroll sync path.
 #![cfg(test)]
 
 use soroban_sdk::{
@@ -93,9 +94,8 @@ fn seed_payroll(
 // TESTS
 // ============================================================================
 
-/// Verifies that a salary adjustment application updates the employee salary
-/// visible to the payroll contract, and that subsequent payroll claims reflect
-/// the new salary rate.
+/// Verifies that a salary adjustment application records the new employee
+/// salary, and that subsequent payroll claims reflect it after employer sync.
 #[test]
 fn test_salary_adjustment_apply_updates_payroll_salary() {
     let env = env();
@@ -166,15 +166,22 @@ fn test_salary_adjustment_apply_updates_payroll_salary() {
     // Step 6: Verify salary tracker reflects new salary
     let tracked_salary = salary_client.get_employee_salary(&employee).unwrap();
     assert_eq!(tracked_salary, NEW_SALARY);
+    payroll_client.update_employee_salary(&agreement_id, &0, &tracked_salary);
+    env.as_contract(&payroll_id, || {
+        assert_eq!(
+            DataKey::get_employee_salary(&env, agreement_id, 0),
+            Some(NEW_SALARY)
+        );
+    });
 
-    // Step 7: Claim additional payroll — should use NEW_SALARY for new periods
-    // The employee already claimed 3 periods. Advance 1 more day and claim again.
+    // Step 7: Claim additional payroll — should use NEW_SALARY for all
+    // unclaimed elapsed periods after the salary sync.
     advance(&env, ONE_DAY);
     payroll_client.claim_payroll(&employee, &agreement_id, &0);
 
-    // 3 periods at INITIAL_SALARY (3,000) + 1 period at NEW_SALARY (2,500) = 5,500
-    assert_eq!(balance(&env, &tok, &employee), INITIAL_SALARY * 3 + NEW_SALARY * 1);
-    assert_eq!(payroll_client.get_employee_claimed_periods(&agreement_id, &0), 4);
+    // 3 periods at INITIAL_SALARY (3,000) + 3 periods at NEW_SALARY (7,500) = 10,500
+    assert_eq!(balance(&env, &tok, &employee), INITIAL_SALARY * 3 + NEW_SALARY * 3);
+    assert_eq!(payroll_client.get_employee_claimed_periods(&agreement_id, &0), 6);
 }
 
 /// Verifies that a decrease adjustment is also reflected in the payroll claim.
@@ -230,13 +237,20 @@ fn test_salary_decrease_affects_payroll_claim() {
 
     let tracked = salary_client.get_employee_salary(&employee).unwrap();
     assert_eq!(tracked, decreased);
+    payroll_client.update_employee_salary(&agreement_id, &0, &tracked);
+    env.as_contract(&payroll_id, || {
+        assert_eq!(
+            DataKey::get_employee_salary(&env, agreement_id, 0),
+            Some(decreased)
+        );
+    });
 
-    // Claim — should use decreased salary for new periods
+    // Claim — should use decreased salary for all unclaimed elapsed periods.
     advance(&env, ONE_DAY);
     payroll_client.claim_payroll(&employee, &agreement_id, &0);
 
-    // 2 periods at 1,000 + 1 period at 500 = 2,500
-    assert_eq!(balance(&env, &tok, &employee), INITIAL_SALARY * 2 + decreased * 1);
+    // 2 periods at 1,000 + 3 periods at 500 = 3,500
+    assert_eq!(balance(&env, &tok, &employee), INITIAL_SALARY * 2 + decreased * 3);
 }
 
 /// Verifies that get_employee_salary returns None before any adjustment is applied.

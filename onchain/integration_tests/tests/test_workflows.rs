@@ -206,6 +206,20 @@ fn fund_payroll_from_employer(
     seed_payroll_internal_with_balance(env, contract_id, agreement_id, tok, employees, total_fund);
 }
 
+/// Funds a milestone agreement through the public API so the accounted
+/// milestone escrow balance matches the token balance.
+fn fund_milestone_from_employer(
+    env: &Env,
+    client: &PayrollContractClient,
+    tok: &Address,
+    employer: &Address,
+    agreement_id: u128,
+    amount: i128,
+) {
+    mint(env, tok, employer, amount);
+    client.fund_milestone_agreement(&agreement_id, employer, &amount);
+}
+
 /// Records a payment as if it were emitted by the payroll contract itself.
 fn record_payment_as_payroll(
     env: &Env,
@@ -458,6 +472,7 @@ fn test_milestone_full_lifecycle() {
     client.add_milestone(&aid, &1000);
     client.add_milestone(&aid, &1500);
     assert_eq!(client.get_milestone_count(&aid), 3);
+    fund_milestone_from_employer(&env, &client, &tok, &employer, aid, 3000);
 
     // Verify milestones are not approved or claimed
     for id in 1..=3u32 {
@@ -502,6 +517,7 @@ fn test_milestone_selective_approval() {
     client.add_milestone(&aid, &100);
     client.add_milestone(&aid, &200);
     client.add_milestone(&aid, &300);
+    fund_milestone_from_employer(&env, &client, &tok, &employer, aid, 200);
 
     // Only approve milestone 2
     client.approve_milestone(&aid, &2);
@@ -522,7 +538,7 @@ fn test_milestone_selective_approval() {
 #[test]
 fn test_milestone_batch_claim() {
     let env = env();
-    let (cid, client) = deploy_payroll(&env);
+    let (_cid, client) = deploy_payroll(&env);
     let employer = addr(&env);
     let contributor = addr(&env);
     let tok = token(&env);
@@ -531,13 +547,11 @@ fn test_milestone_batch_claim() {
     client.add_milestone(&aid, &100);
     client.add_milestone(&aid, &200);
     client.add_milestone(&aid, &300);
+    fund_milestone_from_employer(&env, &client, &tok, &employer, aid, 400);
 
     // Approve milestones 1 and 3, but not 2
     client.approve_milestone(&aid, &1);
     client.approve_milestone(&aid, &3);
-
-    // Fund the contract so transfers succeed
-    mint(&env, &tok, &cid, 500);
 
     // Batch claim all three — milestone 2 should fail (not approved)
     let ids = Vec::from_array(&env, [1u32, 2u32, 3u32]);
@@ -565,16 +579,15 @@ fn test_milestone_batch_claim() {
 #[test]
 fn test_milestone_batch_claim_duplicate_ids() {
     let env = env();
-    let (cid, client) = deploy_payroll(&env);
+    let (_cid, client) = deploy_payroll(&env);
     let employer = addr(&env);
     let contributor = addr(&env);
     let tok = token(&env);
 
     let aid = client.create_milestone_agreement(&employer, &contributor, &tok);
     client.add_milestone(&aid, &500);
+    fund_milestone_from_employer(&env, &client, &tok, &employer, aid, 500);
     client.approve_milestone(&aid, &1);
-
-    mint(&env, &tok, &cid, 1000);
 
     let ids = Vec::from_array(&env, [1u32, 1u32]);
     let result = client.batch_claim_milestones(&aid, &ids);
@@ -599,6 +612,7 @@ fn test_milestone_pause_resume() {
 
     let aid = client.create_milestone_agreement(&employer, &contributor, &tok);
     client.add_milestone(&aid, &1000);
+    fund_milestone_from_employer(&env, &client, &tok, &employer, aid, 1000);
     client.approve_milestone(&aid, &1);
 
     // Pause via milestone path
@@ -630,6 +644,7 @@ fn test_milestone_many_milestones_lifecycle() {
         client.add_milestone(&aid, &(i * 100));
     }
     assert_eq!(client.get_milestone_count(&aid), 10);
+    fund_milestone_from_employer(&env, &client, &tok, &employer, aid, 5500);
 
     for id in 1..=10u32 {
         client.approve_milestone(&aid, &id);
@@ -1859,6 +1874,7 @@ fn test_concurrent_milestone_agreements() {
     client.add_milestone(&a1, &100);
     client.add_milestone(&a1, &200);
     client.add_milestone(&a2, &500);
+    fund_milestone_from_employer(&env, &client, &tok, &employer, a1, 100);
 
     assert_eq!(client.get_milestone_count(&a1), 2);
     assert_eq!(client.get_milestone_count(&a2), 1);
