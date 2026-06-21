@@ -317,7 +317,7 @@ impl FeeCollectorContract {
     /// * `"Gross amount must be non-negative"` — if `gross_amount < 0`.
     ///
     /// # Access Control
-    /// Requires caller authentication
+    /// Read-only — no authentication required.
     pub fn calculate_fee(env: Env, gross_amount: i128) -> (i128, i128) {
         require_initialized(&env);
         bump_ttl(&env);
