@@ -301,24 +301,30 @@ pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, am
 /// * `env` - Contract environment
 /// * `agreement_id` - ID of the agreement
 /// * `amount` - Payment amount for this milestone
-pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
+///
+/// # Errors
+/// * `PayrollError::AgreementNotFound` — the milestone agreement does not exist.
+/// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Created` status.
+/// * `PayrollError::MilestoneAmountInvalid` — `amount` is not strictly positive.
+pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), PayrollError> {
     let status: AgreementStatus = env
         .storage()
         .instance()
         .get(&MilestoneKey::Status(agreement_id))
-        .expect("Agreement not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
 
-    assert!(
-        status == AgreementStatus::Created,
-        "Agreement must be in Created status"
-    );
-    assert!(amount > 0, "Amount must be positive");
+    if status != AgreementStatus::Created {
+        return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
+    if amount <= 0 {
+        return Err(PayrollError::MilestoneAmountInvalid);
+    }
 
     let employer: Address = env
         .storage()
         .instance()
         .get(&MilestoneKey::Employer(agreement_id))
-        .expect("Employer not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
     let count: u32 = env
@@ -367,6 +373,8 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
         amount,
     }
     .publish(&env);
+
+    Ok(())
 }
 
 /// Returns the total configured amount across all milestones for an agreement.
@@ -445,40 +453,51 @@ fn sum_unclaimed_milestones(env: &Env, agreement_id: u128) -> i128 {
 /// * `env` - Contract environment
 /// * `agreement_id` - ID of the agreement
 /// * `milestone_id` - ID of the milestone to approve
-pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
+///
+/// # Errors
+/// * `PayrollError::AgreementNotFound` — the milestone agreement does not exist.
+/// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Created` or `Active` status.
+/// * `PayrollError::MilestoneNotFound` — `milestone_id` is out of range for the agreement.
+/// * `PayrollError::MilestoneAlreadyApproved` — the milestone was already approved.
+/// * `PayrollError::InsufficientEscrowBalance` — funded escrow cannot cover all unclaimed milestones.
+pub fn approve_milestone(
+    env: Env,
+    agreement_id: u128,
+    milestone_id: u32,
+) -> Result<(), PayrollError> {
     let employer: Address = env
         .storage()
         .instance()
         .get(&MilestoneKey::Employer(agreement_id))
-        .expect("Employer not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
     let status: AgreementStatus = env
         .storage()
         .instance()
         .get(&MilestoneKey::Status(agreement_id))
-        .expect("Agreement not found");
-    assert!(
-        status == AgreementStatus::Created || status == AgreementStatus::Active,
-        "Can only approve milestones when agreement is Created or Active"
-    );
+        .ok_or(PayrollError::AgreementNotFound)?;
+    if status != AgreementStatus::Created && status != AgreementStatus::Active {
+        return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
 
     let count: u32 = env
         .storage()
         .instance()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .expect("No milestones found");
-    assert!(
-        milestone_id > 0 && milestone_id <= count,
-        "Invalid milestone ID"
-    );
+        .ok_or(PayrollError::MilestoneNotFound)?;
+    if milestone_id == 0 || milestone_id > count {
+        return Err(PayrollError::MilestoneNotFound);
+    }
 
     let already_approved: bool = env
         .storage()
         .instance()
         .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
         .unwrap_or(false);
-    assert!(!already_approved, "Milestone already approved");
+    if already_approved {
+        return Err(PayrollError::MilestoneAlreadyApproved);
+    }
 
     env.storage().instance().set(
         &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
@@ -494,16 +513,17 @@ pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         .instance()
         .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
         .unwrap_or(0i128);
-    assert!(
-        escrow_balance >= unclaimed_sum,
-        "Insufficient funded escrow balance for unclaimed milestones"
-    );
+    if escrow_balance < unclaimed_sum {
+        return Err(PayrollError::InsufficientEscrowBalance);
+    }
 
     MilestoneApproved {
         agreement_id,
         milestone_id,
     }
     .publish(&env);
+
+    Ok(())
 }
 
 /// Claims payment for an approved milestone
@@ -517,15 +537,30 @@ pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
 /// - Agreement must not be Paused
 /// - Milestone must be approved
 /// - Milestone must not be already claimed
-pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
+///
+/// # Errors
+/// * `PayrollError::EmergencyPaused` — the contract is under an emergency pause.
+/// * `PayrollError::AgreementNotFound` — the milestone agreement (or its token) does not exist.
+/// * `PayrollError::AgreementPaused` — the agreement is currently paused.
+/// * `PayrollError::MilestoneNotFound` — `milestone_id` is out of range or its amount is missing.
+/// * `PayrollError::MilestoneNotApproved` — the milestone has not been approved.
+/// * `PayrollError::MilestoneAlreadyClaimed` — the milestone was already claimed.
+/// * `PayrollError::InsufficientEscrowBalance` — funded escrow cannot cover all unclaimed milestones.
+pub fn claim_milestone(
+    env: Env,
+    agreement_id: u128,
+    milestone_id: u32,
+) -> Result<(), PayrollError> {
     // Check emergency pause
-    assert!(!is_emergency_paused(&env), "Contract is emergency paused");
+    if is_emergency_paused(&env) {
+        return Err(PayrollError::EmergencyPaused);
+    }
 
     let contributor: Address = env
         .storage()
         .instance()
         .get(&MilestoneKey::Contributor(agreement_id))
-        .expect("Contributor not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
     contributor.require_auth();
 
     // Check if agreement is paused
@@ -533,35 +568,37 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         .storage()
         .instance()
         .get(&MilestoneKey::Status(agreement_id))
-        .expect("Agreement not found");
-    assert!(
-        status != AgreementStatus::Paused,
-        "Cannot claim when agreement is paused"
-    );
+        .ok_or(PayrollError::AgreementNotFound)?;
+    if status == AgreementStatus::Paused {
+        return Err(PayrollError::AgreementPaused);
+    }
 
     let count: u32 = env
         .storage()
         .instance()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .expect("No milestones found");
-    assert!(
-        milestone_id > 0 && milestone_id <= count,
-        "Invalid milestone ID"
-    );
+        .ok_or(PayrollError::MilestoneNotFound)?;
+    if milestone_id == 0 || milestone_id > count {
+        return Err(PayrollError::MilestoneNotFound);
+    }
 
     let approved: bool = env
         .storage()
         .instance()
         .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
         .unwrap_or(false);
-    assert!(approved, "Milestone not approved");
+    if !approved {
+        return Err(PayrollError::MilestoneNotApproved);
+    }
 
     let already_claimed: bool = env
         .storage()
         .instance()
         .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
         .unwrap_or(false);
-    assert!(!already_claimed, "Milestone already claimed");
+    if already_claimed {
+        return Err(PayrollError::MilestoneAlreadyClaimed);
+    }
 
     // Invariant check: accounted escrow balance must cover all unclaimed
     // milestones before we allow the transfer. Using the accounted balance
@@ -572,22 +609,21 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         .instance()
         .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
         .unwrap_or(0i128);
-    assert!(
-        escrow_balance >= unclaimed_sum,
-        "Invariant violation: funded escrow balance < sum of unclaimed milestones"
-    );
+    if escrow_balance < unclaimed_sum {
+        return Err(PayrollError::InsufficientEscrowBalance);
+    }
 
     let amount: i128 = env
         .storage()
         .instance()
         .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
-        .expect("Milestone amount not found");
+        .ok_or(PayrollError::MilestoneNotFound)?;
 
     let token_address: Address = env
         .storage()
         .instance()
         .get(&MilestoneKey::Token(agreement_id))
-        .expect("Token not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
 
     // Checks-Effects-Interactions: update all state before the external transfer.
     env.storage().instance().set(
@@ -625,6 +661,8 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
             &AgreementStatus::Completed,
         );
     }
+
+    Ok(())
 }
 
 /// Iterates over `milestone_ids` and claims each approved, unclaimed milestone
@@ -3030,25 +3068,28 @@ pub fn resume_agreement(env: &Env, agreement_id: u128) {
 /// # Note
 /// Milestone agreements can be paused in Created status if they have approved milestones
 /// that could be claimed, effectively making them "active" for claiming purposes.
-pub fn pause_milestone_agreement(env: Env, agreement_id: u128) {
+///
+/// # Errors
+/// * `PayrollError::AgreementNotFound` — the milestone agreement does not exist.
+/// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Active` or `Created` status.
+pub fn pause_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
     let employer: Address = env
         .storage()
         .instance()
         .get(&MilestoneKey::Employer(agreement_id))
-        .expect("Agreement not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
     let status: AgreementStatus = env
         .storage()
         .instance()
         .get(&MilestoneKey::Status(agreement_id))
-        .expect("Agreement not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
 
     // Allow pausing Active agreements, or Created agreements (which can have claimable milestones)
-    assert!(
-        status == AgreementStatus::Active || status == AgreementStatus::Created,
-        "Can only pause Active or Created agreements"
-    );
+    if status != AgreementStatus::Active && status != AgreementStatus::Created {
+        return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
 
     env.storage().instance().set(
         &MilestoneKey::Status(agreement_id),
@@ -3056,6 +3097,8 @@ pub fn pause_milestone_agreement(env: Env, agreement_id: u128) {
     );
 
     AgreementPausedEvent { agreement_id }.publish(&env);
+
+    Ok(())
 }
 
 /// Resumes a paused milestone-based agreement, allowing claims again
@@ -3080,24 +3123,27 @@ pub fn pause_milestone_agreement(env: Env, agreement_id: u128) {
 /// # Note
 /// Resumed milestone agreements return to Active status. If they were Created before
 /// pausing, they will be Active after resuming (allowing milestone claims).
-pub fn resume_milestone_agreement(env: Env, agreement_id: u128) {
+///
+/// # Errors
+/// * `PayrollError::AgreementNotFound` — the milestone agreement does not exist.
+/// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Paused` status.
+pub fn resume_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
     let employer: Address = env
         .storage()
         .instance()
         .get(&MilestoneKey::Employer(agreement_id))
-        .expect("Agreement not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
     let status: AgreementStatus = env
         .storage()
         .instance()
         .get(&MilestoneKey::Status(agreement_id))
-        .expect("Agreement not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
 
-    assert!(
-        status == AgreementStatus::Paused,
-        "Can only resume Paused agreements"
-    );
+    if status != AgreementStatus::Paused {
+        return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
 
     // Resume to Active status (milestone agreements can have claimable milestones in Active state)
     env.storage().instance().set(
@@ -3106,6 +3152,8 @@ pub fn resume_milestone_agreement(env: Env, agreement_id: u128) {
     );
 
     AgreementResumedEvent { agreement_id }.publish(&env);
+
+    Ok(())
 }
 
 fn add_to_employer_agreements(env: &Env, employer: &Address, agreement_id: u128) {

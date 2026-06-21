@@ -1553,7 +1553,6 @@ fn test_batch_payroll_mixed_state_consistency() {
 
 /// Claiming an approved milestone while the agreement is paused must panic.
 #[test]
-#[should_panic(expected = "Cannot claim when agreement is paused")]
 fn test_milestone_claim_on_paused_agreement() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -1563,14 +1562,17 @@ fn test_milestone_claim_on_paused_agreement() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &1000);
-    mint(&env, &token, &client.address, 1000);
+    // Fund the accounted escrow so the approval invariant is satisfied.
+    mint(&env, &token, &employer, 1000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1000);
     client.approve_milestone(&agreement_id, &1u32);
 
     // Pause the agreement.
     client.pause_agreement(&agreement_id);
 
-    // Attempt claim — should panic.
-    client.claim_milestone(&agreement_id, &1u32);
+    // Attempt claim — must be rejected with a typed error.
+    let result = client.try_claim_milestone(&agreement_id, &1u32);
+    assert_eq!(result, Err(Ok(PayrollError::AgreementPaused)));
 }
 
 // ============================================================================
@@ -1579,7 +1581,6 @@ fn test_milestone_claim_on_paused_agreement() {
 
 /// Claiming a milestone that has not been approved must panic.
 #[test]
-#[should_panic(expected = "Milestone not approved")]
 fn test_milestone_claim_without_approval() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -1592,12 +1593,12 @@ fn test_milestone_claim_without_approval() {
     mint(&env, &token, &client.address, 1000);
 
     // Do NOT approve — claiming must fail.
-    client.claim_milestone(&agreement_id, &1u32);
+    let result = client.try_claim_milestone(&agreement_id, &1u32);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneNotApproved)));
 }
 
 /// Claiming a milestone that was already claimed must panic.
 #[test]
-#[should_panic(expected = "Milestone already claimed")]
 fn test_milestone_double_claim() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -1607,13 +1608,16 @@ fn test_milestone_double_claim() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &1000);
-    mint(&env, &token, &client.address, 2000);
+    // Fund the accounted escrow so approval and the first claim succeed.
+    mint(&env, &token, &employer, 1000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1000);
     client.approve_milestone(&agreement_id, &1u32);
 
     client.claim_milestone(&agreement_id, &1u32);
 
     // Second claim must fail.
-    client.claim_milestone(&agreement_id, &1u32);
+    let result = client.try_claim_milestone(&agreement_id, &1u32);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAlreadyClaimed)));
 }
 
 // ============================================================================

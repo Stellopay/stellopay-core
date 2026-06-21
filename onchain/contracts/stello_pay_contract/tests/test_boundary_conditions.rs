@@ -10,7 +10,7 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{testutils::Address as _, Address, Env};
-use stello_pay_contract::storage::{AgreementMode, AgreementStatus, DisputeStatus};
+use stello_pay_contract::storage::{AgreementMode, AgreementStatus, DisputeStatus, PayrollError};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 // ============================================================================
@@ -435,7 +435,6 @@ fn test_add_employee_i128_max_salary_overflow_risk() {
 /// The contract asserts `amount > 0`. A zero-value milestone has no
 /// economic purpose.
 #[test]
-#[should_panic(expected = "Amount must be positive")]
 fn test_add_milestone_zero_amount_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -444,14 +443,14 @@ fn test_add_milestone_zero_amount_panics() {
     let token = create_test_address(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &0i128);
+    let result = client.try_add_milestone(&agreement_id, &0i128);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAmountInvalid)));
 }
 
 /// Verifies that adding a milestone with negative amount panics.
 ///
 /// Negative milestone amounts could corrupt `total_amount` tracking.
 #[test]
-#[should_panic(expected = "Amount must be positive")]
 fn test_add_milestone_negative_amount_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -460,7 +459,8 @@ fn test_add_milestone_negative_amount_panics() {
     let token = create_test_address(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &(-500i128));
+    let result = client.try_add_milestone(&agreement_id, &(-500i128));
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAmountInvalid)));
 }
 
 /// Verifies that adding a milestone with the minimum valid amount (1) succeeds.
@@ -754,7 +754,6 @@ fn test_payroll_max_u64_grace_period_succeeds() {
 /// Milestone IDs are 1-based. ID 0 is always invalid and the contract
 /// explicitly checks `milestone_id > 0`.
 #[test]
-#[should_panic(expected = "Invalid milestone ID")]
 fn test_approve_milestone_id_zero_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -766,7 +765,8 @@ fn test_approve_milestone_id_zero_panics() {
     client.add_milestone(&agreement_id, &1000i128);
 
     // Milestone IDs are 1-based; 0 is always invalid
-    client.approve_milestone(&agreement_id, &0u32);
+    let result = client.try_approve_milestone(&agreement_id, &0u32);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneNotFound)));
 }
 
 /// Verifies that approving a milestone ID beyond the count panics.
@@ -774,7 +774,6 @@ fn test_approve_milestone_id_zero_panics() {
 /// If only 2 milestones exist, approving milestone ID 3 must fail
 /// with "Invalid milestone ID".
 #[test]
-#[should_panic(expected = "Invalid milestone ID")]
 fn test_approve_milestone_id_beyond_count_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -787,14 +786,14 @@ fn test_approve_milestone_id_beyond_count_panics() {
     client.add_milestone(&agreement_id, &500i128);
 
     // Only 2 milestones exist; ID 3 is out of range
-    client.approve_milestone(&agreement_id, &3u32);
+    let result = client.try_approve_milestone(&agreement_id, &3u32);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneNotFound)));
 }
 
 /// Verifies that claiming milestone ID 0 panics with "Invalid milestone ID".
 ///
 /// Same 1-based ID invariant applies to claiming. ID 0 is never valid.
 #[test]
-#[should_panic(expected = "Invalid milestone ID")]
 fn test_claim_milestone_id_zero_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -806,13 +805,15 @@ fn test_claim_milestone_id_zero_panics() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &1000i128);
-    
-    // Fund contract to satisfy invariant during approval
-    token_client.mint(&_contract_id, &1000i128);
+
+    // Fund the accounted escrow so the approval invariant is satisfied.
+    token_client.mint(&employer, &1000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1000i128);
     client.approve_milestone(&agreement_id, &1u32);
 
     // Attempt to claim milestone ID 0 — always invalid
-    client.claim_milestone(&agreement_id, &0u32);
+    let result = client.try_claim_milestone(&agreement_id, &0u32);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneNotFound)));
 }
 
 /// Verifies that `get_milestone` with ID 0 returns None.

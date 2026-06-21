@@ -7,6 +7,7 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{testutils::Address as _, Address, Env};
+use stello_pay_contract::storage::PayrollError;
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 // ============================================================================
@@ -227,18 +228,17 @@ fn test_fund_nonexistent_agreement_fails() {
 
 /// Approving a milestone without prior funding must fail the balance invariant.
 #[test]
-#[should_panic(expected = "Insufficient funded escrow balance for unclaimed milestones")]
 fn test_approve_without_funding_fails() {
     let (env, employer, contributor, token, client) = create_test_env();
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &1_000i128);
     // No fund_milestone_agreement call — must be rejected.
-    client.approve_milestone(&agreement_id, &1);
+    let result = client.try_approve_milestone(&agreement_id, &1);
+    assert_eq!(result, Err(Ok(PayrollError::InsufficientEscrowBalance)));
 }
 
 /// Funding less than the total milestone sum must cause approve to fail.
 #[test]
-#[should_panic(expected = "Insufficient funded escrow balance for unclaimed milestones")]
 fn test_approve_underfunded_fails() {
     let (env, employer, contributor, token, client) = create_test_env();
     let asset_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
@@ -247,7 +247,8 @@ fn test_approve_underfunded_fails() {
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &1_000i128);
     client.fund_milestone_agreement(&agreement_id, &employer, &499i128); // short by 501
-    client.approve_milestone(&agreement_id, &1);
+    let result = client.try_approve_milestone(&agreement_id, &1);
+    assert_eq!(result, Err(Ok(PayrollError::InsufficientEscrowBalance)));
 }
 
 // -----------------------------------------------------------------------------
@@ -290,23 +291,23 @@ fn test_add_multiple_milestones() {
 
 /// Adding a milestone with zero amount must fail.
 #[test]
-#[should_panic(expected = "Amount must be positive")]
 fn test_add_milestone_zero_amount_fails() {
     let (env, employer, contributor, token, client) = create_test_env();
     let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &0);
+    let result = client.try_add_milestone(&agreement_id, &0);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAmountInvalid)));
 }
 
 /// Adding a milestone when agreement is not in Created status must fail.
 #[test]
-#[should_panic(expected = "Agreement must be in Created status")]
 fn test_add_milestone_wrong_status_fails() {
     let (env, employer, contributor, token, client) = create_test_env();
     let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
     client.add_milestone(&agreement_id, &100);
     client.approve_milestone(&agreement_id, &1);
     client.claim_milestone(&agreement_id, &1);
-    client.add_milestone(&agreement_id, &200);
+    let result = client.try_add_milestone(&agreement_id, &200);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAgreementInvalidStatus)));
 }
 
 /// Only employer can add milestones; non-employer must fail.
@@ -376,23 +377,23 @@ fn test_approve_multiple_milestones() {
 
 /// Approving invalid milestone ID must fail.
 #[test]
-#[should_panic(expected = "Invalid milestone ID")]
 fn test_approve_invalid_id_fails() {
     let (env, employer, contributor, token, client) = create_test_env();
     let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
     client.add_milestone(&agreement_id, &100);
-    client.approve_milestone(&agreement_id, &99);
+    let result = client.try_approve_milestone(&agreement_id, &99);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneNotFound)));
 }
 
 /// Approving when agreement is paused must fail.
 #[test]
-#[should_panic(expected = "Can only approve milestones when agreement is Created or Active")]
 fn test_approve_wrong_status_fails() {
     let (env, employer, contributor, token, client) = create_test_env();
     let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
     client.add_milestone(&agreement_id, &100);
     client.pause_agreement(&agreement_id);
-    client.approve_milestone(&agreement_id, &1);
+    let result = client.try_approve_milestone(&agreement_id, &1);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAgreementInvalidStatus)));
 }
 
 /// Only employer can approve; contributor cannot approve.
@@ -435,24 +436,24 @@ fn test_claim_approved_milestone() {
 
 /// Claiming an unapproved milestone must fail.
 #[test]
-#[should_panic(expected = "Milestone not approved")]
 fn test_claim_unapproved_fails() {
     let (env, employer, contributor, token, client) = create_test_env();
     let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
     client.add_milestone(&agreement_id, &1000);
-    client.claim_milestone(&agreement_id, &1);
+    let result = client.try_claim_milestone(&agreement_id, &1);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneNotApproved)));
 }
 
 /// Claiming an already claimed milestone must fail.
 #[test]
-#[should_panic(expected = "Milestone already claimed")]
 fn test_claim_already_claimed_fails() {
     let (env, employer, contributor, token, client) = create_test_env();
     let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
     client.add_milestone(&agreement_id, &1000);
     client.approve_milestone(&agreement_id, &1);
     client.claim_milestone(&agreement_id, &1);
-    client.claim_milestone(&agreement_id, &1);
+    let result = client.try_claim_milestone(&agreement_id, &1);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAlreadyClaimed)));
 }
 
 /// Only contributor can claim; employer cannot claim.
@@ -505,7 +506,6 @@ fn test_milestone_claimed_event() {
 
 /// When all milestones are claimed, agreement completes (adding another milestone fails).
 #[test]
-#[should_panic(expected = "Agreement must be in Created status")]
 fn test_agreement_completes_all_claimed() {
     let (env, employer, contributor, token, client) = create_test_env();
     let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
@@ -517,7 +517,8 @@ fn test_agreement_completes_all_claimed() {
     client.claim_milestone(&agreement_id, &2);
     assert!(client.get_milestone(&agreement_id, &1).unwrap().claimed);
     assert!(client.get_milestone(&agreement_id, &2).unwrap().claimed);
-    client.add_milestone(&agreement_id, &300);
+    let result = client.try_add_milestone(&agreement_id, &300);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAgreementInvalidStatus)));
 }
 
 // -----------------------------------------------------------------------------
