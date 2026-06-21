@@ -49,7 +49,8 @@ const BATCH_CLAIM_MILESTONES: [usize; 3] = [1, 5, MAX_BATCH_SIZE as usize];
 /// Documented ceiling for max-size milestone batches. This is intentionally
 /// higher than the committed baseline tolerance so the test records both the
 /// exact regression baseline and an absolute safe ceiling for `MAX_BATCH_SIZE`.
-const MAX_BATCH_CLAIM_MILESTONE_INSTRUCTIONS: u64 = 3_000_000;
+/// Updated for MAX_BATCH_SIZE=20: measured baseline is ~7_123_086 instructions.
+const MAX_BATCH_CLAIM_MILESTONE_INSTRUCTIONS: u64 = 8_000_000;
 
 // ---------------------------------------------------------------------------
 // Baseline I/O
