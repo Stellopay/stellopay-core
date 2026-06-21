@@ -11,6 +11,7 @@ The `price_oracle` contract provides:
 - **Staleness rejection** – Updates older than `max_staleness_seconds` are rejected; future timestamps are also rejected.
 - **Monotonic ordering** – Older-or-equal timestamps are silently ignored, preventing replay of stale rates.
 - **Optional quorum mode** – Pairs can require `N` distinct sources to submit matching or near-matching rates inside a time window before a rate is accepted.
+- **Per-source rate limiting** – Each source is bounded to at most one submission per `min_submission_interval_seconds` per pair, preventing a single compromised key from spamming near-duplicate prices to skew quorum clustering.
 - **Payroll integration** – Accepted rates are automatically pushed to the core payroll contract via `set_exchange_rate`.
 - **Pair enable/disable** – Admin can pause and resume individual pairs without deleting configuration.
 - **Ownership transfer** – Single-step admin transfer for lightweight governance.
@@ -62,11 +63,16 @@ Where:
   - `quorum_n`: number of distinct sources required. `1` preserves legacy single-source mode.
   - `tolerance_bps`: maximum spread allowed between quorum-supporting rates, in basis points.
   - `quorum_window_seconds`: time bucket size used to group pending quorum votes.
+  - `min_submission_interval_seconds`: minimum seconds a source must wait between consecutive submissions for this pair. `0` disables the check.
 
 - `PairState`:
   - `rate`: last accepted rate.
   - `last_updated_ts`: timestamp associated with the accepted update.
   - `last_source`: oracle source address that supplied the update.
+
+- Per-source rate limit state (temporary storage per `(source, base, quote)`):
+  - Stores the `source_timestamp` of the last accepted submission from that source.
+  - Checked before the quorum path; a source whose elapsed time is below `min_submission_interval_seconds` is rejected with `SubmissionRateLimited`.
 
 - Pending quorum state:
   - A single active temporary bucket is kept per pair.
@@ -95,7 +101,7 @@ Where:
 
 | Function                                                                  | Access | Description                               |
 |---------------------------------------------------------------------------|--------|-------------------------------------------|
-| `configure_pair(caller, base, quote, min_rate, max_rate, max_staleness, quorum_n, tolerance_bps, quorum_window_seconds)` | Owner  | Create or update a pair's configuration   |
+| `configure_pair(caller, base, quote, min_rate, max_rate, max_staleness, quorum_n, tolerance_bps, quorum_window_seconds, min_submission_interval_seconds)` | Owner  | Create or update a pair's configuration   |
 | `disable_pair(caller, base, quote)`                                       | Owner  | Pause updates for a pair                  |
 | `enable_pair(caller, base, quote)`                                        | Owner  | Resume updates for a pair                 |
 | `get_pair_config(base, quote)`                                            | Any    | Read pair configuration                   |
@@ -127,11 +133,13 @@ Each `push_price` call passes through these checks in order:
 5. **Bounds check** – `min_rate <= rate <= max_rate`.
 6. **No future timestamp** – `source_timestamp <= ledger.timestamp`.
 7. **Staleness check** – `ledger.timestamp - source_timestamp <= max_staleness_seconds`.
-8. **Single-source fast path** – If `quorum_n == 1`, the rate is accepted immediately.
-9. **Quorum path** – If `quorum_n > 1`, the vote is stored in the active `(pair, bucket)` window.
-10. **Duplicate rejection** – The same source cannot vote twice in the same active bucket.
-11. **Tolerance check** – Quorum is satisfied only when the completing vote finds `quorum_n` distinct source votes within `tolerance_bps`.
-12. **Persist & forward** – Save `PairState`, clear pending bucket state, and call `set_exchange_rate` on the payroll contract.
+8. **Monotonic check** – If the pair has an accepted state, `source_timestamp > last_updated_ts`; otherwise the call is a no-op.
+9. **Per-source rate limit** – If `min_submission_interval_seconds > 0`, the elapsed time since the source's last recorded `source_timestamp` must be >= `min_submission_interval_seconds`; otherwise `SubmissionRateLimited` is returned. On pass, the stored timestamp is updated.
+10. **Single-source fast path** – If `quorum_n == 1`, the rate is accepted immediately.
+11. **Quorum path** – If `quorum_n > 1`, the vote is stored in the active `(pair, bucket)` window.
+12. **Duplicate rejection** – The same source cannot vote twice in the same active bucket.
+13. **Tolerance check** – Quorum is satisfied only when the completing vote finds `quorum_n` distinct source votes within `tolerance_bps`.
+14. **Persist & forward** – Save `PairState`, clear pending bucket state, and call `set_exchange_rate` on the payroll contract.
 
 On failure at any step, an `OracleError` is returned and no state in either
 contract is mutated.
@@ -156,7 +164,7 @@ Integration steps:
 3. **Configure sources and pairs**
    - Oracle owner calls:
      - `add_source(source_address)`
-     - `configure_pair(base, quote, min_rate, max_rate, max_staleness_seconds, quorum_n, tolerance_bps, quorum_window_seconds)`
+     - `configure_pair(base, quote, min_rate, max_rate, max_staleness_seconds, quorum_n, tolerance_bps, quorum_window_seconds, min_submission_interval_seconds)`
 4. **Feed prices**
    - Authorized sources call `push_price(source, base, quote, rate, source_ts)`.
    - On success, the payroll FX table is updated and any subsequent
@@ -180,6 +188,7 @@ Integration steps:
 | 9    | ZeroRate          | Submitted rate is zero or negative             |
 | 10   | InvalidPairConfig | Invalid configuration parameters               |
 | 11   | DuplicateVote     | Source already voted in the active quorum bucket |
+| 12   | SubmissionRateLimited | Source resubmitted before `min_submission_interval_seconds` elapsed |
 
 ## Quorum model
 
@@ -204,6 +213,7 @@ This model keeps the implementation small and storage bounded while still reduci
 
 | Threat                          | Mitigation                                                                      |
 |---------------------------------|---------------------------------------------------------------------------------|
+| Submission spamming by a single source | `min_submission_interval_seconds` enforced per `(source, base, quote)`; combined with `DuplicateVote` enforcement, one source contributes at most one effective vote per quorum bucket |
 | Compromised oracle source       | Rate bounds limit maximum damage; source cannot modify config or transfer admin |
 | Single source compromise in quorum mode | Attacker must compromise `quorum_n` distinct sources or collude within tolerance |
 | Stale rate injection            | `max_staleness_seconds` + future-timestamp rejection                            |
@@ -250,3 +260,4 @@ This model keeps the implementation small and storage bounded while still reduci
 - **Security scenarios** (4): compromised source blast radius, pair isolation, reconfigure tightens bounds, pair direction matters
 - **Quorum-specific edge cases** (15): quorum success, dissent without quorum, duplicate-vote rejection, tolerance-boundary acceptance, max-supporting-timestamp selection, older-bucket no-op after rollover, removed-source pending vote invalidation, FX forward failure handling, and invalid zero-quorum configuration
 - **Helper-path coverage** (3): non-positive tolerance input and arithmetic overflow guards in the tolerance matcher
+- **Rate limiting** (5): rapid resubmission rejected, resubmission allowed after interval, distinct sources unaffected, single source counts once per quorum bucket, interval=0 disables check

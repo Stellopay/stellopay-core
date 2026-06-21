@@ -57,10 +57,9 @@
 #![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, xdr::ToXdr, Address, Bytes,
-    BytesN, Env, IntoVal, Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, token, xdr::ToXdr, Address, Bytes, BytesN,
+    Env, IntoVal, Symbol, Vec,
 };
-
 // ─── Error Types ─────────────────────────────────────────────────────────────
 
 /// Errors returned by the payment scheduler contract.
@@ -266,6 +265,15 @@ pub struct JobCancelledEvent {
     pub employer: Address,
 }
 
+/// Emitted when a new payment job is funded via `fund_job`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct JobFundedEvent {
+    pub job_id: u128,
+    pub from: Address,
+    pub amount: i128,
+}
+
 // ─── Internal Helpers ─────────────────────────────────────────────────────────
 
 fn require_initialized(env: &Env) -> Result<(), SchedulerError> {
@@ -359,7 +367,7 @@ fn compute_payment_id(
     let mut buf = Bytes::new(env);
     buf.append(&employer.to_xdr(env));
     buf.append(&employee.to_xdr(env));
-    
+
     let amount_bytes = amount.to_le_bytes();
     for byte in amount_bytes.iter() {
         buf.push_back(*byte);
@@ -389,7 +397,11 @@ impl PaymentSchedulerContract {
     /// @return Ok(()) on success.
     /// @security Requires `owner` authentication to prevent unauthorized
     ///           initialization of a newly deployed contract.
-    pub fn initialize(env: Env, owner: Address, retry_contract: Address) -> Result<(), SchedulerError> {
+    pub fn initialize(
+        env: Env,
+        owner: Address,
+        retry_contract: Address,
+    ) -> Result<(), SchedulerError> {
         let already = env
             .storage()
             .persistent()
@@ -402,7 +414,9 @@ impl PaymentSchedulerContract {
         owner.require_auth();
 
         env.storage().persistent().set(&StorageKey::Owner, &owner);
-        env.storage().persistent().set(&StorageKey::RetryContract, &retry_contract);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::RetryContract, &retry_contract);
         env.storage()
             .persistent()
             .set(&StorageKey::Initialized, &true);
@@ -543,10 +557,7 @@ impl PaymentSchedulerContract {
 
         env.events().publish(
             ("job_cancelled", job_id),
-            JobCancelledEvent {
-                job_id,
-                employer,
-            },
+            JobCancelledEvent { job_id, employer },
         );
 
         Ok(())
@@ -696,9 +707,13 @@ impl PaymentSchedulerContract {
                             job_mut.next_scheduled_time,
                         );
 
-                        let retry_addr = env.storage().persistent().get::<_, Address>(&StorageKey::RetryContract).unwrap();
+                        let retry_addr = env
+                            .storage()
+                            .persistent()
+                            .get::<_, Address>(&StorageKey::RetryContract)
+                            .unwrap();
                         let retry_client = RetryContractClient::new(&env, &retry_addr);
-                        
+
                         let retry_config = RetryConfig {
                             max_retries: job_mut.max_retries,
                             retry_intervals: soroban_sdk::vec![&env, 30u64, 60u64, 120u64], // Default backoff
@@ -717,10 +732,8 @@ impl PaymentSchedulerContract {
                         job_mut.next_scheduled_time = now.saturating_add(job_mut.interval_seconds);
                         write_job(&env, &job_mut);
 
-                        env.events().publish(
-                            ("payment_failed", payment_id.clone()),
-                            payment_id,
-                        );
+                        env.events()
+                            .publish(("payment_failed", payment_id.clone()), payment_id);
                     }
                     processed = processed.saturating_add(1);
                 }
@@ -755,8 +768,19 @@ impl PaymentSchedulerContract {
         }
 
         let job = read_job(&env, job_id)?;
+
         let token_client = token::Client::new(&env, &job.token);
+
         token_client.transfer(&from, &env.current_contract_address(), &amount);
+
+        env.events().publish(
+            ("job_funded", job_id),
+            JobFundedEvent {
+                job_id: job_id,
+                from,
+                amount,
+            },
+        );
 
         Ok(())
     }

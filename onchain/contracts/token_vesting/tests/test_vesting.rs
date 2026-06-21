@@ -1258,3 +1258,160 @@ fn test_early_release_event_emitted() {
     assert_eq!(event.id, sid);
     assert_eq!(event.amount, 200);
 }
+
+// ===========================================================================
+// L. Cliff + Linear interaction property tests (added for #516)
+// ===========================================================================
+
+/// Verifies that a linear schedule with a cliff correctly gates vesting:
+/// - Before both start and cliff: 0
+/// - After start but before cliff: 0 (cliff blocks)
+/// - At cliff: linear interpolation from start to cliff
+/// - Between cliff and end: linear interpolation
+/// - At end: total
+/// - After end: capped at total
+#[test]
+fn cliff_plus_linear_full_spectrum() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &Some(30u64),
+        &false,
+    );
+
+    let cases = [
+        (0, 0),    // before start + cliff
+        (10, 0),   // after start, before cliff
+        (20, 0),
+        (30, 300), // exactly at cliff -> 1000 * 30/100 = 300
+        (40, 400),
+        (50, 500),
+        (60, 600),
+        (70, 700),
+        (80, 800),
+        (90, 900),
+        (100, 1000),
+        (110, 1000),
+    ];
+
+    for &(ts, expected) in &cases {
+        set_time(&env, ts);
+        let vested = client.get_vested_amount(&sid);
+        assert_eq!(
+            vested, expected,
+            "cliff+linear vested amount mismatch at t={}: got {}, expected {}",
+            ts, vested, expected
+        );
+    }
+}
+
+/// Edge case: cliff equals end_time (no linear segment after cliff).
+#[test]
+fn cliff_equals_end() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &50u64,
+        &Some(50u64),
+        &false,
+    );
+
+    set_time(&env, 0);
+    assert_eq!(client.get_vested_amount(&sid), 0);
+
+    set_time(&env, 50);
+    assert_eq!(client.get_vested_amount(&sid), 1_000);
+}
+
+/// Edge case: cliff equals start_time (effectively no cliff gate).
+#[test]
+fn cliff_equals_start() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &30u64,
+        &100u64,
+        &Some(30u64),
+        &false,
+    );
+
+    set_time(&env, 30);
+    assert_eq!(client.get_vested_amount(&sid), 0);
+
+    set_time(&env, 65);
+    // 1000 * (65-30) / (100-30) = 1000 * 35 / 70 = 500
+    assert_eq!(client.get_vested_amount(&sid), 500);
+}
+
+/// Edge case: very small total_amount with cliff.
+#[test]
+fn cliff_plus_linear_small_amount() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &3i128,
+        &0u64,
+        &100u64,
+        &Some(50u64),
+        &false,
+    );
+
+    set_time(&env, 50);
+    // 3 * 50/100 = 1.5 -> integer 1
+    assert_eq!(client.get_vested_amount(&sid), 1);
+
+    set_time(&env, 100);
+    assert_eq!(client.get_vested_amount(&sid), 3);
+}
+
+/// Edge case: revoked linear schedule with cliff.
+#[test]
+fn cliff_plus_linear_revoked() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &Some(30u64),
+        &true,
+    );
+
+    set_time(&env, 20);
+    client.revoke(&employer, &sid);
+
+    set_time(&env, 999);
+    assert_eq!(client.get_vested_amount(&sid), 0);
+    assert_eq!(client.get_releasable_amount(&sid), 0);
+}
