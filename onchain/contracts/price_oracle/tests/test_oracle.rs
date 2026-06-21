@@ -1,4 +1,4 @@
-#![cfg(test)]
+﻿#![cfg(test)]
 #![allow(deprecated)]
 
 use price_oracle::{OracleError, PriceOracleContract, PriceOracleContractClient};
@@ -62,6 +62,7 @@ fn configure_pair_with_settings(
         &quorum_n,
         &tolerance_bps,
         &quorum_window_seconds,
+        &0u64, // no rate limit by default in tests
     );
 }
 
@@ -97,6 +98,7 @@ fn full_setup(
         DEFAULT_TOLERANCE_BPS,
         DEFAULT_QUORUM_WINDOW_SECONDS,
     );
+    // NB: min_submission_interval_seconds = 0 (rate limit disabled) by default.
 
     (
         oracle_client,
@@ -211,6 +213,7 @@ fn test_configure_pair_and_read_config() {
         &1u32,
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
     );
 
     let cfg = oracle_client.get_pair_config(&base2, &quote2).unwrap();
@@ -221,6 +224,7 @@ fn test_configure_pair_and_read_config() {
     assert_eq!(cfg.quorum_n, 1);
     assert_eq!(cfg.tolerance_bps, DEFAULT_TOLERANCE_BPS);
     assert_eq!(cfg.quorum_window_seconds, DEFAULT_QUORUM_WINDOW_SECONDS);
+    assert_eq!(cfg.min_submission_interval_seconds, 0);
 }
 
 #[test]
@@ -239,6 +243,7 @@ fn test_configure_pair_same_base_quote_rejected() {
         &1u32,
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -254,12 +259,13 @@ fn test_configure_pair_min_greater_than_max_rejected() {
         &oracle_owner,
         &base,
         &quote,
-        &3_000_000i128, // min > max
+        &3_000_000i128,
         &1_000_000i128,
         &300u64,
         &1u32,
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -281,6 +287,7 @@ fn test_configure_pair_zero_min_rate_rejected() {
         &1u32,
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -302,6 +309,7 @@ fn test_configure_pair_negative_rate_rejected() {
         &1u32,
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -323,6 +331,7 @@ fn test_configure_pair_zero_staleness_rejected() {
         &1u32,
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -343,6 +352,7 @@ fn test_configure_pair_zero_quorum_window_rejected() {
         &300u64,
         &1u32,
         &DEFAULT_TOLERANCE_BPS,
+        &0u64,
         &0u64,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
@@ -366,6 +376,7 @@ fn test_non_owner_cannot_configure_pair() {
         &1u32,
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
     );
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 }
@@ -427,7 +438,7 @@ fn test_non_owner_cannot_disable_pair() {
 }
 
 // ===========================================================================
-// 5. Push price – happy path
+// 5. Push price â€“ happy path
 // ===========================================================================
 
 #[test]
@@ -489,7 +500,7 @@ fn test_push_price_at_max_staleness_boundary() {
 }
 
 // ===========================================================================
-// 6. Push price – forbidden paths
+// 6. Push price â€“ forbidden paths
 // ===========================================================================
 
 #[test]
@@ -613,7 +624,7 @@ fn test_monotonic_ignores_equal_timestamp() {
     env.ledger().with_mut(|li| li.timestamp = 2_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &2_000u64);
 
-    // Same timestamp with different rate — ignored.
+    // Same timestamp with different rate â€” ignored.
     oracle_client.push_price(&source, &base, &quote, &3_000_000i128, &2_000u64);
 
     let state = oracle_client.get_pair_state(&base, &quote).unwrap();
@@ -750,6 +761,7 @@ fn test_configure_pair_before_init_fails() {
         &1u32,
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
     );
     assert_eq!(res, Err(Ok(OracleError::NotInitialized)));
 }
@@ -807,6 +819,7 @@ fn test_compromised_source_blast_radius() {
         &1u32,
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
     );
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 
@@ -847,6 +860,7 @@ fn test_pair_isolation() {
         &1u32,
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -886,6 +900,7 @@ fn test_reconfigure_pair_tightens_bounds() {
         &1u32,
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
     );
 
     // Same rate now rejected.
@@ -931,6 +946,7 @@ fn test_multi_source_quorum_success() {
         &2u32,
         &50u32,
         &60u64,
+        &0u64,
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -973,6 +989,7 @@ fn test_multi_source_quorum_different_rates_do_not_count() {
         &2u32,
         &50u32,
         &60u64,
+        &0u64,
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1243,6 +1260,169 @@ fn test_quorum_rejection_on_zero_quorum() {
         &0u32, // Invalid
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
+}
+
+// ===========================================================================
+
+// ===========================================================================
+// 12. Per-source submission rate limiting
+// ===========================================================================
+
+/// A source configured with a 30-second interval cannot resubmit within that window.
+#[test]
+fn test_rate_limit_rejects_rapid_resubmission() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source, base, quote) = full_setup(&env);
+
+    oracle_client.configure_pair(
+        &oracle_owner,
+        &base,
+        &quote,
+        &500_000i128,
+        &5_000_000i128,
+        &600u64,
+        &1u32,
+        &0u32,
+        &60u64,
+        &30u64, // 30-second min interval
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // Only 10 seconds later — rejected.
+    env.ledger().with_mut(|li| li.timestamp = 1_010);
+    let res = oracle_client.try_push_price(&source, &base, &quote, &2_100_000i128, &1_010u64);
+    assert_eq!(res, Err(Ok(OracleError::SubmissionRateLimited)));
+
+    // State unchanged.
+    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    assert_eq!(state.rate, 2_000_000);
+}
+
+/// After the interval expires the source can submit again.
+#[test]
+fn test_rate_limit_allows_submission_after_interval() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source, base, quote) = full_setup(&env);
+
+    oracle_client.configure_pair(
+        &oracle_owner,
+        &base,
+        &quote,
+        &500_000i128,
+        &5_000_000i128,
+        &600u64,
+        &1u32,
+        &0u32,
+        &60u64,
+        &30u64,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // Exactly 30 seconds later — at the boundary — allowed.
+    env.ledger().with_mut(|li| li.timestamp = 1_030);
+    let res = oracle_client.try_push_price(&source, &base, &quote, &2_100_000i128, &1_030u64);
+    assert!(res.is_ok());
+
+    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    assert_eq!(state.rate, 2_100_000);
+}
+
+/// Rate limit is per-source: a rate-limited source does not block distinct sources.
+#[test]
+fn test_rate_limit_does_not_affect_other_sources() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source1, base, quote) = full_setup(&env);
+    let source2 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+
+    oracle_client.configure_pair(
+        &oracle_owner,
+        &base,
+        &quote,
+        &500_000i128,
+        &5_000_000i128,
+        &600u64,
+        &1u32,
+        &0u32,
+        &60u64,
+        &30u64,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // source1 is rate-limited within the interval.
+    env.ledger().with_mut(|li| li.timestamp = 1_010);
+    let res = oracle_client.try_push_price(&source1, &base, &quote, &2_100_000i128, &1_010u64);
+    assert_eq!(res, Err(Ok(OracleError::SubmissionRateLimited)));
+
+    // source2 is a distinct key — submits freely.
+    let res = oracle_client.try_push_price(&source2, &base, &quote, &2_100_000i128, &1_010u64);
+    assert!(res.is_ok());
+
+    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    assert_eq!(state.rate, 2_100_000);
+    assert_eq!(state.last_source, source2);
+}
+
+/// A single source cannot spam near-duplicate prices to dominate quorum clustering.
+/// The rate limit ensures one source contributes at most one effective vote per bucket.
+#[test]
+fn test_rate_limit_single_source_counts_once_in_quorum() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source1, base, quote) = full_setup(&env);
+    let source2 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+
+    // quorum=2, 30-second rate limit per source.
+    oracle_client.configure_pair(
+        &oracle_owner,
+        &base,
+        &quote,
+        &500_000i128,
+        &5_000_000i128,
+        &600u64,
+        &2u32,
+        &100u32,
+        &60u64,
+        &30u64,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // Rapid follow-up from source1 — blocked by rate limit before reaching the bucket.
+    env.ledger().with_mut(|li| li.timestamp = 1_005);
+    let res = oracle_client.try_push_price(&source1, &base, &quote, &2_005_000i128, &1_005u64);
+    assert_eq!(res, Err(Ok(OracleError::SubmissionRateLimited)));
+
+    // Quorum not met — only source1's single vote is in the bucket.
+    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+
+    // source2 completes quorum.
+    oracle_client.push_price(&source2, &base, &quote, &2_000_000i128, &1_000u64);
+    assert!(oracle_client.get_pair_state(&base, &quote).is_some());
+}
+
+/// min_submission_interval_seconds = 0 disables the rate limit entirely.
+#[test]
+fn test_rate_limit_zero_interval_is_disabled() {
+    let env = create_env();
+    // full_setup configures the pair with interval = 0.
+    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // Immediate resubmission with a newer timestamp — allowed.
+    env.ledger().with_mut(|li| li.timestamp = 1_001);
+    let res = oracle_client.try_push_price(&source, &base, &quote, &2_100_000i128, &1_001u64);
+    assert!(res.is_ok());
 }
