@@ -372,7 +372,7 @@ impl DisputeEscalationContract {
 
         // Open a bounded admin-review window.
         let review_limit = storage::get_pending_review_time_limit(&env);
-        let review_deadline = now + review_limit;
+        let review_deadline = now.checked_add(review_limit).ok_or(DisputeError::SlaDeadlineOverflow)?;
 
         // `phase_started_at` records exactly when the SLA breach was observed.
         dispute.status = DisputeStatus::PendingReview;
