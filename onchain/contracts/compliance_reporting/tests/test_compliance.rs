@@ -427,6 +427,9 @@ fn test_generate_report_with_mocked_external_contracts() {
     // The implementation of generate_report is verified to exist and call configured contracts.
 }
 
+
+#[test]
+fn test_get_withholding_records_empty_result() {
     let (env, client, _) = setup();
     let employer = Address::generate(&env);
 
@@ -734,4 +737,61 @@ fn test_large_batch_logging_and_report() {
     let report = client.get_withholding_records(&employer, &0, &6000, &None, &100);
     assert_eq!(report.record_count, 50);
     assert_eq!(report.total_amount, 500);
+}
+
+// ---------------------------------------------------------------------------
+// Metadata length bounds
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_log_record_empty_metadata_passes() {
+    let (env, client, _) = setup();
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Empty metadata (length 0) should always pass.
+    env.ledger().set_timestamp(1000);
+    let id = client.log_record(
+        &employer, &employer, &employee, &token,
+        &100, &ReportType::Payroll, &Bytes::new(&env),
+    );
+    assert_eq!(id, 1);
+}
+
+#[test]
+fn test_log_record_max_metadata_passes() {
+    let (env, client, _) = setup();
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Max-length metadata (2048 bytes) should pass.
+    let metadata = Bytes::from_array(&env, &[0x42u8; 2048]);
+    env.ledger().set_timestamp(1000);
+    let id = client.log_record(
+        &employer, &employer, &employee, &token,
+        &100, &ReportType::Payroll, &metadata,
+    );
+    assert_eq!(id, 1);
+}
+
+#[test]
+fn test_log_record_over_max_metadata_rejected() {
+    let (env, client, _) = setup();
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Over-max metadata (2049 bytes) should be rejected with MetadataTooLong.
+    let metadata = Bytes::from_array(&env, &[0x42u8; 2049]);
+    env.ledger().set_timestamp(1000);
+    let err = client
+        .try_log_record(
+            &employer, &employer, &employee, &token,
+            &100, &ReportType::Payroll, &metadata,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, ComplianceError::MetadataTooLong);
 }

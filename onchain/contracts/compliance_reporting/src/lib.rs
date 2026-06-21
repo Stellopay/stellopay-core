@@ -57,6 +57,8 @@ pub enum ComplianceError {
     ContractPaused = 6,
     /// Provided amount is invalid (e.g. zero or negative where not allowed).
     InvalidAmount = 7,
+    /// Metadata exceeds the maximum allowed length (MAX_METADATA_LENGTH).
+    MetadataTooLong = 8,
 }
 
 // ---------------------------------------------------------------------------
@@ -174,6 +176,10 @@ pub enum DataKey {
 /// Maximum number of records that can be returned in a single `generate_report`
 /// call. Prevents instruction-limit overflows on Soroban.
 pub const MAX_QUERY_LIMIT: u32 = 100;
+
+/// Maximum allowed length for metadata in log_record (in bytes).
+/// Prevents storage griefing via unbounded per-record metadata.
+pub const MAX_METADATA_LENGTH: u32 = 2048;
 
 #[contract]
 pub struct ComplianceReportingContract;
@@ -363,6 +369,9 @@ impl ComplianceReportingContract {
 
         if amount <= 0 {
             return Err(ComplianceError::InvalidAmount);
+        }
+        if metadata.len() > MAX_METADATA_LENGTH {
+            return Err(ComplianceError::MetadataTooLong);
         }
 
         // Assign per-employer ID.

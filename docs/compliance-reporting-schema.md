@@ -35,3 +35,12 @@ pub struct ComplianceReport {
 - **Withholding Records**: Stored directly in `ComplianceReportingContract` storage, indexed by `employer` and sequential `id`.
 - **Payment History**: Fetched from the `PaymentHistoryContract` configured in `ComplianceReportingContract`. Specifically, records matching the `employee` address are retrieved.
 - **Agreement Events**: Fetched from the `AuditLoggerContract` configured in `ComplianceReportingContract`.
+
+## Metadata Length Limit
+
+The metadata field in ComplianceRecord is limited to **2048 bytes** (MAX_METADATA_LENGTH).
+This prevents storage griefing via unbounded per-record metadata.
+
+- **Maximum:** 2048 bytes — accepted.
+- **Over maximum:** 2049+ bytes — rejected with ComplianceError::MetadataTooLong.
+- **Empty** (0 bytes) — always accepted.
