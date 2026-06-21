@@ -538,8 +538,8 @@ impl PayrollContract {
     /// Requires caller authentication
     ///
     /// # Returns
-    /// bool
-    pub fn set_arbiter(env: Env, caller: Address, arbiter: Address) -> bool {
+    /// Result<(), PayrollError>
+    pub fn set_arbiter(env: Env, caller: Address, arbiter: Address) -> Result<(), PayrollError> {
         payroll::set_arbiter(&env, caller, arbiter)
     }
 

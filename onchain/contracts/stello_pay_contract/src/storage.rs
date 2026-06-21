@@ -360,6 +360,10 @@ pub enum PayrollError {
     RateLimited = 34,
     /// Caller supplied more than `MAX_BATCH_SIZE` batch items.
     BatchTooLarge = 35,
+    /// Caller attempted to appoint themselves as the arbiter.
+    ArbiterSelfAppointment = 36,
+    /// Setting the arbiter to the same address as the current arbiter (no-op).
+    ArbiterNoOp = 37,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.

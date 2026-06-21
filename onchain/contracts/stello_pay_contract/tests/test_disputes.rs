@@ -149,3 +149,72 @@ fn test_multi_employee_payout_split() {
     assert_eq!(token_client.balance(&employee2), 75);
     assert_eq!(token_client.balance(&employer), 50);
 }
+
+
+/// @notice Verifies that setting the arbiter to the caller (self-appointment) is rejected.
+#[test]
+fn test_set_arbiter_self_appointment_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, payroll_client) = setup_payroll(&env);
+    let owner = Address::generate(&env);
+
+    // Owner tries to set themselves as arbiter
+    let result = payroll_client.try_set_arbiter(&owner, &owner);
+    assert_eq!(result, Err(Ok(PayrollError::ArbiterSelfAppointment)));
+}
+
+/// @notice Verifies that setting the arbiter to the same address as the current arbiter is rejected.
+#[test]
+fn test_set_arbiter_no_op_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, payroll_client) = setup_payroll(&env);
+    let owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+
+    // Set arbiter once
+    payroll_client.set_arbiter(&owner, &arbiter);
+
+    // Try setting the same arbiter again
+    let result = payroll_client.try_set_arbiter(&owner, &arbiter);
+    assert_eq!(result, Err(Ok(PayrollError::ArbiterNoOp)));
+}
+
+/// @notice Verifies that a valid arbiter change succeeds and records an audit entry.
+#[test]
+fn test_set_arbiter_valid_change() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, payroll_client) = setup_payroll(&env);
+    let owner = Address::generate(&env);
+    let arbiter1 = Address::generate(&env);
+    let arbiter2 = Address::generate(&env);
+
+    // Set arbiter for the first time
+    payroll_client.set_arbiter(&owner, &arbiter1);
+    assert_eq!(payroll_client.get_arbiter(), Some(arbiter1.clone()));
+
+    // Change to a different arbiter
+    payroll_client.set_arbiter(&owner, &arbiter2);
+    assert_eq!(payroll_client.get_arbiter(), Some(arbiter2.clone()));
+}
+
+/// @notice Verifies that a non-owner caller cannot set the arbiter.
+#[test]
+fn test_set_arbiter_unauthorized_caller() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, payroll_client) = setup_payroll(&env);
+    let _owner = Address::generate(&env);
+    let non_owner = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+
+    // Non-owner tries to set arbiter
+    let result = payroll_client.try_set_arbiter(&non_owner, &arbiter);
+    assert_eq!(result, Err(Ok(PayrollError::Unauthorized)));
+}

@@ -1363,16 +1363,51 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
 ///
 /// # Access Control
 /// Requires caller authentication
-pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
+pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> Result<(), PayrollError> {
     caller.require_auth();
+
+    // Only the contract owner may set the arbiter.
+    let owner: Address = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::Owner)
+        .ok_or(PayrollError::Unauthorized)?;
+    if caller != owner {
+        return Err(PayrollError::Unauthorized);
+    }
+
+    // Reject setting the arbiter to the caller (self-appointment).
+    if arbiter == caller {
+        return Err(PayrollError::ArbiterSelfAppointment);
+    }
+
+    // Reject no-op: setting the arbiter to the same address.
+    let current: Option<Address> = env.storage().persistent().get(&StorageKey::Arbiter);
+    if let Some(existing) = current {
+        if arbiter == existing {
+            return Err(PayrollError::ArbiterNoOp);
+        }
+    }
 
     env.storage()
         .persistent()
         .set(&StorageKey::Arbiter, &arbiter);
+        env.storage().persistent().extend_ttl(&StorageKey::Arbiter, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
     emit_set_arbiter(env, ArbiterSetEvent { arbiter });
 
-    true
+    // Record audit entry using agreement_id=0 (arbiter is a global setting).
+    record_entry(
+        env,
+        caller,
+        AuditEvent::ArbiterSet,
+        0u128,
+        Some(arbiter),
+        None,
+    );
+
+    Ok(())
 }
+
 
 /// Get Arbiter
 ///
