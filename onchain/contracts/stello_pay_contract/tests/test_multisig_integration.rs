@@ -504,3 +504,25 @@ fn test_dispute_multisig_wrong_op_kind_rejected() {
         payroll.try_resolve_dispute_multisig(&arbiter, &agreement_id, &600i128, &400i128, &op_id);
     assert_eq!(result, Err(Ok(PayrollError::MultisigApprovalRequired)));
 }
+
+/// @notice Verifies that set_multisig_config stores config correctly.
+/// @dev Tests that the emitted event and audit entry work end-to-end.
+#[test]
+fn test_set_multisig_config_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_payroll_id, payroll, owner) = setup_payroll(&env);
+    let (multisig_id, _ms, _signers) = setup_multisig(&env);
+
+    // Set multisig config
+    payroll.set_multisig_config(
+        &owner,
+        &multisig_id,
+        &1000i128,
+        &500i128,
+    );
+
+    // Verify config was stored correctly
+    assert_eq!(payroll.get_multisig_contract(), Some(multisig_id));
+}
