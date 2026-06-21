@@ -841,10 +841,9 @@ fn test_batch_payroll_duplicate_index_processed_once() {
         batch.results.get(1).unwrap().error_code,
         PayrollError::InvalidData as u32
     );
-    assert_eq!(
-        DataKey::get_employee_claimed_periods(&env, agreement_id, 0),
-        1
-    );
+    let claimed_periods =
+        env.as_contract(&contract_id, || DataKey::get_employee_claimed_periods(&env, agreement_id, 0));
+    assert_eq!(claimed_periods, 1);
 }
 
 // ============================================================================

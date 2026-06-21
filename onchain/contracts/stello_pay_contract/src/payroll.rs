@@ -2888,6 +2888,10 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollErro
     claimed_periods += periods_to_pay;
     agreement.claimed_periods = Some(claimed_periods);
     agreement.paid_amount += amount;
+    // Keep the standalone paid-amount key in sync, like claim_payroll,
+    // batch_claim_payroll and resolve_dispute do, so the escrow-conservation
+    // invariant (remaining + paid == total) holds for time-based claims too.
+    DataKey::set_agreement_paid_amount(env, agreement_id, agreement.paid_amount);
 
     if claimed_periods >= num_periods {
         agreement.status = AgreementStatus::Completed;
