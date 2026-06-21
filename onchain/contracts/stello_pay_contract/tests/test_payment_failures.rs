@@ -868,13 +868,15 @@ fn test_batch_milestone_error_codes() {
     client.add_milestone(&agreement_id, &600);
     client.add_milestone(&agreement_id, &700);
 
+    // Fund the accounted escrow for all milestones up front.
+    mint(&env, &token, &employer, 1800);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1800);
+
     // Approve and claim milestone 1.
-    mint(&env, &token, &client.address, 500);
     client.approve_milestone(&agreement_id, &1u32);
     client.claim_milestone(&agreement_id, &1u32);
 
     // Approve milestone 2 (unclaimed).
-    mint(&env, &token, &client.address, 600);
     client.approve_milestone(&agreement_id, &2u32);
 
     // Milestone 3 is NOT approved.
