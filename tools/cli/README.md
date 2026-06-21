@@ -111,6 +111,20 @@ Example:
 stellopay-cli info --contract-id CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE
 ```
 
+#### Webhooks
+
+Webhook inspection commands use the CLI's read-only Soroban query path. These
+commands do not require a secret key and never sign or submit transactions:
+
+```bash
+stellopay-cli webhook list --owner <OWNER_ADDRESS> --contract-id <CONTRACT_ID>
+stellopay-cli webhook get --webhook-id 1 --contract-id <CONTRACT_ID>
+stellopay-cli webhook stats --contract-id <CONTRACT_ID>
+```
+
+Webhook mutation commands such as `register`, `update`, `delete`, and `test`
+still use the signed invoke path because they submit contract transactions.
+
 #### Status
 
 Show CLI status and check system dependencies:
