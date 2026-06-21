@@ -989,3 +989,108 @@ fn test_full_lifecycle_created_to_finalized() {
         AgreementStatus::Cancelled
     );
 }
+// ---------------------------------------------------------------------------
+// Storage TTL persistence
+// ---------------------------------------------------------------------------
+
+/// Verifies that persistent storage keys remain accessible after ledger advance.
+/// This is a functional regression test: the TTL bump logic is called during every
+/// write, and this test confirms no data loss occurs across state transitions.
+#[test]
+fn test_storage_ttl_persistence_across_ledger_advance() {
+    let env = create_test_env();
+    let (contract_id, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let employee = create_address(&env);
+    let token = create_token(&env);
+
+    // Step 1: Create a payroll agreement (writes Agreement, AgreementEmployees, Owner)
+    env.ledger().set_timestamp(1000);
+    let id = client.create_payroll_agreement(&employer, &token, ONE_WEEK);
+
+    // Add employee (writes multiple DataKey entries)
+    client.add_employee_to_agreement(&id, &employee, SALARY);
+    client.activate_agreement(&id);
+
+    // Verify state immediately
+    let agreement = client.get_agreement(&id).unwrap();
+    assert_eq!(agreement.status, AgreementStatus::Active);
+    assert_eq!(agreement.employer, employer);
+
+    // Step 2: Advance ledger well past default TTL thresholds
+    // Soroban mock env does not simulate archival, but this proves
+    // our code path invokes extend_ttl without panicking.
+    env.ledger().set_timestamp(1_000_000_000);
+
+    // State still accessible after ledger advance
+    let agreement = client.get_agreement(&id).unwrap();
+    assert_eq!(agreement.status, AgreementStatus::Active);
+    assert_eq!(agreement.employer, employer);
+
+    // Employee data still accessible
+    let employees = client.get_agreement_employees(&id);
+    assert_eq!(employees.len(), 1);
+    assert_eq!(employees.get(0).unwrap(), employee);
+}
+
+/// Verifies that cancelling an agreement preserves the agreement data
+/// and grace period state after ledger advance (covers StorageKey writes).
+#[test]
+fn test_storage_ttl_on_cancel_and_grace_period() {
+    let env = create_test_env();
+    let (contract_id, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let employee = create_address(&env);
+    let token = create_token(&env);
+
+    env.ledger().set_timestamp(1000);
+    let id = client.create_payroll_agreement(&employer, &token, ONE_WEEK);
+    client.add_employee_to_agreement(&id, &employee, SALARY);
+    client.activate_agreement(&id);
+
+    // Cancel and verify grace period
+    client.cancel_agreement(&id);
+    assert!(client.is_grace_period_active(&id));
+
+    // Advance ledger into future
+    env.ledger().set_timestamp(5_000_000_000);
+
+    // Agreement still retrievable
+    let agreement = client.get_agreement(&id).unwrap();
+    assert_eq!(agreement.status, AgreementStatus::Cancelled);
+
+    // Grace period has expired by this point
+    assert!(!client.is_grace_period_active(&id));
+}
+
+/// Verifies that escrow balance and employee salary data survive
+/// repeated writes and ledger advances (covers DataKey storage paths).
+#[test]
+fn test_storage_ttl_on_escrow_and_salary_updates() {
+    let env = create_test_env();
+    let (contract_id, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let employee = create_address(&env);
+    let token = create_token(&env);
+
+    env.ledger().set_timestamp(1000);
+    let id = client.create_escrow_agreement(&employer, &employee, &token, SALARY, ONE_DAY, 10).unwrap();
+    client.activate_agreement(&id);
+
+    // Advance ledger and claim
+    env.ledger().set_timestamp(2000);
+    client.claim_time_based(&id).unwrap();
+
+    // Advance far into the future
+    env.ledger().set_timestamp(1_000_000_000);
+
+    // Agreement still accessible
+    let agreement = client.get_agreement(&id).unwrap();
+    assert_eq!(agreement.status, AgreementStatus::Active);
+    assert_eq!(agreement.claimed_periods, Some(1));
+
+    // Claim again after advance
+    client.claim_time_based(&id).unwrap();
+    let agreement = client.get_agreement(&id).unwrap();
+    assert_eq!(agreement.claimed_periods, Some(2));
+}

@@ -96,9 +96,11 @@ pub fn set_multisig_config(
     env.storage()
         .persistent()
         .set(&StorageKey::MultisigContract, &multisig_contract);
+        env.storage().persistent().extend_ttl(&StorageKey::MultisigContract, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
     env.storage()
         .persistent()
         .set(&StorageKey::LargePaymentThreshold, &large_payment_threshold);
+        env.storage().persistent().extend_ttl(&StorageKey::LargePaymentThreshold, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
     env.storage().persistent().set(
         &StorageKey::DisputeResolutionThreshold,
         &dispute_resolution_threshold,
@@ -956,11 +958,13 @@ fn create_payroll_agreement_internal(
     env.storage()
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
+        env.storage().persistent().extend_ttl(&StorageKey::Agreement(agreement_id), TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     let employees: Vec<EmployeeInfo> = Vec::new(env);
     env.storage()
         .persistent()
         .set(&StorageKey::AgreementEmployees(agreement_id), &employees);
+        env.storage().persistent().extend_ttl(&StorageKey::AgreementEmployees(agreement_id), TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     add_to_employer_agreements(env, &employer, agreement_id);
 
@@ -1128,6 +1132,7 @@ fn create_escrow_agreement_internal(
     env.storage()
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
+        env.storage().persistent().extend_ttl(&StorageKey::Agreement(agreement_id), TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     // Add the contributor as the sole employee
     let mut employees: Vec<EmployeeInfo> = Vec::new(env);
@@ -1139,6 +1144,7 @@ fn create_escrow_agreement_internal(
     env.storage()
         .persistent()
         .set(&StorageKey::AgreementEmployees(agreement_id), &employees);
+        env.storage().persistent().extend_ttl(&StorageKey::AgreementEmployees(agreement_id), TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     add_to_employer_agreements(env, &employer, agreement_id);
 
@@ -1289,9 +1295,11 @@ pub fn add_employee_to_agreement(
     env.storage()
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
+        env.storage().persistent().extend_ttl(&StorageKey::Agreement(agreement_id), TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
     env.storage()
         .persistent()
         .set(&StorageKey::AgreementEmployees(agreement_id), &employees);
+        env.storage().persistent().extend_ttl(&StorageKey::AgreementEmployees(agreement_id), TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     emit_employee_added(
         env,
@@ -1342,6 +1350,7 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
     env.storage()
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
+        env.storage().persistent().extend_ttl(&StorageKey::Agreement(agreement_id), TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     emit_agreement_activated(env, AgreementActivatedEvent { agreement_id });
     record_entry(
@@ -1369,6 +1378,7 @@ pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
     env.storage()
         .persistent()
         .set(&StorageKey::Arbiter, &arbiter);
+        env.storage().persistent().extend_ttl(&StorageKey::Arbiter, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
     emit_set_arbiter(env, ArbiterSetEvent { arbiter });
 
     true
@@ -1436,6 +1446,7 @@ pub fn set_grace_extension_policy(
     env.storage()
         .persistent()
         .set(&StorageKey::GracePeriodExtensionPolicy, &policy);
+        env.storage().persistent().extend_ttl(&StorageKey::GracePeriodExtensionPolicy, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
     Ok(())
 }
 
@@ -1572,6 +1583,7 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
     env.storage()
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
+        env.storage().persistent().extend_ttl(&StorageKey::Agreement(agreement_id), TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     emit_dsipute_raised(env, DisputeRaisedEvent { agreement_id });
     record_entry(
@@ -1723,6 +1735,7 @@ fn resolve_dispute_core(
     env.storage()
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
+        env.storage().persistent().extend_ttl(&StorageKey::Agreement(agreement_id), TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     emit_dsipute_resolved(
         env,
@@ -1776,6 +1789,7 @@ pub fn set_exchange_rate_admin(
     env.storage()
         .persistent()
         .set(&StorageKey::ExchangeRateAdmin, &admin);
+        env.storage().persistent().extend_ttl(&StorageKey::ExchangeRateAdmin, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     Ok(())
 }
@@ -2158,6 +2172,7 @@ pub fn claim_payroll_multisig(
         env.storage()
             .persistent()
             .set(&StorageKey::LargePaymentThreshold, &t);
+        env.storage().persistent().extend_ttl(&StorageKey::LargePaymentThreshold, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
     }
     result
 }
@@ -2832,6 +2847,7 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollErro
     env.storage()
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
+        env.storage().persistent().extend_ttl(&StorageKey::Agreement(agreement_id), TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     emit_payment_sent(
         env,
@@ -2965,6 +2981,7 @@ pub fn pause_agreement(env: &Env, agreement_id: u128) {
     env.storage()
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
+        env.storage().persistent().extend_ttl(&StorageKey::Agreement(agreement_id), TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     emit_agreement_paused(env, AgreementPausedEvent { agreement_id });
 }
@@ -3004,6 +3021,7 @@ pub fn resume_agreement(env: &Env, agreement_id: u128) {
     env.storage()
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
+        env.storage().persistent().extend_ttl(&StorageKey::Agreement(agreement_id), TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     emit_agreement_resumed(env, AgreementResumedEvent { agreement_id });
 }
@@ -3156,6 +3174,7 @@ pub fn cancel_agreement(env: &Env, agreement_id: u128) {
     env.storage()
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
+        env.storage().persistent().extend_ttl(&StorageKey::Agreement(agreement_id), TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     emit_agreement_cancelled(env, AgreementCancelledEvent { agreement_id });
     record_entry(
@@ -3335,6 +3354,7 @@ pub fn set_emergency_guardians(env: &Env, guardians: Vec<Address>) {
     env.storage()
         .persistent()
         .set(&StorageKey::EmergencyGuardians, &guardians);
+        env.storage().persistent().extend_ttl(&StorageKey::EmergencyGuardians, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 }
 
 /// Gets emergency guardians
@@ -3386,12 +3406,14 @@ pub fn propose_emergency_pause(
     env.storage()
         .persistent()
         .set(&StorageKey::PendingPause, &pause_state);
+        env.storage().persistent().extend_ttl(&StorageKey::PendingPause, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     let mut approvals: Vec<Address> = Vec::new(env);
     approvals.push_back(caller);
     env.storage()
         .persistent()
         .set(&StorageKey::PauseApprovals, &approvals);
+        env.storage().persistent().extend_ttl(&StorageKey::PauseApprovals, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     Ok(())
 }
@@ -3431,6 +3453,7 @@ pub fn approve_emergency_pause(env: &Env, caller: Address) -> Result<(), Payroll
     env.storage()
         .persistent()
         .set(&StorageKey::PauseApprovals, &approvals);
+        env.storage().persistent().extend_ttl(&StorageKey::PauseApprovals, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     let threshold = (guardians.len() / 2) + 1;
     if approvals.len() >= threshold {
@@ -3460,6 +3483,7 @@ fn execute_emergency_pause(env: &Env) -> Result<(), PayrollError> {
     env.storage()
         .persistent()
         .set(&StorageKey::EmergencyPause, &pending);
+        env.storage().persistent().extend_ttl(&StorageKey::EmergencyPause, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
     env.storage().persistent().remove(&StorageKey::PendingPause);
     env.storage()
         .persistent()
@@ -3489,6 +3513,7 @@ pub fn emergency_pause(env: &Env) -> Result<(), PayrollError> {
     env.storage()
         .persistent()
         .set(&StorageKey::EmergencyPause, &pause_state);
+        env.storage().persistent().extend_ttl(&StorageKey::EmergencyPause, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     Ok(())
 }
@@ -3514,6 +3539,7 @@ pub fn emergency_unpause(env: &Env) -> Result<(), PayrollError> {
     env.storage()
         .persistent()
         .set(&StorageKey::EmergencyPause, &pause_state);
+        env.storage().persistent().extend_ttl(&StorageKey::EmergencyPause, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
 
     Ok(())
 }

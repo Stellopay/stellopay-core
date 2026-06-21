@@ -9,6 +9,13 @@ use soroban_sdk::{contracterror, contracttype, Address, Env, Vec};
 /// late Soroban resource exhaustion after partial state changes.
 pub const MAX_BATCH_SIZE: u32 = 20;
 
+/// Number of seconds before a persistent key's TTL is considered "live".
+/// Keys accessed within this window are bumped to TTL_EXTEND_TO.
+pub const TTL_LIVE_THRESHOLD: u32 = 86400; // 1 day
+
+/// Target TTL extension duration (in seconds) for long-lived persistent keys.
+pub const TTL_EXTEND_TO: u32 = 5184000; // 60 days
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Milestone {
@@ -446,6 +453,12 @@ pub enum DataKey {
     ExchangeRate(Address, Address),
 }
 
+/// Extend the TTL of a persistent DataKey so long-lived entries are not archived.
+/// Call this after every read or write to a critical persistent key.
+fn extend_data_key_ttl(env: &Env, key: &DataKey) {
+    env.storage().persistent().extend_ttl(key, TTL_LIVE_THRESHOLD, TTL_EXTEND_TO);
+}
+
 impl DataKey {
     /// Get the number of employees in an agreement
     pub fn get_employee_count(env: &Env, agreement_id: u128) -> u32 {
@@ -457,6 +470,7 @@ impl DataKey {
     pub fn set_employee_count(env: &Env, agreement_id: u128, count: u32) {
         let key: DataKey = DataKey::AgreementEmployeeCount(agreement_id);
         env.storage().persistent().set(&key, &count);
+        extend_data_key_ttl(env, &key);
     }
 
     /// Get employee address at a specific index in an agreement
@@ -469,6 +483,7 @@ impl DataKey {
     pub fn set_employee(env: &Env, agreement_id: u128, employee_index: u32, employee: &Address) {
         let key: DataKey = DataKey::AgreementEmployee(agreement_id, employee_index);
         env.storage().persistent().set(&key, employee);
+        extend_data_key_ttl(env, &key);
     }
 
     /// Get salary per period for an employee at a specific index
@@ -481,6 +496,7 @@ impl DataKey {
     pub fn set_employee_salary(env: &Env, agreement_id: u128, employee_index: u32, salary: i128) {
         let key: DataKey = DataKey::EmployeeSalary(agreement_id, employee_index);
         env.storage().persistent().set(&key, &salary);
+        extend_data_key_ttl(env, &key);
     }
 
     /// Get number of claimed periods for an employee at a specific index
@@ -498,6 +514,7 @@ impl DataKey {
     ) {
         let key: DataKey = DataKey::EmployeeClaimedPeriods(agreement_id, employee_index);
         env.storage().persistent().set(&key, &periods);
+        extend_data_key_ttl(env, &key);
     }
 
     /// Get activation timestamp for an agreement
@@ -510,6 +527,7 @@ impl DataKey {
     pub fn set_agreement_activation_time(env: &Env, agreement_id: u128, timestamp: u64) {
         let key: DataKey = DataKey::AgreementActivationTime(agreement_id);
         env.storage().persistent().set(&key, &timestamp);
+        extend_data_key_ttl(env, &key);
     }
 
     /// Get period duration in seconds for an agreement
@@ -522,6 +540,7 @@ impl DataKey {
     pub fn set_agreement_period_duration(env: &Env, agreement_id: u128, duration: u64) {
         let key: DataKey = DataKey::AgreementPeriodDuration(agreement_id);
         env.storage().persistent().set(&key, &duration);
+        extend_data_key_ttl(env, &key);
     }
 
     /// Get token address for an agreement
@@ -534,6 +553,7 @@ impl DataKey {
     pub fn set_agreement_token(env: &Env, agreement_id: u128, token: &Address) {
         let key: DataKey = DataKey::AgreementToken(agreement_id);
         env.storage().persistent().set(&key, token);
+        extend_data_key_ttl(env, &key);
     }
 
     /// Get total paid amount for an agreement
@@ -546,6 +566,7 @@ impl DataKey {
     pub fn set_agreement_paid_amount(env: &Env, agreement_id: u128, amount: i128) {
         let key: DataKey = DataKey::AgreementPaidAmount(agreement_id);
         env.storage().persistent().set(&key, &amount);
+        extend_data_key_ttl(env, &key);
     }
 
     /// Get escrow balance for an agreement and token
@@ -563,6 +584,7 @@ impl DataKey {
     ) {
         let key: DataKey = DataKey::AgreementEscrowBalance(agreement_id, token.clone());
         env.storage().persistent().set(&key, &amount);
+        extend_data_key_ttl(env, &key);
     }
 
     /// Get the configured FX rate for a `(base, quote)` currency pair, if any.
@@ -589,6 +611,7 @@ impl DataKey {
             updated_at: env.ledger().timestamp(),
         };
         env.storage().persistent().set(&key, &info);
+        extend_data_key_ttl(env, &key);
     }
 
     /// Get optional configured max-age (seconds) for FX rates.
