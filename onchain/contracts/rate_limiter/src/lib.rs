@@ -103,6 +103,8 @@ impl RateLimiter {
     /// @param refill_rate Tokens added per second for this address.
     pub fn set_limit_for(env: Env, addr: Address, burst: u32, refill_rate: u32) {
         Self::require_admin_auth(&env);
+        assert!(burst > 0, "burst must be positive");
+        assert!(refill_rate > 0, "refill_rate must be positive");
         env.storage().persistent().set(&StorageKey::Limit(addr), &LimitConfig { burst, refill_rate });
     }
 
@@ -218,4 +220,3 @@ impl RateLimiter {
         admin.require_auth();
     }
 }
-

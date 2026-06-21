@@ -26,7 +26,7 @@ A "bucket" is initialized with a **Burst Capacity** (maximum tokens). Every seco
 
 ### Configuration
 - `set_global_limit(enabled, burst, refill_rate)`: Enables or disables the global rate limit.
-- `set_limit_for(addr, burst, refill_rate)`: Sets an override for a specific address.
+- `set_limit_for(addr, burst, refill_rate)`: Sets an override for a specific address. **Requires `burst > 0` and `refill_rate > 0`** to prevent silent DoS from zero-capacity limits.
 - `clear_limit_for(addr)`: Reverts an address to the default limit.
 - `transfer_admin(new_admin)`: Changes the contract administrator.
 
