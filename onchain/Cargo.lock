@@ -1192,9 +1192,11 @@ dependencies = [
 name = "integration_tests"
 version = "0.0.0"
 dependencies = [
+ "audit_logger",
  "bonus_system",
  "dispute_escalation",
  "employee_roles",
+ "expense_reimbursement",
  "governance",
  "multisig",
  "payment_history",
@@ -1202,6 +1204,7 @@ dependencies = [
  "payment_scheduler",
  "payroll_escrow",
  "rbac",
+ "salary_adjustment",
  "soroban-sdk",
  "stello_pay_contract",
  "token_vesting",

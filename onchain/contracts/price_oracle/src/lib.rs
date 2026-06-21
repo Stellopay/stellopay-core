@@ -39,7 +39,7 @@ pub enum OracleError {
     InvalidPairConfig = 10,
     /// The same source attempted to vote twice in the same active quorum bucket.
     DuplicateVote = 11,
-    /// Source submitted too frequently; must wait at least `min_submission_interval_seconds`.
+    /// Source submitted too frequently; must wait at least `min_submit_interval_secs`.
     SubmissionRateLimited = 12,
 }
 
@@ -76,10 +76,10 @@ pub struct PairConfig {
     /// ## Anti-manipulation assumption
     /// A single source cannot submit multiple near-duplicate prices within one window
     /// to skew quorum clustering, because each submission from the same source is
-    /// rejected until `min_submission_interval_seconds` have elapsed since its last
+    /// rejected until `min_submit_interval_secs` have elapsed since its last
     /// accepted submission timestamp. Combined with `DuplicateVote` enforcement in
     /// quorum mode, each source contributes at most one effective vote per bucket.
-    pub min_submission_interval_seconds: u64,
+    pub min_submit_interval_secs: u64,
 }
 
 /// Last accepted rate for a `(base, quote)` pair.
@@ -132,7 +132,7 @@ enum DataKey {
     /// Active pending quorum bucket for a `(base, quote)` pair.
     PendingBucket(Address, Address),
     /// Last submission timestamp for a `(source, base, quote)` triple.
-    /// Used to enforce `min_submission_interval_seconds`.
+    /// Used to enforce `min_submit_interval_secs`.
     LastSubmission(Address, Address, Address),
 }
 
@@ -343,7 +343,7 @@ impl PriceOracleContract {
     /// @param quorum_n             Minimum number of distinct sources required.
     /// @param tolerance_bps        Maximum spread between quorum-supporting votes.
     /// @param quorum_window_seconds Time window used to bucket pending votes.
-    /// @param min_submission_interval_seconds Minimum seconds between consecutive
+    /// @param min_submit_interval_secs Minimum seconds between consecutive
     ///        submissions from the same source for this pair. `0` disables the check.
     pub fn configure_pair(
         env: Env,
@@ -356,7 +356,7 @@ impl PriceOracleContract {
         quorum_n: u32,
         tolerance_bps: u32,
         quorum_window_seconds: u64,
-        min_submission_interval_seconds: u64,
+        min_submit_interval_secs: u64,
     ) -> Result<(), OracleError> {
         require_admin(&env, &caller)?;
 
@@ -375,7 +375,7 @@ impl PriceOracleContract {
             quorum_n,
             tolerance_bps,
             quorum_window_seconds,
-            min_submission_interval_seconds,
+            min_submit_interval_secs,
         };
 
         env.storage()
@@ -546,7 +546,7 @@ impl PriceOracleContract {
         }
 
         // Per-source submission rate limit.
-        if cfg.min_submission_interval_seconds > 0 {
+        if cfg.min_submit_interval_secs > 0 {
             let last_key =
                 DataKey::LastSubmission(source.clone(), base.clone(), quote.clone());
             if let Some(last_ts) = env
@@ -555,7 +555,7 @@ impl PriceOracleContract {
                 .get::<_, u64>(&last_key)
             {
                 let elapsed = source_timestamp.saturating_sub(last_ts);
-                if elapsed < cfg.min_submission_interval_seconds {
+                if elapsed < cfg.min_submit_interval_secs {
                     return Err(OracleError::SubmissionRateLimited);
                 }
             }

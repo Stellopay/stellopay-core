@@ -98,7 +98,7 @@ fn full_setup(
         DEFAULT_TOLERANCE_BPS,
         DEFAULT_QUORUM_WINDOW_SECONDS,
     );
-    // NB: min_submission_interval_seconds = 0 (rate limit disabled) by default.
+    // NB: min_submit_interval_secs = 0 (rate limit disabled) by default.
 
     (
         oracle_client,
@@ -224,7 +224,7 @@ fn test_configure_pair_and_read_config() {
     assert_eq!(cfg.quorum_n, 1);
     assert_eq!(cfg.tolerance_bps, DEFAULT_TOLERANCE_BPS);
     assert_eq!(cfg.quorum_window_seconds, DEFAULT_QUORUM_WINDOW_SECONDS);
-    assert_eq!(cfg.min_submission_interval_seconds, 0);
+    assert_eq!(cfg.min_submit_interval_secs, 0);
 }
 
 #[test]
@@ -1411,7 +1411,7 @@ fn test_rate_limit_single_source_counts_once_in_quorum() {
     assert!(oracle_client.get_pair_state(&base, &quote).is_some());
 }
 
-/// min_submission_interval_seconds = 0 disables the rate limit entirely.
+/// min_submit_interval_secs = 0 disables the rate limit entirely.
 #[test]
 fn test_rate_limit_zero_interval_is_disabled() {
     let env = create_env();
