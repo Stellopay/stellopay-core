@@ -161,3 +161,53 @@ fn test_admin_transfer() {
     assert_eq!(client.get_admin(), Some(admin2.clone()));
 }
 
+#[test]
+fn test_zero_burst_rejected() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &5u32, &1u32, &true);
+
+    let addr = Address::generate(&env);
+    let result = client.try_set_limit_for(&admin, &addr, &0u32, &10u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_zero_refill_rate_rejected() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &5u32, &1u32, &true);
+
+    let addr = Address::generate(&env);
+    let result = client.try_set_limit_for(&admin, &addr, &10u32, &0u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_both_zero_rejected() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &5u32, &1u32, &true);
+
+    let addr = Address::generate(&env);
+    let result = client.try_set_limit_for(&admin, &addr, &0u32, &0u32);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_valid_positive_values_accepted() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &5u32, &1u32, &true);
+
+    let addr = Address::generate(&env);
+    client.set_limit_for(&admin, &addr, &10u32, &5u32);
+
+    let config = client.get_limit_for(&addr);
+    assert_eq!(config.burst, 10);
+    assert_eq!(config.refill_rate, 5);
+}
