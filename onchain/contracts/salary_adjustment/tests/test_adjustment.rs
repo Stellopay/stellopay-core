@@ -934,3 +934,46 @@ fn test_get_owner() {
 
     assert_eq!(client.get_owner(), Some(owner));
 }
+
+#[test]
+fn test_retroactive_no_op_rejected() {
+    let env = create_env();
+    set_time(&env, 1_000);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let raw_reason_hash = reason_hash(&env, 7);
+
+    client.initialize(&owner);
+
+    // First create a valid adjustment to establish current salary
+    let id1 = client.create_retroactive_adjustment(
+        &owner,
+        &employer,
+        &employee,
+        &approver,
+        &5_000,
+        &6_000,
+        &500,
+        &raw_reason_hash,
+    );
+    client.approve_adjustment(&approver, &id1);
+    client.apply_adjustment(&employer, &id1);
+
+    // Now try a retroactive no-op (new_salary == current_salary)
+    let result = client.try_create_retroactive_adjustment(
+        &owner,
+        &employer,
+        &employee,
+        &approver,
+        &6_000,
+        &6_000, // same as current
+        &400,
+        &raw_reason_hash,
+    );
+
+    // Should be rejected with "New salary must differ from current salary"
+    assert!(result.is_err());
+}

@@ -37,6 +37,18 @@ Employer creates adjustment (Pending)
 | Approved adjustments are immutable | Cancel blocked on `Approved`/`Applied` status |
 | Conflicting edits | Same employee + same effective timestamp can only have one stored adjustment |
 | Compliance auditability | Every mutating action appends a queryable audit record and emits an audit event |
+| **Validation parity** | `create_retroactive_adjustment` uses the same `assert_adjustment_inputs` validation as `create_adjustment` (via `create_adjustment_internal`), ensuring the retroactive path is never less validated than the standard path |
+
+### Validation Parity
+
+Both `create_adjustment` and `create_retroactive_adjustment` use `assert_adjustment_inputs` through `create_adjustment_internal`. This ensures:
+
+- **No-op rejection**: `new_salary != current_salary` is enforced for both paths
+- **Positive values**: Both current and new salaries must be positive
+- **Salary cap**: New salary must not exceed the configured cap
+- **Date validation**: Forward adjustments require future effective dates; retroactive adjustments require past effective dates
+
+This design prevents audit trail pollution from no-op retroactive adjustments.
 
 ## Constants
 

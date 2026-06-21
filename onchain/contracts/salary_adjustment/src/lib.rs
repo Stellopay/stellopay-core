@@ -537,6 +537,7 @@ impl SalaryAdjustmentContract {
     /// * `"Only owner can authorize retroactive adjustment"`
     /// * `"Retroactive reason hash required"`
     /// * Standard create validation panics.
+
     pub fn create_retroactive_adjustment(
         env: Env,
         owner: Address,
