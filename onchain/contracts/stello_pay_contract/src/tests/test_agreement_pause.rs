@@ -150,3 +150,34 @@ fn test_pause_resume_state_transitions() {
         AgreementStatus::Active
     );
 }
+#[test]
+#[should_panic(expected = ""Employee already exists in this agreement"")]
+fn test_add_duplicate_employee_rejected() {
+    let (env, employer, _contributor, token, client) = create_test_env();
+    let employee = Address::generate(&env);
+    env.mock_all_auths();
+
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &3600);
+
+    // First add should succeed
+    client.add_employee_to_agreement(&agreement_id, &employee, &1000);
+
+    // Second add of the same employee should panic
+    client.add_employee_to_agreement(&agreement_id, &employee, &1000);
+}
+
+#[test]
+fn test_add_different_employees_both_succeed() {
+    let (env, employer, _contributor, token, client) = create_test_env();
+    let emp1 = Address::generate(&env);
+    let emp2 = Address::generate(&env);
+    env.mock_all_auths();
+
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &3600);
+
+    client.add_employee_to_agreement(&agreement_id, &emp1, &1000);
+    client.add_employee_to_agreement(&agreement_id, &emp2, &2000);
+
+    let employees = client.get_agreement_employees(&agreement_id);
+    assert_eq!(employees.len(), 2, "Both employees must be stored");
+}

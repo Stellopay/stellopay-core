@@ -1278,6 +1278,12 @@ pub fn add_employee_to_agreement(
         .get(&StorageKey::AgreementEmployees(agreement_id))
         .unwrap_or(Vec::new(env));
 
+        // Reject duplicate employee addresses
+    for i in 0..employees.len() {
+        let existing = employees.get(i).unwrap();
+        assert!(existing.address != employee, "Employee already exists in this agreement");
+    }
+
     employees.push_back(EmployeeInfo {
         address: employee.clone(),
         salary_per_period,
