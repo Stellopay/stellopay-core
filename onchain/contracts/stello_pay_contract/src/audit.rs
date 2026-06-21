@@ -10,6 +10,7 @@ pub enum AuditEvent {
     DisputeRaised,
     DisputeResolved,
     ArbiterSet,
+    MultisigConfigChanged,
 }
 
 /// Append-only audit entry for critical agreement lifecycle transitions.
@@ -43,6 +44,7 @@ impl AuditEvent {
             AuditEvent::AgreementCancelled => Symbol::new(env, "agreement_cancelled"),
             AuditEvent::DisputeRaised => Symbol::new(env, "dispute_raised"),
             AuditEvent::ArbiterSet => Symbol::new(env, "arbiter_set"),
+            AuditEvent::MultisigConfigChanged => Symbol::new(env, "multisig_config_changed"),
             AuditEvent::DisputeResolved => Symbol::new(env, "dispute_resolved"),
         }
     }

@@ -167,6 +167,17 @@
         "successful_claims": { "type": "integer" },
         "failed_claims": { "type": "integer" }
       }
+    },
+    {
+      "title": "MultisigConfigChanged",
+      "properties": {
+        "event": { "const": "MultisigConfigChanged" },
+        "caller": { "$ref": "#/definitions/Address" },
+        "old_large_payment_threshold": { "type": "string" },
+        "new_large_payment_threshold": { "type": "string" },
+        "old_dispute_resolution_threshold": { "type": "string" },
+        "new_dispute_resolution_threshold": { "type": "string" }
+      }
     }
   ]
 }

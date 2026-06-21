@@ -7,11 +7,11 @@ use crate::events::{
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
     emit_employee_added, emit_grace_period_extended, emit_grace_period_finalized,
     emit_milestone_funded, emit_payment_received, emit_payment_sent, emit_payroll_claimed,
-    emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
+    emit_multisig_config_changed, emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
     AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
     BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
     GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
-    MilestoneClaimed, MilestoneFundedEvent, PaymentReceivedEvent, PaymentSentEvent,
+    MilestoneClaimed, MilestoneFundedEvent, MultisigConfigChangedEvent, PaymentReceivedEvent, PaymentSentEvent,
     PayrollClaimedEvent,
 };
 use crate::storage::{
@@ -93,6 +93,16 @@ pub fn set_multisig_config(
     if owner != stored_owner {
         return Err(PayrollError::Unauthorized);
     }
+    // Capture old values for event emission
+    let old_large_payment_threshold: i128 = env.storage()
+        .persistent()
+        .get(&StorageKey::LargePaymentThreshold)
+        .unwrap_or(0i128);
+    let old_dispute_resolution_threshold: i128 = env.storage()
+        .persistent()
+        .get(&StorageKey::DisputeResolutionThreshold)
+        .unwrap_or(0i128);
+
     env.storage()
         .persistent()
         .set(&StorageKey::MultisigContract, &multisig_contract);
@@ -103,6 +113,26 @@ pub fn set_multisig_config(
         &StorageKey::DisputeResolutionThreshold,
         &dispute_resolution_threshold,
     );
+
+    // Emit event for off-chain monitors
+    emit_multisig_config_changed(env, MultisigConfigChangedEvent {
+        caller: owner.clone(),
+        old_large_payment_threshold,
+        new_large_payment_threshold: large_payment_threshold,
+        old_dispute_resolution_threshold,
+        new_dispute_resolution_threshold: dispute_resolution_threshold,
+    });
+
+    // Record audit entry (agreement_id=0 for global config)
+    record_entry(
+        env,
+        owner,
+        AuditEvent::MultisigConfigChanged,
+        0u128,
+        None,
+        Some(large_payment_threshold + dispute_resolution_threshold),
+    );
+
     Ok(())
 }
 

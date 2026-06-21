@@ -253,6 +253,21 @@ pub struct MilestoneFundedEvent {
     pub total_escrow_balance: i128,
 }
 
+/// Event: Multisig configuration changed.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MultisigConfigChangedEvent {
+    pub caller: Address,
+    pub old_large_payment_threshold: i128,
+    pub new_large_payment_threshold: i128,
+    pub old_dispute_resolution_threshold: i128,
+    pub new_dispute_resolution_threshold: i128,
+}
+
+pub fn emit_multisig_config_changed(env: &Env, event: MultisigConfigChangedEvent) {
+    event.publish(env);
+}
+
 pub fn emit_milestone_funded(env: &Env, event: MilestoneFundedEvent) {
     event.publish(env);
 }
