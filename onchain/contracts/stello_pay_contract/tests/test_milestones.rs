@@ -587,3 +587,16 @@ fn test_very_large_milestone_amounts() {
     );
     assert!(client.get_milestone(&agreement_id, &1).unwrap().claimed);
 }
+
+/// Adding milestones that would overflow i128::MAX must panic.
+/// Regression test for #502: checked arithmetic in add_milestone.
+#[test]
+#[should_panic(expected = "Milestone total overflow")]
+fn test_milestone_total_overflow_panics() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
+    // First large milestone succeeds
+    client.add_milestone(&agreement_id, &(i128::MAX / 2));
+    // Second large milestone pushes total past i128::MAX
+    client.add_milestone(&agreement_id, &(i128::MAX / 2 + 1));
+}

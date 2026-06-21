@@ -350,15 +350,18 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
         .instance()
         .get(&MilestoneKey::TotalAmount(agreement_id))
         .unwrap_or(0);
+    let new_total = total
+        .checked_add(amount)
+        .expect("Milestone total overflow");
     env.storage()
         .instance()
-        .set(&MilestoneKey::TotalAmount(agreement_id), &(total + amount));
+        .set(&MilestoneKey::TotalAmount(agreement_id), &new_total);
 
     // Post-invariant: total amount should equal sum of milestones
     #[cfg(debug_assertions)]
     {
         let total_sum = sum_all_milestones(&env, agreement_id);
-        assert!(total_sum == total + amount, "Total amount mismatch after adding milestone");
+        assert!(total_sum == new_total, "Total amount mismatch after adding milestone");
     }
 
     MilestoneAdded {
