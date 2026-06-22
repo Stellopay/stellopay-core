@@ -28,6 +28,7 @@ pub enum GovernanceError {
     ProposalNotActive = 7,
     VotingStillOpen = 8,
     VotingClosed = 9,
+    VotingPeriodTooLong = 18,
     AlreadyVoted = 10,
     NotEligibleVoter = 11,
     ProposalNotSucceeded = 12,
@@ -321,6 +322,10 @@ fn cancel_timelock_operation(env: &Env, op_id: u128) -> Result<(), GovernanceErr
     Ok(())
 }
 
+/// Maximum voting period: 90 days in seconds.
+/// Prevents misconfiguration that could trap proposals in perpetual voting.
+const MAX_VOTING_PERIOD_SECONDS: u64 = 90 * 24 * 3600;
+
 #[contract]
 pub struct GovernanceContract;
 
@@ -359,6 +364,9 @@ impl GovernanceContract {
         }
         if voting_period_seconds == 0 {
             return Err(GovernanceError::InvalidVotingPeriod);
+        }
+        if voting_period_seconds > MAX_VOTING_PERIOD_SECONDS {
+            return Err(GovernanceError::VotingPeriodTooLong);
         }
 
         env.storage().persistent().set(&StorageKey::Owner, &owner);
@@ -401,6 +409,9 @@ impl GovernanceContract {
         }
         if voting_period_seconds == 0 {
             return Err(GovernanceError::InvalidVotingPeriod);
+        }
+        if voting_period_seconds > MAX_VOTING_PERIOD_SECONDS {
+            return Err(GovernanceError::VotingPeriodTooLong);
         }
 
         env.storage()
