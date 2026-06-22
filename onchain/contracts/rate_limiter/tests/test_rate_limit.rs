@@ -159,5 +159,72 @@ fn test_admin_transfer() {
     
     client.transfer_admin(&admin2);
     assert_eq!(client.get_admin(), Some(admin2.clone()));
+#[test]
+fn test_set_limit_for_zero_burst_rejected() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let addr = Address::generate(&env);
+    let contract_id = env.register(RateLimiter, ());
+    let client = RateLimiterClient::new(&env, &contract_id);
+    client.initialize(&admin, &10, &2, &false);
+    
+    // Try to set zero burst - should be rejected
+    let result: Result<(), _> = client.try_set_limit_for(&addr, &0, &5);
+    assert!(result.is_err());
 }
 
+#[test]
+fn test_set_limit_for_zero_refill_rejected() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let addr = Address::generate(&env);
+    let contract_id = env.register(RateLimiter, ());
+    let client = RateLimiterClient::new(&env, &contract_id);
+    client.initialize(&admin, &10, &2, &false);
+    
+    // Try to set zero refill_rate - should be rejected
+    let result: Result<(), _> = client.try_set_limit_for(&addr, &5, &0);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_limit_for_both_zero_rejected() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let addr = Address::generate(&env);
+    let contract_id = env.register(RateLimiter, ());
+    let client = RateLimiterClient::new(&env, &contract_id);
+    client.initialize(&admin, &10, &2, &false);
+    
+    // Try to set both zero
+    let result: Result<(), _> = client.try_set_limit_for(&addr, &0, &0);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_global_limit_zero_burst_rejected() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(RateLimiter, ());
+    let client = RateLimiterClient::new(&env, &contract_id);
+    client.initialize(&admin, &10, &2, &false);
+    
+    // Try to enable global limit with zero burst
+    let result: Result<(), _> = client.try_set_global_limit(&true, &0, &5);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_global_limit_zero_refill_rate_rejected() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let contract_id = env.register(RateLimiter, ());
+    let client = RateLimiterClient::new(&env, &contract_id);
+    client.initialize(&admin, &10, &2, &false);
+    
+    // Try to enable global limit with zero refill_rate
+    let result: Result<(), _> = client.try_set_global_limit(&true, &5, &0);
+    assert!(result.is_err());
+}
+
+}

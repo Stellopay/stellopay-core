@@ -51,6 +51,16 @@ pub struct LimitConfig {
     /// Tokens added to the bucket per second (refill rate)
     pub refill_rate: u32,
 }
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum RateLimitError {
+    /// Burst capacity must be greater than zero to allow traffic
+    InvalidBurst = 1,
+    /// Refill rate must be greater than zero to allow token regeneration
+    InvalidRefillRate = 2,
+}
+
 
 #[contract]
 pub struct RateLimiter;
@@ -88,11 +98,20 @@ impl RateLimiter {
     /// @param enabled Whether to enforce the global limit.
     /// @param burst Global maximum burst capacity.
     /// @param refill_rate Global tokens added per second.
-    pub fn set_global_limit(env: Env, enabled: bool, burst: u32, refill_rate: u32) {
+    pub fn set_global_limit(env: Env, enabled: bool, burst: u32, refill_rate: u32) -> Result<(), RateLimitError> {
         Self::require_admin_auth(&env);
+        if enabled {
+            if burst == 0 {
+                return Err(RateLimitError::InvalidBurst);
+            }
+            if refill_rate == 0 {
+                return Err(RateLimitError::InvalidRefillRate);
+            }
+        }
         env.storage().persistent().set(&StorageKey::GlobalLimitEnabled, &enabled);
         env.storage().persistent().set(&StorageKey::GlobalBurst, &burst);
         env.storage().persistent().set(&StorageKey::GlobalRefillRate, &refill_rate);
+        Ok(())
     }
 
     /// Sets a per-address limit override.
@@ -101,9 +120,16 @@ impl RateLimiter {
     /// @param addr Subject address.
     /// @param burst Max burst capacity for this address.
     /// @param refill_rate Tokens added per second for this address.
-    pub fn set_limit_for(env: Env, addr: Address, burst: u32, refill_rate: u32) {
+    pub fn set_limit_for(env: Env, addr: Address, burst: u32, refill_rate: u32) -> Result<(), RateLimitError> {
         Self::require_admin_auth(&env);
+        if burst == 0 {
+            return Err(RateLimitError::InvalidBurst);
+        }
+        if refill_rate == 0 {
+            return Err(RateLimitError::InvalidRefillRate);
+        }
         env.storage().persistent().set(&StorageKey::Limit(addr), &LimitConfig { burst, refill_rate });
+        Ok(())
     }
 
     /// Removes a per-address limit override.
