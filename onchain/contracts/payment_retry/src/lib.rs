@@ -248,6 +248,11 @@ fn mark_processed(env: &Env, payment_id: BytesN<32>) {
 
 /// Validates that `max_retry_attempts` and `retry_intervals` satisfy protocol
 /// constraints. Called at creation time; never called during retry processing.
+///
+/// A no-retry policy (`max_retry_attempts == 0`) must not carry retry
+/// intervals. Otherwise operators can submit a contradictory configuration that
+/// looks like it has backoff windows but terminally fails on the first missed
+/// attempt because no retries are actually allowed.
 fn validate_retry_configuration(max_retry_attempts: u32, retry_intervals: &Vec<u64>) {
     assert!(
         max_retry_attempts <= MAX_RETRY_ATTEMPTS,
@@ -258,7 +263,12 @@ fn validate_retry_configuration(max_retry_attempts: u32, retry_intervals: &Vec<u
         "Too many retry intervals"
     );
 
-    if max_retry_attempts > 0 {
+    if max_retry_attempts == 0 {
+        assert!(
+            retry_intervals.len() == 0,
+            "Retry intervals require retry attempts"
+        );
+    } else {
         assert!(
             retry_intervals.len() > 0,
             "Retry intervals required when retries are enabled"
@@ -639,5 +649,30 @@ impl PaymentRetryContract {
         env.storage()
             .persistent()
             .get::<_, Address>(&StorageKey::Owner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soroban_sdk::vec;
+
+    #[test]
+    fn retry_configuration_allows_zero_attempts_without_intervals() {
+        let env = Env::default();
+        validate_retry_configuration(0, &vec![&env]);
+    }
+
+    #[test]
+    #[should_panic(expected = "Retry intervals require retry attempts")]
+    fn retry_configuration_rejects_zero_attempts_with_intervals() {
+        let env = Env::default();
+        validate_retry_configuration(0, &vec![&env, 30u64]);
+    }
+
+    #[test]
+    fn retry_configuration_allows_positive_attempts_with_intervals() {
+        let env = Env::default();
+        validate_retry_configuration(3, &vec![&env, 30u64, 60u64]);
     }
 }
