@@ -19,6 +19,13 @@ use withdrawal_timelock::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum GovernanceError {
+
+/// Maximum allowed voting period in seconds (90 days).
+/// Prevents an admin from accidentally setting a period so long
+/// that proposals become effectively unresolvable.
+const MAX_VOTING_PERIOD_SECONDS: u64 = 90 * 24 * 60 * 60; // 90 days
+
+
     NotInitialized = 1,
     AlreadyInitialized = 2,
     NotOwner = 3,
@@ -400,6 +407,9 @@ impl GovernanceContract {
             return Err(GovernanceError::InvalidQuorum);
         }
         if voting_period_seconds == 0 {
+            return Err(GovernanceError::InvalidVotingPeriod);
+        }
+        if voting_period_seconds > MAX_VOTING_PERIOD_SECONDS {
             return Err(GovernanceError::InvalidVotingPeriod);
         }
 
