@@ -1366,6 +1366,15 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
 pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
     caller.require_auth();
 
+    // Reject self-appointment to preserve dispute neutrality.
+    assert!(arbiter != caller, "Arbiter cannot be the caller/employer");
+
+    // Reject setting the same arbiter again (no-op).
+    let current: Option<Address> = env.storage().persistent().get(&StorageKey::Arbiter);
+    if let Some(ref cur) = current {
+        assert!(arbiter != *cur, "Arbiter is already set to this address");
+    }
+
     env.storage()
         .persistent()
         .set(&StorageKey::Arbiter, &arbiter);
