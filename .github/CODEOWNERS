@@ -6,7 +6,7 @@
 * @Stellopay/maintainers
 
 # Soroban smart contracts
-/onchain/contracts/** @Stellopapay/contract-reviewers
+/onchain/contracts/** @Stellopay/contract-reviewers
 
 # Tooling
 /tools/** @Stellopay/tools-maintainers
@@ -16,4 +16,4 @@
 
 # Documentation
 /*.md @Stellopay/docs
-/SECURITY.md @Stellopapay/security
+/SECURITY.md @Stellopay/security
