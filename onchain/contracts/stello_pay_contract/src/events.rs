@@ -256,3 +256,26 @@ pub struct MilestoneFundedEvent {
 pub fn emit_milestone_funded(env: &Env, event: MilestoneFundedEvent) {
     event.publish(env);
 }
+
+/// Event: Batch payroll claim failed for a specific employee.
+///
+/// Emitted once per failed entry in atch_claim_payroll so off-chain
+/// indexers can detect per-employee failures without re-simulating the batch.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BatchPayrollClaimFailedEvent {
+    pub agreement_id: u128,
+    pub employee: Address,
+    pub error_code: u32,
+}
+
+/// Event: Batch milestone claim failed for a specific milestone.
+///
+/// Emitted once per failed entry in atch_claim_milestones.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BatchMilestoneClaimFailedEvent {
+    pub agreement_id: u128,
+    pub milestone_id: u32,
+    pub error_code: u32,
+}

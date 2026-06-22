@@ -753,3 +753,51 @@ fn test_all_event_types_covered() {
     // All existing event types are covered in this test suite
     assert!(true);
 }
+
+/// Test: batch_claim_payroll emits per-employee failure events for invalid entries
+#[test]
+fn test_batch_claim_payroll_failure_events() {
+    let env = create_test_env();
+    let (_contract_id, client) = setup_contract(&env);
+    let employer = create_test_address(&env);
+    let employee = create_test_address(&env);
+    let token = create_test_address(&env);
+
+    let salary = 1000i128;
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
+    client.add_employee_to_agreement(&agreement_id, &employee, &salary);
+    client.activate_agreement(&agreement_id);
+
+    // Call batch_claim_payroll with an out-of-bounds index (employee_count=1, index=5)
+    let mut indices: Vec<u32> = Vec::new(&env);
+    indices.push_back(5u32);
+    let _result = client.try_batch_claim_payroll(&employee, &agreement_id, &indices);
+
+    let count = count_events(&env, "batch_payroll_claim_failed_event");
+    assert!(count > 0, "Expected batch_payroll_claim_failed_event to be emitted");
+}
+
+/// Test: batch_claim_milestones emits per-milestone failure events for invalid entries
+#[test]
+fn test_batch_claim_milestone_failure_events() {
+    let env = create_test_env();
+    let (_contract_id, client) = setup_contract(&env);
+    let employer = create_test_address(&env);
+    let contributor = create_test_address(&env);
+    let token = create_token(&env);
+
+    // Create milestone agreement
+    let employer2 = create_test_address(&env);
+    soroban_sdk::token::StellarAssetClient::new(&env, &token).mint(&employer2, &1000000);
+    let agreement_id = client.create_milestone_agreement(&employer2, &contributor, &token);
+    client.add_milestone(&agreement_id, &1000);
+    client.fund_milestone_agreement(&agreement_id, &employer2, &1000000);
+
+    // Call batch_claim_milestones with an invalid milestone_id (milestone_count=1, id=99)
+    let mut ids: Vec<u32> = Vec::new(&env);
+    ids.push_back(99u32);
+    let _result = client.try_batch_claim_milestones(&agreement_id, &ids);
+
+    let count = count_events(&env, "batch_milestone_claim_failed_event");
+    assert!(count > 0, "Expected batch_milestone_claim_failed_event to be emitted");
+}

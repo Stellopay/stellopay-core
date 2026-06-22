@@ -13,6 +13,7 @@ use crate::events::{
     GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
     MilestoneClaimed, MilestoneFundedEvent, PaymentReceivedEvent, PaymentSentEvent,
     PayrollClaimedEvent,
+    BatchPayrollClaimFailedEvent, BatchMilestoneClaimFailedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
@@ -707,6 +708,12 @@ pub fn batch_claim_milestones(
                 amount_claimed: 0,
                 error_code: 1, // duplicate
             });
+            BatchMilestoneClaimFailedEvent {
+                agreement_id,
+                milestone_id,
+                error_code: 1,
+            }
+            .publish(env);
             continue;
         }
         processed.push_back(milestone_id);
@@ -720,6 +727,12 @@ pub fn batch_claim_milestones(
                 amount_claimed: 0,
                 error_code: 2, // invalid ID
             });
+            BatchMilestoneClaimFailedEvent {
+                agreement_id,
+                milestone_id,
+                error_code: 2,
+            }
+            .publish(env);
             continue;
         }
 
@@ -737,6 +750,12 @@ pub fn batch_claim_milestones(
                 amount_claimed: 0,
                 error_code: 3, // not approved
             });
+            BatchMilestoneClaimFailedEvent {
+                agreement_id,
+                milestone_id,
+                error_code: 3,
+            }
+            .publish(env);
             continue;
         }
 
@@ -754,6 +773,12 @@ pub fn batch_claim_milestones(
                 amount_claimed: 0,
                 error_code: 4, // already claimed
             });
+            BatchMilestoneClaimFailedEvent {
+                agreement_id,
+                milestone_id,
+                error_code: 4,
+            }
+            .publish(env);
             continue;
         }
 
@@ -2506,6 +2531,12 @@ pub fn batch_claim_payroll(
                 amount_claimed: 0,
                 error_code: PayrollError::Unauthorized as u32,
             });
+            BatchPayrollClaimFailedEvent {
+                agreement_id,
+                employee: employee.clone(),
+                error_code: PayrollError::Unauthorized as u32,
+            }
+            .publish(env);
             continue;
         }
 
@@ -2526,6 +2557,12 @@ pub fn batch_claim_payroll(
                 amount_claimed: 0,
                 error_code: PayrollError::NoPeriodsToClaim as u32,
             });
+            BatchPayrollClaimFailedEvent {
+                agreement_id,
+                employee: employee.clone(),
+                error_code: PayrollError::NoPeriodsToClaim as u32,
+            }
+            .publish(env);
             continue;
         }
 
@@ -2543,6 +2580,12 @@ pub fn batch_claim_payroll(
                         amount_claimed: 0,
                         error_code: PayrollError::AgreementNotFound as u32,
                     });
+                    BatchPayrollClaimFailedEvent {
+                        agreement_id,
+                        employee: employee.clone(),
+                        error_code: PayrollError::AgreementNotFound as u32,
+                    }
+                    .publish(env);
                     continue;
                 }
             };
@@ -2558,6 +2601,12 @@ pub fn batch_claim_payroll(
                     amount_claimed: 0,
                     error_code: PayrollError::InvalidData as u32,
                 });
+                BatchPayrollClaimFailedEvent {
+                    agreement_id,
+                    employee: employee.clone(),
+                    error_code: PayrollError::InvalidData as u32,
+                }
+                .publish(env);
                 continue;
             }
         };
@@ -2571,6 +2620,12 @@ pub fn batch_claim_payroll(
                 amount_claimed: 0,
                 error_code: PayrollError::InsufficientEscrowBalance as u32,
             });
+            BatchPayrollClaimFailedEvent {
+                agreement_id,
+                employee: employee.clone(),
+                error_code: PayrollError::InsufficientEscrowBalance as u32,
+            }
+            .publish(env);
             continue;
         }
 
