@@ -1,0 +1,19 @@
+# File-level code ownership for Stellopay Core
+# Each line maps a file pattern to one or more owners.
+# See https://docs.github.com/en/repositories/managing-your-repositorys-settings-features/customizing-your-repository/about-code-owners
+
+# Default reviewers for the entire repository
+* @Stellopay/maintainers
+
+# Soroban smart contracts
+/onchain/contracts/** @Stellopapay/contract-reviewers
+
+# Tooling
+/tools/** @Stellopay/tools-maintainers
+
+# Build and CI configuration
+/.github/workflows/** @Stellopay/devops
+
+# Documentation
+/*.md @Stellopay/docs
+/SECURITY.md @Stellopapay/security
