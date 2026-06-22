@@ -95,4 +95,65 @@ fn test_get_logs_pagination() {
     assert_eq!(page.get(0).unwrap().id, 2u64);
     assert_eq!(page.get(1).unwrap().id, 3u64);
     assert_eq!(page.get(2).unwrap().id, 4u64);
+#[test]
+fn test_get_logs_limit_clamped() {
+    let env = Env::default();
+    let owner = Address::generate(&env);
+
+    let contract_id = env.register(AuditLoggerContract, ());
+    let client = AuditLoggerContractClient::new(&env, &contract_id);
+
+    client.initialize(&owner, &0);
+
+    // Append 5 logs
+    let actor = Address::generate(&env);
+    for i in 0..5u64 {
+        client.append_log_(&actor, &symbol_short!("test"), &None, &None);
+    }
+
+    // Request more than MAX_PAGE_SIZE - should be clamped
+    let result = client.get_logs(&0, &(MAX_PAGE_SIZE + 1));
+    assert_eq!(result.len(), 5);
+}
+
+#[test]
+fn test_get_logs_beyond_max_page_size() {
+    let env = Env::default();
+    let owner = Address::generate(&env);
+
+    let contract_id = env.register(AuditLoggerContract, ());
+    let client = AuditLoggerContractClient::new(&env, &contract_id);
+
+    client.initialize(&owner, &0);
+
+    // Append more logs than MAX_PAGE_SIZE
+    let actor = Address::generate(&env);
+    for i in 0..200u64 {
+        client.append_log_(&actor, &symbol_short!("test"), &None, &None);
+    }
+
+    // Request all - should be clamped to MAX_PAGE_SIZE
+    let result = client.get_logs(&0, &200);
+    assert_eq!(result.len(), MAX_PAGE_SIZE as usize);
+}
+
+#[test]
+fn test_get_latest_logs_clamped() {
+    let env = Env::default();
+    let owner = Address::generate(&env);
+
+    let contract_id = env.register(AuditLoggerContract, ());
+    let client = AuditLoggerContractClient::new(&env, &contract_id);
+
+    client.initialize(&owner, &0);
+
+    let actor = Address::generate(&env);
+    for i in 0..200u64 {
+        client.append_log_(&actor, &symbol_short!("test"), &None, &None);
+    }
+
+    let result = client.get_latest_logs(&200);
+    assert_eq!(result.len(), MAX_PAGE_SIZE as usize);
+}
+
 }

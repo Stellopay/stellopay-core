@@ -4,6 +4,10 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, 
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 
+/// Maximum page size for log queries to prevent unbounded iteration.
+/// Mirrors `payment_history` pagination pattern.
+const MAX_PAGE_SIZE: u32 = 100;
+
 /// Storage keys for the audit logger contract.
 #[contracttype]
 #[derive(Clone)]
@@ -284,6 +288,9 @@ impl AuditLoggerContract {
             return Err(AuditError::InvalidArguments);
         }
 
+        // Clamp limit to MAX_PAGE_SIZE to prevent unbounded iteration
+        let limit = core::cmp::min(limit, MAX_PAGE_SIZE);
+
         let first_id: u64 = env
             .storage()
             .persistent()
@@ -302,6 +309,8 @@ impl AuditLoggerContract {
         let mut results = Vec::new(&env);
         let mut remaining = core::cmp::min(limit as u64, log_count - offset as u64);
 
+        // Track skipped count for orphaned entries (pruned by retention)
+        let mut skipped: u64 = 0;
         let mut current_id = first_id + offset as u64;
         while remaining > 0 {
             if let Some(entry) = env
@@ -310,9 +319,17 @@ impl AuditLoggerContract {
                 .get::<_, AuditLogEntry>(&StorageKey::LogEntry(current_id))
             {
                 results.push_back(entry);
+                remaining -= 1;
+            } else {
+                // Entry was pruned by retention; skip and continue
+                skipped += 1;
             }
             current_id += 1;
-            remaining -= 1;
+
+            // Safety bound: stop if we've scanned far beyond the expected range
+            if skipped > MAX_PAGE_SIZE as u64 * 2 {
+                break;
+            }
         }
 
         Ok(results)
@@ -332,6 +349,9 @@ impl AuditLoggerContract {
         if limit == 0 {
             return Err(AuditError::InvalidArguments);
         }
+
+        // Clamp limit to MAX_PAGE_SIZE to prevent unbounded iteration
+        let limit = core::cmp::min(limit, MAX_PAGE_SIZE);
 
         let first_id: u64 = env
             .storage()
