@@ -3,6 +3,39 @@ use predicates::prelude::*;
 use std::process::Command;
 use tempfile::TempDir;
 
+use std::path::PathBuf;
+use tokio::fs;
+
+use stellopay_cli::config::{load_config, get_secret_key};
+use stellopay_cli::commands::emergency_withdraw;
+use stellopay_cli::{Config, Error, NetworkConfig, ContractConfig, AuthConfig, DefaultsConfig};
+
+const VALID_CONTRACT:  &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
+const VALID_TOKEN:     &str = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCN3";
+const VALID_RECIPIENT: &str = "GBZXN7PIRZGNMHGA7MUUUF4GWPY5AYPGK4YVMQKN74ILIXB4UGOT7ZN";
+const VALID_AMOUNT:   i128  = 1_000;
+const SECRET_KEY:      &str = "SCZANGBA5AKIA7MXODKVS4EKDRNKJHXIXLJHM6H3RDNL3VRI7RJGMQE";
+
+fn make_config(secret_key: Option<&str>) -> Config {
+    Config {
+        network: NetworkConfig {
+            rpc_url: "https://soroban-testnet.stellar.org:443".to_string(),
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+        },
+        contract: ContractConfig {
+            default_contract_id: Some("CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4".to_string()),
+        },
+        auth: AuthConfig {
+            secret_key: secret_key.map(str::to_string),
+        },
+        defaults: DefaultsConfig {
+            token: None,
+            frequency: "monthly".to_string(),
+        },
+    }
+}
+
+
 #[test]
 fn test_cli_help() {
     let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
@@ -197,4 +230,76 @@ fn test_cli_with_short_verbose_flag() {
     cmd.assert()
         .success()
         .stdout(predicate::str::contains("StellopayCore CLI Status"));
+}
+
+#[tokio::test]
+async fn test_zero_amount_returns_zero_amount_error() {
+    let config = make_config(Some(SECRET_KEY));
+
+    let result = emergency_withdraw(&config, "cli-context", VALID_CONTRACT,VALID_TOKEN, VALID_RECIPIENT, 0, false,).await;
+
+    assert!(
+        matches!(result, Err(Error::ZeroAmount)),
+        "Expected ZeroAmount, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_negative_amount_returns_zero_amount_error() {
+    let config = make_config(Some(SECRET_KEY));
+
+    let result = emergency_withdraw(&config, "cli-context", VALID_CONTRACT, VALID_TOKEN, VALID_RECIPIENT, -1, false,).await;
+
+    assert!(
+        matches!(result, Err(Error::ZeroAmount)),
+        "Expected ZeroAmount for negative input, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_amount_exceeding_maximum_returns_error() {
+    let config = make_config(Some(SECRET_KEY));
+
+    let result = emergency_withdraw(&config, "cli-context", VALID_CONTRACT,VALID_TOKEN, VALID_RECIPIENT, 100_000_001, false,).await;
+
+    assert!(
+        matches!(result, Err(Error::MaximumAmount)),
+        "Expected MaximumAmount, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_amount_at_exact_maximum_passes_amount_guard() {
+    let config = make_config(Some(SECRET_KEY));
+
+    let result = emergency_withdraw(&config, "cli-context", VALID_CONTRACT, VALID_TOKEN, VALID_RECIPIENT, 100_000_000, false,).await;
+
+    assert!(
+        !matches!(result, Err(Error::MaximumAmount) | Err(Error::ZeroAmount)),
+        "Boundary value must pass amount guards, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_invalid_recipient_returns_invalid_address_error() {
+    let config = make_config(Some(SECRET_KEY));
+
+    let result = emergency_withdraw(&config, "cli-context", VALID_CONTRACT, VALID_TOKEN, "invalid_address", VALID_AMOUNT, false,).await;
+
+    assert!(
+        matches!(result, Err(Error::InvalidAddress)),
+        "Expected InvalidAddress, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_over_limit_checked_before_address_validation() {
+    let config = make_config(Some(SECRET_KEY));
+
+    let result = emergency_withdraw(&config, "cli-context", VALID_CONTRACT,VALID_TOKEN, "bad-address", 200_000_000, false).await;
+
+    assert!(
+        matches!(result, Err(Error::MaximumAmount)),
+        "MaximumAmount must fire before InvalidAddress, got: {result:?}"
+    );
 }

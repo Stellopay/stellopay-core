@@ -1,9 +1,13 @@
+pub mod config;
+pub mod commands;
+pub mod utils;
+
+pub use config::{load_config, get_secret_key, create_config_file};
+
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-//use soroban_sdk::Env;
-//use thiserror::Error;
 
 #[derive(Parser)]
 #[command(name = "stellopay-cli")]
@@ -20,6 +24,9 @@ pub struct Cli {
     /// Verbose output
     #[arg(short, long)]
     pub verbose: bool,
+
+    #[arg(long, short = 'y', global = true)]
+    pub yes: bool,
 }
 
 #[derive(Subcommand)]
@@ -255,6 +262,10 @@ pub struct GasMetrics {
 pub enum Error{
     #[error("Zero amount is not allowed")]
     ZeroAmount,
+    #[error("Maximum Amount Surpassed")]
+    MaximumAmount,
+    #[error("Invalid Address")]
+    InvalidAddress,
     #[error("Missing secret key")]
     MissingSecretKey,
     #[error(transparent)]
@@ -322,3 +333,4 @@ impl TokenClient{
     }
 
 }
+

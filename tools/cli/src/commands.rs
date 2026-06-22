@@ -1,14 +1,19 @@
 use anyhow::Result;
 use log::{info, warn, error};
 use std::path::PathBuf;
-use stellopay_cli::Config;
-// use crate::Config;
-use stellopay_cli::{require_admin,require_not_paused,TokenClient,Error, WebhookCommands};
-// use crate::token;
-//use soroban_sdk::contractclient::Client as SorobanHttpClient;
-//use anyhow::{Result,anyhow};
-//use soroban_client::rpc::Client as SorobonClient;
-use crate::utils::SorobanHttpClient;
+
+use crate::{
+    Config,
+    Error,
+    TokenClient,
+    WebhookCommands,
+    require_admin,
+    require_not_paused,
+};
+use crate::config::load_config;
+use crate::utils::{validate_address, SorobanHttpClient};
+
+const MAXIMUM_AMOUNT: i128 = 100_000_000;
 
 pub async fn deploy_command(
     network: String,
@@ -204,9 +209,21 @@ pub async fn emergency_withdraw(
     require_not_paused(&dummy_context)?;
 
     //validating amount is non-zero
-    if amount<=0{
+    if amount<=0 {
         return Err(Error::ZeroAmount)
     }
+
+    //validating amount is not greater than MAXIMUM
+    if amount > MAXIMUM_AMOUNT {
+        return Err(Error::MaximumAmount)
+    }
+
+    let result = validate_address(recipient);
+    match result {
+        Ok(_) => {}
+        Err(_) => return Err(Error::InvalidAddress)
+    }
+
      //preparing soroban contract call
     let contract_client=SorobanHttpClient::new(&config.network.rpc_url);
     //performing token transfer
@@ -351,15 +368,15 @@ pub async fn webhook_update_command(
     let mut update_data = serde_json::Map::new();
     
     if let Some(name) = name {
-        update_data.insert("name".to_string(), serde_json::Value::String(name));
+        update_data.insert("name".to_string(), serde_json::Value::String(name.clone()));
         println!("  Name: {}", name);
     }
     if let Some(description) = description {
-        update_data.insert("description".to_string(), serde_json::Value::String(description));
+        update_data.insert("description".to_string(), serde_json::Value::String(description.clone()));
         println!("  Description: {}", description);
     }
     if let Some(url) = url {
-        update_data.insert("url".to_string(), serde_json::Value::String(url));
+        update_data.insert("url".to_string(), serde_json::Value::String(url.clone()));
         println!("  URL: {}", url);
     }
     if let Some(events) = events {

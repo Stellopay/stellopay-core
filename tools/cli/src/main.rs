@@ -1,14 +1,14 @@
 use clap::Parser;
 use std::process;
 
-mod commands;
-mod config;
-mod utils;
-
-use commands::*;
-use config::*;
-use stellopay_cli::{Cli, Commands, WebhookCommands};
+use stellopay_cli::commands::*;
+use stellopay_cli::config::*;
+use stellopay_cli::{
+    Cli, Commands, WebhookCommands,
+    Config, Error,
+};
 use anyhow::anyhow;
+
 
 #[tokio::main]
 async fn main() ->anyhow::Result<()> {

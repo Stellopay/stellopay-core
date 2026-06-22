@@ -1,4 +1,4 @@
-use stellopay_cli::Config;
+use crate::Config;
 use anyhow::Result;
 use std::path::Path;
 use tokio::fs;
@@ -27,7 +27,7 @@ pub async fn load_config(config_path: &Path) -> Result<Config> {
     Ok(config)
 }
 
-async fn create_config_file(path: &Path, config: &Config) -> Result<()> {
+pub async fn create_config_file(path: &Path, config: &Config) -> Result<()> {
     // Create parent directory if it doesn't exist
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;

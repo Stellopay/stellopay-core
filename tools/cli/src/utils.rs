@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use reqwest::Client;
 use serde_json::json;
+use serde_json::Value;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Employee {
@@ -356,5 +357,49 @@ impl SorobanHttpClient{
             .await?;
         let body=response.text().await?;
         Ok(body)
+    }
+
+    /// Simulate a read-only contract call without signing or submitting a transaction.
+    ///
+    /// This method is intentionally separate from `invoke`: it sends only the
+    /// contract id, method, and arguments to the RPC query endpoint and never
+    /// accepts a signer or secret key.
+    pub async fn query(
+        &self,
+        contract_id: &str,
+        method: &str,
+        args: Vec<(&str, &str)>,
+    ) -> Result<Value> {
+        let url = format!("{}/query", self.base_url);
+        let payload = self.query_payload(contract_id, method, args);
+        let response = self.client.post(&url).json(&payload).send().await?;
+        let status = response.status();
+        let body = response.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow::anyhow!(
+                "Soroban query failed with status {}: {}",
+                status,
+                body
+            ));
+        }
+
+        let value: Value = serde_json::from_str(&body)
+            .map_err(|e| anyhow::anyhow!("Malformed Soroban query response: {}", e))?;
+
+        if let Some(error) = value.get("error") {
+            return Err(anyhow::anyhow!("Soroban query RPC error: {}", error));
+        }
+
+        Ok(value.get("result").cloned().unwrap_or(value))
+    }
+
+    fn query_payload(&self, contract_id: &str, method: &str, args: Vec<(&str, &str)>) -> Value {
+        json!({
+            "contract_id": contract_id,
+            "method": method,
+            "args": args.iter().map(|(k, v)| json!({ (*k): v })).collect::<Vec<_>>(),
+            "read_only": true,
+        })
     }
 }
