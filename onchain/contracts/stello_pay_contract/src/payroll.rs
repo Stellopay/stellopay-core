@@ -4,7 +4,7 @@ use soroban_sdk::{Address, Env, Vec};
 use crate::audit::{record_entry, AuditEvent};
 use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
-    emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
+    emit_agreement_paused, emit_agreement_resumed, emit_dispute_raised, emit_dispute_resolved,
     emit_employee_added, emit_grace_period_extended, emit_grace_period_finalized,
     emit_milestone_funded, emit_payment_received, emit_payment_sent, emit_payroll_claimed,
     emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
@@ -1637,7 +1637,7 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
 
-    emit_dsipute_raised(env, DisputeRaisedEvent { agreement_id });
+    emit_dispute_raised(env, DisputeRaisedEvent { agreement_id });
     record_entry(
         env,
         caller,
@@ -1788,7 +1788,7 @@ fn resolve_dispute_core(
         .persistent()
         .set(&StorageKey::Agreement(agreement_id), &agreement);
 
-    emit_dsipute_resolved(
+    emit_dispute_resolved(
         env,
         DisputeResolvedEvent {
             agreement_id,

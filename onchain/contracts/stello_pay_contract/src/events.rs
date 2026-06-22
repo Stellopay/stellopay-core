@@ -136,7 +136,7 @@ pub struct DisputeRaisedEvent {
     pub agreement_id: u128,
 }
 
-pub fn emit_dsipute_raised(env: &Env, event: DisputeRaisedEvent) {
+pub fn emit_dispute_raised(env: &Env, event: DisputeRaisedEvent) {
     event.publish(env);
 }
 
@@ -149,7 +149,7 @@ pub struct DisputeResolvedEvent {
     pub refund_employer: i128,
 }
 
-pub fn emit_dsipute_resolved(env: &Env, event: DisputeResolvedEvent) {
+pub fn emit_dispute_resolved(env: &Env, event: DisputeResolvedEvent) {
     event.publish(env);
 }
 pub fn emit_payroll_claimed(env: &Env, event: PayrollClaimedEvent) {
