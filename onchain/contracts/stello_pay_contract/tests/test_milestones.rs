@@ -587,3 +587,110 @@ fn test_very_large_milestone_amounts() {
     );
     assert!(client.get_milestone(&agreement_id, &1).unwrap().claimed);
 }
+
+// -----------------------------------------------------------------------------
+// Negative-path tests (issue #490)
+// Auth failures, invalid state transitions, milestone-id validation,
+// and completed-status guards for milestone agreements.
+// -----------------------------------------------------------------------------
+
+/// Non-employer cannot pause a milestone agreement.
+#[test]
+#[should_panic]
+fn test_pause_milestone_unauthorized_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
+    client.add_milestone(&agreement_id, &1_000);
+    let stranger = Address::generate(&env);
+    env.mock_auths(&[]);
+    client.pause_agreement(&agreement_id);
+}
+
+/// Non-employer cannot resume a milestone agreement.
+#[test]
+#[should_panic]
+fn test_resume_milestone_unauthorized_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
+    client.add_milestone(&agreement_id, &1_000);
+    // pause first so resume is a valid state transition
+    client.pause_agreement(&agreement_id);
+    let stranger = Address::generate(&env);
+    env.mock_auths(&[]);
+    client.resume_agreement(&agreement_id);
+}
+
+/// Claiming a milestone while the agreement is paused must fail.
+#[test]
+#[should_panic(expected = "Agreement is paused")]
+fn test_claim_milestone_when_paused_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
+    client.add_milestone(&agreement_id, &1_000);
+    client.approve_milestone(&agreement_id, &1);
+    client.pause_agreement(&agreement_id);
+    client.claim_milestone(&agreement_id, &1);
+}
+
+/// Claiming a milestone with an invalid ID (zero) must fail.
+#[test]
+#[should_panic(expected = "Invalid milestone ID")]
+fn test_claim_milestone_id_zero_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
+    client.add_milestone(&agreement_id, &1_000);
+    client.approve_milestone(&agreement_id, &1);
+    client.claim_milestone(&agreement_id, &0);
+}
+
+/// Claiming a milestone with an out-of-range ID must fail.
+#[test]
+#[should_panic(expected = "Invalid milestone ID")]
+fn test_claim_milestone_id_out_of_range_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
+    client.add_milestone(&agreement_id, &1_000);
+    client.approve_milestone(&agreement_id, &1);
+    client.claim_milestone(&agreement_id, &99);
+}
+
+/// Adding a milestone after the agreement has completed must fail.
+#[test]
+#[should_panic(expected = "Agreement must be in Created status")]
+fn test_add_milestone_when_completed_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
+    // Add one milestone, approve it, claim it — agreement completes
+    client.add_milestone(&agreement_id, &1_000);
+    client.approve_milestone(&agreement_id, &1);
+    client.claim_milestone(&agreement_id, &1);
+    // Adding another milestone should fail because agreement is Completed
+    client.add_milestone(&agreement_id, &500);
+}
+
+/// Non-contributor cannot batch-claim milestones (uses try_ API for Result return).
+#[test]
+fn test_batch_claim_milestones_unauthorized_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
+    client.add_milestone(&agreement_id, &1_000);
+    client.approve_milestone(&agreement_id, &1);
+    // batch_claim_milestones enforces require_auth() internally (contributor),
+    // so we clear auth to trigger failure
+    env.mock_auths(&[]);
+    let ids = soroban_sdk::vec![&env, 1u32];
+    let result = client.try_batch_claim_milestones(&agreement_id, &ids);
+    assert!(result.is_err(), "Expected non-contributor batch claim to fail");
+}
+
+/// Duplicate milestone IDs in a batch claim should be rejected.
+#[test]
+fn test_batch_claim_milestones_duplicate_ids_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
+    client.add_milestone(&agreement_id, &1_000);
+    client.approve_milestone(&agreement_id, &1);
+    let ids = soroban_sdk::vec![&env, 1u32, 1u32];
+    let result = client.try_batch_claim_milestones(&agreement_id, &ids);
+    assert!(result.is_err(), "Expected duplicate milestone IDs to be rejected");
+}
