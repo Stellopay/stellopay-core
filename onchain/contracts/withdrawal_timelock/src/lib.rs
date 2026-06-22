@@ -35,6 +35,12 @@ pub enum TimelockError {
     NotReady = 7,
     /// Operation is no longer in `Queued` status.
     AlreadyExecutedOrCancelled = 8,
+    /// Amount in a Withdrawal operation must be positive.
+    ///
+    /// Rejecting zero or negative amounts at queue time prevents no-op
+    /// privileged operations from consuming timelock slots and polluting
+    /// the audit trail.
+    InvalidWithdrawalAmount = 9,
 }
 
 // ─── Domain Types ─────────────────────────────────────────────────────────────
@@ -48,6 +54,7 @@ pub enum OperationKind {
     /// Layout: `(token, to, amount)`.
     /// Actual token transfer is performed by an external orchestrator after
     /// the timelock is satisfied; this contract records the intent only.
+    /// The `amount` must be strictly positive (> 0) — validated at queue time.
     Withdrawal(Address, Address, i128),
 
     /// A generic administrative change on an external contract.
@@ -55,6 +62,8 @@ pub enum OperationKind {
     /// Layout: `(target_contract, payload_hash)`.
     /// The `payload_hash` is an opaque 32-byte commitment to the change
     /// payload; off-chain tooling must verify this hash before applying.
+    /// Fields are NOT validated by the timelock; the caller is responsible
+    /// for payload correctness.
     AdminChange(Address, soroban_sdk::BytesN<32>),
 }
 
@@ -131,6 +140,28 @@ fn validate_delay(d: u64) -> Result<(), TimelockError> {
     }
     if d > MAX_DELAY_SECONDS {
         return Err(TimelockError::DelayTooLarge);
+    }
+    Ok(())
+}
+
+/// Validates that an `OperationKind` carries semantically meaningful parameters.
+///
+/// # Validation scope
+///
+/// | Kind | Field(s) validated | Rule |
+/// |------|--------------------|------|
+/// | `Withdrawal` | `amount` | Must be strictly positive (> 0) |
+/// | `AdminChange` | *(none)* | Opaque payload — not interpreted by the timelock |
+///
+/// Rejecting zero or negative withdrawal amounts at queue time prevents
+/// no-op privileged operations from consuming timelock slots and polluting
+/// the audit trail. `AdminChange` fields are intentionally left unvalidated
+/// because the timelock cannot interpret their payload semantics.
+fn validate_operation_kind(kind: &OperationKind) -> Result<(), TimelockError> {
+    if let OperationKind::Withdrawal(_, _, amount) = kind {
+        if *amount <= 0 {
+            return Err(TimelockError::InvalidWithdrawalAmount);
+        }
     }
     Ok(())
 }
@@ -278,8 +309,14 @@ impl WithdrawalTimelock {
     /// @dev Admin-only. The `eta` is computed as `now + min_delay_seconds`.
     ///      The operation cannot be executed before `eta` has been reached.
     ///      Multiple distinct operations may be queued simultaneously; each
-    ///      receives a unique monotone id. Emits:
-    ///        `("timelock_queued", op_id) → kind`
+    ///      receives a unique monotone id.
+    ///
+    ///      **Validation**: `Withdrawal` kinds require `amount > 0`.
+    ///      Zero or negative amounts are rejected with `InvalidWithdrawalAmount`
+    ///      to prevent no-op privileged operations. `AdminChange` payloads are
+    ///      opaque and not validated by the timelock.
+    ///
+    ///      Emits: `("timelock_queued", op_id) → kind`
     ///      which off-chain monitors should subscribe to for alerting.
     /// @param caller Admin address queuing the operation; must authenticate.
     /// @param kind   `Withdrawal(token, to, amount)` or
@@ -288,6 +325,7 @@ impl WithdrawalTimelock {
     pub fn queue(env: Env, caller: Address, kind: OperationKind) -> Result<u128, TimelockError> {
         require_initialized(&env)?;
         require_admin(&env, &caller)?;
+        validate_operation_kind(&kind)?;
 
         let min_delay = read_min_delay(&env);
         // Defensive belt-and-suspenders: min_delay can only be 0 if the

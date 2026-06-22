@@ -132,7 +132,7 @@ fn initialize_twice_fails() {
     assert_eq!(res, Err(Ok(TimelockError::AlreadyInitialized)));
 }
 
-// ─── Group B: Queue (7 tests) ────────────────────────────────────────────────
+// ─── Group B: Queue (9 tests) ────────────────────────────────────────────────
 
 #[test]
 fn queue_withdrawal_returns_op_id_one() {
@@ -230,6 +230,32 @@ fn queue_appends_to_operations_for() {
     assert_eq!(ids.len(), 2);
     assert_eq!(ids.get(0).unwrap(), id1);
     assert_eq!(ids.get(1).unwrap(), id2);
+}
+
+#[test]
+fn queue_zero_amount_withdrawal_fails() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    let token = Address::generate(&env);
+    let to = Address::generate(&env);
+    let kind = OperationKind::Withdrawal(token, to, 0i128);
+
+    let res = client.try_queue(&admin, &kind);
+    assert_eq!(res, Err(Ok(TimelockError::InvalidWithdrawalAmount)));
+}
+
+#[test]
+fn queue_negative_amount_withdrawal_fails() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    let token = Address::generate(&env);
+    let to = Address::generate(&env);
+    let kind = OperationKind::Withdrawal(token, to, -1i128);
+
+    let res = client.try_queue(&admin, &kind);
+    assert_eq!(res, Err(Ok(TimelockError::InvalidWithdrawalAmount)));
 }
 
 // ─── Group C: Execute (8 tests) ──────────────────────────────────────────────
