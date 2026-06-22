@@ -359,8 +359,12 @@ impl PayrollContract {
     /// - Agreement must be in Created status
     /// - Amount must be positive
     /// - Caller must be the employer
-    pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
-        payroll::add_milestone(env, agreement_id, amount);
+    pub fn add_milestone(
+        env: Env,
+        agreement_id: u128,
+        amount: i128,
+    ) -> Result<(), PayrollError> {
+        payroll::add_milestone(env, agreement_id, amount)
     }
 
 
@@ -377,8 +381,12 @@ impl PayrollContract {
     /// - Milestone must exist
     /// - Milestone must not be already approved
     /// - Caller must be the employer
-    pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
-        payroll::approve_milestone(env, agreement_id, milestone_id);
+    pub fn approve_milestone(
+        env: Env,
+        agreement_id: u128,
+        milestone_id: u32,
+    ) -> Result<(), PayrollError> {
+        payroll::approve_milestone(env, agreement_id, milestone_id)
     }
 
     /// Claims payment for an approved milestone.
@@ -395,8 +403,12 @@ impl PayrollContract {
     /// - Milestone must not be already claimed
     /// - Caller must be the contributor
     /// - Agreement auto-completes when all milestones are claimed
-    pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
-        payroll::claim_milestone(env, agreement_id, milestone_id);
+    pub fn claim_milestone(
+        env: Env,
+        agreement_id: u128,
+        milestone_id: u32,
+    ) -> Result<(), PayrollError> {
+        payroll::claim_milestone(env, agreement_id, milestone_id)
     }
 
     /// Claims payment for multiple approved milestones in a single transaction.
@@ -918,15 +930,15 @@ impl PayrollContract {
     /// - Paused agreements cannot have claims processed
     /// - Agreement state is preserved
     /// - Can be resumed later or cancelled
-    pub fn pause_agreement(env: Env, agreement_id: u128) {
+    pub fn pause_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
         // Try new-style agreement first (payroll/escrow)
         if payroll::get_agreement(&env, agreement_id).is_some() {
             payroll::pause_agreement(&env, agreement_id);
-            return;
+            return Ok(());
         }
 
         // Fall back to milestone-based agreement
-        payroll::pause_milestone_agreement(env, agreement_id);
+        payroll::pause_milestone_agreement(env, agreement_id)
     }
 
     /// Resumes a paused agreement, allowing claims again.
@@ -945,15 +957,15 @@ impl PayrollContract {
     /// - Agreement returns to Active status
     /// - Claims can be processed again
     /// - All agreement data is preserved
-    pub fn resume_agreement(env: Env, agreement_id: u128) {
+    pub fn resume_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
         // Try new-style agreement first (payroll/escrow)
         if payroll::get_agreement(&env, agreement_id).is_some() {
             payroll::resume_agreement(&env, agreement_id);
-            return;
+            return Ok(());
         }
 
         // Fall back to milestone-based agreement
-        payroll::resume_milestone_agreement(env, agreement_id);
+        payroll::resume_milestone_agreement(env, agreement_id)
     }
 
     /// Claims time-based payments for an escrow agreement based on elapsed periods.

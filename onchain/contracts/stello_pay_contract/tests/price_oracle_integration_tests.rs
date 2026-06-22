@@ -144,6 +144,7 @@ fn full_setup(
         &1u32,
         &0u32,
         &QUORUM_WINDOW,
+        &0u64, // min_submit_interval_secs: no rate limit in tests
     );
 
     (
@@ -537,6 +538,7 @@ fn test_quorum_n2_requires_two_sources_before_rate_propagates() {
         &2u32, // quorum = 2
         &0u32,
         &QUORUM_WINDOW,
+        &0u64, // min_submit_interval_secs: no rate limit in tests
     );
 
     let rate: i128 = 3 * FX_SCALE;
@@ -587,6 +589,7 @@ fn test_quorum_duplicate_vote_rejected() {
         &2u32,
         &0u32,
         &QUORUM_WINDOW,
+        &0u64, // min_submit_interval_secs: no rate limit in tests
     );
 
     let rate: i128 = 2 * FX_SCALE;
@@ -701,6 +704,7 @@ fn test_rate_update_propagates_to_subsequent_claims() {
         &1u32,
         &0u32,
         &QUORUM_WINDOW,
+        &0u64, // min_submit_interval_secs: no rate limit in tests
     );
 
     // Push initial rate: 1 base = 2 quote.
@@ -981,6 +985,7 @@ fn test_push_price_fails_when_oracle_not_registered_as_fx_admin() {
         &1u32,
         &0u32,
         &QUORUM_WINDOW,
+        &0u64, // min_submit_interval_secs: no rate limit in tests
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);

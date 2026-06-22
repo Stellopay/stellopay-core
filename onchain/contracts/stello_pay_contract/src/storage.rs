@@ -360,6 +360,18 @@ pub enum PayrollError {
     RateLimited = 34,
     /// Caller supplied more than `MAX_BATCH_SIZE` batch items.
     BatchTooLarge = 35,
+    /// Milestone amount must be strictly positive.
+    MilestoneAmountInvalid = 36,
+    /// Milestone agreement is not in a valid status for the requested operation.
+    MilestoneAgreementInvalidStatus = 37,
+    /// Referenced milestone (or its agreement record) was not found.
+    MilestoneNotFound = 38,
+    /// Milestone has already been approved.
+    MilestoneAlreadyApproved = 39,
+    /// Milestone has not been approved yet.
+    MilestoneNotApproved = 40,
+    /// Milestone has already been claimed.
+    MilestoneAlreadyClaimed = 41,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.

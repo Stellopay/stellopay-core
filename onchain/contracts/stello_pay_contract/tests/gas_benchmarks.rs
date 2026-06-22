@@ -399,9 +399,9 @@ fn gas_benchmark_edge_no_periods_to_claim() {
     );
 }
 
-/// @notice batch_claim_milestones with an empty ID list must panic (pre-flight guard).
+/// @notice batch_claim_milestones with an empty ID list is rejected at the
+///         pre-flight guard with a typed error rather than panicking.
 #[test]
-#[should_panic(expected = "No milestone IDs provided")]
 fn gas_benchmark_edge_empty_milestone_batch() {
     let env = bench_env();
     env.mock_all_auths();
@@ -411,7 +411,11 @@ fn gas_benchmark_edge_empty_milestone_batch() {
     let token = make_token(&env);
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     let ids = soroban_sdk::Vec::<u32>::new(&env);
-    client.batch_claim_milestones(&agreement_id, &ids);
+    let err = client
+        .try_batch_claim_milestones(&agreement_id, &ids)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, stello_pay_contract::storage::PayrollError::InvalidData);
 }
 
 /// @notice claim_payroll rejects a caller who is not the indexed employee.

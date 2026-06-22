@@ -60,7 +60,7 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, Vec,
 };
-use stello_pay_contract::storage::{AgreementStatus, DataKey};
+use stello_pay_contract::storage::{AgreementStatus, DataKey, PayrollError};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 // ============================================================================
@@ -678,7 +678,6 @@ fn test_milestone_claim_succeeds_immediately_after_approval() {
 /// @notice A claimed milestone cannot be claimed a second time.
 /// @dev Double-claim must fail with "Milestone already claimed".
 #[test]
-#[should_panic(expected = "Milestone already claimed")]
 fn test_milestone_double_claim_rejected() {
     let env = create_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -695,7 +694,8 @@ fn test_milestone_double_claim_rejected() {
 
     client.approve_milestone(&agreement_id, &1u32);
     client.claim_milestone(&agreement_id, &1u32);
-    client.claim_milestone(&agreement_id, &1u32); // must panic
+    let result = client.try_claim_milestone(&agreement_id, &1u32);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAlreadyClaimed)));
 }
 
 /// @notice Milestones can be approved and claimed in any order.
@@ -778,9 +778,8 @@ fn test_milestone_wrong_caller_cannot_approve() {
 }
 
 /// @notice Milestone claim is blocked while the agreement is Paused.
-/// @dev Pausing before claim_milestone triggers "Cannot claim when agreement is paused".
+/// @dev Pausing before claim_milestone makes it return PayrollError::AgreementPaused.
 #[test]
-#[should_panic(expected = "Cannot claim when agreement is paused")]
 fn test_milestone_claim_blocked_when_paused() {
     let env = create_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -797,7 +796,8 @@ fn test_milestone_claim_blocked_when_paused() {
 
     client.approve_milestone(&agreement_id, &1u32);
     client.pause_agreement(&agreement_id);
-    client.claim_milestone(&agreement_id, &1u32); // must panic
+    let result = client.try_claim_milestone(&agreement_id, &1u32);
+    assert_eq!(result, Err(Ok(PayrollError::AgreementPaused)));
 }
 
 /// @notice Batch claim processes only milestones that are already approved.
@@ -900,7 +900,6 @@ fn test_milestone_batch_claim_partial_success_correct_counts() {
 /// @notice Claiming a milestone ID that does not exist panics.
 /// @dev milestone_id=0 and IDs larger than count are both invalid.
 #[test]
-#[should_panic(expected = "Invalid milestone ID")]
 fn test_milestone_invalid_id_rejected() {
     let env = create_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -915,7 +914,8 @@ fn test_milestone_invalid_id_rejected() {
     mint(&env, &token, &employer, STANDARD_SALARY);
     client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY);
 
-    client.approve_milestone(&agreement_id, &99u32); // does not exist
+    let result = client.try_approve_milestone(&agreement_id, &99u32); // does not exist
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneNotFound)));
 }
 
 // ============================================================================
