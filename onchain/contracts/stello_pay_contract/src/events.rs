@@ -256,3 +256,33 @@ pub struct MilestoneFundedEvent {
 pub fn emit_milestone_funded(env: &Env, event: MilestoneFundedEvent) {
     event.publish(env);
 }
+
+/// Event: Exchange rate updated.
+///
+/// Emitted from set_exchange_rate after a successful rate update.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ExchangeRateUpdatedEvent {
+    pub base: Address,
+    pub quote: Address,
+    pub rate: i128,
+    pub updated_by: Address,
+}
+
+pub fn emit_exchange_rate_updated(env: &Env, event: ExchangeRateUpdatedEvent) {
+    event.publish(env);
+}
+
+/// Event: Exchange rate admin set.
+///
+/// Emitted from set_exchange_rate_admin after a successful admin update.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ExchangeRateAdminSetEvent {
+    pub admin: Address,
+    pub set_by: Address,
+}
+
+pub fn emit_exchange_rate_admin_set(env: &Env, event: ExchangeRateAdminSetEvent) {
+    event.publish(env);
+}

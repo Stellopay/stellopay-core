@@ -208,3 +208,12 @@ client.claim_payroll_in_token(&employee, &agreement_id, &0u32, &payout_token);
   - `claim_payroll_in_token` shares the same eligibility and period-counting
     logic as `claim_payroll`, ensuring consistent invariants across currencies.
 
+
+### Events
+
+Each FX mutation emits a typed Soroban event for off-chain indexing:
+
+- ExchangeRateUpdated { base, quote, rate, updated_by } — emitted from set_exchange_rate after a successful storage write.
+- ExchangeRateAdminSet { admin, set_by } — emitted from set_exchange_rate_admin after a successful admin update.
+
+Events are emitted only on the authorized, successful path. A rejected call never produces a misleading event.

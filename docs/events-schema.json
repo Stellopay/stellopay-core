@@ -167,6 +167,40 @@
         "successful_claims": { "type": "integer" },
         "failed_claims": { "type": "integer" }
       }
+    },
+    {
+      "title": "ExchangeRateUpdated",
+      "properties": {
+        "event": {
+          "const": "ExchangeRateUpdated"
+        },
+        "base": {
+          "": "#/definitions/Address"
+        },
+        "quote": {
+          "": "#/definitions/Address"
+        },
+        "rate": {
+          "type": "string"
+        },
+        "updated_by": {
+          "": "#/definitions/Address"
+        }
+      }
+    },
+    {
+      "title": "ExchangeRateAdminSet",
+      "properties": {
+        "event": {
+          "const": "ExchangeRateAdminSet"
+        },
+        "admin": {
+          "": "#/definitions/Address"
+        },
+        "set_by": {
+          "": "#/definitions/Address"
+        }
+      }
     }
   ]
 }

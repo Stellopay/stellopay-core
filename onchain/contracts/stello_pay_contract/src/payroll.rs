@@ -13,6 +13,8 @@ use crate::events::{
     GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
     MilestoneClaimed, MilestoneFundedEvent, PaymentReceivedEvent, PaymentSentEvent,
     PayrollClaimedEvent,
+    emit_exchange_rate_updated, emit_exchange_rate_admin_set,
+    ExchangeRateUpdatedEvent, ExchangeRateAdminSetEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
@@ -1777,6 +1779,11 @@ pub fn set_exchange_rate_admin(
         .persistent()
         .set(&StorageKey::ExchangeRateAdmin, &admin);
 
+
+    emit_exchange_rate_admin_set(&env, ExchangeRateAdminSetEvent {
+        admin: admin.clone(),
+        set_by: caller.clone(),
+    });
     Ok(())
 }
 
@@ -1835,6 +1842,13 @@ pub fn set_exchange_rate(
     }
 
     DataKey::set_exchange_rate(env, &base, &quote, rate);
+
+    emit_exchange_rate_updated(&env, ExchangeRateUpdatedEvent {
+        base: base.clone(),
+        quote: quote.clone(),
+        rate,
+        updated_by: caller.clone(),
+    });
 
     Ok(())
 }

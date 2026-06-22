@@ -1,9 +1,9 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events, Ledger},
     token::StellarAssetClient,
-    Address, Env, Vec,
+    Address, Env, Symbol, TryFromVal, Vec,
 };
 
 use stello_pay_contract::storage::{DataKey, PayrollError};
@@ -185,4 +185,41 @@ fn test_claim_payroll_in_different_token_uses_fx_rate() {
         let paid = DataKey::get_agreement_paid_amount(&env, agreement_id);
         assert_eq!(paid, salary_per_period);
     });
+}
+
+/// Helper: count events by name
+fn count_events(env: &Env, event_name: &str) -> usize {
+    env.events().all().iter().filter(|e| {
+        if e.1.len() > 0 {
+            let topic = e.1.get(0).unwrap();
+            if let Ok(sym) = Symbol::try_from_val(env, &topic) {
+                return sym.to_string() == event_name;
+            }
+        }
+        false
+    }).count()
+}
+
+#[test]
+fn test_set_exchange_rate_emits_event() {
+    let (env, owner, _employer, _arbiter, client) = create_test_env();
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+    let rate: i128 = 1_000_000;
+
+    client.set_exchange_rate(&owner, &base, &quote, &rate);
+
+    let count = count_events(&env, \"exchange_rate_updated\");
+    assert!(count > 0, \"Expected exchange_rate_updated event\");
+}
+
+#[test]
+fn test_set_exchange_rate_admin_emits_event() {
+    let (env, owner, _employer, _arbiter, client) = create_test_env();
+    let admin = Address::generate(&env);
+
+    client.set_exchange_rate_admin(&owner, &admin);
+
+    let count = count_events(&env, \"exchange_rate_admin_set\");
+    assert!(count > 0, \"Expected exchange_rate_admin_set event\");
 }
