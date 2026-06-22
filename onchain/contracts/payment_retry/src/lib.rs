@@ -265,6 +265,15 @@ fn validate_retry_configuration(max_retry_attempts: u32, retry_intervals: &Vec<u
         );
     }
 
+    // Guard against contradictory configuration where intervals exist
+    // but no retries can occur (max_retry_attempts = 0).
+    if retry_intervals.len() > 0 {
+        assert!(
+            max_retry_attempts > 0,
+            "Max retry attempts must be positive when retry intervals are specified"
+        );
+    }
+
     let mut i: u32 = 0;
     while i < retry_intervals.len() {
         let interval = retry_intervals.get(i).expect("Retry interval missing");
