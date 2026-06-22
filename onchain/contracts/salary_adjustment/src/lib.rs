@@ -566,6 +566,14 @@ impl SalaryAdjustmentContract {
             "Use create_adjustment for forward adjustments"
         );
 
+        assert_adjustment_inputs(
+            &env,
+            current_salary,
+            new_salary,
+            effective_date,
+            true, // allow_retroactive — retroactive path is inherently retroactive
+        );
+
         let zero = BytesN::from_array(&env, &[0; 32]);
         assert!(reason_hash != zero, "Retroactive reason hash required");
 

@@ -934,3 +934,35 @@ fn test_get_owner() {
 
     assert_eq!(client.get_owner(), Some(owner));
 }
+
+// ============================================================================
+// RETROACTIVE NO-OP NEGATIVE TEST (#514)
+// ============================================================================
+
+/// A retroactive adjustment with new_salary == current_salary must be rejected.
+#[test]
+#[should_panic(expected = "New salary must differ from current salary")]
+fn test_retroactive_adjustment_noop_rejected() {
+    let env = create_env();
+    set_time(&env, 1_000);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let raw_reason_hash = reason_hash(&env, 42);
+
+    client.initialize(&owner);
+
+    // Retroactive no-op: new_salary (5_000) == current_salary (5_000)
+    client.create_retroactive_adjustment(
+        &owner,
+        &employer,
+        &employee,
+        &approver,
+        &5_000,
+        &5_000,
+        &500,
+        &raw_reason_hash,
+    );
+}
