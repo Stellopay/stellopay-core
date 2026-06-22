@@ -1,0 +1,32 @@
+[advisories]
+version = 2
+ignore = [
+    "RUSTSEC-2023-0052",
+]
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "Unicode-3.0",
+    "ISC",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "MPL-2.0",
+    "Zlib",
+]
+exceptions = []
+
+[bans]
+multiple-versions = "deny"
+highest-versions = "deny"
+allow = []
+workspace-default-features = "deny"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = []
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

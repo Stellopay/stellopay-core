@@ -21,14 +21,24 @@ jobs:
         run: |
           cargo install cargo-audit --locked || echo "cargo-audit already installed"
 
+      - name: Install cargo-deny
+        run: |
+          cargo install cargo-deny --locked || echo "cargo-deny already installed"
+
+      - name: Run cargo-deny (blocking supply-chain gate)
+        working-directory: onchain
+        run: |
+          cargo deny check
+
       - name: Run cargo-audit (dependency vulnerability scan)
         run: |
           cargo audit || true
 
       - name: Run Clippy (static analysis)
+        working-directory: onchain
         run: |
-          cargo clippy --all-targets --all-features -- -D warnings || true
+          cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Security scan summary
         run: |
-          echo "Static security scans completed (cargo-audit, clippy)."
+          echo "Static security scans completed (cargo-deny, cargo-audit, clippy)."

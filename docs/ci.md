@@ -38,13 +38,33 @@ directories. If a test breaks during SDK or API migration, either update it in
 the same change, merge the still-useful cases into an active suite, or delete it
 when active coverage already supersedes it.
 
+## Security scans
+
+The **Security Scans** workflow (`.github/workflows/security-scan.yml`) now acts as a blocking gate for dependency policy checks before the advisory and lint scans run.
+
+It performs:
+
+1. **Rust toolchain** — stable channel.
+2. **cargo-deny** — blocking `cargo deny check` from `onchain/deny.toml` to enforce advisories, bans, sources, and license policy.
+3. **cargo-audit** — advisory scan for known RustSec vulnerabilities.
+4. **Clippy** — static analysis for the workspace.
+
+### Dependency policy
+
+Add new dependencies deliberately:
+
+- Prefer crates already used elsewhere in the workspace.
+- Avoid introducing duplicate crate versions unless there is a clear reason.
+- Keep license exceptions minimal and document any `cargo-deny` allow-list entry inline in `onchain/deny.toml`.
+- If `cargo-deny` flags a new dependency, update the policy only after reviewing the advisory, license, or source provenance.
+
 ## Local environment
 
 Align with CI for reproducible runs:
 
 | Requirement | Notes |
-|-------------|--------|
-| Rust | Stable, edition 2021 (see workspace `Cargo.toml`). |
+|-------------|-------|
+| Rust | Stable, edition 2021 (see `onchain/Cargo.toml`). |
 | Target | `rustup target add wasm32-unknown-unknown` |
 | Stellar CLI | Same major line as Soroban SDK in the workspace (e.g. install via `cargo install stellar-cli --locked`). |
 | Coverage | `rustup component add llvm-tools-preview` and `cargo install cargo-llvm-cov` |
