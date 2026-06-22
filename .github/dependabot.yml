@@ -1,0 +1,51 @@
+# Dependabot configuration for Stellopay Core
+# Keeps Cargo dependencies and GitHub Actions up to date automatically.
+#
+# See: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
+
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "rust"
+    groups:
+      soroban-deps:
+        patterns:
+          - "soroban-*"
+          - "stellar-*"
+        update-types:
+          - "minor"
+          - "patch"
+      workspace-deps:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "soroban-*"
+          - "stellar-*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "ci"
+    groups:
+      actions-deps:
+        patterns:
+          - "*"
