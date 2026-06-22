@@ -42,6 +42,9 @@ contractclient!(PaymentHistoryContract, payment_history_client);
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
+
+/// Maximum allowed metadata length in bytes.
+const MAX_METADATA_BYTES: u32 = 2048;
 pub enum ComplianceError {
     /// Contract has not been initialized yet.
     NotInitialized = 1,
@@ -57,6 +60,8 @@ pub enum ComplianceError {
     ContractPaused = 6,
     /// Provided amount is invalid (e.g. zero or negative where not allowed).
     InvalidAmount = 7,
+    /// Metadata exceeds the maximum allowed length (2048 bytes).
+    MetadataTooLong = 8,
 }
 
 // ---------------------------------------------------------------------------
@@ -361,6 +366,9 @@ impl ComplianceReportingContract {
             return Err(ComplianceError::NotAuthorized);
         }
 
+        if metadata.len() > MAX_METADATA_BYTES {
+            return Err(ComplianceError::MetadataTooLong);
+        }
         if amount <= 0 {
             return Err(ComplianceError::InvalidAmount);
         }
