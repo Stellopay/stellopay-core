@@ -18,7 +18,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: llvm-tools-preview
+          components: llvm-tools-preview, clippy
 
       - name: Install system dependencies
         run: |
@@ -31,25 +31,23 @@ jobs:
       - name: Install Stellar CLI
         run: cargo install stellar-cli --locked
 
-      - name: Run tests (stello_pay_contract)
+      - name: Run workspace tests
         working-directory: onchain
-        run: cargo test -p stello_pay_contract --verbose
+        run: cargo test --workspace --verbose
 
-      - name: Run tests (integration_tests)
+      - name: Clippy workspace gate
         working-directory: onchain
-        run: cargo test -p integration_tests --verbose
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Run tests (template_versioning)
+      - name: Build all cdylib contracts (WASM)
         working-directory: onchain
-        run: cargo test -p template_versioning --verbose
-
-      - name: Build Soroban contract (WASM)
-        working-directory: onchain/contracts/stello_pay_contract
-        run: stellar contract build --verbose
-
-      - name: Build template_versioning (WASM)
-        working-directory: onchain/contracts/template_versioning
-        run: stellar contract build --verbose
+        run: |
+          for d in contracts/*/; do
+            if grep -q 'crate-type.*cdylib' "${d}Cargo.toml" 2>/dev/null; then
+              echo "Building WASM for ${d}"
+              (cd "${d}" && stellar contract build --verbose)
+            fi
+          done
 
       - name: Compile critical_paths benchmark (no run)
         working-directory: onchain/contracts/stello_pay_contract
@@ -58,10 +56,10 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Generate coverage (stello_pay_contract + integration_tests)
+      - name: Generate workspace coverage
         working-directory: onchain
         run: |
-          cargo llvm-cov test -p stello_pay_contract -p integration_tests \
+          cargo llvm-cov test --workspace \
             --codecov --output-path codecov.json
 
       - name: Upload coverage artifact

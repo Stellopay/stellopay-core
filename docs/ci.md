@@ -8,8 +8,8 @@ It performs:
 
 1. **Rust toolchain** — stable channel, `wasm32-unknown-unknown` target, `llvm-tools-preview` (for coverage instrumentation).
 2. **Stellar CLI** — `cargo install stellar-cli --locked` for `stellar contract build`.
-3. **Unit / integration tests**
-   - `cargo test -p payroll_escrow --verbose`
+3. **Unit / integration tests** — `cargo test --workspace --verbose` runs all workspace tests.
+   (Removed — workspace-wide `cargo test --workspace` replaces per-crate invocations.)
    - `cargo test -p stello_pay_contract --verbose`
    - `cargo test -p integration_tests --verbose`
    - `cargo test -p template_versioning --verbose`
