@@ -33,13 +33,18 @@ Notable contract modules include:
 | `token_vesting`, `withdrawal_timelock`, `slashing_penalty` | Vesting, withdrawal constraints, and penalty flows. |
 | `audit_logger`, `payment_history` | Audit and historical payment records. |
 
-See [`onchain/contracts/`](onchain/contracts/) for the full contract list.
+See [`onchain/README.md`](onchain/README.md#contract-inventory) for the full
+contract inventory with primary documentation links.
 
 ## Documentation Map
 
 - [API documentation](docs/api/README.md)
 - [Integration guide](docs/integration/README.md)
 - [Architecture](docs/architecture.md)
+- [Payroll escrow](docs/payroll-escrow.md)
+- [Deployment](docs/deployment.md)
+- [Build targets](docs/build-targets.md)
+- [Multi-currency payroll](docs/multi-currency.md)
 - [Examples](docs/examples/README.md)
 - [Best practices](docs/best-practices/README.md)
 - [Developer tools](docs/dev-tools/README.md)
@@ -60,8 +65,8 @@ Common local checks from the on-chain workspace:
 
 ```sh
 cd onchain
-cargo build
-cargo test
+cargo build --target wasm32-unknown-unknown
+cargo test --workspace
 ```
 
 For Soroban contract builds, use:
