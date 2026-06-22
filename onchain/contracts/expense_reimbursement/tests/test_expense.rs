@@ -827,3 +827,40 @@ fn test_multiple_expenses_with_unique_receipts_work_end_to_end() {
     assert_eq!(token_client.balance(&client.address), 0);
     assert_eq!(token_client.balance(&payer), 4000);
 }
+
+#[test]
+fn test_fund_expense_overflow_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    // Mint a huge amount to the payer so the token transfer succeeds
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &i128::MAX);
+
+    client.initialize(&owner);
+    client.add_approver(&approver);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_client.address,
+        &500,
+        &String::from_str(&env, "receipt_overflow"),
+        &String::from_str(&env, "Overflow test"),
+    );
+
+    // Fund the expense with i128::MAX to fill escrow_amount to capacity
+    client.fund_expense(&payer, &expense_id, &i128::MAX);
+
+    // Second funding should overflow and panic
+    let result = client.try_fund_expense(&payer, &expense_id, &1);
+    assert!(result.is_err());
+}
+

@@ -319,7 +319,8 @@ impl ExpenseReimbursementContract {
         let token_client = token::Client::new(&env, &expense.token);
         token_client.transfer(&payer, &env.current_contract_address(), &amount);
 
-        expense.escrow_amount += amount;
+        expense.escrow_amount = expense.escrow_amount.checked_add(amount)
+            .expect("Escrow amount overflow");
         
         // Register the payer if none exists; else require same payer for refunds to be coherent
         if expense.payer.is_none() {
