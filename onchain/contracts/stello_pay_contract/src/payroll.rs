@@ -2889,6 +2889,31 @@ fn get_next_agreement_id(env: &Env) -> u128 {
 ///
 /// The rate is interpreted as `quote_per_base * FX_SCALE`, where `from_token`
 /// is the base and `to_token` is the quote.
+/// Converts mount from rom_token to 	o_token using the configured FX rate.
+///
+/// # Rounding Policy
+///
+/// This function always **rounds toward zero** (truncation) via integer division.
+/// This is a deliberate choice for payroll: the contributor is never over-paid,
+/// and any remainder (dust) stays in the contract escrow balance.
+///
+/// # Dust Handling
+///
+/// A sub-unit remainder is silently discarded. The dust is not tracked individually
+/// because each claim independently converts and the aggregate shortfall across many
+/// claims is bounded by one unit per conversion. Escrow accounting naturally retains
+/// these fractional residuals.
+///
+/// # Zero-Output Guard
+///
+/// If the converted result is zero while the input mount is non-zero (i.e.
+/// mount * rate < FX_SCALE), the function returns ExchangeRateInvalid.
+/// This prevents silent non-payment for economically insignificant conversions.
+///
+/// # Panics / Errors
+/// * ExchangeRateNotFound — no rate is configured for the (from_token, to_token) pair
+/// * ExchangeRateInvalid — rate is zero, negative, or conversion produces zero output
+/// * ExchangeRateOverflow — intermediate multiplication exceeds i128 bounds
 fn convert_amount(
     env: &Env,
     from_token: &Address,
@@ -2923,9 +2948,15 @@ fn convert_amount(
         .checked_mul(rate)
         .ok_or(PayrollError::ExchangeRateOverflow)?;
 
+    // Round toward zero (truncation): discard fractional remainder
     let converted = scaled
         .checked_div(FX_SCALE)
         .ok_or(PayrollError::ExchangeRateInvalid)?;
+
+    // Zero-output guard: non-zero input must produce non-zero output
+    if converted == 0 && amount > 0 {
+        return Err(PayrollError::ExchangeRateInvalid);
+    }
 
     Ok(converted)
 }

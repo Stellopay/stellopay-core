@@ -208,3 +208,19 @@ client.claim_payroll_in_token(&employee, &agreement_id, &0u32, &payout_token);
   - `claim_payroll_in_token` shares the same eligibility and period-counting
     logic as `claim_payroll`, ensuring consistent invariants across currencies.
 
+
+### Rounding Policy
+
+The FX conversion function \convert_amount\ always **rounds toward zero**
+(truncation) via integer division. This is a deliberate choice:
+
+- The contributor is **never over-paid**, which prevents escrow shortfall.
+- Any fractional remainder (dust) is silently discarded. The dust is not
+  tracked individually because each claim independently converts and the
+  aggregate shortfall across many claims is bounded by one unit per claim.
+  Escrow accounting naturally retains these residuals.
+- If a non-zero input produces a zero converted output (i.e.
+  \mount * rate < FX_SCALE\), the call returns \ExchangeRateInvalid\
+  to prevent silent non-payment.
+- This rounding policy matches the round-down semantics used by the
+  payment-splitter path elsewhere in the codebase.

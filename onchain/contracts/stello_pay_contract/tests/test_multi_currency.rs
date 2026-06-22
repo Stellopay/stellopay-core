@@ -186,3 +186,65 @@ fn test_claim_payroll_in_different_token_uses_fx_rate() {
         assert_eq!(paid, salary_per_period);
     });
 }
+
+// ---------------------------------------------------------------------------
+// Dust, boundary, and sub-unit tests (#489 - rounding/dust policy)
+// ---------------------------------------------------------------------------
+
+/// Non-zero input smaller than FX_SCALE/rate should produce ExchangeRateInvalid.
+#[test]
+fn test_convert_currency_zero_output_guard() {
+    let (env, owner, _employer, _arbiter, client) = create_test_env();
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+    // Rate = 1 => FX_SCALE = 1_000_000, so amount < 1_000_000 truncates to 0
+    client.set_exchange_rate(&owner, &base, &quote, &1_000_000i128);
+
+    // 1 unit should convert to 0 because 1 * 1_000_000 / 1_000_000 = 1 (actually this is fine)
+    // Let's use rate = 1 and amount = 1 → 1 * 1 / 1_000_000 = 0 in integer math
+    client.set_exchange_rate(&owner, &base, &quote, &1i128);
+    let result = client.try_convert_currency(&base, &quote, &999_999i128);
+    assert!(
+        result.is_err(),
+        "Expected ExchangeRateInvalid for sub-unit conversion"
+    );
+}
+
+/// Round-down (truncation) test: amount=1, rate=999_999 should produce 0.
+#[test]
+fn test_convert_currency_truncation_round_down() {
+    let (env, owner, _employer, _arbiter, client) = create_test_env();
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+    // rate = 999_999 → 1 * 999_999 / 1_000_000 = 0 (truncated)
+    client.set_exchange_rate(&owner, &base, &quote, &999_999i128);
+    let result = client.try_convert_currency(&base, &quote, &1i128);
+    assert!(
+        result.is_err(),
+        "Expected ExchangeRateInvalid for sub-unit truncation"
+    );
+}
+
+/// Boundary: amount * rate == FX_SCALE should produce exactly 1.
+#[test]
+fn test_convert_currency_exact_fx_scale() {
+    let (env, owner, _employer, _arbiter, client) = create_test_env();
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+    // rate * amount == FX_SCALE exactly → 1 unit
+    client.set_exchange_rate(&owner, &base, &quote, &1_000_000i128);
+    let result = client.convert_currency(&base, &quote, &1i128);
+    assert_eq!(result, 1);
+}
+
+/// Large amounts near i128 bounds should not overflow.
+#[test]
+fn test_convert_currency_large_amount() {
+    let (env, owner, _employer, _arbiter, client) = create_test_env();
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+    client.set_exchange_rate(&owner, &base, &quote, &1i128);
+    // i128::MAX / FX_SCALE ≈ 1.7e30, so this should work
+    let result = client.convert_currency(&base, &quote, &(i128::MAX / 1_000_000));
+    assert!(result > 0);
+}
