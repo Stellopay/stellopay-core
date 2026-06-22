@@ -1,10 +1,10 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Employee {
@@ -62,7 +62,10 @@ pub fn format_amount(amount: i128, decimals: u32) -> String {
             fractional,
             width = decimals as usize
         );
-        formatted.trim_end_matches('0').trim_end_matches('.').to_string()
+        formatted
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
 
@@ -317,45 +320,40 @@ mod tests {
         assert_eq!(truncate_address("SHORT", 4), "SHORT");
     }
 }
-pub struct SorobanHttpClient{
-    base_url:String,
-    client:reqwest::Client,
+pub struct SorobanHttpClient {
+    base_url: String,
+    client: reqwest::Client,
 }
-impl SorobanHttpClient{
-    pub fn new(base_url: &str)->Self{
-        Self{
-            base_url:base_url.to_string(),
-            client:reqwest::Client::new(),
+impl SorobanHttpClient {
+    pub fn new(base_url: &str) -> Self {
+        Self {
+            base_url: base_url.to_string(),
+            client: reqwest::Client::new(),
         }
     }
-    pub async fn get_ledger_info(&self)->Result<String>{
-        let url=format!("{}/ledger",self.base_url);
-        let res=self.client.get(&url).send().await?;
-        let body =res.text().await?;
+    pub async fn get_ledger_info(&self) -> Result<String> {
+        let url = format!("{}/ledger", self.base_url);
+        let res = self.client.get(&url).send().await?;
+        let body = res.text().await?;
         Ok(body)
     }
     pub async fn invoke(
         &self,
-        contract_id:&str,
-        method:&str,
-        args:Vec<(&str,&str)>,
-        signer:&str,
+        contract_id: &str,
+        method: &str,
+        args: Vec<(&str, &str)>,
+        signer: &str,
     ) -> Result<String> {
-        let url=format!("{}/invoke",self.base_url.trim_end_matches('/'));
-        println!("Invoking Soroban at: {}",url);
-        let payload=json!({
+        let url = format!("{}/invoke", self.base_url.trim_end_matches('/'));
+        println!("Invoking Soroban at: {}", url);
+        let payload = json!({
             "contract_id":contract_id,
             "method":method,
             "args":args.iter().map(|(k,v)| json!({(*k):v})).collect::<Vec<_>>(),
             "signer":signer,
         });
-        let response=self
-            .client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await?;
-        let body=response.text().await?;
+        let response = self.client.post(&url).json(&payload).send().await?;
+        let body = response.text().await?;
         Ok(body)
     }
 

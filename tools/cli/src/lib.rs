@@ -1,8 +1,8 @@
-pub mod config;
 pub mod commands;
+pub mod config;
 pub mod utils;
 
-pub use config::{load_config, get_secret_key, create_config_file};
+pub use config::{create_config_file, get_secret_key, load_config};
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
@@ -55,15 +55,15 @@ pub enum Commands {
     /// Show CLI status
     Status,
     /// Emergency Command
-    EmergencyWithdraw{
+    EmergencyWithdraw {
         #[arg(long)]
-        contract_id:Option<String>,
+        contract_id: Option<String>,
         #[arg(long)]
-        token:String,
+        token: String,
         #[arg(long)]
-        recipient:String,
+        recipient: String,
         #[arg(long)]
-        amount:i128,
+        amount: i128,
     },
     /// Webhook management commands
     Webhook {
@@ -258,8 +258,8 @@ pub struct GasMetrics {
     pub total: u64,
 }
 //error enum
-#[derive(Debug,thiserror::Error)]
-pub enum Error{
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
     #[error("Zero amount is not allowed")]
     ZeroAmount,
     #[error("Maximum Amount Surpassed")]
@@ -313,24 +313,22 @@ impl Default for Config {
     }
 }
 //admin and pause checks
-pub fn require_admin(_context:&str)->Result<(),Error>{
+pub fn require_admin(_context: &str) -> Result<(), Error> {
     //dummy implementation
     Ok(())
 }
-pub fn require_not_paused(_context:&str)->Result<(),Error>{
+pub fn require_not_paused(_context: &str) -> Result<(), Error> {
     //dummy implementation
     Ok(())
 }
 //token client
 pub struct TokenClient;
-impl TokenClient{
-    pub fn new(_rpc_url:&str,_token_address:&str)->Self{
+impl TokenClient {
+    pub fn new(_rpc_url: &str, _token_address: &str) -> Self {
         TokenClient
     }
-    pub fn transfer(&self,_to:&str,_amount:i128)->Result<(),Error>{
+    pub fn transfer(&self, _to: &str, _amount: i128) -> Result<(), Error> {
         //dummy implementation
         Ok(())
     }
-
 }
-
