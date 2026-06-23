@@ -7,7 +7,7 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{testutils::Address as _, Address, Env};
-use stello_pay_contract::storage::{AgreementMode, AgreementStatus};
+use stello_pay_contract::storage::{AgreementMode, AgreementStatus, PayrollError};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 // ============================================================================
@@ -506,4 +506,21 @@ fn test_agreement_with_long_periods() {
     let agreement_id = client.create_payroll_agreement(&employer, &token, &long_grace);
     let agreement = client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agreement.grace_period_seconds, long_grace);
+}
+
+/// Adding the same employee twice to the same agreement must fail with EmployeeAlreadyExists.
+#[test]
+fn test_add_duplicate_employee_fails() {
+    let env = create_test_env();
+    let (_contract_id, client) = setup_contract(&env);
+    let employer = create_test_address(&env);
+    let token = create_test_address(&env);
+    let employee = create_test_address(&env);
+    let salary = 2000i128;
+
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
+    client.add_employee_to_agreement(&agreement_id, &employee, &salary);
+
+    let result = client.try_add_employee_to_agreement(&agreement_id, &employee, &salary);
+    assert!(result.is_err());
 }

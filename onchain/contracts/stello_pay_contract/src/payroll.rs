@@ -1319,7 +1319,7 @@ pub fn add_employee_to_agreement(
     agreement_id: u128,
     employee: Address,
     salary_per_period: i128,
-) {
+) -> Result<(), PayrollError> {
     let mut agreement = get_agreement(env, agreement_id).expect("Agreement not found");
 
     agreement.employer.require_auth();
@@ -1341,6 +1341,13 @@ pub fn add_employee_to_agreement(
         .persistent()
         .get(&StorageKey::AgreementEmployees(agreement_id))
         .unwrap_or(Vec::new(env));
+
+    // Reject duplicate employee address in the same agreement (#501)
+    for e in employees.iter() {
+        if e.address == employee {
+            return Err(PayrollError::EmployeeAlreadyExists);
+        }
+    }
 
     employees.push_back(EmployeeInfo {
         address: employee.clone(),
@@ -1365,6 +1372,8 @@ pub fn add_employee_to_agreement(
             salary_per_period,
         },
     );
+
+    Ok(())
 }
 
 /// Activates an agreement
