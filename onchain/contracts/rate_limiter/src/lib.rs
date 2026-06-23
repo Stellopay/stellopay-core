@@ -164,6 +164,36 @@ impl RateLimiter {
         Self::get_limit_config(&env, &addr)
     }
 
+    /// Returns the current usage state for an address without consuming tokens.
+    ///
+    /// # Read-Only Semantics
+    /// This is a purely observational query. It computes the token refill based on
+    /// elapsed time since the last update but does **not** mutate any state.
+    /// No authentication is required.
+    ///
+    /// # Returns
+    /// - `Some(Usage)` — the current token count and last-update timestamp, with
+    ///   refill applied up to the current ledger time.
+    /// - `None` — if no usage has ever been recorded for this address (the bucket
+    ///   is effectively full at the configured burst capacity).
+    pub fn get_usage(env: Env, addr: Address) -> Option<Usage> {
+        env.storage().persistent().get(&StorageKey::Usage(addr.clone())).map(|usage: Usage| {
+            let now = env.ledger().timestamp();
+            let config = Self::get_limit_config(&env, &addr);
+            let elapsed = now.saturating_sub(usage.last_update);
+            if elapsed > 0 {
+                let new_tokens = (elapsed as u32).saturating_mul(config.refill_rate);
+                let tokens = usage.tokens.saturating_add(new_tokens);
+                Usage {
+                    last_update: now,
+                    tokens: if tokens > config.burst { config.burst } else { tokens },
+                }
+            } else {
+                usage
+            }
+        })
+    }
+
     /// Gets effective admin address.
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().persistent().get(&StorageKey::Admin)

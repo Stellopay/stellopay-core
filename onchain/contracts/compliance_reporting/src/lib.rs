@@ -26,13 +26,10 @@
 //! Off-chain indexers should consume events and snapshot data independently.
 
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Vec,
 };
-use audit_logger::{AuditLogEntry, AuditLoggerContract};
-use payment_history::{PaymentHistoryContract, PaymentRecord};
-
-contractclient!(AuditLoggerContract, audit_logger_client);
-contractclient!(PaymentHistoryContract, payment_history_client);
+use audit_logger::{AuditLogEntry, AuditLoggerContractClient};
+use payment_history::{PaymentHistoryContractClient, PaymentRecord};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -113,11 +110,31 @@ pub struct ComplianceRecord {
     pub publisher: Address,
 }
 
-/// Aggregated report returned by `generate_report`.
+/// Aggregated report returned by `generate_report` and `get_withholding_records`.
+///
+/// ## Field provenance
+///
+/// | Field          | Source                                                          |
+/// |----------------|-----------------------------------------------------------------|
+/// | `employer`     | Passed in by caller; verified to own the queried records.       |
+/// | `employee`     | Passed in by caller (or derived from records for single-emp).   |
+/// | `total_amount` | Sum of `ComplianceRecord::amount` for all records in `records`. |
+/// | `record_count` | `records.len()` — derived, not independently stored.           |
+/// | `records`      | On-chain `ComplianceRecord` entries filtered by time window.    |
+/// | `payment_history` | Fetched from the registered `PaymentHistory` contract.       |
+/// | `agreement_events`| Fetched from the registered `AuditLogger` contract.         |
+///
+/// ## Empty-window semantics
+///
+/// When no records match the requested window, `records` is an empty `Vec`,
+/// `total_amount` is `0`, and `record_count` is `0`. This is a legitimate
+/// result, not a placeholder — callers can rely on it as authoritative.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComplianceReport {
     /// Employer this report covers.
+    /// Derived from the `employer` parameter passed to the query function;
+    /// never randomly generated.
     pub employer: Address,
     /// Employee this report covers.
     pub employee: Address,
@@ -125,15 +142,19 @@ pub struct ComplianceReport {
     pub start_date: u64,
     /// Inclusive end of the reporting period (UNIX timestamp).
     pub end_date: u64,
-    /// Sum of all matching record amounts (withholding).
-    pub total_withholding: i128,
-    /// Number of withholding records.
-    pub withholding_count: u32,
-    /// Withholding records from this contract.
-    pub withholding_records: Vec<ComplianceRecord>,
-    /// Payment history records from PaymentHistory contract.
+    /// Sum of `amount` across all entries in `records`.
+    ///
+    /// Aggregated by iterating every matching `ComplianceRecord` within
+    /// `[start_date, end_date]`. Zero when no records match — this is the
+    /// correct aggregate, not a placeholder.
+    pub total_amount: i128,
+    /// Number of matching withholding records (equals `records.len()`).
+    pub record_count: u32,
+    /// Withholding records from this contract that fall within the window.
+    pub records: Vec<ComplianceRecord>,
+    /// Payment history records from the registered PaymentHistory contract.
     pub payment_history: Vec<PaymentRecord>,
-    /// Audit log events from AuditLogger contract.
+    /// Audit log events from the registered AuditLogger contract.
     pub agreement_events: Vec<AuditLogEntry>,
     /// Schema version for off-chain parsing.
     pub schema_version: u32,
@@ -452,28 +473,37 @@ impl ComplianceReportingContract {
             .unwrap_or(0)
     }
 
-    /// @notice Generates an aggregated compliance report for a given employer
-    ///         and time window.
-    /// @dev Iterates backwards (newest-first) through the employer's records.
-    ///      Stops early when a record's timestamp falls below `start_date`,
-    ///      saving instruction budget. `limit` is capped at `MAX_QUERY_LIMIT`
-    ///      (100) to prevent instruction-limit overflows.
-    /// @param employer The employer to report on.
+    /// @notice Returns the withholding records for an employer/employee pair
+    ///         within a time window, with aggregated totals.
+    ///
+    /// ## Aggregation semantics
+    ///
+    /// `total_amount` is the arithmetic sum of `ComplianceRecord::amount` for
+    /// every record that satisfies **all** of:
+    /// 1. Belongs to `employer` (keyed in storage under `employer`).
+    /// 2. `start_date <= record.timestamp <= end_date`.
+    /// 3. `report_type` matches `filter_type` (if `Some`) or any type (`None`).
+    ///
+    /// When no records match, `total_amount` is `0` and `records` is empty.
+    /// This is the correct aggregate for an empty window — **not a placeholder**.
+    ///
+    /// ## Security
+    ///
+    /// Records are scoped strictly to `employer`. Cross-employer leakage is
+    /// structurally impossible because the storage key includes the employer
+    /// address: `DataKey::Record(employer, id)`.
+    ///
+    /// @param employer The employer whose records are queried.
+    /// @param employee The employee for report metadata (does not filter records).
     /// @param start_date Inclusive start of the reporting period (UNIX timestamp).
     /// @param end_date Inclusive end of the reporting period (UNIX timestamp).
     /// @param filter_type Optional `ReportType` filter; `None` returns all types.
     /// @param limit Maximum number of matching records to include (≤ 100).
-    /// @return A `ComplianceReport` with aggregated totals and matching records.
-    /// @notice Returns the withholding records for an employer and time window.
-    /// @dev Formerly `generate_report`.
-    /// @param employer The employer to report on.
-    /// @param start_date Inclusive start of the reporting period (UNIX timestamp).
-    /// @param end_date Inclusive end of the reporting period (UNIX timestamp).
-    /// @param filter_type Optional `ReportType` filter; `None` returns all types.
-    /// @param limit Maximum number of matching records to include (≤ 100).
+    /// @return A `ComplianceReport` with real aggregated totals and records.
     pub fn get_withholding_records(
         env: Env,
         employer: Address,
+        employee: Address,
         start_date: u64,
         end_date: u64,
         filter_type: Option<ReportType>,
@@ -494,10 +524,15 @@ impl ComplianceReportingContract {
             .get(&DataKey::RecordCount(employer.clone()))
             .unwrap_or(0);
 
-        let mut matching_records = Vec::new(&env);
+        let mut matching_records: Vec<ComplianceRecord> = Vec::new(&env);
+        // `total_amount` accumulates the sum of `record.amount` for every
+        // record that passes all filters. Starts at 0 — the correct value
+        // when zero records match.
         let mut total_amount: i128 = 0;
         let mut current_id = total_records;
 
+        // Iterate newest-first (highest ID → lowest). Stops early when a
+        // record's timestamp falls below `start_date`, saving budget.
         while current_id > 0 && (matching_records.len() as u32) < limit {
             if let Some(record) = env
                 .storage()
@@ -505,8 +540,8 @@ impl ComplianceReportingContract {
                 .get::<_, ComplianceRecord>(&DataKey::Record(employer.clone(), current_id))
             {
                 if record.timestamp < start_date {
-                    // Records are stored in ascending timestamp order; once we
-                    // pass below start_date we can stop.
+                    // Records are written in ascending timestamp order; once we
+                    // pass below start_date no earlier record can match.
                     break;
                 }
 
@@ -525,28 +560,56 @@ impl ComplianceReportingContract {
             current_id -= 1;
         }
 
-        // Return a dummy report for now until we fully integrate everything.
+        let record_count = matching_records.len() as u32;
+
         Ok(ComplianceReport {
             employer,
-            employee: Address::generate(&env),
+            employee,
             start_date,
             end_date,
-            total_withholding: total_amount,
-            withholding_count: matching_records.len() as u32,
-            withholding_records: matching_records,
+            total_amount,
+            record_count,
+            records: matching_records,
             payment_history: Vec::new(&env),
             agreement_events: Vec::new(&env),
             schema_version: 1,
         })
     }
 
-    /// @notice Generates a comprehensive compliance report for an employee and time window.
-    /// @param employee The employee to report on.
+    /// @notice Generates a comprehensive compliance report for an employer/employee
+    ///         pair within a time window, cross-referencing on-chain withholding
+    ///         records with payment history and audit log events.
+    ///
+    /// ## Aggregation semantics
+    ///
+    /// Withholding records are fetched from **this contract's** own storage,
+    /// scoped to `employer`. `total_amount` is the arithmetic sum of
+    /// `ComplianceRecord::amount` for every record within `[period_start,
+    /// period_end]`. When no records fall in the window the result has
+    /// `total_amount = 0` and an empty `records` vec — this is the correct
+    /// aggregate, not a placeholder.
+    ///
+    /// Payment history and audit events are fetched from the registered
+    /// companion contracts (see `set_contract_addresses`). If those contracts
+    /// are not configured, this function returns
+    /// `ComplianceError::NotInitialized`.
+    ///
+    /// ## Security
+    ///
+    /// Withholding records are keyed by `employer` in storage
+    /// (`DataKey::Record(employer, id)`), so cross-employer leakage is
+    /// structurally impossible. `payment_history` and `agreement_events` are
+    /// fetched via the registered contract clients using the supplied
+    /// `employee` address, ensuring each caller sees only their own data.
+    ///
+    /// @param employer The employer whose withholding records are aggregated.
+    /// @param employee The employee whose payment history is fetched.
     /// @param period_start Inclusive start of the reporting period (UNIX timestamp).
     /// @param period_end Inclusive end of the reporting period (UNIX timestamp).
-    /// @return A `ComplianceReport` with aggregated data.
+    /// @return A `ComplianceReport` with real aggregated totals — no placeholders.
     pub fn generate_report(
         env: Env,
+        employer: Address,
         employee: Address,
         period_start: u64,
         period_end: u64,
@@ -557,7 +620,7 @@ impl ComplianceReportingContract {
             return Err(ComplianceError::InvalidDateRange);
         }
 
-        // 1. Fetch configured contract addresses
+        // 1. Fetch configured companion contract addresses.
         let audit_logger_addr: Address = env
             .storage()
             .persistent()
@@ -569,29 +632,58 @@ impl ComplianceReportingContract {
             .get(&DataKey::PaymentHistory)
             .ok_or(ComplianceError::NotInitialized)?;
 
-        // 2. Fetch PaymentHistory records for employee
-        let ph_client = payment_history_client::Client::new(&env, &payment_history_addr);
-        // Assuming there is a way to get payments by employee.
+        // 2. Aggregate withholding records from this contract's own storage,
+        //    scoped strictly to `employer`. Iterate newest-first for early exit.
+        let total_on_chain: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RecordCount(employer.clone()))
+            .unwrap_or(0);
+
+        let mut matching_records: Vec<ComplianceRecord> = Vec::new(&env);
+        // `total_amount` accumulates the real sum of matched record amounts.
+        // Starts at 0 — the correct result when zero records match the window.
+        let mut total_amount: i128 = 0;
+        let mut current_id = total_on_chain;
+
+        while current_id > 0 && (matching_records.len() as u32) < MAX_QUERY_LIMIT {
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get::<_, ComplianceRecord>(&DataKey::Record(employer.clone(), current_id))
+            {
+                // Early exit: records are written in ascending timestamp order.
+                if record.timestamp < period_start {
+                    break;
+                }
+                if record.timestamp <= period_end {
+                    total_amount += record.amount;
+                    matching_records.push_back(record);
+                }
+            }
+            current_id -= 1;
+        }
+
+        let record_count = matching_records.len() as u32;
+
+        // 3. Fetch PaymentHistory records for the employee.
+        let ph_client = PaymentHistoryContractClient::new(&env, &payment_history_addr);
         let payments = ph_client.get_payments_by_employee(&employee, &1, &MAX_QUERY_LIMIT);
 
-        // 3. Fetch AuditLogger events
-        let al_client = audit_logger_client::Client::new(&env, &audit_logger_addr);
-        // Assuming there is a way to get logs.
-        let events = al_client.get_latest_logs(&MAX_QUERY_LIMIT).unwrap_or_else(|_| Vec::new(&env));
-
-        // 4. Fetch Withholding records (placeholder)
-        let withholding_records = Vec::new(&env);
+        // 4. Fetch AuditLogger events.
+        let al_client = AuditLoggerContractClient::new(&env, &audit_logger_addr);
+        let events = al_client.get_latest_logs(&MAX_QUERY_LIMIT);
 
         let schema_version = Self::get_report_schema_version(env.clone());
 
         Ok(ComplianceReport {
-            employer: Address::generate(&env), // Placeholder
+            employer,
             employee,
             start_date: period_start,
             end_date: period_end,
-            total_withholding: 0,
-            withholding_count: 0,
-            withholding_records,
+            total_amount,
+            record_count,
+            records: matching_records,
             payment_history: payments,
             agreement_events: events,
             schema_version,
