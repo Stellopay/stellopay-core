@@ -1,7 +1,9 @@
 #![cfg(test)]
 
 use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, Vec};
-use stello_pay_contract::storage::{AgreementMode, AgreementStatus, DataKey, Milestone, PayrollError};
+use stello_pay_contract::storage::{
+    Agreement, AgreementMode, AgreementStatus, DataKey, Milestone, PayrollError, StorageKey,
+};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 fn create_test_env() -> Env {
@@ -310,6 +312,15 @@ fn test_invariant_dispute_resolution_bounds() {
     
     env.as_contract(&contract_id, || {
         DataKey::set_agreement_escrow_balance(&env, agreement_id, &token_id, escrow_balance);
+        let mut agreement: Agreement = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Agreement(agreement_id))
+            .unwrap();
+        agreement.total_amount = escrow_balance;
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Agreement(agreement_id), &agreement);
     });
     
     client.activate_agreement(&agreement_id);
@@ -344,23 +355,20 @@ fn test_invariant_dispute_resolution_bounds() {
         (emp3_after - emp3_before) +
         (employer_after - employer_before);
     
-    // **Invariant: Total distributed must equal initial escrow**
+    // **Invariant: Total distributed must not exceed escrow balance**
+    // Integer division dust (700 / 3 = 233 per employee, 233*3 = 699, 1 left) is expected
+    let contract_balance_after = token_client.balance(&contract_id);
     assert_eq!(
-        total_distributed,
+        total_distributed + contract_balance_after,
         escrow_balance,
-        "Total distributed ({}) != escrow balance ({})",
-        total_distributed, escrow_balance
+        "Distributed ({}) + remaining ({}) != escrow ({})",
+        total_distributed, contract_balance_after, escrow_balance
     );
-    
-    // Verify minimal remaining dust
-    env.as_contract(&contract_id, || {
-        let remaining = DataKey::get_agreement_escrow_balance(&env, agreement_id, &token_id);
-        assert!(
-            remaining <= 2, // At most employee_count - 1 dust
-            "Excessive remaining balance: {}",
-            remaining
-        );
-    });
+    assert!(
+        contract_balance_after <= 2,
+        "Excessive dust remaining in contract: {}",
+        contract_balance_after
+    );
 }
 
 /// **Invariant: Claimed periods is monotonic and bounded**
