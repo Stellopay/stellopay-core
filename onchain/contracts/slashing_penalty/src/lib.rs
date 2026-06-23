@@ -212,6 +212,9 @@ impl SlashingPenaltyContract {
         admin.require_auth();
         env.storage().instance().set(&ADMIN, &admin);
         env.storage().instance().set(&TOKEN, &token);
+                if quorum == 0 {
+            return Err(SlashError::InvalidConfig);
+        }
         env.storage().instance().set(&QUORUM, &quorum.max(DEFAULT_QUORUM));
         env.storage().instance().set(&SLASHERS, &Vec::<Address>::new(&env));
         env.storage().instance().set(&STAKES, &Map::<Address, i128>::new(&env));

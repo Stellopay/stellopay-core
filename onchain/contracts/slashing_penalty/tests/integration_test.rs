@@ -615,3 +615,24 @@ fn test_slash_exactly_at_appeal_deadline_still_open() {
     let result = t.client.try_execute_slash(&hash);
     assert_eq!(result, Err(Ok(SlashError::AppealWindowOpen)));
 }
+
+#[test]
+fn test_initialize_quorum_zero_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SlashingPenaltyContract);
+    let client = SlashingPenaltyContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let result = client.try_initialize(
+        &admin, &token,
+        &0u32,        // zero quorum - should be rejected
+        &5_000u32,
+        &6_000i128,
+        &9_000i128,
+        &86_400u64,
+    );
+    assert_eq!(result, Err(Ok(SlashError::InvalidConfig)));
+}
+
