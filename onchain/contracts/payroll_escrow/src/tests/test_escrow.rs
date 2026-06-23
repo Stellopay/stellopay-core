@@ -828,6 +828,9 @@ fn test_release_full_and_refund_fails() {
     client.refund_remaining(&manager, &1);
 }
 
+#[test]
+#[should_panic(expected = "Balance overflow")]
+fn test_fund_overflow_rejects_with_no_transfer() {
 // ============================================================================
 // Conservation invariant helpers and edge-case coverage
 // ============================================================================
@@ -869,6 +872,19 @@ fn test_escrow_conservation_invariant_multi_step() {
     let client = create_payroll_escrow_contract(&env);
     client.initialize(&admin, &token.address, &manager);
 
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &i128::MAX);
+
+    // Fund with maximum safe amount
+    let max_safe = i128::MAX / 2;
+    client.fund_agreement(&employer, &1, &employer, &max_safe);
+    assert_eq!(client.get_agreement_balance(&1), max_safe);
+    
+    // Record token balance before overflow attempt
+    let token_before = token.balance(&env.current_contract_address());
+
+    // Attempt to fund with amount that would overflow
+    // This should panic on checked_add before any transfer occurs
+    client.fund_agreement(&employer, &1, &employer, &max_safe);
     soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &10_000);
 
     let agreement_id = 99u128;

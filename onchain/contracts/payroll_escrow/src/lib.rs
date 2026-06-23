@@ -167,8 +167,9 @@ impl PayrollEscrowContract {
 
     /// Funds an agreement with tokens.
     ///
-    /// Transfers tokens from the caller to this contract and records the balance
-    /// for the specified agreement.
+    /// Validates the balance update via checked_add before performing the token transfer.
+    /// This ordering ensures that if the balance computation overflows, no tokens are moved
+    /// and the contract state remains consistent with actual custody.
     ///
     /// # Arguments
     ///
@@ -183,6 +184,13 @@ impl PayrollEscrowContract {
     /// * Contract must be initialized
     /// * Amount must be positive
     /// * Caller must have approved sufficient tokens for transfer
+    /// * New balance must not overflow i128
+    ///
+    /// # Checks-Effects-Interactions (CEI) Ordering
+    ///
+    /// - **Checks**: Validates initialization, amount, employer consistency, and balance overflow
+    /// - **Effects**: Updates agreement balance in storage (only if validation succeeds)
+    /// - **Interactions**: Transfers tokens (only after balance is recorded)
     ///
     /// # Events
     ///
@@ -222,18 +230,7 @@ impl PayrollEscrowContract {
                 .set(&StorageKey::AgreementEmployer(agreement_id), &employer);
         }
 
-        // Get token address
-        let token: Address = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::Token)
-            .expect("Token not set");
-
-        // Transfer tokens from caller to this contract
-        let token_client = soroban_sdk::token::Client::new(&env, &token);
-        token_client.transfer(&from, &env.current_contract_address(), &amount);
-
-        // Update agreement balance
+        // Compute and validate new balance BEFORE any token transfer
         let current_balance: i128 = env
             .storage()
             .persistent()
@@ -242,9 +239,22 @@ impl PayrollEscrowContract {
         let new_balance = current_balance
             .checked_add(amount)
             .expect("Balance overflow");
+
+        // Update agreement balance in storage (effect)
         env.storage()
             .persistent()
             .set(&StorageKey::AgreementBalance(agreement_id), &new_balance);
+
+        // Get token address
+        let token: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Token)
+            .expect("Token not set");
+
+        // Transfer tokens from caller to this contract (interaction)
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        token_client.transfer(&from, &env.current_contract_address(), &amount);
 
         // Emit event
         env.events().publish(
