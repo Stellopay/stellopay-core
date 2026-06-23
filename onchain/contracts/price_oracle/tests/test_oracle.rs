@@ -1426,3 +1426,53 @@ fn test_rate_limit_zero_interval_is_disabled() {
     let res = oracle_client.try_push_price(&source, &base, &quote, &2_100_000i128, &1_001u64);
     assert!(res.is_ok());
 }
+
+// === Tolerance BPS boundary tests (Issue #594) ===
+#[test]
+fn test_tolerance_bps_zero_accepted() {
+    let env = create_env();
+    let (payroll_id, _, _) = setup_payroll(&env);
+    let (_, oracle_client, oracle_owner) = setup_oracle(&env, &payroll_id);
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+
+    let res = oracle_client.try_configure_pair(
+        &oracle_owner, &base, &quote,
+        &500_000i128, &5_000_000i128, &600u64,
+        &2u32, &0u32, &60u64, &0u64,
+    );
+    assert!(res.is_ok());
+}
+
+#[test]
+fn test_tolerance_bps_max_accepted() {
+    let env = create_env();
+    let (payroll_id, _, _) = setup_payroll(&env);
+    let (_, oracle_client, oracle_owner) = setup_oracle(&env, &payroll_id);
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+
+    let res = oracle_client.try_configure_pair(
+        &oracle_owner, &base, &quote,
+        &500_000i128, &5_000_000i128, &600u64,
+        &2u32, &10_000u32, &60u64, &0u64,
+    );
+    assert!(res.is_ok());
+}
+
+#[test]
+fn test_tolerance_bps_over_max_rejected() {
+    let env = create_env();
+    let (payroll_id, _, _) = setup_payroll(&env);
+    let (_, oracle_client, oracle_owner) = setup_oracle(&env, &payroll_id);
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+
+    let res = oracle_client.try_configure_pair(
+        &oracle_owner, &base, &quote,
+        &500_000i128, &5_000_000i128, &600u64,
+        &2u32, &10_001u32, &60u64, &0u64,
+    );
+    assert_eq!(res, Err(Ok(OracleError::ToleranceOutOfRange)));
+}
+

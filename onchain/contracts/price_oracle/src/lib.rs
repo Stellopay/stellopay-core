@@ -41,6 +41,7 @@ pub enum OracleError {
     DuplicateVote = 11,
     /// Source submitted too frequently; must wait at least `min_submit_interval_secs`.
     SubmissionRateLimited = 12,
+    ToleranceOutOfRange = 13,
 }
 
 // ============================================================================
@@ -365,6 +366,9 @@ impl PriceOracleContract {
         }
         if max_staleness_seconds == 0 || quorum_n == 0 || quorum_window_seconds == 0 {
             return Err(OracleError::InvalidPairConfig);
+        }
+        if tolerance_bps > 10_000 {
+            return Err(OracleError::ToleranceOutOfRange);
         }
 
         let cfg = PairConfig {
