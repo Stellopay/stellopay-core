@@ -61,9 +61,8 @@
 //! * `payment_succeeded` — mark the corresponding payroll period as paid.
 //! * `payment_failed`    — flag the agreement for manual review; the funds
 //!   remain in escrow until a human operator cancels or re-funds.
-//!
-//! The `failure_notifier` address stored in each record is included in the
-//! `PaymentFailedEvent` so indexers can route the alert to the correct employer.
+//! * `payment_funded`    — confirm an escrow deposit has been recorded so
+//!   off-chain systems can reconcile balances without reading storage.
 
 #![no_std]
 
@@ -72,9 +71,9 @@ use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, 
 #[contract]
 pub struct PaymentRetryContract;
 
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 // Domain types
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 
 /// Lifecycle state of a retry process.
 #[contracttype]
@@ -126,9 +125,9 @@ pub struct PaymentRequest {
     pub failure_notifier: Address,
 }
 
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 // Storage keys
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 
 #[contracttype]
 #[derive(Clone)]
@@ -139,9 +138,9 @@ enum StorageKey {
     Processed(BytesN<32>),
 }
 
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 // Events
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 
 /// Emitted when a new payment request is created.
 #[contracttype]
@@ -188,9 +187,27 @@ pub struct PaymentFailedEvent {
     pub notifier: Address,
 }
 
-// ---------------------------------------------------------------------------
+/// Emitted when tokens are deposited into the payment retry escrow via
+/// `fund_payment`.
+///
+/// Off-chain systems can use this event to reconcile escrow balances and
+/// audit retry coverage without reading contract storage directly.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentFundedEvent {
+    /// The payment request that was funded.
+    pub payment_id: BytesN<32>,
+    /// Address that deposited the tokens (must match the request's payer).
+    pub funder: Address,
+    /// Token contract address used for the deposit.
+    pub token: Address,
+    /// Amount of tokens deposited.
+    pub amount: i128,
+}
+
+// -------------------------------------------------------------------------------
 // Constants
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 
 /// Hard cap on `max_retry_attempts` per payment request.
 ///
@@ -207,9 +224,9 @@ pub const MAX_RETRY_INTERVALS: u32 = 100;
 /// impractical duration.
 pub const MAX_SINGLE_RETRY_INTERVAL_SECONDS: u64 = 31_536_000;
 
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 // Internal helpers
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 
 fn require_initialized(env: &Env) {
     let initialized = env
@@ -257,14 +274,12 @@ fn validate_retry_configuration(max_retry_attempts: u32, retry_intervals: &Vec<u
         retry_intervals.len() <= MAX_RETRY_INTERVALS,
         "Too many retry intervals"
     );
-
     if max_retry_attempts > 0 {
         assert!(
             retry_intervals.len() > 0,
             "Retry intervals required when retries are enabled"
         );
     }
-
     let mut i: u32 = 0;
     while i < retry_intervals.len() {
         let interval = retry_intervals.get(i).expect("Retry interval missing");
@@ -285,19 +300,17 @@ fn interval_for_retry(retry_intervals: &Vec<u64>, retry_count: u32) -> u64 {
     if retry_intervals.is_empty() {
         return 0;
     }
-
     let mut index = retry_count.saturating_sub(1);
     let max_index = retry_intervals.len().saturating_sub(1);
     if index > max_index {
         index = max_index;
     }
-
     retry_intervals.get(index).expect("Retry interval missing")
 }
 
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 // Contract implementation
-// ---------------------------------------------------------------------------
+// -------------------------------------------------------------------------------
 
 #[contractimpl]
 impl PaymentRetryContract {
@@ -319,14 +332,12 @@ impl PaymentRetryContract {
     /// Requires `owner` authentication.
     pub fn initialize(env: Env, owner: Address) {
         owner.require_auth();
-
         let initialized = env
             .storage()
             .persistent()
             .get::<_, bool>(&StorageKey::Initialized)
             .unwrap_or(false);
         assert!(!initialized, "Contract already initialized");
-
         env.storage().persistent().set(&StorageKey::Owner, &owner);
         env.storage()
             .persistent()
@@ -387,12 +398,9 @@ impl PaymentRetryContract {
         if env.storage().persistent().has(&StorageKey::Payment(payment_id.clone())) {
             return;
         }
-
         assert!(amount > 0, "Amount must be positive");
         validate_retry_configuration(config.max_retries, &config.retry_intervals);
-
         let now = env.ledger().timestamp();
-
         let payment = PaymentRequest {
             id: payment_id.clone(),
             payer: payer.clone(),
@@ -408,9 +416,7 @@ impl PaymentRetryContract {
             alternate_payout: None,
             failure_notifier: payer.clone(),
         };
-
         write_payment(&env, &payment);
-
         env.events().publish(
             ("retry_scheduled", payment_id.clone()),
             PaymentCreatedEvent {
@@ -424,43 +430,34 @@ impl PaymentRetryContract {
 
     pub fn process_retry(env: Env, payment_id: BytesN<32>) {
         require_initialized(&env);
-
         if already_processed(&env, payment_id.clone()) {
             return; // idempotency guard
         }
-
         let mut payment = read_payment(&env, payment_id.clone());
-
         if payment.state == RetryState::Success || payment.state == RetryState::Failed {
             return;
         }
-
         if payment.retry_count > payment.max_retry_attempts {
             payment.state = RetryState::Failed;
             write_payment(&env, &payment);
             return;
         }
-
         let now = env.ledger().timestamp();
         if now < payment.next_retry_at {
             return;
         }
-
         let token_client = token::Client::new(&env, &payment.token);
         let balance = token_client.balance(&env.current_contract_address());
-
         if balance >= payment.amount {
             // Idempotency: mark processed BEFORE transfer
             mark_processed(&env, payment_id.clone());
             payment.state = RetryState::Success;
             write_payment(&env, &payment);
-
             token_client.transfer(
                 &env.current_contract_address(),
                 &payment.recipient,
                 &payment.amount,
             );
-
             env.events().publish(
                 ("payment_success", payment_id.clone()),
                 PaymentSucceededEvent {
@@ -479,7 +476,6 @@ impl PaymentRetryContract {
                 payment.next_retry_at = now.saturating_add(interval);
             }
             write_payment(&env, &payment);
-
             env.events().publish(
                 ("payment_retry_failed", payment_id.clone()),
                 RetryScheduledEvent {
@@ -488,7 +484,6 @@ impl PaymentRetryContract {
                     next_retry_at: payment.next_retry_at,
                 },
             );
-
             if payment.state == RetryState::Failed {
                 env.events().publish(
                     ("payment_failed", payment.id.clone()),
@@ -521,6 +516,12 @@ impl PaymentRetryContract {
     /// * `"Only payer can fund payment"` — if `payer` does not match the record.
     /// * `"Payment is not pending"` — if the request is in a terminal state.
     ///
+    /// # Events
+    ///
+    /// Emits `("payment_funded", payment_id)` carrying a [`PaymentFundedEvent`]
+    /// after the deposit is recorded so off-chain systems can reconcile escrow
+    /// balances.
+    ///
     /// # Access Control
     ///
     /// Requires `payer` authentication.
@@ -528,16 +529,24 @@ impl PaymentRetryContract {
         require_initialized(&env);
         payer.require_auth();
         assert!(amount > 0, "Amount must be positive");
-
-        let payment = read_payment(&env, payment_id);
+        let payment = read_payment(&env, payment_id.clone());
         assert!(payment.payer == payer, "Only payer can fund payment");
         assert!(
             payment.state != RetryState::Success && payment.state != RetryState::Failed,
             "Payment is already terminal"
         );
-
         let token_client = token::Client::new(&env, &payment.token);
         token_client.transfer(&payer, &env.current_contract_address(), &amount);
+        // Emit event after state change so indexers never see uncommitted funding
+        env.events().publish(
+            ("payment_funded", payment_id),
+            PaymentFundedEvent {
+                payment_id: payment.id,
+                funder: payer,
+                token: payment.token,
+                amount,
+            },
+        );
     }
 
     /// Processes up to `max_payments` due payment requests in a single call.
@@ -574,11 +583,9 @@ impl PaymentRetryContract {
     /// Redirects to 'process_retry' for the blueprint's new logic.
     pub fn process_due_payments(env: Env, max_payments: u32) -> u32 {
         require_initialized(&env);
-
         if max_payments == 0 {
             return 0;
         }
-
         // Note: In a real production system, we'd iterate over all pending payments.
         // For this orchestration demo, we'll assume the keeper calls 'process_retry' directly
         // or we implement a way to list pending IDs.
@@ -610,14 +617,12 @@ impl PaymentRetryContract {
     pub fn cancel_payment(env: Env, payer: Address, payment_id: BytesN<32>) {
         require_initialized(&env);
         payer.require_auth();
-
         let mut payment = read_payment(&env, payment_id.clone());
         assert!(payment.payer == payer, "Only payer can cancel payment");
         assert!(
             payment.state != RetryState::Success && payment.state != RetryState::Failed,
             "Payment is already terminal"
         );
-
         payment.state = RetryState::Failed; // Treat cancellation as a terminal failure state
         write_payment(&env, &payment);
     }
