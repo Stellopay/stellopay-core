@@ -372,6 +372,9 @@ pub enum PayrollError {
     MilestoneNotApproved = 40,
     /// Milestone has already been claimed.
     MilestoneAlreadyClaimed = 41,
+    /// FX conversion produced zero output for a non-zero input
+    /// (rate is too low relative to FX_SCALE, truncating to zero).
+    ExchangeRateZeroOutput = 42,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.

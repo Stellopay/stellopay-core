@@ -2955,6 +2955,18 @@ fn get_next_agreement_id(env: &Env) -> u128 {
 /// Internal helper: convert `amount` from `from_token` into `to_token` using
 /// the configured FX rate stored in `DataKey::ExchangeRate`.
 ///
+/// ## Rounding Policy
+///
+/// The conversion uses integer division (`checked_div`) which truncates toward
+/// zero (round-down). The fractional remainder (dust) is deliberately discarded.
+/// This choice keeps accounting deterministic and avoids introducing a rounding
+/// bias—the contributor may be shorted by less than one unit per claim.
+///
+/// Callers that need exact amounts should ensure the FX rate and amount are
+/// large enough that the truncated dust is negligible relative to the payout.
+///
+/// ## Overflow and Zero-Output Protection
+///
 /// The rate is interpreted as `quote_per_base * FX_SCALE`, where `from_token`
 /// is the base and `to_token` is the quote.
 fn convert_amount(
@@ -2994,6 +3006,12 @@ fn convert_amount(
     let converted = scaled
         .checked_div(FX_SCALE)
         .ok_or(PayrollError::ExchangeRateInvalid)?;
+
+    // Guard: when a non-zero amount truncates to zero, reject instead of
+    // silently discarding the contributor's payout (e.g. tiny amount × low rate).
+    if amount > 0 && converted == 0 {
+        return Err(PayrollError::ExchangeRateZeroOutput);
+    }
 
     Ok(converted)
 }

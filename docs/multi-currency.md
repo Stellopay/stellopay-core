@@ -30,6 +30,18 @@ Overflow, zero, or negative rates are rejected with `PayrollError::ExchangeRateI
 
 ---
 
+### Rounding Policy (Integer Truncation)
+
+The `convert_amount` helper applies integer division (`checked_div`) which **truncates toward zero** (round-down). This means:
+
+- If `amount_base × rate < 10⁶`, the converted amount is zero.
+- For non-zero inputs that truncate to zero, the contract returns `PayrollError::ExchangeRateZeroOutput`.
+- The fractional remainder (dust) is deliberately discarded.
+
+**Rationale:** Round-down is deterministic across Soroban hosts; avoiding round-half-up removes a potential upward bias in payroll. The dust scales with the price precision — keeping `FX_SCALE = 10⁶` ensures negligible error for typical payroll amounts.
+
+---
+
 ### Storage Layout
 
 FX data is stored using the existing `DataKey` enum:

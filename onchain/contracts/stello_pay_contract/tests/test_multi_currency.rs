@@ -192,3 +192,39 @@ fn test_claim_payroll_in_different_token_uses_fx_rate() {
         assert_eq!(paid, salary_per_period);
     });
 }
+}
+
+/// Verify that a zero-output FX conversion (non-zero base × rate < FX_SCALE)
+/// is rejected with an error in claim_payroll_in_token.
+#[test]
+fn test_fx_rounding_rejects_zero_output() {
+    let (env, owner, employer, _arbiter, client) = create_test_env();
+
+    let base = Address::generate(&env);
+    let payout = Address::generate(&env);
+
+    // Rate: 900 / 1_000_000 means 1_000 base → floor(900_000 / 1_000_000) = 0.
+    let rate: i128 = 900;
+    let max_age: u64 = 3600;
+    client.set_exchange_rate_admin(&owner, &owner);
+    client.set_exchange_rate(&owner, &base, &payout, &rate, &max_age);
+
+    let salary: i128 = 1_000;
+    let period_seconds: u64 = 86_400;
+    let agreement_id = client.create_payroll_agreement(
+        &employer, &base, &salary, &period_seconds, &12u32,
+    );
+
+    let employee = Address::generate(&env);
+    client.add_employee_to_agreement(&employer, &agreement_id, &employee, &salary);
+    client.activate_agreement(&employer, &agreement_id);
+
+    // Advance one period so a non-zero amount is claimable.
+    env.ledger().with_mut(|li| { li.timestamp += period_seconds; });
+
+    // Claim in payout token should fail: conversion truncates to 0.
+    let result = client.try_claim_payroll_in_token(
+        &employee, &agreement_id, &0u32, &payout,
+    );
+    assert!(result.is_err());
+}
