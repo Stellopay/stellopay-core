@@ -1,8 +1,8 @@
 #![no_std]
-
 //! Payroll / escrow template versioning: immutable version records, lookup, and agreement bindings.
 //!
 //! # Migration
+//!
 //! When template fields change, publish a new version with a new `schema_hash` (e.g. hash of the
 //! canonical schema). Existing agreements keep their `template_version`; new agreements pick an
 //! explicit version or the latest non-deprecated version. Deprecate old versions after a cutover
@@ -54,6 +54,21 @@ pub struct AgreementBinding {
     pub creator: Address,
     pub label: String,
     pub created_at: u64,
+}
+
+/// Emitted when a template version is marked as deprecated.
+///
+/// Off-chain systems can react to deprecations immediately instead of polling,
+/// so integrators can stop instantiating new agreements from deprecated templates.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TemplateVersionDeprecatedEvent {
+    /// The owning template identifier.
+    pub template_id: u64,
+    /// The version number that was deprecated.
+    pub version: u32,
+    /// Ledger timestamp when the deprecation occurred.
+    pub timestamp: u64,
 }
 
 #[contracterror]
@@ -145,6 +160,12 @@ impl TemplateVersioning {
     }
 
     /// Mark a version as deprecated so new agreements cannot use it (unless caller uses force).
+    ///
+    /// # Events
+    ///
+    /// Emits `("template_version_deprecated", …)` carrying a
+    /// [`TemplateVersionDeprecatedEvent`] after the deprecated flag is set so
+    /// integrators can react immediately instead of polling.
     pub fn deprecate_version(
         env: Env,
         owner: Address,
@@ -162,6 +183,16 @@ impl TemplateVersioning {
         let key = DataKey::TemplateVersion(template_id, version);
         let mut rec: TemplateVersionRecord = storage.get(&key).ok_or(VersioningError::VersionNotFound)?;
         rec.deprecated = true;
+
+        // Emit before persistence so indexers always see the event
+        env.events().publish(
+            ("template_version_deprecated", ()),
+            TemplateVersionDeprecatedEvent {
+                template_id,
+                version,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
         storage.set(&key, &rec);
         Ok(())
     }
