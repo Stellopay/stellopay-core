@@ -5,7 +5,7 @@ use soroban_sdk::{
     Address, Env,
 };
 
-use rate_limiter::{RateLimiter, RateLimiterClient, LimitConfig};
+use rate_limiter::{RateLimiter, RateLimiterClient};
 
 fn create_env() -> Env {
     let env = Env::default();
@@ -159,5 +159,133 @@ fn test_admin_transfer() {
     
     client.transfer_admin(&admin2);
     assert_eq!(client.get_admin(), Some(admin2.clone()));
+}
+
+#[test]
+fn test_get_usage_returns_none_for_unused_address() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &10u32, &1u32, &false);
+
+    // No usage record yet → None
+    assert_eq!(client.get_usage(&user), None);
+}
+
+#[test]
+fn test_get_usage_after_consumption() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 100);
+    client.initialize(&admin, &5u32, &1u32, &false);
+
+    // Consume 2 tokens
+    client.check_and_consume(&user);
+    client.check_and_consume(&user);
+
+    // get_usage should show 3 tokens remaining at time 100
+    let usage = client.get_usage(&user).unwrap();
+    assert_eq!(usage.tokens, 3);
+    assert_eq!(usage.last_update, 100);
+}
+
+#[test]
+fn test_get_usage_shows_refill_without_mutation() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 100);
+    client.initialize(&admin, &5u32, &1u32, &false);
+
+    // Consume all 5 tokens
+    for _ in 0..5 {
+        client.check_and_consume(&user);
+    }
+    assert!(client.try_check_and_consume(&user).is_err());
+
+    // Advance 3 seconds → refill gives 3 tokens
+    env.ledger().with_mut(|li| li.timestamp = 103);
+    let usage = client.get_usage(&user).unwrap();
+    assert_eq!(usage.tokens, 3);
+    assert_eq!(usage.last_update, 103);
+
+    // Call again — result is identical (no mutation)
+    let usage2 = client.get_usage(&user).unwrap();
+    assert_eq!(usage2.tokens, 3);
+    assert_eq!(usage2.last_update, 103);
+
+    // check_and_consume should also see 3 tokens (not double-refilled)
+    assert_eq!(client.check_and_consume(&user), 2);
+}
+
+#[test]
+fn test_get_usage_no_refill_with_zero_rate() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 100);
+    client.initialize(&admin, &3u32, &0u32, &false);
+
+    client.check_and_consume(&user);
+
+    // Advance time — no refill because rate is 0, but last_update advances
+    env.ledger().with_mut(|li| li.timestamp = 200);
+    let usage = client.get_usage(&user).unwrap();
+    assert_eq!(usage.tokens, 2);
+    assert_eq!(usage.last_update, 200);
+}
+
+#[test]
+fn test_get_usage_with_per_address_override() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 100);
+    client.initialize(&admin, &1u32, &0u32, &false);
+
+    // Override: burst 10, refill 2/sec
+    client.set_limit_for(&user, &10u32, &2u32);
+
+    // Consume 5 tokens → 5 remain
+    for _ in 0..5 {
+        client.check_and_consume(&user);
+    }
+
+    // Advance 2 seconds → refill 4 tokens → 5 + 4 = 9
+    env.ledger().with_mut(|li| li.timestamp = 102);
+    let usage = client.get_usage(&user).unwrap();
+    assert_eq!(usage.tokens, 9);
+    assert_eq!(usage.last_update, 102);
+}
+
+#[test]
+fn test_get_usage_caps_at_burst() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 100);
+    client.initialize(&admin, &5u32, &1u32, &false);
+
+    // Consume 1 token → 4 remain
+    client.check_and_consume(&user);
+
+    // Advance 10 seconds → would refill 10 tokens, but capped at burst 5
+    env.ledger().with_mut(|li| li.timestamp = 110);
+    let usage = client.get_usage(&user).unwrap();
+    assert_eq!(usage.tokens, 5);
+    assert_eq!(usage.last_update, 110);
 }
 
