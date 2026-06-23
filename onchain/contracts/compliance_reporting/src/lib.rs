@@ -31,6 +31,10 @@ use soroban_sdk::{
 use audit_logger::{AuditLogEntry, AuditLoggerContractClient};
 use payment_history::{PaymentHistoryContractClient, PaymentRecord};
 
+/// Maximum number of records that can be returned in a single `generate_report`
+/// call. Prevents instruction-limit overflows on Soroban.
+pub const MAX_QUERY_LIMIT: u32 = 100;
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -54,6 +58,11 @@ pub enum ComplianceError {
     ContractPaused = 6,
     /// Provided amount is invalid (e.g. zero or negative where not allowed).
     InvalidAmount = 7,
+    /// A required dependency contract is unavailable or not properly configured.
+    /// This occurs when PaymentHistory, AuditLogger, or other cross-contract
+    /// dependencies are not deployed, not configured with valid addresses,
+    /// or have incompatible interfaces.
+    DependencyUnavailable = 8,
 }
 
 // ---------------------------------------------------------------------------
@@ -192,10 +201,58 @@ pub enum DataKey {
 // Contract
 // ---------------------------------------------------------------------------
 
-/// Maximum number of records that can be returned in a single `generate_report`
-/// call. Prevents instruction-limit overflows on Soroban.
-pub const MAX_QUERY_LIMIT: u32 = 100;
-
+/// # Compliance Reporting Contract — Dependencies and Failure Modes
+///
+/// ## Required Dependencies
+///
+/// The `generate_report()` function aggregates data from two cross-contract dependencies:
+///
+/// 1. **PaymentHistory** contract
+///    - Used to retrieve payment records for a given employee.
+///    - Must be configured via `set_contract_addresses()` before reports can be generated.
+///    - Failure mode: If not deployed, not configured, or returns an error on invocation,
+///      `generate_report()` returns `DependencyUnavailable`.
+///
+/// 2. **AuditLogger** contract
+///    - Used to retrieve audit log entries (e.g., employment agreement events).
+///    - Must be configured via `set_contract_addresses()` before reports can be generated.
+///    - Failure mode: If not deployed, not configured, or returns an error on invocation,
+///      `generate_report()` returns `DependencyUnavailable`.
+///
+/// ## Configuration
+///
+/// Call `set_contract_addresses(admin, audit_logger, payment_history)` to configure both
+/// dependencies. Only the contract admin may call this function.
+///
+/// ## Failure Modes
+///
+/// ### DependencyUnavailable Error
+///
+/// This error is returned when:
+/// - A dependency address is not configured (returned `None` from persistent storage)
+/// - A cross-contract call to PaymentHistory or AuditLogger fails (e.g., contract not
+///   deployed, incompatible interface, or invocation error)
+/// - Either dependency is unable to process the requested operation
+///
+/// ### Fail-Closed Guarantee
+///
+/// If any dependency is unavailable, `generate_report()` **immediately fails** and
+/// returns `DependencyUnavailable`. It does NOT:
+/// - Return a partial report with only local data
+/// - Attempt to continue with fallback data
+/// - Silently omit dependency data and return incomplete results
+///
+/// This guarantees that compliance reports are always complete or explicitly failed,
+/// preventing off-chain systems from misinterpreting a partial report as a complete audit.
+///
+/// ## Integration Notes for Callers
+///
+/// Before calling `generate_report()`:
+/// 1. Ensure both PaymentHistory and AuditLogger contracts are deployed on the network
+/// 2. Ensure the compliance reporting contract has been initialized with `initialize(admin)`
+/// 3. Call `set_contract_addresses()` with the correct contract addresses
+/// 4. Be prepared to handle `DependencyUnavailable` errors; they indicate misconfiguration
+///    or a temporary outage, not a bug in the compliance reporting contract
 #[contract]
 pub struct ComplianceReportingContract;
 
@@ -592,7 +649,10 @@ impl ComplianceReportingContract {
     /// Payment history and audit events are fetched from the registered
     /// companion contracts (see `set_contract_addresses`). If those contracts
     /// are not configured, this function returns
-    /// `ComplianceError::NotInitialized`.
+    /// `ComplianceError::NotInitialized`. If a configured dependency is
+    /// unavailable, not properly deployed, or has an incompatible interface,
+    /// the call fails closed with `ComplianceError::DependencyUnavailable`
+    /// rather than returning a partial or misleading report.
     ///
     /// ## Security
     ///
@@ -607,6 +667,8 @@ impl ComplianceReportingContract {
     /// @param period_start Inclusive start of the reporting period (UNIX timestamp).
     /// @param period_end Inclusive end of the reporting period (UNIX timestamp).
     /// @return A `ComplianceReport` with real aggregated totals — no placeholders.
+    /// @error DependencyUnavailable if PaymentHistory or AuditLogger cannot be called.
+    /// @error InvalidDateRange if period_start > period_end.
     pub fn generate_report(
         env: Env,
         employer: Address,
@@ -620,17 +682,17 @@ impl ComplianceReportingContract {
             return Err(ComplianceError::InvalidDateRange);
         }
 
-        // 1. Fetch configured companion contract addresses.
+        // 1. Validate and fetch configured companion contract addresses.
         let audit_logger_addr: Address = env
             .storage()
             .persistent()
             .get(&DataKey::AuditLogger)
-            .ok_or(ComplianceError::NotInitialized)?;
+            .ok_or(ComplianceError::DependencyUnavailable)?;
         let payment_history_addr: Address = env
             .storage()
             .persistent()
             .get(&DataKey::PaymentHistory)
-            .ok_or(ComplianceError::NotInitialized)?;
+            .ok_or(ComplianceError::DependencyUnavailable)?;
 
         // 2. Aggregate withholding records from this contract's own storage,
         //    scoped strictly to `employer`. Iterate newest-first for early exit.
@@ -666,13 +728,20 @@ impl ComplianceReportingContract {
 
         let record_count = matching_records.len() as u32;
 
-        // 3. Fetch PaymentHistory records for the employee.
+        // 3. Fetch PaymentHistory records for the employee, failing closed with a
+        //    typed DependencyUnavailable error if the dependency call fails.
         let ph_client = PaymentHistoryContractClient::new(&env, &payment_history_addr);
-        let payments = ph_client.get_payments_by_employee(&employee, &1, &MAX_QUERY_LIMIT);
+        let payments = ph_client
+            .try_get_payments_by_employee(&employee, &1, &MAX_QUERY_LIMIT)
+            .map_err(|_| ComplianceError::DependencyUnavailable)?
+            .map_err(|_| ComplianceError::DependencyUnavailable)?;
 
-        // 4. Fetch AuditLogger events.
+        // 4. Fetch AuditLogger events, with the same typed error handling.
         let al_client = AuditLoggerContractClient::new(&env, &audit_logger_addr);
-        let events = al_client.get_latest_logs(&MAX_QUERY_LIMIT);
+        let events = al_client
+            .try_get_latest_logs(&MAX_QUERY_LIMIT)
+            .map_err(|_| ComplianceError::DependencyUnavailable)?
+            .map_err(|_| ComplianceError::DependencyUnavailable)?;
 
         let schema_version = Self::get_report_schema_version(env.clone());
 
