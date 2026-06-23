@@ -93,3 +93,97 @@ fn test_update_tiered_schedule_unauthorized() {
     let schedule = Vec::new(&env);
     client.update_tiered_schedule(&attacker, &schedule);
 }
+
+
+#[test]
+#[should_panic(expected = "Tier limits must be strictly increasing and positive")]
+fn test_update_tiered_schedule_negative_limit_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = FeeCollectorContractClient::new(&env, &env.register(FeeCollectorContract, ()));
+
+    client.initialize(&admin, &treasury, &0, &0, &FeeMode::Percentage);
+
+    let mut schedule = Vec::new(&env);
+    schedule.push_back(FeeTier { limit: -100, fee_bps: 500 });
+
+    client.update_tiered_schedule(&admin, &schedule);
+}
+
+#[test]
+#[should_panic(expected = "Tier limits must be strictly increasing and positive")]
+fn test_update_tiered_schedule_zero_limit_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = FeeCollectorContractClient::new(&env, &env.register(FeeCollectorContract, ()));
+
+    client.initialize(&admin, &treasury, &0, &0, &FeeMode::Percentage);
+
+    let mut schedule = Vec::new(&env);
+    schedule.push_back(FeeTier { limit: 0, fee_bps: 500 });
+
+    client.update_tiered_schedule(&admin, &schedule);
+}
+
+#[test]
+#[should_panic(expected = "Tier limits must be strictly increasing and positive")]
+fn test_update_tiered_schedule_non_increasing_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = FeeCollectorContractClient::new(&env, &env.register(FeeCollectorContract, ()));
+
+    client.initialize(&admin, &treasury, &0, &0, &FeeMode::Percentage);
+
+    let mut schedule = Vec::new(&env);
+    schedule.push_back(FeeTier { limit: 1000, fee_bps: 500 });
+    schedule.push_back(FeeTier { limit: 500, fee_bps: 250 }); // lower than previous
+
+    client.update_tiered_schedule(&admin, &schedule);
+}
+
+#[test]
+#[should_panic(expected = "Tier limits must be strictly increasing and positive")]
+fn test_update_tiered_schedule_duplicate_limit_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = FeeCollectorContractClient::new(&env, &env.register(FeeCollectorContract, ()));
+
+    client.initialize(&admin, &treasury, &0, &0, &FeeMode::Percentage);
+
+    let mut schedule = Vec::new(&env);
+    schedule.push_back(FeeTier { limit: 1000, fee_bps: 500 });
+    schedule.push_back(FeeTier { limit: 1000, fee_bps: 250 }); // same as previous
+
+    client.update_tiered_schedule(&admin, &schedule);
+}
+
+#[test]
+fn test_update_tiered_schedule_valid_limits_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = FeeCollectorContractClient::new(&env, &env.register(FeeCollectorContract, ()));
+
+    client.initialize(&admin, &treasury, &0, &0, &FeeMode::Percentage);
+
+    let mut schedule = Vec::new(&env);
+    schedule.push_back(FeeTier { limit: 1000, fee_bps: 500 });
+    schedule.push_back(FeeTier { limit: 5000, fee_bps: 250 });
+    schedule.push_back(FeeTier { limit: i128::MAX, fee_bps: 100 });
+
+    client.update_tiered_schedule(&admin, &schedule);
+}

@@ -233,7 +233,20 @@ impl PaymentSplitterContract {
                 .expect("Dust underflow");
             assert!(dust >= 0, "Negative dust detected");
 
-            for _ in 0..dust {
+            // Mathematical bound: dust = sum(remainders) / 10000. 
+            // Since each remainder < 10000, sum(remainders) < 10000 * recipient_count.
+            // Therefore, dust < recipient_count.
+            assert!(
+                dust < (recipient_count as i128),
+                "Dust exceeds recipient count bound"
+            );
+
+            // Bounded loop: iterate up to recipient_count, break early if dust is exhausted.
+            // This prevents unbounded execution even if invariants are somehow violated.
+            for i in 0..recipient_count {
+                if (i as i128) >= dust {
+                    break;
+                }
                 let best = Self::select_next_dust_recipient(&env, &def.recipients, &remainders, &awarded_dust);
                 awarded_dust.push_back(best);
             }

@@ -1083,6 +1083,87 @@ fn test_cross_escrow_refund_remaining() {
     assert_eq!(balance(&env, &tok, &employer), emp_bal_before + 3000);
 }
 
+/// Fund → partial release → refund lifecycle with token conservation.
+#[test]
+fn test_cross_escrow_fund_partial_release_then_refund_conservation() {
+    let env = env();
+    let (payroll_id, _payroll_client) = deploy_payroll(&env);
+    let tok = token(&env);
+    let (_escrow_id, escrow_client) = deploy_escrow(&env, &tok, &payroll_id);
+
+    let employer = addr(&env);
+    let recipient = addr(&env);
+    let funded = 5_000i128;
+    let released = 1_500i128;
+
+    mint(&env, &tok, &employer, funded);
+    escrow_client.fund_agreement(&employer, &1u128, &employer, &funded);
+    let employer_after_fund = balance(&env, &tok, &employer);
+
+    escrow_client.release(&payroll_id, &1u128, &recipient, &released);
+
+    let remaining = escrow_client.get_agreement_balance(&1u128);
+    assert_eq!(remaining, funded - released);
+
+    escrow_client.refund_remaining(&payroll_id, &1u128);
+
+    assert_eq!(escrow_client.get_agreement_balance(&1u128), 0);
+    assert_eq!(balance(&env, &tok, &recipient), released);
+    assert_eq!(
+        balance(&env, &tok, &employer),
+        employer_after_fund + remaining,
+        "employer receives refunded remainder"
+    );
+    assert_eq!(
+        funded,
+        released + remaining,
+        "funded == released + refunded"
+    );
+}
+
+/// Second refund after a successful refund must be rejected.
+#[test]
+fn test_cross_escrow_double_refund_rejected() {
+    let env = env();
+    let (payroll_id, _payroll_client) = deploy_payroll(&env);
+    let tok = token(&env);
+    let (_escrow_id, escrow_client) = deploy_escrow(&env, &tok, &payroll_id);
+
+    let employer = addr(&env);
+    mint(&env, &tok, &employer, 2000);
+    escrow_client.fund_agreement(&employer, &1u128, &employer, &2000);
+
+    escrow_client.refund_remaining(&payroll_id, &1u128);
+    assert_eq!(escrow_client.get_agreement_balance(&1u128), 0);
+
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        escrow_client.refund_remaining(&payroll_id, &1u128);
+    }));
+    assert!(r.is_err());
+}
+
+/// Release after a full refund must be rejected.
+#[test]
+fn test_cross_escrow_release_after_refund_rejected() {
+    let env = env();
+    let (payroll_id, _payroll_client) = deploy_payroll(&env);
+    let tok = token(&env);
+    let (_escrow_id, escrow_client) = deploy_escrow(&env, &tok, &payroll_id);
+
+    let employer = addr(&env);
+    let recipient = addr(&env);
+    mint(&env, &tok, &employer, 3000);
+    escrow_client.fund_agreement(&employer, &1u128, &employer, &3000);
+
+    escrow_client.refund_remaining(&payroll_id, &1u128);
+    assert_eq!(escrow_client.get_agreement_balance(&1u128), 0);
+
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        escrow_client.release(&payroll_id, &1u128, &recipient, &100);
+    }));
+    assert!(r.is_err());
+}
+
 /// Non-manager cannot release or refund via escrow contract.
 #[test]
 fn test_cross_escrow_unauthorized_release_rejected() {

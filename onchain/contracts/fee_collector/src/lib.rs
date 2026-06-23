@@ -317,7 +317,7 @@ impl FeeCollectorContract {
     /// * `"Gross amount must be non-negative"` — if `gross_amount < 0`.
     ///
     /// # Access Control
-    /// Requires caller authentication
+    /// Read-only — no authentication required.
     pub fn calculate_fee(env: Env, gross_amount: i128) -> (i128, i128) {
         require_initialized(&env);
         bump_ttl(&env);
@@ -410,11 +410,17 @@ impl FeeCollectorContract {
         admin.require_auth();
         require_admin(&env, &admin);
 
+        let mut prev_limit: i128 = 0;
         for tier in new_schedule.iter() {
+            assert!(
+                tier.limit > prev_limit,
+                "Tier limits must be strictly increasing and positive"
+            );
             assert!(
                 tier.fee_bps <= MAX_FEE_BPS,
                 "Fee in tier exceeds maximum allowed"
             );
+            prev_limit = tier.limit;
         }
 
         env.storage()

@@ -4,7 +4,7 @@ This document describes how to measure host resource usage for critical Stellopa
 
 ## Environment
 
-- Rust stable with `wasm32v1-none` (or `wasm32-unknown-unknown` per your Soroban toolchain).
+- Rust stable with `wasm32-unknown-unknown` (see [build-targets.md](./build-targets.md) for target rationale).
 - Soroban SDK version is pinned in `onchain/Cargo.toml` (`workspace.dependencies.soroban-sdk`).
 - Benchmarks run in the Soroban **test host** (`Env::default()`), not on Futurenet/Mainnet. Absolute numbers are useful for **relative** comparisons on the same machine and SDK version.
 

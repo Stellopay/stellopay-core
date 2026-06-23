@@ -160,4 +160,6 @@ pub enum DisputeError {
     AlreadyTerminal = 10,
     /// Dispute is already in PendingReview state; keeper_advance_stage cannot be called again.
     AlreadyPendingReview = 11,
+    /// SLA deadline computation overflowed u64; keeper_advance_stage cannot proceed.
+    SlaDeadlineOverflow = 12,
 }

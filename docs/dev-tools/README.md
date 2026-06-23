@@ -28,45 +28,85 @@ cargo install --path .
 cargo install stellopay-cli
 ```
 
-#### Usage
+#### Real Commands
+
+The CLI exposes five top-level commands. Run `stellopay-cli <COMMAND> --help` for per-command flags.
+
+| Command | Description |
+|---|---|
+| `deploy` | Deploy a new contract |
+| `info` | Get contract information |
+| `status` | Show CLI status |
+| `emergency-withdraw` | Emergency withdrawal of tokens |
+| `webhook` | Webhook management (see subcommands below) |
+
+##### `deploy`
 
 ```bash
-# Initialize a new payroll contract
 stellopay-cli deploy --network testnet --owner <OWNER_ADDRESS>
-
-# Create employee payroll
-stellopay-cli payroll create \
-  --contract <CONTRACT_ID> \
-  --employee <EMPLOYEE_ADDRESS> \
-  --salary 5000 \
-  --frequency monthly \
-  --token <TOKEN_ADDRESS>
-
-# Deposit funds
-stellopay-cli deposit \
-  --contract <CONTRACT_ID> \
-  --amount 50000 \
-  --token <TOKEN_ADDRESS>
-
-# Process payments
-stellopay-cli pay \
-  --contract <CONTRACT_ID> \
-  --employee <EMPLOYEE_ADDRESS>
-
-# Bulk operations
-stellopay-cli bulk-pay \
-  --contract <CONTRACT_ID> \
-  --employees employees.json
-
-# Monitor contract
-stellopay-cli monitor \
-  --contract <CONTRACT_ID> \
-  --watch
-
-# Get contract info
-stellopay-cli info \
-  --contract <CONTRACT_ID>
+stellopay-cli deploy --network testnet --owner <OWNER_ADDRESS> --wasm ./target/release/contract.wasm
 ```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--network` | No (default: testnet) | Network to deploy to |
+| `--owner` | Yes | Owner address |
+| `--wasm` | No | WASM file path |
+
+##### `info`
+
+```bash
+stellopay-cli info --contract-id <CONTRACT_ID>
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--contract-id` | No | Contract ID to inspect |
+
+##### `status`
+
+```bash
+stellopay-cli status
+```
+
+No flags. Displays current CLI configuration status.
+
+##### `emergency-withdraw`
+
+```bash
+stellopay-cli emergency-withdraw --contract-id <CONTRACT_ID> --token <TOKEN_ADDRESS> --recipient <ADDRESS> --amount <AMOUNT>
+```
+
+| Flag | Required | Description |
+|---|---|---|
+| `--contract-id` | No | Contract ID |
+| `--token` | Yes | Token address |
+| `--recipient` | Yes | Recipient address |
+| `--amount` | Yes | Amount to withdraw (i128) |
+
+##### `webhook`
+
+Webhook subcommands manage event subscriptions:
+
+```bash
+stellopay-cli webhook register --name <NAME> --description <DESC> --url <URL> --events <EVENTS> --secret <SECRET>
+stellopay-cli webhook update --webhook-id <ID> [--name <NAME>] [--url <URL>] ...
+stellopay-cli webhook delete --webhook-id <ID>
+stellopay-cli webhook list --owner <ADDRESS>
+stellopay-cli webhook get --webhook-id <ID>
+stellopay-cli webhook stats
+stellopay-cli webhook test --webhook-id <ID> --event-type <TYPE>
+```
+
+| Subcommand | Description |
+|---|---|
+| `register` | Register a new webhook |
+| `update` | Update an existing webhook |
+| `delete` | Delete a webhook |
+| `list` | List webhooks for an owner |
+| `get` | Get webhook information |
+| `stats` | Get webhook statistics |
+| `test` | Test webhook delivery |
 
 #### Configuration
 
@@ -88,295 +128,75 @@ token = "TOKEN_ADDRESS_HERE"
 frequency = "monthly"
 ```
 
-### Contract Management Commands
+#### Keeping Docs in Sync
+
+The authoritative source for available commands is the `Commands` enum in `tools/cli/src/lib.rs`. To regenerate this reference after changing the CLI definition:
 
 ```bash
-# Contract deployment and management
-stellopay-cli contract deploy [OPTIONS]
-stellopay-cli contract initialize --owner <ADDRESS>
-stellopay-cli contract pause
-stellopay-cli contract unpause
-stellopay-cli contract transfer-ownership --new-owner <ADDRESS>
-
-# Token management
-stellopay-cli token add --address <TOKEN_ADDRESS>
-stellopay-cli token remove --address <TOKEN_ADDRESS>
-stellopay-cli token list
-
-# Payroll management
-stellopay-cli payroll list
-stellopay-cli payroll create [OPTIONS]
-stellopay-cli payroll update [OPTIONS]
-stellopay-cli payroll delete --employee <ADDRESS>
-
-# Payment operations
-stellopay-cli payment process --employee <ADDRESS>
-stellopay-cli payment process-all
-stellopay-cli payment schedule --employee <ADDRESS> --when <TIMESTAMP>
-stellopay-cli payment history --employee <ADDRESS>
-
-# Reporting
-stellopay-cli report payroll --format json
-stellopay-cli report payments --from <DATE> --to <DATE>
-stellopay-cli report balances
+cargo run -p stellopay-cli -- --help
+cargo run -p stellopay-cli webhook --help
 ```
 
+## Phantom Commands (Not Implemented)
 
-### Event Log Analyzer
+The following commands documented in earlier versions of this file **do not exist** in the current CLI:
+
+- `payroll create / update / delete / list`
+- `deposit`, `pay`, `bulk-pay`
+- `contract deploy / initialize / pause / unpause / transfer-ownership`
+- `token add / remove / list`
+- `payment process / process-all / schedule / history`
+- `report payroll / payments / balances`
+- `analyze events / report`
+- `debug transaction / trace / state / gas`
+- `test setup / deploy / accounts / generate / run / report`
+- `load-test`, `stress-test`, `benchmark`
+- `generate bindings / client / docs / openapi / contract-docs`
+- `health`, `stream`, `export`, `monitor`
+
+These are aspirational features not yet implemented. If you need them, please open a feature request.
+
+## Monitoring and Debugging Tools
+
+For real-time event monitoring, query the contract via the Soroban RPC or a block explorer:
 
 ```bash
-# Analyze contract events
-stellopay-cli analyze events --contract <CONTRACT_ID> --from <DATE>
-
-# Generate reports
-stellopay-cli analyze report --format json --output report.json
-
-# Real-time event streaming
-stellopay-cli stream events --contract <CONTRACT_ID>
+stellar contract id --id <CONTRACT_ID>
 ```
 
-### Debug Tools
-
-```bash
-# Debug transaction
-stellopay-cli debug transaction <TRANSACTION_HASH>
-
-# Trace contract calls
-stellopay-cli debug trace --contract <CONTRACT_ID> --function <FUNCTION_NAME>
-
-# Contract state inspection
-stellopay-cli debug state --contract <CONTRACT_ID>
-
-# Gas usage analysis
-stellopay-cli debug gas --contract <CONTRACT_ID> --function <FUNCTION_NAME>
-```
+The CLI does not ship built-in `analyze`, `stream`, `debug`, or `monitor` subcommands.
 
 ## Testing Utilities
 
 ### Test Environment Setup
 
 ```bash
-# Create test environment
-stellopay-cli test setup --network testnet
+# Run unit tests
+cargo test
 
-# Deploy test contract
-stellopay-cli test deploy
-
-# Create test accounts
-stellopay-cli test accounts create --count 5
-
-# Fund test accounts
-stellopay-cli test accounts fund --all
-
-# Create test tokens
-stellopay-cli test tokens create --symbol USDC --name "USD Coin"
-```
-
-### Test Data Generator
-
-```bash
-# Generate test payroll data
-stellopay-cli test generate payrolls --count 10 --output test-payrolls.json
-
-# Generate test employees
-stellopay-cli test generate employees --count 50 --output test-employees.json
-
-# Generate test scenarios
-stellopay-cli test generate scenarios --type regression --output test-scenarios.json
-```
-
-### Integration Test Runner
-
-```bash
 # Run integration tests
-stellopay-cli test run --suite integration
+cargo test --test integration_tests
 
-# Run specific test
-stellopay-cli test run --test payroll_lifecycle
-
-# Run performance tests
-stellopay-cli test run --suite performance --duration 5m
-
-# Generate test report
-stellopay-cli test report --format html --output test-report.html
+# Run end-to-end tests (if configured)
+npm test -- --testPathPattern=e2e
 ```
 
-### Load Testing
-
-```bash
-# Run load tests
-stellopay-cli load-test --contract <CONTRACT_ID> --duration 5m --rate 10/s
-
-# Stress test
-stellopay-cli stress-test --contract <CONTRACT_ID> --concurrent 50 --duration 2m
-
-# Benchmark operations
-stellopay-cli benchmark --contract <CONTRACT_ID> --operation disburse_salary
-```
+Existing test scripts are available at `scripts/test.sh`.
 
 ## Code Generation
 
-### Contract Bindings Generator
+Contract bindings can be generated using the Soroban CLI directly:
 
 ```bash
-# Generate TypeScript bindings
-stellopay-cli generate bindings --language typescript --output ./src/bindings
-
-# Generate Python bindings
-stellopay-cli generate bindings --language python --output ./bindings
-
-# Generate Rust bindings
-stellopay-cli generate bindings --language rust --output ./src/bindings.rs
+# Generate TypeScript bindings (requires soroban-cli)
+soroban contract bindings typescript --contract-id <CONTRACT_ID> --output-dir ./src/bindings
 ```
 
-### Client Code Generator
-
-```bash
-# Generate client code
-stellopay-cli generate client --language typescript --template react
-stellopay-cli generate client --language python --template fastapi
-stellopay-cli generate client --language rust --template tokio
-```
-
-### Documentation Generator
-
-```bash
-# Generate API documentation
-stellopay-cli generate docs --format markdown --output ./docs/api
-
-# Generate OpenAPI spec
-stellopay-cli generate openapi --output ./api-spec.yaml
-
-# Generate contract documentation
-stellopay-cli generate contract-docs --format html --output ./contract-docs
-```
+The CLI does not ship a built-in `generate` subcommand.
 
 ## Development Scripts
 
-### Build and Deployment Scripts
-
-```bash
-#!/bin/bash
-# scripts/deploy.sh
-
-set -e
-
-echo "Building contract..."
-cd onchain/contracts/stello_pay_contract
-soroban contract build
-
-echo "Deploying to testnet..."
-CONTRACT_ID=$(soroban contract deploy \
-  --wasm target/wasm32-unknown-unknown/release/stello_pay_contract.wasm \
-  --source-account $DEPLOY_ACCOUNT \
-  --rpc-url https://soroban-testnet.stellar.org:443 \
-  --network testnet)
-
-echo "Contract deployed: $CONTRACT_ID"
-
-echo "Initializing contract..."
-soroban contract invoke \
-  --id $CONTRACT_ID \
-  --source-account $DEPLOY_ACCOUNT \
-  --rpc-url https://soroban-testnet.stellar.org:443 \
-  --network testnet \
-  -- initialize \
-  --owner $OWNER_ADDRESS
-
-echo "Contract initialized successfully!"
-echo "Contract ID: $CONTRACT_ID"
-```
-
-### Testing Scripts
-
-```bash
-#!/bin/bash
-# scripts/test.sh
-
-set -e
-
-echo "Running unit tests..."
-cd onchain/contracts/stello_pay_contract
-cargo test
-
-echo "Running integration tests..."
-cd ../../../
-cargo test --test integration_tests
-
-echo "Running end-to-end tests..."
-npm test -- --testPathPattern=e2e
-
-echo "Generating test report..."
-cargo tarpaulin --out Html --output-dir coverage
-
-echo "All tests passed!"
-```
-
-### Monitoring Scripts
-
-```bash
-#!/bin/bash
-# scripts/monitor.sh
-
-CONTRACT_ID=${1:-$DEFAULT_CONTRACT_ID}
-
-if [ -z "$CONTRACT_ID" ]; then
-    echo "Usage: $0 <CONTRACT_ID>"
-    exit 1
-fi
-
-echo "Monitoring contract: $CONTRACT_ID"
-
-# Check contract health
-stellopay-cli health --contract $CONTRACT_ID || {
-    echo "Contract health check failed!"
-    exit 1
-}
-
-# Monitor events
-stellopay-cli stream events --contract $CONTRACT_ID &
-EVENT_PID=$!
-
-# Monitor performance
-stellopay-cli monitor performance --contract $CONTRACT_ID --interval 30s &
-PERF_PID=$!
-
-# Handle shutdown
-trap "kill $EVENT_PID $PERF_PID" EXIT
-
-echo "Monitoring started. Press Ctrl+C to stop."
-wait
-```
-
-### Backup Scripts
-
-```bash
-#!/bin/bash
-# scripts/backup.sh
-
-CONTRACT_ID=${1:-$DEFAULT_CONTRACT_ID}
-BACKUP_DIR="backups/$(date +%Y%m%d_%H%M%S)"
-
-mkdir -p $BACKUP_DIR
-
-echo "Creating backup for contract: $CONTRACT_ID"
-
-# Export contract state
-stellopay-cli export state --contract $CONTRACT_ID --output $BACKUP_DIR/state.json
-
-# Export payroll data
-stellopay-cli export payrolls --contract $CONTRACT_ID --output $BACKUP_DIR/payrolls.json
-
-# Export events
-stellopay-cli export events --contract $CONTRACT_ID --output $BACKUP_DIR/events.json
-
-# Create compressed archive
-tar -czf $BACKUP_DIR.tar.gz $BACKUP_DIR
-rm -rf $BACKUP_DIR
-
-echo "Backup created: $BACKUP_DIR.tar.gz"
-```
-
+Build, test, and monitoring scripts are available in the `scripts/` directory as shell scripts with descriptive comments.
 
 ## Getting Started
 
@@ -389,22 +209,18 @@ echo "Backup created: $BACKUP_DIR.tar.gz"
    ```bash
    git clone https://github.com/stellopay/stellopay-core
    cd stellopay-core
-   docker-compose -f docker-compose.dev.yml up -d
    ```
 
 3. **Deploy Test Contract**:
    ```bash
-   stellopay-cli deploy --network testnet
+   stellopay-cli deploy --network testnet --owner <OWNER_ADDRESS>
    ```
 
-4. **Run Examples**:
+4. **Run Tests**:
    ```bash
-   stellopay-cli test run --suite examples
+   cargo test
    ```
 
-5. **Start Monitoring**:
-   ```bash
-   stellopay-cli monitor --contract <CONTRACT_ID>
-   ```
+For detailed usage instructions, see the [Integration Guide](../integration/README.md).
 
-For detailed usage instructions, see the [CLI Reference](./cli-reference.md) and [Integration Guide](../integration/README.md).
+> **Accuracy note:** This document was reconciled against the `Commands` enum in `tools/cli/src/lib.rs`. If the CLI gains new subcommands, update this file to match. Run `cargo run -p stellopay-cli -- --help` to verify.

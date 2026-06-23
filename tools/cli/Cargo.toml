@@ -11,6 +11,10 @@ repository = "https://github.com/stellopay/stellopay-core"
 name = "stellopay-cli"
 path = "src/main.rs"
 
+[lib]
+name = "stellopay_cli"
+path = "src/lib.rs"
+
 [dependencies]
 # CLI framework
 clap = { version = "4.0", features = ["derive"] }

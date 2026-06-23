@@ -54,6 +54,10 @@
 //! sync. Each event carries both `payment_id` (sequential position key) and
 //! `payment_hash` (transaction-level reference key). Because records are
 //! immutable, indexers never need to handle update or delete messages.
+//!
+//! See [`docs/payment-history.md`](../../../../docs/payment-history.md) for the
+//! full integration guide, pagination examples, storage key reference, and
+//! canonical reconciliation patterns.
 
 #![no_std]
 

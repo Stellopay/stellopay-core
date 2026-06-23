@@ -25,7 +25,9 @@ stellar-tokens = "0.6.0"
 rbac-interface = { path = "../rbac-interface" }
 
 [dev-dependencies]
+multisig = { path = "../multisig" }
 rbac = { path = "../rbac" }
+rate_limiter = { path = "../rate_limiter" }
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
 proptest = "1.10.0"
 criterion = { version = "0.8.2", features = ["html_reports"] }

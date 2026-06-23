@@ -20,14 +20,17 @@
 
 #![cfg(test)]
 
+use std::ops::Add;
+
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env,
+    Address, Env, IntoVal, Val, Vec,
 };
 
 use payment_scheduler::{
-    JobStatus, PaymentJob, PaymentSchedulerContract, PaymentSchedulerContractClient, SchedulerError,
+    JobFundedEvent, JobStatus, PaymentJob, PaymentSchedulerContract,
+    PaymentSchedulerContractClient, SchedulerError,
 };
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -54,7 +57,8 @@ fn create_token_contract<'a>(env: &Env, admin: &Address) -> TokenClient<'a> {
 fn setup(env: &Env) -> (Address, PaymentSchedulerContractClient<'static>) {
     let (id, client) = register_contract(env);
     let owner = Address::generate(env);
-    client.initialize(&owner);
+    let retry_contract = Address::generate(env);
+    client.initialize(&owner, &retry_contract);
     (id, client)
 }
 
@@ -66,7 +70,8 @@ fn test_initialize_and_read_owner() {
     let (_, client) = register_contract(&env);
     let owner = Address::generate(&env);
 
-    client.initialize(&owner);
+    let retry_contract = Address::generate(&env);
+    client.initialize(&owner, &retry_contract);
     assert_eq!(client.get_owner(), Some(owner.clone()));
 }
 
@@ -75,9 +80,10 @@ fn test_double_init_rejected() {
     let env = create_env();
     let (_, client) = register_contract(&env);
     let owner = Address::generate(&env);
+    let retry_contract = Address::generate(&env);
 
-    client.initialize(&owner);
-    let result = client.try_initialize(&owner);
+    client.initialize(&owner, &retry_contract);
+    let result = client.try_initialize(&owner, &retry_contract);
     assert_eq!(
         result.unwrap_err().unwrap(),
         SchedulerError::AlreadyInitialized
@@ -142,13 +148,8 @@ fn test_create_job_zero_interval_recurring_rejected() {
 
     // max_executions = None (unlimited) with interval = 0 → error
     let result = client.try_create_job(
-        &employer,
-        &recipient,
-        &token,
-        &100i128,
-        &0u64, // zero interval
-        &0u64,
-        &None, // unlimited → must have interval
+        &employer, &recipient, &token, &100i128, &0u64, // zero interval
+        &0u64, &None, // unlimited → must have interval
         &1u32,
     );
     assert_eq!(
@@ -171,7 +172,7 @@ fn test_create_job_one_time_zero_interval_allowed() {
         &recipient,
         &token,
         &100i128,
-        &0u64,       // zero interval OK for one-time
+        &0u64, // zero interval OK for one-time
         &0u64,
         &Some(1u32), // one-time
         &0u32,
@@ -191,10 +192,24 @@ fn test_create_job_increments_id() {
     env.ledger().with_mut(|li| li.timestamp = 0);
 
     let id1 = client.create_job(
-        &employer, &recipient, &token.address, &100i128, &10u64, &0u64, &None, &1u32,
+        &employer,
+        &recipient,
+        &token.address,
+        &100i128,
+        &10u64,
+        &0u64,
+        &None,
+        &1u32,
     );
     let id2 = client.create_job(
-        &employer, &recipient, &token.address, &100i128, &10u64, &1000u64, &None, &1u32,
+        &employer,
+        &recipient,
+        &token.address,
+        &100i128,
+        &10u64,
+        &1000u64,
+        &None,
+        &1u32,
     );
 
     assert_eq!(id2, id1 + 1);
@@ -233,12 +248,26 @@ fn test_duplicate_schedule_rejected() {
 
     // Create first job
     client.create_job(
-        &employer, &recipient, &token, &100i128, &10u64, &1000u64, &Some(3u32), &1u32,
+        &employer,
+        &recipient,
+        &token,
+        &100i128,
+        &10u64,
+        &1000u64,
+        &Some(3u32),
+        &1u32,
     );
 
     // Exact same parameters → DuplicateSchedule
     let result = client.try_create_job(
-        &employer, &recipient, &token, &100i128, &10u64, &1000u64, &Some(3u32), &1u32,
+        &employer,
+        &recipient,
+        &token,
+        &100i128,
+        &10u64,
+        &1000u64,
+        &Some(3u32),
+        &1u32,
     );
     assert_eq!(
         result.unwrap_err().unwrap(),
@@ -397,7 +426,10 @@ fn test_cancel_completed_job_rejected() {
     );
 
     client.process_due_payments(&10u32);
-    assert_eq!(client.get_job(&job_id).unwrap().status, JobStatus::Completed);
+    assert_eq!(
+        client.get_job(&job_id).unwrap().status,
+        JobStatus::Completed
+    );
 
     let result = client.try_cancel_job(&employer, &job_id);
     assert_eq!(
@@ -516,6 +548,143 @@ fn test_fund_job_increases_scheduler_balance() {
 
     client.fund_job(&employer, &job_id, &200i128);
     assert_eq!(token.balance(&scheduler_id), 200i128);
+}
+
+#[test]
+fn test_fund_job_event() {
+    let env = create_env();
+    let (scheduler_id, client) = setup(&env);
+    let employer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    asset_admin.mint(&employer, &300i128);
+
+    let job_id = client.create_job(
+        &employer,
+        &recipient,
+        &token.address,
+        &100i128,
+        &10u64,
+        &0u64,
+        &None,
+        &1u32,
+    );
+
+    let amount = 200i128;
+    client.fund_job(&employer, &job_id, &amount);
+
+    let events = env.events().all();
+
+    let second_event: (Address, Vec<Val>, Val) = events.get(1).unwrap();
+    let mut second_event_vec: soroban_sdk::Vec<(Address, Vec<Val>, Val)> = Vec::new(&env);
+    second_event_vec.push_front(second_event);
+
+    let job_funded_event: (Address, Vec<Val>, Val) = (
+        scheduler_id.clone(),
+        ("job_funded", job_id).into_val(&env),
+        (JobFundedEvent {
+            job_id,
+            from: employer,
+            amount,
+        }
+        .into_val(&env)),
+    );
+    let mut job_funded_vec: soroban_sdk::Vec<(Address, Vec<Val>, Val)> = Vec::new(&env);
+    job_funded_vec.push_front(job_funded_event);
+
+    assert_eq!(second_event_vec, job_funded_vec);
+}
+
+#[test]
+fn test_fund_job_multiple_event() {
+    let env = create_env();
+    let (scheduler_id, client) = setup(&env);
+    let employer = Address::generate(&env);
+    let second_employer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    asset_admin.mint(&employer, &500i128);
+    asset_admin.mint(&second_employer, &500i128);
+
+    let job_id = client.create_job(
+        &employer,
+        &recipient,
+        &token.address,
+        &100i128,
+        &10u64,
+        &0u64,
+        &None,
+        &1u32,
+    );
+
+    let amount = 200i128;
+    client.fund_job(&employer.clone(), &job_id, &amount);
+    let events = env.events().all();
+    let second_event: (Address, Vec<Val>, Val) = events.get(1).unwrap();
+    let mut second_event_vec: soroban_sdk::Vec<(Address, Vec<Val>, Val)> = Vec::new(&env);
+    second_event_vec.push_front(second_event);
+
+    let job_funded_event: (Address, Vec<Val>, Val) = (
+        scheduler_id.clone(),
+        ("job_funded", job_id).into_val(&env),
+        (JobFundedEvent {
+            job_id,
+            from: employer.clone(),
+            amount,
+        }
+        .into_val(&env)),
+    );
+    let mut job_funded_vec: soroban_sdk::Vec<(Address, Vec<Val>, Val)> = Vec::new(&env);
+    job_funded_vec.push_front(job_funded_event);
+
+    assert_eq!(second_event_vec, job_funded_vec);
+
+    client.fund_job(&second_employer, &job_id, &amount);
+    let events = env.events().all();
+    let second_event: (Address, Vec<Val>, Val) = events.get(1).unwrap();
+    let mut second_event_vec: soroban_sdk::Vec<(Address, Vec<Val>, Val)> = Vec::new(&env);
+    second_event_vec.push_front(second_event);
+
+    let job_funded_event: (Address, Vec<Val>, Val) = (
+        scheduler_id.clone(),
+        ("job_funded", job_id).into_val(&env),
+        (JobFundedEvent {
+            job_id,
+            from: second_employer.clone(),
+            amount,
+        }
+        .into_val(&env)),
+    );
+    let mut job_funded_vec: soroban_sdk::Vec<(Address, Vec<Val>, Val)> = Vec::new(&env);
+    job_funded_vec.push_front(job_funded_event);
+
+    assert_eq!(second_event_vec, job_funded_vec);
+
+    client.fund_job(&employer, &job_id, &100);
+    let events = env.events().all();
+    let second_event: (Address, Vec<Val>, Val) = events.get(1).unwrap();
+    let mut second_event_vec: soroban_sdk::Vec<(Address, Vec<Val>, Val)> = Vec::new(&env);
+    second_event_vec.push_front(second_event);
+
+    let job_funded_event: (Address, Vec<Val>, Val) = (
+        scheduler_id.clone(),
+        ("job_funded", job_id).into_val(&env),
+        (JobFundedEvent {
+            job_id,
+            from: employer.clone(),
+            amount: 100,
+        }
+        .into_val(&env)),
+    );
+    let mut job_funded_vec: soroban_sdk::Vec<(Address, Vec<Val>, Val)> = Vec::new(&env);
+    job_funded_vec.push_front(job_funded_event);
+    assert_eq!(second_event_vec, job_funded_vec);
 }
 
 // ─── process_due_payments ─────────────────────────────────────────────────────
@@ -724,7 +893,8 @@ fn test_insufficient_funds_then_retry_success() {
     // Top up and advance to retry time
     asset_admin.mint(&employer, &200i128);
     token.transfer(&employer, &scheduler_id, &200i128);
-    env.ledger().with_mut(|li| li.timestamp = job.next_scheduled_time);
+    env.ledger()
+        .with_mut(|li| li.timestamp = job.next_scheduled_time);
     client.process_due_payments(&5u32);
 
     job = client.get_job(&job_id).unwrap();
@@ -785,11 +955,25 @@ fn test_conflict_detection_prevents_duplicates() {
     let token = Address::generate(&env);
 
     client.create_job(
-        &employer, &recipient, &token, &100i128, &10u64, &1000u64, &Some(3u32), &1u32,
+        &employer,
+        &recipient,
+        &token,
+        &100i128,
+        &10u64,
+        &1000u64,
+        &Some(3u32),
+        &1u32,
     );
 
     let result = client.try_create_job(
-        &employer, &recipient, &token, &100i128, &10u64, &1000u64, &Some(3u32), &1u32,
+        &employer,
+        &recipient,
+        &token,
+        &100i128,
+        &10u64,
+        &1000u64,
+        &Some(3u32),
+        &1u32,
     );
     assert_eq!(
         result.unwrap_err().unwrap(),
