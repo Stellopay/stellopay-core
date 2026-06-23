@@ -1,0 +1,11 @@
+# Default owners for the repository
+* @Stellopay/core-maintainers
+
+# On-chain contracts
+/onchain/contracts/ @Stellopay/contract-reviewers
+
+# Documentation
+/docs/ @Stellopay/docs-maintainers
+
+# CI/CD workflows
+/.github/workflows/ @Stellopay/infra-maintainers
