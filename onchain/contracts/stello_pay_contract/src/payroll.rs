@@ -1489,7 +1489,7 @@ pub fn set_grace_extension_policy(
     // Sanity bounds so a compromised owner key cannot configure absurd values in one tx.
     const MAX_BPS: u32 = 500_000;
     const MAX_PER_CALL: u64 = 730 * 24 * 3600;
-    if policy.max_cumulative_extension_bps > MAX_BPS {
+    if policy.max_cumulative_extension_bps == 0 || policy.max_cumulative_extension_bps > MAX_BPS {
         return Err(PayrollError::GraceExtensionInvalid);
     }
     if policy.max_extension_per_call_seconds == 0
