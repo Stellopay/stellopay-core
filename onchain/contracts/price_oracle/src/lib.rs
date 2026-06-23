@@ -66,6 +66,7 @@ pub struct PairConfig {
     /// Minimum number of unique authorized sources required to accept a price.
     pub quorum_n: u32,
     /// Maximum spread allowed between quorum-supporting rates, in basis points.
+    /// Must be in range [0, 10_000] (0 = exact match, 10_000 = 100%).
     pub tolerance_bps: u32,
     /// Time window used to group submissions into a single quorum bucket.
     pub quorum_window_seconds: u64,
@@ -238,6 +239,17 @@ mod unit_tests {
             u32::MAX
         ));
     }
+
+    #[test]
+    fn test_within_tolerance_at_boundaries() {
+        // 0 bps = exact match only
+        assert!(within_tolerance(1_000_000, 1_000_000, 0));
+        assert!(!within_tolerance(1_000_000, 1_000_001, 0));
+
+        // 10_000 bps = 100% tolerance (any positive rate matches)
+        assert!(within_tolerance(100, 200, 10_000));
+        assert!(within_tolerance(200, 100, 10_000));
+    }
 }
 
 // ============================================================================
@@ -333,6 +345,7 @@ impl PriceOracleContract {
     ///      - `min_rate > 0` and `max_rate > 0`
     ///      - `min_rate <= max_rate`
     ///      - `max_staleness_seconds > 0`
+    ///      - `tolerance_bps <= 10_000` (max 100% spread)
     ///      Emits event `("oracle", "cfgpair")` with `(base, quote)`.
     /// @param caller               Owner address.
     /// @param base                 Base token address.
@@ -341,7 +354,8 @@ impl PriceOracleContract {
     /// @param max_rate             Maximum allowed scaled rate (inclusive).
     /// @param max_staleness_seconds Maximum allowed age of a rate update.
     /// @param quorum_n             Minimum number of distinct sources required.
-    /// @param tolerance_bps        Maximum spread between quorum-supporting votes.
+    /// @param tolerance_bps        Maximum spread between quorum-supporting votes
+    ///                             in basis points, capped at 10_000 (100%).
     /// @param quorum_window_seconds Time window used to bucket pending votes.
     /// @param min_submit_interval_secs Minimum seconds between consecutive
     ///        submissions from the same source for this pair. `0` disables the check.
@@ -364,6 +378,9 @@ impl PriceOracleContract {
             return Err(OracleError::InvalidPairConfig);
         }
         if max_staleness_seconds == 0 || quorum_n == 0 || quorum_window_seconds == 0 {
+            return Err(OracleError::InvalidPairConfig);
+        }
+        if tolerance_bps > 10_000 {
             return Err(OracleError::InvalidPairConfig);
         }
 
