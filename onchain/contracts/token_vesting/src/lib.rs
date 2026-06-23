@@ -194,9 +194,27 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
                 if duration == 0 {
                     schedule.total_amount
                 } else {
-                    // Linear interpolation: total * elapsed / duration
-                    (schedule.total_amount * i128::from(elapsed as i64))
-                        / i128::from(duration as i64)
+                    // Overflow-safe linear interpolation: total * elapsed / duration
+                    // Uses divide-before-multiply to prevent intermediate overflow.
+                    // Computes: (total / duration) * elapsed + (total % duration) * elapsed / duration
+                    // Rounding: truncates toward zero (same as original behavior).
+                    // The result is guaranteed to be <= total_amount since elapsed <= duration.
+                    let elapsed_i128 = i128::from(elapsed as i64);
+                    let duration_i128 = i128::from(duration as i64);
+                    
+                    // Main term: (total / duration) * elapsed
+                    let quotient = schedule.total_amount / duration_i128;
+                    let main_term = quotient.checked_mul(elapsed_i128).unwrap_or(schedule.total_amount);
+                    
+                    // Remainder term: (total % duration) * elapsed / duration
+                    let remainder = schedule.total_amount % duration_i128;
+                    let remainder_term = remainder
+                        .checked_mul(elapsed_i128)
+                        .and_then(|p| p.checked_div(duration_i128))
+                        .unwrap_or(0);
+                    
+                    // Sum and cap at total_amount (should not exceed, but safe guard)
+                    main_term.checked_add(remainder_term).unwrap_or(schedule.total_amount).min(schedule.total_amount)
                 }
             }
         }
@@ -205,7 +223,7 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
             _ => 0,
         },
         VestingKind::Custom => {
-            if schedule.checkpoints.len() == 0 {
+            if schedule.checkpoints.is_empty() {
                 return 0;
             }
             let mut last_amount: i128 = 0;
@@ -297,7 +315,7 @@ impl TokenVestingContract {
 
         // Escrow tokens in the vesting contract.
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&employer, &env.current_contract_address(), &total_amount);
+        token_client.transfer(&employer, env.current_contract_address(), &total_amount);
 
         let id = next_schedule_id(&env);
         let schedule = VestingSchedule {
@@ -358,7 +376,7 @@ impl TokenVestingContract {
         assert!(total_amount > 0, "Total amount must be positive");
 
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&employer, &env.current_contract_address(), &total_amount);
+        token_client.transfer(&employer, env.current_contract_address(), &total_amount);
 
         let id = next_schedule_id(&env);
         let schedule = VestingSchedule {
@@ -419,7 +437,7 @@ impl TokenVestingContract {
         employer.require_auth();
 
         assert!(total_amount > 0, "Total amount must be positive");
-        assert!(checkpoints.len() > 0, "At least one checkpoint required");
+        assert!(!checkpoints.is_empty(), "At least one checkpoint required");
 
         let mut last_time: u64 = 0;
         let mut last_amount: i128 = 0;
@@ -439,7 +457,7 @@ impl TokenVestingContract {
         );
 
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&employer, &env.current_contract_address(), &total_amount);
+        token_client.transfer(&employer, env.current_contract_address(), &total_amount);
 
         let id = next_schedule_id(&env);
         let schedule = VestingSchedule {
