@@ -161,3 +161,38 @@ fn test_admin_transfer() {
     assert_eq!(client.get_admin(), Some(admin2.clone()));
 }
 
+#[test]
+fn test_get_usage_read_only() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 100);
+    client.initialize(&admin, &5u32, &1u32, &false);
+
+    // Fresh user shows full burst
+    let usage = client.get_usage(&user);
+    assert_eq!(usage.tokens, 5);
+
+    // Consume 2, get_usage reflects state after consumption
+    client.check_and_consume(&user);
+    client.check_and_consume(&user);
+    let usage2 = client.get_usage(&user);
+    assert_eq!(usage2.tokens, 3);
+
+    // Advance 2s: tokens refill to cap (3 + 2*1 = 5, capped at 5)
+    env.ledger().with_mut(|li| li.timestamp = 102);
+    let usage3 = client.get_usage(&user);
+    assert_eq!(usage3.tokens, 5);
+
+    // get_usage does NOT mutate state
+    let usage4 = client.get_usage(&user);
+    assert_eq!(usage4.tokens, 5);
+    assert_eq!(client.check_and_consume(&user), 4);
+
+    // Address with no limit uses defaults
+    let new_user = Address::generate(&env);
+    let usage5 = client.get_usage(&new_user);
+    assert_eq!(usage5.tokens, 5);
+}

@@ -143,6 +143,38 @@ impl RateLimiter {
         Self::consume_bucket(&env, StorageKey::Usage(subject.clone()), limit.burst, limit.refill_rate)
     }
 
+    /// Gets the current usage state for an address without mutating state.
+    ///
+    /// @notice Read-only query returning the effective token count after computing
+    ///         refill at the current ledger timestamp.
+    /// @dev Performs no mutation and requires no authentication.
+    /// @param addr Address to query.
+    /// @return Usage with token count as of now and the snapshot timestamp.
+    pub fn get_usage(env: Env, addr: Address) -> Usage {
+        Self::require_initialized(&env);
+
+        let limit = Self::get_limit_config(&env, &addr);
+        let now = env.ledger().timestamp();
+        let key = StorageKey::Usage(addr);
+
+        let stored: Usage = env.storage().persistent().get(&key).unwrap_or(Usage {
+            last_update: now,
+            tokens: limit.burst,
+        });
+
+        let elapsed = now.saturating_sub(stored.last_update);
+        let mut tokens = stored.tokens;
+        if elapsed > 0 {
+            let new_tokens = (elapsed as u32).saturating_mul(limit.refill_rate);
+            tokens = tokens.saturating_add(new_tokens);
+            if tokens > limit.burst {
+                tokens = limit.burst;
+            }
+        }
+
+        Usage { last_update: now, tokens }
+    }
+
     /// Explicitly resets usage for an address.
     ///
     /// @dev Only callable by admin.
@@ -218,4 +250,3 @@ impl RateLimiter {
         admin.require_auth();
     }
 }
-
