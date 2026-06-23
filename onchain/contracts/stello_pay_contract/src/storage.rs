@@ -372,6 +372,8 @@ pub enum PayrollError {
     MilestoneNotApproved = 40,
     /// Milestone has already been claimed.
     MilestoneAlreadyClaimed = 41,
+    /// Cumulative milestone total would overflow i128.
+    MilestoneAmountOverflow = 42,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.

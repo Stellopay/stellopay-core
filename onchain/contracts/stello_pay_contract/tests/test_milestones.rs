@@ -670,3 +670,18 @@ fn test_batch_claim_mixed_reports_error_codes() {
     assert_eq!(result.results.get(1).unwrap().error_code, 3); // not approved
     assert_eq!(result.results.get(2).unwrap().error_code, 1); // duplicate
 }
+
+/// Adding a milestone that pushes cumulative total past i128::MAX fails with MilestoneAmountOverflow.
+#[test]
+fn test_add_milestone_overflow_fails() {
+    let (env, employer, contributor, token, client) = create_test_env();
+    soroban_sdk::testutils::Ledger::new(&env).set_timestamp(1000);
+    let id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
+
+    // Add first milestone at near-MAX
+    client.add_milestone(&id, &(i128::MAX - 1));
+
+    // Adding another should overflow the cumulative sum
+    let result = client.try_add_milestone(&id, &2i128);
+    assert_eq!(result.err(), Some(Ok(PayrollError::MilestoneAmountOverflow)));
+}
