@@ -13,8 +13,11 @@
 //!
 //! ## Quorum
 //! A slash via attestation requires signatures from at least `quorum_threshold`
-//! distinct slasher addresses (default: 2-of-N). On-chain evidence bypasses
-//! quorum but still requires the caller to hold the `slasher` role.
+//! distinct slasher addresses. The suggested minimum is `DEFAULT_QUORUM` (2).
+//! Quorum must be at least 1; passing 0 is rejected explicitly so operators
+//! cannot accidentally deploy a slashing contract with no quorum protection.
+//! On-chain evidence bypasses quorum but still requires the caller to hold the
+//! `slasher` role.
 //!
 //! ## Security Assumptions
 //! - Only addresses granted the `slasher` role may initiate or countersign a slash.
@@ -39,7 +42,8 @@ const MAX_PENALTY_BPS: u32 = 5_000;
 /// Appeal window: 7 days in seconds.
 const APPEAL_WINDOW_SECS: u64 = 7 * 24 * 60 * 60;
 
-/// Minimum quorum of slasher signatures required for attestation-based slashes.
+/// Suggested minimum quorum of slasher signatures for attestation-based slashes.
+/// Quorum is validated on initialisation and must be at least 1.
 const DEFAULT_QUORUM: u32 = 2;
 
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
@@ -172,6 +176,8 @@ pub enum SlashError {
     LifetimeCapExceeded = 15,
     /// Arithmetic overflow/underflow protection.
     ArithmeticOverflow  = 16,
+    /// Quorum must be at least 1; zero-quorum deployments are rejected.
+    ZeroQuorum          = 17,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -190,6 +196,8 @@ impl SlashingPenaltyContract {
     /// * `admin`   - Address that can grant/revoke slasher roles and reverse appeals.
     /// * `token`   - Contract address of the XLM-wrapped or custom token used for stake.
     /// * `quorum`  - Minimum number of slasher signatures for attestation slashes.
+    ///               Must be at least 1. The suggested value is `DEFAULT_QUORUM` (2).
+    ///               Passing 0 returns `ZeroQuorum`.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -203,6 +211,9 @@ impl SlashingPenaltyContract {
         if env.storage().instance().has(&ADMIN) {
             return Err(SlashError::AlreadyInitialized);
         }
+        if quorum == 0 {
+            return Err(SlashError::ZeroQuorum);
+        }
         Self::validate_caps(
             per_event_bps_cap,
             per_period_amount_cap,
@@ -212,7 +223,7 @@ impl SlashingPenaltyContract {
         admin.require_auth();
         env.storage().instance().set(&ADMIN, &admin);
         env.storage().instance().set(&TOKEN, &token);
-        env.storage().instance().set(&QUORUM, &quorum.max(DEFAULT_QUORUM));
+        env.storage().instance().set(&QUORUM, &quorum);
         env.storage().instance().set(&SLASHERS, &Vec::<Address>::new(&env));
         env.storage().instance().set(&STAKES, &Map::<Address, i128>::new(&env));
         env.storage().instance().set(&SLASH_REC, &Map::<BytesN<32>, SlashRecord>::new(&env));
