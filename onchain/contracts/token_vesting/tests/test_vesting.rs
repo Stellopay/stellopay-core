@@ -3,7 +3,7 @@
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, IntoVal, Symbol, Vec, vec,
+    Address, Env, IntoVal, Vec, vec,
 };
 
 use token_vesting::{
@@ -1414,4 +1414,116 @@ fn cliff_plus_linear_revoked() {
     set_time(&env, 999);
     assert_eq!(client.get_vested_amount(&sid), 0);
     assert_eq!(client.get_releasable_amount(&sid), 0);
+}
+
+// ===========================================================================
+// L. Overflow safety tests (3 tests)
+// ===========================================================================
+
+/// Test that large total_amount near i128::MAX does not cause overflow panic.
+#[test]
+fn linear_large_total_no_overflow() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    // Mint enough tokens for the large amount
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+    let large_total = i128::MAX / 2;
+    asset_admin.mint(&employer, &large_total);
+
+    set_time(&env, 0);
+    // Use a large total_amount that would overflow with naive multiplication
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &large_total,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // At midpoint: should vest approximately half without overflow
+    set_time(&env, 50);
+    let vested = client.get_vested_amount(&sid);
+    // Should be approximately half (truncates toward zero)
+    assert!(vested > 0 && vested <= large_total);
+    
+    // At end: should vest full amount
+    set_time(&env, 100);
+    assert_eq!(client.get_vested_amount(&sid), large_total);
+}
+
+/// Test that long duration with large total_amount does not overflow.
+#[test]
+fn linear_long_duration_no_overflow() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    // Mint enough tokens for the large amount
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+    let large_total = i128::MAX / 10;
+    asset_admin.mint(&employer, &large_total);
+
+    set_time(&env, 0);
+    // Large total with long duration (simulating years)
+    let long_duration = u64::MAX / 100; // Very long duration
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &large_total,
+        &0u64,
+        &long_duration,
+        &None,
+        &false,
+    );
+
+    // At various points, should not overflow
+    set_time(&env, long_duration / 4);
+    let vested_quarter = client.get_vested_amount(&sid);
+    assert!(vested_quarter > 0 && vested_quarter <= large_total);
+    
+    set_time(&env, long_duration / 2);
+    let vested_half = client.get_vested_amount(&sid);
+    assert!(vested_half > vested_quarter && vested_half <= large_total);
+    
+    set_time(&env, long_duration);
+    assert_eq!(client.get_vested_amount(&sid), large_total);
+}
+
+/// Test that vested amount never exceeds total_amount even with edge cases.
+#[test]
+fn linear_vested_never_exceeds_total() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    // Mint enough tokens for the large amount
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+    let total = 1_000_000i128;
+    asset_admin.mint(&employer, &total);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &total,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // Check at multiple points that vested <= total
+    for t in [0u64, 10, 25, 50, 75, 90, 99, 100, 200] {
+        set_time(&env, t);
+        let vested = client.get_vested_amount(&sid);
+        assert!(vested <= total, "Vested amount {} exceeds total {} at time {}", vested, total, t);
+    }
+    
+    // At end, should equal total
+    set_time(&env, 100);
+    assert_eq!(client.get_vested_amount(&sid), total);
 }
