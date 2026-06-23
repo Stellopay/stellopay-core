@@ -1,7 +1,7 @@
-use crate::{PayrollEscrowContract, PayrollEscrowContractClient};
+use crate::{ManagerUpdatedEvent, PayrollEscrowContract, PayrollEscrowContractClient};
 use soroban_sdk::{
-    testutils::{Address as _, Events, Ledger},
-    vec, Address, Env, IntoVal, Symbol,
+    testutils::{Address as _, Events},
+    vec, Address, Env, IntoVal,
 };
 
 fn create_token_contract<'a>(e: &Env, admin: &Address) -> soroban_sdk::token::Client<'a> {
@@ -68,6 +68,103 @@ fn test_admin_set_correctly() {
 
     let client = create_payroll_escrow_contract(&env);
     client.initialize(&admin, &token.address, &manager);
+}
+
+#[test]
+fn test_update_manager_admin_authorized() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let new_manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    client.update_manager(&admin, &new_manager);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(
+        last_event.1,
+        vec![
+            &env,
+            soroban_sdk::String::from_str(&env, "manager_updated").into_val(&env)
+        ]
+    );
+
+    let event: ManagerUpdatedEvent = last_event.2.into_val(&env);
+    assert_eq!(event.old_manager, manager);
+    assert_eq!(event.new_manager, new_manager);
+}
+
+#[test]
+fn test_update_manager_non_admin_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let new_manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    let result = client.try_update_manager(&non_admin, &new_manager);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_update_manager_same_manager_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    let result = client.try_update_manager(&admin, &manager);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_release_uses_new_manager_after_rotation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let new_manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &1000);
+    client.fund_agreement(&employer, &1, &employer, &500);
+
+    client.update_manager(&admin, &new_manager);
+
+    assert!(client.try_release(&manager, &1, &employee, &100).is_err());
+
+    client.release(&new_manager, &1, &employee, &200);
+
+    assert_eq!(client.get_agreement_balance(&1), 300);
+    assert_eq!(token.balance(&employee), 200);
 }
 
 #[test]
@@ -751,7 +848,10 @@ fn assert_escrow_conservation(
         outflow + remaining,
         "conservation violated: funded={total_funded} released={total_released} refunded={total_refunded} remaining={remaining}"
     );
-    assert!(outflow <= total_funded, "outflow must not exceed funded deposits");
+    assert!(
+        outflow <= total_funded,
+        "outflow must not exceed funded deposits"
+    );
 }
 
 #[test]
