@@ -8,7 +8,10 @@ use tokio::fs;
 
 use stellopay_cli::commands::emergency_withdraw;
 use stellopay_cli::config::{get_secret_key, load_config};
+use stellopay_cli::utils::SorobanHttpClient;
 use stellopay_cli::{AuthConfig, Config, ContractConfig, DefaultsConfig, Error, NetworkConfig};
+use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const VALID_CONTRACT: &str = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4";
 const VALID_TOKEN: &str = "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCN3";
@@ -357,5 +360,264 @@ async fn test_over_limit_checked_before_address_validation() {
     assert!(
         matches!(result, Err(Error::MaximumAmount)),
         "MaximumAmount must fire before InvalidAddress, got: {result:?}"
+    );
+}
+
+// --- SorobanHttpClient::query tests ---
+//
+// These tests exercise the read-only `query` path against a local mock RPC
+// server (wiremock), so they do not depend on network access or a live
+// Soroban node.
+
+#[tokio::test]
+async fn test_query_success_returns_result_field() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "webhook_id": 1, "active": true }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = SorobanHttpClient::new(&server.uri());
+    let result = client
+        .query(VALID_CONTRACT, "get_webhook", vec![("webhook_id", "1")])
+        .await
+        .expect("query should succeed");
+
+    assert_eq!(result["webhook_id"], 1);
+    assert_eq!(result["active"], true);
+}
+
+#[tokio::test]
+async fn test_query_empty_result() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": []
+        })))
+        .mount(&server)
+        .await;
+
+    let client = SorobanHttpClient::new(&server.uri());
+    let result = client
+        .query(VALID_CONTRACT, "list_owner_webhooks", vec![("owner", "G...")])
+        .await
+        .expect("query should succeed even with an empty result");
+
+    assert_eq!(result, serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn test_query_returns_whole_body_when_no_result_field() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "total_webhooks": 3,
+            "active_webhooks": 2
+        })))
+        .mount(&server)
+        .await;
+
+    let client = SorobanHttpClient::new(&server.uri());
+    let result = client
+        .query(VALID_CONTRACT, "get_webhook_stats", vec![])
+        .await
+        .expect("query should succeed");
+
+    assert_eq!(result["total_webhooks"], 3);
+    assert_eq!(result["active_webhooks"], 2);
+}
+
+#[tokio::test]
+async fn test_query_rpc_error_surfaces_as_err() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "error": "contract not found"
+        })))
+        .mount(&server)
+        .await;
+
+    let client = SorobanHttpClient::new(&server.uri());
+    let err = client
+        .query("unknown_contract", "get_webhook", vec![])
+        .await
+        .expect_err("an RPC-level error field should surface as Err");
+
+    assert!(
+        err.to_string().contains("contract not found"),
+        "expected error message to include RPC error, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_query_http_error_status_surfaces_as_err() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/query"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("internal server error"))
+        .mount(&server)
+        .await;
+
+    let client = SorobanHttpClient::new(&server.uri());
+    let err = client
+        .query(VALID_CONTRACT, "get_webhook", vec![])
+        .await
+        .expect_err("a non-2xx HTTP status should surface as Err");
+
+    assert!(
+        err.to_string().contains("500"),
+        "expected error message to include status code, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_query_malformed_response_surfaces_as_err() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not json at all"))
+        .mount(&server)
+        .await;
+
+    let client = SorobanHttpClient::new(&server.uri());
+    let err = client
+        .query(VALID_CONTRACT, "get_webhook", vec![])
+        .await
+        .expect_err("a non-JSON body should surface as Err");
+
+    assert!(
+        err.to_string().contains("Malformed"),
+        "expected error message to flag malformed response, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn test_query_request_never_includes_a_signer() {
+    // Security property: the read-only query path must not carry a signer or
+    // secret key, unlike `invoke`. We assert this both by the method's
+    // signature (it takes no signer argument) and by inspecting the actual
+    // request body sent over the wire.
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/query"))
+        .and(body_partial_json(serde_json::json!({ "read_only": true })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": "ok"
+        })))
+        .mount(&server)
+        .await;
+
+    let client = SorobanHttpClient::new(&server.uri());
+    let result = client
+        .query(VALID_CONTRACT, "get_webhook_stats", vec![])
+        .await
+        .expect("query should succeed");
+
+    assert_eq!(result, "ok");
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let sent_body: serde_json::Value = requests[0].body_json().unwrap();
+    assert!(
+        sent_body.get("signer").is_none(),
+        "query request body must never include a signer field, got: {sent_body}"
+    );
+    assert_eq!(sent_body["read_only"], true);
+}
+
+#[tokio::test]
+async fn test_query_as_deserializes_into_typed_struct() {
+    use stellopay_cli::utils::WebhookInfo;
+
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": 7,
+                "name": "payroll-events",
+                "description": "notifies on payroll runs",
+                "url": "https://example.com/hook",
+                "events": ["payment.sent"],
+                "is_active": true
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = SorobanHttpClient::new(&server.uri());
+    let webhook: WebhookInfo = client
+        .query_as(VALID_CONTRACT, "get_webhook", vec![("webhook_id", "7")])
+        .await
+        .expect("typed query should succeed");
+
+    assert_eq!(webhook.id, Some(7));
+    assert_eq!(webhook.name, Some("payroll-events".to_string()));
+    assert_eq!(webhook.is_active, Some(true));
+    assert_eq!(webhook.events, Some(vec!["payment.sent".to_string()]));
+}
+
+#[tokio::test]
+async fn test_query_as_tolerates_missing_optional_fields() {
+    use stellopay_cli::utils::WebhookInfo;
+
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": 9 }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = SorobanHttpClient::new(&server.uri());
+    let webhook: WebhookInfo = client
+        .query_as(VALID_CONTRACT, "get_webhook", vec![("webhook_id", "9")])
+        .await
+        .expect("typed query should tolerate missing optional fields");
+
+    assert_eq!(webhook.id, Some(9));
+    assert_eq!(webhook.name, None);
+    assert_eq!(webhook.retry_config, None);
+}
+
+#[tokio::test]
+async fn test_query_as_returns_err_on_shape_mismatch() {
+    use stellopay_cli::utils::WebhookStats;
+
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "total_webhooks": "not-a-number" }
+        })))
+        .mount(&server)
+        .await;
+
+    let client = SorobanHttpClient::new(&server.uri());
+    let err = client
+        .query_as::<WebhookStats>(VALID_CONTRACT, "get_webhook_stats", vec![])
+        .await
+        .expect_err("a type mismatch in the result shape should surface as Err");
+
+    assert!(
+        err.to_string().contains("did not match expected shape"),
+        "expected shape-mismatch error, got: {err}"
     );
 }

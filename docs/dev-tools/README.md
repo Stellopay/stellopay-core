@@ -108,6 +108,34 @@ stellopay-cli webhook test --webhook-id <ID> --event-type <TYPE>
 | `stats` | Get webhook statistics |
 | `test` | Test webhook delivery |
 
+##### Read vs. write: `query` and `invoke`
+
+`webhook list`, `webhook get`, and `webhook stats` are read-only — they call
+`SorobanHttpClient::query` (defined in `tools/cli/src/utils.rs`) instead of
+`SorobanHttpClient::invoke`. The two methods are intentionally distinct:
+
+| | `query` | `invoke` |
+|---|---|---|
+| Purpose | Read-only contract simulation | Submits a transaction |
+| Requires a signer/secret key | No | Yes |
+| Mutates on-chain state | No | Yes |
+| Used by | `webhook list`, `webhook get`, `webhook stats` | `webhook register/update/delete/test`, `emergency-withdraw` |
+
+`query` posts the contract id, method, and arguments to the RPC's `/query`
+endpoint with `read_only: true` and never accepts or forwards a signer. It
+returns a `serde_json::Value` (the `result` field of the RPC response, or the
+full response body if no `result` field is present), and surfaces both
+transport-level failures (non-2xx HTTP status) and RPC-level failures (an
+`error` field in the response body) as `Err`. See the `///` doc comment on
+`SorobanHttpClient::query` for the exact contract.
+
+Tests for this path live in `tools/cli/tests/integration_tests.rs` (the
+`test_query_*` tests) and run against a local mock RPC server via `wiremock`,
+covering: a successful result, an empty result, a response with no `result`
+field, an RPC-level `error` field, a non-2xx HTTP status, a malformed
+(non-JSON) body, and a check that the outgoing request never carries a
+`signer` field.
+
 #### Configuration
 
 ```toml
