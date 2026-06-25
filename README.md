@@ -84,6 +84,12 @@ See [Building on Windows](docs/windows-build.md) for the full Windows guidance.
 
 The on-chain workspace uses GitHub Actions to build and test Soroban contracts on pull requests and pushes to the main branches. See [`onchain/README.md`](onchain/README.md) for the CI overview and local setup notes.
 
+## Contributing and security
+
+- [Contributing guide](CONTRIBUTING.md) — workspace layout, build/test workflow, and PR expectations
+- [Security policy](SECURITY.md) — responsible disclosure for contracts under `onchain/contracts/`
+- [Open an issue](.github/ISSUE_TEMPLATE/) — bug, feature, or security report templates
+
 ## Safety Notes
 
 This repository contains smart contract code. Review migrations, upgrades, and deployment steps carefully before using any live network or production asset. Keep private keys, RPC credentials, wallet secrets, and production database or ledger data out of commits, issue comments, and logs.
