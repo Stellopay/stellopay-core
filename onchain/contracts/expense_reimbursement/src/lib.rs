@@ -209,30 +209,30 @@ impl ExpenseReimbursementContract {
             .set(&StorageKey::Initialized, &true);
     }
 
-    /// Add an approver who can approve/reject expenses
-    pub fn add_approver(env: Env, approver: Address) {
+    /// Add an approver who can approve/reject expenses.
+    ///
+    /// # Authorization
+    /// Authorizes the live `caller`: it requires `caller`'s signature via
+    /// `require_auth` and asserts that `caller` is the contract owner. Any
+    /// non-owner caller is rejected, so only the owner can mutate the approver set.
+    pub fn add_approver(env: Env, caller: Address, approver: Address) {
         require_initialized(&env);
-        let owner: Address = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::Owner)
-            .expect("Owner not set");
-        require_owner(&env, &owner);
+        require_owner(&env, &caller);
 
         env.storage()
             .persistent()
             .set(&StorageKey::ApproverRole(approver), &true);
     }
 
-    /// Remove an approver
-    pub fn remove_approver(env: Env, approver: Address) {
+    /// Remove an approver.
+    ///
+    /// # Authorization
+    /// Authorizes the live `caller`: it requires `caller`'s signature via
+    /// `require_auth` and asserts that `caller` is the contract owner. Any
+    /// non-owner caller is rejected, so only the owner can mutate the approver set.
+    pub fn remove_approver(env: Env, caller: Address, approver: Address) {
         require_initialized(&env);
-        let owner: Address = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::Owner)
-            .expect("Owner not set");
-        require_owner(&env, &owner);
+        require_owner(&env, &caller);
 
         env.storage()
             .persistent()
