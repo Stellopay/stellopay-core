@@ -237,6 +237,12 @@ cargo build --release
 
 See [tools/cli/README.md](../tools/cli/README.md) for full usage.
 
+## Project health
+
+- [CONTRIBUTING.md](../CONTRIBUTING.md)
+- [SECURITY.md](../SECURITY.md)
+- [Issue templates](../.github/ISSUE_TEMPLATE/)
+
 ### `tools/doc_checker` — Documentation Checker
 
 Scans all `#[contractimpl]` public functions for missing doc comments (params, returns, access control).
