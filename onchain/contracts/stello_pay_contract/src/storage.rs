@@ -203,6 +203,8 @@ pub enum StorageKey {
     DisputeResolutionThreshold,
     /// Optional rate limiter contract address for throttling claims.
     RateLimiterContract,
+    /// Optional salary adjustment contract address for dynamic salary overrides.
+    SalaryAdjustmentContract,
 }
 
 #[contracttype]

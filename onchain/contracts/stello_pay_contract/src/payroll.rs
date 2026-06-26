@@ -37,6 +37,11 @@ trait RateLimiterInterface {
     fn check_and_consume(env: Env, subject: Address) -> u32;
 }
 
+#[contractclient(name = "SalaryAdjustmentClient")]
+trait SalaryAdjustmentInterface {
+    fn get_employee_salary(env: Env, employee: Address) -> Option<i128>;
+}
+
 /// Mirror of multisig::OperationStatus — names must match for XDR decoding.
 #[contracttype]
 #[derive(Clone, PartialEq)]
@@ -2067,9 +2072,16 @@ pub fn claim_payroll(
 
     let periods_to_pay = total_elapsed_periods - claimed_periods;
 
-    // Get employee salary per period
-    let salary_per_period = DataKey::get_employee_salary(env, agreement_id, employee_index)
+    // Get employee salary per period, checking for dynamic adjustment overrides.
+    let mut salary_per_period = DataKey::get_employee_salary(env, agreement_id, employee_index)
         .ok_or(PayrollError::AgreementNotFound)?;
+
+    if let Some(salary_adj_addr) = env.storage().persistent().get::<_, Address>(&StorageKey::SalaryAdjustmentContract) {
+        let client = SalaryAdjustmentClient::new(env, &salary_adj_addr);
+        if let Some(adjusted_salary) = client.get_employee_salary(&employee) {
+            salary_per_period = adjusted_salary;
+        }
+    }
 
     // Calculate total amount to pay
     let amount = salary_per_period
@@ -2595,8 +2607,8 @@ pub fn batch_claim_payroll(
 
         let periods_to_pay = total_elapsed_periods - claimed_periods;
 
-        // Salary must be configured
-        let salary_per_period =
+        // Salary must be configured, checking for dynamic adjustment overrides.
+        let mut salary_per_period =
             match DataKey::get_employee_salary(env, agreement_id, employee_index) {
                 Some(s) => s,
                 None => {
@@ -2610,6 +2622,13 @@ pub fn batch_claim_payroll(
                     continue;
                 }
             };
+
+        if let Some(salary_adj_addr) = env.storage().persistent().get::<_, Address>(&StorageKey::SalaryAdjustmentContract) {
+            let client = SalaryAdjustmentClient::new(env, &salary_adj_addr);
+            if let Some(adjusted_salary) = client.get_employee_salary(&employee) {
+                salary_per_period = adjusted_salary;
+            }
+        }
 
         // Overflow-safe amount
         let amount = match salary_per_period.checked_mul(periods_to_pay as i128) {
