@@ -103,8 +103,12 @@ Read helpers:
 - `get_config() -> Result<(Address, u64), TimelockError>`
   - Returns `(admin, min_delay_seconds)`.
 - `get_operation(op_id) -> Option<TimelockedOperation>`
-- `get_operations_for(owner) -> Vec<u128>`
-  - Returns all op ids (including executed and cancelled) created by `owner`.
+- `get_operations_for(owner, status, start, limit) -> OperationPage`
+  - Returns a paginated and optionally filtered list of operations created by `owner`.
+  - `status` is an optional `OperationStatus` filter.
+  - `start` is a 1-based start position (inclusive).
+  - `limit` is capped at `MAX_PAGE_SIZE` (100).
+  - Returns `OperationPage { operations: Vec<TimelockedOperation>, next_cursor: Option<u32> }`.
 - `get_queued_count() -> u32`
   - O(1) count of currently active (`Queued`) operations.
 
