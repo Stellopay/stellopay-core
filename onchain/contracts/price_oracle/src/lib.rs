@@ -366,6 +366,9 @@ impl PriceOracleContract {
         if max_staleness_seconds == 0 || quorum_n == 0 || quorum_window_seconds == 0 {
             return Err(OracleError::InvalidPairConfig);
         }
+        if tolerance_bps > BPS_DENOMINATOR as u32 {
+            return Err(OracleError::InvalidPairConfig);
+        }
 
         let cfg = PairConfig {
             min_rate,

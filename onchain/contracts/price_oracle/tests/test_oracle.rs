@@ -359,6 +359,28 @@ fn test_configure_pair_zero_quorum_window_rejected() {
 }
 
 #[test]
+fn test_configure_pair_tolerance_bps_exceeds_denominator_rejected() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, _, _, _) = full_setup(&env);
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+
+    let res = oracle_client.try_configure_pair(
+        &oracle_owner,
+        &base,
+        &quote,
+        &1_000_000i128,
+        &2_000_000i128,
+        &300u64,
+        &1u32,
+        &u32::MAX,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
+    );
+    assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
+}
+
+#[test]
 fn test_non_owner_cannot_configure_pair() {
     let env = create_env();
     let (oracle_client, _, _, _, _, _) = full_setup(&env);
