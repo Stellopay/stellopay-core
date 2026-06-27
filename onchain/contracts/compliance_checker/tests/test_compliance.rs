@@ -5,7 +5,7 @@
 
 use compliance_checker::{
     AgreementStatus, ComplianceCheckerContract, ComplianceCheckerContractClient, Decision,
-    PayrollAction, ReasonCode,
+    PayrollAction, ReasonCode, TraceRule,
 };
 use soroban_sdk::{testutils::Address as _, Address, Env};
 
@@ -288,5 +288,67 @@ fn test_claims_from_cancelled_require_grace_period() {
         );
         assert_eq!(allowed.decision, Decision::Allow);
         assert_eq!(allowed.reason, ReasonCode::Allowed);
+    }
+}
+
+#[test]
+fn test_deny_traces_include_rule_and_reason() {
+    let env = create_env();
+    let (_cid, client, admin) = setup(&env);
+    let actor = Address::generate(&env);
+    let auxiliary = Address::generate(&env);
+
+    let emergency = client.check_action(
+        &actor,
+        &auxiliary,
+        &PayrollAction::ActivateAgreement,
+        &AgreementStatus::Created,
+        &AgreementStatus::Active,
+        &false,
+    );
+    assert_eq!(emergency.decision, Decision::Deny);
+    assert_eq!(emergency.reason, ReasonCode::AuxiliaryNotAllowed);
+    let trace = emergency.traces.get(1).unwrap();
+    assert_eq!(trace.rule, TraceRule::AuxiliaryNotAllowed);
+    assert_eq!(trace.result, Decision::Deny);
+    assert_eq!(trace.reason, Some(ReasonCode::AuxiliaryNotAllowed));
+
+    client.set_emergency_pause(&admin, &true);
+    let emergency = client.check_action(
+        &actor,
+        &auxiliary,
+        &PayrollAction::ActivateAgreement,
+        &AgreementStatus::Created,
+        &AgreementStatus::Active,
+        &false,
+    );
+    assert_eq!(emergency.decision, Decision::Deny);
+    assert_eq!(emergency.reason, ReasonCode::EmergencyPaused);
+    let trace = emergency.traces.get(0).unwrap();
+    assert_eq!(trace.rule, TraceRule::EmergencyPause);
+    assert_eq!(trace.result, Decision::Deny);
+    assert_eq!(trace.reason, Some(ReasonCode::EmergencyPaused));
+}
+
+#[test]
+fn test_allow_path_traces_have_none_reasons() {
+    let env = create_env();
+    let (_cid, client, _admin) = setup(&env);
+    let actor = Address::generate(&env);
+
+    let decision = client.check_action(
+        &actor,
+        &actor,
+        &PayrollAction::ActivateAgreement,
+        &AgreementStatus::Created,
+        &AgreementStatus::Active,
+        &false,
+    );
+
+    assert_eq!(decision.decision, Decision::Allow);
+    assert_eq!(decision.reason, ReasonCode::Allowed);
+    assert_eq!(decision.traces.len(), 4);
+    for i in 0..decision.traces.len() {
+        assert!(decision.traces.get(i).unwrap().reason.is_none());
     }
 }
