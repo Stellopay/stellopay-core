@@ -114,6 +114,28 @@ impl PayrollContract {
         env.storage().persistent().get(&StorageKey::RateLimiterContract)
     }
 
+    /// Sets the linked Salary Adjustment contract address used for dynamic salary overrides.
+    ///
+    /// # Arguments
+    /// * `owner` - Owner of the contract
+    /// * `salary_adjustment` - Salary adjustment contract address
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn set_salary_adjustment_contract(env: Env, owner: Address, salary_adjustment: Address) {
+        let stored_owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        owner.require_auth();
+        assert!(owner == stored_owner, "Unauthorized");
+        env.storage()
+            .persistent()
+            .set(&StorageKey::SalaryAdjustmentContract, &salary_adjustment);
+    }
+
+    /// Gets the linked Salary Adjustment contract address, if any.
+    pub fn get_salary_adjustment_contract(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&StorageKey::SalaryAdjustmentContract)
+    }
+
     /// @notice Upgrades the contract's WASM code to a new version.
     /// @dev Highly critical administrative function to alter contract bytecode.
     /// Gated strictly by require_upgrade_admin logic.
