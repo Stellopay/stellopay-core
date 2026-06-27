@@ -13,6 +13,9 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, 
 /// returns `Err(TimelockError::DelayTooLarge)`.
 pub const MAX_DELAY_SECONDS: u64 = 30 * 24 * 3600; // 2_592_000
 
+/// Maximum number of operations returned in a single paginated query.
+pub const MAX_PAGE_SIZE: u32 = 100;
+
 // ─── Error Types ──────────────────────────────────────────────────────────────
 
 /// Errors returned by the withdrawal timelock contract.
@@ -92,6 +95,16 @@ pub struct TimelockedOperation {
     pub status: OperationStatus,
 }
 
+/// Paginated result containing a list of operations and an optional cursor.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct OperationPage {
+    /// List of operations in the current page.
+    pub operations: Vec<TimelockedOperation>,
+    /// Index to use as `start` in the next query to continue.
+    pub next_cursor: Option<u32>,
+}
+
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
 
 /// Persistent storage keys for the timelock contract.
@@ -112,11 +125,12 @@ pub enum StorageKey {
     QueuedCount,
     /// Full operation data keyed by id (`TimelockedOperation`).
     Operation(u128),
-    /// Ordered list of operation ids created by an address (`Vec<u128>`).
+    /// Count of operations created by an address (`u32`).
+    OperationsCount(Address),
+    /// Operation id at a specific position for an address (`u32`).
     ///
-    /// Includes ids of executed and cancelled operations. Callers must filter
-    /// by `op.status` to find active ones.
-    OperationsFor(Address),
+    /// Layout: `(owner, position) -> op_id`.
+    OperationAt(Address, u32),
 }
 
 // ─── Private Helpers ──────────────────────────────────────────────────────────
@@ -211,17 +225,23 @@ fn write_operation(env: &Env, op: &TimelockedOperation) {
         .set(&StorageKey::Operation(op.id), op);
 }
 
-/// Appends `id` to the operation list for `owner`.
+/// Appends `id` to the indexed operation list for `owner`.
 fn push_operation_for(env: &Env, owner: &Address, id: u128) {
-    let mut ids: Vec<u128> = env
+    let count: u32 = env
         .storage()
         .persistent()
-        .get(&StorageKey::OperationsFor(owner.clone()))
-        .unwrap_or(Vec::new(env));
-    ids.push_back(id);
+        .get(&StorageKey::OperationsCount(owner.clone()))
+        .unwrap_or(0);
+
+    let new_count = count.checked_add(1).expect("owner op count overflow");
+
     env.storage()
         .persistent()
-        .set(&StorageKey::OperationsFor(owner.clone()), &ids);
+        .set(&StorageKey::OperationAt(owner.clone(), new_count), &id);
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::OperationsCount(owner.clone()), &new_count);
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -436,17 +456,71 @@ impl WithdrawalTimelock {
             .get(&StorageKey::Operation(op_id))
     }
 
-    /// @notice Returns all operation ids queued by the given address,
-    ///         in queue order.
-    /// @dev Includes ids of executed and cancelled operations. Callers should
-    ///      inspect `get_operation(id).status` to filter active ones.
-    /// @param owner The creator address to list operation ids for.
-    /// @return `Vec<u128>` of operation ids.
-    pub fn get_operations_for(env: Env, owner: Address) -> Vec<u128> {
-        env.storage()
+    /// @notice Returns a paginated and optionally filtered list of operations
+    ///         created by the given address.
+    /// @dev `limit` is silently capped to [`MAX_PAGE_SIZE`] (100).
+    ///      Returns a next cursor for resumable iteration.
+    /// @param owner  The creator address to list operations for.
+    /// @param status Optional status filter (e.g., only `Queued` operations).
+    /// @param start  1-based start position in the owner's history (inclusive).
+    /// @param limit  Maximum number of operations to return.
+    /// @return `OperationPage` containing operations and the next cursor.
+    pub fn get_operations_for(
+        env: Env,
+        owner: Address,
+        status: Option<OperationStatus>,
+        start: Option<u32>,
+        limit: Option<u32>,
+    ) -> OperationPage {
+        let total_count: u32 = env
+            .storage()
             .persistent()
-            .get(&StorageKey::OperationsFor(owner))
-            .unwrap_or(Vec::new(&env))
+            .get(&StorageKey::OperationsCount(owner.clone()))
+            .unwrap_or(0);
+
+        let mut operations = Vec::new(&env);
+        let start_pos = start.unwrap_or(1).max(1);
+
+        if start_pos > total_count {
+            return OperationPage {
+                operations,
+                next_cursor: None,
+            };
+        }
+
+        let effective_limit = limit.unwrap_or(MAX_PAGE_SIZE).min(MAX_PAGE_SIZE);
+        let mut next_cursor = None;
+        let mut found_count = 0;
+
+        for i in start_pos..=total_count {
+            if found_count >= effective_limit {
+                next_cursor = Some(i);
+                break;
+            }
+
+            let op_id: u128 = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::OperationAt(owner.clone(), i))
+                .unwrap();
+
+            let op = read_operation(&env, op_id).unwrap();
+
+            if let Some(ref s) = status {
+                if op.status == *s {
+                    operations.push_back(op);
+                    found_count += 1;
+                }
+            } else {
+                operations.push_back(op);
+                found_count += 1;
+            }
+        }
+
+        OperationPage {
+            operations,
+            next_cursor,
+        }
     }
 
     /// @notice Returns the number of currently active (`Queued`) operations.
