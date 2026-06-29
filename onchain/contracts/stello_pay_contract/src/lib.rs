@@ -509,6 +509,10 @@ impl PayrollContract {
     /// - Agreement must be in Created status
     /// - Agreement must be Payroll mode
     /// - Caller must be the employer
+    /// - The employee address must not already be present in the agreement;
+    ///   a duplicate add panics with `PayrollError::EmployeeAlreadyExists` to
+    ///   preserve the 1:1 employee-to-salary mapping. A previously removed
+    ///   employee may be re-added.
     pub fn add_employee_to_agreement(
         env: Env,
         agreement_id: u128,
@@ -828,7 +832,12 @@ impl PayrollContract {
     /// - Requires `caller` to be the employee at `employee_index` (`Unauthorized` otherwise).
     /// - Rejects claims when the contract is emergency-paused or the agreement is paused.
     /// - Large payments above `LargePaymentThreshold` require `claim_payroll_multisig`.
-    /// - Updates escrow balance and claimed-period counters before token transfer (CEI).
+    /// - Enforces checks-effects-interactions: escrow balance, `claimed_periods`,
+    ///   and `paid_amount` are persisted BEFORE the external token transfer.
+    /// - Protected by a transient reentrancy guard (temporary storage, cleared per
+    ///   transaction). A reentrant call during transfer fails with
+    ///   `PayrollError::ReentrancyDetected`, preventing double-payment of a period
+    ///   via a hostile or hook-enabled token.
     ///
     /// # Gas
     /// Benchmarked at 1, 10, and 50 elapsed payroll periods. See `docs/gas-benchmarks.md`.
