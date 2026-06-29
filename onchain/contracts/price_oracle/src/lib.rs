@@ -7,6 +7,10 @@ use stello_pay_contract::PayrollContractClient;
 
 const BPS_DENOMINATOR: i128 = 10_000;
 
+/// Maximum number of pending submissions in a single quorum bucket.
+/// Caps storage and CPU usage from adversarial sources flooding a bucket.
+const MAX_QUORUM_SUBMISSIONS: u32 = 100;
+
 // ============================================================================
 // Errors
 // ============================================================================
@@ -41,6 +45,8 @@ pub enum OracleError {
     DuplicateVote = 11,
     /// Source submitted too frequently; must wait at least `min_submit_interval_secs`.
     SubmissionRateLimited = 12,
+    /// Quorum bucket already has MAX_QUORUM_SUBMISSIONS pending votes; bucket full.
+    TooManySources = 13,
 }
 
 // ============================================================================
@@ -593,6 +599,9 @@ impl PriceOracleContract {
                 }
             }
 
+            if pending.submissions.len() >= MAX_QUORUM_SUBMISSIONS {
+                return Err(OracleError::TooManySources);
+            }
             pending.submissions.push_back(PendingSubmission {
                 source: source.clone(),
                 rate,
