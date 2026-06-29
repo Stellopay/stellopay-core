@@ -673,6 +673,73 @@ impl DepartmentManagerContract {
             .set(&StorageKey::DepartmentEmployees(department_id), &employees);
     }
 
+    /// Returns a bounded page of employee addresses in a department.
+    ///
+    /// Ordering is stable (insertion order) so callers can use the returned
+    /// `next_start` cursor in subsequent calls without risk of skipping or
+    /// duplicating members.
+    ///
+    /// # Arguments
+    /// * `department_id` - Department to query
+    /// * `start`         - Zero-based index of the first employee to return
+    /// * `limit`         - Maximum number of employees to return; clamped to
+    ///                     [`MAX_PAGE_SIZE`] (50) to bound instruction usage
+    ///
+    /// # Returns
+    /// A tuple `(page, next_start)` where:
+    /// - `page`       – the slice of employee addresses for this page
+    /// - `next_start` – the index to pass as `start` on the next call, or
+    ///                  `None` when the last page has been reached
+    ///
+    /// # Security
+    /// Clamping `limit` to `MAX_PAGE_SIZE` prevents unbounded-return DoS.
+    /// Cursor arithmetic uses simple addition, making skip/duplicate
+    /// impossible for a stable list.
+    pub fn get_department_employees_paged(
+        env: Env,
+        department_id: u128,
+        start: u32,
+        limit: u32,
+    ) -> (Vec<Address>, Option<u32>) {
+        /// Hard upper bound on employees returned per call.
+        const MAX_PAGE_SIZE: u32 = 50;
+
+        let effective_limit = if limit == 0 || limit > MAX_PAGE_SIZE {
+            MAX_PAGE_SIZE
+        } else {
+            limit
+        };
+
+        let all_employees: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::DepartmentEmployees(department_id))
+            .unwrap_or_else(|| Vec::new(&env));
+
+        let total = all_employees.len();
+        let mut page: Vec<Address> = Vec::new(&env);
+
+        if start >= total {
+            return (page, None);
+        }
+
+        let end = {
+            let candidate = start + effective_limit;
+            if candidate > total { total } else { candidate }
+        };
+
+        let mut i = start;
+        while i < end {
+            if let Some(addr) = all_employees.get(i) {
+                page.push_back(addr);
+            }
+            i += 1;
+        }
+
+        let next_start = if end < total { Some(end) } else { None };
+        (page, next_start)
+    }
+
     /// Asserts the contract has been initialized.
     ///
     /// # Panics
