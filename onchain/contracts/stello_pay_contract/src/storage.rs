@@ -241,6 +241,10 @@ pub enum StorageKey {
     RateLimiterContract,
     /// Optional salary adjustment contract address for dynamic salary overrides.
     SalaryAdjustmentContract,
+    /// Transient reentrancy guard for the claim paths. Stored in temporary
+    /// storage so it is automatically cleared at the end of each transaction;
+    /// a panic mid-transfer therefore cannot strand the guard.
+    ReentrancyGuard,
 }
 
 #[contracttype]
@@ -414,6 +418,10 @@ pub enum PayrollError {
     /// employee list. Adding it again would create two salary entries and break
     /// the 1:1 employee-to-index mapping, so the duplicate add is rejected.
     EmployeeAlreadyExists = 42,
+    /// A reentrant call into a guarded claim path was detected. The transient
+    /// reentrancy guard was already set, indicating an in-progress claim
+    /// re-entered (e.g. via a hostile or hook-enabled token during transfer).
+    ReentrancyDetected = 43,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.

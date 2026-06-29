@@ -96,6 +96,50 @@ fn test_initialize_twice_fails() {
     assert_eq!(result, Err(Ok(SlashError::AlreadyInitialized)));
 }
 
+#[test]
+fn test_initialize_zero_quorum_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SlashingPenaltyContract);
+    let client = SlashingPenaltyContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // quorum = 0 must be rejected with a typed error, never silently coerced.
+    let result = client.try_initialize(
+        &admin,
+        &token,
+        &0u32,
+        &5_000u32,
+        &6_000i128,
+        &9_000i128,
+        &86_400u64,
+    );
+    assert_eq!(result, Err(Ok(SlashError::ZeroQuorum)));
+}
+
+#[test]
+fn test_initialize_quorum_one_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SlashingPenaltyContract);
+    let client = SlashingPenaltyContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // quorum = 1 is the minimum valid value and must be stored as-is (not raised to DEFAULT_QUORUM).
+    client.initialize(
+        &admin,
+        &token,
+        &1u32,
+        &5_000u32,
+        &6_000i128,
+        &9_000i128,
+        &86_400u64,
+    );
+    assert_eq!(client.get_quorum(), 1u32);
+}
+
 // ─── Role Management ─────────────────────────────────────────────────────────
 
 #[test]
@@ -614,4 +658,54 @@ fn test_slash_exactly_at_appeal_deadline_still_open() {
     t.advance_time(APPEAL_WINDOW);
     let result = t.client.try_execute_slash(&hash);
     assert_eq!(result, Err(Ok(SlashError::AppealWindowOpen)));
+}
+
+// ─── Keyed Evidence-Hash Replay Protection (O(1) lookup) ─────────────────────
+
+/// A fresh evidence hash must be accepted; reusing the same hash must be rejected.
+/// This holds regardless of how many prior slashes have been recorded.
+#[test]
+fn test_fresh_evidence_hash_accepted_reused_rejected() {
+    let t = TestEnv::setup();
+
+    let fresh = t.evidence_hash(110);
+
+    // First use of this hash — must succeed.
+    t.client.slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::DoubleSigning, &1_000u32, &fresh, &0u64,
+    );
+
+    // Second use of the exact same hash — must be rejected.
+    let result = t.client.try_slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::DoubleSigning, &1_000u32, &fresh, &0u64,
+    );
+    assert_eq!(result, Err(Ok(SlashError::DuplicateEvidence)));
+}
+
+/// Replay detection must remain correct after many prior slashes (proves O(1) keyed
+/// lookup — not a scan that could time-out as the set grows).
+#[test]
+fn test_replay_rejection_independent_of_prior_slash_count() {
+    let t = TestEnv::setup();
+
+    // Record several slashes with distinct hashes so the used-evidence store is
+    // populated. Each slash is small enough to stay within caps.
+    for seed in 120u8..124u8 {
+        t.client.slash_with_evidence(
+            &t.slasher1, &t.offender, &Offense::MissedDuty, &100u32, &t.evidence_hash(seed), &0u64,
+        );
+    }
+
+    let target = t.evidence_hash(120); // already used in the loop above
+
+    // Reuse of a hash that was consumed earlier must still be rejected.
+    let result = t.client.try_slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::MissedDuty, &100u32, &target, &0u64,
+    );
+    assert_eq!(result, Err(Ok(SlashError::DuplicateEvidence)));
+
+    // A genuinely new hash must still be accepted.
+    t.client.slash_with_evidence(
+        &t.slasher1, &t.offender, &Offense::MissedDuty, &100u32, &t.evidence_hash(130), &0u64,
+    );
 }
