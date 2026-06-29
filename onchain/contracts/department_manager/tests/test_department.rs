@@ -147,3 +147,151 @@ fn test_get_organization_not_found() {
     let (_cid, client) = setup_contract(&env);
     let _ = client.get_organization(&999);
 }
+
+// ── Paginated get_department_employees_paged tests ────────────────────────────
+
+#[test]
+fn test_paged_empty_department() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+
+    let (page, next) = client.get_department_employees_paged(&dept_id, &0, &10);
+    assert_eq!(page.len(), 0);
+    assert_eq!(next, None);
+}
+
+#[test]
+fn test_paged_single_full_page() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+
+    let emp1 = Address::generate(&env);
+    let emp2 = Address::generate(&env);
+    let emp3 = Address::generate(&env);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp1);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp2);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp3);
+
+    let (page, next) = client.get_department_employees_paged(&dept_id, &0, &10);
+    assert_eq!(page.len(), 3);
+    assert_eq!(page.get(0), emp1);
+    assert_eq!(page.get(1), emp2);
+    assert_eq!(page.get(2), emp3);
+    assert_eq!(next, None);
+}
+
+#[test]
+fn test_paged_exact_page_boundary() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+
+    let emp1 = Address::generate(&env);
+    let emp2 = Address::generate(&env);
+    let emp3 = Address::generate(&env);
+    let emp4 = Address::generate(&env);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp1);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp2);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp3);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp4);
+
+    // First page of 2
+    let (page1, next1) = client.get_department_employees_paged(&dept_id, &0, &2);
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1.get(0), emp1);
+    assert_eq!(page1.get(1), emp2);
+    assert_eq!(next1, Some(2));
+
+    // Second page of 2
+    let (page2, next2) = client.get_department_employees_paged(&dept_id, &2, &2);
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page2.get(0), emp3);
+    assert_eq!(page2.get(1), emp4);
+    assert_eq!(next2, None);
+}
+
+#[test]
+fn test_paged_oversized_limit_clamped_to_max() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+
+    // Add 3 employees but request 9999 – should still return only 3
+    let emp1 = Address::generate(&env);
+    let emp2 = Address::generate(&env);
+    let emp3 = Address::generate(&env);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp1);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp2);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp3);
+
+    let (page, next) = client.get_department_employees_paged(&dept_id, &0, &9999);
+    assert_eq!(page.len(), 3);
+    assert_eq!(next, None);
+}
+
+#[test]
+fn test_paged_start_beyond_total_returns_empty() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+
+    let emp = Address::generate(&env);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp);
+
+    let (page, next) = client.get_department_employees_paged(&dept_id, &100, &10);
+    assert_eq!(page.len(), 0);
+    assert_eq!(next, None);
+}
+
+#[test]
+fn test_paged_partial_last_page() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+
+    let emp1 = Address::generate(&env);
+    let emp2 = Address::generate(&env);
+    let emp3 = Address::generate(&env);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp1);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp2);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp3);
+
+    // Request page of 2 starting at index 2 – only 1 employee remains
+    let (page, next) = client.get_department_employees_paged(&dept_id, &2, &2);
+    assert_eq!(page.len(), 1);
+    assert_eq!(page.get(0), emp3);
+    assert_eq!(next, None);
+}
+
+#[test]
+fn test_paged_zero_limit_uses_max_page_size() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+
+    let emp1 = Address::generate(&env);
+    let emp2 = Address::generate(&env);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp1);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp2);
+
+    // limit=0 should default to MAX_PAGE_SIZE (50), returning all 2 employees
+    let (page, next) = client.get_department_employees_paged(&dept_id, &0, &0);
+    assert_eq!(page.len(), 2);
+    assert_eq!(next, None);
+}
