@@ -509,6 +509,10 @@ impl PayrollContract {
     /// - Agreement must be in Created status
     /// - Agreement must be Payroll mode
     /// - Caller must be the employer
+    /// - The employee address must not already be present in the agreement;
+    ///   a duplicate add panics with `PayrollError::EmployeeAlreadyExists` to
+    ///   preserve the 1:1 employee-to-salary mapping. A previously removed
+    ///   employee may be re-added.
     pub fn add_employee_to_agreement(
         env: Env,
         agreement_id: u128,
