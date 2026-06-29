@@ -1,8 +1,11 @@
 use soroban_sdk::{
-    testutils::{Address as _, Ledger, LedgerInfo},
-    Address, BytesN, Env, String,
+    testutils::{Address as _, Events, Ledger, LedgerInfo},
+    Address, BytesN, Env, IntoVal, String, Vec,
 };
-use template_versioning::{AgreementBinding, TemplateVersionRecord, TemplateVersioning, TemplateVersioningClient};
+use template_versioning::{
+    AgreementBinding, TemplateVersionDeprecated, TemplateVersionRecord, TemplateVersioning,
+    TemplateVersioningClient,
+};
 
 fn ledger_ts(env: &Env, ts: u64) {
     env.ledger().set(LedgerInfo {
@@ -162,4 +165,162 @@ fn non_owner_cannot_publish() {
             )
             .is_err()
     );
+}
+
+/// Deprecating a version should emit a `TemplateVersionDeprecated` event
+/// with the correct template id, version, and timestamp.
+#[test]
+fn deprecate_version_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 2_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Payroll v1"))
+        .unwrap()
+        .unwrap();
+
+    let hash = BytesN::from_array(&env, &[7u8; 32]);
+    let ver = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &hash,
+            &String::from_str(&env, "initial"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+
+    client
+        .try_deprecate_version(&owner, &tid, &ver)
+        .unwrap()
+        .unwrap();
+
+    // Inspect emitted events
+    let all_events = env.events().all();
+    let last = all_events.last().unwrap();
+
+    // Verify event data
+    let emitted: TemplateVersionDeprecated = last.2.into_val(&env);
+    assert_eq!(emitted.template_id, tid);
+    assert_eq!(emitted.version, ver);
+    assert_eq!(emitted.timestamp, 2_000_000u64);
+}
+
+/// Deprecating an already-deprecated version should still emit the event.
+#[test]
+fn deprecate_already_deprecated_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 3_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Template"))
+        .unwrap()
+        .unwrap();
+
+    let hash = BytesN::from_array(&env, &[3u8; 32]);
+    let ver = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &hash,
+            &String::from_str(&env, "notes"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+
+    // First deprecation
+    client
+        .try_deprecate_version(&owner, &tid, &ver)
+        .unwrap()
+        .unwrap();
+
+    // Second deprecation (idempotent flag flip, event still emitted)
+    client
+        .try_deprecate_version(&owner, &tid, &ver)
+        .unwrap()
+        .unwrap();
+
+    let all_events = env.events().all();
+    // Two deprecation events should have been emitted
+    let count = all_events
+        .iter()
+        .filter(|e| {
+            let data: Result<TemplateVersionDeprecated, _> = e.2.clone().into_val(&env);
+            data.map(|d| d.template_id == tid && d.version == ver)
+                .unwrap_or(false)
+        })
+        .count();
+    assert_eq!(count, 2);
+}
+
+/// Non-owner cannot deprecate, so no event is emitted.
+#[test]
+fn non_owner_cannot_deprecate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "T"))
+        .unwrap()
+        .unwrap();
+
+    let hash = BytesN::from_array(&env, &[5u8; 32]);
+    let ver = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &hash,
+            &String::from_str(&env, "v1"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+
+    // Attacker attempt should fail
+    assert!(
+        client
+            .try_deprecate_version(&attacker, &tid, &ver)
+            .is_err()
+    );
+
+    // No deprecation event should exist
+    let all_events = env.events().all();
+    let dep_count = all_events
+        .iter()
+        .filter(|e| {
+            let data: Result<TemplateVersionDeprecated, _> = e.2.clone().into_val(&env);
+            data.map(|d| d.template_id == tid).unwrap_or(false)
+        })
+        .count();
+    assert_eq!(dep_count, 0);
 }
