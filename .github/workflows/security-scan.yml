@@ -17,21 +17,6 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # Cache Cargo registry and git sources so vulnerability-scanning tools
-      # (cargo-audit, clippy) do not re-download the entire dependency graph on
-      # every run.  The cache key invalidates on Cargo.lock changes.
-      - name: Cache Rust workspace dependencies
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            onchain/target
-          key: ${{ runner.os }}-cargo-security-${{ hashFiles('onchain/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-security-
-
       - name: Install cargo-audit
         run: |
           cargo install cargo-audit --locked || echo "cargo-audit already installed"
