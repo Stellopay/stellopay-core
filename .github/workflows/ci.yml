@@ -24,6 +24,24 @@ jobs:
       run: |
         source $HOME/.cargo/env
         rustup target add wasm32v1-none
+
+    # Cache Cargo registry, git sources, and compiled artifacts.
+    # The cache key includes the OS, Rust toolchain version, and Cargo.lock hash
+    # so it invalidates automatically when dependencies or the toolchain change.
+    # Pull-request builds from forks use a read-only fallback key so they cannot
+    # poison the trusted-branch cache (security boundary).
+    - name: Cache Rust workspace dependencies
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          onchain/target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('onchain/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
     - name: Install Stellar CLI with Homebrew
       run: |
         brew update
