@@ -1883,6 +1883,13 @@ pub fn set_exchange_rate(
         return Err(PayrollError::Unauthorized);
     }
 
+    // Enforce absolute sanity bound if configured.
+    if let Some(max_rate) = DataKey::get_exchange_rate_max_rate_sanity_bound(env) {
+        if rate > max_rate {
+            return Err(PayrollError::ExchangeRateInvalid);
+        }
+    }
+
     // Enforce max-deviation if configured: compare with previous rate.
     if let Some(max_dev_bps) = DataKey::get_exchange_rate_max_deviation_bps(env) {
         if let Some(prev) = DataKey::get_exchange_rate(env, &base, &quote) {

@@ -780,6 +780,30 @@ impl PayrollContract {
         payroll::set_exchange_rate(&env, caller, base, quote, rate)
     }
 
+    /// Sets an absolute upper-bound sanity limit for exchange rates.
+    /// Any `set_exchange_rate` call with a rate above this value will be rejected.
+    /// Caller must be the contract owner.
+    pub fn set_fx_rate_sanity_bound(
+        env: Env,
+        caller: Address,
+        max_rate: i128,
+    ) -> Result<(), PayrollError> {
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Owner)
+            .ok_or(PayrollError::Unauthorized)?;
+        caller.require_auth();
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+        if max_rate <= 0 {
+            return Err(PayrollError::ExchangeRateInvalid);
+        }
+        storage::DataKey::set_exchange_rate_max_rate_sanity_bound(&env, max_rate);
+        Ok(())
+    }
+
     /// Converts an `amount` from one token into another using the configured
     /// FX rate, without performing any on-chain transfer. This is useful for
     /// off-chain estimation and validation of multi-currency payouts.
