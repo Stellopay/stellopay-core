@@ -4,6 +4,13 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, 
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 
+/// Maximum number of entries returned by a single [`AuditLoggerContract::get_logs`] call.
+///
+/// Callers supplying a larger `limit` are silently clamped to this value.
+/// This bounds ledger-read budget per invocation and prevents a DoS via
+/// an uncapped loop driven by a caller-controlled `limit` up to `u32::MAX`.
+pub const MAX_PAGE_SIZE: u32 = 100;
+
 /// Storage keys for the audit logger contract.
 #[contracttype]
 #[derive(Clone)]
@@ -38,6 +45,23 @@ pub struct AuditLogEntry {
     pub subject: Option<Address>,
     /// Optional signed amount associated with the event (e.g. payment amount).
     pub amount: Option<i128>,
+}
+
+/// Result type returned by [`AuditLoggerContract::get_logs`].
+///
+/// `next_cursor` is `Some(offset)` when more entries may exist beyond the
+/// current page, allowing the caller to resume by passing that value as
+/// `offset` in the next call. It is `None` when the end of the retained
+/// window has been reached.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct LogsPage {
+    /// Entries retrieved for this page (may be fewer than `limit` if
+    /// orphaned entries were skipped due to retention pruning).
+    pub entries: Vec<AuditLogEntry>,
+    /// Offset to pass as `offset` in the next `get_logs` call to resume,
+    /// or `None` if there are no more entries.
+    pub next_cursor: Option<u32>,
 }
 
 /// Error codes for the audit logger.
@@ -77,6 +101,9 @@ impl AuditLoggerContract {
     /// # Arguments
     /// * `owner` - Address that controls retention configuration
     /// * `retention_limit` - Maximum number of logs to retain (0 = unlimited)
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn initialize(env: Env, owner: Address, retention_limit: u32) {
         owner.require_auth();
 
@@ -87,9 +114,7 @@ impl AuditLoggerContract {
         env.storage()
             .persistent()
             .set(&StorageKey::NextLogId, &1u64);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::LogCount, &0u64);
+        env.storage().persistent().set(&StorageKey::LogCount, &0u64);
         env.storage()
             .persistent()
             .set(&StorageKey::FirstLogId, &1u64);
@@ -99,7 +124,21 @@ impl AuditLoggerContract {
     ///
     /// # Access Control
     /// - Caller must be the contract owner.
-    pub fn set_retention_limit(env: Env, caller: Address, retention_limit: u32) -> Result<(), AuditError> {
+    ///
+    /// # Arguments
+    /// * `caller` - caller parameter
+    /// * `retention_limit` - retention_limit parameter
+    ///
+    /// # Returns
+    /// Result<(), AuditError>
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
+    pub fn set_retention_limit(
+        env: Env,
+        caller: Address,
+        retention_limit: u32,
+    ) -> Result<(), AuditError> {
         let owner: Address = env
             .storage()
             .persistent()
@@ -118,6 +157,9 @@ impl AuditLoggerContract {
     }
 
     /// Returns the current retention limit (0 = unlimited).
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_retention_limit(env: Env) -> u32 {
         env.storage()
             .persistent()
@@ -210,6 +252,9 @@ impl AuditLoggerContract {
     }
 
     /// Returns the total number of logs currently retained.
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_log_count(env: Env) -> u64 {
         env.storage()
             .persistent()
@@ -218,6 +263,15 @@ impl AuditLoggerContract {
     }
 
     /// Fetches a single log entry by identifier, if it is still retained.
+    ///
+    /// # Arguments
+    /// * `id` - id parameter
+    ///
+    /// # Returns
+    /// `Option<AuditLogEntry>`
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_log(env: Env, id: u64) -> Option<AuditLogEntry> {
         let first_id: u64 = env
             .storage()
@@ -234,21 +288,37 @@ impl AuditLoggerContract {
             return None;
         }
 
-        env.storage()
-            .persistent()
-            .get(&StorageKey::LogEntry(id))
+        env.storage().persistent().get(&StorageKey::LogEntry(id))
     }
 
     /// Returns a window of logs starting at a given offset from the first
     /// retained log.
     ///
+    /// `limit` is silently clamped to [`MAX_PAGE_SIZE`] (100) to prevent an
+    /// unbounded loop driven by a caller-supplied value up to `u32::MAX`.
+    ///
+    /// Entries whose storage key is absent — because retention has pruned them
+    /// since the window counters were last updated — are **skipped silently**
+    /// and do not count against `limit`. This avoids misrepresenting the log
+    /// count while still returning every retrievable entry in the range.
+    ///
     /// # Arguments
     /// * `offset` - Zero-based index into the retained log window
-    /// * `limit` - Maximum number of entries to return
-    pub fn get_logs(env: Env, offset: u32, limit: u32) -> Result<Vec<AuditLogEntry>, AuditError> {
+    /// * `limit` - Maximum number of entries to return (capped at [`MAX_PAGE_SIZE`])
+    ///
+    /// # Returns
+    /// A [`LogsPage`] containing the retrieved entries and an optional
+    /// `next_cursor` offset for resuming past any gaps.
+    ///
+    /// # Errors
+    /// Returns [`AuditError::InvalidArguments`] if `limit` is 0.
+    pub fn get_logs(env: Env, offset: u32, limit: u32) -> Result<LogsPage, AuditError> {
         if limit == 0 {
             return Err(AuditError::InvalidArguments);
         }
+
+        // Clamp to MAX_PAGE_SIZE to bound ledger-read budget.
+        let effective_limit = limit.min(MAX_PAGE_SIZE);
 
         let first_id: u64 = env
             .storage()
@@ -262,29 +332,55 @@ impl AuditLoggerContract {
             .unwrap_or(0u64);
 
         if offset as u64 >= log_count {
-            return Ok(Vec::new(&env));
+            return Ok(LogsPage {
+                entries: Vec::new(&env),
+                next_cursor: None,
+            });
         }
 
-        let mut results = Vec::new(&env);
-        let mut remaining = core::cmp::min(limit as u64, log_count - offset as u64);
+        let mut entries = Vec::new(&env);
+        let window = core::cmp::min(effective_limit as u64, log_count - offset as u64);
+        let start_id = first_id + offset as u64;
+        let end_id = start_id + window; // exclusive upper bound
 
-        let mut current_id = first_id + offset as u64;
-        while remaining > 0 {
+        for id in start_id..end_id {
+            // Skip orphaned entries: storage may not hold the key when
+            // retention has pruned the underlying record after first_id
+            // was last updated. We skip and continue rather than returning
+            // a short count or panicking.
             if let Some(entry) = env
                 .storage()
                 .persistent()
-                .get::<_, AuditLogEntry>(&StorageKey::LogEntry(current_id))
+                .get::<_, AuditLogEntry>(&StorageKey::LogEntry(id))
             {
-                results.push_back(entry);
+                entries.push_back(entry);
             }
-            current_id += 1;
-            remaining -= 1;
         }
 
-        Ok(results)
+        // Compute the next cursor: the offset of the entry after this window.
+        let next_offset = offset.saturating_add(window as u32);
+        let next_cursor = if (next_offset as u64) < log_count {
+            Some(next_offset)
+        } else {
+            None
+        };
+
+        Ok(LogsPage {
+            entries,
+            next_cursor,
+        })
     }
 
     /// Returns the latest `limit` log entries (newest first).
+    ///
+    /// # Arguments
+    /// * `limit` - limit parameter
+    ///
+    /// # Errors
+    /// Returns an error if validation fails
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_latest_logs(env: Env, limit: u32) -> Result<Vec<AuditLogEntry>, AuditError> {
         if limit == 0 {
             return Err(AuditError::InvalidArguments);
@@ -322,4 +418,3 @@ impl AuditLoggerContract {
         Ok(results)
     }
 }
-

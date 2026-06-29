@@ -122,12 +122,11 @@ fn setup_funded_milestone(
     for _ in 1..=num_milestones {
         client.add_milestone(&agreement_id, &amount);
     }
-    mint(
-        env,
-        token,
-        &client.address,
-        amount * (num_milestones as i128),
-    );
+    // Fund through the contract so the accounted milestone escrow balance is
+    // set; approve/claim check that balance, not the raw token balance.
+    let total = amount * (num_milestones as i128);
+    mint(env, token, employer, total);
+    client.fund_milestone_agreement(&agreement_id, employer, &total);
     agreement_id
 }
 

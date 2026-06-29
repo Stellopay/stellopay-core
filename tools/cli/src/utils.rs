@@ -1,9 +1,10 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Employee {
@@ -61,7 +62,10 @@ pub fn format_amount(amount: i128, decimals: u32) -> String {
             fractional,
             width = decimals as usize
         );
-        formatted.trim_end_matches('0').trim_end_matches('.').to_string()
+        formatted
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
 
@@ -316,45 +320,147 @@ mod tests {
         assert_eq!(truncate_address("SHORT", 4), "SHORT");
     }
 }
-pub struct SorobanHttpClient{
-    base_url:String,
-    client:reqwest::Client,
+/// Retry policy attached to a webhook, as returned by `register_webhook` / `get_webhook`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetryConfig {
+    pub max_retries: u32,
+    pub retry_delay: u64,
+    pub exponential_backoff: bool,
+    pub max_delay: u64,
 }
-impl SorobanHttpClient{
-    pub fn new(base_url: &str)->Self{
-        Self{
-            base_url:base_url.to_string(),
-            client:reqwest::Client::new(),
+
+/// Delivery security policy attached to a webhook.
+///
+/// This deliberately excludes the webhook secret: read responses must never
+/// echo back signing material.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    pub signature_method: String,
+    pub rate_limit_per_minute: u32,
+    pub require_tls: bool,
+}
+
+/// Typed view of a single webhook, as returned by the contract's `get_webhook` query.
+///
+/// All fields are optional so that this type tolerates contract responses
+/// that omit fields not yet populated (e.g. a webhook with no retry policy
+/// configured), without failing deserialization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebhookInfo {
+    pub id: Option<u64>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub url: Option<String>,
+    pub events: Option<Vec<String>>,
+    pub is_active: Option<bool>,
+    pub retry_config: Option<RetryConfig>,
+    pub security_config: Option<SecurityConfig>,
+}
+
+/// Typed view of aggregate webhook statistics, as returned by `get_webhook_stats`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebhookStats {
+    pub total_webhooks: Option<u64>,
+    pub active_webhooks: Option<u64>,
+    pub total_deliveries: Option<u64>,
+    pub failed_deliveries: Option<u64>,
+}
+
+pub struct SorobanHttpClient {
+    base_url: String,
+    client: reqwest::Client,
+}
+impl SorobanHttpClient {
+    pub fn new(base_url: &str) -> Self {
+        Self {
+            base_url: base_url.to_string(),
+            client: reqwest::Client::new(),
         }
     }
-    pub async fn get_ledger_info(&self)->Result<String>{
-        let url=format!("{}/ledger",self.base_url);
-        let res=self.client.get(&url).send().await?;
-        let body =res.text().await?;
+    pub async fn get_ledger_info(&self) -> Result<String> {
+        let url = format!("{}/ledger", self.base_url);
+        let res = self.client.get(&url).send().await?;
+        let body = res.text().await?;
         Ok(body)
     }
     pub async fn invoke(
         &self,
-        contract_id:&str,
-        method:&str,
-        args:Vec<(&str,&str)>,
-        signer:&str,
+        contract_id: &str,
+        method: &str,
+        args: Vec<(&str, &str)>,
+        signer: &str,
     ) -> Result<String> {
-        let url=format!("{}/invoke",self.base_url.trim_end_matches('/'));
-        println!("Invoking Soroban at: {}",url);
-        let payload=json!({
+        let url = format!("{}/invoke", self.base_url.trim_end_matches('/'));
+        println!("Invoking Soroban at: {}", url);
+        let payload = json!({
             "contract_id":contract_id,
             "method":method,
             "args":args.iter().map(|(k,v)| json!({(*k):v})).collect::<Vec<_>>(),
             "signer":signer,
         });
-        let response=self
-            .client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await?;
-        let body=response.text().await?;
+        let response = self.client.post(&url).json(&payload).send().await?;
+        let body = response.text().await?;
         Ok(body)
+    }
+
+    /// Simulate a read-only contract call without signing or submitting a transaction.
+    ///
+    /// This method is intentionally separate from `invoke`: it sends only the
+    /// contract id, method, and arguments to the RPC query endpoint and never
+    /// accepts a signer or secret key.
+    pub async fn query(
+        &self,
+        contract_id: &str,
+        method: &str,
+        args: Vec<(&str, &str)>,
+    ) -> Result<Value> {
+        let url = format!("{}/query", self.base_url);
+        let payload = self.query_payload(contract_id, method, args);
+        let response = self.client.post(&url).json(&payload).send().await?;
+        let status = response.status();
+        let body = response.text().await?;
+
+        if !status.is_success() {
+            return Err(anyhow::anyhow!(
+                "Soroban query failed with status {}: {}",
+                status,
+                body
+            ));
+        }
+
+        let value: Value = serde_json::from_str(&body)
+            .map_err(|e| anyhow::anyhow!("Malformed Soroban query response: {}", e))?;
+
+        if let Some(error) = value.get("error") {
+            return Err(anyhow::anyhow!("Soroban query RPC error: {}", error));
+        }
+
+        Ok(value.get("result").cloned().unwrap_or(value))
+    }
+
+    /// Same read-only query as [`SorobanHttpClient::query`], but deserialized
+    /// into a typed result `T` instead of a raw [`Value`].
+    ///
+    /// Prefer this over `query` when the shape of the contract method's
+    /// return value is known (e.g. [`WebhookInfo`], [`WebhookStats`]), so
+    /// callers get compile-time field access instead of indexing into JSON.
+    pub async fn query_as<T: serde::de::DeserializeOwned>(
+        &self,
+        contract_id: &str,
+        method: &str,
+        args: Vec<(&str, &str)>,
+    ) -> Result<T> {
+        let value = self.query(contract_id, method, args).await?;
+        serde_json::from_value(value)
+            .map_err(|e| anyhow::anyhow!("Soroban query result did not match expected shape: {}", e))
+    }
+
+    fn query_payload(&self, contract_id: &str, method: &str, args: Vec<(&str, &str)>) -> Value {
+        json!({
+            "contract_id": contract_id,
+            "method": method,
+            "args": args.iter().map(|(k, v)| json!({ (*k): v })).collect::<Vec<_>>(),
+            "read_only": true,
+        })
     }
 }

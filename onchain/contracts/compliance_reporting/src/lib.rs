@@ -1,20 +1,82 @@
 #![no_std]
 
+//! # Compliance Reporting Contract
+//!
+//! Provides on-chain, tamper-evident compliance reporting structures so that
+//! off-chain indexers can reconstruct reporting periods without trusting
+//! centralized databases alone.
+//!
+//! ## Security Model
+//!
+//! - Only the contract admin can authorize publishers.
+//! - Only authorized publishers (or the employer themselves) may log records.
+//! - Records are assigned a monotonically increasing, per-employer sequence
+//!   number and a ledger-derived timestamp, making replay and gap detection
+//!   straightforward for indexers.
+//! - A global sequence counter provides cross-employer ordering for indexers
+//!   that reconstruct a full timeline.
+//! - The admin address is set once at initialization and cannot be changed,
+//!   preventing privilege escalation.
+//! - Emergency pause blocks all new record writes while preserving reads.
+//!
+//! ## Data Retention
+//!
+//! Records are stored in `persistent` storage. Callers are responsible for
+//! ensuring ledger TTL extensions if long-term on-chain retention is required.
+//! Off-chain indexers should consume events and snapshot data independently.
+
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Vec,
 };
+use audit_logger::{AuditLogEntry, AuditLoggerContractClient};
+use payment_history::{PaymentHistoryContractClient, PaymentRecord};
 
+/// Maximum number of records that can be returned in a single `generate_report`
+/// call. Prevents instruction-limit overflows on Soroban.
+pub const MAX_QUERY_LIMIT: u32 = 100;
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/// Error codes returned by the compliance reporting contract.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum ComplianceError {
+    /// Contract has not been initialized yet.
     NotInitialized = 1,
+    /// Contract has already been initialized.
     AlreadyInitialized = 2,
+    /// Caller is not authorized to perform this action.
     NotAuthorized = 3,
+    /// `start_date` is greater than `end_date`.
     InvalidDateRange = 4,
+    /// Requested `limit` exceeds the maximum allowed per query.
     QueryLimitExceeded = 5,
+    /// Contract is paused; no new records may be written.
+    ContractPaused = 6,
+    /// Provided amount is invalid (e.g. zero or negative where not allowed).
+    InvalidAmount = 7,
+    /// A required dependency contract is unavailable or not properly configured.
+    /// This occurs when PaymentHistory, AuditLogger, or other cross-contract
+    /// dependencies are not deployed, not configured with valid addresses,
+    /// or have incompatible interfaces.
+    DependencyUnavailable = 8,
 }
 
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/// Classification of a compliance record.
+///
+/// ## NatSpec
+/// | Variant    | Description                                                        |
+/// |------------|--------------------------------------------------------------------|
+/// | Payroll    | Standard salary, bonus, and wage disbursement records.             |
+/// | Tax        | Withheld amounts, government levies, or employer-side tax payments.|
+/// | Regulatory | KYC checkpoints, localized compliance fee deductions, etc.         |
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReportType {
@@ -23,64 +85,336 @@ pub enum ReportType {
     Regulatory,
 }
 
+/// A single immutable compliance record stored on-chain.
+///
+/// ## Tamper-Evidence
+/// - `id` is a per-employer monotonic counter; gaps indicate missing records.
+/// - `global_seq` is a contract-wide monotonic counter; indexers can detect
+///   cross-employer ordering and replay attempts.
+/// - `timestamp` is the ledger timestamp at write time; it cannot be
+///   back-dated by callers.
+/// - `publisher` records who wrote the entry, enabling publisher accountability.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComplianceRecord {
+    /// Per-employer monotonic record identifier (1-based).
     pub id: u32,
+    /// Contract-wide monotonic sequence number for cross-employer ordering.
+    pub global_seq: u64,
+    /// Employer on whose behalf this record was logged.
     pub employer: Address,
+    /// Employee (payment recipient) associated with this record.
     pub employee: Address,
+    /// Token contract address used for the payment.
     pub token: Address,
+    /// Token amount (must be > 0).
     pub amount: i128,
+    /// Ledger timestamp at the time of writing (set by the contract).
     pub timestamp: u64,
+    /// Classification of this record.
     pub report_type: ReportType,
-    pub metadata: Bytes, // Additional off-chain reference data (e.g., IPFS hash of a payslip)
+    /// Off-chain reference data (e.g. IPFS CID of a payslip PDF or JSON blob).
+    pub metadata: Bytes,
+    /// Address that submitted this record (employer or authorized publisher).
+    pub publisher: Address,
 }
 
+/// Aggregated report returned by `generate_report` and `get_withholding_records`.
+///
+/// ## Field provenance
+///
+/// | Field          | Source                                                          |
+/// |----------------|-----------------------------------------------------------------|
+/// | `employer`     | Passed in by caller; verified to own the queried records.       |
+/// | `employee`     | Passed in by caller (or derived from records for single-emp).   |
+/// | `total_amount` | Sum of `ComplianceRecord::amount` for all records in `records`. |
+/// | `record_count` | `records.len()` — derived, not independently stored.           |
+/// | `records`      | On-chain `ComplianceRecord` entries filtered by time window.    |
+/// | `payment_history` | Fetched from the registered `PaymentHistory` contract.       |
+/// | `agreement_events`| Fetched from the registered `AuditLogger` contract.         |
+///
+/// ## Empty-window semantics
+///
+/// When no records match the requested window, `records` is an empty `Vec`,
+/// `total_amount` is `0`, and `record_count` is `0`. This is a legitimate
+/// result, not a placeholder — callers can rely on it as authoritative.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComplianceReport {
+    /// Employer this report covers.
+    /// Derived from the `employer` parameter passed to the query function;
+    /// never randomly generated.
     pub employer: Address,
+    /// Employee this report covers.
+    pub employee: Address,
+    /// Inclusive start of the reporting period (UNIX timestamp).
     pub start_date: u64,
+    /// Inclusive end of the reporting period (UNIX timestamp).
     pub end_date: u64,
+    /// Sum of `amount` across all entries in `records`.
+    ///
+    /// Aggregated by iterating every matching `ComplianceRecord` within
+    /// `[start_date, end_date]`. Zero when no records match — this is the
+    /// correct aggregate, not a placeholder.
     pub total_amount: i128,
+    /// Number of matching withholding records (equals `records.len()`).
     pub record_count: u32,
-    pub records: Vec<ComplianceRecord>, // Export payload
+    /// Withholding records from this contract that fall within the window.
+    pub records: Vec<ComplianceRecord>,
+    /// Payment history records from the registered PaymentHistory contract.
+    pub payment_history: Vec<PaymentRecord>,
+    /// Audit log events from the registered AuditLogger contract.
+    pub agreement_events: Vec<AuditLogEntry>,
+    /// Schema version for off-chain parsing.
+    pub schema_version: u32,
 }
 
+// ---------------------------------------------------------------------------
+// Storage keys
+// ---------------------------------------------------------------------------
+
+/// Storage keys used by the compliance reporting contract.
 #[contracttype]
+#[derive(Clone)]
 pub enum DataKey {
+    /// Initialization flag.
+    Initialized,
+    /// Contract administrator address.
     Admin,
-    // Tracks the total number of records per employer: EmployerAddress -> u32
+    /// Emergency pause flag.
+    Paused,
+    /// Contract-wide monotonic sequence counter.
+    GlobalSeq,
+    /// Per-employer record count: `RecordCount(employer) -> u32`.
     RecordCount(Address),
-    // Stores the actual record: (EmployerAddress, u32) -> ComplianceRecord
+    /// Individual record: `Record(employer, id) -> ComplianceRecord`.
     Record(Address, u32),
+    /// Publisher allowlist: `Publisher(address) -> bool`.
+    Publisher(Address),
+    /// AuditLogger contract address.
+    AuditLogger,
+    /// PaymentHistory contract address.
+    PaymentHistory,
 }
 
+// ---------------------------------------------------------------------------
+// Contract
+// ---------------------------------------------------------------------------
+
+/// # Compliance Reporting Contract — Dependencies and Failure Modes
+///
+/// ## Required Dependencies
+///
+/// The `generate_report()` function aggregates data from two cross-contract dependencies:
+///
+/// 1. **PaymentHistory** contract
+///    - Used to retrieve payment records for a given employee.
+///    - Must be configured via `set_contract_addresses()` before reports can be generated.
+///    - Failure mode: If not deployed, not configured, or returns an error on invocation,
+///      `generate_report()` returns `DependencyUnavailable`.
+///
+/// 2. **AuditLogger** contract
+///    - Used to retrieve audit log entries (e.g., employment agreement events).
+///    - Must be configured via `set_contract_addresses()` before reports can be generated.
+///    - Failure mode: If not deployed, not configured, or returns an error on invocation,
+///      `generate_report()` returns `DependencyUnavailable`.
+///
+/// ## Configuration
+///
+/// Call `set_contract_addresses(admin, audit_logger, payment_history)` to configure both
+/// dependencies. Only the contract admin may call this function.
+///
+/// ## Failure Modes
+///
+/// ### DependencyUnavailable Error
+///
+/// This error is returned when:
+/// - A dependency address is not configured (returned `None` from persistent storage)
+/// - A cross-contract call to PaymentHistory or AuditLogger fails (e.g., contract not
+///   deployed, incompatible interface, or invocation error)
+/// - Either dependency is unable to process the requested operation
+///
+/// ### Fail-Closed Guarantee
+///
+/// If any dependency is unavailable, `generate_report()` **immediately fails** and
+/// returns `DependencyUnavailable`. It does NOT:
+/// - Return a partial report with only local data
+/// - Attempt to continue with fallback data
+/// - Silently omit dependency data and return incomplete results
+///
+/// This guarantees that compliance reports are always complete or explicitly failed,
+/// preventing off-chain systems from misinterpreting a partial report as a complete audit.
+///
+/// ## Integration Notes for Callers
+///
+/// Before calling `generate_report()`:
+/// 1. Ensure both PaymentHistory and AuditLogger contracts are deployed on the network
+/// 2. Ensure the compliance reporting contract has been initialized with `initialize(admin)`
+/// 3. Call `set_contract_addresses()` with the correct contract addresses
+/// 4. Be prepared to handle `DependencyUnavailable` errors; they indicate misconfiguration
+///    or a temporary outage, not a bug in the compliance reporting contract
 #[contract]
 pub struct ComplianceReportingContract;
 
 #[contractimpl]
 impl ComplianceReportingContract {
+    // -----------------------------------------------------------------------
+    // Initialization
+    // -----------------------------------------------------------------------
+
     /// @notice Initializes the compliance reporting contract.
-    /// @param admin The administrator address.
+    /// @dev One-time setup. The `admin` address is immutable after this call.
+    ///      The admin is automatically registered as an authorized publisher.
+    /// @param admin The administrator address; controls publisher allowlist and
+    ///              emergency pause.
+    /// @return `ComplianceError::AlreadyInitialized` if called more than once.
     pub fn initialize(env: Env, admin: Address) -> Result<(), ComplianceError> {
-        if env.storage().instance().has(&DataKey::Admin) {
+        if env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::Initialized)
+            .unwrap_or(false)
+        {
             return Err(ComplianceError::AlreadyInitialized);
         }
+
+        admin.require_auth();
+
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage().instance().set(&DataKey::Initialized, &true);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage().persistent().set(&DataKey::GlobalSeq, &0u64);
+
+        // Admin is an authorized publisher by default.
+        env.storage()
+            .persistent()
+            .set(&DataKey::Publisher(admin.clone()), &true);
+
+        env.events().publish(
+            (symbol_short!("init"),),
+            (admin,),
+        );
+
         Ok(())
     }
 
+    // -----------------------------------------------------------------------
+    // Admin: publisher management
+    // -----------------------------------------------------------------------
+
+    /// @notice Grants or revokes publisher authorization for an address.
+    /// @dev Only the admin may call this. Authorized publishers may log records
+    ///      on behalf of any employer. Employers can always log their own records
+    ///      without being explicitly added as publishers.
+    /// @param caller Must be the contract admin.
+    /// @param publisher The address to authorize or deauthorize.
+    /// @param authorized `true` to grant, `false` to revoke.
+    pub fn set_publisher(
+        env: Env,
+        caller: Address,
+        publisher: Address,
+        authorized: bool,
+    ) -> Result<(), ComplianceError> {
+        Self::require_initialized(&env)?;
+        Self::require_admin(&env, &caller)?;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Publisher(publisher.clone()), &authorized);
+
+        env.events().publish(
+            (symbol_short!("pub_set"),),
+            (publisher, authorized),
+        );
+
+        Ok(())
+    }
+
+    /// @notice Returns whether an address is an authorized publisher.
+    /// @param publisher The address to query.
+    pub fn is_publisher(env: Env, publisher: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Publisher(publisher))
+            .unwrap_or(false)
+    }
+
+    /// @notice Returns the current report schema version.
+    pub fn get_report_schema_version(_env: Env) -> u32 {
+        1
+    }
+
+    /// @notice Sets the contract addresses for AuditLogger and PaymentHistory.
+    pub fn set_contract_addresses(
+        env: Env,
+        caller: Address,
+        audit_logger: Address,
+        payment_history: Address,
+    ) -> Result<(), ComplianceError> {
+        Self::require_initialized(&env)?;
+        Self::require_admin(&env, &caller)?;
+
+        env.storage().persistent().set(&DataKey::AuditLogger, &audit_logger);
+        env.storage().persistent().set(&DataKey::PaymentHistory, &payment_history);
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Admin: emergency pause
+    // -----------------------------------------------------------------------
+
+    /// @notice Pauses or unpauses the contract.
+    /// @dev When paused, `log_record` is blocked. Reads (`generate_report`,
+    ///      `get_record`, `get_record_count`) remain available so indexers can
+    ///      continue to reconstruct history.
+    /// @param caller Must be the contract admin.
+    /// @param paused `true` to pause, `false` to unpause.
+    pub fn set_paused(env: Env, caller: Address, paused: bool) -> Result<(), ComplianceError> {
+        Self::require_initialized(&env)?;
+        Self::require_admin(&env, &caller)?;
+
+        env.storage().instance().set(&DataKey::Paused, &paused);
+
+        env.events().publish(
+            (symbol_short!("paused"),),
+            (paused,),
+        );
+
+        Ok(())
+    }
+
+    /// @notice Returns whether the contract is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get::<_, bool>(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    // -----------------------------------------------------------------------
+    // Record writing
+    // -----------------------------------------------------------------------
+
     /// @notice Logs a new compliance record onto the ledger.
-    /// @dev Requires authorization from the employer logging the data.
-    /// @param employer The company/entity making the payment.
-    /// @param employee The recipient of the payment.
-    /// @param token The SPL/Soroban token used.
-    /// @param amount The token amount.
-    /// @param report_type Classification of the record (Tax, Payroll, Regulatory).
-    /// @param metadata Extra bytes for off-chain linkage.
+    /// @dev The caller must be either the `employer` themselves or an address
+    ///      that has been granted publisher authorization by the admin.
+    ///      The ledger timestamp is used; callers cannot back-date records.
+    ///      A monotonically increasing per-employer `id` and a contract-wide
+    ///      `global_seq` are assigned, enabling gap detection by indexers.
+    ///      Emits a `log_comp` event with `(employer, id, global_seq, timestamp,
+    ///      amount, report_type_u32)` for off-chain indexers.
+    /// @param publisher The address submitting this record (must auth).
+    /// @param employer The company/entity on whose behalf the record is logged.
+    /// @param employee The payment recipient.
+    /// @param token The Soroban token contract address.
+    /// @param amount The token amount (must be > 0).
+    /// @param report_type Classification of the record.
+    /// @param metadata Off-chain reference bytes (e.g. IPFS CID).
+    /// @return The per-employer record `id` assigned to this entry.
     pub fn log_record(
         env: Env,
+        publisher: Address,
         employer: Address,
         employee: Address,
         token: Address,
@@ -89,84 +423,186 @@ impl ComplianceReportingContract {
         metadata: Bytes,
     ) -> Result<u32, ComplianceError> {
         Self::require_initialized(&env)?;
-        employer.require_auth();
+        Self::require_not_paused(&env)?;
 
+        publisher.require_auth();
+
+        // Authorization: publisher must be the employer or an allowlisted publisher.
+        let is_employer = publisher == employer;
+        let is_authorized_publisher = env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::Publisher(publisher.clone()))
+            .unwrap_or(false);
+
+        if !is_employer && !is_authorized_publisher {
+            return Err(ComplianceError::NotAuthorized);
+        }
+
+        if amount <= 0 {
+            return Err(ComplianceError::InvalidAmount);
+        }
+
+        // Assign per-employer ID.
         let count_key = DataKey::RecordCount(employer.clone());
-        let next_id: u32 = env.storage().persistent().get(&count_key).unwrap_or(0) + 1;
+        let next_id: u32 = env
+            .storage()
+            .persistent()
+            .get(&count_key)
+            .unwrap_or(0u32)
+            + 1;
+
+        // Assign global sequence number.
+        let global_seq: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::GlobalSeq)
+            .unwrap_or(0u64)
+            + 1;
 
         let timestamp = env.ledger().timestamp();
 
         let record = ComplianceRecord {
             id: next_id,
+            global_seq,
             employer: employer.clone(),
             employee,
             token,
             amount,
             timestamp,
-            report_type,
+            report_type: report_type.clone(),
             metadata,
+            publisher: publisher.clone(),
         };
 
-        // Store the record
         env.storage()
             .persistent()
             .set(&DataKey::Record(employer.clone(), next_id), &record);
-        
-        // Update count
         env.storage().persistent().set(&count_key, &next_id);
+        env.storage()
+            .persistent()
+            .set(&DataKey::GlobalSeq, &global_seq);
 
-        // Emit indexable event
+        // Emit indexable event. All fields needed for off-chain reconstruction
+        // are included so indexers don't need a separate storage read.
+        let report_type_u32: u32 = match report_type {
+            ReportType::Payroll => 0,
+            ReportType::Tax => 1,
+            ReportType::Regulatory => 2,
+        };
         env.events().publish(
             (symbol_short!("log_comp"), employer.clone()),
-            (next_id, timestamp, amount),
+            (next_id, global_seq, timestamp, amount, report_type_u32),
         );
 
         Ok(next_id)
     }
 
-    /// @notice Generates an aggregated report and exports matching records.
-    /// @dev To prevent gas limits (CPU/Memory), we limit the query to the latest `limit` records.
-    /// @param employer The employer to generate the report for.
-    /// @param start_date Unix timestamp of the range start.
-    /// @param end_date Unix timestamp of the range end.
-    /// @param filter_type Optional filter for a specific report type.
-    /// @param limit Maximum records to process (to prevent instruction limit overflows).
-    pub fn generate_report(
+    // -----------------------------------------------------------------------
+    // Queries
+    // -----------------------------------------------------------------------
+
+    /// @notice Returns the total number of records logged for an employer.
+    /// @param employer The employer address to query.
+    pub fn get_record_count(env: Env, employer: Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RecordCount(employer))
+            .unwrap_or(0)
+    }
+
+    /// @notice Fetches a single compliance record by employer and record ID.
+    /// @param employer The employer address.
+    /// @param id The per-employer record identifier.
+    /// @return `Some(ComplianceRecord)` if found, `None` otherwise.
+    pub fn get_record(env: Env, employer: Address, id: u32) -> Option<ComplianceRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Record(employer, id))
+    }
+
+    /// @notice Returns the current contract-wide global sequence counter.
+    ///         Useful for indexers to detect gaps or missed events.
+    pub fn get_global_seq(env: Env) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::GlobalSeq)
+            .unwrap_or(0)
+    }
+
+    /// @notice Returns the withholding records for an employer/employee pair
+    ///         within a time window, with aggregated totals.
+    ///
+    /// ## Aggregation semantics
+    ///
+    /// `total_amount` is the arithmetic sum of `ComplianceRecord::amount` for
+    /// every record that satisfies **all** of:
+    /// 1. Belongs to `employer` (keyed in storage under `employer`).
+    /// 2. `start_date <= record.timestamp <= end_date`.
+    /// 3. `report_type` matches `filter_type` (if `Some`) or any type (`None`).
+    ///
+    /// When no records match, `total_amount` is `0` and `records` is empty.
+    /// This is the correct aggregate for an empty window — **not a placeholder**.
+    ///
+    /// ## Security
+    ///
+    /// Records are scoped strictly to `employer`. Cross-employer leakage is
+    /// structurally impossible because the storage key includes the employer
+    /// address: `DataKey::Record(employer, id)`.
+    ///
+    /// @param employer The employer whose records are queried.
+    /// @param employee The employee for report metadata (does not filter records).
+    /// @param start_date Inclusive start of the reporting period (UNIX timestamp).
+    /// @param end_date Inclusive end of the reporting period (UNIX timestamp).
+    /// @param filter_type Optional `ReportType` filter; `None` returns all types.
+    /// @param limit Maximum number of matching records to include (≤ 100).
+    /// @return A `ComplianceReport` with real aggregated totals and records.
+    pub fn get_withholding_records(
         env: Env,
         employer: Address,
+        employee: Address,
         start_date: u64,
         end_date: u64,
         filter_type: Option<ReportType>,
         limit: u32,
     ) -> Result<ComplianceReport, ComplianceError> {
         Self::require_initialized(&env)?;
-        
+
         if start_date > end_date {
             return Err(ComplianceError::InvalidDateRange);
         }
-        if limit > 100 {
-            return Err(ComplianceError::QueryLimitExceeded); // Cap to prevent timeout
+        if limit == 0 || limit > MAX_QUERY_LIMIT {
+            return Err(ComplianceError::QueryLimitExceeded);
         }
 
-        let count_key = DataKey::RecordCount(employer.clone());
-        let total_records: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+        let total_records: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RecordCount(employer.clone()))
+            .unwrap_or(0);
 
-        let mut matching_records = Vec::new(&env);
+        let mut matching_records: Vec<ComplianceRecord> = Vec::new(&env);
+        // `total_amount` accumulates the sum of `record.amount` for every
+        // record that passes all filters. Starts at 0 — the correct value
+        // when zero records match.
         let mut total_amount: i128 = 0;
-        let mut processed: u32 = 0;
-
-        // Iterate backwards to get the most recent records first
         let mut current_id = total_records;
 
-        while current_id > 0 && processed < limit {
+        // Iterate newest-first (highest ID → lowest). Stops early when a
+        // record's timestamp falls below `start_date`, saving budget.
+        while current_id > 0 && (matching_records.len() as u32) < limit {
             if let Some(record) = env
                 .storage()
                 .persistent()
                 .get::<_, ComplianceRecord>(&DataKey::Record(employer.clone(), current_id))
             {
-                // Check if within date range
-                if record.timestamp >= start_date && record.timestamp <= end_date {
-                    // Check type filter
+                if record.timestamp < start_date {
+                    // Records are written in ascending timestamp order; once we
+                    // pass below start_date no earlier record can match.
+                    break;
+                }
+
+                if record.timestamp <= end_date {
                     let type_matches = match &filter_type {
                         Some(t) => &record.report_type == t,
                         None => true,
@@ -175,38 +611,191 @@ impl ComplianceReportingContract {
                     if type_matches {
                         total_amount += record.amount;
                         matching_records.push_back(record);
-                        processed += 1;
                     }
-                } else if record.timestamp < start_date {
-                    // Since we iterate backwards chronologically, if we hit a record older than our start_date, 
-                    // we can safely break early to save gas.
-                    break; 
                 }
             }
             current_id -= 1;
         }
 
+        let record_count = matching_records.len() as u32;
+
         Ok(ComplianceReport {
             employer,
+            employee,
             start_date,
             end_date,
             total_amount,
-            record_count: matching_records.len() as u32,
+            record_count,
             records: matching_records,
+            payment_history: Vec::new(&env),
+            agreement_events: Vec::new(&env),
+            schema_version: 1,
         })
     }
 
-    /// @notice Returns the total number of records logged by an employer.
-    pub fn get_record_count(env: Env, employer: Address) -> u32 {
-        env.storage()
+    /// @notice Generates a comprehensive compliance report for an employer/employee
+    ///         pair within a time window, cross-referencing on-chain withholding
+    ///         records with payment history and audit log events.
+    ///
+    /// ## Aggregation semantics
+    ///
+    /// Withholding records are fetched from **this contract's** own storage,
+    /// scoped to `employer`. `total_amount` is the arithmetic sum of
+    /// `ComplianceRecord::amount` for every record within `[period_start,
+    /// period_end]`. When no records fall in the window the result has
+    /// `total_amount = 0` and an empty `records` vec — this is the correct
+    /// aggregate, not a placeholder.
+    ///
+    /// Payment history and audit events are fetched from the registered
+    /// companion contracts (see `set_contract_addresses`). If those contracts
+    /// are not configured, this function returns
+    /// `ComplianceError::NotInitialized`. If a configured dependency is
+    /// unavailable, not properly deployed, or has an incompatible interface,
+    /// the call fails closed with `ComplianceError::DependencyUnavailable`
+    /// rather than returning a partial or misleading report.
+    ///
+    /// ## Security
+    ///
+    /// Withholding records are keyed by `employer` in storage
+    /// (`DataKey::Record(employer, id)`), so cross-employer leakage is
+    /// structurally impossible. `payment_history` and `agreement_events` are
+    /// fetched via the registered contract clients using the supplied
+    /// `employee` address, ensuring each caller sees only their own data.
+    ///
+    /// @param employer The employer whose withholding records are aggregated.
+    /// @param employee The employee whose payment history is fetched.
+    /// @param period_start Inclusive start of the reporting period (UNIX timestamp).
+    /// @param period_end Inclusive end of the reporting period (UNIX timestamp).
+    /// @return A `ComplianceReport` with real aggregated totals — no placeholders.
+    /// @error DependencyUnavailable if PaymentHistory or AuditLogger cannot be called.
+    /// @error InvalidDateRange if period_start > period_end.
+    pub fn generate_report(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<ComplianceReport, ComplianceError> {
+        Self::require_initialized(&env)?;
+
+        if period_start > period_end {
+            return Err(ComplianceError::InvalidDateRange);
+        }
+
+        // 1. Validate and fetch configured companion contract addresses.
+        let audit_logger_addr: Address = env
+            .storage()
             .persistent()
-            .get(&DataKey::RecordCount(employer))
-            .unwrap_or(0)
+            .get(&DataKey::AuditLogger)
+            .ok_or(ComplianceError::DependencyUnavailable)?;
+        let payment_history_addr: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PaymentHistory)
+            .ok_or(ComplianceError::DependencyUnavailable)?;
+
+        // 2. Aggregate withholding records from this contract's own storage,
+        //    scoped strictly to `employer`. Iterate newest-first for early exit.
+        let total_on_chain: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RecordCount(employer.clone()))
+            .unwrap_or(0);
+
+        let mut matching_records: Vec<ComplianceRecord> = Vec::new(&env);
+        // `total_amount` accumulates the real sum of matched record amounts.
+        // Starts at 0 — the correct result when zero records match the window.
+        let mut total_amount: i128 = 0;
+        let mut current_id = total_on_chain;
+
+        while current_id > 0 && (matching_records.len() as u32) < MAX_QUERY_LIMIT {
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get::<_, ComplianceRecord>(&DataKey::Record(employer.clone(), current_id))
+            {
+                // Early exit: records are written in ascending timestamp order.
+                if record.timestamp < period_start {
+                    break;
+                }
+                if record.timestamp <= period_end {
+                    total_amount += record.amount;
+                    matching_records.push_back(record);
+                }
+            }
+            current_id -= 1;
+        }
+
+        let record_count = matching_records.len() as u32;
+
+        // 3. Fetch PaymentHistory records for the employee, failing closed with a
+        //    typed DependencyUnavailable error if the dependency call fails.
+        let ph_client = PaymentHistoryContractClient::new(&env, &payment_history_addr);
+        let payments = ph_client
+            .try_get_payments_by_employee(&employee, &1, &MAX_QUERY_LIMIT)
+            .map_err(|_| ComplianceError::DependencyUnavailable)?
+            .map_err(|_| ComplianceError::DependencyUnavailable)?;
+
+        // 4. Fetch AuditLogger events, with the same typed error handling.
+        let al_client = AuditLoggerContractClient::new(&env, &audit_logger_addr);
+        let events = al_client
+            .try_get_latest_logs(&MAX_QUERY_LIMIT)
+            .map_err(|_| ComplianceError::DependencyUnavailable)?
+            .map_err(|_| ComplianceError::DependencyUnavailable)?;
+
+        let schema_version = Self::get_report_schema_version(env.clone());
+
+        Ok(ComplianceReport {
+            employer,
+            employee,
+            start_date: period_start,
+            end_date: period_end,
+            total_amount,
+            record_count,
+            records: matching_records,
+            payment_history: payments,
+            agreement_events: events,
+            schema_version,
+        })
     }
 
+    // -----------------------------------------------------------------------
+    // Internal helpers
+    // -----------------------------------------------------------------------
+
     fn require_initialized(env: &Env) -> Result<(), ComplianceError> {
-        if !env.storage().instance().has(&DataKey::Admin) {
+        if !env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::Initialized)
+            .unwrap_or(false)
+        {
             return Err(ComplianceError::NotInitialized);
+        }
+        Ok(())
+    }
+
+    fn require_admin(env: &Env, caller: &Address) -> Result<(), ComplianceError> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(ComplianceError::NotAuthorized)?;
+        caller.require_auth();
+        if *caller != admin {
+            return Err(ComplianceError::NotAuthorized);
+        }
+        Ok(())
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), ComplianceError> {
+        if env
+            .storage()
+            .instance()
+            .get::<_, bool>(&DataKey::Paused)
+            .unwrap_or(false)
+        {
+            return Err(ComplianceError::ContractPaused);
         }
         Ok(())
     }

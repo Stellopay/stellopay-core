@@ -9,9 +9,14 @@ Welcome to the comprehensive documentation for the StellopayCore smart contract 
 3. [Best Practices](./best-practices/README.md) - Recommended patterns and practices
 4. [Examples](./examples/README.md) - Common use cases and code examples
 5. [Developer Tools](./dev-tools/README.md) - CLI tools and utilities
-6. [Architecture](./architecture/README.md) - System design and architecture
-7. [Migrations](./migrations.md) - Contract upgrade procedures, rollback, and data compatibility
-8. [Building on Windows](./windows-build.md) - Fixing "export ordinal too large" (MinGW) and WASM-only build
+6. [Architecture](./architecture.md) - System design and architecture
+7. [Build Targets](./build-targets.md) - WASM target rationale (`wasm32-unknown-unknown`)
+8. [CI Pipeline](./ci.md) - Contracts CI workflow, coverage, and local environment
+9. [Deployment](./deployment.md) - Deploy contracts to testnet/mainnet
+10. [Benchmarks](./benchmarks.md) - Soroban cost benchmarks and regression guarding
+11. [Migrations](./migrations.md) - Contract upgrade procedures, rollback, and data compatibility
+12. [Upgrade & migration strategy](./upgrade-migration-strategy.md) - RBAC-admin-gated upgrades and `migrate_state`
+13. [Building on Windows](./windows-build.md) - Fixing "export ordinal too large" (MinGW) and WASM-only build
 
 ## Quick Start
 
@@ -75,4 +80,4 @@ See the [Developer Tools](/docs/dev-tools/README.md) and [Integration Guide](/do
 
 ## Contributing
 
-We welcome contributions! Please see our [Contributing Guide](../CONTRIBUTING.md) for details on how to contribute to the documentation.
+We welcome contributions. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the build and test workflow, and [SECURITY.md](../SECURITY.md) for vulnerability reporting.

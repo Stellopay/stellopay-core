@@ -456,11 +456,13 @@ fn test_milestone_complete_on_last_claim() {
     let (cid, client) = setup_contract(&env);
     let employer = create_address(&env);
     let contributor = create_address(&env);
-    let token = create_address(&env);
+    let token = create_token(&env);
 
     let ms_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&ms_id, &1000i128);
     client.add_milestone(&ms_id, &2000i128);
+    mint(&env, &token, &employer, 3000i128);
+    client.fund_milestone_agreement(&ms_id, &employer, &3000i128);
 
     client.approve_milestone(&ms_id, &1u32);
     client.approve_milestone(&ms_id, &2u32);
@@ -988,4 +990,127 @@ fn test_full_lifecycle_created_to_finalized() {
         client.get_agreement(&id).unwrap().status,
         AgreementStatus::Cancelled
     );
+}
+
+// ============================================================================
+// STORAGE TTL (STATE-ARCHIVAL) TESTS (#503)
+// ============================================================================
+
+use soroban_sdk::testutils::storage::Persistent as _;
+use stello_pay_contract::storage::{StorageKey, PERSISTENT_BUMP_AMOUNT, PERSISTENT_TTL_THRESHOLD};
+
+/// Configures a finite ledger TTL window so archival behavior can be exercised
+/// in tests. Production ledgers enforce this; the default test ledger does not.
+fn configure_ttl_window(env: &Env) {
+    env.ledger().with_mut(|li| {
+        li.sequence_number = 1;
+        li.min_persistent_entry_ttl = 1;
+        // Headroom above the bump target so a bump is never clamped below it.
+        li.max_entry_ttl = PERSISTENT_BUMP_AMOUNT + 100_000;
+    });
+}
+
+/// Advances far enough that a freshly-bumped entry's remaining TTL drops just
+/// below `PERSISTENT_TTL_THRESHOLD`, so the next access must re-bump it.
+fn advance_until_near_expiry(env: &Env) {
+    advance_ledgers(env, PERSISTENT_BUMP_AMOUNT - 1_000);
+}
+
+/// Advances the ledger sequence number by `n` ledgers (TTL is measured in ledgers).
+fn advance_ledgers(env: &Env, n: u32) {
+    env.ledger().with_mut(|li| {
+        li.sequence_number += n;
+    });
+}
+
+/// Reading an agreement bumps its persistent TTL back up to the configured
+/// target, so an active-but-infrequently-touched agreement is not archived.
+#[test]
+fn test_get_agreement_bumps_ttl() {
+    let env = create_test_env();
+    configure_ttl_window(&env);
+    let (cid, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let token = create_address(&env);
+    let employee = create_address(&env);
+
+    let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
+    client.add_employee_to_agreement(&id, &employee, &SALARY);
+    client.activate_agreement(&id);
+
+    // Let almost the whole TTL window elapse so the entry is near expiry.
+    advance_until_near_expiry(&env);
+    env.as_contract(&cid, || {
+        let ttl_before = env
+            .storage()
+            .persistent()
+            .get_ttl(&StorageKey::Agreement(id));
+        assert!(
+            ttl_before < PERSISTENT_TTL_THRESHOLD,
+            "precondition: entry should be near expiry ({} >= {})",
+            ttl_before,
+            PERSISTENT_TTL_THRESHOLD
+        );
+    });
+
+    // Accessing the agreement keeps it live and re-bumps its TTL.
+    let a = client.get_agreement(&id).expect("agreement must still be live");
+    assert_eq!(a.status, AgreementStatus::Active);
+
+    env.as_contract(&cid, || {
+        let ttl = env
+            .storage()
+            .persistent()
+            .get_ttl(&StorageKey::Agreement(id));
+        assert!(
+            ttl >= PERSISTENT_BUMP_AMOUNT - 10,
+            "agreement TTL not bumped: {} < {}",
+            ttl,
+            PERSISTENT_BUMP_AMOUNT
+        );
+    });
+}
+
+/// Writing/reading an escrow balance bumps its TTL, and the entry survives a
+/// ledger advance that would otherwise archive it.
+#[test]
+fn test_escrow_balance_ttl_survives_ledger_advance() {
+    let env = create_test_env();
+    configure_ttl_window(&env);
+    let (cid, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let contributor = create_address(&env);
+    let token = create_token(&env);
+    let total = SALARY * 4;
+
+    let id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &SALARY, &ONE_DAY, &4u32);
+    client.activate_agreement(&id);
+
+    mint(&env, &token, &cid, total);
+    env.as_contract(&cid, || {
+        DataKey::set_agreement_escrow_balance(&env, id, &token, total);
+        let ttl = env.storage().persistent().get_ttl(
+            &DataKey::AgreementEscrowBalance(id, token.clone()),
+        );
+        assert!(ttl >= PERSISTENT_BUMP_AMOUNT, "escrow TTL not bumped on write");
+    });
+
+    // Advance until near expiry, then access through the read helper.
+    advance_until_near_expiry(&env);
+    let balance = env.as_contract(&cid, || {
+        DataKey::get_agreement_escrow_balance(&env, id, &token)
+    });
+    assert_eq!(balance, total, "escrow balance must remain live and correct");
+
+    // The read bumped the TTL back up.
+    env.as_contract(&cid, || {
+        let ttl = env.storage().persistent().get_ttl(
+            &DataKey::AgreementEscrowBalance(id, token.clone()),
+        );
+        assert!(
+            ttl >= PERSISTENT_BUMP_AMOUNT - 10,
+            "escrow TTL not bumped on read"
+        );
+    });
 }

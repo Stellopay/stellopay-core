@@ -1,12 +1,15 @@
+//! Focused tests for the current PaymentRetry API.
+//!
+//! These tests cover `schedule_retry`, single-record `process_retry`, and the
+//! keeper-facing `process_due_payments` batch entry point.
+
 #![cfg(test)]
 
-use payment_retry::{
-    PaymentRetryContract, PaymentRetryContractClient, PaymentStatus,
-};
+use payment_retry::{PaymentRetryContract, PaymentRetryContractClient, RetryConfig, RetryState};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    vec, Address, Env,
+    Address, BytesN, Env, Vec,
 };
 
 fn create_env() -> Env {
@@ -15,363 +18,408 @@ fn create_env() -> Env {
     env
 }
 
+#[allow(deprecated)]
 fn register_contract(env: &Env) -> (Address, PaymentRetryContractClient<'static>) {
-    #[allow(deprecated)]
     let id = env.register_contract(None, PaymentRetryContract);
     let client = PaymentRetryContractClient::new(env, &id);
     (id, client)
 }
 
 fn create_token_contract<'a>(env: &Env, admin: &Address) -> TokenClient<'a> {
-    let token_addr = env.register_stellar_asset_contract(admin.clone());
+    let token_addr = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
     TokenClient::new(env, &token_addr)
 }
 
-#[test]
-fn initialize_once_and_read_owner() {
-    let env = create_env();
-    let (_id, client) = register_contract(&env);
-    let owner = Address::generate(&env);
+fn payment_id(env: &Env, seed: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[seed; 32])
+}
 
-    client.initialize(&owner);
-    assert_eq!(client.get_owner(), Some(owner.clone()));
+fn retry_config(env: &Env, max_retries: u32, intervals: &[u64]) -> RetryConfig {
+    let mut retry_intervals = Vec::new(env);
+    for interval in intervals {
+        retry_intervals.push_back(*interval);
+    }
 
-    let second_init = client.try_initialize(&owner);
-    assert!(second_init.is_err());
+    RetryConfig {
+        max_retries,
+        retry_intervals,
+    }
+}
+
+struct PaymentInput<'a> {
+    id_seed: u8,
+    payer: &'a Address,
+    recipient: &'a Address,
+    token: &'a Address,
+    amount: i128,
+    max_retries: u32,
+    intervals: &'a [u64],
+}
+
+fn schedule_payment(
+    env: &Env,
+    client: &PaymentRetryContractClient<'static>,
+    input: PaymentInput<'_>,
+) -> BytesN<32> {
+    let id = payment_id(env, input.id_seed);
+    client.schedule_retry(
+        &id,
+        input.payer,
+        input.recipient,
+        input.token,
+        &input.amount,
+        &retry_config(env, input.max_retries, input.intervals),
+    );
+    id
 }
 
 #[test]
-fn create_fund_and_process_successfully() {
+fn test_initialize_and_read_owner() {
     let env = create_env();
-    let (contract_id, client) = register_contract(&env);
+    let (_contract_id, client) = register_contract(&env);
     let owner = Address::generate(&env);
-    client.initialize(&owner);
 
+    client.initialize(&owner);
+    assert_eq!(client.get_owner(), Some(owner));
+}
+
+#[test]
+fn test_schedule_retry_stores_due_payment() {
+    let env = create_env();
+    let (_contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
     let payer = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let notifier = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token = create_token_contract(&env, &token_admin);
-    let asset_admin = StellarAssetClient::new(&env, &token.address);
 
-    asset_admin.mint(&payer, &200i128);
+    client.initialize(&owner);
+    env.ledger().with_mut(|li| li.timestamp = 100);
 
-    env.ledger().with_mut(|li| li.timestamp = 10);
-
-    let payment_id = client.create_payment_request(
-        &payer,
-        &recipient,
-        &token.address,
-        &100i128,
-        &2u32,
-        &vec![&env, 5u64, 10u64],
-        &notifier,
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 1,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 250,
+            max_retries: 2,
+            intervals: &[30, 60],
+        },
     );
 
-    client.fund_payment(&payer, &payment_id, &100i128);
-    assert_eq!(token.balance(&contract_id), 100i128);
-
-    let processed = client.process_due_payments(&10u32);
-    assert_eq!(processed, 1);
-
-    let payment = client.get_payment(&payment_id).unwrap();
-    assert_eq!(payment.status, PaymentStatus::Completed);
+    let payment = client.get_payment(&id).unwrap();
+    assert_eq!(payment.id, id);
+    assert_eq!(payment.payer, payer);
+    assert_eq!(payment.recipient, recipient);
+    assert_eq!(payment.amount, 250);
     assert_eq!(payment.retry_count, 0);
-    assert_eq!(token.balance(&recipient), 100i128);
+    assert_eq!(payment.max_retry_attempts, 2);
+    assert_eq!(payment.next_retry_at, 100);
+    assert_eq!(payment.state, RetryState::Scheduled);
 }
 
 #[test]
-fn retries_then_succeeds_after_refund() {
+fn test_process_due_payments_succeeds_and_returns_count() {
     let env = create_env();
-    let (_contract_id, client) = register_contract(&env);
+    let (contract_id, client) = register_contract(&env);
     let owner = Address::generate(&env);
-    client.initialize(&owner);
-
     let payer = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let notifier = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token = create_token_contract(&env, &token_admin);
     let asset_admin = StellarAssetClient::new(&env, &token.address);
 
-    asset_admin.mint(&payer, &500i128);
+    client.initialize(&owner);
+    asset_admin.mint(&payer, &100);
 
-    env.ledger().with_mut(|li| li.timestamp = 0);
-
-    let payment_id = client.create_payment_request(
-        &payer,
-        &recipient,
-        &token.address,
-        &100i128,
-        &3u32,
-        &vec![&env, 10u64, 20u64],
-        &notifier,
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 2,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
     );
+    client.fund_payment(&payer, &id, &100);
+    assert_eq!(token.balance(&contract_id), 100);
 
-    // No funding yet, first attempt fails and schedules retry at t=10.
-    let processed = client.process_due_payments(&1u32);
+    let processed = client.process_due_payments(&10);
     assert_eq!(processed, 1);
 
-    let mut payment = client.get_payment(&payment_id).unwrap();
-    assert_eq!(payment.status, PaymentStatus::Pending);
-    assert_eq!(payment.retry_count, 1);
-    assert_eq!(payment.next_retry_at, 10);
+    let payment = client.get_payment(&id).unwrap();
+    assert_eq!(payment.state, RetryState::Success);
+    assert_eq!(payment.retry_count, 0);
+    assert_eq!(token.balance(&recipient), 100);
+    assert_eq!(token.balance(&contract_id), 0);
 
-    // Top up before next retry.
-    client.fund_payment(&payer, &payment_id, &100i128);
-    env.ledger().with_mut(|li| li.timestamp = 10);
-
-    let processed = client.process_due_payments(&1u32);
-    assert_eq!(processed, 1);
-
-    payment = client.get_payment(&payment_id).unwrap();
-    assert_eq!(payment.status, PaymentStatus::Completed);
-    assert_eq!(payment.retry_count, 1);
-    assert_eq!(token.balance(&recipient), 100i128);
+    assert_eq!(client.process_due_payments(&10), 0);
+    assert_eq!(token.balance(&recipient), 100);
 }
 
 #[test]
-fn fails_after_max_retries_and_emits_notification_event() {
+fn test_process_due_payments_respects_next_retry_at() {
     let env = create_env();
     let (_contract_id, client) = register_contract(&env);
     let owner = Address::generate(&env);
-    client.initialize(&owner);
-
     let payer = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let notifier = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
 
-    env.ledger().with_mut(|li| li.timestamp = 1);
-
-    let payment_id = client.create_payment_request(
-        &payer,
-        &recipient,
-        &token.address,
-        &100i128,
-        &2u32,
-        &vec![&env, 5u64],
-        &notifier,
-    );
-
-    // Retry #1
-    let _ = client.process_due_payments(&10u32);
-    let mut payment = client.get_payment(&payment_id).unwrap();
-    assert_eq!(payment.status, PaymentStatus::Pending);
-    assert_eq!(payment.retry_count, 1);
-    assert_eq!(payment.next_retry_at, 6);
-
-    // Retry #2
-    env.ledger().with_mut(|li| li.timestamp = 6);
-    let _ = client.process_due_payments(&10u32);
-    payment = client.get_payment(&payment_id).unwrap();
-    assert_eq!(payment.status, PaymentStatus::Pending);
-    assert_eq!(payment.retry_count, 2);
-    assert_eq!(payment.next_retry_at, 11);
-
-    // Retry #3 exceeds max retry attempts and fails terminally.
-    env.ledger().with_mut(|li| li.timestamp = 11);
-    let _ = client.process_due_payments(&10u32);
-    payment = client.get_payment(&payment_id).unwrap();
-    assert_eq!(payment.status, PaymentStatus::Failed);
-    assert_eq!(payment.retry_count, 3);
-    assert_eq!(payment.failure_notifier, notifier);
-}
-
-#[test]
-fn reuses_last_interval_when_retry_count_exceeds_interval_list() {
-    let env = create_env();
-    let (_contract_id, client) = register_contract(&env);
-    let owner = Address::generate(&env);
     client.initialize(&owner);
-
-    let payer = Address::generate(&env);
-    let recipient = Address::generate(&env);
-    let notifier = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token = create_token_contract(&env, &token_admin);
-
     env.ledger().with_mut(|li| li.timestamp = 0);
 
-    let payment_id = client.create_payment_request(
-        &payer,
-        &recipient,
-        &token.address,
-        &100i128,
-        &3u32,
-        &vec![&env, 7u64],
-        &notifier,
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 3,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30, 60],
+        },
     );
 
-    // First retry: next at 7
-    let _ = client.process_due_payments(&1u32);
-    let mut payment = client.get_payment(&payment_id).unwrap();
-    assert_eq!(payment.next_retry_at, 7);
+    assert_eq!(client.process_due_payments(&10), 1);
+    let payment = client.get_payment(&id).unwrap();
+    assert_eq!(payment.state, RetryState::Retrying);
+    assert_eq!(payment.retry_count, 1);
+    assert_eq!(payment.next_retry_at, 30);
 
-    // Second retry: still +7 (reuse last interval)
-    env.ledger().with_mut(|li| li.timestamp = 7);
-    let _ = client.process_due_payments(&1u32);
-    payment = client.get_payment(&payment_id).unwrap();
-    assert_eq!(payment.next_retry_at, 14);
+    asset_admin.mint(&payer, &100);
+    client.fund_payment(&payer, &id, &100);
 
-    // Third retry: still +7
-    env.ledger().with_mut(|li| li.timestamp = 14);
-    let _ = client.process_due_payments(&1u32);
-    payment = client.get_payment(&payment_id).unwrap();
-    assert_eq!(payment.next_retry_at, 21);
+    env.ledger().with_mut(|li| li.timestamp = 29);
+    assert_eq!(client.process_due_payments(&10), 0);
+    assert_eq!(client.get_payment(&id).unwrap().state, RetryState::Retrying);
+
+    env.ledger().with_mut(|li| li.timestamp = 30);
+    assert_eq!(client.process_due_payments(&10), 1);
+    assert_eq!(client.get_payment(&id).unwrap().state, RetryState::Success);
+    assert_eq!(token.balance(&recipient), 100);
 }
 
 #[test]
-fn cancel_prevents_further_processing() {
-    let env = create_env();
-    let (_contract_id, client) = register_contract(&env);
-    let owner = Address::generate(&env);
-    client.initialize(&owner);
-
-    let payer = Address::generate(&env);
-    let recipient = Address::generate(&env);
-    let notifier = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token = create_token_contract(&env, &token_admin);
-
-    let payment_id = client.create_payment_request(
-        &payer,
-        &recipient,
-        &token.address,
-        &50i128,
-        &1u32,
-        &vec![&env, 4u64],
-        &notifier,
-    );
-
-    client.cancel_payment(&payer, &payment_id);
-    let payment = client.get_payment(&payment_id).unwrap();
-    assert_eq!(payment.status, PaymentStatus::Cancelled);
-
-    let processed = client.process_due_payments(&10u32);
-    assert_eq!(processed, 0);
-}
-
-#[test]
-fn process_limit_is_enforced() {
+fn test_process_due_payments_respects_max_payments() {
     let env = create_env();
     let (contract_id, client) = register_contract(&env);
     let owner = Address::generate(&env);
-    client.initialize(&owner);
-
     let payer = Address::generate(&env);
     let recipient_a = Address::generate(&env);
     let recipient_b = Address::generate(&env);
-    let notifier = Address::generate(&env);
+    let recipient_c = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token = create_token_contract(&env, &token_admin);
     let asset_admin = StellarAssetClient::new(&env, &token.address);
 
-    asset_admin.mint(&payer, &500i128);
+    client.initialize(&owner);
+    asset_admin.mint(&payer, &300);
 
-    let payment_a = client.create_payment_request(
-        &payer,
-        &recipient_a,
-        &token.address,
-        &100i128,
-        &1u32,
-        &vec![&env, 5u64],
-        &notifier,
+    let id_a = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 4,
+            payer: &payer,
+            recipient: &recipient_a,
+            token: &token.address,
+            amount: 100,
+            max_retries: 1,
+            intervals: &[30],
+        },
     );
-    let payment_b = client.create_payment_request(
-        &payer,
-        &recipient_b,
-        &token.address,
-        &100i128,
-        &1u32,
-        &vec![&env, 5u64],
-        &notifier,
+    let id_b = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 5,
+            payer: &payer,
+            recipient: &recipient_b,
+            token: &token.address,
+            amount: 100,
+            max_retries: 1,
+            intervals: &[30],
+        },
+    );
+    let id_c = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 6,
+            payer: &payer,
+            recipient: &recipient_c,
+            token: &token.address,
+            amount: 100,
+            max_retries: 1,
+            intervals: &[30],
+        },
     );
 
-    client.fund_payment(&payer, &payment_a, &100i128);
-    client.fund_payment(&payer, &payment_b, &100i128);
-    assert_eq!(token.balance(&contract_id), 200i128);
+    client.fund_payment(&payer, &id_a, &100);
+    client.fund_payment(&payer, &id_b, &100);
+    client.fund_payment(&payer, &id_c, &100);
+    assert_eq!(token.balance(&contract_id), 300);
 
-    let processed = client.process_due_payments(&1u32);
-    assert_eq!(processed, 1);
+    assert_eq!(client.process_due_payments(&2), 2);
+    assert_eq!(
+        client.get_payment(&id_a).unwrap().state,
+        RetryState::Success
+    );
+    assert_eq!(
+        client.get_payment(&id_b).unwrap().state,
+        RetryState::Success
+    );
+    assert_eq!(
+        client.get_payment(&id_c).unwrap().state,
+        RetryState::Scheduled
+    );
 
-    let p1 = client.get_payment(&payment_a).unwrap();
-    let p2 = client.get_payment(&payment_b).unwrap();
-    assert_eq!(p1.status, PaymentStatus::Completed);
-    assert_eq!(p2.status, PaymentStatus::Pending);
-
-    let processed = client.process_due_payments(&2u32);
-    assert_eq!(processed, 1);
-    let p2 = client.get_payment(&payment_b).unwrap();
-    assert_eq!(p2.status, PaymentStatus::Completed);
+    assert_eq!(client.process_due_payments(&10), 1);
+    assert_eq!(
+        client.get_payment(&id_c).unwrap().state,
+        RetryState::Success
+    );
 }
 
 #[test]
-fn validation_and_access_control_checks() {
+fn test_process_due_payments_returns_zero_for_zero_limit() {
     let env = create_env();
     let (_contract_id, client) = register_contract(&env);
     let owner = Address::generate(&env);
-    client.initialize(&owner);
-
     let payer = Address::generate(&env);
-    let another_payer = Address::generate(&env);
     let recipient = Address::generate(&env);
-    let notifier = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token = create_token_contract(&env, &token_admin);
 
-    let invalid_amount = client.try_create_payment_request(
-        &payer,
-        &recipient,
-        &token.address,
-        &0i128,
-        &1u32,
-        &vec![&env, 5u64],
-        &notifier,
-    );
-    assert!(invalid_amount.is_err());
-
-    let missing_intervals = client.try_create_payment_request(
-        &payer,
-        &recipient,
-        &token.address,
-        &100i128,
-        &1u32,
-        &vec![&env],
-        &notifier,
-    );
-    assert!(missing_intervals.is_err());
-
-    let payment_id = client.create_payment_request(
-        &payer,
-        &recipient,
-        &token.address,
-        &100i128,
-        &1u32,
-        &vec![&env, 5u64],
-        &notifier,
+    client.initialize(&owner);
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 7,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 1,
+            intervals: &[30],
+        },
     );
 
-    let fund_by_wrong_payer = client.try_fund_payment(&another_payer, &payment_id, &100i128);
-    assert!(fund_by_wrong_payer.is_err());
+    assert_eq!(client.process_due_payments(&0), 0);
+    assert_eq!(
+        client.get_payment(&id).unwrap().state,
+        RetryState::Scheduled
+    );
+}
 
-    let cancel_by_wrong_payer = client.try_cancel_payment(&another_payer, &payment_id);
-    assert!(cancel_by_wrong_payer.is_err());
+#[test]
+fn test_terminal_failure_is_not_reprocessed() {
+    let env = create_env();
+    let (_contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
 
-    let zero_max_with_empty_intervals = client.create_payment_request(
-        &payer,
-        &recipient,
-        &token.address,
-        &100i128,
-        &0u32,
-        &vec![&env],
-        &notifier,
+    client.initialize(&owner);
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 8,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 0,
+            intervals: &[],
+        },
     );
 
-    // Zero retries means first failed attempt becomes terminal.
-    let _ = client.process_due_payments(&10u32);
-    let payment = client.get_payment(&zero_max_with_empty_intervals).unwrap();
-    assert_eq!(payment.status, PaymentStatus::Failed);
-    assert_eq!(payment.retry_count, 1);
+    assert_eq!(client.process_due_payments(&10), 1);
+    let failed = client.get_payment(&id).unwrap();
+    assert_eq!(failed.state, RetryState::Failed);
+    assert_eq!(failed.retry_count, 1);
+
+    assert_eq!(client.process_due_payments(&10), 0);
+}
+
+#[test]
+fn test_process_retry_removes_completed_record_from_batch_index() {
+    let env = create_env();
+    let (_contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    client.initialize(&owner);
+    asset_admin.mint(&payer, &100);
+
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 9,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 1,
+            intervals: &[30],
+        },
+    );
+    client.fund_payment(&payer, &id, &100);
+
+    client.process_retry(&id);
+    assert_eq!(client.get_payment(&id).unwrap().state, RetryState::Success);
+    assert_eq!(client.process_due_payments(&10), 0);
+}
+
+#[test]
+fn test_cancelled_record_is_skipped_by_batch_processing() {
+    let env = create_env();
+    let (_contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+
+    client.initialize(&owner);
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 10,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 1,
+            intervals: &[30],
+        },
+    );
+
+    client.cancel_payment(&payer, &id);
+    assert_eq!(client.get_payment(&id).unwrap().state, RetryState::Failed);
+    assert_eq!(client.process_due_payments(&10), 0);
 }
