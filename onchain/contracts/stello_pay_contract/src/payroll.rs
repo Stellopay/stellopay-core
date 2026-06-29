@@ -1481,6 +1481,23 @@ pub fn get_grace_extension_policy(env: &Env) -> GracePeriodExtensionPolicy {
 }
 
 /// Sets caps for per-agreement grace extensions. Callable only by the contract owner.
+///
+/// # Policy semantics
+/// Both policy fields must be strictly positive. A zero value is treated as an
+/// invalid configuration (not "disabled"), because a zero cap silently disables
+/// all grace extensions and removes a safety mechanism with no error:
+/// - `max_cumulative_extension_bps == 0` would make every extension exceed the
+///   (zero) cumulative cap, so no extension could ever be applied.
+/// - `max_extension_per_call_seconds == 0` would reject every single-call
+///   extension.
+///
+/// To intentionally stop allowing extensions, set the caps to a small, explicit
+/// non-zero value rather than zero, so the configuration choice is auditable and
+/// cannot happen by accident. Both fields are also bounded above so a compromised
+/// owner key cannot configure absurd values in one transaction.
+///
+/// Returns [`PayrollError::GraceExtensionInvalid`] when either field is zero or
+/// exceeds its upper bound.
 pub fn set_grace_extension_policy(
     env: &Env,
     caller: Address,
@@ -1494,7 +1511,11 @@ pub fn set_grace_extension_policy(
     // Sanity bounds so a compromised owner key cannot configure absurd values in one tx.
     const MAX_BPS: u32 = 500_000;
     const MAX_PER_CALL: u64 = 730 * 24 * 3600;
-    if policy.max_cumulative_extension_bps > MAX_BPS {
+    // Reject zero on both fields: a zero cap silently disables grace extensions,
+    // which must be an explicit, non-zero configuration rather than an accident.
+    if policy.max_cumulative_extension_bps == 0
+        || policy.max_cumulative_extension_bps > MAX_BPS
+    {
         return Err(PayrollError::GraceExtensionInvalid);
     }
     if policy.max_extension_per_call_seconds == 0
