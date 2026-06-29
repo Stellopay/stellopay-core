@@ -1,0 +1,26 @@
+# rustfmt configuration for stellopay-core/onchain workspace.
+# Run: cargo fmt --all
+# Check (no writes): cargo fmt --all -- --check
+# This file is picked up automatically by rustfmt when run from the workspace root.
+
+edition = "2021"
+
+# Line width — keep long function signatures readable.
+max_width = 100
+
+# Imports: merge use statements for cleaner groupings.
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+
+# Function arguments — put each argument on its own line when they don't fit.
+fn_params_layout = "Tall"
+
+# Comments — wrap at max_width.
+wrap_comments = true
+comment_width = 100
+
+# Trailing commas in multi-line constructs for cleaner diffs.
+trailing_comma = "Vertical"
+
+# Normalize doc comments: convert /// to //! only where appropriate (leave as-is).
+normalize_doc_attributes = false
