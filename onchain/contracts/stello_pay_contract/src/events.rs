@@ -257,33 +257,20 @@ pub fn emit_milestone_funded(env: &Env, event: MilestoneFundedEvent) {
     event.publish(env);
 }
 
-/// Event: Multisig threshold configuration changed.
-///
-/// Emitted by `set_multisig_config` on every successful update so off-chain
-/// monitors can detect when the approval requirements (which gate large payments
-/// and dispute resolutions) change mid-lifecycle. Carries the previous and new
-/// thresholds and the owner that performed the change.
-///
-/// Topics: `("MULTISIG", "config")` (derived from the struct/field layout by the
-/// `#[contractevent]` macro). The event exposes only public configuration; it
-/// does not include any multisig signer secrets.
+/// Event: Exchange rate set via `set_exchange_rate` or `set_exchange_rate_admin`.
+/// Emitted whenever a rate is updated so off-chain indexers can track FX history.
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct MultisigConfigChangedEvent {
-    /// Owner address that performed the change.
-    pub caller: Address,
-    /// New multisig contract address now configured.
-    pub multisig_contract: Address,
-    /// Previous large-payment threshold (0 if previously unset/disabled).
-    pub old_large_threshold: i128,
-    /// New large-payment threshold.
-    pub new_large_threshold: i128,
-    /// Previous dispute-resolution threshold (0 if previously unset/disabled).
-    pub old_dispute_threshold: i128,
-    /// New dispute-resolution threshold.
-    pub new_dispute_threshold: i128,
+pub struct ExchangeRateChangedEvent {
+    pub base: Address,
+    pub quote: Address,
+    pub new_rate: i128,
+    /// Previous rate, or 0 if this is the first time the pair is set.
+    pub prev_rate: i128,
+    /// Ledger timestamp when this event was emitted.
+    pub updated_at: u64,
 }
 
-pub fn emit_multisig_config_changed(env: &Env, event: MultisigConfigChangedEvent) {
+pub fn emit_exchange_rate_changed(env: &Env, event: ExchangeRateChangedEvent) {
     event.publish(env);
 }
