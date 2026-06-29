@@ -4,7 +4,7 @@ use soroban_sdk::{
     testutils::Address as _,
     token, Address, Env,
 };
-use stello_pay_contract::storage::{DisputeStatus, PayrollError};
+use stello_pay_contract::storage::{DataKey, DisputeStatus, PayrollError};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 /// Helper to set up the main payroll contract
@@ -148,4 +148,110 @@ fn test_multi_employee_payout_split() {
     assert_eq!(token_client.balance(&employee1), 75);
     assert_eq!(token_client.balance(&employee2), 75);
     assert_eq!(token_client.balance(&employer), 50);
+}
+
+/// @notice An indivisible employee payout strands no dust: the remainder is
+/// allocated to the last employee so transfers sum exactly to `pay_employee`.
+#[test]
+fn test_dispute_dust_allocated_to_last_employee() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (payroll_id, payroll_client) = setup_payroll(&env);
+    let employer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token_address, token_client, token_admin_client) = setup_token(&env, &token_admin);
+    let e1 = Address::generate(&env);
+    let e2 = Address::generate(&env);
+    let e3 = Address::generate(&env);
+
+    payroll_client.set_arbiter(&employer, &arbiter);
+    let agreement_id = payroll_client.create_payroll_agreement(&employer, &token_address, &86400);
+    payroll_client.add_employee_to_agreement(&agreement_id, &e1, &100);
+    payroll_client.add_employee_to_agreement(&agreement_id, &e2, &100);
+    payroll_client.add_employee_to_agreement(&agreement_id, &e3, &100);
+    token_admin_client.mint(&payroll_id, &300);
+
+    payroll_client.raise_dispute(&employer, &agreement_id);
+
+    // 100 / 3 = 33 each, remainder 1 -> last employee gets 34.
+    let pay_employee = 100_i128;
+    payroll_client.resolve_dispute(&arbiter, &agreement_id, &pay_employee, &0_i128);
+
+    assert_eq!(token_client.balance(&e1), 33);
+    assert_eq!(token_client.balance(&e2), 33);
+    assert_eq!(token_client.balance(&e3), 34);
+    // Conservation: nothing stranded in the contract from this split.
+    let distributed =
+        token_client.balance(&e1) + token_client.balance(&e2) + token_client.balance(&e3);
+    assert_eq!(distributed, pay_employee);
+    assert_eq!(token_client.balance(&payroll_id), 300 - pay_employee);
+}
+
+/// @notice Negative payout amounts are rejected with `InvalidPayout`.
+#[test]
+fn test_dispute_rejects_negative_amounts() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, payroll_client) = setup_payroll(&env);
+    let employer = Address::generate(&env);
+    let contributor = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    payroll_client.set_arbiter(&employer, &arbiter);
+    let agreement_id =
+        payroll_client.create_escrow_agreement(&employer, &contributor, &token, &1000, &86400, &1);
+    payroll_client.raise_dispute(&employer, &agreement_id);
+
+    let neg_pay = payroll_client.try_resolve_dispute(&arbiter, &agreement_id, &-1_i128, &0_i128);
+    assert_eq!(neg_pay, Err(Ok(PayrollError::InvalidPayout)));
+
+    let neg_refund =
+        payroll_client.try_resolve_dispute(&arbiter, &agreement_id, &0_i128, &-1_i128);
+    assert_eq!(neg_refund, Err(Ok(PayrollError::InvalidPayout)));
+}
+
+/// @notice When a real escrow balance is tracked, a payout that fits within
+/// `total_amount` but exceeds the actual escrow balance is rejected, and a valid
+/// resolution decrements the tracked escrow by exactly the distributed amount.
+#[test]
+fn test_dispute_validates_and_decrements_real_escrow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (payroll_id, payroll_client) = setup_payroll(&env);
+    let employer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token_address, _token_client, token_admin_client) = setup_token(&env, &token_admin);
+    let employee = Address::generate(&env);
+
+    payroll_client.set_arbiter(&employer, &arbiter);
+    let agreement_id = payroll_client.create_payroll_agreement(&employer, &token_address, &86400);
+    // total_amount becomes 1000 from the employee salary.
+    payroll_client.add_employee_to_agreement(&agreement_id, &employee, &1000);
+
+    // Real escrow deposited is only 400 (less than total_amount 1000).
+    let deposited = 400_i128;
+    token_admin_client.mint(&payroll_id, &deposited);
+    env.as_contract(&payroll_id, || {
+        DataKey::set_agreement_escrow_balance(&env, agreement_id, &token_address, deposited);
+    });
+
+    payroll_client.raise_dispute(&employer, &agreement_id);
+
+    // 600 <= total_amount (1000) but > real escrow (400): must be rejected.
+    let over = payroll_client.try_resolve_dispute(&arbiter, &agreement_id, &600_i128, &0_i128);
+    assert_eq!(over, Err(Ok(PayrollError::InvalidPayout)));
+
+    // A payout within the escrow succeeds and decrements the tracked balance.
+    payroll_client.resolve_dispute(&arbiter, &agreement_id, &300_i128, &50_i128);
+    let remaining = env.as_contract(&payroll_id, || {
+        DataKey::get_agreement_escrow_balance(&env, agreement_id, &token_address)
+    });
+    // deposited (400) - distributed (350) == 50.
+    assert_eq!(remaining, deposited - 350);
 }

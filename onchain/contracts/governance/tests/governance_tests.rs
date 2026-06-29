@@ -2,7 +2,7 @@
 
 use governance::{
     GovernanceContract, GovernanceContractClient, GovernanceError, ProposalKind, ProposalStatus,
-    VoteChoice,
+    VoteChoice, MAX_VOTING_PERIOD_SECONDS, MIN_VOTING_PERIOD_SECONDS,
 };
 use multisig::{MultisigContract, MultisigContractClient};
 use rbac::{RbacContract, RbacContractClient, Role};
@@ -61,7 +61,7 @@ fn setup(env: &Env) -> TestContracts {
     multisig.initialize(&owner, &signers, &2u32, &None);
 
     timelock.initialize(&governance_id, &60u64);
-    governance.initialize(&owner, &rbac_id, &multisig_id, &timelock_id, &2u32, &100u64);
+    governance.initialize(&owner, &rbac_id, &multisig_id, &timelock_id, &2u32, &3600u64);
 
     TestContracts {
         governance,
@@ -96,7 +96,7 @@ fn initialize_links_external_contracts() {
     assert_eq!(multisig_id, setup.multisig.address);
     assert_eq!(timelock_id, setup.timelock.address);
     assert_eq!(quorum_votes, 2u32);
-    assert_eq!(voting_period, 100u64);
+    assert_eq!(voting_period, 3600u64);
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn employer_can_create_vote_finalize_and_multisig_signer_executes() {
         .governance
         .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
 
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&proposal_id);
 
     let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
@@ -201,7 +201,7 @@ fn proposal_is_defeated_without_quorum() {
         .governance
         .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
 
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&proposal_id);
 
     let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
@@ -228,7 +228,7 @@ fn proposal_is_defeated_when_against_votes_win() {
         .governance
         .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::Against);
 
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&proposal_id);
 
     let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
@@ -251,7 +251,7 @@ fn only_multisig_signer_can_execute() {
         .governance
         .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
 
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&proposal_id);
     advance_time(&env, 60);
 
@@ -277,7 +277,7 @@ fn canceling_succeeded_proposal_cancels_timelock_operation() {
         .governance
         .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
 
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&proposal_id);
 
     let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
@@ -309,7 +309,7 @@ fn upgrade_and_arbiter_proposals_apply_expected_state() {
     setup
         .governance
         .cast_vote(&setup.employer_a, &arbiter_proposal, &VoteChoice::For);
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&arbiter_proposal);
     advance_time(&env, 60);
     setup
@@ -331,7 +331,7 @@ fn upgrade_and_arbiter_proposals_apply_expected_state() {
     setup
         .governance
         .cast_vote(&setup.employer_b, &upgrade_proposal, &VoteChoice::For);
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&upgrade_proposal);
     advance_time(&env, 60);
     setup
@@ -361,4 +361,143 @@ fn losing_employer_role_blocks_future_votes() {
         .governance
         .try_cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
     assert_eq!(res, Err(Ok(GovernanceError::NotEligibleVoter)));
+}
+
+/// Registers and links RBAC, multisig, and timelock contracts and returns the
+/// raw (uninitialized) governance client plus the owner, so voting-period
+/// boundary cases can be exercised against `initialize` directly.
+fn setup_uninitialized(
+    env: &Env,
+) -> (GovernanceContractClient<'static>, Address, Address, Address, Address) {
+    #[allow(deprecated)]
+    let governance_id = env.register_contract(None, GovernanceContract);
+    #[allow(deprecated)]
+    let rbac_id = env.register_contract(None, RbacContract);
+    #[allow(deprecated)]
+    let multisig_id = env.register_contract(None, MultisigContract);
+    #[allow(deprecated)]
+    let timelock_id = env.register_contract(None, WithdrawalTimelock);
+
+    let governance = GovernanceContractClient::new(env, &governance_id);
+    let rbac = RbacContractClient::new(env, &rbac_id);
+    let multisig = MultisigContractClient::new(env, &multisig_id);
+    let timelock = WithdrawalTimelockClient::new(env, &timelock_id);
+
+    let owner = Address::generate(env);
+    rbac.initialize(&owner);
+    let signers = Vec::from_array(env, [Address::generate(env), Address::generate(env)]);
+    multisig.initialize(&owner, &signers, &2u32, &None);
+    timelock.initialize(&governance_id, &60u64);
+
+    (governance, owner, rbac_id, multisig_id, timelock_id)
+}
+
+#[test]
+fn initialize_accepts_voting_period_at_min_and_max_bounds() {
+    let env = create_env();
+
+    for period in [MIN_VOTING_PERIOD_SECONDS, MAX_VOTING_PERIOD_SECONDS] {
+        let (governance, owner, rbac_id, multisig_id, timelock_id) = setup_uninitialized(&env);
+        let res = governance.try_initialize(
+            &owner,
+            &rbac_id,
+            &multisig_id,
+            &timelock_id,
+            &2u32,
+            &period,
+        );
+        assert!(res.is_ok(), "period {} should be accepted", period);
+        let (_, _, _, _, _, stored_period) = governance.get_config();
+        assert_eq!(stored_period, period);
+    }
+}
+
+#[test]
+fn initialize_rejects_zero_voting_period() {
+    let env = create_env();
+    let (governance, owner, rbac_id, multisig_id, timelock_id) = setup_uninitialized(&env);
+    let res = governance.try_initialize(
+        &owner,
+        &rbac_id,
+        &multisig_id,
+        &timelock_id,
+        &2u32,
+        &0u64,
+    );
+    assert_eq!(res, Err(Ok(GovernanceError::VotingPeriodOutOfBounds)));
+}
+
+#[test]
+fn initialize_rejects_voting_period_below_min() {
+    let env = create_env();
+    let (governance, owner, rbac_id, multisig_id, timelock_id) = setup_uninitialized(&env);
+    let res = governance.try_initialize(
+        &owner,
+        &rbac_id,
+        &multisig_id,
+        &timelock_id,
+        &2u32,
+        &(MIN_VOTING_PERIOD_SECONDS - 1),
+    );
+    assert_eq!(res, Err(Ok(GovernanceError::VotingPeriodOutOfBounds)));
+}
+
+#[test]
+fn initialize_rejects_voting_period_above_max() {
+    let env = create_env();
+    let (governance, owner, rbac_id, multisig_id, timelock_id) = setup_uninitialized(&env);
+    let res = governance.try_initialize(
+        &owner,
+        &rbac_id,
+        &multisig_id,
+        &timelock_id,
+        &2u32,
+        &(MAX_VOTING_PERIOD_SECONDS + 1),
+    );
+    assert_eq!(res, Err(Ok(GovernanceError::VotingPeriodOutOfBounds)));
+}
+
+#[test]
+fn initialize_rejects_voting_period_near_u64_max() {
+    let env = create_env();
+    let (governance, owner, rbac_id, multisig_id, timelock_id) = setup_uninitialized(&env);
+    let res = governance.try_initialize(
+        &owner,
+        &rbac_id,
+        &multisig_id,
+        &timelock_id,
+        &2u32,
+        &(u64::MAX - 1),
+    );
+    assert_eq!(res, Err(Ok(GovernanceError::VotingPeriodOutOfBounds)));
+}
+
+#[test]
+fn update_config_enforces_voting_period_bounds() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // Over-max and near-u64::MAX are rejected.
+    let too_large = setup
+        .governance
+        .try_update_config(&setup.owner, &2u32, &(MAX_VOTING_PERIOD_SECONDS + 1));
+    assert_eq!(too_large, Err(Ok(GovernanceError::VotingPeriodOutOfBounds)));
+
+    let near_max = setup
+        .governance
+        .try_update_config(&setup.owner, &2u32, &u64::MAX);
+    assert_eq!(near_max, Err(Ok(GovernanceError::VotingPeriodOutOfBounds)));
+
+    // Below-min is rejected.
+    let too_small = setup
+        .governance
+        .try_update_config(&setup.owner, &2u32, &(MIN_VOTING_PERIOD_SECONDS - 1));
+    assert_eq!(too_small, Err(Ok(GovernanceError::VotingPeriodOutOfBounds)));
+
+    // A valid in-range value is accepted and persisted.
+    setup
+        .governance
+        .update_config(&setup.owner, &2u32, &MAX_VOTING_PERIOD_SECONDS);
+    let (_, _, _, _, _, period) = setup.governance.get_config();
+    assert_eq!(period, MAX_VOTING_PERIOD_SECONDS);
 }

@@ -20,6 +20,8 @@
 //! - Only addresses granted the `slasher` role may initiate or countersign a slash.
 //! - Penalty is strictly proportional — capped at `MAX_PENALTY_BPS` (5 000 bps = 50%).
 //! - Each unique `evidence_hash` can only be acted upon once (replay protection).
+//!   Replay detection uses O(1) keyed storage: each hash is stored as a key in `USED_EV`
+//!   (a `Map<BytesN<32>, bool>`), so lookup time is constant regardless of slash history.
 //! - Slashed funds are held in escrow during the appeal window before burning/redistribution.
 //! - Admin cannot slash; roles are separated (admin ≠ slasher).
 
@@ -172,6 +174,8 @@ pub enum SlashError {
     LifetimeCapExceeded = 15,
     /// Arithmetic overflow/underflow protection.
     ArithmeticOverflow  = 16,
+    /// Quorum must be greater than zero; passing 0 is a misconfiguration.
+    ZeroQuorum          = 17,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -190,6 +194,9 @@ impl SlashingPenaltyContract {
     /// * `admin`   - Address that can grant/revoke slasher roles and reverse appeals.
     /// * `token`   - Contract address of the XLM-wrapped or custom token used for stake.
     /// * `quorum`  - Minimum number of slasher signatures for attestation slashes.
+    ///              Must be greater than zero; `DEFAULT_QUORUM` (2) is the recommended
+    ///              minimum. Passing 0 returns `SlashError::ZeroQuorum` — it is never
+    ///              silently raised to the default, as that would hide misconfiguration.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -203,6 +210,9 @@ impl SlashingPenaltyContract {
         if env.storage().instance().has(&ADMIN) {
             return Err(SlashError::AlreadyInitialized);
         }
+        if quorum == 0 {
+            return Err(SlashError::ZeroQuorum);
+        }
         Self::validate_caps(
             per_event_bps_cap,
             per_period_amount_cap,
@@ -212,11 +222,11 @@ impl SlashingPenaltyContract {
         admin.require_auth();
         env.storage().instance().set(&ADMIN, &admin);
         env.storage().instance().set(&TOKEN, &token);
-        env.storage().instance().set(&QUORUM, &quorum.max(DEFAULT_QUORUM));
+        env.storage().instance().set(&QUORUM, &quorum);
         env.storage().instance().set(&SLASHERS, &Vec::<Address>::new(&env));
         env.storage().instance().set(&STAKES, &Map::<Address, i128>::new(&env));
         env.storage().instance().set(&SLASH_REC, &Map::<BytesN<32>, SlashRecord>::new(&env));
-        env.storage().instance().set(&USED_EV, &Vec::<BytesN<32>>::new(&env));
+        env.storage().instance().set(&USED_EV, &Map::<BytesN<32>, bool>::new(&env));
         env.storage().instance().set(&ESCROW, &Map::<BytesN<32>, i128>::new(&env));
         env.storage().instance().set(&SLASH_ACC, &Map::<Address, PenaltyAccumulator>::new(&env));
         env.storage().instance().set(&CAPS, &PenaltyCaps {
@@ -616,18 +626,30 @@ impl SlashingPenaltyContract {
         Ok(())
     }
 
+    /// Check that an evidence hash has not been used before.
+    ///
+    /// Uses a keyed `Map<BytesN<32>, bool>` for O(1) lookup, ensuring replay detection
+    /// remains constant-cost regardless of how many prior slashes have been recorded.
+    ///
+    /// # Replay-protection invariant
+    /// Every evidence hash is stored as a key at mark time. `has()` on the map is a
+    /// single ledger entry lookup — it never degrades to a linear scan.
     fn check_evidence_unused(env: &Env, hash: &BytesN<32>) -> Result<(), SlashError> {
-        let used: Vec<BytesN<32>> = env.storage().instance().get(&USED_EV).unwrap();
-        if used.contains(hash) {
+        let used: Map<BytesN<32>, bool> = env.storage().instance().get(&USED_EV).unwrap();
+        if used.contains_key(hash.clone()) {
             Err(SlashError::DuplicateEvidence)
         } else {
             Ok(())
         }
     }
 
+    /// Mark an evidence hash as used by inserting it into the keyed map.
+    ///
+    /// The map key is the hash itself; the value `true` is a sentinel. Future calls to
+    /// `check_evidence_unused` will find the key in O(1) via `contains_key`.
     fn mark_evidence_used(env: &Env, hash: BytesN<32>) {
-        let mut used: Vec<BytesN<32>> = env.storage().instance().get(&USED_EV).unwrap();
-        used.push_back(hash);
+        let mut used: Map<BytesN<32>, bool> = env.storage().instance().get(&USED_EV).unwrap();
+        used.set(hash, true);
         env.storage().instance().set(&USED_EV, &used);
     }
 
