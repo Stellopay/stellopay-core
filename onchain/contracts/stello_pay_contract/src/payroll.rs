@@ -6,13 +6,13 @@ use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
     emit_employee_added, emit_grace_period_extended, emit_grace_period_finalized,
-    emit_milestone_funded, emit_payment_received, emit_payment_sent, emit_payroll_claimed,
-    emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
-    AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
-    BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
-    GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
-    MilestoneClaimed, MilestoneFundedEvent, PaymentReceivedEvent, PaymentSentEvent,
-    PayrollClaimedEvent,
+    emit_milestone_funded, emit_multisig_config_changed, emit_payment_received, emit_payment_sent,
+    emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent,
+    AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent,
+    BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent,
+    EmployeeAddedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded,
+    MilestoneApproved, MilestoneClaimed, MilestoneFundedEvent, MultisigConfigChangedEvent,
+    PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
@@ -98,6 +98,20 @@ pub fn set_multisig_config(
     if owner != stored_owner {
         return Err(PayrollError::Unauthorized);
     }
+
+    // Capture the previous thresholds before overwriting so the emitted event
+    // and audit entry can report old-vs-new values (0 = previously unset).
+    let old_large_payment_threshold: i128 = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::LargePaymentThreshold)
+        .unwrap_or(0);
+    let old_dispute_resolution_threshold: i128 = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::DisputeResolutionThreshold)
+        .unwrap_or(0);
+
     env.storage()
         .persistent()
         .set(&StorageKey::MultisigContract, &multisig_contract);
@@ -108,6 +122,33 @@ pub fn set_multisig_config(
         &StorageKey::DisputeResolutionThreshold,
         &dispute_resolution_threshold,
     );
+
+    // Emit a structured event so off-chain monitors observe approval-requirement
+    // changes mid-lifecycle. Only public configuration is exposed.
+    emit_multisig_config_changed(
+        env,
+        MultisigConfigChangedEvent {
+            caller: owner.clone(),
+            multisig_contract: multisig_contract.clone(),
+            old_large_threshold: old_large_payment_threshold,
+            new_large_threshold: large_payment_threshold,
+            old_dispute_threshold: old_dispute_resolution_threshold,
+            new_dispute_threshold: dispute_resolution_threshold,
+        },
+    );
+
+    // Record a tamper-evident audit entry via the existing audit path. This is a
+    // contract-level change, so it uses the sentinel `agreement_id = 0` and
+    // reports the new large-payment threshold as the entry's `amount`.
+    record_entry(
+        env,
+        owner,
+        AuditEvent::MultisigConfigChanged,
+        0,
+        None,
+        Some(large_payment_threshold),
+    );
+
     Ok(())
 }
 

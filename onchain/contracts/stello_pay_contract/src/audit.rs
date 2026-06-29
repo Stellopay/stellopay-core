@@ -9,6 +9,11 @@ pub enum AuditEvent {
     AgreementCancelled,
     DisputeRaised,
     DisputeResolved,
+    /// A multisig threshold configuration change (`set_multisig_config`).
+    ///
+    /// This is a contract-level event not tied to an agreement; entries use a
+    /// sentinel `agreement_id` of `0`.
+    MultisigConfigChanged,
 }
 
 /// Append-only audit entry for critical agreement lifecycle transitions.
@@ -42,6 +47,7 @@ impl AuditEvent {
             AuditEvent::AgreementCancelled => Symbol::new(env, "agreement_cancelled"),
             AuditEvent::DisputeRaised => Symbol::new(env, "dispute_raised"),
             AuditEvent::DisputeResolved => Symbol::new(env, "dispute_resolved"),
+            AuditEvent::MultisigConfigChanged => Symbol::new(env, "multisig_config_changed"),
         }
     }
 }

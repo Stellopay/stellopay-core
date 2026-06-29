@@ -139,3 +139,26 @@ The test suite covers:
 - Zero-amount payment rejection
 - ContractUpgrade and DisputeResolution flows
 - Query function correctness
+
+### Observability: payroll multisig threshold changes
+
+The `stello_pay_contract` payroll contract gates large payments and dispute
+resolutions behind multisig approval, using two thresholds configured via
+`set_multisig_config(owner, multisig_contract, large_payment_threshold,
+dispute_resolution_threshold)`.
+
+Because changing these thresholds alters the contract's security posture, every
+successful `set_multisig_config` call now:
+
+- emits a `MultisigConfigChanged` event (see `docs/events-schema.json`) carrying
+  the `caller`, the `multisig_contract`, and the old vs new values for both
+  thresholds, so off-chain monitors can detect approval-requirement changes
+  mid-lifecycle; and
+- records a tamper-evident audit entry through the contract's existing audit
+  path (`AuditEvent::MultisigConfigChanged`, action `multisig_config_changed`,
+  contract-level `agreement_id = 0`).
+
+The event exposes only public configuration; it never includes multisig signer
+secrets. Emission and audit recording are covered by
+`onchain/contracts/stello_pay_contract/tests/test_event_emissions.rs`
+(`test_multisig_config_changed_event*`).
