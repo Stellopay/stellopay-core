@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "sdk_version": "23.5.2",
+  "captured_at": "2026-05-31",
+  "regression_tolerance_pct": 5,
+  "host": "soroban-sdk test host (native Rust, not WASM)",
+  "claim_payroll": {
+    "description": "CPU instructions for claim_payroll with N elapsed payroll periods (single transfer, O(1) in backlog size)",
+    "cases": [
+      { "periods": 1, "instructions": 477796 },
+      { "periods": 10, "instructions": 477796 },
+      { "periods": 50, "instructions": 477796 },
+    ]
+  },
+  "batch_claim_milestones": {
+    "description": "CPU instructions for batch_claim_milestones with N approved milestones",
+    "cases": [
+      { "milestones": 1, "instructions": 401410 },
+      { "milestones": 5, "instructions": 1524366 },
+      { "milestones": 20, "instructions": 7123086 },
+    ]
+  }
+}

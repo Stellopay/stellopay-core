@@ -143,3 +143,26 @@ stellar contract invoke \
 
 These patterns can be wrapped in shell scripts, CI jobs, or higher‑level deployment tooling to provide reliable, repeatable interactions without writing additional application code.
 
+---
+
+### Payroll + Token Vesting Integration Assumptions
+
+The payroll and token vesting contracts are integrated by orchestration rather than by direct contract-to-contract calls. A hiring workflow should bind the same `employer`, `employee`, and `token` to:
+
+- a `stello_pay_contract` payroll agreement for recurring salary claims
+- a `token_vesting` schedule for grant, bonus, or equity-like vesting claims
+
+The integration tests in `onchain/integration_tests/tests/test_token_vesting_payroll_integration.rs` cover the expected lifecycle:
+
+- hire: employer creates and activates a payroll agreement, then creates a revocable vesting schedule for the same employee
+- claims: employee claims payroll periods and vested tokens at multiple ledger timestamps
+- termination: payroll cancellation starts the grace period, while vesting revocation refunds only unvested tokens and leaves vested-but-unclaimed tokens claimable
+- dispute/grace alignment: an admin early release may be used after a payroll dispute or grace-period decision, but only the vesting owner can approve it
+- security boundaries: mismatched employees cannot claim another employee's payroll or vesting, and mismatched employers cannot revoke a schedule
+
+Security notes:
+
+- Payroll escrow accounting remains independent from vesting escrow accounting; both contracts transfer the same SAC token but hold separate balances.
+- Revocation freezes vesting at `revoked_at`; later ledger movement must not increase `releasable_amount`.
+- Repeated same-ledger claims are rejected once no additional payroll period or vested amount is available.
+- Off-chain services should persist the payroll `agreement_id` to vesting `schedule_id` mapping and verify the employer, beneficiary, and token match before presenting combined lifecycle actions.

@@ -61,6 +61,46 @@ enum StorageKey {
     Schedule(u128),
 }
 
+// ============================================================================
+// EVENTS
+// ============================================================================
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CreatedEvent {
+    pub id: u128,
+    pub employer: Address,
+    pub beneficiary: Address,
+    pub token: Address,
+    pub kind: VestingKind,
+    pub amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimedEvent {
+    pub id: u128,
+    pub beneficiary: Address,
+    pub amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RevokedEvent {
+    pub id: u128,
+    pub employer: Address,
+    pub refunded: i128,
+    pub at: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EarlyReleaseEvent {
+    pub id: u128,
+    pub admin: Address,
+    pub amount: i128,
+}
+
 fn require_initialized(env: &Env) {
     let initialized = env
         .storage()
@@ -103,6 +143,33 @@ fn write_schedule(env: &Env, schedule: &VestingSchedule) {
         .set(&StorageKey::Schedule(schedule.id), schedule);
 }
 
+/// Computes the cumulative vested amount for `schedule` at timestamp `now`.
+///
+/// For revoked schedules the clock is frozen at `revoked_at`.
+///
+/// # Vesting kinds
+///
+/// - **Linear**: proportional interpolation between `start_time` and `end_time`,
+///   gated by an optional `cliff_time` (nothing vests until the cliff is reached).
+///   cliff+linear interaction: before the cliff the result is 0 even after start;
+///   at and after the cliff, linear interpolation applies from `start_time`.
+/// - **Cliff**: 0 before `cliff_time`, 100% of `total_amount` at or after `cliff_time`.
+/// - **Custom**: step function — returns the `cumulative_amount` of the last
+///   checkpoint whose `time <= now`, capped at `total_amount`.
+///
+/// # Arguments
+///
+/// * `now` - Current ledger timestamp (or `revoked_at` for revoked schedules).
+/// * `schedule` - The vesting schedule to evaluate.
+///
+/// # Returns
+///
+/// The cumulative amount vested at `now`, as an `i128`. Never exceeds
+/// `schedule.total_amount`.
+///
+/// # Panics
+///
+/// Never. Pure computation — does not access storage or require auth.
 fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
     if schedule.total_amount <= 0 {
         return 0;
@@ -117,6 +184,8 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
         VestingKind::Linear => {
             if effective_now <= schedule.start_time {
                 0
+            } else if matches!(schedule.cliff_time, Some(cliff) if effective_now < cliff) {
+                0
             } else if effective_now >= schedule.end_time {
                 schedule.total_amount
             } else {
@@ -125,9 +194,27 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
                 if duration == 0 {
                     schedule.total_amount
                 } else {
-                    // Linear interpolation: total * elapsed / duration
-                    (schedule.total_amount * i128::from(elapsed as i64))
-                        / i128::from(duration as i64)
+                    // Overflow-safe linear interpolation: total * elapsed / duration
+                    // Uses divide-before-multiply to prevent intermediate overflow.
+                    // Computes: (total / duration) * elapsed + (total % duration) * elapsed / duration
+                    // Rounding: truncates toward zero (same as original behavior).
+                    // The result is guaranteed to be <= total_amount since elapsed <= duration.
+                    let elapsed_i128 = i128::from(elapsed as i64);
+                    let duration_i128 = i128::from(duration as i64);
+                    
+                    // Main term: (total / duration) * elapsed
+                    let quotient = schedule.total_amount / duration_i128;
+                    let main_term = quotient.checked_mul(elapsed_i128).unwrap_or(schedule.total_amount);
+                    
+                    // Remainder term: (total % duration) * elapsed / duration
+                    let remainder = schedule.total_amount % duration_i128;
+                    let remainder_term = remainder
+                        .checked_mul(elapsed_i128)
+                        .and_then(|p| p.checked_div(duration_i128))
+                        .unwrap_or(0);
+                    
+                    // Sum and cap at total_amount (should not exceed, but safe guard)
+                    main_term.checked_add(remainder_term).unwrap_or(schedule.total_amount).min(schedule.total_amount)
                 }
             }
         }
@@ -136,7 +223,7 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
             _ => 0,
         },
         VestingKind::Custom => {
-            if schedule.checkpoints.len() == 0 {
+            if schedule.checkpoints.is_empty() {
                 return 0;
             }
             let mut last_amount: i128 = 0;
@@ -157,6 +244,9 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
     }
 }
 
+/// Returns `vested - released_amount`, floored at 0.
+///
+/// This is the amount the beneficiary can currently withdraw via `claim`.
 fn compute_releasable(now: u64, schedule: &VestingSchedule) -> i128 {
     let vested = compute_vested_amount(now, schedule);
     let mut releasable = vested.checked_sub(schedule.released_amount).unwrap_or(0);
@@ -198,6 +288,7 @@ impl TokenVestingContract {
     /// @param end_time Vesting end timestamp (must be > start_time).
     /// @param cliff_time Optional cliff timestamp.
     /// @param revocable Whether employer can revoke this schedule.
+    /// @return u128
     pub fn create_linear_schedule(
         env: Env,
         employer: Address,
@@ -224,14 +315,14 @@ impl TokenVestingContract {
 
         // Escrow tokens in the vesting contract.
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&employer, &env.current_contract_address(), &total_amount);
+        token_client.transfer(&employer, env.current_contract_address(), &total_amount);
 
         let id = next_schedule_id(&env);
         let schedule = VestingSchedule {
             id,
-            employer,
-            beneficiary,
-            token,
+            employer: employer.clone(),
+            beneficiary: beneficiary.clone(),
+            token: token.clone(),
             kind: VestingKind::Linear,
             total_amount,
             released_amount: 0,
@@ -244,11 +335,32 @@ impl TokenVestingContract {
             revoked_at: None,
         };
         write_schedule(&env, &schedule);
+
+        env.events().publish(
+            ("vesting_created", id),
+            CreatedEvent {
+                id,
+                employer,
+                beneficiary,
+                token,
+                kind: VestingKind::Linear,
+                amount: total_amount,
+            },
+        );
+
         id
     }
 
     /// @notice Creates a cliff vesting schedule.
-    /// @dev All tokens vest at `cliff_time`.
+    /// @dev All tokens vest at `cliff_time`; nothing is released before.
+    ///      Employer escrows the full `total_amount` at creation time.
+    /// @param employer Funding address; must authenticate.
+    /// @param beneficiary Employee/recipient of vested tokens.
+    /// @param token Token contract address used for vesting.
+    /// @param total_amount Total number of tokens to vest (must be > 0).
+    /// @param cliff_time Absolute timestamp at which 100% of tokens vest.
+    /// @param revocable Whether employer can revoke this schedule.
+    /// @return u128 Unique schedule identifier.
     pub fn create_cliff_schedule(
         env: Env,
         employer: Address,
@@ -264,14 +376,14 @@ impl TokenVestingContract {
         assert!(total_amount > 0, "Total amount must be positive");
 
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&employer, &env.current_contract_address(), &total_amount);
+        token_client.transfer(&employer, env.current_contract_address(), &total_amount);
 
         let id = next_schedule_id(&env);
         let schedule = VestingSchedule {
             id,
-            employer,
-            beneficiary,
-            token,
+            employer: employer.clone(),
+            beneficiary: beneficiary.clone(),
+            token: token.clone(),
             kind: VestingKind::Cliff,
             total_amount,
             released_amount: 0,
@@ -284,11 +396,34 @@ impl TokenVestingContract {
             revoked_at: None,
         };
         write_schedule(&env, &schedule);
+
+        env.events().publish(
+            ("vesting_created", id),
+            CreatedEvent {
+                id,
+                employer,
+                beneficiary,
+                token,
+                kind: VestingKind::Cliff,
+                amount: total_amount,
+            },
+        );
+
         id
     }
 
     /// @notice Creates a custom vesting schedule with arbitrary checkpoints.
-    /// @dev `checkpoints` must be sorted by `time` and end at `total_amount`.
+    /// @dev `checkpoints` must be sorted ascending by `time`, with non-decreasing
+    ///      `cumulative_amount` values; the last checkpoint must equal `total_amount`.
+    ///      Employer escrows the full `total_amount` at creation time.
+    /// @param employer Funding address; must authenticate.
+    /// @param beneficiary Employee/recipient of vested tokens.
+    /// @param token Token contract address used for vesting.
+    /// @param total_amount Total number of tokens to vest (must be > 0).
+    /// @param checkpoints Ordered list of `CustomCheckpoint` entries defining the
+    ///        step-function vesting curve.
+    /// @param revocable Whether employer can revoke this schedule.
+    /// @return u128 Unique schedule identifier.
     pub fn create_custom_schedule(
         env: Env,
         employer: Address,
@@ -302,7 +437,7 @@ impl TokenVestingContract {
         employer.require_auth();
 
         assert!(total_amount > 0, "Total amount must be positive");
-        assert!(checkpoints.len() > 0, "At least one checkpoint required");
+        assert!(!checkpoints.is_empty(), "At least one checkpoint required");
 
         let mut last_time: u64 = 0;
         let mut last_amount: i128 = 0;
@@ -322,14 +457,14 @@ impl TokenVestingContract {
         );
 
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&employer, &env.current_contract_address(), &total_amount);
+        token_client.transfer(&employer, env.current_contract_address(), &total_amount);
 
         let id = next_schedule_id(&env);
         let schedule = VestingSchedule {
             id,
-            employer,
-            beneficiary,
-            token,
+            employer: employer.clone(),
+            beneficiary: beneficiary.clone(),
+            token: token.clone(),
             kind: VestingKind::Custom,
             total_amount,
             released_amount: 0,
@@ -342,6 +477,19 @@ impl TokenVestingContract {
             revoked_at: None,
         };
         write_schedule(&env, &schedule);
+
+        env.events().publish(
+            ("vesting_created", id),
+            CreatedEvent {
+                id,
+                employer,
+                beneficiary,
+                token,
+                kind: VestingKind::Custom,
+                amount: total_amount,
+            },
+        );
+
         id
     }
 
@@ -367,9 +515,9 @@ impl TokenVestingContract {
         let amount = compute_releasable(now, &schedule);
         assert!(amount > 0, "Nothing to claim");
 
-        let token_client = token::Client::new(&env, &schedule.token);
-        token_client.transfer(&env.current_contract_address(), &beneficiary, &amount);
-
+        // Checks-effects-interactions:
+        // commit released amount before external transfer to prevent reentrant
+        // reuse of stale releasable state.
         schedule.released_amount = schedule
             .released_amount
             .checked_add(amount)
@@ -380,6 +528,18 @@ impl TokenVestingContract {
         }
 
         write_schedule(&env, &schedule);
+        let token_client = token::Client::new(&env, &schedule.token);
+        token_client.transfer(&env.current_contract_address(), &beneficiary, &amount);
+
+        env.events().publish(
+            ("vesting_claimed", schedule_id),
+            ClaimedEvent {
+                id: schedule_id,
+                beneficiary,
+                amount,
+            },
+        );
+
         amount
     }
 
@@ -422,13 +582,7 @@ impl TokenVestingContract {
             amount
         };
 
-        let token_client = token::Client::new(&env, &schedule.token);
-        token_client.transfer(
-            &env.current_contract_address(),
-            &schedule.beneficiary,
-            &release_amount,
-        );
-
+        // Checks-effects-interactions: move accounting update before transfer.
         schedule.released_amount = schedule
             .released_amount
             .checked_add(release_amount)
@@ -439,6 +593,22 @@ impl TokenVestingContract {
         }
 
         write_schedule(&env, &schedule);
+        let token_client = token::Client::new(&env, &schedule.token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &schedule.beneficiary,
+            &release_amount,
+        );
+
+        env.events().publish(
+            ("vesting_early_release", schedule_id),
+            EarlyReleaseEvent {
+                id: schedule_id,
+                admin,
+                amount: release_amount,
+            },
+        );
+
         release_amount
     }
 
@@ -464,26 +634,41 @@ impl TokenVestingContract {
         let unvested = schedule.total_amount.checked_sub(vested).unwrap_or(0);
         assert!(unvested >= 0, "Invalid vesting state");
 
+        schedule.status = VestingStatus::Revoked;
+        schedule.revoked_at = Some(now);
+        write_schedule(&env, &schedule);
+
         if unvested > 0 {
             let token_client = token::Client::new(&env, &schedule.token);
             token_client.transfer(&env.current_contract_address(), &employer, &unvested);
         }
 
-        schedule.status = VestingStatus::Revoked;
-        schedule.revoked_at = Some(now);
-        write_schedule(&env, &schedule);
+        env.events().publish(
+            ("vesting_revoked", schedule_id),
+            RevokedEvent {
+                id: schedule_id,
+                employer,
+                refunded: unvested,
+                at: now,
+            },
+        );
 
         unvested
     }
 
     /// @notice Reads a vesting schedule by id.
+    /// @param schedule_id Unique identifier of the schedule to look up.
+    /// @return `Option<VestingSchedule>` — `None` if `schedule_id` does not exist.
+    /// @dev Read-only; no authentication required.
     pub fn get_schedule(env: Env, schedule_id: u128) -> Option<VestingSchedule> {
         env.storage()
             .persistent()
             .get(&StorageKey::Schedule(schedule_id))
     }
 
-    /// @notice Returns the amount currently vested for a schedule.
+    /// @notice Returns the cumulative amount vested so far for a schedule.
+    /// @param schedule_id Unique identifier of the schedule.
+    /// @dev Read-only; no authentication required.
     pub fn get_vested_amount(env: Env, schedule_id: u128) -> i128 {
         let schedule = read_schedule(&env, schedule_id);
         let now = env.ledger().timestamp();
@@ -491,6 +676,8 @@ impl TokenVestingContract {
     }
 
     /// @notice Returns the currently releasable (claimable) amount.
+    /// @param schedule_id Unique identifier of the schedule.
+    /// @dev Read-only; no authentication required. Equals vested minus already released.
     pub fn get_releasable_amount(env: Env, schedule_id: u128) -> i128 {
         let schedule = read_schedule(&env, schedule_id);
         let now = env.ledger().timestamp();
@@ -498,6 +685,7 @@ impl TokenVestingContract {
     }
 
     /// @notice Returns the contract owner/admin.
+    /// @dev Read-only; no authentication required.
     pub fn get_owner(env: Env) -> Option<Address> {
         env.storage().persistent().get(&StorageKey::Owner)
     }

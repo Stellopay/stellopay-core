@@ -1,90 +1,111 @@
 #![no_std]
 
-//! Automated Compliance Checker Contract (#233)
+//! Payroll compliance transition rules engine.
 //!
-//! Provides configurable compliance rules, automatic checks, reporting, and
-//! violation alerts for on-chain business logic.
+//! This contract encodes allow/deny checks for payroll lifecycle actions and
+//! emits deterministic reason codes for each decision.
 
-use soroban_sdk::{
-    contract, contractevent, contractimpl, contracttype, symbol_short, Address, Env, Symbol, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
 
 #[contract]
 pub struct ComplianceCheckerContract;
 
-/// Storage keys for the compliance checker
 #[contracttype]
 #[derive(Clone)]
 enum StorageKey {
     Initialized,
     Admin,
-    NextRuleId,
-    /// Rule definition: rule_id -> Rule
-    Rule(u32),
-    /// Ordered list of rule IDs
-    RulesIndex,
-    /// Last compliance report for a subject: subject_id -> ComplianceReport
-    LastReport(u128),
+    EmergencyPause,
+    AuxiliaryAllowed(Address),
 }
 
-/// Kinds of compliance rules supported by the contract.
-///
-/// Note: Soroban contract types require tuple-style payloads.
+/// Payroll agreement lifecycle statuses mirrored from main payroll flows.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AgreementStatus {
+    Created,
+    Active,
+    Paused,
+    Cancelled,
+    Completed,
+    Disputed,
+}
+
+/// Validated payroll actions.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PayrollAction {
+    AddEmployee,
+    ActivateAgreement,
+    PauseAgreement,
+    ResumeAgreement,
+    CancelAgreement,
+    FinalizeGracePeriod,
+    RaiseDispute,
+    ResolveDispute,
+    ClaimPayroll,
+    ClaimTimeBased,
+    ClaimMilestone,
+}
+
+/// Binary decision for a compliance check.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Decision {
+    Allow,
+    Deny,
+}
+
+/// Deterministic reason codes returned by the rules engine.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReasonCode {
+    Allowed,
+    AuxiliaryNotAllowed,
+    EmergencyPaused,
+    TerminalState,
+    InvalidCurrentState,
+    InvalidTargetState,
+    GracePeriodRequired,
+}
+
+/// Canonical identifiers for each evaluated rule in the compliance engine.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TraceRule {
+    EmergencyPause,
+    AuxiliaryNotAllowed,
+    TerminalState,
+    InvalidCurrentState,
+    InvalidTargetState,
+    GracePeriodRequired,
+}
+
+/// Trace entry for a single rule evaluation.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TraceEntry {
+    pub rule: TraceRule,
+    pub result: Decision,
+    /// Denial reason that caused this rule to decide `Deny`, or `None` for
+    /// allowed path evaluations.
+    pub reason: Option<ReasonCode>,
+}
+
+/// Result payload returned by rule evaluation.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RuleKind {
-    /// Attribute must not exceed a maximum value, e.g. `amount <= max`.
-    MaxValue(Symbol, i128),
-    /// Attribute must be at least a minimum value, e.g. `amount >= min`.
-    MinValue(Symbol, i128),
-    /// Attribute must be present and non-zero, e.g. a required flag.
-    RequiredFlag(Symbol),
-}
-
-/// A single compliance rule.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Rule {
-    pub id: u32,
-    pub active: bool,
-    pub kind: RuleKind,
-    pub description: Symbol,
-    pub severity: u32,
-}
-
-/// A single violation entry in a compliance report.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ComplianceViolation {
-    pub rule_id: u32,
-    pub message: Symbol,
-    pub severity: u32,
-}
-
-/// Result of a compliance check for a subject.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ComplianceReport {
-    pub subject_id: u128,
-    pub passed: bool,
-    pub violations: Vec<ComplianceViolation>,
-}
-
-/// Emitted when a compliance violation is detected.
-#[contractevent]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ComplianceViolationEvent {
-    pub subject_id: u128,
-    pub rule_id: u32,
-    pub severity: u32,
+pub struct ComplianceDecision {
+    pub decision: Decision,
+    pub reason: ReasonCode,
+    pub traces: soroban_sdk::Vec<TraceEntry>,
 }
 
 #[contractimpl]
 impl ComplianceCheckerContract {
-    /// Initializes the contract.
-    ///
-    /// # Arguments
-    /// * `admin` - Address that will manage rules (must authenticate).
+    /// @notice Initializes the compliance checker.
+    /// @dev One-time setup. `admin` is the only principal allowed to mutate
+    ///      security settings (pause state and auxiliary allowlist).
     pub fn initialize(env: Env, admin: Address) {
         if env
             .storage()
@@ -94,254 +115,237 @@ impl ComplianceCheckerContract {
         {
             panic!("Already initialized");
         }
+
         admin.require_auth();
+        env.storage().persistent().set(&StorageKey::Admin, &admin);
         env.storage()
             .persistent()
-            .set(&StorageKey::Admin, &admin);
+            .set(&StorageKey::EmergencyPause, &false);
         env.storage()
             .persistent()
             .set(&StorageKey::Initialized, &true);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::NextRuleId, &1u32);
-        let empty: Vec<u32> = Vec::new(&env);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::RulesIndex, &empty);
     }
 
-    /// Adds a new compliance rule.
-    ///
-    /// # Arguments
-    /// * `caller` - Must be the admin (must authenticate).
-    /// * `kind` - Rule kind.
-    /// * `description` - Short description of the rule.
-    /// * `severity` - Severity level.
-    pub fn add_rule(
-        env: Env,
-        caller: Address,
-        kind: RuleKind,
-        description: Symbol,
-        severity: u32,
-    ) -> u32 {
+    /// @notice Enables or disables emergency pause checks.
+    /// @dev Highest precedence deny: when paused, all payroll action checks
+    ///      return `Deny/EmergencyPaused`.
+    pub fn set_emergency_pause(env: Env, caller: Address, is_paused: bool) {
         Self::require_initialized(&env);
         Self::require_admin(&env, &caller);
-
-        let next_id: u32 = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::NextRuleId)
-            .unwrap_or(1);
-        let new_next = next_id
-            .checked_add(1)
-            .expect("Rule id overflow");
         env.storage()
             .persistent()
-            .set(&StorageKey::NextRuleId, &new_next);
-
-        let rule = Rule {
-            id: next_id,
-            active: true,
-            kind,
-            description,
-            severity,
-        };
-        env.storage()
-            .persistent()
-            .set(&StorageKey::Rule(next_id), &rule);
-
-        let mut index: Vec<u32> = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::RulesIndex)
-            .unwrap_or_else(|| Vec::new(&env));
-        index.push_back(next_id);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::RulesIndex, &index);
-
-        next_id
+            .set(&StorageKey::EmergencyPause, &is_paused);
     }
 
-    /// Activates or deactivates an existing rule.
-    pub fn set_rule_active(env: Env, caller: Address, rule_id: u32, active: bool) {
+    /// @notice Allowlists or removes an auxiliary contract.
+    /// @dev Auxiliary callers are denied by default and must be explicitly
+    ///      enabled. This protects against indirect bypass by helper contracts.
+    pub fn set_auxiliary_allowed(env: Env, caller: Address, auxiliary: Address, allowed: bool) {
         Self::require_initialized(&env);
         Self::require_admin(&env, &caller);
-        let mut rule: Rule = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::Rule(rule_id))
-            .expect("Rule not found");
-        rule.active = active;
         env.storage()
             .persistent()
-            .set(&StorageKey::Rule(rule_id), &rule);
+            .set(&StorageKey::AuxiliaryAllowed(auxiliary), &allowed);
     }
 
-    /// Returns a single rule.
-    pub fn get_rule(env: Env, rule_id: u32) -> Rule {
+    /// @notice Returns whether an auxiliary contract is explicitly allowlisted.
+    pub fn is_auxiliary_allowed(env: Env, auxiliary: Address) -> bool {
         env.storage()
             .persistent()
-            .get(&StorageKey::Rule(rule_id))
-            .expect("Rule not found")
+            .get(&StorageKey::AuxiliaryAllowed(auxiliary))
+            .unwrap_or(false)
     }
 
-    /// Lists all rules in insertion order.
-    pub fn list_rules(env: Env) -> Vec<Rule> {
-        let index: Vec<u32> = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::RulesIndex)
-            .unwrap_or_else(|| Vec::new(&env));
-        let mut out: Vec<Rule> = Vec::new(&env);
-        let mut i = 0u32;
-        while i < index.len() {
-            let id = index.get(i).unwrap();
-            if let Some(rule) = env
-                .storage()
-                .persistent()
-                .get::<_, Rule>(&StorageKey::Rule(id))
-            {
-                out.push_back(rule);
-            }
-            i += 1;
-        }
-        out
-    }
-
-    /// Checks compliance for a subject with a set of key/value attributes.
+    /// @notice Validates a payroll action transition.
+    /// @dev Rule precedence (highest -> lowest):
+    ///      1. Emergency pause deny.
+    ///      2. Auxiliary allowlist deny (when `executor != actor`).
+    ///      3. Terminal-state deny.
+    ///      4. Action/current-state compatibility deny.
+    ///      5. Target-state compatibility deny.
+    ///      6. Grace-period requirement deny for cancelled claims.
+    ///      7. Allow.
     ///
-    /// Attributes are represented as `(key, value)` pairs, where the
-    /// interpretation of `value` depends on the specific `RuleKind`.
-    pub fn check_compliance(
+    ///      Security assumption: callers must pass the real execution context:
+    ///      `actor` is the principal authorizing the action, and `executor` is
+    ///      the immediate executor. If `executor != actor`, executor is treated
+    ///      as an auxiliary contract and must be allowlisted.
+    pub fn check_action(
         env: Env,
-        subject_id: u128,
-        attributes: Vec<(Symbol, i128)>,
-    ) -> ComplianceReport {
+        actor: Address,
+        executor: Address,
+        action: PayrollAction,
+        current_state: AgreementStatus,
+        target_state: AgreementStatus,
+        grace_period_active: bool,
+    ) -> ComplianceDecision {
         Self::require_initialized(&env);
-        let rules = Self::list_rules(env.clone());
-        let mut violations: Vec<ComplianceViolation> = Vec::new(&env);
 
-        let mut i = 0u32;
-        while i < rules.len() {
-            let rule = rules.get(i).unwrap();
-            if rule.active {
-                if let Some(v) = Self::evaluate_rule(&env, &rule, subject_id, &attributes) {
-                    violations.push_back(v);
-                }
-            }
-            i += 1;
+        actor.require_auth();
+        if executor != actor {
+            executor.require_auth();
         }
 
-        let passed = violations.len() == 0;
-        let report = ComplianceReport {
-            subject_id,
-            passed,
-            violations,
-        };
-        env.storage()
+        let mut traces = soroban_sdk::Vec::new(&env);
+
+        // 1. Emergency Pause check
+        let is_paused = env
+            .storage()
             .persistent()
-            .set(&StorageKey::LastReport(subject_id), &report);
-        report
-    }
+            .get::<_, bool>(&StorageKey::EmergencyPause)
+            .unwrap_or(false);
+        
+        let pause_result = if is_paused { Decision::Deny } else { Decision::Allow };
+        traces.push_back(TraceEntry {
+            rule: TraceRule::EmergencyPause,
+            result: pause_result,
+            reason: if is_paused {
+                Some(ReasonCode::EmergencyPaused)
+            } else {
+                None
+            },
+        });
+        
+        if is_paused {
+            return Self::make_decision(Decision::Deny, ReasonCode::EmergencyPaused, traces);
+        }
 
-    /// Returns the last stored report for a subject, if any.
-    pub fn get_last_report(env: Env, subject_id: u128) -> Option<ComplianceReport> {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::LastReport(subject_id))
-    }
-
-    fn evaluate_rule(
-        env: &Env,
-        rule: &Rule,
-        subject_id: u128,
-        attributes: &Vec<(Symbol, i128)>,
-    ) -> Option<ComplianceViolation> {
-        use RuleKind::*;
-
-        match &rule.kind {
-            MaxValue(key, max) => {
-                if let Some(value) = Self::get_attr(attributes, key) {
-                    if value > *max {
-                        let msg = symbol_short!("max_vio");
-                        ComplianceViolationEvent {
-                            subject_id,
-                            rule_id: rule.id,
-                            severity: rule.severity,
-                        }
-                        .publish(env);
-                        return Some(ComplianceViolation {
-                            rule_id: rule.id,
-                            message: msg,
-                            severity: rule.severity,
-                        });
-                    }
-                }
-            }
-            MinValue(key, min) => {
-                if let Some(value) = Self::get_attr(attributes, key) {
-                    if value < *min {
-                        let msg = symbol_short!("min_vio");
-                        ComplianceViolationEvent {
-                            subject_id,
-                            rule_id: rule.id,
-                            severity: rule.severity,
-                        }
-                        .publish(env);
-                        return Some(ComplianceViolation {
-                            rule_id: rule.id,
-                            message: msg,
-                            severity: rule.severity,
-                        });
-                    }
-                }
-            }
-            RequiredFlag(key) => {
-                if let Some(value) = Self::get_attr(attributes, key) {
-                    if value == 0 {
-                        let msg = symbol_short!("flag_mis");
-                        ComplianceViolationEvent {
-                            subject_id,
-                            rule_id: rule.id,
-                            severity: rule.severity,
-                        }
-                        .publish(env);
-                        return Some(ComplianceViolation {
-                            rule_id: rule.id,
-                            message: msg,
-                            severity: rule.severity,
-                        });
-                    }
+        // 2. Auxiliary Not Allowed check
+        if executor != actor {
+            let is_allowed = Self::is_auxiliary_allowed(env.clone(), executor);
+            let aux_result = if is_allowed { Decision::Allow } else { Decision::Deny };
+            traces.push_back(TraceEntry {
+                rule: TraceRule::AuxiliaryNotAllowed,
+                result: aux_result,
+                reason: if is_allowed {
+                    None
                 } else {
-                    let msg = symbol_short!("flag_mis");
-                    ComplianceViolationEvent {
-                        subject_id,
-                        rule_id: rule.id,
-                        severity: rule.severity,
-                    }
-                    .publish(env);
-                    return Some(ComplianceViolation {
-                        rule_id: rule.id,
-                        message: msg,
-                        severity: rule.severity,
-                    });
-                }
+                    Some(ReasonCode::AuxiliaryNotAllowed)
+                },
+            });
+            if !is_allowed {
+                return Self::make_decision(Decision::Deny, ReasonCode::AuxiliaryNotAllowed, traces);
             }
         }
-        None
+
+        // 3. Terminal State check
+        let is_terminal = current_state == AgreementStatus::Completed;
+        let terminal_result = if is_terminal { Decision::Deny } else { Decision::Allow };
+        traces.push_back(TraceEntry {
+            rule: TraceRule::TerminalState,
+            result: terminal_result,
+            reason: if is_terminal {
+                Some(ReasonCode::TerminalState)
+            } else {
+                None
+            },
+        });
+        if is_terminal {
+            return Self::make_decision(Decision::Deny, ReasonCode::TerminalState, traces);
+        }
+
+        // 4. Invalid Current State check
+        let is_current_valid = Self::is_action_allowed_from_state(action, current_state);
+        let current_valid_result = if is_current_valid { Decision::Allow } else { Decision::Deny };
+        traces.push_back(TraceEntry {
+            rule: TraceRule::InvalidCurrentState,
+            result: current_valid_result,
+            reason: if is_current_valid {
+                None
+            } else {
+                Some(ReasonCode::InvalidCurrentState)
+            },
+        });
+        if !is_current_valid {
+            return Self::make_decision(Decision::Deny, ReasonCode::InvalidCurrentState, traces);
+        }
+
+        // 5. Invalid Target State check
+        let expected_target = Self::expected_target_state(action, current_state);
+        let is_target_valid = target_state == expected_target;
+        let target_valid_result = if is_target_valid { Decision::Allow } else { Decision::Deny };
+        traces.push_back(TraceEntry {
+            rule: TraceRule::InvalidTargetState,
+            result: target_valid_result,
+            reason: if is_target_valid {
+                None
+            } else {
+                Some(ReasonCode::InvalidTargetState)
+            },
+        });
+        if !is_target_valid {
+            return Self::make_decision(Decision::Deny, ReasonCode::InvalidTargetState, traces);
+        }
+
+        // 6. Grace Period Required check
+        let is_claim_action = action == PayrollAction::ClaimPayroll
+            || action == PayrollAction::ClaimTimeBased
+            || action == PayrollAction::ClaimMilestone;
+        if is_claim_action && current_state == AgreementStatus::Cancelled {
+            let grace_result = if grace_period_active { Decision::Allow } else { Decision::Deny };
+            traces.push_back(TraceEntry {
+                rule: TraceRule::GracePeriodRequired,
+                result: grace_result,
+                reason: if grace_period_active {
+                    None
+                } else {
+                    Some(ReasonCode::GracePeriodRequired)
+                },
+            });
+            if !grace_period_active {
+                return Self::make_decision(Decision::Deny, ReasonCode::GracePeriodRequired, traces);
+            }
+        }
+
+        Self::make_decision(Decision::Allow, ReasonCode::Allowed, traces)
     }
 
-    fn get_attr(attrs: &Vec<(Symbol, i128)>, key: &Symbol) -> Option<i128> {
-        let mut i = 0u32;
-        while i < attrs.len() {
-            let pair = attrs.get(i).unwrap();
-            if &pair.0 == key {
-                return Some(pair.1);
-            }
-            i += 1;
+    fn make_decision(decision: Decision, reason: ReasonCode, traces: soroban_sdk::Vec<TraceEntry>) -> ComplianceDecision {
+        ComplianceDecision {
+            decision,
+            reason,
+            traces,
         }
-        None
+    }
+
+    fn expected_target_state(action: PayrollAction, current_state: AgreementStatus) -> AgreementStatus {
+        match action {
+            PayrollAction::AddEmployee => AgreementStatus::Created,
+            PayrollAction::ActivateAgreement => AgreementStatus::Active,
+            PayrollAction::PauseAgreement => AgreementStatus::Paused,
+            PayrollAction::ResumeAgreement => AgreementStatus::Active,
+            PayrollAction::CancelAgreement => AgreementStatus::Cancelled,
+            PayrollAction::FinalizeGracePeriod => AgreementStatus::Cancelled,
+            PayrollAction::RaiseDispute => AgreementStatus::Disputed,
+            PayrollAction::ResolveDispute => AgreementStatus::Completed,
+            PayrollAction::ClaimPayroll => current_state,
+            PayrollAction::ClaimTimeBased => current_state,
+            PayrollAction::ClaimMilestone => current_state,
+        }
+    }
+
+    fn is_action_allowed_from_state(action: PayrollAction, current_state: AgreementStatus) -> bool {
+        match action {
+            PayrollAction::AddEmployee => current_state == AgreementStatus::Created,
+            PayrollAction::ActivateAgreement => current_state == AgreementStatus::Created,
+            PayrollAction::PauseAgreement => current_state == AgreementStatus::Active,
+            PayrollAction::ResumeAgreement => current_state == AgreementStatus::Paused,
+            PayrollAction::CancelAgreement => {
+                current_state == AgreementStatus::Created || current_state == AgreementStatus::Active
+            }
+            PayrollAction::FinalizeGracePeriod => current_state == AgreementStatus::Cancelled,
+            PayrollAction::RaiseDispute => {
+                current_state == AgreementStatus::Created
+                    || current_state == AgreementStatus::Active
+                    || current_state == AgreementStatus::Cancelled
+            }
+            PayrollAction::ResolveDispute => current_state == AgreementStatus::Disputed,
+            PayrollAction::ClaimPayroll
+            | PayrollAction::ClaimTimeBased
+            | PayrollAction::ClaimMilestone => {
+                current_state == AgreementStatus::Active || current_state == AgreementStatus::Cancelled
+            }
+        }
     }
 
     fn require_initialized(env: &Env) {
@@ -361,5 +365,21 @@ impl ComplianceCheckerContract {
             .expect("Admin not set");
         caller.require_auth();
         assert!(*caller == admin, "Not admin");
+    }
+
+    fn allow(env: &Env) -> ComplianceDecision {
+        ComplianceDecision {
+            decision: Decision::Allow,
+            reason: ReasonCode::Allowed,
+            traces: soroban_sdk::Vec::new(env),
+        }
+    }
+
+    fn deny(reason: ReasonCode, traces: soroban_sdk::Vec<TraceEntry>) -> ComplianceDecision {
+        ComplianceDecision {
+            decision: Decision::Deny,
+            reason,
+            traces,
+        }
     }
 }

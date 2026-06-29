@@ -6,12 +6,13 @@ use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
 ///
 /// This contract provides secure escrow functionality that can be reused across
 /// multiple agreement types. It enforces strict access control where only the
-/// designated manager contract can authorize fund movements.
+/// designated manager contract can authorize fund movements, while the admin
+/// can rotate that manager for upgrade or incident response.
 ///
 /// # Security Model
 ///
 /// - Only the manager contract can release or refund funds
-/// - Only the admin can initialize or upgrade the contract
+/// - Only the admin can initialize, upgrade, or rotate the manager
 /// - Per-agreement balance tracking prevents cross-agreement fund mixing
 /// - All operations emit events for auditability
 #[contract]
@@ -60,6 +61,14 @@ pub struct RefundedEvent {
     pub amount: i128,
 }
 
+/// Emitted after the authenticated admin rotates the manager address.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct ManagerUpdatedEvent {
+    pub old_manager: Address,
+    pub new_manager: Address,
+}
+
 #[contractimpl]
 impl PayrollEscrowContract {
     /// Initializes the escrow contract.
@@ -101,10 +110,66 @@ impl PayrollEscrowContract {
             .set(&StorageKey::Initialized, &true);
     }
 
+    /// Rotates the manager address authorized to release and refund escrow funds.
+    ///
+    /// This is an admin-only incident-response and upgrade hook. The supplied
+    /// `admin` must authenticate and must match the admin stored at
+    /// initialization. Once updated, the previous manager immediately loses
+    /// authorization for `release` and `refund_remaining`.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment
+    /// * `admin` - The current admin address (must authenticate)
+    /// * `new_manager` - The replacement manager contract address
+    ///
+    /// # Requirements
+    ///
+    /// * Admin must authenticate with `require_auth`
+    /// * Admin must match the stored admin address
+    /// * New manager must differ from the current manager
+    ///
+    /// # Events
+    ///
+    /// Emits `ManagerUpdated` with the old and new manager addresses.
+    pub fn update_manager(env: Env, admin: Address, new_manager: Address) {
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Admin)
+            .expect("Admin not set");
+        assert!(admin == stored_admin, "Only admin can update manager");
+
+        let old_manager: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Manager)
+            .expect("Manager not set");
+        assert!(
+            new_manager != old_manager,
+            "New manager must differ from current manager"
+        );
+
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Manager, &new_manager);
+
+        env.events().publish(
+            ("manager_updated",),
+            ManagerUpdatedEvent {
+                old_manager,
+                new_manager,
+            },
+        );
+    }
+
     /// Funds an agreement with tokens.
     ///
-    /// Transfers tokens from the caller to this contract and records the balance
-    /// for the specified agreement.
+    /// Validates the balance update via checked_add before performing the token transfer.
+    /// This ordering ensures that if the balance computation overflows, no tokens are moved
+    /// and the contract state remains consistent with actual custody.
     ///
     /// # Arguments
     ///
@@ -119,6 +184,13 @@ impl PayrollEscrowContract {
     /// * Contract must be initialized
     /// * Amount must be positive
     /// * Caller must have approved sufficient tokens for transfer
+    /// * New balance must not overflow i128
+    ///
+    /// # Checks-Effects-Interactions (CEI) Ordering
+    ///
+    /// - **Checks**: Validates initialization, amount, employer consistency, and balance overflow
+    /// - **Effects**: Updates agreement balance in storage (only if validation succeeds)
+    /// - **Interactions**: Transfers tokens (only after balance is recorded)
     ///
     /// # Events
     ///
@@ -143,18 +215,22 @@ impl PayrollEscrowContract {
         // Validate amount
         assert!(amount > 0, "Amount must be positive");
 
-        // Get token address
-        let token: Address = env
+        // Get and validate employer consistency
+        let existing_employer: Option<Address> = env
             .storage()
             .persistent()
-            .get(&StorageKey::Token)
-            .expect("Token not set");
+            .get(&StorageKey::AgreementEmployer(agreement_id));
 
-        // Transfer tokens from caller to this contract
-        let token_client = soroban_sdk::token::Client::new(&env, &token);
-        token_client.transfer(&from, &env.current_contract_address(), &amount);
+        if let Some(existing) = existing_employer {
+            assert!(existing == employer, "Mismatched employer for agreement");
+        } else {
+            // Store employer if not already set
+            env.storage()
+                .persistent()
+                .set(&StorageKey::AgreementEmployer(agreement_id), &employer);
+        }
 
-        // Update agreement balance
+        // Compute and validate new balance BEFORE any token transfer
         let current_balance: i128 = env
             .storage()
             .persistent()
@@ -163,21 +239,22 @@ impl PayrollEscrowContract {
         let new_balance = current_balance
             .checked_add(amount)
             .expect("Balance overflow");
+
+        // Update agreement balance in storage (effect)
         env.storage()
             .persistent()
             .set(&StorageKey::AgreementBalance(agreement_id), &new_balance);
 
-        // Store employer if not already set
-        if env
+        // Get token address
+        let token: Address = env
             .storage()
             .persistent()
-            .get::<_, Address>(&StorageKey::AgreementEmployer(agreement_id))
-            .is_none()
-        {
-            env.storage()
-                .persistent()
-                .set(&StorageKey::AgreementEmployer(agreement_id), &employer);
-        }
+            .get(&StorageKey::Token)
+            .expect("Token not set");
+
+        // Transfer tokens from caller to this contract (interaction)
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        token_client.transfer(&from, &env.current_contract_address(), &amount);
 
         // Emit event
         env.events().publish(
@@ -205,13 +282,24 @@ impl PayrollEscrowContract {
     ///
     /// # Requirements
     ///
-    /// * Caller must be the manager contract
-    /// * Agreement must have sufficient balance
+    /// * Caller must be the authorized manager contract address
+    /// * Agreement must have sufficient balance for the requested amount
     /// * Amount must be positive
     ///
     /// # Access Control
     ///
-    /// Only the manager contract can release funds.
+    /// STRICT: Only the address stored as `Manager` can authorize releases.
+    ///
+    /// # Invariants
+    ///
+    /// - Sum of all `release` and `refund_remaining` calls for an agreement
+    ///   cannot exceed total `fund_agreement` deposits.
+    /// - Individual `AgreementBalance` is reduced by the exact `amount`.
+    ///
+    /// # Invariant
+    ///
+    /// Agreement balance is reduced before the token transfer to avoid
+    /// reentrant double-release against stale balance state.
     ///
     /// # Events
     ///
@@ -230,7 +318,7 @@ impl PayrollEscrowContract {
         // Validate amount
         assert!(amount > 0, "Amount must be positive");
 
-        // Check balance
+        // Check and update balance
         let balance: i128 = env
             .storage()
             .persistent()
@@ -245,15 +333,15 @@ impl PayrollEscrowContract {
             .get(&StorageKey::Token)
             .expect("Token not set");
 
-        // Transfer tokens
-        let token_client = soroban_sdk::token::Client::new(&env, &token);
-        token_client.transfer(&env.current_contract_address(), &to, &amount);
-
         // Update balance
-        let new_balance = balance - amount;
+        let new_balance = balance.checked_sub(amount).expect("Balance underflow");
         env.storage()
             .persistent()
             .set(&StorageKey::AgreementBalance(agreement_id), &new_balance);
+
+        // Transfer tokens
+        let token_client = soroban_sdk::token::Client::new(&env, &token);
+        token_client.transfer(&env.current_contract_address(), &to, &amount);
 
         // Emit event
         env.events().publish(
@@ -279,13 +367,23 @@ impl PayrollEscrowContract {
     ///
     /// # Requirements
     ///
-    /// * Caller must be the manager contract
-    /// * Agreement must have a balance
-    /// * Agreement must have an employer address
+    /// * Caller must be the authorized manager contract address
+    /// * Agreement must have a positive balance remaining
+    /// * Agreement must have an assigned employer address
     ///
     /// # Access Control
     ///
-    /// Only the manager contract can refund funds.
+    /// STRICT: Only the address stored as `Manager` can authorize refunds.
+    ///
+    /// # Invariants
+    ///
+    /// - After a successful refund, the `AgreementBalance` for that `agreement_id` is exactly zero.
+    /// - Funds are only returned to the `AgreementEmployer` address originally recorded.
+    ///
+    /// # Invariant
+    ///
+    /// Refunded agreement balance is zeroed before transfer so nested calls
+    /// cannot observe and drain the old balance twice.
     ///
     /// # Events
     ///
@@ -323,11 +421,9 @@ impl PayrollEscrowContract {
             .get(&StorageKey::Token)
             .expect("Token not set");
 
-        // Transfer tokens
         let token_client = soroban_sdk::token::Client::new(&env, &token);
         token_client.transfer(&env.current_contract_address(), &employer, &balance);
 
-        // Clear balance
         env.storage()
             .persistent()
             .set(&StorageKey::AgreementBalance(agreement_id), &0i128);
@@ -353,6 +449,9 @@ impl PayrollEscrowContract {
     /// # Returns
     ///
     /// The current balance (0 if no balance exists)
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_agreement_balance(env: Env, agreement_id: u128) -> i128 {
         env.storage()
             .persistent()
@@ -370,6 +469,9 @@ impl PayrollEscrowContract {
     /// # Returns
     ///
     /// The employer address if found, None otherwise
+    ///
+    /// # Access Control
+    /// Requires caller authentication
     pub fn get_agreement_employer(env: Env, agreement_id: u128) -> Option<Address> {
         env.storage()
             .persistent()

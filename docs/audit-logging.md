@@ -94,6 +94,29 @@ pub fn get_latest_logs(env: Env, limit: u32) -> Result<Vec<AuditLogEntry>, Audit
 
 ---
 
+### Security Properties
+
+#### Append-Only Guarantee
+Logs cannot be modified after creation. There are no update or delete entrypoints. The `AuditLogEntry` struct is immutable once stored.
+
+#### Tamper Evidence
+- Each entry has a monotonically increasing ID and ledger timestamp
+- IDs are assigned sequentially with no gaps possible within the retained window
+- Timestamps are sourced from the Soroban ledger and cannot be spoofed
+
+#### Access Control
+- `append_log` requires `actor.require_auth()` — only the authenticated actor can create a log entry attributed to them
+- `set_retention_limit` is owner-only — non-owners cannot change retention policy
+- `initialize` is one-time only (owner must auth)
+
+#### Retention as Pruning
+Old logs age out of the queryable window when retention is exceeded. Underlying storage entries remain but are logically invisible. This prevents unbounded storage growth while maintaining tamper evidence within the window.
+
+#### Log Injection Prevention
+Since `actor.require_auth()` is enforced, a malicious contract cannot impersonate another address to inject false log entries. Each entry is cryptographically attributed to the authenticating signer.
+
+---
+
 ### Usage Patterns
 
 - **Compliance auditing**:
@@ -103,3 +126,69 @@ pub fn get_latest_logs(env: Env, limit: u32) -> Result<Vec<AuditLogEntry>, Audit
 - **Forensics**:
   - Use `get_latest_logs` for dashboards and `get_logs` for paginated history views.
 
+### Expense Reimbursement Approval Linkage
+
+The `expense_reimbursement` contract can be configured with an `audit_logger` address using:
+
+```rust
+set_audit_logger(owner, audit_logger_address)
+```
+
+When configured, each successful `approve_expense` call appends:
+
+- `actor = approver`
+- `action = "expense_approved"`
+- `subject = Some(submitter)`
+- `amount = Some(approved_amount)`
+
+The returned `log_id` is persisted in the expense record (`audit_log_id`) and emitted in the approval event payload, providing a stable on-chain linkage between the financial state transition and append-only audit history.
+
+#### Privacy Considerations for Expense Flows
+
+- Approval logs should include only operational metadata (`actor`, action, `subject`, amount).
+- Receipt material is not logged in plaintext by `audit_logger`; expense flows store only a domain-separated SHA-256 receipt commitment.
+
+### Salary Adjustment Audit Stream
+
+The `salary_adjustment` contract maintains a contract-local append-only audit stream in parallel with its lifecycle events. Each successful mutating action appends a `SalaryAdjustmentAuditEntry` and emits `("salary_adjustment_audit", audit_id)`.
+
+Logged actions include:
+
+- `adjustment_created`
+- `adjustment_approved`
+- `adjustment_rejected`
+- `adjustment_applied`
+- `adjustment_cancelled`
+- `salary_cap_set`
+
+Retroactive salary adjustments require the dedicated `create_retroactive_adjustment` path. The contract stores a domain-separated SHA-256 reason commitment rather than plaintext rationale:
+
+```text
+sha256("salary_adjustment:retroactive:v1" || actor and adjustment fields || caller_supplied_reason_hash)
+```
+
+This lets compliance teams prove that a reason existed and was bound to the immutable adjustment fields without exposing sensitive HR details on-chain.
+
+---
+
+### Testing
+
+```bash
+cd onchain
+cargo test -p audit_logger
+```
+
+#### Test Coverage
+
+The test suite covers:
+- Initialization with default and zero retention
+- Append log returns monotonic IDs and increments count
+- All fields recorded correctly (actor, action, subject, amount, timestamp)
+- Negative amounts supported
+- Retention enforcement (unlimited, exact boundary, single-entry retention)
+- Pagination (empty, offset beyond count, partial pages, limit=0 error)
+- Latest logs ordering
+- Only owner can set retention
+- Log entries are immutable (tamper evidence)
+- Timestamps are monotonic
+- Multiple actors can append independently

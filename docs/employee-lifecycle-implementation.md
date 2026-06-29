@@ -182,3 +182,120 @@ Additional documentation should be created for:
 - Integration-ready architecture
 
 The implementation provides a solid foundation for comprehensive employee lifecycle management while maintaining compatibility with the existing Stello Pay infrastructure.
+
+## Bonus System Integration
+
+### Overview
+
+The bonus system is tightly integrated with employee lifecycle management to ensure proper handling of bonuses during onboarding, active employment, and offboarding phases.
+
+### Onboarding Phase
+
+- New employees can immediately receive bonuses once onboarded
+- Bonus caps apply from first bonus issuance
+- All bonus events are logged for audit compliance
+
+### Active Employment
+
+- Employees can receive one-time and recurring bonuses
+- Admin-configurable caps prevent overpayment
+- Approval workflow ensures proper authorization
+- All bonus operations emit events for tracking
+
+### Offboarding and Termination
+
+#### Post-Termination Restrictions
+
+When an employee is terminated via `terminate_employee(admin, employee)`:
+
+1. **New Bonuses Blocked**: Any attempt to create new bonuses for the terminated employee will fail immediately
+   - `create_one_time_bonus` will panic with "Cannot create bonus for terminated employee"
+   - `create_recurring_incentive` will panic with "Cannot create incentive for terminated employee"
+
+2. **Existing Bonuses Remain Valid**:
+   - Previously created bonuses can still be approved
+   - Employee can still claim vested payouts from approved bonuses
+   - This ensures earned compensation is not forfeited
+
+3. **Clawback Still Available**:
+   - Admin can execute clawbacks on any previously claimed bonuses
+   - Useful for recovering sign-on bonuses, relocation payments, or other conditional bonuses
+   - Clawback returns funds to original employer
+   - Full audit trail maintained with reason hash
+
+#### Clawback Behavior During Offboarding
+
+**When to Use Clawback:**
+
+- Employee received sign-on bonus but left before required tenure
+- Conditional bonus was paid but conditions not met
+- Overpayment discovered during final reconciliation
+- Policy violation discovered post-termination
+
+**Clawback Process:**
+
+```
+1. Admin identifies bonus requiring clawback
+2. Admin determines clawback amount (cannot exceed claimed amount)
+3. Admin generates reason hash (e.g., hash of offboarding document)
+4. Admin executes: execute_clawback(admin, employee, incentive_id, amount, reason_hash)
+5. Funds transferred from bonus contract back to employer
+6. ClawbackExecutedEvent emitted with full audit details
+7. get_clawback_total(incentive_id) can be queried to verify clawback amount
+```
+
+**Safety Guarantees:**
+
+- Cannot claw back more than employee actually received
+- Cannot double-clawback (tracked via clawback totals)
+- Requires admin authentication
+- Requires immutable reason hash for audit trail
+- Works regardless of employee termination status
+
+#### Example Offboarding Flow with Bonuses
+
+```
+Scenario: Employee John is terminated with existing bonuses
+
+1. Admin calls: terminate_employee(admin, john)
+   -> EmployeeTerminatedEvent emitted
+   -> John marked as terminated
+
+2. John has pending bonus #123 (not yet approved)
+   -> Approver can still approve if appropriate
+   -> Or employer can cancel for refund
+
+3. John has approved bonus #456 (vested but unclaimed)
+   -> John can still claim: claim_incentive(john, 456)
+   -> Ensures earned compensation is paid
+
+4. John had sign-on bonus #789 (already claimed $5000)
+   -> Employment contract requires 1-year tenure
+   -> John left after 6 months
+   -> Admin executes clawback:
+      execute_clawback(admin, john, 789, 5000, reason_hash)
+   -> $5000 returned to employer
+   -> ClawbackExecutedEvent emitted
+
+5. Final reconciliation complete
+   -> All bonus states tracked
+   -> Full audit trail available
+   -> Compliance requirements met
+```
+
+### Integration with HR Workflows
+
+The bonus system integrates with the broader HR workflow management:
+
+- **Onboarding workflows** can include bonus setup as a task
+- **Offboarding workflows** should include bonus reconciliation
+- **Compliance records** can reference bonus events for audit
+- **Event logging** provides complete history for dispute resolution
+
+### Best Practices
+
+1. **Set caps before issuing first bonus**: Prevent accidental overpayment
+2. **Use reason hashes for all clawbacks**: Ensures immutable audit trail
+3. **Reconcile bonuses during offboarding**: Check all active incentives before finalizing termination
+4. **Monitor cap usage**: Use `get_employee_bonus_total` to track bonus spending
+5. **Document clawback reasons**: Store reason hash mapping off-chain for full transparency

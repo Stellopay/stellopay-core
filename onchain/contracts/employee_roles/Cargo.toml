@@ -12,6 +12,7 @@ doctest = false
 soroban-sdk = { workspace = true, features = ["alloc"] }
 stellar-contract-utils = "0.6.0"
 stellar-macros = "0.6.0"
+rbac = { path = "../rbac" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
