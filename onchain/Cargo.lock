@@ -1163,6 +1163,7 @@ dependencies = [
  "bonus_system",
  "payment_history",
  "payroll_escrow",
+ "salary_adjustment",
  "soroban-sdk",
  "stello_pay_contract",
 ]
