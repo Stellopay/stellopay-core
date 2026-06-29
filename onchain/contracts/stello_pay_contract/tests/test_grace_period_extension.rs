@@ -319,6 +319,75 @@ fn test_set_grace_extension_policy_rejects_absurd_bps() {
 }
 
 #[test]
+fn test_set_grace_extension_policy_rejects_zero_cumulative_bps() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_id, client, owner) = setup(&env);
+    let p = GracePeriodExtensionPolicy {
+        max_cumulative_extension_bps: 0,
+        max_extension_per_call_seconds: 3600,
+    };
+    let e = client
+        .try_set_grace_extension_policy(&owner, &p)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(e, PayrollError::GraceExtensionInvalid);
+}
+
+#[test]
+fn test_set_grace_extension_policy_rejects_zero_per_call_seconds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_id, client, owner) = setup(&env);
+    let p = GracePeriodExtensionPolicy {
+        max_cumulative_extension_bps: 5000,
+        max_extension_per_call_seconds: 0,
+    };
+    let e = client
+        .try_set_grace_extension_policy(&owner, &p)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(e, PayrollError::GraceExtensionInvalid);
+}
+
+#[test]
+fn test_set_grace_extension_policy_rejects_both_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_id, client, owner) = setup(&env);
+    let p = GracePeriodExtensionPolicy {
+        max_cumulative_extension_bps: 0,
+        max_extension_per_call_seconds: 0,
+    };
+    let e = client
+        .try_set_grace_extension_policy(&owner, &p)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(e, PayrollError::GraceExtensionInvalid);
+}
+
+#[test]
+fn test_set_grace_extension_policy_accepts_minimal_nonzero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_id, client, owner) = setup(&env);
+    // Smallest valid (explicitly-nonzero) configuration is accepted; existing
+    // valid configs are unaffected by the new lower-bound check.
+    let p = GracePeriodExtensionPolicy {
+        max_cumulative_extension_bps: 1,
+        max_extension_per_call_seconds: 1,
+    };
+    client.set_grace_extension_policy(&owner, &p);
+    let got = client.get_grace_extension_policy();
+    assert_eq!(got.max_cumulative_extension_bps, 1);
+    assert_eq!(got.max_extension_per_call_seconds, 1);
+}
+
+#[test]
 fn test_grace_period_extended_event_emitted() {
     let env = Env::default();
     env.mock_all_auths();
