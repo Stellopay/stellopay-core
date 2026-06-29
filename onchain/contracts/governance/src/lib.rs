@@ -14,6 +14,19 @@ use withdrawal_timelock::{
     TimelockedOperation, WithdrawalTimelockClient,
 };
 
+/// Minimum allowed voting period, in seconds (1 hour).
+///
+/// A voting window shorter than this gives eligible voters effectively no time
+/// to participate, so values below it are rejected.
+pub const MIN_VOTING_PERIOD_SECONDS: u64 = 3_600;
+
+/// Maximum allowed voting period, in seconds (30 days).
+///
+/// An unbounded voting period would let a misconfigured admin set a value near
+/// `u64::MAX`, trapping proposals in effectively perpetual voting and freezing
+/// governance. Values above this bound are rejected.
+pub const MAX_VOTING_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60;
+
 /// Errors returned by the governance contract.
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,6 +49,24 @@ pub enum GovernanceError {
     TimelockQueueFailed = 15,
     TimelockExecutionFailed = 16,
     TimelockCancellationFailed = 17,
+    /// `voting_period_seconds` was outside the `[MIN_VOTING_PERIOD_SECONDS,
+    /// MAX_VOTING_PERIOD_SECONDS]` range.
+    VotingPeriodOutOfBounds = 18,
+}
+
+/// Validates that `voting_period_seconds` falls within the supported bounds.
+///
+/// Rejects zero (via the range check) as well as values below
+/// [`MIN_VOTING_PERIOD_SECONDS`] or above [`MAX_VOTING_PERIOD_SECONDS`]. The
+/// upper bound prevents a misconfigured admin from setting a period near
+/// `u64::MAX` that would trap proposals in perpetual voting.
+fn validate_voting_period(voting_period_seconds: u64) -> Result<(), GovernanceError> {
+    if voting_period_seconds < MIN_VOTING_PERIOD_SECONDS
+        || voting_period_seconds > MAX_VOTING_PERIOD_SECONDS
+    {
+        return Err(GovernanceError::VotingPeriodOutOfBounds);
+    }
+    Ok(())
 }
 
 /// Types of governance actions supported by the contract.
@@ -334,7 +365,9 @@ impl GovernanceContract {
     /// @param multisig_contract Multisig contract whose signer set authorizes execution.
     /// @param timelock_contract Timelock contract that queues passed proposals before execution.
     /// @param quorum_votes Minimum number of votes required for a proposal to pass quorum.
-    /// @param voting_period_seconds Duration of the voting window in seconds.
+    /// @param voting_period_seconds Duration of the voting window in seconds. Must be within
+    ///        `[MIN_VOTING_PERIOD_SECONDS, MAX_VOTING_PERIOD_SECONDS]`; out-of-range values are
+    ///        rejected with `VotingPeriodOutOfBounds` to prevent perpetual-voting misconfiguration.
     pub fn initialize(
         env: Env,
         owner: Address,
@@ -357,9 +390,7 @@ impl GovernanceContract {
         if quorum_votes == 0 {
             return Err(GovernanceError::InvalidQuorum);
         }
-        if voting_period_seconds == 0 {
-            return Err(GovernanceError::InvalidVotingPeriod);
-        }
+        validate_voting_period(voting_period_seconds)?;
 
         env.storage().persistent().set(&StorageKey::Owner, &owner);
         env.storage()
@@ -387,7 +418,9 @@ impl GovernanceContract {
     /// @dev Owner-only. Dependency contract addresses remain fixed after initialization.
     /// @param caller Owner address.
     /// @param quorum_votes New minimum number of participating votes required.
-    /// @param voting_period_seconds New voting window length.
+    /// @param voting_period_seconds New voting window length. Must be within
+    ///        `[MIN_VOTING_PERIOD_SECONDS, MAX_VOTING_PERIOD_SECONDS]`; out-of-range values are
+    ///        rejected with `VotingPeriodOutOfBounds`.
     pub fn update_config(
         env: Env,
         caller: Address,
@@ -399,9 +432,7 @@ impl GovernanceContract {
         if quorum_votes == 0 {
             return Err(GovernanceError::InvalidQuorum);
         }
-        if voting_period_seconds == 0 {
-            return Err(GovernanceError::InvalidVotingPeriod);
-        }
+        validate_voting_period(voting_period_seconds)?;
 
         env.storage()
             .persistent()
