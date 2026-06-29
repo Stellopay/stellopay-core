@@ -1203,7 +1203,6 @@ dependencies = [
  "payment_retry",
  "payment_scheduler",
  "payroll_escrow",
- "rbac",
  "salary_adjustment",
  "soroban-sdk",
  "stello_pay_contract",

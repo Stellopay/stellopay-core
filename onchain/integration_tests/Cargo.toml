@@ -14,17 +14,7 @@ token_vesting = { path = "../contracts/token_vesting" }
 payroll_escrow = { path = "../contracts/payroll_escrow" }
 bonus_system = { path = "../contracts/bonus_system" }
 payment_history = { path = "../contracts/payment_history" }
-payment_retry = { path = "../contracts/payment_retry" }
-payment_scheduler = { path = "../contracts/payment_scheduler" }
-dispute_escalation = { path = "../contracts/dispute_escalation" }
-employee_roles = { path = "../contracts/employee_roles" }
-rbac = { path = "../contracts/rbac" }
-governance = { path = "../contracts/governance" }
-multisig = { path = "../contracts/multisig" }
-withdrawal_timelock = { path = "../contracts/withdrawal_timelock" }
 salary_adjustment = { path = "../contracts/salary_adjustment" }
-audit_logger = { path = "../contracts/audit_logger" }
-expense_reimbursement = { path = "../contracts/expense_reimbursement" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
