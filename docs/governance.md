@@ -51,7 +51,16 @@ Backward-compatible aliases are also present for earlier local names:
 ### Configuration Model
 
 - `quorum_votes` is an absolute participation threshold, not a percentage.
-- `voting_period_seconds` controls how long proposals stay open.
+- `voting_period_seconds` controls how long proposals stay open. Both `initialize`
+  and `update_config` enforce that it falls within
+  `[MIN_VOTING_PERIOD_SECONDS, MAX_VOTING_PERIOD_SECONDS]`:
+  - `MIN_VOTING_PERIOD_SECONDS = 3600` (1 hour) ensures voters have a realistic
+    window to participate.
+  - `MAX_VOTING_PERIOD_SECONDS = 2_592_000` (30 days) prevents a misconfigured
+    admin from setting a value near `u64::MAX`, which would trap proposals in
+    effectively perpetual voting and freeze governance.
+  - Values outside this range (including zero) are rejected with
+    `GovernanceError::VotingPeriodOutOfBounds`.
 - The timelock delay is owned by the linked `withdrawal_timelock` contract.
 - The governance contract does not store a separate execution delay.
 

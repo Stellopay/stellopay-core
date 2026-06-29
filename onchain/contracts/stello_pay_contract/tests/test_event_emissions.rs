@@ -728,6 +728,73 @@ fn test_no_duplicate_events() {
 }
 
 // ============================================================================
+// MULTISIG CONFIG EVENT TESTS
+// ============================================================================
+
+/// Test: multisig_config_changed_event is emitted with old/new thresholds and caller.
+#[test]
+fn test_multisig_config_changed_event() {
+    let env = create_test_env();
+    #[allow(deprecated)]
+    let contract_id = env.register_contract(None, PayrollContract);
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let owner = create_test_address(&env);
+    client.initialize(&owner);
+
+    let multisig = create_test_address(&env);
+
+    // First config: previous thresholds default to 0.
+    client.set_multisig_config(&owner, &multisig, &1_000i128, &2_000i128);
+
+    assert!(has_event(&env, "multisig_config_changed_event"));
+    let event = find_event(&env, "multisig_config_changed_event").unwrap();
+    let caller: Address = get_event_field(&env, &event.2, "caller");
+    let old_large: i128 = get_event_field(&env, &event.2, "old_large_threshold");
+    let new_large: i128 = get_event_field(&env, &event.2, "new_large_threshold");
+    let old_dispute: i128 = get_event_field(&env, &event.2, "old_dispute_threshold");
+    let new_dispute: i128 = get_event_field(&env, &event.2, "new_dispute_threshold");
+    assert_eq!(caller, owner);
+    assert_eq!(old_large, 0);
+    assert_eq!(new_large, 1_000);
+    assert_eq!(old_dispute, 0);
+    assert_eq!(new_dispute, 2_000);
+
+    // An audit entry was recorded via the existing audit path.
+    assert_eq!(client.get_audit_entry_count(), 1);
+}
+
+/// Test: a second config change reports the previous thresholds as the old values.
+#[test]
+fn test_multisig_config_changed_event_reports_previous_values() {
+    let env = create_test_env();
+    #[allow(deprecated)]
+    let contract_id = env.register_contract(None, PayrollContract);
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let owner = create_test_address(&env);
+    client.initialize(&owner);
+    let multisig = create_test_address(&env);
+
+    client.set_multisig_config(&owner, &multisig, &1_000i128, &2_000i128);
+    client.set_multisig_config(&owner, &multisig, &5_000i128, &9_000i128);
+
+    // Capture the second call's event before any further invocation (read calls
+    // also reset the test host's event buffer). It must carry the first call's
+    // thresholds as the old values, proving old-vs-new tracking across changes.
+    let event = find_event(&env, "multisig_config_changed_event").unwrap();
+    let old_large: i128 = get_event_field(&env, &event.2, "old_large_threshold");
+    let new_large: i128 = get_event_field(&env, &event.2, "new_large_threshold");
+    let old_dispute: i128 = get_event_field(&env, &event.2, "old_dispute_threshold");
+    let new_dispute: i128 = get_event_field(&env, &event.2, "new_dispute_threshold");
+    assert_eq!(old_large, 1_000);
+    assert_eq!(new_large, 5_000);
+    assert_eq!(old_dispute, 2_000);
+    assert_eq!(new_dispute, 9_000);
+
+    // Two config changes produce two persistent audit entries.
+    assert_eq!(client.get_audit_entry_count(), 2);
+}
+
+// ============================================================================
 // SUMMARY TEST
 // ============================================================================
 

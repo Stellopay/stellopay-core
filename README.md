@@ -94,6 +94,13 @@ The on-chain workspace uses GitHub Actions to build and test Soroban contracts o
 
 This repository contains smart contract code. Review migrations, upgrades, and deployment steps carefully before using any live network or production asset. Keep private keys, RPC credentials, wallet secrets, and production database or ledger data out of commits, issue comments, and logs.
 
+### Dispute payout conservation
+
+`resolve_dispute` / `resolve_dispute_multisig` (in `onchain/contracts/stello_pay_contract`) conserve funds deterministically:
+
+- `pay_employee` is split equally across employees; the integer-division remainder (dust) is added to the **last** employee so the employee transfers sum to `pay_employee` exactly and no tokens are stranded.
+- `pay_employee` and `refund_employer` must be non-negative, and their sum must not exceed the agreement's `total_amount` nor (when tracked) its real per-agreement escrow balance; the escrow balance is decremented by the distributed total after transfers. Out-of-range or negative payouts return `PayrollError::InvalidPayout`.
+
 For upgrade and migration planning, start with [Migrations](docs/migrations.md) and [Upgrade and migration strategy](docs/upgrade-migration-strategy.md).
 
 ## License
