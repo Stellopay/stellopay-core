@@ -9,7 +9,8 @@
 //! window so reviewers can enforce that only current schemas are used for new payrolls.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, String,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
+    String,
 };
 
 /// Persistent storage keys.
@@ -54,6 +55,26 @@ pub struct AgreementBinding {
     pub creator: Address,
     pub label: String,
     pub created_at: u64,
+}
+
+/// Emitted when a template version is deprecated via [`TemplateVersioning::deprecate_version`].
+///
+/// Off-chain indexers should subscribe to this event to detect deprecations
+/// immediately rather than polling the contract state.
+///
+/// # Fields
+/// - `template_id` – Stable identifier of the owning template.
+/// - `version`     – Version number that was deprecated.
+/// - `timestamp`   – Ledger timestamp at the moment of deprecation.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TemplateVersionDeprecated {
+    /// Owning template id.
+    pub template_id: u64,
+    /// The version number that was deprecated.
+    pub version: u32,
+    /// Ledger timestamp at the moment of deprecation.
+    pub timestamp: u64,
 }
 
 #[contracterror]
@@ -163,6 +184,17 @@ impl TemplateVersioning {
         let mut rec: TemplateVersionRecord = storage.get(&key).ok_or(VersioningError::VersionNotFound)?;
         rec.deprecated = true;
         storage.set(&key, &rec);
+
+        let now = env.ledger().timestamp();
+        env.events().publish(
+            (symbol_short!("tmpl_dep"), template_id, version),
+            TemplateVersionDeprecated {
+                template_id,
+                version,
+                timestamp: now,
+            },
+        );
+
         Ok(())
     }
 
