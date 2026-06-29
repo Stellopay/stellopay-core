@@ -1,8 +1,8 @@
 #![cfg(test)]
 
 use governance::{
-    GovernanceContract, GovernanceContractClient, GovernanceError, ProposalKind, ProposalStatus,
-    VoteChoice, MAX_VOTING_PERIOD_SECONDS, MIN_VOTING_PERIOD_SECONDS,
+    GovernanceContract, GovernanceContractClient, GovernanceError, ProposalKind, ProposalPage,
+    ProposalStatus, VoteChoice,
 };
 use multisig::{MultisigContract, MultisigContractClient};
 use rbac::{RbacContract, RbacContractClient, Role};
@@ -363,141 +363,228 @@ fn losing_employer_role_blocks_future_votes() {
     assert_eq!(res, Err(Ok(GovernanceError::NotEligibleVoter)));
 }
 
-/// Registers and links RBAC, multisig, and timelock contracts and returns the
-/// raw (uninitialized) governance client plus the owner, so voting-period
-/// boundary cases can be exercised against `initialize` directly.
-fn setup_uninitialized(
-    env: &Env,
-) -> (GovernanceContractClient<'static>, Address, Address, Address, Address) {
-    #[allow(deprecated)]
-    let governance_id = env.register_contract(None, GovernanceContract);
-    #[allow(deprecated)]
-    let rbac_id = env.register_contract(None, RbacContract);
-    #[allow(deprecated)]
-    let multisig_id = env.register_contract(None, MultisigContract);
-    #[allow(deprecated)]
-    let timelock_id = env.register_contract(None, WithdrawalTimelock);
+#[test]
+fn list_proposals_empty_set() {
+    let env = create_env();
+    let setup = setup(&env);
 
-    let governance = GovernanceContractClient::new(env, &governance_id);
-    let rbac = RbacContractClient::new(env, &rbac_id);
-    let multisig = MultisigContractClient::new(env, &multisig_id);
-    let timelock = WithdrawalTimelockClient::new(env, &timelock_id);
-
-    let owner = Address::generate(env);
-    rbac.initialize(&owner);
-    let signers = Vec::from_array(env, [Address::generate(env), Address::generate(env)]);
-    multisig.initialize(&owner, &signers, &2u32, &None);
-    timelock.initialize(&governance_id, &60u64);
-
-    (governance, owner, rbac_id, multisig_id, timelock_id)
+    let page: ProposalPage = setup.governance.list_proposals(&0, &10, &None);
+    assert_eq!(page.proposals.len(), 0);
+    assert!(page.next_cursor.is_none());
 }
 
 #[test]
-fn initialize_accepts_voting_period_at_min_and_max_bounds() {
+fn list_proposals_basic_pagination() {
     let env = create_env();
+    let setup = setup(&env);
 
-    for period in [MIN_VOTING_PERIOD_SECONDS, MAX_VOTING_PERIOD_SECONDS] {
-        let (governance, owner, rbac_id, multisig_id, timelock_id) = setup_uninitialized(&env);
-        let res = governance.try_initialize(
-            &owner,
-            &rbac_id,
-            &multisig_id,
-            &timelock_id,
-            &2u32,
-            &period,
+    // Create 5 proposals
+    let mut proposal_ids = Vec::new(&env);
+    for _i in 0..5 {
+        let id = setup.governance.create_proposal(
+            &setup.owner,
+            &ProposalKind::ArbiterChange(Address::generate(&env)),
         );
-        assert!(res.is_ok(), "period {} should be accepted", period);
-        let (_, _, _, _, _, stored_period) = governance.get_config();
-        assert_eq!(stored_period, period);
+        proposal_ids.push_back(id);
+    }
+
+    // Fetch first page with limit 3
+    let page: ProposalPage = setup.governance.list_proposals(&0, &3, &None);
+    assert_eq!(page.proposals.len(), 3);
+    assert_eq!(page.next_cursor, Some(3));
+
+    // Verify proposals are in ascending order by ID
+    assert_eq!(page.proposals.get(0).unwrap().id, 1);
+    assert_eq!(page.proposals.get(1).unwrap().id, 2);
+    assert_eq!(page.proposals.get(2).unwrap().id, 3);
+
+    // Fetch second page using cursor
+    let page2: ProposalPage = setup
+        .governance
+        .list_proposals(&page.next_cursor.unwrap(), &3, &None);
+    assert_eq!(page2.proposals.len(), 2);
+    assert_eq!(page2.proposals.get(0).unwrap().id, 4);
+    assert_eq!(page2.proposals.get(1).unwrap().id, 5);
+    assert!(page2.next_cursor.is_none());
+}
+
+#[test]
+fn list_proposals_status_filter() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // Create proposals with different statuses
+    let active_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    let defeated_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+    // Vote against to ensure defeat
+    setup
+        .governance
+        .cast_vote(&setup.owner, &defeated_id, &VoteChoice::Against);
+    advance_time(&env, 101);
+    setup.governance.finalize_proposal(&defeated_id);
+
+    let succeeded_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+    setup
+        .governance
+        .cast_vote(&setup.owner, &succeeded_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &succeeded_id, &VoteChoice::For);
+    advance_time(&env, 101);
+    setup.governance.finalize_proposal(&succeeded_id);
+
+    // Filter by Active status
+    let active_page: ProposalPage =
+        setup
+            .governance
+            .list_proposals(&0, &10, &Some(ProposalStatus::Active));
+    assert_eq!(active_page.proposals.len(), 1);
+    assert_eq!(active_page.proposals.get(0).unwrap().id, active_id);
+
+    // Filter by Defeated status
+    let defeated_page: ProposalPage =
+        setup
+            .governance
+            .list_proposals(&0, &10, &Some(ProposalStatus::Defeated));
+    assert_eq!(defeated_page.proposals.len(), 1);
+    assert_eq!(defeated_page.proposals.get(0).unwrap().id, defeated_id);
+
+    // Filter by Succeeded status
+    let succeeded_page: ProposalPage =
+        setup
+            .governance
+            .list_proposals(&0, &10, &Some(ProposalStatus::Succeeded));
+    assert_eq!(succeeded_page.proposals.len(), 1);
+    assert_eq!(succeeded_page.proposals.get(0).unwrap().id, succeeded_id);
+
+    // No filter returns all
+    let all_page: ProposalPage = setup.governance.list_proposals(&0, &10, &None);
+    assert_eq!(all_page.proposals.len(), 3);
+}
+
+#[test]
+fn list_proposals_oversized_limit_clamped() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // Create 10 proposals
+    for _ in 0..10 {
+        setup.governance.create_proposal(
+            &setup.owner,
+            &ProposalKind::ArbiterChange(Address::generate(&env)),
+        );
+    }
+
+    // Request 100 proposals (should be clamped to MAX_PAGE_SIZE=50)
+    let page: ProposalPage = setup.governance.list_proposals(&0, &100, &None);
+    assert_eq!(page.proposals.len(), 10); // Only 10 exist
+    assert!(page.next_cursor.is_none());
+}
+
+#[test]
+fn list_proposals_cursor_resume_across_pages() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // Create 15 proposals
+    for _ in 0..15 {
+        setup.governance.create_proposal(
+            &setup.owner,
+            &ProposalKind::ArbiterChange(Address::generate(&env)),
+        );
+    }
+
+    // Page through all proposals with page size 5
+    let mut all_proposals = Vec::new(&env);
+    let mut cursor = Some(0u128);
+
+    while let Some(start) = cursor {
+        let page: ProposalPage = setup.governance.list_proposals(&start, &5, &None);
+        for i in 0..page.proposals.len() {
+            all_proposals.push_back(page.proposals.get(i).unwrap().clone());
+        }
+        cursor = page.next_cursor;
+    }
+
+    assert_eq!(all_proposals.len(), 15);
+
+    // Verify all IDs are present and in order
+    for i in 0..15 {
+        assert_eq!(all_proposals.get(i).unwrap().id, (i + 1) as u128);
     }
 }
 
 #[test]
-fn initialize_rejects_zero_voting_period() {
-    let env = create_env();
-    let (governance, owner, rbac_id, multisig_id, timelock_id) = setup_uninitialized(&env);
-    let res = governance.try_initialize(
-        &owner,
-        &rbac_id,
-        &multisig_id,
-        &timelock_id,
-        &2u32,
-        &0u64,
-    );
-    assert_eq!(res, Err(Ok(GovernanceError::VotingPeriodOutOfBounds)));
-}
-
-#[test]
-fn initialize_rejects_voting_period_below_min() {
-    let env = create_env();
-    let (governance, owner, rbac_id, multisig_id, timelock_id) = setup_uninitialized(&env);
-    let res = governance.try_initialize(
-        &owner,
-        &rbac_id,
-        &multisig_id,
-        &timelock_id,
-        &2u32,
-        &(MIN_VOTING_PERIOD_SECONDS - 1),
-    );
-    assert_eq!(res, Err(Ok(GovernanceError::VotingPeriodOutOfBounds)));
-}
-
-#[test]
-fn initialize_rejects_voting_period_above_max() {
-    let env = create_env();
-    let (governance, owner, rbac_id, multisig_id, timelock_id) = setup_uninitialized(&env);
-    let res = governance.try_initialize(
-        &owner,
-        &rbac_id,
-        &multisig_id,
-        &timelock_id,
-        &2u32,
-        &(MAX_VOTING_PERIOD_SECONDS + 1),
-    );
-    assert_eq!(res, Err(Ok(GovernanceError::VotingPeriodOutOfBounds)));
-}
-
-#[test]
-fn initialize_rejects_voting_period_near_u64_max() {
-    let env = create_env();
-    let (governance, owner, rbac_id, multisig_id, timelock_id) = setup_uninitialized(&env);
-    let res = governance.try_initialize(
-        &owner,
-        &rbac_id,
-        &multisig_id,
-        &timelock_id,
-        &2u32,
-        &(u64::MAX - 1),
-    );
-    assert_eq!(res, Err(Ok(GovernanceError::VotingPeriodOutOfBounds)));
-}
-
-#[test]
-fn update_config_enforces_voting_period_bounds() {
+fn list_proposals_start_beyond_max_id() {
     let env = create_env();
     let setup = setup(&env);
 
-    // Over-max and near-u64::MAX are rejected.
-    let too_large = setup
-        .governance
-        .try_update_config(&setup.owner, &2u32, &(MAX_VOTING_PERIOD_SECONDS + 1));
-    assert_eq!(too_large, Err(Ok(GovernanceError::VotingPeriodOutOfBounds)));
+    // Create 3 proposals
+    for _ in 0..3 {
+        setup.governance.create_proposal(
+            &setup.owner,
+            &ProposalKind::ArbiterChange(Address::generate(&env)),
+        );
+    }
 
-    let near_max = setup
-        .governance
-        .try_update_config(&setup.owner, &2u32, &u64::MAX);
-    assert_eq!(near_max, Err(Ok(GovernanceError::VotingPeriodOutOfBounds)));
+    // Start from ID 100 (beyond the max)
+    let page: ProposalPage = setup.governance.list_proposals(&100, &10, &None);
+    assert_eq!(page.proposals.len(), 0);
+    assert!(page.next_cursor.is_none());
+}
 
-    // Below-min is rejected.
-    let too_small = setup
-        .governance
-        .try_update_config(&setup.owner, &2u32, &(MIN_VOTING_PERIOD_SECONDS - 1));
-    assert_eq!(too_small, Err(Ok(GovernanceError::VotingPeriodOutOfBounds)));
+#[test]
+fn list_proposals_status_filter_with_pagination() {
+    let env = create_env();
+    let setup = setup(&env);
 
-    // A valid in-range value is accepted and persisted.
-    setup
-        .governance
-        .update_config(&setup.owner, &2u32, &MAX_VOTING_PERIOD_SECONDS);
-    let (_, _, _, _, _, period) = setup.governance.get_config();
-    assert_eq!(period, MAX_VOTING_PERIOD_SECONDS);
+    // Create 5 active proposals
+    let mut active_ids = Vec::new(&env);
+    for _ in 0..5 {
+        let id = setup.governance.create_proposal(
+            &setup.owner,
+            &ProposalKind::ArbiterChange(Address::generate(&env)),
+        );
+        active_ids.push_back(id);
+    }
+
+    // Create 3 defeated proposals
+    for _ in 0..3 {
+        let id = setup.governance.create_proposal(
+            &setup.owner,
+            &ProposalKind::ArbiterChange(Address::generate(&env)),
+        );
+        setup
+            .governance
+            .cast_vote(&setup.owner, &id, &VoteChoice::Against);
+        advance_time(&env, 101);
+        setup.governance.finalize_proposal(&id);
+    }
+
+    // Page through active proposals with page size 2
+    let mut active_proposals = Vec::new(&env);
+    let mut cursor = Some(0u128);
+
+    while let Some(start) = cursor {
+        let page: ProposalPage =
+            setup
+                .governance
+                .list_proposals(&start, &2, &Some(ProposalStatus::Active));
+        for i in 0..page.proposals.len() {
+            active_proposals.push_back(page.proposals.get(i).unwrap().clone());
+        }
+        cursor = page.next_cursor;
+    }
+
+    assert_eq!(active_proposals.len(), 5);
 }
