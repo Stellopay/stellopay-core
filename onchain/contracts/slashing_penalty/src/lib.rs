@@ -174,6 +174,8 @@ pub enum SlashError {
     LifetimeCapExceeded = 15,
     /// Arithmetic overflow/underflow protection.
     ArithmeticOverflow  = 16,
+    /// Quorum must be greater than zero; passing 0 is a misconfiguration.
+    ZeroQuorum          = 17,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -192,6 +194,9 @@ impl SlashingPenaltyContract {
     /// * `admin`   - Address that can grant/revoke slasher roles and reverse appeals.
     /// * `token`   - Contract address of the XLM-wrapped or custom token used for stake.
     /// * `quorum`  - Minimum number of slasher signatures for attestation slashes.
+    ///              Must be greater than zero; `DEFAULT_QUORUM` (2) is the recommended
+    ///              minimum. Passing 0 returns `SlashError::ZeroQuorum` — it is never
+    ///              silently raised to the default, as that would hide misconfiguration.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -205,6 +210,9 @@ impl SlashingPenaltyContract {
         if env.storage().instance().has(&ADMIN) {
             return Err(SlashError::AlreadyInitialized);
         }
+        if quorum == 0 {
+            return Err(SlashError::ZeroQuorum);
+        }
         Self::validate_caps(
             per_event_bps_cap,
             per_period_amount_cap,
@@ -214,7 +222,7 @@ impl SlashingPenaltyContract {
         admin.require_auth();
         env.storage().instance().set(&ADMIN, &admin);
         env.storage().instance().set(&TOKEN, &token);
-        env.storage().instance().set(&QUORUM, &quorum.max(DEFAULT_QUORUM));
+        env.storage().instance().set(&QUORUM, &quorum);
         env.storage().instance().set(&SLASHERS, &Vec::<Address>::new(&env));
         env.storage().instance().set(&STAKES, &Map::<Address, i128>::new(&env));
         env.storage().instance().set(&SLASH_REC, &Map::<BytesN<32>, SlashRecord>::new(&env));

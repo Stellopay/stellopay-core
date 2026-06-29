@@ -96,6 +96,50 @@ fn test_initialize_twice_fails() {
     assert_eq!(result, Err(Ok(SlashError::AlreadyInitialized)));
 }
 
+#[test]
+fn test_initialize_zero_quorum_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SlashingPenaltyContract);
+    let client = SlashingPenaltyContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // quorum = 0 must be rejected with a typed error, never silently coerced.
+    let result = client.try_initialize(
+        &admin,
+        &token,
+        &0u32,
+        &5_000u32,
+        &6_000i128,
+        &9_000i128,
+        &86_400u64,
+    );
+    assert_eq!(result, Err(Ok(SlashError::ZeroQuorum)));
+}
+
+#[test]
+fn test_initialize_quorum_one_accepted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SlashingPenaltyContract);
+    let client = SlashingPenaltyContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // quorum = 1 is the minimum valid value and must be stored as-is (not raised to DEFAULT_QUORUM).
+    client.initialize(
+        &admin,
+        &token,
+        &1u32,
+        &5_000u32,
+        &6_000i128,
+        &9_000i128,
+        &86_400u64,
+    );
+    assert_eq!(client.get_quorum(), 1u32);
+}
+
 // ─── Role Management ─────────────────────────────────────────────────────────
 
 #[test]
