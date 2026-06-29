@@ -194,34 +194,15 @@ fn enforce_rate_limit(env: &Env, caller: &Address) -> Result<(), PayrollError> {
 /// Fixed-point scaling factor for FX rates: 1e6 precision.
 const FX_SCALE: i128 = 1_000_000;
 
-/// Acquires the transient reentrancy guard, returning [`PayrollError::ReentrancyDetected`]
-/// if a guarded claim path is already in progress within this transaction.
+/// Minimum converted amount (in quote-token base units) below which the
+/// conversion is treated as pure dust and rejected.
 ///
-/// The guard lives in **temporary** storage so it is cleared automatically at
-/// the end of the transaction; a panic mid-transfer therefore cannot strand it.
-/// Callers must pair a successful acquire with [`release_reentrancy_guard`] on
-/// every (non-panicking) return path.
-fn acquire_reentrancy_guard(env: &Env) -> Result<(), PayrollError> {
-    if env
-        .storage()
-        .temporary()
-        .get::<_, bool>(&StorageKey::ReentrancyGuard)
-        .unwrap_or(false)
-    {
-        return Err(PayrollError::ReentrancyDetected);
-    }
-    env.storage()
-        .temporary()
-        .set(&StorageKey::ReentrancyGuard, &true);
-    Ok(())
-}
-
-/// Releases the transient reentrancy guard set by [`acquire_reentrancy_guard`].
-fn release_reentrancy_guard(env: &Env) {
-    env.storage()
-        .temporary()
-        .remove(&StorageKey::ReentrancyGuard);
-}
+/// Rounding policy: `convert_amount` uses **floor division** (truncation toward
+/// zero). Any remainder is discarded. If truncation reduces the converted amount
+/// to zero the call returns `ExchangeRateInvalid` so callers are not silently
+/// credited nothing. Callers that need to claim very small amounts should
+/// accumulate multiple periods before claiming.
+const DUST_THRESHOLD: i128 = 1;
 
 pub fn create_milestone_agreement(
     env: Env,
@@ -3246,6 +3227,12 @@ fn convert_amount(
     let converted = scaled
         .checked_div(FX_SCALE)
         .ok_or(PayrollError::ExchangeRateInvalid)?;
+
+    // Dust guard: reject conversions that floor-round to zero to prevent
+    // callers from being silently credited nothing for a non-zero input.
+    if converted < DUST_THRESHOLD {
+        return Err(PayrollError::ExchangeRateInvalid);
+    }
 
     Ok(converted)
 }
