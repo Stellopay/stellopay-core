@@ -167,6 +167,19 @@
         "successful_claims": { "type": "integer" },
         "failed_claims": { "type": "integer" }
       }
+    },
+    {
+      "title": "MultisigConfigChanged",
+      "description": "Emitted by set_multisig_config on every successful update so off-chain monitors can detect changes to the approval-requirement thresholds. Exposes only public configuration (no signer secrets).",
+      "properties": {
+        "event": { "const": "MultisigConfigChanged" },
+        "caller": { "$ref": "#/definitions/Address" },
+        "multisig_contract": { "$ref": "#/definitions/Address" },
+        "old_large_threshold": { "type": "string" },
+        "new_large_threshold": { "type": "string" },
+        "old_dispute_threshold": { "type": "string" },
+        "new_dispute_threshold": { "type": "string" }
+      }
     }
   ]
 }
