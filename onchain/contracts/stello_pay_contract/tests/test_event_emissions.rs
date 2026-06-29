@@ -35,6 +35,15 @@ fn create_test_address(env: &Env) -> Address {
     Address::generate(env)
 }
 
+fn create_token(env: &Env) -> Address {
+    let admin = Address::generate(env);
+    env.register_stellar_asset_contract_v2(admin).address()
+}
+
+fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
+    soroban_sdk::token::StellarAssetClient::new(env, token).mint(to, &amount);
+}
+
 /// Sets up the contract and returns contract ID and client
 fn setup_contract(env: &Env) -> (Address, PayrollContractClient<'static>) {
     #[allow(deprecated)]
@@ -346,17 +355,18 @@ fn test_milestone_added_event() {
     assert_eq!(event_amount, amount);
 }
 
-/// Test: milestone_approved event is emitted when approving a milestone
 #[test]
 fn test_milestone_approved_event() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let contributor = create_test_address(&env);
-    let token = create_test_address(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &5000);
+    mint(&env, &token, &employer, 5000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &5000);
     client.approve_milestone(&agreement_id, &1);
 
     assert!(has_event(&env, "milestone_approved"));
@@ -369,18 +379,19 @@ fn test_milestone_approved_event() {
     assert_eq!(event_milestone_id, 1);
 }
 
-/// Test: milestone_claimed event is emitted when claiming a milestone
 #[test]
 fn test_milestone_claimed_event() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let contributor = create_test_address(&env);
-    let token = create_test_address(&env);
+    let token = create_token(&env);
     let amount = 5000i128;
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &amount);
+    mint(&env, &token, &employer, amount);
+    client.fund_milestone_agreement(&agreement_id, &employer, &amount);
     client.approve_milestone(&agreement_id, &1);
     client.claim_milestone(&agreement_id, &1);
 
@@ -540,14 +551,13 @@ fn test_event_ordering_agreement_lifecycle() {
     );
 }
 
-/// Test: Events are emitted in correct order during milestone workflow
 #[test]
 fn test_event_ordering_milestone_workflow() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let contributor = create_test_address(&env);
-    let token = create_test_address(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
 
@@ -557,6 +567,8 @@ fn test_event_ordering_milestone_workflow() {
         "milestone_added not found"
     );
 
+    mint(&env, &token, &employer, 5000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &5000);
     client.approve_milestone(&agreement_id, &1);
     assert!(
         has_event(&env, "milestone_approved"),
@@ -624,14 +636,13 @@ fn test_complete_payroll_workflow_events() {
     );
 }
 
-/// Test: Complete milestone workflow emits all expected events
 #[test]
 fn test_complete_milestone_workflow_events() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let contributor = create_test_address(&env);
-    let token = create_test_address(&env);
+    let token = create_token(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
 
@@ -647,6 +658,8 @@ fn test_complete_milestone_workflow_events() {
         "Second milestone_added not found"
     );
 
+    mint(&env, &token, &employer, 3000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &3000);
     client.approve_milestone(&agreement_id, &1);
     assert!(
         has_event(&env, "milestone_approved"),
@@ -712,6 +725,73 @@ fn test_no_duplicate_events() {
 
     // Should emit exactly 1 agreement_created_event
     assert_eq!(count_events(&env, "agreement_created_event"), 1);
+}
+
+// ============================================================================
+// MULTISIG CONFIG EVENT TESTS
+// ============================================================================
+
+/// Test: multisig_config_changed_event is emitted with old/new thresholds and caller.
+#[test]
+fn test_multisig_config_changed_event() {
+    let env = create_test_env();
+    #[allow(deprecated)]
+    let contract_id = env.register_contract(None, PayrollContract);
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let owner = create_test_address(&env);
+    client.initialize(&owner);
+
+    let multisig = create_test_address(&env);
+
+    // First config: previous thresholds default to 0.
+    client.set_multisig_config(&owner, &multisig, &1_000i128, &2_000i128);
+
+    assert!(has_event(&env, "multisig_config_changed_event"));
+    let event = find_event(&env, "multisig_config_changed_event").unwrap();
+    let caller: Address = get_event_field(&env, &event.2, "caller");
+    let old_large: i128 = get_event_field(&env, &event.2, "old_large_threshold");
+    let new_large: i128 = get_event_field(&env, &event.2, "new_large_threshold");
+    let old_dispute: i128 = get_event_field(&env, &event.2, "old_dispute_threshold");
+    let new_dispute: i128 = get_event_field(&env, &event.2, "new_dispute_threshold");
+    assert_eq!(caller, owner);
+    assert_eq!(old_large, 0);
+    assert_eq!(new_large, 1_000);
+    assert_eq!(old_dispute, 0);
+    assert_eq!(new_dispute, 2_000);
+
+    // An audit entry was recorded via the existing audit path.
+    assert_eq!(client.get_audit_entry_count(), 1);
+}
+
+/// Test: a second config change reports the previous thresholds as the old values.
+#[test]
+fn test_multisig_config_changed_event_reports_previous_values() {
+    let env = create_test_env();
+    #[allow(deprecated)]
+    let contract_id = env.register_contract(None, PayrollContract);
+    let client = PayrollContractClient::new(&env, &contract_id);
+    let owner = create_test_address(&env);
+    client.initialize(&owner);
+    let multisig = create_test_address(&env);
+
+    client.set_multisig_config(&owner, &multisig, &1_000i128, &2_000i128);
+    client.set_multisig_config(&owner, &multisig, &5_000i128, &9_000i128);
+
+    // Capture the second call's event before any further invocation (read calls
+    // also reset the test host's event buffer). It must carry the first call's
+    // thresholds as the old values, proving old-vs-new tracking across changes.
+    let event = find_event(&env, "multisig_config_changed_event").unwrap();
+    let old_large: i128 = get_event_field(&env, &event.2, "old_large_threshold");
+    let new_large: i128 = get_event_field(&env, &event.2, "new_large_threshold");
+    let old_dispute: i128 = get_event_field(&env, &event.2, "old_dispute_threshold");
+    let new_dispute: i128 = get_event_field(&env, &event.2, "new_dispute_threshold");
+    assert_eq!(old_large, 1_000);
+    assert_eq!(new_large, 5_000);
+    assert_eq!(old_dispute, 2_000);
+    assert_eq!(new_dispute, 9_000);
+
+    // Two config changes produce two persistent audit entries.
+    assert_eq!(client.get_audit_entry_count(), 2);
 }
 
 // ============================================================================

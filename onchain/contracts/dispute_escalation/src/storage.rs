@@ -14,6 +14,24 @@ pub fn get_level_time_limit(env: &Env, level: EscalationLevel) -> u64 {
     env.storage().persistent().get(&key).unwrap_or(604800)
 }
 
+/// Set the pending-review time limit (in seconds).
+/// This is the window the admin has to act after `keeper_advance_stage` moves a dispute into
+/// `PendingReview`. Defaults to 3 days (259_200 seconds) if not explicitly set.
+pub fn set_pending_review_time_limit(env: &Env, limit_seconds: u64) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PendingReviewTimeLimit, &limit_seconds);
+}
+
+/// Get the pending-review time limit (in seconds).
+/// Defaults to 3 days (259_200 s) if not configured.
+pub fn get_pending_review_time_limit(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::PendingReviewTimeLimit)
+        .unwrap_or(259_200)
+}
+
 /// Get details of an active dispute
 pub fn get_dispute(env: &Env, agreement_id: u128) -> Option<DisputeDetails> {
     let key = StorageKey::Dispute(agreement_id);

@@ -1,5 +1,50 @@
 use soroban_sdk::{contracterror, contracttype, Address, Env, Vec};
 
+/// Maximum caller-supplied batch size accepted by batch entrypoints.
+///
+/// The ceiling is intentionally set to 20 because `tests/gas_benchmarks.rs`
+/// measures `batch_claim_milestones` at N = 20 and keeps that path under the
+/// committed regression threshold. Keeping all batch creation and claim
+/// entrypoints at the same cap gives callers one documented limit and prevents
+/// late Soroban resource exhaustion after partial state changes.
+pub const MAX_BATCH_SIZE: u32 = 20;
+
+/// Number of ledgers below which a long-lived persistent entry is bumped.
+///
+/// Under Soroban's state-archival model, persistent entries that are not bumped
+/// can be archived once their time-to-live (TTL) lapses, which would make active
+/// payroll agreements, escrow balances, and employee records inaccessible
+/// mid-lifecycle. When a long-lived key's remaining TTL drops below this
+/// threshold, [`extend_persistent_ttl`] extends it back up to
+/// [`PERSISTENT_BUMP_AMOUNT`].
+///
+/// ~30 days at 5s/ledger (≈ 17,280 ledgers/day).
+pub const PERSISTENT_TTL_THRESHOLD: u32 = 30 * 17_280;
+
+/// Target TTL (in ledgers) that long-lived persistent keys are extended to.
+///
+/// ~90 days at 5s/ledger. Kept comfortably above [`PERSISTENT_TTL_THRESHOLD`] so
+/// that a single access well before expiry restores a long runway without
+/// bumping on every read.
+pub const PERSISTENT_BUMP_AMOUNT: u32 = 90 * 17_280;
+
+/// Bumps the TTL of a single long-lived persistent entry if it exists.
+///
+/// This is a no-op when the entry is absent. Centralizing the thresholds here
+/// keeps the archival strategy consistent across agreements, escrow balances,
+/// and employee records. TTL bumps cannot be used to keep adversarial entries
+/// alive cheaply: they only ever extend keys the contract itself already owns
+/// and writes, and the caller pays the rent for the extension.
+pub fn extend_persistent_ttl<K>(env: &Env, key: &K)
+where
+    K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    let storage = env.storage().persistent();
+    if storage.has(key) {
+        storage.extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    }
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Milestone {
@@ -58,6 +103,12 @@ pub enum MilestoneKey {
     MilestoneApproved(u128, u32),
     /// Milestone claim status: (agreement_id, milestone_id) -> bool
     MilestoneClaimed(u128, u32),
+    /// Accounted escrow balance for a milestone agreement: agreement_id -> i128
+    ///
+    /// Tracks only tokens explicitly deposited via `fund_milestone_agreement`.
+    /// Invariant checks use this value so that unrelated token transfers into
+    /// the contract address cannot inflate claimable funds.
+    MilestoneEscrowBalance(u128),
 }
 
 impl Milestone {
@@ -142,6 +193,10 @@ pub struct EmployeeInfo {
 pub enum StorageKey {
     /// Contract owner
     Owner,
+    /// Linked RBAC contract address (source of truth for Admin authorization).
+    RbacContract,
+    /// Storage schema version for upgrade/migration coordination.
+    ContractVersion,
     /// Agreement by ID
     Agreement(u128),
     /// List of employees for an agreement
@@ -164,6 +219,32 @@ pub enum StorageKey {
     PauseApprovals,
     /// Global admin allowed to update FX rates (e.g. an oracle contract)
     ExchangeRateAdmin,
+    /// Optional max age (seconds) for using an FX rate. If set, any rate older
+    /// than this value (based on stored `updated_at`) will be considered stale.
+    ExchangeRateMaxAgeSeconds,
+    /// Optional max single-update deviation expressed in basis points (10000 = 100%).
+    /// If set, a new update that changes the rate by more than this fraction
+    /// relative to the previous stored rate will be rejected.
+    ExchangeRateMaxDeviationBps,
+    /// Cumulative grace extension (seconds) applied on top of `Agreement::grace_period_seconds`
+    /// for cancelled agreements (`agreement_id` -> u64).
+    GracePeriodExtensionSeconds(u128),
+    /// Owner-configurable caps for `extend_grace_period` (singleton).
+    GracePeriodExtensionPolicy,
+    /// Address of the deployed multisig contract used for threshold checks.
+    MultisigContract,
+    /// Minimum payout amount (inclusive) that requires multisig approval for LargePayment.
+    LargePaymentThreshold,
+    /// Minimum total payout amount (inclusive) that requires multisig approval for DisputeResolution.
+    DisputeResolutionThreshold,
+    /// Optional rate limiter contract address for throttling claims.
+    RateLimiterContract,
+    /// Optional salary adjustment contract address for dynamic salary overrides.
+    SalaryAdjustmentContract,
+    /// Transient reentrancy guard for the claim paths. Stored in temporary
+    /// storage so it is automatically cleared at the end of each transaction;
+    /// a panic mid-transfer therefore cannot strand the guard.
+    ReentrancyGuard,
 }
 
 #[contracttype]
@@ -241,6 +322,13 @@ pub struct PayrollCreateResult {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExchangeRateInfo {
+    pub rate: i128,
+    pub updated_at: u64,
+}
+
+#[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct EscrowCreateResult {
     pub agreement_id: Option<u128>,
@@ -299,12 +387,55 @@ pub enum PayrollError {
     NotGuardian = 25,
     TimelockActive = 26,
     InvalidTimelock = 27,
+    MultisigApprovalRequired = 28,
     /// Missing or unconfigured FX rate for a currency pair
-    ExchangeRateNotFound = 28,
+    ExchangeRateNotFound = 29,
     /// Arithmetic overflow/underflow during FX conversion
-    ExchangeRateOverflow = 29,
+    ExchangeRateOverflow = 30,
     /// Invalid FX rate (e.g. non-positive)
-    ExchangeRateInvalid = 30,
+    ExchangeRateInvalid = 31,
+    /// Grace extension arguments invalid (zero, overflow, wrong status, unauthorized)
+    GraceExtensionInvalid = 32,
+    /// Extension would exceed owner-configured cumulative cap
+    GraceExtensionCapExceeded = 33,
+    /// Rate limiter rejected the call (too many requests for the caller).
+    RateLimited = 34,
+    /// Caller supplied more than `MAX_BATCH_SIZE` batch items.
+    BatchTooLarge = 35,
+    /// Milestone amount must be strictly positive.
+    MilestoneAmountInvalid = 36,
+    /// Milestone agreement is not in a valid status for the requested operation.
+    MilestoneAgreementInvalidStatus = 37,
+    /// Referenced milestone (or its agreement record) was not found.
+    MilestoneNotFound = 38,
+    /// Milestone has already been approved.
+    MilestoneAlreadyApproved = 39,
+    /// Milestone has not been approved yet.
+    MilestoneNotApproved = 40,
+    /// Milestone has already been claimed.
+    MilestoneAlreadyClaimed = 41,
+    /// An employee with the same address is already present in the agreement's
+    /// employee list. Adding it again would create two salary entries and break
+    /// the 1:1 employee-to-index mapping, so the duplicate add is rejected.
+    EmployeeAlreadyExists = 42,
+    /// A reentrant call into a guarded claim path was detected. The transient
+    /// reentrancy guard was already set, indicating an in-progress claim
+    /// re-entered (e.g. via a hostile or hook-enabled token during transfer).
+    ReentrancyDetected = 43,
+}
+
+/// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.
+///
+/// Extensions are stored separately from `Agreement::grace_period_seconds` so existing
+/// agreements keep their original base grace while allowing audited, bounded extensions.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GracePeriodExtensionPolicy {
+    /// Maximum cumulative extra seconds as basis points of the agreement's base
+    /// `grace_period_seconds` at extension time (e.g. `10000` = up to 100% extra).
+    pub max_cumulative_extension_bps: u32,
+    /// Upper bound on `additional_seconds` for a single `extend_grace_period` call.
+    pub max_extension_per_call_seconds: u64,
 }
 
 /// Emergency pause state
@@ -373,7 +504,7 @@ pub enum DataKey {
     /// multi-currency conversion helpers.
     ///
     /// Key: ExchangeRate(Address, Address)
-    /// Value: i128 (scaled rate)
+    /// Value: ExchangeRateInfo { rate: i128, updated_at: u64 }
     ExchangeRate(Address, Address),
 }
 
@@ -408,10 +539,11 @@ impl DataKey {
         env.storage().persistent().get(&key)
     }
 
-    /// Set salary per period for an employee at a specific index
+    /// Set salary per period for an employee at a specific index, bumping its TTL.
     pub fn set_employee_salary(env: &Env, agreement_id: u128, employee_index: u32, salary: i128) {
         let key: DataKey = DataKey::EmployeeSalary(agreement_id, employee_index);
         env.storage().persistent().set(&key, &salary);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get number of claimed periods for an employee at a specific index
@@ -429,6 +561,7 @@ impl DataKey {
     ) {
         let key: DataKey = DataKey::EmployeeClaimedPeriods(agreement_id, employee_index);
         env.storage().persistent().set(&key, &periods);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get activation timestamp for an agreement
@@ -479,13 +612,18 @@ impl DataKey {
         env.storage().persistent().set(&key, &amount);
     }
 
-    /// Get escrow balance for an agreement and token
+    /// Get escrow balance for an agreement and token.
+    ///
+    /// Bumps the entry's TTL on read so an escrow balance that is referenced but
+    /// not rewritten for a long time does not get archived.
     pub fn get_agreement_escrow_balance(env: &Env, agreement_id: u128, token: &Address) -> i128 {
         let key: DataKey = DataKey::AgreementEscrowBalance(agreement_id, token.clone());
-        env.storage().persistent().get(&key).unwrap_or(0i128)
+        let balance = env.storage().persistent().get(&key).unwrap_or(0i128);
+        extend_persistent_ttl(env, &key);
+        balance
     }
 
-    /// Set escrow balance for an agreement and token
+    /// Set escrow balance for an agreement and token, bumping its TTL.
     pub fn set_agreement_escrow_balance(
         env: &Env,
         agreement_id: u128,
@@ -494,12 +632,18 @@ impl DataKey {
     ) {
         let key: DataKey = DataKey::AgreementEscrowBalance(agreement_id, token.clone());
         env.storage().persistent().set(&key, &amount);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get the configured FX rate for a `(base, quote)` currency pair, if any.
     ///
-    /// The returned value is the fixed-point rate `quote_per_base * FX_SCALE`.
-    pub fn get_exchange_rate(env: &Env, base: &Address, quote: &Address) -> Option<i128> {
+    /// The returned value is an `ExchangeRateInfo` containing the fixed-point
+    /// rate `quote_per_base * FX_SCALE` and the `updated_at` ledger timestamp.
+    pub fn get_exchange_rate(
+        env: &Env,
+        base: &Address,
+        quote: &Address,
+    ) -> Option<ExchangeRateInfo> {
         let key: DataKey = DataKey::ExchangeRate(base.clone(), quote.clone());
         env.storage().persistent().get(&key)
     }
@@ -507,9 +651,41 @@ impl DataKey {
     /// Set the FX rate for a `(base, quote)` currency pair.
     ///
     /// Callers are responsible for enforcing any necessary access control;
-    /// this helper only performs the storage write.
+    /// this helper writes the rate together with the current ledger timestamp.
     pub fn set_exchange_rate(env: &Env, base: &Address, quote: &Address, rate: i128) {
         let key: DataKey = DataKey::ExchangeRate(base.clone(), quote.clone());
-        env.storage().persistent().set(&key, &rate);
+        let info = ExchangeRateInfo {
+            rate,
+            updated_at: env.ledger().timestamp(),
+        };
+        env.storage().persistent().set(&key, &info);
+    }
+
+    /// Get optional configured max-age (seconds) for FX rates.
+    pub fn get_exchange_rate_max_age_seconds(env: &Env) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ExchangeRateMaxAgeSeconds)
+    }
+
+    /// Set optional configured max-age (seconds) for FX rates.
+    pub fn set_exchange_rate_max_age_seconds(env: &Env, seconds: u64) {
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ExchangeRateMaxAgeSeconds, &seconds);
+    }
+
+    /// Get optional configured max single-update deviation in basis points.
+    pub fn get_exchange_rate_max_deviation_bps(env: &Env) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ExchangeRateMaxDeviationBps)
+    }
+
+    /// Set optional configured max single-update deviation in basis points.
+    pub fn set_exchange_rate_max_deviation_bps(env: &Env, bps: u32) {
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ExchangeRateMaxDeviationBps, &bps);
     }
 }

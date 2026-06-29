@@ -2,83 +2,78 @@ name: Contracts CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
   pull_request:
-    branches: [ "main" ]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # -----------------------------------------------------------------------
-  # Native (non-wasm) build and test job
-  # -----------------------------------------------------------------------
-  test-native:
-    name: Build & test (native)
+  contracts:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      # Cache Cargo registry, git sources, and the native target directory.
-      # Key is scoped to the OS + Cargo.lock so the cache invalidates whenever
-      # dependencies change.  Pull-requests from untrusted forks fall back to
-      # the read-only restore-key and cannot overwrite the canonical cache.
-      - name: Cache Rust workspace dependencies (native)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            onchain/target
-          key: ${{ runner.os }}-cargo-native-${{ hashFiles('onchain/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-native-
-
-      - name: Build workspace (native)
-        run: cargo build --workspace --manifest-path onchain/Cargo.toml --verbose
-
-      - name: Run workspace tests (native)
-        run: cargo test --workspace --manifest-path onchain/Cargo.toml --verbose
-
-  # -----------------------------------------------------------------------
-  # Wasm build job
-  # -----------------------------------------------------------------------
-  build-wasm:
-    name: Build contracts (wasm32)
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: wasm32v1-none
+          components: llvm-tools-preview
 
-      # Separate cache key for the wasm target directory so native and wasm
-      # build artefacts do not interfere with each other.
-      - name: Cache Rust workspace dependencies (wasm)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            onchain/target
-          key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('onchain/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-wasm-
-
-      - name: Build workspace for wasm32
+      - name: Install system dependencies
         run: |
-          cargo build \
-            --workspace \
-            --manifest-path onchain/Cargo.toml \
-            --target wasm32v1-none \
-            --release \
-            --verbose
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
+
+      - name: Add WASM target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install Stellar CLI
+        run: cargo install stellar-cli --locked
+
+      - name: Run tests (stello_pay_contract)
+        working-directory: onchain
+        run: cargo test -p stello_pay_contract --verbose
+
+      - name: Run tests (integration_tests)
+        working-directory: onchain
+        run: cargo test -p integration_tests --verbose
+
+      - name: Run tests (template_versioning)
+        working-directory: onchain
+        run: cargo test -p template_versioning --verbose
+
+      - name: Build Soroban contract (WASM)
+        working-directory: onchain/contracts/stello_pay_contract
+        run: stellar contract build --verbose
+
+      - name: Build template_versioning (WASM)
+        working-directory: onchain/contracts/template_versioning
+        run: stellar contract build --verbose
+
+      - name: Compile critical_paths benchmark (no run)
+        working-directory: onchain/contracts/stello_pay_contract
+        run: cargo bench --bench critical_paths --no-run --verbose
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate coverage (stello_pay_contract + integration_tests)
+        working-directory: onchain
+        run: |
+          cargo llvm-cov test -p stello_pay_contract -p integration_tests \
+            --codecov --output-path codecov.json
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codecov-json
+          path: onchain/codecov.json
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        continue-on-error: true
+        with:
+          files: onchain/codecov.json
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}

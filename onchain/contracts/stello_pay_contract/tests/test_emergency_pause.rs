@@ -202,10 +202,12 @@ fn test_paused_blocks_milestone_claims() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token.address);
     client.add_milestone(&agreement_id, &1000);
-    client.approve_milestone(&agreement_id, &1);
 
-    // Mint tokens
-    token.mint(&client.address, &10000);
+    // Fund the accounted escrow so the approve_milestone invariant passes.
+    token.mint(&employer, &10000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &10000);
+
+    client.approve_milestone(&agreement_id, &1);
 
     // Emergency pause
     let _ = client.emergency_pause();
@@ -230,9 +232,12 @@ fn test_unpause_restores_functionality() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token.address);
     client.add_milestone(&agreement_id, &1000);
-    client.approve_milestone(&agreement_id, &1);
 
-    token.mint(&client.address, &10000);
+    // Fund the accounted escrow so the approve_milestone invariant passes.
+    token.mint(&employer, &10000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &10000);
+
+    client.approve_milestone(&agreement_id, &1);
 
     // Pause
     let _ = client.emergency_pause();

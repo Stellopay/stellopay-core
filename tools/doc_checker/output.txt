@@ -1,0 +1,90 @@
+﻿cargo :    Compiling 
+doc_checker v0.1.0 (C:
+\Users\ADMIN\Desktop\m
+idea-drips\stellopay-c
+ore\tools\doc_checker)
+At line:1 char:1
++ cargo test 2>&1 | 
+Out-File -Encoding 
+utf8 output.txt
++ ~~~~~~~~~~~~~~~
+    + CategoryInfo    
+          : NotSpeci  
+  fied: (   Compili   
+ ng do...ls\doc_ch    
+ecker):String) []    
+, RemoteException
+    + FullyQualifiedE 
+   rrorId : NativeCo  
+  mmandError
+ 
+error[E0599]: no 
+method named `start` 
+found for struct 
+`proc_macro2::Span` 
+in the current scope
+  --> 
+src\main.rs:73:117
+   |
+73 | ...   errors.push
+(format!("{}:{}: fn 
+{} missing {}", 
+file_name, func.sig.id
+ent.span().start().lin
+e, func.sig.ident, mis
+sing_parts.join(",...
+   |                  
+                      
+                      
+                      
+   ^^^^^ method not 
+found in 
+`proc_macro2::Span`
+
+error[E0599]: no 
+method named `start` 
+found for struct 
+`proc_macro2::Span` 
+in the current scope
+  --> 
+src\main.rs:91:155
+   |
+91 | ..._name, field.i
+dent.as_ref().unwrap()
+.span().start().line, 
+item_struct.ident, 
+field_name));
+   |                  
+                      
+        ^^^^^ method 
+not found in 
+`proc_macro2::Span`
+
+error[E0599]: no 
+method named `start` 
+found for struct 
+`proc_macro2::Span` 
+in the current scope
+   --> 
+src\main.rs:115:135
+    |
+115 | ...ariant {}", 
+file_name, variant.ide
+nt.span().start().line
+, item_enum.ident, 
+variant.ident));
+    |                 
+                      
+         ^^^^^ method 
+not found in 
+`proc_macro2::Span`
+
+For more information 
+about this error, try 
+`rustc --explain 
+E0599`.
+error: could not 
+compile `doc_checker` 
+(bin "doc_checker" 
+test) due to 3 
+previous errors

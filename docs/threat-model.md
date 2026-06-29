@@ -129,6 +129,28 @@ This section references concrete mechanisms present in the codebase.
 - Contract errors are enumerated (`PayrollError`) in `onchain/contracts/stello_pay_contract/src/storage.rs`.
 - Batch claim operations are designed to be partially successful (errors captured per item) (see batch claim result types in `storage.rs`).
 
+### 5.5 Entry points reviewed in security pass #351
+
+The following externally callable entry points were reviewed and aligned to
+auth/composition expectations:
+
+- `expense_reimbursement::initialize` now requires `owner.require_auth()`.
+- `expense_reimbursement::pay_expense` updates status to `Paid` before token transfer.
+- `payroll_escrow::release` decrements per-agreement balance before transfer.
+- `payroll_escrow::refund_remaining` zeroes per-agreement balance before transfer.
+- `payment_scheduler::process_due_payments` commits execution counters and next schedule before transfer.
+- `bonus_system::claim_incentive` commits claimed payout counters/status before transfer.
+- `token_vesting::{claim, approve_early_release, revoke}` commit vesting state before transfer.
+
+Security invariants for these paths:
+
+- Auth completeness: every privileged or identity-bound operation gates with
+  explicit `require_auth()`.
+- Token conservation: each transfer path preserves per-object accounting
+  (`released + remaining == funded`, modulo expected refunds/claims).
+- Reentrancy resilience: mutable accounting is committed before external token
+  interaction.
+
 ---
 
 ## 6) Threats and mitigations
@@ -206,10 +228,13 @@ This section references concrete mechanisms present in the codebase.
 **Mitigations**:
 - Enforce `AgreementStatus` checks at every transition.
 - Use explicit invariants: `paid_amount <= total_amount`, claimed periods bounded, milestones count bounded.
+- Define dispute/grace windows precisely and test boundary conditions against ledger time.
 - Comprehensive test coverage for edge cases (pause, cancel, dispute, repeated claim).
 
 **Code references**:
 - Status checks in milestone claim/approval functions in `onchain/contracts/stello_pay_contract/src/payroll.rs`.
+- Dispute window enforcement in `raise_dispute` in `onchain/contracts/stello_pay_contract/src/payroll.rs` (uses `cancelled_at` as window start when cancelled, otherwise `created_at`).
+- Grace period refund transfer authorization in `finalize_grace_period` in `onchain/contracts/stello_pay_contract/src/payroll.rs` (contract-authorized token `transfer`).
 
 ---
 
@@ -238,7 +263,43 @@ This section references concrete mechanisms present in the codebase.
 
 ---
 
-### 6.8 Misconfiguration / key compromise (off-chain)
+### 6.8 Cross-contract workflow orchestration drift
+
+**Threat**: A realistic payout flow spans multiple contracts, but one step is
+executed out of order or by the wrong authority. Examples include:
+
+- Recording payment history from a non-payroll address
+- Releasing escrow from a non-manager address
+- Escalating a dispute after the allowed deadline
+- Claiming an optional bonus before approval or unlock
+
+**Impact**: Operators can mis-read workflow progress, retry successful steps,
+or strand funds in module-specific escrows while the primary agreement moves
+forward.
+
+**Mitigations**:
+- Keep each contract's auth boundary explicit in integration tests and
+  orchestration code.
+- Treat failed intermediate calls as state-preserving unless a success result
+  is observed and indexed.
+- Verify token conservation across employer, employee, and contract balances
+  for multi-step workflows.
+- Verify dispute deadlines and escalation levels with explicit ledger-time
+  manipulation in integration tests.
+
+**Integration coverage added in `onchain/integration_tests`**:
+- Payroll plus `payment_history` only records successfully when executed as the
+  payroll contract.
+- Payroll plus `payroll_escrow` rejects unauthorized release attempts without
+  mutating the tracked agreement balance.
+- Payroll disputes can be mirrored into `dispute_escalation`, including both
+  deadline-expiry failures and successful escalation/resolution sequences.
+- Optional `bonus_system` claims are covered both before unlock and after
+  approval/unlock.
+
+---
+
+### 6.9 Misconfiguration / key compromise (off-chain)
 
 **Threat**: Leaked `secret_key` in CLI config; compromised admin wallet upgrades malicious code.
 

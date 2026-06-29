@@ -1,80 +1,65 @@
-# CI / Continuous Integration
+# Continuous integration (contracts)
 
-This document describes the GitHub Actions CI setup for the `stellopay-core`
-repository, with a focus on the Rust build-cache strategy used to keep
-pipeline runtimes short.
+## Workflow
 
----
+The GitHub Actions workflow **Contracts CI** (`.github/workflows/contracts.yml`) runs on pushes and pull requests targeting `main`.
 
-## Workflows
+It performs:
 
-| File | Runner | Purpose |
-|------|--------|---------|
-| `.github/workflows/ci.yml` | `macos-latest` | Full Soroban contract build + tests |
-| `.github/workflows/contracts.yml` | `ubuntu-latest` | Native and wasm32 workspace builds |
-| `.github/workflows/security-scan.yml` | `ubuntu-latest` | `cargo-audit` + Clippy static analysis |
+1. **Rust toolchain** — stable channel, `wasm32-unknown-unknown` target, `llvm-tools-preview` (for coverage instrumentation).
+2. **Stellar CLI** — `cargo install stellar-cli --locked` for `stellar contract build`.
+3. **Unit / integration tests**
+   - `cargo test -p payroll_escrow --verbose`
+   - `cargo test -p stello_pay_contract --verbose`
+   - `cargo test -p integration_tests --verbose`
+   - `cargo test -p template_versioning --verbose`
+4. **WASM build** — `stellar contract build` in `onchain/contracts/stello_pay_contract` and `onchain/contracts/template_versioning`.
+5. **Coverage** — `cargo llvm-cov` over the same two packages; produces `onchain/codecov.json` and uploads it as a workflow artifact.
 
----
+### Optional Codecov
 
-## Rust Dependency Caching
+To publish reports to [Codecov](https://codecov.io), add a repository secret `CODECOV_TOKEN` and uncomment (or enable) the Codecov step in `contracts.yml`. The job is configured so missing token does not fail the workflow by default.
 
-All three workflows use `actions/cache@v4` to persist Cargo artefacts between
-runs.  The directories that are cached are:
+### Coverage thresholds
 
-```
-~/.cargo/registry/index   # crates.io sparse index
-~/.cargo/registry/cache   # downloaded .crate tarballs
-~/.cargo/git/db           # git-sourced dependencies
-onchain/target            # compiled build artefacts
-```
-
-### Cache key strategy
-
-```
-<runner-os>-cargo-<job-suffix>-<sha256 of onchain/Cargo.lock>
-```
-
-| Component | Why |
-|-----------|-----|
-| `runner.os` | Prevents cross-platform cache pollution |
-| job suffix (`native`, `wasm`, `security`) | Keeps native and wasm artefacts separate |
-| `hashFiles('onchain/Cargo.lock')` | Invalidates the cache when any dependency version changes |
-
-A `restore-keys` fallback (without the `Cargo.lock` hash) lets a new run
-reuse a stale cache and only rebuild what changed, rather than starting cold.
-
-### Security boundary for fork pull requests
-
-GitHub Actions does not allow pull requests from forks to write to the
-repository's cache (only trusted pushes to `main` can populate it).  Fork PRs
-read from the best matching `restore-keys` entry, so they still benefit from a
-warm registry cache without being able to inject malicious build artefacts into
-a trusted run.
-
----
-
-## Adding a new workflow
-
-1. Add `actions/checkout@v4` as the first step.
-2. Add `dtolnay/rust-toolchain@stable` (or the curl-based installer for macOS).
-3. Copy the cache step from an existing workflow, choosing a unique job suffix
-   so artefacts remain isolated.
-4. Place the cache step **after** toolchain installation and **before** any
-   `cargo build` / `cargo test` invocations.
-
----
-
-## Local reproduction
+The workflow does **not** enforce a minimum coverage percentage by default (Soroban contract tests mix host and WASM targets; thresholds are easier to tune locally first). To fail CI below a threshold, add for example:
 
 ```bash
-# Build the entire workspace natively
-cargo build --workspace --manifest-path onchain/Cargo.toml
-
-# Build for wasm32 (requires the target to be installed first)
-rustup target add wasm32v1-none
-cargo build --workspace --manifest-path onchain/Cargo.toml \
-  --target wasm32v1-none --release
-
-# Run all tests
-cargo test --workspace --manifest-path onchain/Cargo.toml
+cargo llvm-cov test -p stello_pay_contract --fail-under-lines 95
 ```
+
+after validating numbers in your environment.
+
+### Disabled tests
+
+Tests on `main` must be either active or deleted. Do not leave Rust test files
+with a `.disabled` suffix or similar opt-out extension in contract test
+directories. If a test breaks during SDK or API migration, either update it in
+the same change, merge the still-useful cases into an active suite, or delete it
+when active coverage already supersedes it.
+
+## Local environment
+
+Align with CI for reproducible runs:
+
+| Requirement | Notes |
+|-------------|--------|
+| Rust | Stable, edition 2021 (see workspace `Cargo.toml`). |
+| Target | `rustup target add wasm32-unknown-unknown` |
+| Stellar CLI | Same major line as Soroban SDK in the workspace (e.g. install via `cargo install stellar-cli --locked`). |
+| Coverage | `rustup component add llvm-tools-preview` and `cargo install cargo-llvm-cov` |
+
+### Commands
+
+```bash
+cd onchain
+cargo test -p payroll_escrow --verbose
+cargo test -p stello_pay_contract --verbose
+cargo test -p integration_tests --verbose
+cd contracts/stello_pay_contract && stellar contract build --verbose
+cd ../.. && cargo llvm-cov test -p stello_pay_contract -p integration_tests --html
+```
+
+## Legacy workflow
+
+`.github/workflows/ci.yml` is limited to **manual** runs (`workflow_dispatch`) so PRs are not duplicated. Use **Contracts CI** for branch protection checks.

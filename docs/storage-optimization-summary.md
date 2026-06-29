@@ -170,6 +170,36 @@ The implementation maintains full backward compatibility:
 4. **Analytics:** Add analytics functions for payroll insights
 5. **Bulk Operations:** Add more bulk operation types
 
+## State Archival / TTL Strategy
+
+Soroban archives persistent entries once their time-to-live (TTL) lapses. Long-lived
+but infrequently-accessed payroll data (agreements, escrow balances, employee salary
+and claimed-period records) could otherwise be archived mid-lifecycle, breaking later
+claims and refunds.
+
+To prevent this, TTL constants are centralized in `storage.rs` and the contract bumps
+TTL on access of these long-lived keys:
+
+- `PERSISTENT_TTL_THRESHOLD` (~30 days of ledgers): when a key's remaining TTL drops
+  below this, it is extended.
+- `PERSISTENT_BUMP_AMOUNT` (~90 days of ledgers): the target TTL a bump extends to.
+- `extend_persistent_ttl(env, key)`: a no-op when the key is absent; otherwise calls
+  `extend_ttl(PERSISTENT_TTL_THRESHOLD, PERSISTENT_BUMP_AMOUNT)`.
+
+Bumps are applied in the centralized accessors and `get_agreement`:
+
+- `get_agreement` / `get_agreement_escrow_balance` (read paths)
+- `set_agreement_escrow_balance`, `set_employee_salary`,
+  `set_employee_claimed_periods` (write paths)
+
+**Anti-griefing.** TTL bumps only ever extend keys the contract already owns and writes,
+and the caller pays the rent for the extension, so they cannot be abused to keep
+adversarial entries alive cheaply or to inflate another party's storage rent.
+
+Coverage: `tests/test_state_machine.rs` (`test_get_agreement_bumps_ttl`,
+`test_escrow_balance_ttl_survives_ledger_advance`) configures a finite TTL window,
+advances the ledger near expiry, and asserts the entries remain live and are re-bumped.
+
 ## Conclusion
 
 These storage optimizations provide significant improvements in:

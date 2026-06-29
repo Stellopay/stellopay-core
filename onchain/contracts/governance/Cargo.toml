@@ -1,0 +1,18 @@
+[package]
+name = "governance"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true, features = ["alloc"] }
+rbac = { path = "../rbac" }
+multisig = { path = "../multisig" }
+withdrawal_timelock = { path = "../withdrawal_timelock" }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }

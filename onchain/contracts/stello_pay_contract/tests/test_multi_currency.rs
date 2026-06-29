@@ -7,6 +7,7 @@ use soroban_sdk::{
 };
 
 use stello_pay_contract::storage::{DataKey, PayrollError};
+use stello_pay_contract::storage::ExchangeRateInfo;
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 /// Create a fresh test environment with a deployed payroll contract, owner,
@@ -53,6 +54,52 @@ fn test_convert_currency_basic() {
     let amount: i128 = 10;
     let converted = client.convert_currency(&base, &quote, &amount);
     assert_eq!(converted, 20);
+}
+
+#[test]
+fn test_exchange_rate_staleness_rejected() {
+    let (env, owner, _employer, _arbiter, client) = create_test_env();
+
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+    let rate: i128 = 1_000_000;
+
+    // configure max age to 1 second
+    let contract_address = client.address.clone();
+    env.as_contract(&contract_address, || {
+        DataKey::set_exchange_rate_max_age_seconds(&env, 1u64);
+    });
+
+    client.set_exchange_rate(&owner, &base, &quote, &rate);
+
+    // advance ledger far beyond max age
+    env.ledger().with_mut(|li| li.timestamp += 10u64);
+
+    let res = client.try_convert_currency(&base, &quote, &10i128);
+    assert!(res.is_err());
+}
+
+#[test]
+fn test_exchange_rate_deviation_rejected() {
+    let (env, owner, _employer, _arbiter, client) = create_test_env();
+
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+
+    // initial rate
+    let r1: i128 = 1_000_000; // 1.0
+    client.set_exchange_rate(&owner, &base, &quote, &r1);
+
+    // set max deviation to 100 bps (1%)
+    let contract_address = client.address.clone();
+    env.as_contract(&contract_address, || {
+        DataKey::set_exchange_rate_max_deviation_bps(&env, 100u32);
+    });
+
+    // attempt a >1% update should be rejected
+    let r2 = r1 + (r1 / 50); // +2%
+    let res = client.try_set_exchange_rate(&owner, &base, &quote, &r2);
+    assert!(res.is_err());
 }
 
 /// End‑to‑end test for `claim_payroll_in_token`:

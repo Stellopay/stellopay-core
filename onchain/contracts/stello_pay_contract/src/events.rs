@@ -94,6 +94,18 @@ pub struct PaymentReceivedEvent {
     pub token: Address,
 }
 
+/// Event: Contract storage migration applied
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ContractMigratedEvent {
+    pub from_version: u32,
+    pub to_version: u32,
+}
+
+pub fn emit_contract_migrated(env: &Env, event: ContractMigratedEvent) {
+    event.publish(env);
+}
+
 pub fn emit_agreement_created(env: &Env, event: AgreementCreatedEvent) {
     event.publish(env);
 }
@@ -182,6 +194,23 @@ pub fn emit_grace_period_finalized(env: &Env, event: GracePeriodFinalizedEvent) 
     event.publish(env);
 }
 
+/// Event: Grace period extended (audit trail for employer or owner).
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct GracePeriodExtendedEvent {
+    pub agreement_id: u128,
+    /// Seconds added by this call.
+    pub additional_seconds: u64,
+    /// Total extra seconds stored after this call (excluding base `grace_period_seconds`).
+    pub total_extension_seconds: u64,
+    /// True if the contract owner authorized the call; false if the employer did.
+    pub extended_by_owner: bool,
+}
+
+pub fn emit_grace_period_extended(env: &Env, event: GracePeriodExtendedEvent) {
+    event.publish(env);
+}
+
 /// Event: Batch payroll claimed
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -207,5 +236,54 @@ pub struct BatchMilestoneClaimedEvent {
 }
 
 pub fn emit_batch_milestone_claimed(env: &Env, event: BatchMilestoneClaimedEvent) {
+    event.publish(env);
+}
+
+/// Event: Milestone agreement funded by employer.
+///
+/// Emitted when an employer deposits tokens into the contract for a specific
+/// milestone agreement via `fund_milestone_agreement`. The `total_escrow_balance`
+/// field reflects the new accounted balance after this deposit.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MilestoneFundedEvent {
+    pub agreement_id: u128,
+    pub from: Address,
+    pub amount: i128,
+    pub total_escrow_balance: i128,
+}
+
+pub fn emit_milestone_funded(env: &Env, event: MilestoneFundedEvent) {
+    event.publish(env);
+}
+
+/// Event: Multisig threshold configuration changed.
+///
+/// Emitted by `set_multisig_config` on every successful update so off-chain
+/// monitors can detect when the approval requirements (which gate large payments
+/// and dispute resolutions) change mid-lifecycle. Carries the previous and new
+/// thresholds and the owner that performed the change.
+///
+/// Topics: `("MULTISIG", "config")` (derived from the struct/field layout by the
+/// `#[contractevent]` macro). The event exposes only public configuration; it
+/// does not include any multisig signer secrets.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MultisigConfigChangedEvent {
+    /// Owner address that performed the change.
+    pub caller: Address,
+    /// New multisig contract address now configured.
+    pub multisig_contract: Address,
+    /// Previous large-payment threshold (0 if previously unset/disabled).
+    pub old_large_threshold: i128,
+    /// New large-payment threshold.
+    pub new_large_threshold: i128,
+    /// Previous dispute-resolution threshold (0 if previously unset/disabled).
+    pub old_dispute_threshold: i128,
+    /// New dispute-resolution threshold.
+    pub new_dispute_threshold: i128,
+}
+
+pub fn emit_multisig_config_changed(env: &Env, event: MultisigConfigChangedEvent) {
     event.publish(env);
 }
