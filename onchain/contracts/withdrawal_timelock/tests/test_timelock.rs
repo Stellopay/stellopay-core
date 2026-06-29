@@ -10,6 +10,8 @@ use withdrawal_timelock::{
     WithdrawalTimelockClient, MAX_DELAY_SECONDS,
 };
 
+// ─── Group G: Withdrawal amount validation (issue #586) ──────────────────────
+
 // ─── Shared Test Helpers ──────────────────────────────────────────────────────
 
 /// Creates a clean environment with all auth mocked out.
@@ -762,4 +764,68 @@ fn get_operations_for_invalid_start_returns_empty() {
     let page = client.get_operations_for(&admin, &None, &Some(5), &None);
     assert_eq!(page.operations.len(), 0);
     assert_eq!(page.next_cursor, None);
+}
+
+// ─── Group G: Withdrawal amount validation (issue #586) ──────────────────────
+
+/// Zero-amount withdrawal must be rejected at queue time.
+/// A zero-amount withdrawal is a no-op that would consume a timelock slot
+/// and pollute the audit trail without any actual economic effect.
+#[test]
+fn queue_withdrawal_zero_amount_fails() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    let token = Address::generate(&env);
+    let to = Address::generate(&env);
+    let kind = OperationKind::Withdrawal(token, to, 0i128);
+
+    let res = client.try_queue(&admin, &kind);
+    assert_eq!(res, Err(Ok(TimelockError::InvalidWithdrawalAmount)));
+}
+
+/// Negative-amount withdrawal must also be rejected at queue time.
+#[test]
+fn queue_withdrawal_negative_amount_fails() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    let token = Address::generate(&env);
+    let to = Address::generate(&env);
+    let kind = OperationKind::Withdrawal(token, to, -1i128);
+
+    let res = client.try_queue(&admin, &kind);
+    assert_eq!(res, Err(Ok(TimelockError::InvalidWithdrawalAmount)));
+}
+
+/// A positive-amount withdrawal must succeed and be recorded.
+#[test]
+fn queue_withdrawal_positive_amount_succeeds() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    let token = Address::generate(&env);
+    let to = Address::generate(&env);
+    let kind = OperationKind::Withdrawal(token, to, 1i128);
+
+    let op_id = client.queue(&admin, &kind);
+    let op: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Queued);
+}
+
+/// Non-withdrawal kinds (AdminChange) must not be affected by amount validation.
+/// Their opaque payload_hash is outside the timelock's interpretation scope.
+#[test]
+fn queue_admin_change_not_affected_by_withdrawal_validation() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    let target = Address::generate(&env);
+    let payload: BytesN<32> = BytesN::from_array(&env, &[0u8; 32]);
+    let kind = OperationKind::AdminChange(target, payload);
+
+    // Must succeed regardless of the payload content.
+    let op_id = client.queue(&admin, &kind);
+    let op: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Queued);
 }
