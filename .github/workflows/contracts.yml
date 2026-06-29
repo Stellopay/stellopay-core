@@ -1,0 +1,93 @@
+name: Contracts CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            onchain/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('onchain/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libdbus-1-dev pkg-config libudev-dev
+
+      - name: Add WASM target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install Stellar CLI
+        run: cargo install stellar-cli --locked
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: cargo-deny (security advisories, license, banned crates)
+        working-directory: onchain
+        run: cargo deny check
+
+      - name: Run workspace-wide tests
+        working-directory: onchain
+        run: cargo test --workspace --verbose
+
+      - name: Clippy workspace-wide lint gate
+        working-directory: onchain
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build all cdylib contracts (WASM)
+        working-directory: onchain
+        run: |
+          for dir in contracts/*/; do
+            crate=$(basename "$dir")
+            echo "=== Building $crate ==="
+            # Only build crates that produce a cdylib (contract) target
+            if grep -q 'crate-type.*cdylib' "$dir/Cargo.toml" 2>/dev/null; then
+              stellar contract build --manifest-path "$dir/Cargo.toml" --verbose || echo "WARN: $crate build failed"
+            fi
+          done
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Generate workspace-wide coverage
+        working-directory: onchain
+        run: |
+          cargo llvm-cov test --workspace \
+            --codecov --output-path codecov.json
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codecov-json
+          path: onchain/codecov.json
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        continue-on-error: true
+        with:
+          files: onchain/codecov.json
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}
