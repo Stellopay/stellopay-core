@@ -31,17 +31,9 @@ jobs:
       - name: Install Stellar CLI
         run: cargo install stellar-cli --locked
 
-      - name: Run tests (stello_pay_contract)
+      - name: Run tests (all workspace crates)
         working-directory: onchain
-        run: cargo test -p stello_pay_contract --verbose
-
-      - name: Run tests (integration_tests)
-        working-directory: onchain
-        run: cargo test -p integration_tests --verbose
-
-      - name: Run tests (template_versioning)
-        working-directory: onchain
-        run: cargo test -p template_versioning --verbose
+        run: cargo test --workspace --verbose
 
       - name: Build Soroban contract (WASM)
         working-directory: onchain/contracts/stello_pay_contract
