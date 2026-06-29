@@ -226,6 +226,10 @@ pub enum StorageKey {
     /// If set, a new update that changes the rate by more than this fraction
     /// relative to the previous stored rate will be rejected.
     ExchangeRateMaxDeviationBps,
+    /// Optional absolute upper-bound on any FX rate (inclusive). If set, any
+    /// `set_exchange_rate` call with a rate above this value is rejected as
+    /// a sanity guard against oracle bugs or mis-configured rates.
+    ExchangeRateMaxRateSanityBound,
     /// Cumulative grace extension (seconds) applied on top of `Agreement::grace_period_seconds`
     /// for cancelled agreements (`agreement_id` -> u64).
     GracePeriodExtensionSeconds(u128),
@@ -687,5 +691,19 @@ impl DataKey {
         env.storage()
             .persistent()
             .set(&StorageKey::ExchangeRateMaxDeviationBps, &bps);
+    }
+
+    /// Get optional absolute upper-bound sanity limit for FX rates.
+    pub fn get_exchange_rate_max_rate_sanity_bound(env: &Env) -> Option<i128> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ExchangeRateMaxRateSanityBound)
+    }
+
+    /// Set optional absolute upper-bound sanity limit for FX rates.
+    pub fn set_exchange_rate_max_rate_sanity_bound(env: &Env, max_rate: i128) {
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ExchangeRateMaxRateSanityBound, &max_rate);
     }
 }
