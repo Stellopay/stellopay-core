@@ -10,7 +10,9 @@
 //! - Arithmetic safety (checked operations)
 //! - Validation helpers (duplicate recipient checks, zero-weight prevention)
 
-use soroban_sdk::{contract, contractimpl, contracttype, xdr::ToXdr, Address, Bytes, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, Bytes, Env, Vec};
+
+const MAX_RECIPIENTS: u32 = 50;
 
 #[contract]
 pub struct PaymentSplitterContract;
@@ -89,6 +91,10 @@ impl PaymentSplitterContract {
         creator.require_auth();
         Self::require_initialized(&env);
         assert!(!recipients.is_empty(), "At least one recipient required");
+        assert!(
+            recipients.len() <= MAX_RECIPIENTS,
+            "Recipient count exceeds maximum"
+        );
 
         let mut has_percent = false;
         let mut has_fixed = false;
@@ -143,6 +149,12 @@ impl PaymentSplitterContract {
         env.storage()
             .persistent()
             .set(&StorageKey::Split(next_id), &def);
+
+        env.events().publish(
+            (symbol_short!("split"), creator),
+            (next_id, def.recipients.len(), def.is_percent),
+        );
+
         next_id
     }
 
