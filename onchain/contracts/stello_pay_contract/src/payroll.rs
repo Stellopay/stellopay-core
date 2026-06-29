@@ -194,6 +194,35 @@ fn enforce_rate_limit(env: &Env, caller: &Address) -> Result<(), PayrollError> {
 /// Fixed-point scaling factor for FX rates: 1e6 precision.
 const FX_SCALE: i128 = 1_000_000;
 
+/// Acquires the transient reentrancy guard, returning [`PayrollError::ReentrancyDetected`]
+/// if a guarded claim path is already in progress within this transaction.
+///
+/// The guard lives in **temporary** storage so it is cleared automatically at
+/// the end of the transaction; a panic mid-transfer therefore cannot strand it.
+/// Callers must pair a successful acquire with [`release_reentrancy_guard`] on
+/// every (non-panicking) return path.
+fn acquire_reentrancy_guard(env: &Env) -> Result<(), PayrollError> {
+    if env
+        .storage()
+        .temporary()
+        .get::<_, bool>(&StorageKey::ReentrancyGuard)
+        .unwrap_or(false)
+    {
+        return Err(PayrollError::ReentrancyDetected);
+    }
+    env.storage()
+        .temporary()
+        .set(&StorageKey::ReentrancyGuard, &true);
+    Ok(())
+}
+
+/// Releases the transient reentrancy guard set by [`acquire_reentrancy_guard`].
+fn release_reentrancy_guard(env: &Env) {
+    env.storage()
+        .temporary()
+        .remove(&StorageKey::ReentrancyGuard);
+}
+
 pub fn create_milestone_agreement(
     env: Env,
     employer: Address,
@@ -2063,6 +2092,21 @@ pub fn claim_payroll(
     agreement_id: u128,
     employee_index: u32,
 ) -> Result<(), PayrollError> {
+    // Guard the entire claim against cross-contract reentrancy (e.g. a hostile
+    // token re-entering during `transfer`). The guard is released on every
+    // return path; a panic clears it automatically via temporary storage.
+    acquire_reentrancy_guard(env)?;
+    let result = claim_payroll_inner(env, caller, agreement_id, employee_index);
+    release_reentrancy_guard(env);
+    result
+}
+
+fn claim_payroll_inner(
+    env: &Env,
+    caller: &Address,
+    agreement_id: u128,
+    employee_index: u32,
+) -> Result<(), PayrollError> {
     enforce_rate_limit(env, caller)?;
 
     // Check emergency pause
@@ -2188,7 +2232,25 @@ pub fn claim_payroll(
     // Get contract address (this contract)
     let contract_address = env.current_contract_address();
 
-    // Transfer tokens from escrow to employee.
+    // === EFFECTS BEFORE INTERACTION (checks-effects-interactions) ===
+    // Persist the new escrow balance, claimed periods, and paid amount BEFORE
+    // the external token transfer, so a malicious or hook-enabled token cannot
+    // re-enter and observe stale state to double-claim a period. The transient
+    // reentrancy guard (acquired by the caller) is the primary defense; this
+    // ordering is defense-in-depth.
+    let new_escrow_balance = escrow_balance - amount;
+    DataKey::set_agreement_escrow_balance(env, agreement_id, &token, new_escrow_balance);
+
+    let new_claimed_periods = claimed_periods + periods_to_pay;
+    DataKey::set_employee_claimed_periods(env, agreement_id, employee_index, new_claimed_periods);
+
+    let current_paid = DataKey::get_agreement_paid_amount(env, agreement_id);
+    let new_paid = current_paid
+        .checked_add(amount)
+        .ok_or(PayrollError::InvalidData)?;
+    DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
+
+    // === INTERACTION: transfer tokens from escrow to employee ===
     //
     // IMPORTANT: Token `transfer(from=contract_address, ...)` requires `from.require_auth()`.
     // When the token contract calls `require_auth()` on a contract address, the calling
@@ -2213,21 +2275,6 @@ pub fn claim_payroll(
         })],
     ));
     token_client.transfer(&contract_address, &employee, &amount);
-
-    // Update escrow balance
-    let new_escrow_balance = escrow_balance - amount;
-    DataKey::set_agreement_escrow_balance(env, agreement_id, &token, new_escrow_balance);
-
-    // Update employee's claimed periods
-    let new_claimed_periods = claimed_periods + periods_to_pay;
-    DataKey::set_employee_claimed_periods(env, agreement_id, employee_index, new_claimed_periods);
-
-    // Update agreement total paid amount
-    let current_paid = DataKey::get_agreement_paid_amount(env, agreement_id);
-    let new_paid = current_paid
-        .checked_add(amount)
-        .ok_or(PayrollError::InvalidData)?;
-    DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
 
     // Emit events
     emit_payroll_claimed(
@@ -2332,6 +2379,21 @@ pub fn claim_payroll_in_token(
     employee_index: u32,
     payout_token: Address,
 ) -> Result<(), PayrollError> {
+    // Reentrancy guard mirrors `claim_payroll`; released on every return path.
+    acquire_reentrancy_guard(env)?;
+    let result =
+        claim_payroll_in_token_inner(env, caller, agreement_id, employee_index, payout_token);
+    release_reentrancy_guard(env);
+    result
+}
+
+fn claim_payroll_in_token_inner(
+    env: &Env,
+    caller: &Address,
+    agreement_id: u128,
+    employee_index: u32,
+    payout_token: Address,
+) -> Result<(), PayrollError> {
     enforce_rate_limit(env, caller)?;
 
     // Validate employee index
@@ -2388,8 +2450,10 @@ pub fn claim_payroll_in_token(
         DataKey::get_agreement_token(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     // Shortcut to the single-currency path if payout token == base token.
+    // Call the inner (unguarded) variant because the guard is already held by
+    // this function's wrapper; re-acquiring would self-trip the guard.
     if payout_token == base_token {
-        return claim_payroll(env, caller, agreement_id, employee_index);
+        return claim_payroll_inner(env, caller, agreement_id, employee_index);
     }
 
     // Get current timestamp
@@ -2437,7 +2501,22 @@ pub fn claim_payroll_in_token(
     // Get contract address (this contract)
     let contract_address = env.current_contract_address();
 
-    // Transfer tokens from escrow to employee in payout currency.
+    // === EFFECTS BEFORE INTERACTION (checks-effects-interactions) ===
+    // Persist payout-currency escrow, claimed periods, and base-currency paid
+    // amount BEFORE the external transfer (defense-in-depth alongside the guard).
+    let new_escrow_payout = escrow_balance_payout - amount_payout;
+    DataKey::set_agreement_escrow_balance(env, agreement_id, &payout_token, new_escrow_payout);
+
+    let new_claimed_periods = claimed_periods + periods_to_pay;
+    DataKey::set_employee_claimed_periods(env, agreement_id, employee_index, new_claimed_periods);
+
+    let current_paid = DataKey::get_agreement_paid_amount(env, agreement_id);
+    let new_paid = current_paid
+        .checked_add(amount_base)
+        .ok_or(PayrollError::InvalidData)?;
+    DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
+
+    // === INTERACTION: transfer tokens from escrow to employee in payout currency ===
     //
     // Token `transfer(from=contract_address, ...)` requires `from.require_auth()`.
     // We pre-authorize via `authorize_as_current_contract` as in the base path.
@@ -2461,21 +2540,6 @@ pub fn claim_payroll_in_token(
         })],
     ));
     token_client.transfer(&contract_address, &employee, &amount_payout);
-
-    // Update escrow balance for payout currency
-    let new_escrow_payout = escrow_balance_payout - amount_payout;
-    DataKey::set_agreement_escrow_balance(env, agreement_id, &payout_token, new_escrow_payout);
-
-    // Update employee's claimed periods
-    let new_claimed_periods = claimed_periods + periods_to_pay;
-    DataKey::set_employee_claimed_periods(env, agreement_id, employee_index, new_claimed_periods);
-
-    // Update agreement total paid amount in base currency
-    let current_paid = DataKey::get_agreement_paid_amount(env, agreement_id);
-    let new_paid = current_paid
-        .checked_add(amount_base)
-        .ok_or(PayrollError::InvalidData)?;
-    DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
 
     // Emit events: `PayrollClaimed` remains in base currency units, while the
     // payment events reflect the actual payout asset and amount.
@@ -2547,6 +2611,20 @@ pub fn claim_payroll_in_token(
 /// * Token client constructed once and reused.
 /// * Completion / status updates are batched where possible.
 pub fn batch_claim_payroll(
+    env: &Env,
+    caller: &Address,
+    agreement_id: u128,
+    employee_indices: Vec<u32>,
+) -> Result<BatchPayrollResult, PayrollError> {
+    // Reentrancy guard covers the whole batch (each per-employee transfer is a
+    // potential reentry point); released on every return path.
+    acquire_reentrancy_guard(env)?;
+    let result = batch_claim_payroll_inner(env, caller, agreement_id, employee_indices);
+    release_reentrancy_guard(env);
+    result
+}
+
+fn batch_claim_payroll_inner(
     env: &Env,
     caller: &Address,
     agreement_id: u128,
@@ -2736,6 +2814,28 @@ pub fn batch_claim_payroll(
             continue;
         }
 
+        // === EFFECTS BEFORE INTERACTION (checks-effects-interactions) ===
+        // Decrement the in-memory escrow and persist per-employee claimed
+        // periods and the agreement paid amount BEFORE the external transfer,
+        // so a hostile token cannot re-enter and observe stale per-employee
+        // state. The transaction-level reentrancy guard is the primary defense.
+        escrow_balance -= amount;
+        total_claimed += amount;
+        successful_claims += 1;
+
+        DataKey::set_employee_claimed_periods(
+            env,
+            agreement_id,
+            employee_index,
+            claimed_periods + periods_to_pay,
+        );
+
+        let new_paid = DataKey::get_agreement_paid_amount(env, agreement_id)
+            .checked_add(amount)
+            .unwrap_or(DataKey::get_agreement_paid_amount(env, agreement_id));
+        DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
+
+        // === INTERACTION: transfer tokens from escrow to employee ===
         env.authorize_as_current_contract(Vec::from_array(
             env,
             [InvokerContractAuthEntry::Contract(SubContractInvocation {
@@ -2755,24 +2855,6 @@ pub fn batch_claim_payroll(
             })],
         ));
         token_client.transfer(&contract_address, &employee, &amount);
-
-        // Update in-memory balance
-        escrow_balance -= amount;
-        total_claimed += amount;
-        successful_claims += 1;
-
-        // Persist per-employee state
-        DataKey::set_employee_claimed_periods(
-            env,
-            agreement_id,
-            employee_index,
-            claimed_periods + periods_to_pay,
-        );
-
-        let new_paid = DataKey::get_agreement_paid_amount(env, agreement_id)
-            .checked_add(amount)
-            .unwrap_or(DataKey::get_agreement_paid_amount(env, agreement_id));
-        DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
 
         // Events — identical to claim_payroll
         emit_payroll_claimed(
