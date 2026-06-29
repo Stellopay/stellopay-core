@@ -153,6 +153,16 @@ fn enforce_rate_limit(env: &Env, caller: &Address) -> Result<(), PayrollError> {
 /// Fixed-point scaling factor for FX rates: 1e6 precision.
 const FX_SCALE: i128 = 1_000_000;
 
+/// Minimum converted amount (in quote-token base units) below which the
+/// conversion is treated as pure dust and rejected.
+///
+/// Rounding policy: `convert_amount` uses **floor division** (truncation toward
+/// zero). Any remainder is discarded. If truncation reduces the converted amount
+/// to zero the call returns `ExchangeRateInvalid` so callers are not silently
+/// credited nothing. Callers that need to claim very small amounts should
+/// accumulate multiple periods before claiming.
+const DUST_THRESHOLD: i128 = 1;
+
 pub fn create_milestone_agreement(
     env: Env,
     employer: Address,
@@ -3013,6 +3023,12 @@ fn convert_amount(
     let converted = scaled
         .checked_div(FX_SCALE)
         .ok_or(PayrollError::ExchangeRateInvalid)?;
+
+    // Dust guard: reject conversions that floor-round to zero to prevent
+    // callers from being silently credited nothing for a non-zero input.
+    if converted < DUST_THRESHOLD {
+        return Err(PayrollError::ExchangeRateInvalid);
+    }
 
     Ok(converted)
 }
