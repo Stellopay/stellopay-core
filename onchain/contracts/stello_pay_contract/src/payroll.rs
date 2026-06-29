@@ -23,7 +23,7 @@ use crate::storage::{
 };
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contractclient, contracttype, token, IntoVal, Symbol, Val,
+    contractclient, contracttype, panic_with_error, token, IntoVal, Symbol, Val,
 };
 
 /// Minimal interface for cross-contract calls into the deployed multisig contract.
@@ -1346,6 +1346,16 @@ pub fn add_employee_to_agreement(
         .persistent()
         .get(&StorageKey::AgreementEmployees(agreement_id))
         .unwrap_or(Vec::new(env));
+
+    // Reject duplicate employee addresses. Each address must map to exactly one
+    // salary entry within an agreement; adding the same address twice would
+    // create two salary streams and corrupt per-employee claim accounting.
+    // A removed employee can be re-added because they are no longer present.
+    for existing in employees.iter() {
+        if existing.address == employee {
+            panic_with_error!(env, PayrollError::EmployeeAlreadyExists);
+        }
+    }
 
     employees.push_back(EmployeeInfo {
         address: employee.clone(),
