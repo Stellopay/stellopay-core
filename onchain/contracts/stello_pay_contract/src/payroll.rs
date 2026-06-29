@@ -6,13 +6,13 @@ use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
     emit_employee_added, emit_grace_period_extended, emit_grace_period_finalized,
-    emit_milestone_funded, emit_payment_received, emit_payment_sent, emit_payroll_claimed,
-    emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
-    AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
-    BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
-    GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
-    MilestoneClaimed, MilestoneFundedEvent, PaymentReceivedEvent, PaymentSentEvent,
-    PayrollClaimedEvent,
+    emit_exchange_rate_changed, emit_milestone_funded, emit_payment_received, emit_payment_sent,
+    emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent,
+    AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent,
+    BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent,
+    DisputeResolvedEvent, EmployeeAddedEvent, ExchangeRateChangedEvent, GracePeriodExtendedEvent,
+    GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved, MilestoneClaimed,
+    MilestoneFundedEvent, PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
@@ -1903,7 +1903,19 @@ pub fn set_exchange_rate(
         }
     }
 
+    let prev_rate = DataKey::get_exchange_rate(env, &base, &quote)
+        .map(|r| r.rate)
+        .unwrap_or(0);
+
     DataKey::set_exchange_rate(env, &base, &quote, rate);
+
+    emit_exchange_rate_changed(env, ExchangeRateChangedEvent {
+        base,
+        quote,
+        new_rate: rate,
+        prev_rate,
+        updated_at: env.ledger().timestamp(),
+    });
 
     Ok(())
 }
