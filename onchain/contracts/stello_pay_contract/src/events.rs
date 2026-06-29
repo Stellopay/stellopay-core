@@ -256,3 +256,34 @@ pub struct MilestoneFundedEvent {
 pub fn emit_milestone_funded(env: &Env, event: MilestoneFundedEvent) {
     event.publish(env);
 }
+
+/// Event: Multisig threshold configuration changed.
+///
+/// Emitted by `set_multisig_config` on every successful update so off-chain
+/// monitors can detect when the approval requirements (which gate large payments
+/// and dispute resolutions) change mid-lifecycle. Carries the previous and new
+/// thresholds and the owner that performed the change.
+///
+/// Topics: `("MULTISIG", "config")` (derived from the struct/field layout by the
+/// `#[contractevent]` macro). The event exposes only public configuration; it
+/// does not include any multisig signer secrets.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MultisigConfigChangedEvent {
+    /// Owner address that performed the change.
+    pub caller: Address,
+    /// New multisig contract address now configured.
+    pub multisig_contract: Address,
+    /// Previous large-payment threshold (0 if previously unset/disabled).
+    pub old_large_threshold: i128,
+    /// New large-payment threshold.
+    pub new_large_threshold: i128,
+    /// Previous dispute-resolution threshold (0 if previously unset/disabled).
+    pub old_dispute_threshold: i128,
+    /// New dispute-resolution threshold.
+    pub new_dispute_threshold: i128,
+}
+
+pub fn emit_multisig_config_changed(env: &Env, event: MultisigConfigChangedEvent) {
+    event.publish(env);
+}

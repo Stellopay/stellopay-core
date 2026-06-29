@@ -410,6 +410,10 @@ pub enum PayrollError {
     MilestoneNotApproved = 40,
     /// Milestone has already been claimed.
     MilestoneAlreadyClaimed = 41,
+    /// An employee with the same address is already present in the agreement's
+    /// employee list. Adding it again would create two salary entries and break
+    /// the 1:1 employee-to-index mapping, so the duplicate add is rejected.
+    EmployeeAlreadyExists = 42,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.

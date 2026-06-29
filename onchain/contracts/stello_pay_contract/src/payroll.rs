@@ -6,13 +6,13 @@ use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
     emit_employee_added, emit_grace_period_extended, emit_grace_period_finalized,
-    emit_milestone_funded, emit_payment_received, emit_payment_sent, emit_payroll_claimed,
-    emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
-    AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
-    BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
-    GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
-    MilestoneClaimed, MilestoneFundedEvent, PaymentReceivedEvent, PaymentSentEvent,
-    PayrollClaimedEvent,
+    emit_milestone_funded, emit_multisig_config_changed, emit_payment_received, emit_payment_sent,
+    emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent,
+    AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent,
+    BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent,
+    EmployeeAddedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded,
+    MilestoneApproved, MilestoneClaimed, MilestoneFundedEvent, MultisigConfigChangedEvent,
+    PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
@@ -23,7 +23,7 @@ use crate::storage::{
 };
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contractclient, contracttype, token, IntoVal, Symbol, Val,
+    contractclient, contracttype, panic_with_error, token, IntoVal, Symbol, Val,
 };
 
 /// Minimal interface for cross-contract calls into the deployed multisig contract.
@@ -98,6 +98,20 @@ pub fn set_multisig_config(
     if owner != stored_owner {
         return Err(PayrollError::Unauthorized);
     }
+
+    // Capture the previous thresholds before overwriting so the emitted event
+    // and audit entry can report old-vs-new values (0 = previously unset).
+    let old_large_payment_threshold: i128 = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::LargePaymentThreshold)
+        .unwrap_or(0);
+    let old_dispute_resolution_threshold: i128 = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::DisputeResolutionThreshold)
+        .unwrap_or(0);
+
     env.storage()
         .persistent()
         .set(&StorageKey::MultisigContract, &multisig_contract);
@@ -108,6 +122,33 @@ pub fn set_multisig_config(
         &StorageKey::DisputeResolutionThreshold,
         &dispute_resolution_threshold,
     );
+
+    // Emit a structured event so off-chain monitors observe approval-requirement
+    // changes mid-lifecycle. Only public configuration is exposed.
+    emit_multisig_config_changed(
+        env,
+        MultisigConfigChangedEvent {
+            caller: owner.clone(),
+            multisig_contract: multisig_contract.clone(),
+            old_large_threshold: old_large_payment_threshold,
+            new_large_threshold: large_payment_threshold,
+            old_dispute_threshold: old_dispute_resolution_threshold,
+            new_dispute_threshold: dispute_resolution_threshold,
+        },
+    );
+
+    // Record a tamper-evident audit entry via the existing audit path. This is a
+    // contract-level change, so it uses the sentinel `agreement_id = 0` and
+    // reports the new large-payment threshold as the entry's `amount`.
+    record_entry(
+        env,
+        owner,
+        AuditEvent::MultisigConfigChanged,
+        0,
+        None,
+        Some(large_payment_threshold),
+    );
+
     Ok(())
 }
 
@@ -1347,6 +1388,16 @@ pub fn add_employee_to_agreement(
         .get(&StorageKey::AgreementEmployees(agreement_id))
         .unwrap_or(Vec::new(env));
 
+    // Reject duplicate employee addresses. Each address must map to exactly one
+    // salary entry within an agreement; adding the same address twice would
+    // create two salary streams and corrupt per-employee claim accounting.
+    // A removed employee can be re-added because they are no longer present.
+    for existing in employees.iter() {
+        if existing.address == employee {
+            panic_with_error!(env, PayrollError::EmployeeAlreadyExists);
+        }
+    }
+
     employees.push_back(EmployeeInfo {
         address: employee.clone(),
         salary_per_period,
@@ -1481,6 +1532,23 @@ pub fn get_grace_extension_policy(env: &Env) -> GracePeriodExtensionPolicy {
 }
 
 /// Sets caps for per-agreement grace extensions. Callable only by the contract owner.
+///
+/// # Policy semantics
+/// Both policy fields must be strictly positive. A zero value is treated as an
+/// invalid configuration (not "disabled"), because a zero cap silently disables
+/// all grace extensions and removes a safety mechanism with no error:
+/// - `max_cumulative_extension_bps == 0` would make every extension exceed the
+///   (zero) cumulative cap, so no extension could ever be applied.
+/// - `max_extension_per_call_seconds == 0` would reject every single-call
+///   extension.
+///
+/// To intentionally stop allowing extensions, set the caps to a small, explicit
+/// non-zero value rather than zero, so the configuration choice is auditable and
+/// cannot happen by accident. Both fields are also bounded above so a compromised
+/// owner key cannot configure absurd values in one transaction.
+///
+/// Returns [`PayrollError::GraceExtensionInvalid`] when either field is zero or
+/// exceeds its upper bound.
 pub fn set_grace_extension_policy(
     env: &Env,
     caller: Address,
@@ -1494,7 +1562,11 @@ pub fn set_grace_extension_policy(
     // Sanity bounds so a compromised owner key cannot configure absurd values in one tx.
     const MAX_BPS: u32 = 500_000;
     const MAX_PER_CALL: u64 = 730 * 24 * 3600;
-    if policy.max_cumulative_extension_bps > MAX_BPS {
+    // Reject zero on both fields: a zero cap silently disables grace extensions,
+    // which must be an explicit, non-zero configuration rather than an accident.
+    if policy.max_cumulative_extension_bps == 0
+        || policy.max_cumulative_extension_bps > MAX_BPS
+    {
         return Err(PayrollError::GraceExtensionInvalid);
     }
     if policy.max_extension_per_call_seconds == 0
