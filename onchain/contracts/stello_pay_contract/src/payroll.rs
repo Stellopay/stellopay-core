@@ -163,7 +163,7 @@ pub fn create_milestone_agreement(
 
     let mut counter: u128 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::AgreementCounter)
         .unwrap_or(0);
     counter += 1;
@@ -171,30 +171,30 @@ pub fn create_milestone_agreement(
     let agreement_id = counter;
 
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::AgreementCounter, &counter);
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::Employer(agreement_id), &employer);
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::Contributor(agreement_id), &contributor);
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::Token(agreement_id), &token);
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::PaymentType(agreement_id),
         &PaymentType::MilestoneBased,
     );
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::Status(agreement_id),
         &AgreementStatus::Created,
     );
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::TotalAmount(agreement_id), &0i128);
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::MilestoneCount(agreement_id), &0u32);
 
     agreement_id
@@ -242,7 +242,7 @@ pub fn create_milestone_agreement(
 pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, amount: i128) {
     let employer: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Employer(agreement_id))
         .expect("Agreement not found");
 
@@ -257,7 +257,7 @@ pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, am
 
     let status: AgreementStatus = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Status(agreement_id))
         .expect("Agreement not found");
     assert!(
@@ -271,19 +271,19 @@ pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, am
 
     let current_balance: i128 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
         .unwrap_or(0i128);
     let new_balance = current_balance
         .checked_add(amount)
         .expect("Escrow balance overflow");
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::MilestoneEscrowBalance(agreement_id), &new_balance);
 
     let token_address: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Token(agreement_id))
         .expect("Token not found");
     TokenClient::new(env, &token_address)
@@ -314,7 +314,7 @@ pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, am
 pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), PayrollError> {
     let status: AgreementStatus = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Status(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
 
@@ -327,42 +327,42 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), P
 
     let employer: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Employer(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
     let count: u32 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
         .unwrap_or(0);
 
     let milestone_id = count + 1;
 
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::MilestoneAmount(agreement_id, milestone_id),
         &amount,
     );
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
         &false,
     );
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
         &false,
     );
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::MilestoneCount(agreement_id), &milestone_id);
 
     let total: i128 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::TotalAmount(agreement_id))
         .unwrap_or(0);
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::TotalAmount(agreement_id), &(total + amount));
 
     // Post-invariant: total amount should equal sum of milestones
@@ -397,14 +397,14 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), P
 fn sum_all_milestones(env: &Env, agreement_id: u128) -> i128 {
     let count: u32 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
         .unwrap_or(0);
     let mut sum = 0i128;
     for i in 1..=count {
         sum += env
             .storage()
-            .instance()
+            .persistent()
             .get::<_, i128>(&MilestoneKey::MilestoneAmount(agreement_id, i))
             .unwrap_or(0);
     }
@@ -426,25 +426,25 @@ fn sum_all_milestones(env: &Env, agreement_id: u128) -> i128 {
 fn sum_unclaimed_milestones(env: &Env, agreement_id: u128) -> i128 {
     let count: u32 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
         .unwrap_or(0);
     let mut sum = 0i128;
     for i in 1..=count {
         let approved: bool = env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::MilestoneApproved(agreement_id, i))
             .unwrap_or(false);
         let claimed: bool = env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::MilestoneClaimed(agreement_id, i))
             .unwrap_or(false);
         if approved && !claimed {
             sum += env
                 .storage()
-                .instance()
+                .persistent()
                 .get::<_, i128>(&MilestoneKey::MilestoneAmount(agreement_id, i))
                 .unwrap_or(0);
         }
@@ -472,14 +472,14 @@ pub fn approve_milestone(
 ) -> Result<(), PayrollError> {
     let employer: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Employer(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
     let status: AgreementStatus = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Status(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
     if status != AgreementStatus::Created && status != AgreementStatus::Active {
@@ -488,7 +488,7 @@ pub fn approve_milestone(
 
     let count: u32 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
         .ok_or(PayrollError::MilestoneNotFound)?;
     if milestone_id == 0 || milestone_id > count {
@@ -497,14 +497,14 @@ pub fn approve_milestone(
 
     let already_approved: bool = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
         .unwrap_or(false);
     if already_approved {
         return Err(PayrollError::MilestoneAlreadyApproved);
     }
 
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
         &true,
     );
@@ -515,7 +515,7 @@ pub fn approve_milestone(
     let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
     let escrow_balance: i128 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
         .unwrap_or(0i128);
     if escrow_balance < unclaimed_sum {
@@ -563,7 +563,7 @@ pub fn claim_milestone(
 
     let contributor: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Contributor(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
     contributor.require_auth();
@@ -571,7 +571,7 @@ pub fn claim_milestone(
     // Check if agreement is paused
     let status: AgreementStatus = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Status(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
     if status == AgreementStatus::Paused {
@@ -580,7 +580,7 @@ pub fn claim_milestone(
 
     let count: u32 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
         .ok_or(PayrollError::MilestoneNotFound)?;
     if milestone_id == 0 || milestone_id > count {
@@ -589,7 +589,7 @@ pub fn claim_milestone(
 
     let approved: bool = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
         .unwrap_or(false);
     if !approved {
@@ -598,7 +598,7 @@ pub fn claim_milestone(
 
     let already_claimed: bool = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
         .unwrap_or(false);
     if already_claimed {
@@ -611,7 +611,7 @@ pub fn claim_milestone(
     let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
     let escrow_balance: i128 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
         .unwrap_or(0i128);
     if escrow_balance < unclaimed_sum {
@@ -620,18 +620,18 @@ pub fn claim_milestone(
 
     let amount: i128 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
         .ok_or(PayrollError::MilestoneNotFound)?;
 
     let token_address: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Token(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
 
     // Checks-Effects-Interactions: update all state before the external transfer.
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
         &true,
     );
@@ -640,10 +640,10 @@ pub fn claim_milestone(
     // reflect the reduced available balance.
     let escrow_balance: i128 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
         .unwrap_or(0i128);
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::MilestoneEscrowBalance(agreement_id),
         &escrow_balance.saturating_sub(amount),
     );
@@ -661,7 +661,7 @@ pub fn claim_milestone(
 
     let all_claimed = all_milestones_claimed(&env, agreement_id, count);
     if all_claimed {
-        env.storage().instance().set(
+        env.storage().persistent().set(
             &MilestoneKey::Status(agreement_id),
             &AgreementStatus::Completed,
         );
@@ -708,7 +708,7 @@ pub fn batch_claim_milestones(
 ) -> Result<BatchMilestoneResult, PayrollError> {
     let contributor: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Contributor(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
     contributor.require_auth();
@@ -723,7 +723,7 @@ pub fn batch_claim_milestones(
     // Shared pre-flight
     let status: AgreementStatus = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Status(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
     if status == AgreementStatus::Paused {
@@ -732,14 +732,14 @@ pub fn batch_claim_milestones(
 
     let count: u32 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
         .ok_or(PayrollError::MilestoneNotFound)?;
 
     // Token client created once and reused
     let token: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Token(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
     let token_client = TokenClient::new(env, &token);
@@ -780,7 +780,7 @@ pub fn batch_claim_milestones(
         // Approved check
         let approved: bool = env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
             .unwrap_or(false);
         if !approved {
@@ -797,7 +797,7 @@ pub fn batch_claim_milestones(
         // Already-claimed check
         let already_claimed: bool = env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
             .unwrap_or(false);
         if already_claimed {
@@ -813,7 +813,7 @@ pub fn batch_claim_milestones(
 
         let amount: i128 = match env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
         {
             Some(amount) => amount,
@@ -833,7 +833,7 @@ pub fn batch_claim_milestones(
         };
 
         // Checks-Effects-Interactions: update all state before the external transfer.
-        env.storage().instance().set(
+        env.storage().persistent().set(
             &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
             &true,
         );
@@ -842,10 +842,10 @@ pub fn batch_claim_milestones(
         // across subsequent iterations of this batch.
         let escrow_balance: i128 = env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
             .unwrap_or(0i128);
-        env.storage().instance().set(
+        env.storage().persistent().set(
             &MilestoneKey::MilestoneEscrowBalance(agreement_id),
             &escrow_balance.saturating_sub(amount),
         );
@@ -875,7 +875,7 @@ pub fn batch_claim_milestones(
     }
 
     if all_milestones_claimed(env, agreement_id, count) {
-        env.storage().instance().set(
+        env.storage().persistent().set(
             &MilestoneKey::Status(agreement_id),
             &AgreementStatus::Completed,
         );
@@ -901,7 +901,7 @@ pub fn batch_claim_milestones(
 
 pub fn get_milestone_count(env: Env, agreement_id: u128) -> u32 {
     env.storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
         .unwrap_or(0)
 }
@@ -909,7 +909,7 @@ pub fn get_milestone_count(env: Env, agreement_id: u128) -> u32 {
 pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<Milestone> {
     let count: u32 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
         .unwrap_or(0);
 
@@ -919,16 +919,16 @@ pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<
 
     let amount: i128 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))?;
     let approved: bool = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
         .unwrap_or(false);
     let claimed: bool = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
         .unwrap_or(false);
 
@@ -957,7 +957,7 @@ fn all_milestones_claimed(env: &Env, agreement_id: u128, count: u32) -> bool {
     for i in 1..=count {
         let claimed: bool = env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::MilestoneClaimed(agreement_id, i))
             .unwrap_or(false);
         if !claimed {
@@ -3124,14 +3124,14 @@ pub fn resume_agreement(env: &Env, agreement_id: u128) {
 pub fn pause_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
     let employer: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Employer(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
     let status: AgreementStatus = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Status(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
 
@@ -3140,7 +3140,7 @@ pub fn pause_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), Pay
         return Err(PayrollError::MilestoneAgreementInvalidStatus);
     }
 
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::Status(agreement_id),
         &AgreementStatus::Paused,
     );
@@ -3179,14 +3179,14 @@ pub fn pause_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), Pay
 pub fn resume_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
     let employer: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Employer(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
     let status: AgreementStatus = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Status(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
 
@@ -3195,7 +3195,7 @@ pub fn resume_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), Pa
     }
 
     // Resume to Active status (milestone agreements can have claimable milestones in Active state)
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::Status(agreement_id),
         &AgreementStatus::Active,
     );
