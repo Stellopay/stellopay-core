@@ -166,6 +166,58 @@ fn test_add_multiple_employees() {
     assert_eq!(agreement.total_amount, 6000);
 }
 
+/// Adding the same employee address twice must be rejected to preserve the
+/// 1:1 employee-to-salary mapping.
+#[test]
+fn test_add_duplicate_employee_fails() {
+    let env = create_test_env();
+    let (_contract_id, client) = setup_contract(&env);
+    let employer = create_test_address(&env);
+    let token = create_test_address(&env);
+    let employee = create_test_address(&env);
+
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
+    client.add_employee_to_agreement(&agreement_id, &employee, &1000);
+
+    // Re-adding the same address must fail with EmployeeAlreadyExists.
+    let res = client.try_add_employee_to_agreement(&agreement_id, &employee, &2000);
+    let expected: soroban_sdk::Error =
+        stello_pay_contract::storage::PayrollError::EmployeeAlreadyExists.into();
+    assert_eq!(res, Err(Ok(expected)));
+
+    // The original single entry and total are unchanged.
+    let employees = client.get_agreement_employees(&agreement_id);
+    assert_eq!(employees.len(), 1);
+    let agreement = client.get_agreement(&agreement_id).unwrap();
+    assert_eq!(agreement.total_amount, 1000);
+}
+
+/// A different employee address can still be added after a duplicate is rejected.
+#[test]
+fn test_add_duplicate_does_not_block_other_employees() {
+    let env = create_test_env();
+    let (_contract_id, client) = setup_contract(&env);
+    let employer = create_test_address(&env);
+    let token = create_test_address(&env);
+    let e1 = create_test_address(&env);
+    let e2 = create_test_address(&env);
+
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
+    client.add_employee_to_agreement(&agreement_id, &e1, &1000);
+
+    let dup = client.try_add_employee_to_agreement(&agreement_id, &e1, &1000);
+    let expected: soroban_sdk::Error =
+        stello_pay_contract::storage::PayrollError::EmployeeAlreadyExists.into();
+    assert_eq!(dup, Err(Ok(expected)));
+
+    // A distinct address still works.
+    client.add_employee_to_agreement(&agreement_id, &e2, &2000);
+    let employees = client.get_agreement_employees(&agreement_id);
+    assert_eq!(employees.len(), 2);
+    let agreement = client.get_agreement(&agreement_id).unwrap();
+    assert_eq!(agreement.total_amount, 3000);
+}
+
 /// Adding employee with zero salary must fail.
 #[test]
 #[should_panic(expected = "Salary must be positive")]
