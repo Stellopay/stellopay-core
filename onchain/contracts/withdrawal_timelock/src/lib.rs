@@ -38,6 +38,13 @@ pub enum TimelockError {
     NotReady = 7,
     /// Operation is no longer in `Queued` status.
     AlreadyExecutedOrCancelled = 8,
+    /// `Withdrawal` amount must be greater than zero.
+    ///
+    /// Queuing a zero-amount withdrawal would create a no-op that still
+    /// consumes a timelock slot and pollutes the audit trail.  Only
+    /// `Withdrawal` amounts are validated; `AdminChange` payloads are
+    /// opaque commitments that the timelock cannot interpret.
+    InvalidWithdrawalAmount = 9,
 }
 
 // ─── Domain Types ─────────────────────────────────────────────────────────────
@@ -301,6 +308,16 @@ impl WithdrawalTimelock {
     ///      receives a unique monotone id. Emits:
     ///        `("timelock_queued", op_id) → kind`
     ///      which off-chain monitors should subscribe to for alerting.
+    ///
+    ///      **Validated fields** (fields this contract can interpret):
+    ///      - `Withdrawal(_, _, amount)`: `amount` must be `> 0`.
+    ///
+    ///      **Opaque fields** (not validated by this contract):
+    ///      - `Withdrawal(token, to, _)`: token and recipient addresses are
+    ///        forwarded verbatim to the external orchestrator.
+    ///      - `AdminChange(target_contract, payload_hash)`: entirely opaque;
+    ///        off-chain tooling is responsible for verifying the hash.
+    ///
     /// @param caller Admin address queuing the operation; must authenticate.
     /// @param kind   `Withdrawal(token, to, amount)` or
     ///               `AdminChange(target_contract, payload_hash)`.
@@ -308,6 +325,15 @@ impl WithdrawalTimelock {
     pub fn queue(env: Env, caller: Address, kind: OperationKind) -> Result<u128, TimelockError> {
         require_initialized(&env)?;
         require_admin(&env, &caller)?;
+
+        // Validate fields the timelock can interpret.  AdminChange carries an
+        // opaque payload_hash; only the external orchestrator can verify it, so
+        // we deliberately leave it unvalidated here.
+        if let OperationKind::Withdrawal(_, _, amount) = &kind {
+            if *amount <= 0 {
+                return Err(TimelockError::InvalidWithdrawalAmount);
+            }
+        }
 
         let min_delay = read_min_delay(&env);
         // Defensive belt-and-suspenders: min_delay can only be 0 if the
