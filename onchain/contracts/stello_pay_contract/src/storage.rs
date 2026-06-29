@@ -9,6 +9,42 @@ use soroban_sdk::{contracterror, contracttype, Address, Env, Vec};
 /// late Soroban resource exhaustion after partial state changes.
 pub const MAX_BATCH_SIZE: u32 = 20;
 
+/// Number of ledgers below which a long-lived persistent entry is bumped.
+///
+/// Under Soroban's state-archival model, persistent entries that are not bumped
+/// can be archived once their time-to-live (TTL) lapses, which would make active
+/// payroll agreements, escrow balances, and employee records inaccessible
+/// mid-lifecycle. When a long-lived key's remaining TTL drops below this
+/// threshold, [`extend_persistent_ttl`] extends it back up to
+/// [`PERSISTENT_BUMP_AMOUNT`].
+///
+/// ~30 days at 5s/ledger (≈ 17,280 ledgers/day).
+pub const PERSISTENT_TTL_THRESHOLD: u32 = 30 * 17_280;
+
+/// Target TTL (in ledgers) that long-lived persistent keys are extended to.
+///
+/// ~90 days at 5s/ledger. Kept comfortably above [`PERSISTENT_TTL_THRESHOLD`] so
+/// that a single access well before expiry restores a long runway without
+/// bumping on every read.
+pub const PERSISTENT_BUMP_AMOUNT: u32 = 90 * 17_280;
+
+/// Bumps the TTL of a single long-lived persistent entry if it exists.
+///
+/// This is a no-op when the entry is absent. Centralizing the thresholds here
+/// keeps the archival strategy consistent across agreements, escrow balances,
+/// and employee records. TTL bumps cannot be used to keep adversarial entries
+/// alive cheaply: they only ever extend keys the contract itself already owns
+/// and writes, and the caller pays the rent for the extension.
+pub fn extend_persistent_ttl<K>(env: &Env, key: &K)
+where
+    K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    let storage = env.storage().persistent();
+    if storage.has(key) {
+        storage.extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    }
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Milestone {
@@ -495,10 +531,11 @@ impl DataKey {
         env.storage().persistent().get(&key)
     }
 
-    /// Set salary per period for an employee at a specific index
+    /// Set salary per period for an employee at a specific index, bumping its TTL.
     pub fn set_employee_salary(env: &Env, agreement_id: u128, employee_index: u32, salary: i128) {
         let key: DataKey = DataKey::EmployeeSalary(agreement_id, employee_index);
         env.storage().persistent().set(&key, &salary);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get number of claimed periods for an employee at a specific index
@@ -516,6 +553,7 @@ impl DataKey {
     ) {
         let key: DataKey = DataKey::EmployeeClaimedPeriods(agreement_id, employee_index);
         env.storage().persistent().set(&key, &periods);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get activation timestamp for an agreement
@@ -566,13 +604,18 @@ impl DataKey {
         env.storage().persistent().set(&key, &amount);
     }
 
-    /// Get escrow balance for an agreement and token
+    /// Get escrow balance for an agreement and token.
+    ///
+    /// Bumps the entry's TTL on read so an escrow balance that is referenced but
+    /// not rewritten for a long time does not get archived.
     pub fn get_agreement_escrow_balance(env: &Env, agreement_id: u128, token: &Address) -> i128 {
         let key: DataKey = DataKey::AgreementEscrowBalance(agreement_id, token.clone());
-        env.storage().persistent().get(&key).unwrap_or(0i128)
+        let balance = env.storage().persistent().get(&key).unwrap_or(0i128);
+        extend_persistent_ttl(env, &key);
+        balance
     }
 
-    /// Set escrow balance for an agreement and token
+    /// Set escrow balance for an agreement and token, bumping its TTL.
     pub fn set_agreement_escrow_balance(
         env: &Env,
         agreement_id: u128,
@@ -581,6 +624,7 @@ impl DataKey {
     ) {
         let key: DataKey = DataKey::AgreementEscrowBalance(agreement_id, token.clone());
         env.storage().persistent().set(&key, &amount);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get the configured FX rate for a `(base, quote)` currency pair, if any.

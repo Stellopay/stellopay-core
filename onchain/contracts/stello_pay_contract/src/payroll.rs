@@ -1993,12 +1993,19 @@ pub fn convert_currency(
 
 /// Retrieves an agreement by ID
 ///
+/// Bumps the agreement entry's TTL on read (see [`crate::storage::extend_persistent_ttl`])
+/// so an active agreement that is accessed but not rewritten for a long time is
+/// not archived under Soroban's state-archival model.
+///
 /// # Returns
 /// Some(Agreement) if found, None otherwise
 pub fn get_agreement(env: &Env, agreement_id: u128) -> Option<Agreement> {
-    env.storage()
-        .persistent()
-        .get(&StorageKey::Agreement(agreement_id))
+    let key = StorageKey::Agreement(agreement_id);
+    let agreement = env.storage().persistent().get(&key);
+    if agreement.is_some() {
+        crate::storage::extend_persistent_ttl(env, &key);
+    }
+    agreement
 }
 
 /// Retrieves all employees for an agreement
