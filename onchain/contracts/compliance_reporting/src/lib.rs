@@ -35,6 +35,10 @@ use payment_history::{PaymentHistoryContractClient, PaymentRecord};
 /// call. Prevents instruction-limit overflows on Soroban.
 pub const MAX_QUERY_LIMIT: u32 = 100;
 
+/// Maximum byte length of metadata in a compliance record.
+/// Prevents unbounded storage growth from oversized off-chain references.
+pub const MAX_METADATA_LENGTH: u32 = 1024;
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -443,6 +447,10 @@ impl ComplianceReportingContract {
             return Err(ComplianceError::InvalidAmount);
         }
 
+        if metadata.len() > MAX_METADATA_LENGTH {
+            return Err(ComplianceError::InvalidAmount);
+        }
+
         // Assign per-employer ID.
         let count_key = DataKey::RecordCount(employer.clone());
         let next_id: u32 = env
@@ -800,3 +808,4 @@ impl ComplianceReportingContract {
         Ok(())
     }
 }
+
