@@ -320,6 +320,52 @@ mod tests {
         assert_eq!(truncate_address("SHORT", 4), "SHORT");
     }
 }
+/// Retry policy attached to a webhook, as returned by `register_webhook` / `get_webhook`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetryConfig {
+    pub max_retries: u32,
+    pub retry_delay: u64,
+    pub exponential_backoff: bool,
+    pub max_delay: u64,
+}
+
+/// Delivery security policy attached to a webhook.
+///
+/// This deliberately excludes the webhook secret: read responses must never
+/// echo back signing material.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    pub signature_method: String,
+    pub rate_limit_per_minute: u32,
+    pub require_tls: bool,
+}
+
+/// Typed view of a single webhook, as returned by the contract's `get_webhook` query.
+///
+/// All fields are optional so that this type tolerates contract responses
+/// that omit fields not yet populated (e.g. a webhook with no retry policy
+/// configured), without failing deserialization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebhookInfo {
+    pub id: Option<u64>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub url: Option<String>,
+    pub events: Option<Vec<String>>,
+    pub is_active: Option<bool>,
+    pub retry_config: Option<RetryConfig>,
+    pub security_config: Option<SecurityConfig>,
+}
+
+/// Typed view of aggregate webhook statistics, as returned by `get_webhook_stats`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebhookStats {
+    pub total_webhooks: Option<u64>,
+    pub active_webhooks: Option<u64>,
+    pub total_deliveries: Option<u64>,
+    pub failed_deliveries: Option<u64>,
+}
+
 pub struct SorobanHttpClient {
     base_url: String,
     client: reqwest::Client,
@@ -390,6 +436,23 @@ impl SorobanHttpClient {
         }
 
         Ok(value.get("result").cloned().unwrap_or(value))
+    }
+
+    /// Same read-only query as [`SorobanHttpClient::query`], but deserialized
+    /// into a typed result `T` instead of a raw [`Value`].
+    ///
+    /// Prefer this over `query` when the shape of the contract method's
+    /// return value is known (e.g. [`WebhookInfo`], [`WebhookStats`]), so
+    /// callers get compile-time field access instead of indexing into JSON.
+    pub async fn query_as<T: serde::de::DeserializeOwned>(
+        &self,
+        contract_id: &str,
+        method: &str,
+        args: Vec<(&str, &str)>,
+    ) -> Result<T> {
+        let value = self.query(contract_id, method, args).await?;
+        serde_json::from_value(value)
+            .map_err(|e| anyhow::anyhow!("Soroban query result did not match expected shape: {}", e))
     }
 
     fn query_payload(&self, contract_id: &str, method: &str, args: Vec<(&str, &str)>) -> Value {

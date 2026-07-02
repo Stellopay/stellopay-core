@@ -77,7 +77,7 @@ fn test_expense_approval_records_audit_log() {
 
     // Initialize contracts
     expense_client.initialize(&expense_owner);
-    expense_client.add_approver(&approver);
+    expense_client.add_approver(&expense_owner, &approver);
     audit_client.initialize(&expense_owner, &100u32); // retention limit 100
 
     // Configure expense contract to use audit logger
@@ -138,7 +138,7 @@ fn test_expense_rejection_does_not_create_audit_log() {
     let tok = token(&env);
 
     expense_client.initialize(&expense_owner);
-    expense_client.add_approver(&approver);
+    expense_client.add_approver(&expense_owner, &approver);
     audit_client.initialize(&expense_owner, &100u32);
     expense_client.set_audit_logger(&expense_owner, &audit_id);
 
@@ -171,7 +171,7 @@ fn test_expense_approval_without_audit_logger() {
     let tok = token(&env);
 
     expense_client.initialize(&expense_owner);
-    expense_client.add_approver(&approver);
+    expense_client.add_approver(&expense_owner, &approver);
 
     let eid = expense_client.submit_expense(
         &submitter,

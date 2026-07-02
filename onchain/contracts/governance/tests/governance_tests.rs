@@ -1,8 +1,8 @@
 #![cfg(test)]
 
 use governance::{
-    GovernanceContract, GovernanceContractClient, GovernanceError, ProposalKind, ProposalStatus,
-    VoteChoice,
+    GovernanceContract, GovernanceContractClient, GovernanceError, ProposalKind, ProposalPage,
+    ProposalStatus, VoteChoice,
 };
 use multisig::{MultisigContract, MultisigContractClient};
 use rbac::{RbacContract, RbacContractClient, Role};
@@ -61,7 +61,7 @@ fn setup(env: &Env) -> TestContracts {
     multisig.initialize(&owner, &signers, &2u32, &None);
 
     timelock.initialize(&governance_id, &60u64);
-    governance.initialize(&owner, &rbac_id, &multisig_id, &timelock_id, &2u32, &100u64);
+    governance.initialize(&owner, &rbac_id, &multisig_id, &timelock_id, &2u32, &3600u64);
 
     TestContracts {
         governance,
@@ -96,7 +96,7 @@ fn initialize_links_external_contracts() {
     assert_eq!(multisig_id, setup.multisig.address);
     assert_eq!(timelock_id, setup.timelock.address);
     assert_eq!(quorum_votes, 2u32);
-    assert_eq!(voting_period, 100u64);
+    assert_eq!(voting_period, 3600u64);
 }
 
 #[test]
@@ -117,7 +117,7 @@ fn employer_can_create_vote_finalize_and_multisig_signer_executes() {
         .governance
         .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
 
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&proposal_id);
 
     let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
@@ -201,7 +201,7 @@ fn proposal_is_defeated_without_quorum() {
         .governance
         .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
 
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&proposal_id);
 
     let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
@@ -228,7 +228,7 @@ fn proposal_is_defeated_when_against_votes_win() {
         .governance
         .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::Against);
 
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&proposal_id);
 
     let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
@@ -251,7 +251,7 @@ fn only_multisig_signer_can_execute() {
         .governance
         .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
 
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&proposal_id);
     advance_time(&env, 60);
 
@@ -277,7 +277,7 @@ fn canceling_succeeded_proposal_cancels_timelock_operation() {
         .governance
         .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
 
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&proposal_id);
 
     let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
@@ -309,7 +309,7 @@ fn upgrade_and_arbiter_proposals_apply_expected_state() {
     setup
         .governance
         .cast_vote(&setup.employer_a, &arbiter_proposal, &VoteChoice::For);
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&arbiter_proposal);
     advance_time(&env, 60);
     setup
@@ -331,7 +331,7 @@ fn upgrade_and_arbiter_proposals_apply_expected_state() {
     setup
         .governance
         .cast_vote(&setup.employer_b, &upgrade_proposal, &VoteChoice::For);
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&upgrade_proposal);
     advance_time(&env, 60);
     setup
@@ -361,4 +361,230 @@ fn losing_employer_role_blocks_future_votes() {
         .governance
         .try_cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
     assert_eq!(res, Err(Ok(GovernanceError::NotEligibleVoter)));
+}
+
+#[test]
+fn list_proposals_empty_set() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let page: ProposalPage = setup.governance.list_proposals(&0, &10, &None);
+    assert_eq!(page.proposals.len(), 0);
+    assert!(page.next_cursor.is_none());
+}
+
+#[test]
+fn list_proposals_basic_pagination() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // Create 5 proposals
+    let mut proposal_ids = Vec::new(&env);
+    for _i in 0..5 {
+        let id = setup.governance.create_proposal(
+            &setup.owner,
+            &ProposalKind::ArbiterChange(Address::generate(&env)),
+        );
+        proposal_ids.push_back(id);
+    }
+
+    // Fetch first page with limit 3
+    let page: ProposalPage = setup.governance.list_proposals(&0, &3, &None);
+    assert_eq!(page.proposals.len(), 3);
+    assert_eq!(page.next_cursor, Some(3));
+
+    // Verify proposals are in ascending order by ID
+    assert_eq!(page.proposals.get(0).unwrap().id, 1);
+    assert_eq!(page.proposals.get(1).unwrap().id, 2);
+    assert_eq!(page.proposals.get(2).unwrap().id, 3);
+
+    // Fetch second page using cursor
+    let page2: ProposalPage = setup
+        .governance
+        .list_proposals(&page.next_cursor.unwrap(), &3, &None);
+    assert_eq!(page2.proposals.len(), 2);
+    assert_eq!(page2.proposals.get(0).unwrap().id, 4);
+    assert_eq!(page2.proposals.get(1).unwrap().id, 5);
+    assert!(page2.next_cursor.is_none());
+}
+
+#[test]
+fn list_proposals_status_filter() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // Create proposals with different statuses
+    let active_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    let defeated_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+    // Vote against to ensure defeat
+    setup
+        .governance
+        .cast_vote(&setup.owner, &defeated_id, &VoteChoice::Against);
+    advance_time(&env, 101);
+    setup.governance.finalize_proposal(&defeated_id);
+
+    let succeeded_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+    setup
+        .governance
+        .cast_vote(&setup.owner, &succeeded_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &succeeded_id, &VoteChoice::For);
+    advance_time(&env, 101);
+    setup.governance.finalize_proposal(&succeeded_id);
+
+    // Filter by Active status
+    let active_page: ProposalPage =
+        setup
+            .governance
+            .list_proposals(&0, &10, &Some(ProposalStatus::Active));
+    assert_eq!(active_page.proposals.len(), 1);
+    assert_eq!(active_page.proposals.get(0).unwrap().id, active_id);
+
+    // Filter by Defeated status
+    let defeated_page: ProposalPage =
+        setup
+            .governance
+            .list_proposals(&0, &10, &Some(ProposalStatus::Defeated));
+    assert_eq!(defeated_page.proposals.len(), 1);
+    assert_eq!(defeated_page.proposals.get(0).unwrap().id, defeated_id);
+
+    // Filter by Succeeded status
+    let succeeded_page: ProposalPage =
+        setup
+            .governance
+            .list_proposals(&0, &10, &Some(ProposalStatus::Succeeded));
+    assert_eq!(succeeded_page.proposals.len(), 1);
+    assert_eq!(succeeded_page.proposals.get(0).unwrap().id, succeeded_id);
+
+    // No filter returns all
+    let all_page: ProposalPage = setup.governance.list_proposals(&0, &10, &None);
+    assert_eq!(all_page.proposals.len(), 3);
+}
+
+#[test]
+fn list_proposals_oversized_limit_clamped() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // Create 10 proposals
+    for _ in 0..10 {
+        setup.governance.create_proposal(
+            &setup.owner,
+            &ProposalKind::ArbiterChange(Address::generate(&env)),
+        );
+    }
+
+    // Request 100 proposals (should be clamped to MAX_PAGE_SIZE=50)
+    let page: ProposalPage = setup.governance.list_proposals(&0, &100, &None);
+    assert_eq!(page.proposals.len(), 10); // Only 10 exist
+    assert!(page.next_cursor.is_none());
+}
+
+#[test]
+fn list_proposals_cursor_resume_across_pages() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // Create 15 proposals
+    for _ in 0..15 {
+        setup.governance.create_proposal(
+            &setup.owner,
+            &ProposalKind::ArbiterChange(Address::generate(&env)),
+        );
+    }
+
+    // Page through all proposals with page size 5
+    let mut all_proposals = Vec::new(&env);
+    let mut cursor = Some(0u128);
+
+    while let Some(start) = cursor {
+        let page: ProposalPage = setup.governance.list_proposals(&start, &5, &None);
+        for i in 0..page.proposals.len() {
+            all_proposals.push_back(page.proposals.get(i).unwrap().clone());
+        }
+        cursor = page.next_cursor;
+    }
+
+    assert_eq!(all_proposals.len(), 15);
+
+    // Verify all IDs are present and in order
+    for i in 0..15 {
+        assert_eq!(all_proposals.get(i).unwrap().id, (i + 1) as u128);
+    }
+}
+
+#[test]
+fn list_proposals_start_beyond_max_id() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // Create 3 proposals
+    for _ in 0..3 {
+        setup.governance.create_proposal(
+            &setup.owner,
+            &ProposalKind::ArbiterChange(Address::generate(&env)),
+        );
+    }
+
+    // Start from ID 100 (beyond the max)
+    let page: ProposalPage = setup.governance.list_proposals(&100, &10, &None);
+    assert_eq!(page.proposals.len(), 0);
+    assert!(page.next_cursor.is_none());
+}
+
+#[test]
+fn list_proposals_status_filter_with_pagination() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // Create 5 active proposals
+    let mut active_ids = Vec::new(&env);
+    for _ in 0..5 {
+        let id = setup.governance.create_proposal(
+            &setup.owner,
+            &ProposalKind::ArbiterChange(Address::generate(&env)),
+        );
+        active_ids.push_back(id);
+    }
+
+    // Create 3 defeated proposals
+    for _ in 0..3 {
+        let id = setup.governance.create_proposal(
+            &setup.owner,
+            &ProposalKind::ArbiterChange(Address::generate(&env)),
+        );
+        setup
+            .governance
+            .cast_vote(&setup.owner, &id, &VoteChoice::Against);
+        advance_time(&env, 101);
+        setup.governance.finalize_proposal(&id);
+    }
+
+    // Page through active proposals with page size 2
+    let mut active_proposals = Vec::new(&env);
+    let mut cursor = Some(0u128);
+
+    while let Some(start) = cursor {
+        let page: ProposalPage =
+            setup
+                .governance
+                .list_proposals(&start, &2, &Some(ProposalStatus::Active));
+        for i in 0..page.proposals.len() {
+            active_proposals.push_back(page.proposals.get(i).unwrap().clone());
+        }
+        cursor = page.next_cursor;
+    }
+
+    assert_eq!(active_proposals.len(), 5);
 }

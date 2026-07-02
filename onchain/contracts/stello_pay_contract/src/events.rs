@@ -256,3 +256,21 @@ pub struct MilestoneFundedEvent {
 pub fn emit_milestone_funded(env: &Env, event: MilestoneFundedEvent) {
     event.publish(env);
 }
+
+/// Event: Exchange rate set via `set_exchange_rate` or `set_exchange_rate_admin`.
+/// Emitted whenever a rate is updated so off-chain indexers can track FX history.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ExchangeRateChangedEvent {
+    pub base: Address,
+    pub quote: Address,
+    pub new_rate: i128,
+    /// Previous rate, or 0 if this is the first time the pair is set.
+    pub prev_rate: i128,
+    /// Ledger timestamp when this event was emitted.
+    pub updated_at: u64,
+}
+
+pub fn emit_exchange_rate_changed(env: &Env, event: ExchangeRateChangedEvent) {
+    event.publish(env);
+}

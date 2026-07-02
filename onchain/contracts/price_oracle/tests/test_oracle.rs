@@ -659,7 +659,7 @@ fn test_multi_source_latest_wins() {
 }
 
 // ===========================================================================
-// 8. Ownership transfer
+// 8. Ownership transfer (two-step)
 // ===========================================================================
 
 #[test]
@@ -669,7 +669,10 @@ fn test_transfer_ownership_success() {
     let (_, client, owner) = setup_oracle(&env, &payroll_id);
     let new_owner = Address::generate(&env);
 
-    client.transfer_ownership(&owner, &new_owner);
+    client.propose_ownership(&owner, &new_owner);
+    assert_eq!(client.get_owner().unwrap(), owner); // Still old owner
+
+    client.accept_ownership(&new_owner);
     assert_eq!(client.get_owner().unwrap(), new_owner);
 }
 
@@ -680,7 +683,8 @@ fn test_new_owner_can_add_source() {
     let (_, client, owner) = setup_oracle(&env, &payroll_id);
     let new_owner = Address::generate(&env);
 
-    client.transfer_ownership(&owner, &new_owner);
+    client.propose_ownership(&owner, &new_owner);
+    client.accept_ownership(&new_owner);
 
     let source = Address::generate(&env);
     client.add_source(&new_owner, &source);
@@ -694,7 +698,8 @@ fn test_old_owner_loses_admin_after_transfer() {
     let (_, client, owner) = setup_oracle(&env, &payroll_id);
     let new_owner = Address::generate(&env);
 
-    client.transfer_ownership(&owner, &new_owner);
+    client.propose_ownership(&owner, &new_owner);
+    client.accept_ownership(&new_owner);
 
     let source = Address::generate(&env);
     let res = client.try_add_source(&owner, &source);
@@ -702,14 +707,71 @@ fn test_old_owner_loses_admin_after_transfer() {
 }
 
 #[test]
-fn test_non_owner_cannot_transfer_ownership() {
+fn test_non_owner_cannot_propose_ownership() {
     let env = create_env();
     let (payroll_id, _, _) = setup_payroll(&env);
     let (_, client, _owner) = setup_oracle(&env, &payroll_id);
     let attacker = Address::generate(&env);
     let target = Address::generate(&env);
 
-    let res = client.try_transfer_ownership(&attacker, &target);
+    let res = client.try_propose_ownership(&attacker, &target);
+    assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
+}
+
+#[test]
+fn test_unauthorized_accept_rejection() {
+    let env = create_env();
+    let (payroll_id, _, _) = setup_payroll(&env);
+    let (_, client, owner) = setup_oracle(&env, &payroll_id);
+    let new_owner = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.propose_ownership(&owner, &new_owner);
+
+    let res = client.try_accept_ownership(&attacker);
+    assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
+    assert_eq!(client.get_owner().unwrap(), owner);
+}
+
+#[test]
+fn test_accept_without_propose_fails() {
+    let env = create_env();
+    let (payroll_id, _, _) = setup_payroll(&env);
+    let (_, client, owner) = setup_oracle(&env, &payroll_id);
+    let attacker = Address::generate(&env);
+
+    let res = client.try_accept_ownership(&attacker);
+    assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
+    assert_eq!(client.get_owner().unwrap(), owner);
+}
+
+#[test]
+fn test_cancel_ownership_transfer() {
+    let env = create_env();
+    let (payroll_id, _, _) = setup_payroll(&env);
+    let (_, client, owner) = setup_oracle(&env, &payroll_id);
+    let new_owner = Address::generate(&env);
+
+    client.propose_ownership(&owner, &new_owner);
+    client.cancel_ownership_transfer(&owner);
+
+    // After cancel, the pending owner cannot accept.
+    let res = client.try_accept_ownership(&new_owner);
+    assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
+    assert_eq!(client.get_owner().unwrap(), owner);
+}
+
+#[test]
+fn test_non_owner_cannot_cancel_transfer() {
+    let env = create_env();
+    let (payroll_id, _, _) = setup_payroll(&env);
+    let (_, client, owner) = setup_oracle(&env, &payroll_id);
+    let new_owner = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.propose_ownership(&owner, &new_owner);
+
+    let res = client.try_cancel_ownership_transfer(&attacker);
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 }
 
@@ -780,14 +842,25 @@ fn test_disable_pair_before_init_fails() {
 }
 
 #[test]
-fn test_transfer_ownership_before_init_fails() {
+fn test_propose_ownership_before_init_fails() {
     let env = create_env();
     let oracle_id = env.register_contract(None, PriceOracleContract);
     let client = PriceOracleContractClient::new(&env, &oracle_id);
     let a = Address::generate(&env);
     let b = Address::generate(&env);
 
-    let res = client.try_transfer_ownership(&a, &b);
+    let res = client.try_propose_ownership(&a, &b);
+    assert_eq!(res, Err(Ok(OracleError::NotInitialized)));
+}
+
+#[test]
+fn test_accept_ownership_before_init_fails() {
+    let env = create_env();
+    let oracle_id = env.register_contract(None, PriceOracleContract);
+    let client = PriceOracleContractClient::new(&env, &oracle_id);
+    let a = Address::generate(&env);
+
+    let res = client.try_accept_ownership(&a);
     assert_eq!(res, Err(Ok(OracleError::NotInitialized)));
 }
 
@@ -824,7 +897,7 @@ fn test_compromised_source_blast_radius() {
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 
     // Source cannot transfer ownership.
-    let res = oracle_client.try_transfer_ownership(&source, &source);
+    let res = oracle_client.try_propose_ownership(&source, &source);
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 
     // Source cannot disable pair.

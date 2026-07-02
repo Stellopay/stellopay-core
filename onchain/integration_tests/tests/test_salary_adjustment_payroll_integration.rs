@@ -118,6 +118,7 @@ fn test_salary_adjustment_apply_updates_payroll_salary() {
     // Initialize contracts
     salary_client.initialize(&salary_owner);
     payroll_client.initialize(&employer);
+    payroll_client.set_salary_adjustment_contract(&employer, &salary_id);
 
     // Step 1: Create payroll agreement with employee at INITIAL_SALARY
     let agreement_id = payroll_client.create_payroll_agreement(&employer, &tok, &ONE_WEEK);
@@ -158,7 +159,7 @@ fn test_salary_adjustment_apply_updates_payroll_salary() {
     assert_eq!(adj.status, salary_adjustment::AdjustmentStatus::Approved);
 
     // Step 5: Advance to effective date and apply
-    advance(&env, ONE_DAY * 2); // past effective_date
+    advance(&env, ONE_DAY * 1); // exactly at effective_date
     salary_client.apply_adjustment(&employer, &adjustment_id);
     let adj = salary_client.get_adjustment(&adjustment_id).unwrap();
     assert_eq!(adj.status, salary_adjustment::AdjustmentStatus::Applied);
@@ -168,8 +169,9 @@ fn test_salary_adjustment_apply_updates_payroll_salary() {
     assert_eq!(tracked_salary, NEW_SALARY);
 
     // Step 7: Claim additional payroll — should use NEW_SALARY for new periods
-    // The employee already claimed 3 periods. Advance 1 more day and claim again.
-    advance(&env, ONE_DAY);
+    // The employee already claimed 3 periods.
+    // At this point (time 260,200 + 86,400 = 346,600), 4 periods have elapsed since 1,000.
+    // 3 were already claimed, so 1 more is available.
     payroll_client.claim_payroll(&employee, &agreement_id, &0);
 
     // 3 periods at INITIAL_SALARY (3,000) + 1 period at NEW_SALARY (2,500) = 5,500
@@ -197,6 +199,7 @@ fn test_salary_decrease_affects_payroll_claim() {
 
     salary_client.initialize(&salary_owner);
     payroll_client.initialize(&employer);
+    payroll_client.set_salary_adjustment_contract(&employer, &salary_id);
 
     let agreement_id = payroll_client.create_payroll_agreement(&employer, &tok, &ONE_WEEK);
     payroll_client.add_employee_to_agreement(&agreement_id, &employee, &INITIAL_SALARY);
@@ -225,14 +228,15 @@ fn test_salary_decrease_affects_payroll_claim() {
         &INITIAL_SALARY, &decreased, &effective_date,
     );
     salary_client.approve_adjustment(&approver, &adjustment_id);
-    advance(&env, ONE_DAY * 2);
+    advance(&env, ONE_DAY * 1); // exactly at effective_date
     salary_client.apply_adjustment(&employer, &adjustment_id);
 
     let tracked = salary_client.get_employee_salary(&employee).unwrap();
     assert_eq!(tracked, decreased);
 
     // Claim — should use decreased salary for new periods
-    advance(&env, ONE_DAY);
+    // At this point (time 173,800 + 86,400 = 260,200), 3 periods have elapsed since 1,000.
+    // 2 were already claimed, so 1 more is available.
     payroll_client.claim_payroll(&employee, &agreement_id, &0);
 
     // 2 periods at 1,000 + 1 period at 500 = 2,500

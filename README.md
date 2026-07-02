@@ -18,22 +18,64 @@ Start with the [documentation index](docs/README.md) for product and integration
 
 The Soroban workspace is defined in [`onchain/Cargo.toml`](onchain/Cargo.toml). It includes all crates under `onchain/contracts/*` plus `onchain/integration_tests`.
 
-Notable contract modules include:
+### Core payroll
 
 | Contract | Focus |
 | --- | --- |
-| `stello_pay_contract` | Core payroll contract implementation. |
-| `payroll_escrow` | Escrowed salary funding and release flows. |
-| `payment_scheduler` | Scheduled and recurring payment support. |
-| `payment_retry` | Retry handling for failed payment attempts. |
-| `payment_splitter` | Split-payment logic. |
-| `price_oracle` | Pricing and conversion support for multi-currency flows. |
-| `governance`, `multisig`, `rbac` | Administrative controls and permissioning. |
-| `compliance_checker`, `compliance_reporting`, `tax_withholding` | Compliance and reporting support. |
-| `token_vesting`, `withdrawal_timelock`, `slashing_penalty` | Vesting, withdrawal constraints, and penalty flows. |
-| `audit_logger`, `payment_history` | Audit and historical payment records. |
+| [`stello_pay_contract`](onchain/contracts/stello_pay_contract/) | Core contract: payroll agreements, milestone escrow, multi-currency, disputes. |
+| [`payroll_escrow`](onchain/contracts/payroll_escrow/) | Escrowed salary funding and release flows. |
+| [`payment_scheduler`](onchain/contracts/payment_scheduler/) | Scheduled and recurring payment support. |
+| [`payment_retry`](onchain/contracts/payment_retry/) | Retry handling for failed payment attempts. |
+| [`payment_splitter`](onchain/contracts/payment_splitter/) | Split-payment logic for multi-recipient payouts. |
+| [`payment_history`](onchain/contracts/payment_history/) | Immutable on-chain payment history log. |
 
-See [`onchain/contracts/`](onchain/contracts/) for the full contract list.
+### Compliance and reporting
+
+| Contract | Focus |
+| --- | --- |
+| [`compliance_checker`](onchain/contracts/compliance_checker/) | Rule-based action compliance checks. |
+| [`compliance_reporting`](onchain/contracts/compliance_reporting/) | Structured compliance report emission. |
+| [`tax_withholding`](onchain/contracts/tax_withholding/) | On-chain tax-withholding deductions. |
+| [`audit_logger`](onchain/contracts/audit_logger/) | Cross-contract audit-trail emission. |
+
+### Access control and governance
+
+| Contract | Focus |
+| --- | --- |
+| [`rbac`](onchain/contracts/rbac/) + [`rbac-interface`](onchain/contracts/rbac-interface/) | Role-based access control and typed cross-contract interface. |
+| [`governance`](onchain/contracts/governance/) | On-chain proposal and voting system. |
+| [`multisig`](onchain/contracts/multisig/) | Multi-signature approval for high-stakes operations. |
+| [`employee_roles`](onchain/contracts/employee_roles/) | Per-employee role and permission registry. |
+| [`department_manager`](onchain/contracts/department_manager/) | Org-unit grouping for payroll operations. |
+
+### Financial controls
+
+| Contract | Focus |
+| --- | --- |
+| [`price_oracle`](onchain/contracts/price_oracle/) | FX rates and pricing for multi-currency flows. |
+| [`fee_collector`](onchain/contracts/fee_collector/) | Protocol fee collection and routing. |
+| [`rate_limiter`](onchain/contracts/rate_limiter/) | Per-caller claim rate limiting. |
+| [`salary_adjustment`](onchain/contracts/salary_adjustment/) | Dynamic salary override hooks. |
+| [`bonus_system`](onchain/contracts/bonus_system/) | On-chain bonus calculation and distribution. |
+| [`expense_reimbursement`](onchain/contracts/expense_reimbursement/) | Employee expense claim and approval. |
+
+### Vesting and lifecycle
+
+| Contract | Focus |
+| --- | --- |
+| [`token_vesting`](onchain/contracts/token_vesting/) | Time-based and cliff vesting schedules. |
+| [`withdrawal_timelock`](onchain/contracts/withdrawal_timelock/) | Withdrawal delay enforcement. |
+| [`slashing_penalty`](onchain/contracts/slashing_penalty/) | Penalty slashing on policy violations. |
+| [`dispute_escalation`](onchain/contracts/dispute_escalation/) | Escalated dispute handling beyond the core arbiter. |
+| [`nft_payroll_badge`](onchain/contracts/nft_payroll_badge/) | NFT badge issuance for payroll milestones. |
+
+### Tooling crates (rlib only)
+
+| Crate | Purpose |
+| --- | --- |
+| [`rbac-interface`](onchain/contracts/rbac-interface/) | Typed cross-contract RBAC client (no cdylib dependency). |
+| [`milestone-interface`](onchain/contracts/milestone-interface/) | Typed cross-contract milestone query client. |
+| [`template_versioning`](onchain/contracts/template_versioning/) | Contract schema versioning utilities. |
 
 ## Documentation Map
 
@@ -84,9 +126,22 @@ See [Building on Windows](docs/windows-build.md) for the full Windows guidance.
 
 The on-chain workspace uses GitHub Actions to build and test Soroban contracts on pull requests and pushes to the main branches. See [`onchain/README.md`](onchain/README.md) for the CI overview and local setup notes.
 
+## Contributing and security
+
+- [Contributing guide](CONTRIBUTING.md) — workspace layout, build/test workflow, and PR expectations
+- [Security policy](SECURITY.md) — responsible disclosure for contracts under `onchain/contracts/`
+- [Open an issue](.github/ISSUE_TEMPLATE/) — bug, feature, or security report templates
+
 ## Safety Notes
 
 This repository contains smart contract code. Review migrations, upgrades, and deployment steps carefully before using any live network or production asset. Keep private keys, RPC credentials, wallet secrets, and production database or ledger data out of commits, issue comments, and logs.
+
+### Dispute payout conservation
+
+`resolve_dispute` / `resolve_dispute_multisig` (in `onchain/contracts/stello_pay_contract`) conserve funds deterministically:
+
+- `pay_employee` is split equally across employees; the integer-division remainder (dust) is added to the **last** employee so the employee transfers sum to `pay_employee` exactly and no tokens are stranded.
+- `pay_employee` and `refund_employer` must be non-negative, and their sum must not exceed the agreement's `total_amount` nor (when tracked) its real per-agreement escrow balance; the escrow balance is decremented by the distributed total after transfers. Out-of-range or negative payouts return `PayrollError::InvalidPayout`.
 
 For upgrade and migration planning, start with [Migrations](docs/migrations.md) and [Upgrade and migration strategy](docs/upgrade-migration-strategy.md).
 

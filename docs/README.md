@@ -80,4 +80,4 @@ See the [Developer Tools](/docs/dev-tools/README.md) and [Integration Guide](/do
 
 ## Contributing
 
-We welcome contributions! Please see our [Contributing Guide](../CONTRIBUTING.md) for details on how to contribute to the documentation.
+We welcome contributions. See [CONTRIBUTING.md](../CONTRIBUTING.md) for the build and test workflow, and [SECURITY.md](../SECURITY.md) for vulnerability reporting.

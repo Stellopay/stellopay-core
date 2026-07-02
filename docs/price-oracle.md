@@ -14,7 +14,7 @@ The `price_oracle` contract provides:
 - **Per-source rate limiting** – Each source is bounded to at most one submission per `min_submission_interval_seconds` per pair, preventing a single compromised key from spamming near-duplicate prices to skew quorum clustering.
 - **Payroll integration** – Accepted rates are automatically pushed to the core payroll contract via `set_exchange_rate`.
 - **Pair enable/disable** – Admin can pause and resume individual pairs without deleting configuration.
-- **Ownership transfer** – Single-step admin transfer for lightweight governance.
+- **Ownership transfer** – Two-step (propose and accept) ownership transfer for secure governance.
 
 ## Contract Location
 
@@ -37,7 +37,7 @@ This is referred to as `FX_SCALE` throughout. A rate of `2_000_000` means 1 unit
 
 | Role   | Who                   | Can do                                                        |
 |--------|-----------------------|---------------------------------------------------------------|
-| Owner  | Contract admin        | Add/remove sources, configure/disable/enable pairs, transfer ownership |
+| Owner  | Contract admin        | Add/remove sources, configure/disable/enable pairs, propose/cancel ownership transfer |
 | Source | Whitelisted addresses | Push price updates for configured pairs                       |
 
 Sources have no administrative privileges. They can only call `push_price` and only within the bounds the owner configured.
@@ -115,10 +115,12 @@ Where:
 
 ### Admin
 
-| Function                                   | Access | Description                   |
-|--------------------------------------------|--------|-------------------------------|
-| `transfer_ownership(caller, new_owner)`    | Owner  | Transfer admin to new address |
-| `get_owner()`                              | Any    | Read current owner            |
+| Function                                   | Access | Description                               |
+|--------------------------------------------|--------|-------------------------------------------|
+| `propose_ownership(caller, new_owner)`    | Owner  | Propose a new owner (two-step flow)       |
+| `accept_ownership(caller)`                 | Pending| Accept pending ownership transfer          |
+| `cancel_ownership_transfer(caller)`       | Owner  | Cancel a pending ownership transfer       |
+| `get_owner()`                              | Any    | Read current owner                        |
 
 ---
 
@@ -244,7 +246,9 @@ This model keeps the implementation small and storage bounded while still reduci
 | `("oracle", "disable")`   | `(base, quote)`         | `disable_pair`       |
 | `("oracle", "enable")`    | `(base, quote)`         | `enable_pair`        |
 | `("oracle", "price")`     | `(base, quote, rate)`   | `push_price`         |
-| `("oracle", "owner")`     | `new_owner`             | `transfer_ownership` |
+| `("oracle", "propose")`   | `new_owner`             | `propose_ownership`  |
+| `("oracle", "owner")`     | `new_owner`             | `accept_ownership`   |
+| `("oracle", "cancel")`    | `pending_owner`         | `cancel_ownership_transfer` |
 
 ## Test coverage (57 tests)
 
@@ -255,7 +259,7 @@ This model keeps the implementation small and storage bounded while still reduci
 - **Push price happy path** (4): full integration, min boundary, max boundary, max staleness boundary
 - **Push price forbidden** (8): unregistered source, zero rate, negative rate, below min, above max, future timestamp, stale timestamp, unconfigured pair
 - **Monotonic/multi-source** (3): older ignored, equal ignored, latest-wins with backup source
-- **Ownership transfer** (4): success, new owner works, old owner blocked, non-owner blocked
+- **Ownership transfer (two-step)** (8): propose/accept success, old owner loses access, unauthorized accept rejection, accept without propose fails, cancel transfer, non-owner propose/cancel blocked, uninitialized guards.
 - **Uninitialized guards** (5): all admin/source functions revert before init
 - **Security scenarios** (4): compromised source blast radius, pair isolation, reconfigure tightens bounds, pair direction matters
 - **Quorum-specific edge cases** (15): quorum success, dissent without quorum, duplicate-vote rejection, tolerance-boundary acceptance, max-supporting-timestamp selection, older-bucket no-op after rollover, removed-source pending vote invalidation, FX forward failure handling, and invalid zero-quorum configuration

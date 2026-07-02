@@ -14,6 +14,19 @@ use withdrawal_timelock::{
     TimelockedOperation, WithdrawalTimelockClient,
 };
 
+/// Minimum allowed voting period, in seconds (1 hour).
+///
+/// A voting window shorter than this gives eligible voters effectively no time
+/// to participate, so values below it are rejected.
+pub const MIN_VOTING_PERIOD_SECONDS: u64 = 3_600;
+
+/// Maximum allowed voting period, in seconds (30 days).
+///
+/// An unbounded voting period would let a misconfigured admin set a value near
+/// `u64::MAX`, trapping proposals in effectively perpetual voting and freezing
+/// governance. Values above this bound are rejected.
+pub const MAX_VOTING_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60;
+
 /// Errors returned by the governance contract.
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,6 +49,24 @@ pub enum GovernanceError {
     TimelockQueueFailed = 15,
     TimelockExecutionFailed = 16,
     TimelockCancellationFailed = 17,
+    /// `voting_period_seconds` was outside the `[MIN_VOTING_PERIOD_SECONDS,
+    /// MAX_VOTING_PERIOD_SECONDS]` range.
+    VotingPeriodOutOfBounds = 18,
+}
+
+/// Validates that `voting_period_seconds` falls within the supported bounds.
+///
+/// Rejects zero (via the range check) as well as values below
+/// [`MIN_VOTING_PERIOD_SECONDS`] or above [`MAX_VOTING_PERIOD_SECONDS`]. The
+/// upper bound prevents a misconfigured admin from setting a period near
+/// `u64::MAX` that would trap proposals in perpetual voting.
+fn validate_voting_period(voting_period_seconds: u64) -> Result<(), GovernanceError> {
+    if voting_period_seconds < MIN_VOTING_PERIOD_SECONDS
+        || voting_period_seconds > MAX_VOTING_PERIOD_SECONDS
+    {
+        return Err(GovernanceError::VotingPeriodOutOfBounds);
+    }
+    Ok(())
 }
 
 /// Types of governance actions supported by the contract.
@@ -94,6 +125,25 @@ pub struct Proposal {
     /// Earliest execution timestamp returned by the timelock contract.
     pub eta: Option<u64>,
 }
+
+/// Paginated proposal listing result.
+///
+/// Contains a slice of proposals and a cursor for fetching the next page.
+/// The cursor is the next proposal ID to start from, or `None` if no more proposals exist.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProposalPage {
+    /// The proposals in this page.
+    pub proposals: Vec<Proposal>,
+    /// The next proposal ID to use as the start cursor for the next page.
+    /// `None` indicates there are no more proposals to fetch.
+    pub next_cursor: Option<u128>,
+}
+
+/// Maximum number of proposals that can be returned in a single page.
+///
+/// This limit prevents excessive gas consumption and ensures bounded return sizes.
+const MAX_PAGE_SIZE: u32 = 50;
 
 /// Persistent storage keys.
 #[contracttype]
@@ -334,7 +384,9 @@ impl GovernanceContract {
     /// @param multisig_contract Multisig contract whose signer set authorizes execution.
     /// @param timelock_contract Timelock contract that queues passed proposals before execution.
     /// @param quorum_votes Minimum number of votes required for a proposal to pass quorum.
-    /// @param voting_period_seconds Duration of the voting window in seconds.
+    /// @param voting_period_seconds Duration of the voting window in seconds. Must be within
+    ///        `[MIN_VOTING_PERIOD_SECONDS, MAX_VOTING_PERIOD_SECONDS]`; out-of-range values are
+    ///        rejected with `VotingPeriodOutOfBounds` to prevent perpetual-voting misconfiguration.
     pub fn initialize(
         env: Env,
         owner: Address,
@@ -357,9 +409,7 @@ impl GovernanceContract {
         if quorum_votes == 0 {
             return Err(GovernanceError::InvalidQuorum);
         }
-        if voting_period_seconds == 0 {
-            return Err(GovernanceError::InvalidVotingPeriod);
-        }
+        validate_voting_period(voting_period_seconds)?;
 
         env.storage().persistent().set(&StorageKey::Owner, &owner);
         env.storage()
@@ -387,7 +437,9 @@ impl GovernanceContract {
     /// @dev Owner-only. Dependency contract addresses remain fixed after initialization.
     /// @param caller Owner address.
     /// @param quorum_votes New minimum number of participating votes required.
-    /// @param voting_period_seconds New voting window length.
+    /// @param voting_period_seconds New voting window length. Must be within
+    ///        `[MIN_VOTING_PERIOD_SECONDS, MAX_VOTING_PERIOD_SECONDS]`; out-of-range values are
+    ///        rejected with `VotingPeriodOutOfBounds`.
     pub fn update_config(
         env: Env,
         caller: Address,
@@ -399,9 +451,7 @@ impl GovernanceContract {
         if quorum_votes == 0 {
             return Err(GovernanceError::InvalidQuorum);
         }
-        if voting_period_seconds == 0 {
-            return Err(GovernanceError::InvalidVotingPeriod);
-        }
+        validate_voting_period(voting_period_seconds)?;
 
         env.storage()
             .persistent()
@@ -666,6 +716,123 @@ impl GovernanceContract {
         env.storage()
             .persistent()
             .get(&StorageKey::Proposal(proposal_id))
+    }
+
+    /// @notice Lists proposals with pagination and optional status filtering.
+    ///
+    /// # Pagination
+    ///
+    /// Proposals are returned in ascending order by proposal ID. The `start` parameter
+    /// specifies the proposal ID to start from (exclusive). Use `0` to start from the
+    /// beginning (proposal ID 1). The `limit` parameter specifies the maximum number of
+    /// proposals to return, clamped to `MAX_PAGE_SIZE` (50).
+    ///
+    /// # Cursor-based pagination
+    ///
+    /// The returned `next_cursor` contains the last proposal ID fetched. Use this value
+    /// as the `start` parameter for the next page to continue fetching. When `next_cursor`
+    /// is `None`, there are no more proposals to fetch.
+    ///
+    /// # Status filtering
+    ///
+    /// When `status_filter` is `Some(status)`, only proposals matching that status are
+    /// returned. When `None`, all proposals are returned regardless of status.
+    ///
+    /// # Security considerations
+    ///
+    /// This is a read-only function that cannot modify state. The `limit` is clamped to
+    /// `MAX_PAGE_SIZE` to prevent excessive gas consumption and ensure bounded return sizes.
+    /// The cursor is bounded by the total number of proposals created (NextProposalId).
+    ///
+    /// # Arguments
+    ///
+    /// * `start` - The proposal ID to start from (exclusive). Use `0` to start from the beginning.
+    /// * `limit` - The maximum number of proposals to return. Clamped to `MAX_PAGE_SIZE` (50).
+    /// * `status_filter` - Optional filter to only return proposals with a specific status.
+    ///
+    /// # Returns
+    ///
+    /// A `ProposalPage` containing:
+    /// - `proposals`: A vector of proposals matching the criteria.
+    /// - `next_cursor`: The last proposal ID fetched, or `None` if no more proposals exist.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Fetch first page of active proposals
+    /// let page = governance.list_proposals(&0, &10, &Some(ProposalStatus::Active));
+    /// for proposal in page.proposals.iter() {
+    ///     // process proposal
+    /// }
+    /// if let Some(next) = page.next_cursor {
+    ///     // fetch next page
+    ///     let next_page = governance.list_proposals(&next, &10, &Some(ProposalStatus::Active));
+    /// }
+    /// ```
+    pub fn list_proposals(
+        env: Env,
+        start: u128,
+        limit: u32,
+        status_filter: Option<ProposalStatus>,
+    ) -> ProposalPage {
+        // Clamp limit to MAX_PAGE_SIZE to prevent excessive gas consumption
+        let limit = limit.min(MAX_PAGE_SIZE);
+
+        // Get the total number of proposals created to bound the cursor
+        let max_id = env
+            .storage()
+            .persistent()
+            .get::<_, u128>(&StorageKey::NextProposalId)
+            .unwrap_or(0);
+
+        // If start is beyond the max proposal ID, return empty result
+        if start >= max_id {
+            return ProposalPage {
+                proposals: Vec::new(&env),
+                next_cursor: None,
+            };
+        }
+
+        let mut proposals = Vec::new(&env);
+        let mut count = 0u32;
+        let mut next_cursor = None;
+        let mut last_fetched_id = None;
+
+        // Iterate through proposal IDs starting from 'start'
+        // Note: start is exclusive, so we start from start + 1
+        let mut proposal_id = start + 1;
+        while proposal_id <= max_id && count < limit {
+            if let Some(proposal) = env
+                .storage()
+                .persistent()
+                .get::<_, Proposal>(&StorageKey::Proposal(proposal_id))
+            {
+                // Apply status filter if provided
+                if status_filter.is_none() || proposal.status == *status_filter.as_ref().unwrap() {
+                    proposals.push_back(proposal);
+                    count += 1;
+                    last_fetched_id = Some(proposal_id);
+                }
+            }
+            // Always advance to next ID to check
+            proposal_id += 1;
+        }
+
+        // Set next_cursor to the last fetched proposal ID if there are more proposals to fetch
+        // The caller should use this value as the next start cursor (exclusive)
+        if let Some(last_id) = last_fetched_id {
+            // Only set cursor if there are more proposal IDs to check after the last fetched one
+            // Since proposal IDs are 1-indexed and max_id is the next ID to assign,
+            // we have more proposals if last_id + 1 < max_id
+            if last_id + 1 < max_id {
+                next_cursor = Some(last_id);
+            }
+        }
+
+        ProposalPage {
+            proposals,
+            next_cursor,
+        }
     }
 
     /// @notice Returns the vote choice cast by a voter on a proposal, if any.

@@ -10,6 +10,8 @@ use withdrawal_timelock::{
     WithdrawalTimelockClient, MAX_DELAY_SECONDS,
 };
 
+// ─── Group G: Withdrawal amount validation (issue #586) ──────────────────────
+
 // ─── Shared Test Helpers ──────────────────────────────────────────────────────
 
 /// Creates a clean environment with all auth mocked out.
@@ -226,10 +228,10 @@ fn queue_appends_to_operations_for() {
     let id1 = client.queue(&admin, &withdrawal_kind(&env));
     let id2 = client.queue(&admin, &withdrawal_kind(&env));
 
-    let ids = client.get_operations_for(&admin);
-    assert_eq!(ids.len(), 2);
-    assert_eq!(ids.get(0).unwrap(), id1);
-    assert_eq!(ids.get(1).unwrap(), id2);
+    let page = client.get_operations_for(&admin, &None, &None, &None);
+    assert_eq!(page.operations.len(), 2);
+    assert_eq!(page.operations.get(0).unwrap().id, id1);
+    assert_eq!(page.operations.get(1).unwrap().id, id2);
 }
 
 // ─── Group C: Execute (8 tests) ──────────────────────────────────────────────
@@ -485,15 +487,15 @@ fn update_delay_does_not_alter_queued_eta() {
     assert!(op2.eta > eta_before);
 }
 
-// ─── Group F: Read Helpers (4 tests) ─────────────────────────────────────────
+// ─── Group F: Read Helpers (10 tests) ────────────────────────────────────────
 
 #[test]
 fn get_operations_for_returns_empty_before_queue() {
     let env = create_env();
     let (client, admin) = setup(&env);
 
-    let ids = client.get_operations_for(&admin);
-    assert_eq!(ids.len(), 0);
+    let page = client.get_operations_for(&admin, &None, &None, &None);
+    assert_eq!(page.operations.len(), 0);
 }
 
 #[test]
@@ -656,8 +658,174 @@ fn operations_for_admin_lists_ids() {
         &OperationKind::Withdrawal(token.clone(), to.clone(), 2_000i128),
     );
 
-    let ids = client.get_operations_for(&admin);
-    assert_eq!(ids.len(), 2);
-    assert_eq!(ids.get(0).unwrap(), id1);
-    assert_eq!(ids.get(1).unwrap(), id2);
+    let page = client.get_operations_for(&admin, &None, &None, &None);
+    assert_eq!(page.operations.len(), 2);
+    assert_eq!(page.operations.get(0).unwrap().id, id1);
+    assert_eq!(page.operations.get(1).unwrap().id, id2);
+}
+
+#[test]
+fn get_operations_for_paginates() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    for _ in 0..5 {
+        client.queue(&admin, &withdrawal_kind(&env));
+    }
+
+    // Page 1: limit 2
+    let page1 = client.get_operations_for(&admin, &None, &None, &Some(2));
+    assert_eq!(page1.operations.len(), 2);
+    assert_eq!(page1.next_cursor, Some(3));
+
+    // Page 2: resume from cursor, limit 2
+    let page2 = client.get_operations_for(&admin, &None, &page1.next_cursor, &Some(2));
+    assert_eq!(page2.operations.len(), 2);
+    assert_eq!(page2.next_cursor, Some(5));
+
+    // Page 3: resume from cursor, limit 2
+    let page3 = client.get_operations_for(&admin, &None, &page2.next_cursor, &Some(2));
+    assert_eq!(page3.operations.len(), 1);
+    assert_eq!(page3.next_cursor, None);
+}
+
+#[test]
+fn get_operations_for_filters_by_status() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    let id1 = client.queue(&admin, &withdrawal_kind(&env)); // Queued
+    let id2 = client.queue(&admin, &withdrawal_kind(&env)); // To be Executed
+    let id3 = client.queue(&admin, &withdrawal_kind(&env)); // To be Cancelled
+
+    // Advance and execute id2
+    let op2: TimelockedOperation = client.get_operation(&id2).unwrap();
+    advance_time(&env, op2.eta - env.ledger().timestamp() + 1);
+    client.execute(&admin, &id2);
+
+    // Cancel id3
+    client.cancel(&admin, &id3);
+
+    // Filter: Queued
+    let page_queued = client.get_operations_for(&admin, &Some(OperationStatus::Queued), &None, &None);
+    assert_eq!(page_queued.operations.len(), 1);
+    assert_eq!(page_queued.operations.get(0).unwrap().id, id1);
+
+    // Filter: Executed
+    let page_executed =
+        client.get_operations_for(&admin, &Some(OperationStatus::Executed), &None, &None);
+    assert_eq!(page_executed.operations.len(), 1);
+    assert_eq!(page_executed.operations.get(0).unwrap().id, id2);
+
+    // Filter: Cancelled
+    let page_cancelled =
+        client.get_operations_for(&admin, &Some(OperationStatus::Cancelled), &None, &None);
+    assert_eq!(page_cancelled.operations.len(), 1);
+    assert_eq!(page_cancelled.operations.get(0).unwrap().id, id3);
+}
+
+#[test]
+fn get_operations_for_clamps_max_page_size() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    // Queue 110 operations
+    for _ in 0..110 {
+        client.queue(&admin, &withdrawal_kind(&env));
+    }
+
+    // Request 150, should be clamped to 100
+    let page = client.get_operations_for(&admin, &None, &None, &Some(150));
+    assert_eq!(page.operations.len(), 100);
+    assert_eq!(page.next_cursor, Some(101));
+}
+
+#[test]
+fn get_operations_for_handles_empty_filtered_result() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    client.queue(&admin, &withdrawal_kind(&env));
+
+    // Filter for status that doesn't exist yet
+    let page = client.get_operations_for(&admin, &Some(OperationStatus::Executed), &None, &None);
+    assert_eq!(page.operations.len(), 0);
+    assert_eq!(page.next_cursor, None);
+}
+
+#[test]
+fn get_operations_for_invalid_start_returns_empty() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    client.queue(&admin, &withdrawal_kind(&env));
+
+    // Start beyond total count
+    let page = client.get_operations_for(&admin, &None, &Some(5), &None);
+    assert_eq!(page.operations.len(), 0);
+    assert_eq!(page.next_cursor, None);
+}
+
+// ─── Group G: Withdrawal amount validation (issue #586) ──────────────────────
+
+/// Zero-amount withdrawal must be rejected at queue time.
+/// A zero-amount withdrawal is a no-op that would consume a timelock slot
+/// and pollute the audit trail without any actual economic effect.
+#[test]
+fn queue_withdrawal_zero_amount_fails() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    let token = Address::generate(&env);
+    let to = Address::generate(&env);
+    let kind = OperationKind::Withdrawal(token, to, 0i128);
+
+    let res = client.try_queue(&admin, &kind);
+    assert_eq!(res, Err(Ok(TimelockError::InvalidWithdrawalAmount)));
+}
+
+/// Negative-amount withdrawal must also be rejected at queue time.
+#[test]
+fn queue_withdrawal_negative_amount_fails() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    let token = Address::generate(&env);
+    let to = Address::generate(&env);
+    let kind = OperationKind::Withdrawal(token, to, -1i128);
+
+    let res = client.try_queue(&admin, &kind);
+    assert_eq!(res, Err(Ok(TimelockError::InvalidWithdrawalAmount)));
+}
+
+/// A positive-amount withdrawal must succeed and be recorded.
+#[test]
+fn queue_withdrawal_positive_amount_succeeds() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    let token = Address::generate(&env);
+    let to = Address::generate(&env);
+    let kind = OperationKind::Withdrawal(token, to, 1i128);
+
+    let op_id = client.queue(&admin, &kind);
+    let op: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Queued);
+}
+
+/// Non-withdrawal kinds (AdminChange) must not be affected by amount validation.
+/// Their opaque payload_hash is outside the timelock's interpretation scope.
+#[test]
+fn queue_admin_change_not_affected_by_withdrawal_validation() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    let target = Address::generate(&env);
+    let payload: BytesN<32> = BytesN::from_array(&env, &[0u8; 32]);
+    let kind = OperationKind::AdminChange(target, payload);
+
+    // Must succeed regardless of the payload content.
+    let op_id = client.queue(&admin, &kind);
+    let op: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Queued);
 }

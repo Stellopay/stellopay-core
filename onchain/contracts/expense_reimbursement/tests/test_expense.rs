@@ -98,7 +98,7 @@ fn test_add_and_check_approver() {
     let client = create_contract(&env);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     assert!(client.is_approver(&approver));
 }
@@ -113,11 +113,54 @@ fn test_remove_approver() {
     let client = create_contract(&env);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
     assert!(client.is_approver(&approver));
 
-    client.remove_approver(&approver);
+    client.remove_approver(&owner, &approver);
     assert!(!client.is_approver(&approver));
+}
+
+#[test]
+fn test_add_approver_rejects_non_owner() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let non_owner = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let client = create_contract(&env);
+
+    client.initialize(&owner);
+
+    // A non-owner caller (even with a valid signature) must not be able to
+    // mutate the approver set.
+    let result = client.try_add_approver(&non_owner, &approver);
+    assert!(result.is_err());
+
+    // The approver set is unchanged.
+    assert!(!client.is_approver(&approver));
+}
+
+#[test]
+fn test_remove_approver_rejects_non_owner() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let non_owner = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let client = create_contract(&env);
+
+    client.initialize(&owner);
+    client.add_approver(&owner, &approver);
+    assert!(client.is_approver(&approver));
+
+    // A non-owner caller must not be able to remove an approver.
+    let result = client.try_remove_approver(&non_owner, &approver);
+    assert!(result.is_err());
+
+    // The approver role is still in place.
+    assert!(client.is_approver(&approver));
 }
 
 #[test]
@@ -133,7 +176,7 @@ fn test_submit_expense() {
     let client = create_contract(&env);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let expense_id = client.submit_expense(
         &submitter,
@@ -169,7 +212,7 @@ fn test_submit_expense_empty_receipt_payload_fails() {
     let client = create_contract(&env);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     client.submit_expense(
         &submitter,
@@ -197,7 +240,7 @@ fn test_submit_expense_oversized_receipt_payload_fails() {
     let oversized = "x".repeat(4097);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     client.submit_expense(
         &submitter,
@@ -224,7 +267,7 @@ fn test_same_receipt_payload_rejected_on_second_submission() {
     let client = create_contract(&env);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let payload = String::from_str(&env, "same-receipt-payload");
 
@@ -261,7 +304,7 @@ fn test_different_receipt_payloads_allowed() {
     let client = create_contract(&env);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let id1 = client.submit_expense(
         &submitter_a,
@@ -299,7 +342,7 @@ fn test_submit_expense_zero_amount_fails() {
     let client = create_contract(&env);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     client.submit_expense(
         &submitter,
@@ -324,7 +367,7 @@ fn test_submit_expense_self_approve_fails() {
     let client = create_contract(&env);
 
     client.initialize(&owner);
-    client.add_approver(&submitter_and_approver);
+    client.add_approver(&owner, &submitter_and_approver);
 
     client.submit_expense(
         &submitter_and_approver,
@@ -352,7 +395,7 @@ fn test_fund_expense() {
     token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let expense_id = client.submit_expense(
         &submitter,
@@ -390,7 +433,7 @@ fn test_approve_expense_full() {
     token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let expense_id = client.submit_expense(
         &submitter,
@@ -425,7 +468,7 @@ fn test_approve_expense_partial() {
     token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let expense_id = client.submit_expense(
         &submitter,
@@ -461,8 +504,8 @@ fn test_approve_expense_requires_designated_approver() {
     token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
-    client.add_approver(&unauthorized_approver);
+    client.add_approver(&owner, &approver);
+    client.add_approver(&owner, &unauthorized_approver);
 
     let expense_id = client.submit_expense(
         &submitter,
@@ -496,7 +539,7 @@ fn test_approval_links_to_audit_logger_when_configured() {
     token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
     client.set_audit_logger(&owner, &audit_logger);
     assert_eq!(client.get_audit_logger(), Some(audit_logger));
 
@@ -546,7 +589,7 @@ fn test_approve_expense_unfunded_fails() {
     let client = create_contract(&env);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let expense_id = client.submit_expense(
         &submitter,
@@ -577,7 +620,7 @@ fn test_reject_expense_refunds() {
     token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let expense_id = client.submit_expense(
         &submitter,
@@ -618,7 +661,7 @@ fn test_pay_expense_full() {
     token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let expense_id = client.submit_expense(
         &submitter,
@@ -658,7 +701,7 @@ fn test_pay_expense_cannot_be_paid_twice() {
     token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let expense_id = client.submit_expense(
         &submitter,
@@ -693,7 +736,7 @@ fn test_pay_expense_partial() {
     token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let expense_id = client.submit_expense(
         &submitter,
@@ -730,7 +773,7 @@ fn test_cancel_expense_refunds() {
     token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let expense_id = client.submit_expense(
         &submitter,
@@ -770,7 +813,7 @@ fn test_multiple_expenses_with_unique_receipts_work_end_to_end() {
     token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &5_000);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let expense_id1 = client.submit_expense(
         &submitter1,
@@ -826,4 +869,40 @@ fn test_multiple_expenses_with_unique_receipts_work_end_to_end() {
     assert_eq!(token_client.balance(&submitter2), 700);
     assert_eq!(token_client.balance(&client.address), 0);
     assert_eq!(token_client.balance(&payer), 4000);
+}
+
+#[test]
+fn test_fund_expense_overflow_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &i128::MAX);
+
+    client.initialize(&owner);
+    client.add_approver(&owner, &approver);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_client.address,
+        &500,
+        &String::from_str(&env, "receipt_hash_overflow"),
+        &String::from_str(&env, "Travel overflow"),
+    );
+
+    client.fund_expense(&payer, &expense_id, &500);
+
+    let result = client.try_fund_expense(&payer, &expense_id, &i128::MAX);
+    assert!(result.is_err());
+    
+    let expense = client.get_expense(&expense_id).unwrap();
+    assert_eq!(expense.escrow_amount, 500);
 }

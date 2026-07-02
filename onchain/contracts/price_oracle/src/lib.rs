@@ -7,6 +7,10 @@ use stello_pay_contract::PayrollContractClient;
 
 const BPS_DENOMINATOR: i128 = 10_000;
 
+/// Maximum number of pending submissions in a single quorum bucket.
+/// Caps storage and CPU usage from adversarial sources flooding a bucket.
+const MAX_QUORUM_SUBMISSIONS: u32 = 100;
+
 // ============================================================================
 // Errors
 // ============================================================================
@@ -41,6 +45,8 @@ pub enum OracleError {
     DuplicateVote = 11,
     /// Source submitted too frequently; must wait at least `min_submit_interval_secs`.
     SubmissionRateLimited = 12,
+    /// Quorum bucket already has MAX_QUORUM_SUBMISSIONS pending votes; bucket full.
+    TooManySources = 13,
 }
 
 // ============================================================================
@@ -121,6 +127,7 @@ pub struct PendingBucketState {
 enum DataKey {
     Initialized,
     Owner,
+    PendingOwner,
     /// Address of the core payroll contract to which FX rates are pushed.
     PayrollContract,
     /// Authorized oracle sources (address -> bool).
@@ -366,6 +373,9 @@ impl PriceOracleContract {
         if max_staleness_seconds == 0 || quorum_n == 0 || quorum_window_seconds == 0 {
             return Err(OracleError::InvalidPairConfig);
         }
+        if tolerance_bps > 10_000 {
+            return Err(OracleError::InvalidPairConfig);
+        }
 
         let cfg = PairConfig {
             min_rate,
@@ -589,6 +599,9 @@ impl PriceOracleContract {
                 }
             }
 
+            if pending.submissions.len() >= MAX_QUORUM_SUBMISSIONS {
+                return Err(OracleError::TooManySources);
+            }
             pending.submissions.push_back(PendingSubmission {
                 source: source.clone(),
                 rate,
@@ -682,28 +695,80 @@ impl PriceOracleContract {
     }
 
     // ------------------------------------------------------------------------
-    // Admin transfer
+    // Admin transfer (two-step)
     // ------------------------------------------------------------------------
 
-    /// @notice Transfers contract ownership to a new address.
-    /// @dev Only the current owner may call this. The new owner immediately
-    ///      takes effect (single-step for simplicity; the price oracle is
-    ///      a lighter-weight contract than the RBAC core).
-    ///      Emits event `("oracle", "owner")` with the new owner address.
+    /// @notice Proposes a new owner. Must be accepted via `accept_ownership`.
+    /// @dev Only the current owner may call this. The pending owner is stored
+    ///      but has no privileges until they accept.
+    ///      Emits event `("oracle", "propose")` with the new_owner address.
     /// @param caller    Current owner; must authenticate.
-    /// @param new_owner New owner address.
-    pub fn transfer_ownership(
+    /// @param new_owner Proposed new owner address.
+    pub fn propose_ownership(
         env: Env,
         caller: Address,
         new_owner: Address,
     ) -> Result<(), OracleError> {
         require_admin(&env, &caller)?;
-        env.storage().instance().set(&DataKey::Owner, &new_owner);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingOwner, &new_owner);
+
+        env.events().publish(
+            (symbol_short!("oracle"), symbol_short!("propose")),
+            &new_owner,
+        );
+
+        Ok(())
+    }
+
+    /// @notice Accepts a pending ownership transfer.
+    /// @dev The caller must be the pending owner.
+    ///      Emits event `("oracle", "owner")` with the new owner address.
+    /// @param caller Must be the pending owner; must authenticate.
+    pub fn accept_ownership(env: Env, caller: Address) -> Result<(), OracleError> {
+        require_initialized(&env)?;
+        caller.require_auth();
+
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingOwner)
+            .ok_or(OracleError::NotAuthorized)?;
+
+        if caller != pending {
+            return Err(OracleError::NotAuthorized);
+        }
+
+        env.storage().instance().set(&DataKey::Owner, &caller);
+        env.storage().instance().remove(&DataKey::PendingOwner);
 
         env.events().publish(
             (symbol_short!("oracle"), symbol_short!("owner")),
-            &new_owner,
+            &caller,
         );
+
+        Ok(())
+    }
+
+    /// @notice Cancels a pending ownership transfer.
+    /// @dev Only the current owner may call this.
+    ///      Emits event `("oracle", "cancel")` with the pending owner address.
+    /// @param caller Current owner; must authenticate.
+    pub fn cancel_ownership_transfer(env: Env, caller: Address) -> Result<(), OracleError> {
+        require_admin(&env, &caller)?;
+
+        if let Some(pending) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::PendingOwner)
+        {
+            env.storage().instance().remove(&DataKey::PendingOwner);
+            env.events().publish(
+                (symbol_short!("oracle"), symbol_short!("cancel")),
+                &pending,
+            );
+        }
 
         Ok(())
     }

@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, token, xdr::ToXdr, Address, Bytes, BytesN, Env,
+    contract, contracterror, contractimpl, contracttype, token, xdr::ToXdr, Address, Bytes, BytesN, Env,
     IntoVal, String, Symbol, Val, Vec,
 };
 
@@ -18,6 +18,14 @@ use soroban_sdk::{
 /// - All state changes emit events for auditability.
 #[contract]
 pub struct ExpenseReimbursementContract;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum Error {
+    /// Escrow balance overflowed during funding. This prevents silent integer wrapping.
+    EscrowOverflow = 1,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -201,30 +209,30 @@ impl ExpenseReimbursementContract {
             .set(&StorageKey::Initialized, &true);
     }
 
-    /// Add an approver who can approve/reject expenses
-    pub fn add_approver(env: Env, approver: Address) {
+    /// Add an approver who can approve/reject expenses.
+    ///
+    /// # Authorization
+    /// Authorizes the live `caller`: it requires `caller`'s signature via
+    /// `require_auth` and asserts that `caller` is the contract owner. Any
+    /// non-owner caller is rejected, so only the owner can mutate the approver set.
+    pub fn add_approver(env: Env, caller: Address, approver: Address) {
         require_initialized(&env);
-        let owner: Address = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::Owner)
-            .expect("Owner not set");
-        require_owner(&env, &owner);
+        require_owner(&env, &caller);
 
         env.storage()
             .persistent()
             .set(&StorageKey::ApproverRole(approver), &true);
     }
 
-    /// Remove an approver
-    pub fn remove_approver(env: Env, approver: Address) {
+    /// Remove an approver.
+    ///
+    /// # Authorization
+    /// Authorizes the live `caller`: it requires `caller`'s signature via
+    /// `require_auth` and asserts that `caller` is the contract owner. Any
+    /// non-owner caller is rejected, so only the owner can mutate the approver set.
+    pub fn remove_approver(env: Env, caller: Address, approver: Address) {
         require_initialized(&env);
-        let owner: Address = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::Owner)
-            .expect("Owner not set");
-        require_owner(&env, &owner);
+        require_owner(&env, &caller);
 
         env.storage()
             .persistent()
@@ -303,7 +311,7 @@ impl ExpenseReimbursementContract {
     }
 
     /// Extends a pending claim by escrowing funds
-    pub fn fund_expense(env: Env, payer: Address, expense_id: u128, amount: i128) {
+    pub fn fund_expense(env: Env, payer: Address, expense_id: u128, amount: i128) -> Result<(), Error> {
         require_initialized(&env);
         payer.require_auth();
         assert!(amount > 0, "Amount must be positive");
@@ -316,10 +324,7 @@ impl ExpenseReimbursementContract {
 
         assert!(expense.status == ExpenseStatus::Pending, "Expense not pending");
 
-        let token_client = token::Client::new(&env, &expense.token);
-        token_client.transfer(&payer, &env.current_contract_address(), &amount);
-
-        expense.escrow_amount += amount;
+        expense.escrow_amount = expense.escrow_amount.checked_add(amount).ok_or(Error::EscrowOverflow)?;
         
         // Register the payer if none exists; else require same payer for refunds to be coherent
         if expense.payer.is_none() {
@@ -333,6 +338,9 @@ impl ExpenseReimbursementContract {
             .persistent()
             .set(&StorageKey::Expense(expense_id), &expense);
 
+        let token_client = token::Client::new(&env, &expense.token);
+        token_client.transfer(&payer, &env.current_contract_address(), &amount);
+
         env.events().publish(
             (String::from_str(&env, "expense_funded"), expense_id),
             ExpenseFundedEvent {
@@ -341,6 +349,8 @@ impl ExpenseReimbursementContract {
                 amount,
             },
         );
+
+        Ok(())
     }
 
     /// Approve an expense, with support for partial approval.

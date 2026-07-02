@@ -114,6 +114,28 @@ impl PayrollContract {
         env.storage().persistent().get(&StorageKey::RateLimiterContract)
     }
 
+    /// Sets the linked Salary Adjustment contract address used for dynamic salary overrides.
+    ///
+    /// # Arguments
+    /// * `owner` - Owner of the contract
+    /// * `salary_adjustment` - Salary adjustment contract address
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn set_salary_adjustment_contract(env: Env, owner: Address, salary_adjustment: Address) {
+        let stored_owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        owner.require_auth();
+        assert!(owner == stored_owner, "Unauthorized");
+        env.storage()
+            .persistent()
+            .set(&StorageKey::SalaryAdjustmentContract, &salary_adjustment);
+    }
+
+    /// Gets the linked Salary Adjustment contract address, if any.
+    pub fn get_salary_adjustment_contract(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&StorageKey::SalaryAdjustmentContract)
+    }
+
     /// @notice Upgrades the contract's WASM code to a new version.
     /// @dev Highly critical administrative function to alter contract bytecode.
     /// Gated strictly by require_upgrade_admin logic.
@@ -487,6 +509,10 @@ impl PayrollContract {
     /// - Agreement must be in Created status
     /// - Agreement must be Payroll mode
     /// - Caller must be the employer
+    /// - The employee address must not already be present in the agreement;
+    ///   a duplicate add panics with `PayrollError::EmployeeAlreadyExists` to
+    ///   preserve the 1:1 employee-to-salary mapping. A previously removed
+    ///   employee may be re-added.
     pub fn add_employee_to_agreement(
         env: Env,
         agreement_id: u128,
@@ -758,6 +784,30 @@ impl PayrollContract {
         payroll::set_exchange_rate(&env, caller, base, quote, rate)
     }
 
+    /// Sets an absolute upper-bound sanity limit for exchange rates.
+    /// Any `set_exchange_rate` call with a rate above this value will be rejected.
+    /// Caller must be the contract owner.
+    pub fn set_fx_rate_sanity_bound(
+        env: Env,
+        caller: Address,
+        max_rate: i128,
+    ) -> Result<(), PayrollError> {
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Owner)
+            .ok_or(PayrollError::Unauthorized)?;
+        caller.require_auth();
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+        if max_rate <= 0 {
+            return Err(PayrollError::ExchangeRateInvalid);
+        }
+        storage::DataKey::set_exchange_rate_max_rate_sanity_bound(&env, max_rate);
+        Ok(())
+    }
+
     /// Converts an `amount` from one token into another using the configured
     /// FX rate, without performing any on-chain transfer. This is useful for
     /// off-chain estimation and validation of multi-currency payouts.
@@ -806,7 +856,12 @@ impl PayrollContract {
     /// - Requires `caller` to be the employee at `employee_index` (`Unauthorized` otherwise).
     /// - Rejects claims when the contract is emergency-paused or the agreement is paused.
     /// - Large payments above `LargePaymentThreshold` require `claim_payroll_multisig`.
-    /// - Updates escrow balance and claimed-period counters before token transfer (CEI).
+    /// - Enforces checks-effects-interactions: escrow balance, `claimed_periods`,
+    ///   and `paid_amount` are persisted BEFORE the external token transfer.
+    /// - Protected by a transient reentrancy guard (temporary storage, cleared per
+    ///   transaction). A reentrant call during transfer fails with
+    ///   `PayrollError::ReentrancyDetected`, preventing double-payment of a period
+    ///   via a hostile or hook-enabled token.
     ///
     /// # Gas
     /// Benchmarked at 1, 10, and 50 elapsed payroll periods. See `docs/gas-benchmarks.md`.

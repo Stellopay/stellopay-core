@@ -3,7 +3,7 @@ use log::{error, info, warn};
 use std::path::PathBuf;
 
 use crate::config::load_config;
-use crate::utils::{validate_address, SorobanHttpClient};
+use crate::utils::{validate_address, SorobanHttpClient, WebhookInfo, WebhookStats};
 use crate::{require_admin, require_not_paused, Config, Error, TokenClient, WebhookCommands};
 
 const MAXIMUM_AMOUNT: i128 = 100_000_000;
@@ -536,11 +536,22 @@ pub async fn webhook_list_command(
     // Call contract to list webhooks
     let contract_client = SorobanHttpClient::new(&config.network.rpc_url);
 
-    let result = contract_client
-        .query(&contract_id, "list_owner_webhooks", vec![("owner", &owner)])
+    let webhook_ids: Vec<u64> = contract_client
+        .query_as(&contract_id, "list_owner_webhooks", vec![("owner", &owner)])
         .await?;
 
-    println!("Webhook IDs: {}", result);
+    if webhook_ids.is_empty() {
+        println!("No webhooks found for this owner.");
+    } else {
+        println!(
+            "Webhook IDs: {}",
+            webhook_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
 
     Ok(())
 }
@@ -562,15 +573,35 @@ pub async fn webhook_get_command(
     // Call contract to get webhook
     let contract_client = SorobanHttpClient::new(&config.network.rpc_url);
 
-    let result = contract_client
-        .query(
+    let webhook: WebhookInfo = contract_client
+        .query_as(
             &contract_id,
             "get_webhook",
             vec![("webhook_id", &webhook_id.to_string())],
         )
         .await?;
 
-    println!("Webhook Details: {}", result);
+    println!("  Name: {}", webhook.name.as_deref().unwrap_or("-"));
+    println!(
+        "  Description: {}",
+        webhook.description.as_deref().unwrap_or("-")
+    );
+    println!("  URL: {}", webhook.url.as_deref().unwrap_or("-"));
+    println!(
+        "  Events: {}",
+        webhook
+            .events
+            .as_deref()
+            .map(|e| e.join(", "))
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "  Active: {}",
+        webhook
+            .is_active
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
 
     Ok(())
 }
@@ -587,11 +618,38 @@ pub async fn webhook_stats_command(contract_id: Option<String>, config: &Config)
     // Call contract to get webhook stats
     let contract_client = SorobanHttpClient::new(&config.network.rpc_url);
 
-    let result = contract_client
-        .query(&contract_id, "get_webhook_stats", vec![])
+    let stats: WebhookStats = contract_client
+        .query_as(&contract_id, "get_webhook_stats", vec![])
         .await?;
 
-    println!("Statistics: {}", result);
+    println!(
+        "  Total Webhooks: {}",
+        stats
+            .total_webhooks
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "  Active Webhooks: {}",
+        stats
+            .active_webhooks
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "  Total Deliveries: {}",
+        stats
+            .total_deliveries
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
+    println!(
+        "  Failed Deliveries: {}",
+        stats
+            .failed_deliveries
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".to_string())
+    );
 
     Ok(())
 }

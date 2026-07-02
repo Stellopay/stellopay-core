@@ -12,7 +12,7 @@
 //!
 //! Payers deposit funds into this contract's escrow. An off-chain keeper (or
 //! any caller) invokes `process_due_payments` periodically; each call checks
-//! all `Pending` records whose `next_retry_at` has elapsed and attempts the
+//! tracked retry records whose `next_retry_at` has elapsed and attempts the
 //! transfer. If the escrow balance is still insufficient the record is
 //! rescheduled according to its `retry_intervals` list. Once `retry_count`
 //! exceeds `max_retry_attempts` the record transitions to `Failed` and a
@@ -58,7 +58,7 @@
 //!
 //! Off-chain payroll systems should subscribe to the events emitted by this
 //! contract:
-//! * `payment_succeeded` — mark the corresponding payroll period as paid.
+//! * `payment_success`   — mark the corresponding payroll period as paid.
 //! * `payment_failed`    — flag the agreement for manual review; the funds
 //!   remain in escrow until a human operator cancels or re-funds.
 //!
@@ -136,6 +136,7 @@ enum StorageKey {
     Initialized,
     Owner,
     Payment(BytesN<32>),
+    PendingPayments,
     Processed(BytesN<32>),
 }
 
@@ -246,6 +247,48 @@ fn mark_processed(env: &Env, payment_id: BytesN<32>) {
         .set(&StorageKey::Processed(payment_id), &true);
 }
 
+fn read_pending_payment_ids(env: &Env) -> Vec<BytesN<32>> {
+    env.storage()
+        .persistent()
+        .get::<_, Vec<BytesN<32>>>(&StorageKey::PendingPayments)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+fn write_pending_payment_ids(env: &Env, payment_ids: &Vec<BytesN<32>>) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PendingPayments, payment_ids);
+}
+
+fn track_pending_payment(env: &Env, payment_id: BytesN<32>) {
+    let mut payment_ids = read_pending_payment_ids(env);
+
+    let mut i: u32 = 0;
+    while i < payment_ids.len() {
+        if payment_ids.get(i).expect("pending payment id missing") == payment_id {
+            return;
+        }
+        i = i.saturating_add(1);
+    }
+
+    payment_ids.push_back(payment_id);
+    write_pending_payment_ids(env, &payment_ids);
+}
+
+fn untrack_pending_payment(env: &Env, payment_id: BytesN<32>) {
+    let mut payment_ids = read_pending_payment_ids(env);
+
+    let mut i: u32 = 0;
+    while i < payment_ids.len() {
+        if payment_ids.get(i).expect("pending payment id missing") == payment_id {
+            payment_ids.remove(i);
+            write_pending_payment_ids(env, &payment_ids);
+            return;
+        }
+        i = i.saturating_add(1);
+    }
+}
+
 /// Validates that `max_retry_attempts` and `retry_intervals` satisfy protocol
 /// constraints. Called at creation time; never called during retry processing.
 fn validate_retry_configuration(max_retry_attempts: u32, retry_intervals: &Vec<u64>) {
@@ -260,7 +303,7 @@ fn validate_retry_configuration(max_retry_attempts: u32, retry_intervals: &Vec<u
 
     if max_retry_attempts > 0 {
         assert!(
-            retry_intervals.len() > 0,
+            !retry_intervals.is_empty(),
             "Retry intervals required when retries are enabled"
         );
     }
@@ -293,6 +336,95 @@ fn interval_for_retry(retry_intervals: &Vec<u64>, retry_count: u32) -> u64 {
     }
 
     retry_intervals.get(index).expect("Retry interval missing")
+}
+
+/// Attempts one due payment and returns whether the record was actually
+/// evaluated in this call. Not-due, already-processed, and terminal records
+/// return `false` so batch callers can report an accurate processed count.
+fn process_payment_if_due(env: &Env, payment_id: BytesN<32>) -> bool {
+    if already_processed(env, payment_id.clone()) {
+        untrack_pending_payment(env, payment_id);
+        return false;
+    }
+
+    let mut payment = read_payment(env, payment_id.clone());
+
+    if payment.state == RetryState::Success || payment.state == RetryState::Failed {
+        untrack_pending_payment(env, payment_id);
+        return false;
+    }
+
+    if payment.retry_count > payment.max_retry_attempts {
+        payment.state = RetryState::Failed;
+        write_payment(env, &payment);
+        untrack_pending_payment(env, payment_id);
+        return true;
+    }
+
+    let now = env.ledger().timestamp();
+    if now < payment.next_retry_at {
+        return false;
+    }
+
+    let token_client = token::Client::new(env, &payment.token);
+    let balance = token_client.balance(&env.current_contract_address());
+
+    if balance >= payment.amount {
+        mark_processed(env, payment_id.clone());
+        payment.state = RetryState::Success;
+        write_payment(env, &payment);
+        untrack_pending_payment(env, payment_id.clone());
+
+        let recipient = match payment.alternate_payout.clone() {
+            Some(alternate_payout) => alternate_payout,
+            None => payment.recipient.clone(),
+        };
+
+        token_client.transfer(&env.current_contract_address(), &recipient, &payment.amount);
+
+        env.events().publish(
+            ("payment_success", payment_id.clone()),
+            PaymentSucceededEvent {
+                payment_id,
+                recipient,
+                amount: payment.amount,
+            },
+        );
+    } else {
+        payment.retry_count = payment.retry_count.saturating_add(1);
+        if payment.retry_count > payment.max_retry_attempts {
+            payment.state = RetryState::Failed;
+            untrack_pending_payment(env, payment_id.clone());
+        } else {
+            payment.state = RetryState::Retrying;
+            let interval = interval_for_retry(&payment.retry_intervals, payment.retry_count);
+            payment.next_retry_at = now.saturating_add(interval);
+        }
+        write_payment(env, &payment);
+
+        env.events().publish(
+            ("payment_retry_failed", payment_id.clone()),
+            RetryScheduledEvent {
+                payment_id: payment_id.clone(),
+                retry_count: payment.retry_count,
+                next_retry_at: payment.next_retry_at,
+            },
+        );
+
+        if payment.state == RetryState::Failed {
+            env.events().publish(
+                ("payment_failed", payment.id.clone()),
+                PaymentFailedEvent {
+                    payment_id: payment.id,
+                    retry_count: payment.retry_count,
+                    max_retry_attempts: payment.max_retry_attempts,
+                    notifier: payment.failure_notifier,
+                },
+            );
+        }
+    }
+
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -384,7 +516,11 @@ impl PaymentRetryContract {
     ) {
         require_initialized(&env);
         // Permissionless entry point, but we check if already exists
-        if env.storage().persistent().has(&StorageKey::Payment(payment_id.clone())) {
+        if env
+            .storage()
+            .persistent()
+            .has(&StorageKey::Payment(payment_id.clone()))
+        {
             return;
         }
 
@@ -410,6 +546,7 @@ impl PaymentRetryContract {
         };
 
         write_payment(&env, &payment);
+        track_pending_payment(&env, payment_id.clone());
 
         env.events().publish(
             ("retry_scheduled", payment_id.clone()),
@@ -424,83 +561,7 @@ impl PaymentRetryContract {
 
     pub fn process_retry(env: Env, payment_id: BytesN<32>) {
         require_initialized(&env);
-
-        if already_processed(&env, payment_id.clone()) {
-            return; // idempotency guard
-        }
-
-        let mut payment = read_payment(&env, payment_id.clone());
-
-        if payment.state == RetryState::Success || payment.state == RetryState::Failed {
-            return;
-        }
-
-        if payment.retry_count > payment.max_retry_attempts {
-            payment.state = RetryState::Failed;
-            write_payment(&env, &payment);
-            return;
-        }
-
-        let now = env.ledger().timestamp();
-        if now < payment.next_retry_at {
-            return;
-        }
-
-        let token_client = token::Client::new(&env, &payment.token);
-        let balance = token_client.balance(&env.current_contract_address());
-
-        if balance >= payment.amount {
-            // Idempotency: mark processed BEFORE transfer
-            mark_processed(&env, payment_id.clone());
-            payment.state = RetryState::Success;
-            write_payment(&env, &payment);
-
-            token_client.transfer(
-                &env.current_contract_address(),
-                &payment.recipient,
-                &payment.amount,
-            );
-
-            env.events().publish(
-                ("payment_success", payment_id.clone()),
-                PaymentSucceededEvent {
-                    payment_id,
-                    recipient: payment.alternate_payout.unwrap_or(payment.recipient),
-                    amount: payment.amount,
-                },
-            );
-        } else {
-            payment.retry_count = payment.retry_count.saturating_add(1);
-            if payment.retry_count > payment.max_retry_attempts {
-                payment.state = RetryState::Failed;
-            } else {
-                payment.state = RetryState::Retrying;
-                let interval = interval_for_retry(&payment.retry_intervals, payment.retry_count);
-                payment.next_retry_at = now.saturating_add(interval);
-            }
-            write_payment(&env, &payment);
-
-            env.events().publish(
-                ("payment_retry_failed", payment_id.clone()),
-                RetryScheduledEvent {
-                    payment_id,
-                    retry_count: payment.retry_count,
-                    next_retry_at: payment.next_retry_at,
-                },
-            );
-
-            if payment.state == RetryState::Failed {
-                env.events().publish(
-                    ("payment_failed", payment.id.clone()),
-                    PaymentFailedEvent {
-                        payment_id: payment.id,
-                        retry_count: payment.retry_count,
-                        max_retry_attempts: payment.max_retry_attempts,
-                        notifier: payment.failure_notifier,
-                    },
-                );
-            }
-        }
+        process_payment_if_due(&env, payment_id);
     }
 
     /// Deposits tokens from the payer into this contract's escrow.
@@ -537,17 +598,17 @@ impl PaymentRetryContract {
         );
 
         let token_client = token::Client::new(&env, &payment.token);
-        token_client.transfer(&payer, &env.current_contract_address(), &amount);
+        token_client.transfer(&payer, env.current_contract_address(), &amount);
     }
 
     /// Processes up to `max_payments` due payment requests in a single call.
     ///
-    /// For each `Pending` record whose `next_retry_at ≤ now`:
+    /// For each tracked non-terminal record whose `next_retry_at ≤ now`:
     /// * If the escrow balance covers `amount`: transfer succeeds →
-    ///   `status = Completed`, emit `payment_succeeded`.
+    ///   `state = Success`, emit `payment_success`.
     /// * If the escrow balance is insufficient:
     ///   - Increment `retry_count`.
-    ///   - If `retry_count > max_retry_attempts`: `status = Failed`,
+    ///   - If `retry_count > max_retry_attempts`: `state = Failed`,
     ///     emit `payment_failed`.
     ///   - Otherwise: compute `next_retry_at` and emit `retry_scheduled`.
     ///
@@ -557,7 +618,7 @@ impl PaymentRetryContract {
     ///
     /// Safe to call multiple times per ledger. Each record's `next_retry_at`
     /// acts as a gate; records already processed in the same time window are
-    /// skipped. Terminal records (`Completed`, `Failed`, `Cancelled`) are never
+    /// skipped. Terminal records (`Success`, `Failed`) are never
     /// re-processed.
     ///
     /// # Arguments
@@ -570,8 +631,6 @@ impl PaymentRetryContract {
     ///
     /// Number of payment records actually evaluated (not necessarily
     /// transferred) in this call.
-    /// Processes due payment requests.
-    /// Redirects to 'process_retry' for the blueprint's new logic.
     pub fn process_due_payments(env: Env, max_payments: u32) -> u32 {
         require_initialized(&env);
 
@@ -579,14 +638,22 @@ impl PaymentRetryContract {
             return 0;
         }
 
-        // Note: In a real production system, we'd iterate over all pending payments.
-        // For this orchestration demo, we'll assume the keeper calls 'process_retry' directly
-        // or we implement a way to list pending IDs.
-        // For now, I'll leave this as a stub or implement a simple iteration if storage allows.
-        0
+        let payment_ids = read_pending_payment_ids(&env);
+        let mut processed: u32 = 0;
+        let mut i: u32 = 0;
+
+        while i < payment_ids.len() && processed < max_payments {
+            let payment_id = payment_ids.get(i).expect("pending payment id missing");
+            if process_payment_if_due(&env, payment_id) {
+                processed = processed.saturating_add(1);
+            }
+            i = i.saturating_add(1);
+        }
+
+        processed
     }
 
-    /// Cancels a `Pending` payment request, preventing any future processing.
+    /// Cancels a non-terminal payment request, preventing any future processing.
     ///
     /// The payer should separately reclaim escrow funds by withdrawing the
     /// deposited tokens. (Fund withdrawal is out of scope for this contract;
@@ -620,6 +687,7 @@ impl PaymentRetryContract {
 
         payment.state = RetryState::Failed; // Treat cancellation as a terminal failure state
         write_payment(&env, &payment);
+        untrack_pending_payment(&env, payment_id);
     }
 
     /// Returns a payment request by ID, or `None` if it does not exist.
