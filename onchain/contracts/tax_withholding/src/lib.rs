@@ -27,6 +27,8 @@ pub enum TaxError {
     InvalidVersion = 7,
     /// Ruleset version is locked and cannot be changed.
     VersionLocked = 8,
+    /// Ruleset version is deprecated and cannot be selected for new use.
+    DeprecatedVersion = 9,
 }
 
 /// Storage keys for the tax withholding contract.
@@ -128,6 +130,25 @@ pub struct WithholdingRemittedEvent {
     pub amount: i128,
     /// Treasury address that received the funds.
     pub treasury: Address,
+}
+
+/// Emitted when an employee is pinned to a different ruleset version.
+///
+/// This audit trail lets compliance systems prove which owner-authorized
+/// caller moved an employee between ruleset versions. Deprecated versions are
+/// never valid migration targets; they may remain only for historical,
+/// already-pinned calculations.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmployeeVersionMigratedEvent {
+    /// Employee whose ruleset pin changed.
+    pub employee: Address,
+    /// Ruleset version used before the migration.
+    pub from_version: u32,
+    /// Ruleset version selected by the migration.
+    pub to_version: u32,
+    /// Authenticated owner address that performed the migration.
+    pub caller: Address,
 }
 
 /// Tax Withholding Contract
@@ -362,12 +383,15 @@ impl TaxWithholdingContract {
         caller.require_auth();
         Self::require_owner(&env, &caller)?;
 
-        // Verify version exists
-        let _metadata: RulesetMetadata = env
+        // Verify version exists and is eligible for activation.
+        let metadata: RulesetMetadata = env
             .storage()
             .persistent()
             .get(&StorageKey::RulesetMetadata(version))
             .ok_or(TaxError::InvalidVersion)?;
+        if metadata.deprecated {
+            return Err(TaxError::DeprecatedVersion);
+        }
 
         env.storage()
             .persistent()
@@ -427,6 +451,51 @@ impl TaxWithholdingContract {
         Ok(())
     }
 
+    /// Deprecates a ruleset version so it cannot be activated or selected by migration.
+    ///
+    /// Deprecated versions are retained for deterministic historical calculations
+    /// for employees that were already pinned before deprecation. There is no
+    /// override path in this contract for migrating an employee to a deprecated
+    /// version because that would silently allow obsolete withholding rules.
+    ///
+    /// # Arguments
+    /// * `caller` - Must be the contract owner.
+    /// * `version` - Version number to deprecate.
+    ///
+    /// # Access Control
+    /// Caller must be the contract owner.
+    ///
+    /// # Errors
+    /// * `Unauthorized` — caller is not the owner.
+    /// * `InvalidVersion` — version does not exist or is the active default.
+    pub fn deprecate_ruleset_version(
+        env: Env,
+        caller: Address,
+        version: u32,
+    ) -> Result<(), TaxError> {
+        caller.require_auth();
+        Self::require_owner(&env, &caller)?;
+
+        let active_version: u32 = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::ActiveRulesetVersion)
+            .unwrap_or(1);
+        if version == active_version {
+            return Err(TaxError::InvalidVersion);
+        }
+
+        let key = StorageKey::RulesetMetadata(version);
+        let mut metadata: RulesetMetadata = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(TaxError::InvalidVersion)?;
+        metadata.deprecated = true;
+        env.storage().persistent().set(&key, &metadata);
+        Ok(())
+    }
+
     /// Checks if a ruleset version is locked.
     pub fn is_ruleset_locked(env: Env, version: u32) -> bool {
         env.storage()
@@ -435,7 +504,12 @@ impl TaxWithholdingContract {
             .unwrap_or(false)
     }
 
-    /// Migrates an employee to a specific ruleset version.
+    /// Migrates an employee to a specific non-deprecated ruleset version.
+    ///
+    /// Deprecated versions are never valid migration targets. They are kept
+    /// only so already-pinned historical calculations remain deterministic;
+    /// this contract intentionally has no override that can silently move an
+    /// employee back onto obsolete withholding rules.
     ///
     /// # Arguments
     /// * `caller` - Must be the contract owner.
@@ -448,6 +522,12 @@ impl TaxWithholdingContract {
     /// # Errors
     /// * `Unauthorized` — caller is not the owner.
     /// * `InvalidVersion` — version does not exist.
+    /// * `DeprecatedVersion` — version is deprecated.
+    ///
+    /// # Events
+    /// Emits `("employee_version_migrated",)` with an
+    /// [`EmployeeVersionMigratedEvent`] containing the previous version, target
+    /// version, employee, and caller.
     pub fn migrate_employee_to_version(
         env: Env,
         caller: Address,
@@ -457,16 +537,28 @@ impl TaxWithholdingContract {
         caller.require_auth();
         Self::require_owner(&env, &caller)?;
 
-        // Verify version exists
-        let _metadata: RulesetMetadata = env
+        let metadata: RulesetMetadata = env
             .storage()
             .persistent()
             .get(&StorageKey::RulesetMetadata(version))
             .ok_or(TaxError::InvalidVersion)?;
+        if metadata.deprecated {
+            return Err(TaxError::DeprecatedVersion);
+        }
 
+        let from_version = Self::get_employee_ruleset_version_internal(&env, &employee);
         env.storage()
             .persistent()
-            .set(&StorageKey::EmployeeRulesetVersion(employee), &version);
+            .set(&StorageKey::EmployeeRulesetVersion(employee.clone()), &version);
+        env.events().publish(
+            ("employee_version_migrated",),
+            EmployeeVersionMigratedEvent {
+                employee,
+                from_version,
+                to_version: version,
+                caller,
+            },
+        );
         Ok(())
     }
 
