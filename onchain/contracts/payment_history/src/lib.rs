@@ -293,11 +293,7 @@ impl PaymentHistoryContract {
             .storage()
             .persistent()
             .get(&StorageKey::PaymentByHash(payment_hash));
-        global_id.and_then(|id| {
-            env.storage()
-                .persistent()
-                .get(&StorageKey::Payment(id))
-        })
+        global_id.and_then(|id| env.storage().persistent().get(&StorageKey::Payment(id)))
     }
 
     /// Fetch a single payment record by its global ID.
@@ -366,7 +362,9 @@ impl PaymentHistoryContract {
         }
 
         let effective_limit = limit.min(MAX_PAGE_SIZE);
-        let end = start_index.saturating_add(effective_limit).min(count.saturating_add(1));
+        let end = start_index
+            .saturating_add(effective_limit)
+            .min(count.saturating_add(1));
 
         for i in start_index..end {
             let global_id: u128 = env
@@ -422,7 +420,9 @@ impl PaymentHistoryContract {
         }
 
         let effective_limit = limit.min(MAX_PAGE_SIZE);
-        let end = start_index.saturating_add(effective_limit).min(count.saturating_add(1));
+        let end = start_index
+            .saturating_add(effective_limit)
+            .min(count.saturating_add(1));
 
         for i in start_index..end {
             let global_id: u128 = env
@@ -478,7 +478,9 @@ impl PaymentHistoryContract {
         }
 
         let effective_limit = limit.min(MAX_PAGE_SIZE);
-        let end = start_index.saturating_add(effective_limit).min(count.saturating_add(1));
+        let end = start_index
+            .saturating_add(effective_limit)
+            .min(count.saturating_add(1));
 
         for i in start_index..end {
             let global_id: u128 = env

@@ -373,12 +373,8 @@ impl RbacContract {
         write_roles(&env, &old_owner, &old_roles);
 
         // Update owner record.
-        env.storage()
-            .persistent()
-            .set(&StorageKey::Owner, &caller);
-        env.storage()
-            .persistent()
-            .remove(&StorageKey::PendingOwner);
+        env.storage().persistent().set(&StorageKey::Owner, &caller);
+        env.storage().persistent().remove(&StorageKey::PendingOwner);
 
         env.events()
             .publish((symbol_short!("RBAC"), symbol_short!("owner")), &caller);

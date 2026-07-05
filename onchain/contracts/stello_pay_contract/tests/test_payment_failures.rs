@@ -841,8 +841,9 @@ fn test_batch_payroll_duplicate_index_processed_once() {
         batch.results.get(1).unwrap().error_code,
         PayrollError::InvalidData as u32
     );
-    let claimed_periods =
-        env.as_contract(&contract_id, || DataKey::get_employee_claimed_periods(&env, agreement_id, 0));
+    let claimed_periods = env.as_contract(&contract_id, || {
+        DataKey::get_employee_claimed_periods(&env, agreement_id, 0)
+    });
     assert_eq!(claimed_periods, 1);
 }
 
@@ -942,10 +943,8 @@ fn test_batch_milestone_duplicate_invalid_id_processed_once() {
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &500);
 
-    let batch = client.batch_claim_milestones(
-        &agreement_id,
-        &Vec::from_array(&env, [99u32, 99u32, 1u32]),
-    );
+    let batch =
+        client.batch_claim_milestones(&agreement_id, &Vec::from_array(&env, [99u32, 99u32, 1u32]));
 
     assert_eq!(batch.successful_claims, 0);
     assert_eq!(batch.failed_claims, 3);

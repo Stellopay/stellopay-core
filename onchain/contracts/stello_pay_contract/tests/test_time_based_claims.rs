@@ -46,15 +46,14 @@ fn create_funded_time_based_agreement(
     amount_per_period: i128,
     num_periods: u32,
 ) -> u128 {
-    let agreement_id = client
-        .create_escrow_agreement(
-            employer,
-            contributor,
-            token,
-            &amount_per_period,
-            &PERIOD_SECONDS,
-            &num_periods,
-        );
+    let agreement_id = client.create_escrow_agreement(
+        employer,
+        contributor,
+        token,
+        &amount_per_period,
+        &PERIOD_SECONDS,
+        &num_periods,
+    );
     let total = amount_per_period * i128::from(num_periods);
 
     StellarAssetClient::new(env, token).mint(&client.address, &total);

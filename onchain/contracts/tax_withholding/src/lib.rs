@@ -547,9 +547,10 @@ impl TaxWithholdingContract {
         }
 
         let from_version = Self::get_employee_ruleset_version_internal(&env, &employee);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::EmployeeRulesetVersion(employee.clone()), &version);
+        env.storage().persistent().set(
+            &StorageKey::EmployeeRulesetVersion(employee.clone()),
+            &version,
+        );
         env.events().publish(
             ("employee_version_migrated",),
             EmployeeVersionMigratedEvent {

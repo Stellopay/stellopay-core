@@ -4,9 +4,7 @@ use expense_reimbursement::{
     ExpenseReimbursementContract, ExpenseReimbursementContractClient, ExpenseStatus,
 };
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{
-    contract, contractimpl, contracttype, token, Address, Env, String, Symbol,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String, Symbol};
 
 #[contracttype]
 #[derive(Clone)]
@@ -411,7 +409,7 @@ fn test_fund_expense() {
     let expense = client.get_expense(&expense_id).unwrap();
     assert_eq!(expense.escrow_amount, 500);
     assert_eq!(expense.payer, Some(payer.clone()));
-    
+
     // contract holds tokens
     assert_eq!(token_client.balance(&client.address), 500);
     assert_eq!(token_client.balance(&payer), 500);
@@ -633,7 +631,7 @@ fn test_reject_expense_refunds() {
 
     client.fund_expense(&payer, &expense_id, &500);
     assert_eq!(token_client.balance(&client.address), 500);
-    
+
     client.reject_expense(&approver, &expense_id);
 
     let expense = client.get_expense(&expense_id).unwrap();
@@ -678,7 +676,7 @@ fn test_pay_expense_full() {
 
     let expense = client.get_expense(&expense_id).unwrap();
     assert_eq!(expense.status, ExpenseStatus::Paid);
-    
+
     // Funds disbursed fully to submitter
     assert_eq!(token_client.balance(&submitter), 500);
     assert_eq!(token_client.balance(&payer), 500); // the remaining 500 out of initial 1_000
@@ -902,7 +900,7 @@ fn test_fund_expense_overflow_rejected() {
 
     let result = client.try_fund_expense(&payer, &expense_id, &i128::MAX);
     assert!(result.is_err());
-    
+
     let expense = client.get_expense(&expense_id).unwrap();
     assert_eq!(expense.escrow_amount, 500);
 }

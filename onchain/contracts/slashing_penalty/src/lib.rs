@@ -1,215 +1,3 @@
-<<<<<<< HEAD
-#![no_std]
-
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Bytes, Env, Vec};
-
-/// A slash record stored for each slashable agreement.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SlashRecord {
-    pub agreement_id: u128,
-    pub target: Address,
-    pub penalty_bps: u32,
-    pub executed: bool,
-}
-
-/// Error variants for the slashing-penalty contract.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SlashError {
-    /// Quorum is set to zero, which would allow any single attestor to slash
-    /// unilaterally. Zero-quorum is always rejected.
-    ZeroQuorum,
-    /// The attestor list has at least one entry but does not meet quorum.
-    BelowQuorum,
-    /// The agreement has already been slashed.
-    AlreadySlashed,
-    /// The slash record was not found.
-    NotFound,
-    /// No on-chain evidence was provided for an evidence-only slash.
-    MissingEvidence,
-    /// Contract has not been initialized.
-    NotInitialized,
-    /// Caller is not authorized.
-    Unauthorized,
-}
-
-#[contracttype]
-#[derive(Clone)]
-enum StorageKey {
-    Initialized,
-    Admin,
-    Quorum,
-    Record(u128),
-}
-
-#[contract]
-pub struct SlashingPenaltyContract;
-
-fn require_initialized(env: &Env) -> Result<(), SlashError> {
-    let ok = env
-        .storage()
-        .persistent()
-        .get::<_, bool>(&StorageKey::Initialized)
-        .unwrap_or(false);
-    if !ok {
-        return Err(SlashError::NotInitialized);
-    }
-    Ok(())
-}
-
-fn read_quorum(env: &Env) -> u32 {
-    env.storage()
-        .persistent()
-        .get::<_, u32>(&StorageKey::Quorum)
-        .expect("Quorum not set")
-}
-
-/// Determine whether quorum enforcement is required for the given call.
-///
-/// # Quorum enforcement rules
-///
-/// | Scenario                            | `requires_quorum` | Allowed? |
-/// |-------------------------------------|-------------------|----------|
-/// | attestors present, count >= quorum  | true              | Yes      |
-/// | attestors present, count < quorum   | true              | **No**   |
-/// | no attestors + on-chain evidence    | false             | Yes      |
-/// | no attestors + no evidence          | false             | **No**   |
-/// | quorum == 0 (any scenario)          | —                 | **No**   |
-///
-/// The zero-quorum case is rejected unconditionally so that a misconfigured
-/// contract cannot be exploited to bypass attestor checks entirely.
-fn requires_quorum(attestors: &Vec<Address>) -> bool {
-    attestors.len() > 0
-}
-
-#[contractimpl]
-impl SlashingPenaltyContract {
-    /// Initialize the slashing-penalty contract.
-    ///
-    /// # Arguments
-    /// * `admin`  - Address that administers the contract.
-    /// * `quorum` - Minimum number of attestors required to approve a slash when
-    ///              attestors are present. Must be >= 1; a value of 0 is rejected
-    ///              to prevent silent bypass of the attestor requirement.
-    pub fn initialize(env: Env, admin: Address, quorum: u32) -> Result<(), SlashError> {
-        admin.require_auth();
-
-        let already = env
-            .storage()
-            .persistent()
-            .get::<_, bool>(&StorageKey::Initialized)
-            .unwrap_or(false);
-        assert!(!already, "Already initialized");
-
-        // Reject zero quorum at configuration time so the invariant is
-        // established once and checked cheaply everywhere else.
-        if quorum == 0 {
-            return Err(SlashError::ZeroQuorum);
-        }
-
-        env.storage().persistent().set(&StorageKey::Admin, &admin);
-        env.storage().persistent().set(&StorageKey::Quorum, &quorum);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::Initialized, &true);
-        Ok(())
-    }
-
-    /// Execute a slash against a target for a given agreement.
-    ///
-    /// # Quorum condition
-    ///
-    /// This function enforces quorum **only when at least one attestor is
-    /// supplied**.  When `attestors` is empty the function instead requires
-    /// `on_chain_evidence` to be non-empty, proving the slash is backed by
-    /// verifiable on-chain data rather than attestor votes.
-    ///
-    /// Concretely:
-    /// - `attestors.len() > 0` → `requires_quorum` is `true`; the count must
-    ///   reach the configured quorum or the call is rejected with
-    ///   [`SlashError::BelowQuorum`].
-    /// - `attestors.len() == 0` → `requires_quorum` is `false`; quorum is
-    ///   **not** checked, but `on_chain_evidence` must be non-empty or the
-    ///   call is rejected with [`SlashError::MissingEvidence`].  This path is
-    ///   intentional: some slash conditions (e.g. cryptographic fraud proofs)
-    ///   are self-evidencing and need no human attestors.
-    /// - A configured quorum of `0` is **always** rejected at initialisation
-    ///   time, so it can never arise here.  If somehow reached, the call panics.
-    ///
-    /// # Arguments
-    /// * `caller`            - Admin address invoking the slash.
-    /// * `agreement_id`      - Identifier of the slashable agreement.
-    /// * `target`            - Address to be penalised.
-    /// * `penalty_bps`       - Penalty in basis points (1 bps = 0.01 %).
-    /// * `attestors`         - Addresses that attest to the slash.  May be empty
-    ///                         only when `on_chain_evidence` is non-empty.
-    /// * `on_chain_evidence` - Raw bytes of on-chain evidence (e.g. fraud proof).
-    ///                         Required when `attestors` is empty; ignored
-    ///                         otherwise.
-    pub fn execute_slash(
-        env: Env,
-        caller: Address,
-        agreement_id: u128,
-        target: Address,
-        penalty_bps: u32,
-        attestors: Vec<Address>,
-        on_chain_evidence: Bytes,
-    ) -> Result<(), SlashError> {
-        require_initialized(&env)?;
-        caller.require_auth();
-
-        // Only the admin may trigger a slash.
-        let admin = env
-            .storage()
-            .persistent()
-            .get::<_, Address>(&StorageKey::Admin)
-            .expect("Admin not set");
-        if caller != admin {
-            return Err(SlashError::Unauthorized);
-        }
-
-        // Guard against a zero quorum reaching execute_slash (belt-and-suspenders).
-        let quorum = read_quorum(&env);
-        assert!(quorum > 0, "Quorum invariant violated: quorum must be > 0");
-
-        // Reject double-slash.
-        if let Some(record) = env
-            .storage()
-            .persistent()
-            .get::<_, SlashRecord>(&StorageKey::Record(agreement_id))
-        {
-            if record.executed {
-                return Err(SlashError::AlreadySlashed);
-            }
-        }
-
-        if requires_quorum(&attestors) {
-            // Attestor-backed path: enforce quorum.
-            let len = attestors.len();
-            if len < quorum {
-                return Err(SlashError::BelowQuorum);
-            }
-        } else {
-            // Evidence-only path: no attestors, so evidence must be present.
-            // This branch is intentional and not a quorum bypass — it is only
-            // reachable when the caller explicitly provides zero attestors, and
-            // is gated by the requirement that valid on-chain evidence exists.
-            if on_chain_evidence.len() == 0 {
-                return Err(SlashError::MissingEvidence);
-            }
-        }
-
-        let record = SlashRecord {
-            agreement_id,
-            target,
-            penalty_bps,
-            executed: true,
-        };
-        env.storage()
-            .persistent()
-            .set(&StorageKey::Record(agreement_id), &record);
-=======
 //! # Slashing Penalty Contract
 //!
 //! Encodes slashing rules tied to signed attestations or on-chain evidence.
@@ -240,9 +28,8 @@ impl SlashingPenaltyContract {
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror,
-    Address, BytesN, Env, Map, Vec, Symbol, symbol_short,
-    token,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
+    Map, Symbol, Vec,
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -258,16 +45,16 @@ const DEFAULT_QUORUM: u32 = 2;
 
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
 
-const ADMIN: Symbol        = symbol_short!("ADMIN");
-const QUORUM: Symbol       = symbol_short!("QUORUM");
-const SLASHERS: Symbol     = symbol_short!("SLASHERS");
-const STAKES: Symbol       = symbol_short!("STAKES");
-const SLASH_REC: Symbol    = symbol_short!("SLASHREC");
-const USED_EV: Symbol      = symbol_short!("USEDEV");
-const ESCROW: Symbol       = symbol_short!("ESCROW");
-const TOKEN: Symbol        = symbol_short!("TOKEN");
-const CAPS: Symbol         = symbol_short!("CAPS");
-const SLASH_ACC: Symbol    = symbol_short!("SLASHACC");
+const ADMIN: Symbol = symbol_short!("ADMIN");
+const QUORUM: Symbol = symbol_short!("QUORUM");
+const SLASHERS: Symbol = symbol_short!("SLASHERS");
+const STAKES: Symbol = symbol_short!("STAKES");
+const SLASH_REC: Symbol = symbol_short!("SLASHREC");
+const USED_EV: Symbol = symbol_short!("USEDEV");
+const ESCROW: Symbol = symbol_short!("ESCROW");
+const TOKEN: Symbol = symbol_short!("TOKEN");
+const CAPS: Symbol = symbol_short!("CAPS");
+const SLASH_ACC: Symbol = symbol_short!("SLASHACC");
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -355,39 +142,39 @@ pub struct PenaltyAccumulator {
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum SlashError {
     /// Caller does not hold the slasher role.
-    Unauthorized        = 1,
+    Unauthorized = 1,
     /// Evidence hash has already been used.
-    DuplicateEvidence   = 2,
+    DuplicateEvidence = 2,
     /// Penalty exceeds the allowed maximum.
-    PenaltyTooHigh      = 3,
+    PenaltyTooHigh = 3,
     /// Offender has insufficient staked balance.
-    InsufficientStake   = 4,
+    InsufficientStake = 4,
     /// Appeal window has not yet closed.
-    AppealWindowOpen    = 5,
+    AppealWindowOpen = 5,
     /// Appeal window has already closed.
-    AppealWindowClosed  = 6,
+    AppealWindowClosed = 6,
     /// Slash record not found.
-    RecordNotFound      = 7,
+    RecordNotFound = 7,
     /// Slash is not in a state that allows this operation.
-    InvalidState        = 8,
+    InvalidState = 8,
     /// Quorum of attestors not yet reached.
-    QuorumNotMet        = 9,
+    QuorumNotMet = 9,
     /// Slasher already attested to this slash.
-    AlreadyAttested     = 10,
+    AlreadyAttested = 10,
     /// Penalty basis points cannot be zero.
-    ZeroPenalty         = 11,
+    ZeroPenalty = 11,
     /// Admin address already initialised.
-    AlreadyInitialized  = 12,
+    AlreadyInitialized = 12,
     /// Penalty cap configuration is invalid.
-    InvalidConfig       = 13,
+    InvalidConfig = 13,
     /// Period cap would be exceeded.
-    PeriodCapExceeded   = 14,
+    PeriodCapExceeded = 14,
     /// Lifetime cap would be exceeded.
     LifetimeCapExceeded = 15,
     /// Arithmetic overflow/underflow protection.
-    ArithmeticOverflow  = 16,
+    ArithmeticOverflow = 16,
     /// Quorum must be greater than zero; passing 0 is a misconfiguration.
-    ZeroQuorum          = 17,
+    ZeroQuorum = 17,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -397,7 +184,6 @@ pub struct SlashingPenaltyContract;
 
 #[contractimpl]
 impl SlashingPenaltyContract {
-
     // ── Initialisation ────────────────────────────────────────────────────────
 
     /// Initialise the contract. Can only be called once.
@@ -435,18 +221,33 @@ impl SlashingPenaltyContract {
         env.storage().instance().set(&ADMIN, &admin);
         env.storage().instance().set(&TOKEN, &token);
         env.storage().instance().set(&QUORUM, &quorum);
-        env.storage().instance().set(&SLASHERS, &Vec::<Address>::new(&env));
-        env.storage().instance().set(&STAKES, &Map::<Address, i128>::new(&env));
-        env.storage().instance().set(&SLASH_REC, &Map::<BytesN<32>, SlashRecord>::new(&env));
-        env.storage().instance().set(&USED_EV, &Map::<BytesN<32>, bool>::new(&env));
-        env.storage().instance().set(&ESCROW, &Map::<BytesN<32>, i128>::new(&env));
-        env.storage().instance().set(&SLASH_ACC, &Map::<Address, PenaltyAccumulator>::new(&env));
-        env.storage().instance().set(&CAPS, &PenaltyCaps {
-            per_event_bps_cap,
-            per_period_amount_cap,
-            lifetime_amount_cap,
-            period_secs,
-        });
+        env.storage()
+            .instance()
+            .set(&SLASHERS, &Vec::<Address>::new(&env));
+        env.storage()
+            .instance()
+            .set(&STAKES, &Map::<Address, i128>::new(&env));
+        env.storage()
+            .instance()
+            .set(&SLASH_REC, &Map::<BytesN<32>, SlashRecord>::new(&env));
+        env.storage()
+            .instance()
+            .set(&USED_EV, &Map::<BytesN<32>, bool>::new(&env));
+        env.storage()
+            .instance()
+            .set(&ESCROW, &Map::<BytesN<32>, i128>::new(&env));
+        env.storage()
+            .instance()
+            .set(&SLASH_ACC, &Map::<Address, PenaltyAccumulator>::new(&env));
+        env.storage().instance().set(
+            &CAPS,
+            &PenaltyCaps {
+                per_event_bps_cap,
+                per_period_amount_cap,
+                lifetime_amount_cap,
+                period_secs,
+            },
+        );
         Ok(())
     }
 
@@ -465,12 +266,15 @@ impl SlashingPenaltyContract {
             lifetime_amount_cap,
             period_secs,
         )?;
-        env.storage().instance().set(&CAPS, &PenaltyCaps {
-            per_event_bps_cap,
-            per_period_amount_cap,
-            lifetime_amount_cap,
-            period_secs,
-        });
+        env.storage().instance().set(
+            &CAPS,
+            &PenaltyCaps {
+                per_event_bps_cap,
+                per_period_amount_cap,
+                lifetime_amount_cap,
+                period_secs,
+            },
+        );
         Ok(())
     }
 
@@ -655,38 +459,27 @@ impl SlashingPenaltyContract {
 
         env.storage().instance().set(&SLASH_REC, &records);
 
-        env.events().publish(
-            (symbol_short!("ATTESTED"), attestor),
-            evidence_hash.clone(),
-        );
->>>>>>> origin/main
+        env.events()
+            .publish((symbol_short!("ATTESTED"), attestor), evidence_hash.clone());
 
         Ok(())
     }
 
-<<<<<<< HEAD
-    /// Retrieve a slash record by agreement id.
-    pub fn get_slash_record(env: Env, agreement_id: u128) -> Option<SlashRecord> {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::Record(agreement_id))
-    }
-
-    /// Return the configured quorum threshold.
-    pub fn get_quorum(env: Env) -> u32 {
-        read_quorum(&env)
-    }
-}
-=======
     // ── Appeal ────────────────────────────────────────────────────────────────
 
     /// The offender raises an appeal during the appeal window.
     /// This does not automatically reverse the slash — admin must review.
-    pub fn raise_appeal(env: Env, offender: Address, evidence_hash: BytesN<32>) -> Result<(), SlashError> {
+    pub fn raise_appeal(
+        env: Env,
+        offender: Address,
+        evidence_hash: BytesN<32>,
+    ) -> Result<(), SlashError> {
         offender.require_auth();
         let records: Map<BytesN<32>, SlashRecord> =
             env.storage().instance().get(&SLASH_REC).unwrap();
-        let record = records.get(evidence_hash.clone()).ok_or(SlashError::RecordNotFound)?;
+        let record = records
+            .get(evidence_hash.clone())
+            .ok_or(SlashError::RecordNotFound)?;
 
         if record.status != SlashStatus::Pending {
             return Err(SlashError::InvalidState);
@@ -696,10 +489,8 @@ impl SlashingPenaltyContract {
             return Err(SlashError::AppealWindowClosed);
         }
 
-        env.events().publish(
-            (symbol_short!("APPEALED"), offender),
-            evidence_hash,
-        );
+        env.events()
+            .publish((symbol_short!("APPEALED"), offender), evidence_hash);
 
         Ok(())
     }
@@ -714,7 +505,9 @@ impl SlashingPenaltyContract {
 
         let mut records: Map<BytesN<32>, SlashRecord> =
             env.storage().instance().get(&SLASH_REC).unwrap();
-        let mut record = records.get(evidence_hash.clone()).ok_or(SlashError::RecordNotFound)?;
+        let mut record = records
+            .get(evidence_hash.clone())
+            .ok_or(SlashError::RecordNotFound)?;
 
         if record.status != SlashStatus::Pending {
             return Err(SlashError::InvalidState);
@@ -734,10 +527,8 @@ impl SlashingPenaltyContract {
         records.set(evidence_hash.clone(), record);
         env.storage().instance().set(&SLASH_REC, &records);
 
-        env.events().publish(
-            (symbol_short!("RESOLVED"), uphold),
-            evidence_hash,
-        );
+        env.events()
+            .publish((symbol_short!("RESOLVED"), uphold), evidence_hash);
 
         Ok(())
     }
@@ -747,7 +538,9 @@ impl SlashingPenaltyContract {
     pub fn execute_slash(env: Env, evidence_hash: BytesN<32>) -> Result<(), SlashError> {
         let mut records: Map<BytesN<32>, SlashRecord> =
             env.storage().instance().get(&SLASH_REC).unwrap();
-        let mut record = records.get(evidence_hash.clone()).ok_or(SlashError::RecordNotFound)?;
+        let mut record = records
+            .get(evidence_hash.clone())
+            .ok_or(SlashError::RecordNotFound)?;
 
         if record.status != SlashStatus::Pending {
             return Err(SlashError::InvalidState);
@@ -901,10 +694,15 @@ impl SlashingPenaltyContract {
         Ok(slash_amount)
     }
 
-    fn enforce_and_record_caps(env: &Env, offender: &Address, slash_amount: i128) -> Result<(), SlashError> {
+    fn enforce_and_record_caps(
+        env: &Env,
+        offender: &Address,
+        slash_amount: i128,
+    ) -> Result<(), SlashError> {
         let caps: PenaltyCaps = env.storage().instance().get(&CAPS).unwrap();
         let now = env.ledger().timestamp();
-        let mut accs: Map<Address, PenaltyAccumulator> = env.storage().instance().get(&SLASH_ACC).unwrap();
+        let mut accs: Map<Address, PenaltyAccumulator> =
+            env.storage().instance().get(&SLASH_ACC).unwrap();
 
         let mut acc = accs.get(offender.clone()).unwrap_or(PenaltyAccumulator {
             period_start_ts: now,
@@ -941,7 +739,8 @@ impl SlashingPenaltyContract {
     }
 
     fn decrease_accumulator(env: &Env, offender: &Address, amount: i128) -> Result<(), SlashError> {
-        let mut accs: Map<Address, PenaltyAccumulator> = env.storage().instance().get(&SLASH_ACC).unwrap();
+        let mut accs: Map<Address, PenaltyAccumulator> =
+            env.storage().instance().get(&SLASH_ACC).unwrap();
         let Some(mut acc) = accs.get(offender.clone()) else {
             return Ok(());
         };
@@ -997,4 +796,3 @@ impl SlashingPenaltyContract {
         Ok(())
     }
 }
->>>>>>> origin/main

@@ -55,18 +55,25 @@ pub struct FeeTier {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FeeSplit {
+    /// No split configured: all fees go to the single `FeeRecipient`.
+    ///
+    /// This is used instead of wrapping `FeeSplit` in `Option` because
+    /// Soroban's `#[contracttype]` codegen (under the `testutils` feature)
+    /// cannot derive an `ScVal` conversion for `Option<T>` where `T` is a
+    /// user-defined enum/struct — only primitive-wrapped `Option<T>` is
+    /// supported.
+    None,
     /// All fees go to a single treasury address (default).
     Treasury(Address),
     /// All fees are sent to a burn address (effectively removed from circulation).
     Burn(Address),
     /// Fees are split between treasury and burn.
     /// `treasury_bps` + `burn_bps` must equal `BPS_DENOMINATOR` (10,000).
-    Split {
-        treasury: Address,
-        burn: Address,
-        treasury_bps: u32,
-        burn_bps: u32,
-    },
+    ///
+    /// Tuple fields, in order: `(treasury, burn, treasury_bps, burn_bps)`.
+    /// Named fields are not used here because Soroban's `#[contracttype]` does
+    /// not support struct-like (named-field) enum variants.
+    Split(Address, Address, u32, u32),
 }
 
 /// Read-only snapshot of the current fee configuration.
@@ -87,6 +94,7 @@ pub struct FeeConfig {
     pub tiered_schedule: soroban_sdk::Vec<FeeTier>,
     /// Whether fee collection is currently paused.
     pub paused: bool,
-    /// Fee routing split policy (if configured).
-    pub split: Option<FeeSplit>,
+    /// Fee routing split policy. `FeeSplit::None` means no split is configured
+    /// (all fees go to the single `recipient`).
+    pub split: FeeSplit,
 }

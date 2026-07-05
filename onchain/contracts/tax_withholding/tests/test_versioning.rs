@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env, IntoVal, Symbol, Vec};
+use soroban_sdk::{testutils::Address as _, testutils::Events, Address, Env, IntoVal, Symbol, Vec};
 
 use tax_withholding::{
     EmployeeVersionMigratedEvent, RulesetMetadata, TaxComputation, TaxError,
@@ -224,9 +224,13 @@ fn test_migrate_employee_to_new_version() {
     assert_eq!(result1.ruleset_version, 1);
     assert_eq!(result1.total_tax, 1_000);
 
-    // Migrate employee to version 2
+    // Migrate employee to version 2.
+    //
+    // Read events immediately after the mutating call: `env.events().all()`
+    // only retains events from the most recent top-level invocation, so any
+    // further contract call (even a read-only getter) would clear this event
+    // before it could be inspected.
     client.migrate_employee_to_version(&owner, &employee, &2);
-    assert_eq!(client.get_employee_ruleset_version(&employee), 2);
 
     let events = env.events().all();
     let last_event = events.last().unwrap();
@@ -236,6 +240,8 @@ fn test_migrate_employee_to_new_version() {
     assert_eq!(event.from_version, 1);
     assert_eq!(event.to_version, 2);
     assert_eq!(event.caller, owner);
+
+    assert_eq!(client.get_employee_ruleset_version(&employee), 2);
 
     // Now employee uses version 2 rates
     let result2: TaxComputation = client.calculate_withholding(&employee, &10_000i128);
@@ -253,15 +259,18 @@ fn test_migrate_employee_to_active_version_allowed() {
     client.migrate_employee_to_version(&owner, &employee, &1);
     client.set_active_ruleset_version(&owner, &2);
 
+    // Read events immediately after the mutating call: `env.events().all()`
+    // only retains events from the most recent top-level invocation.
     client.migrate_employee_to_version(&owner, &employee, &2);
 
-    assert_eq!(client.get_employee_ruleset_version(&employee), 2);
     let events = env.events().all();
     let event: EmployeeVersionMigratedEvent = events.last().unwrap().2.into_val(&env);
     assert_eq!(event.employee, employee);
     assert_eq!(event.from_version, 1);
     assert_eq!(event.to_version, 2);
     assert_eq!(event.caller, owner);
+
+    assert_eq!(client.get_employee_ruleset_version(&employee), 2);
 }
 
 #[test]

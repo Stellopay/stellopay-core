@@ -458,7 +458,10 @@ fn test_remove_one_leaves_others() {
     let remaining = client.get_department_employees(&dept_id);
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining.get(0), Some(emp2.clone()));
-    assert_eq!(client.get_employee_department(&emp2, &org_id), Some(dept_id));
+    assert_eq!(
+        client.get_employee_department(&emp2, &org_id),
+        Some(dept_id)
+    );
 }
 
 #[test]
@@ -804,10 +807,15 @@ fn prop_all_cycle_attempts_rejected() {
 
         // Map original IDs to new IDs
         let map_id = |id: u128| -> u128 {
-            if id == root { r }
-            else if id == n1 { x1 }
-            else if id == n2 { x2 }
-            else { x3 }
+            if id == root {
+                r
+            } else if id == n1 {
+                x1
+            } else if id == n2 {
+                x2
+            } else {
+                x3
+            }
         };
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -888,9 +896,9 @@ fn test_paged_single_full_page() {
 
     let (page, next) = client.get_department_employees_paged(&dept_id, &0, &10);
     assert_eq!(page.len(), 3);
-    assert_eq!(page.get(0), emp1);
-    assert_eq!(page.get(1), emp2);
-    assert_eq!(page.get(2), emp3);
+    assert_eq!(page.get(0), Some(emp1));
+    assert_eq!(page.get(1), Some(emp2));
+    assert_eq!(page.get(2), Some(emp3));
     assert_eq!(next, None);
 }
 
@@ -914,15 +922,15 @@ fn test_paged_exact_page_boundary() {
     // First page of 2
     let (page1, next1) = client.get_department_employees_paged(&dept_id, &0, &2);
     assert_eq!(page1.len(), 2);
-    assert_eq!(page1.get(0), emp1);
-    assert_eq!(page1.get(1), emp2);
+    assert_eq!(page1.get(0), Some(emp1));
+    assert_eq!(page1.get(1), Some(emp2));
     assert_eq!(next1, Some(2));
 
     // Second page of 2
     let (page2, next2) = client.get_department_employees_paged(&dept_id, &2, &2);
     assert_eq!(page2.len(), 2);
-    assert_eq!(page2.get(0), emp3);
-    assert_eq!(page2.get(1), emp4);
+    assert_eq!(page2.get(0), Some(emp3));
+    assert_eq!(page2.get(1), Some(emp4));
     assert_eq!(next2, None);
 }
 
@@ -981,7 +989,7 @@ fn test_paged_partial_last_page() {
     // Request page of 2 starting at index 2 – only 1 employee remains
     let (page, next) = client.get_department_employees_paged(&dept_id, &2, &2);
     assert_eq!(page.len(), 1);
-    assert_eq!(page.get(0), emp3);
+    assert_eq!(page.get(0), Some(emp3));
     assert_eq!(next, None);
 }
 

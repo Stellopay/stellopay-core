@@ -45,7 +45,7 @@ pub use events::{
     RecipientUpdatedEvent, TieredScheduleUpdatedEvent,
 };
 pub use storage::StorageKey;
-pub use types::{FeeConfig, FeeMode, FeeSplit};
+pub use types::{FeeConfig, FeeMode, FeeSplit, FeeTier};
 
 use helpers::{
     bump_ttl, compute_fee_internal, require_admin, require_initialized, require_not_paused,
@@ -156,10 +156,13 @@ impl FeeCollectorContract {
             .instance()
             .set(&StorageKey::TotalFeesCollected, &0i128);
         env.storage().instance().set(&StorageKey::Paused, &false);
-        env.storage().instance().set(&StorageKey::Initialized, &true);
         env.storage()
             .instance()
-            .set(&StorageKey::TieredSchedule, &soroban_sdk::Vec::<FeeTier>::new(&env));
+            .set(&StorageKey::Initialized, &true);
+        env.storage().instance().set(
+            &StorageKey::TieredSchedule,
+            &soroban_sdk::Vec::<FeeTier>::new(&env),
+        );
 
         // Establish initial TTL for the contract instance.
         bump_ttl(&env);
@@ -246,20 +249,19 @@ impl FeeCollectorContract {
 
         if fee_amount > 0 {
             // Check for fee split routing
-            let split: Option<FeeSplit> = env.storage().instance().get(&StorageKey::FeeSplit);
+            let split: FeeSplit = env
+                .storage()
+                .instance()
+                .get(&StorageKey::FeeSplit)
+                .unwrap_or(FeeSplit::None);
             match split {
-                Some(FeeSplit::Treasury(addr)) => {
+                FeeSplit::Treasury(addr) => {
                     token_client.transfer(&payer, &addr, &fee_amount);
                 }
-                Some(FeeSplit::Burn(addr)) => {
+                FeeSplit::Burn(addr) => {
                     token_client.transfer(&payer, &addr, &fee_amount);
                 }
-                Some(FeeSplit::Split {
-                    treasury,
-                    burn,
-                    treasury_bps,
-                    burn_bps,
-                }) => {
+                FeeSplit::Split(treasury, burn, treasury_bps, burn_bps) => {
                     let treasury_share = fee_amount
                         .checked_mul(treasury_bps as i128)
                         .expect("Overflow")
@@ -273,7 +275,7 @@ impl FeeCollectorContract {
                         token_client.transfer(&payer, &burn, &burn_share);
                     }
                 }
-                None => {
+                FeeSplit::None => {
                     // Default: all fees to single recipient
                     token_client.transfer(&payer, &fee_recipient, &fee_amount);
                 }
@@ -514,13 +516,14 @@ impl FeeCollectorContract {
     /// Updates the fee routing split policy.
     ///
     /// When set, collected fees are routed according to the split (e.g., part to treasury,
-    /// part to a burn address). When not set, all fees go to the single `FeeRecipient`.
+    /// part to a burn address). When set to `FeeSplit::None`, all fees go to the single
+    /// `FeeRecipient`.
     ///
     /// # Arguments
     ///
     /// * `env`   — Soroban environment.
     /// * `admin` — Current admin (must authenticate).
-    /// * `split` — New fee split policy, or `None` to use single-recipient mode.
+    /// * `split` — New fee split policy, or `FeeSplit::None` to use single-recipient mode.
     ///
     /// # Panics
     ///
@@ -530,26 +533,17 @@ impl FeeCollectorContract {
     /// # Events
     ///
     /// Emits `("fee_split_updated",)`.
-    pub fn update_fee_split(env: Env, admin: Address, split: Option<FeeSplit>) {
+    pub fn update_fee_split(env: Env, admin: Address, split: FeeSplit) {
         require_initialized(&env);
         bump_ttl(&env);
         admin.require_auth();
         require_admin(&env, &admin);
 
-        if let Some(ref s) = split {
-            match s {
-                FeeSplit::Split {
-                    treasury_bps,
-                    burn_bps,
-                    ..
-                } => {
-                    assert!(
-                        treasury_bps + burn_bps == BPS_DENOMINATOR,
-                        "Split BPS must equal 10000"
-                    );
-                }
-                _ => {}
-            }
+        if let FeeSplit::Split(_, _, treasury_bps, burn_bps) = &split {
+            assert!(
+                treasury_bps + burn_bps == BPS_DENOMINATOR,
+                "Split BPS must equal 10000"
+            );
         }
 
         env.storage().instance().set(&StorageKey::FeeSplit, &split);
@@ -629,7 +623,11 @@ impl FeeCollectorContract {
                 .instance()
                 .get(&StorageKey::Paused)
                 .unwrap_or(false),
-            split: env.storage().instance().get(&StorageKey::FeeSplit),
+            split: env
+                .storage()
+                .instance()
+                .get(&StorageKey::FeeSplit)
+                .unwrap_or(FeeSplit::None),
         }
     }
 

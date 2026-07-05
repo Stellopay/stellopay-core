@@ -5,14 +5,15 @@ use crate::audit::{record_entry, AuditEvent};
 use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
-    emit_employee_added, emit_grace_period_extended, emit_grace_period_finalized,
-    emit_exchange_rate_changed, emit_milestone_funded, emit_payment_received, emit_payment_sent,
-    emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent,
-    AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent,
-    BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent,
-    DisputeResolvedEvent, EmployeeAddedEvent, ExchangeRateChangedEvent, GracePeriodExtendedEvent,
-    GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved, MilestoneClaimed,
-    MilestoneFundedEvent, PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
+    emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
+    emit_grace_period_finalized, emit_milestone_funded, emit_multisig_config_changed,
+    emit_payment_received, emit_payment_sent, emit_payroll_claimed, emit_set_arbiter,
+    AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent,
+    AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent,
+    DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, ExchangeRateChangedEvent,
+    GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
+    MilestoneClaimed, MilestoneFundedEvent, MultisigConfigChangedEvent, PaymentReceivedEvent,
+    PaymentSentEvent, PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
@@ -182,13 +183,44 @@ fn require_multisig_executed(
 }
 
 fn enforce_rate_limit(env: &Env, caller: &Address) -> Result<(), PayrollError> {
-    if let Some(rate_limiter_addr) = env.storage().persistent().get::<_, Address>(&StorageKey::RateLimiterContract) {
+    if let Some(rate_limiter_addr) = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::RateLimiterContract)
+    {
         let client = RateLimiterClient::new(env, &rate_limiter_addr);
         if client.try_check_and_consume(caller).is_err() {
             return Err(PayrollError::RateLimited);
         }
     }
     Ok(())
+}
+
+/// Acquire the transient reentrancy guard for a claim path.
+///
+/// Returns [`PayrollError::ReentrancyDetected`] if the guard is already held,
+/// i.e. this call path was re-entered (e.g. via a hostile or hook-enabled
+/// token during `transfer`). The guard is kept in *temporary* storage (see
+/// [`StorageKey::ReentrancyGuard`]) so it is automatically cleared at the end
+/// of the transaction even if a panic strands it mid-call.
+fn acquire_reentrancy_guard(env: &Env) -> Result<(), PayrollError> {
+    if env.storage().temporary().has(&StorageKey::ReentrancyGuard) {
+        return Err(PayrollError::ReentrancyDetected);
+    }
+    env.storage()
+        .temporary()
+        .set(&StorageKey::ReentrancyGuard, &true);
+    Ok(())
+}
+
+/// Release the transient reentrancy guard acquired by [`acquire_reentrancy_guard`].
+///
+/// Must be called on every return path of the guarded function so the guard
+/// never outlives a single top-level call.
+fn release_reentrancy_guard(env: &Env) {
+    env.storage()
+        .temporary()
+        .remove(&StorageKey::ReentrancyGuard);
 }
 
 /// Fixed-point scaling factor for FX rates: 1e6 precision.
@@ -328,17 +360,17 @@ pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, am
     let new_balance = current_balance
         .checked_add(amount)
         .expect("Escrow balance overflow");
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::MilestoneEscrowBalance(agreement_id), &new_balance);
+    env.storage().persistent().set(
+        &MilestoneKey::MilestoneEscrowBalance(agreement_id),
+        &new_balance,
+    );
 
     let token_address: Address = env
         .storage()
         .persistent()
         .get(&MilestoneKey::Token(agreement_id))
         .expect("Token not found");
-    TokenClient::new(env, &token_address)
-        .transfer(&from, &env.current_contract_address(), &amount);
+    TokenClient::new(env, &token_address).transfer(&from, &env.current_contract_address(), &amount);
 
     emit_milestone_funded(
         env,
@@ -420,7 +452,10 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), P
     #[cfg(debug_assertions)]
     {
         let total_sum = sum_all_milestones(&env, agreement_id);
-        assert!(total_sum == total + amount, "Total amount mismatch after adding milestone");
+        assert!(
+            total_sum == total + amount,
+            "Total amount mismatch after adding milestone"
+        );
     }
 
     MilestoneAdded {
@@ -699,8 +734,11 @@ pub fn claim_milestone(
         &escrow_balance.saturating_sub(amount),
     );
 
-    TokenClient::new(&env, &token_address)
-        .transfer(&env.current_contract_address(), &contributor, &amount);
+    TokenClient::new(&env, &token_address).transfer(
+        &env.current_contract_address(),
+        &contributor,
+        &amount,
+    );
 
     MilestoneClaimed {
         agreement_id,
@@ -922,7 +960,6 @@ pub fn batch_claim_milestones(
             amount_claimed: amount,
             error_code: 0,
         });
-
     }
 
     if all_milestones_claimed(env, agreement_id, count) {
@@ -1574,9 +1611,7 @@ pub fn set_grace_extension_policy(
     const MAX_PER_CALL: u64 = 730 * 24 * 3600;
     // Reject zero on both fields: a zero cap silently disables grace extensions,
     // which must be an explicit, non-zero configuration rather than an accident.
-    if policy.max_cumulative_extension_bps == 0
-        || policy.max_cumulative_extension_bps > MAX_BPS
-    {
+    if policy.max_cumulative_extension_bps == 0 || policy.max_cumulative_extension_bps > MAX_BPS {
         return Err(PayrollError::GraceExtensionInvalid);
     }
     if policy.max_extension_per_call_seconds == 0
@@ -1866,8 +1901,7 @@ fn resolve_dispute_core(
     if total_payout > total_locked {
         return Err(PayrollError::InvalidPayout);
     }
-    let escrow_balance =
-        DataKey::get_agreement_escrow_balance(env, agreement_id, &agreement.token);
+    let escrow_balance = DataKey::get_agreement_escrow_balance(env, agreement_id, &agreement.token);
     let escrow_tracked = escrow_balance > 0;
     if escrow_tracked && total_payout > escrow_balance {
         return Err(PayrollError::InvalidPayout);
@@ -1900,11 +1934,7 @@ fn resolve_dispute_core(
                     amount += dust;
                 }
                 if amount > 0 {
-                    token.transfer(
-                        &env.current_contract_address(),
-                        &employee.address,
-                        &amount,
-                    );
+                    token.transfer(&env.current_contract_address(), &employee.address, &amount);
                     distributed += amount;
                 }
             }
@@ -2047,9 +2077,13 @@ pub fn set_exchange_rate(
                 let allowed_delta = (prev_rate
                     .checked_mul(max_dev_bps as i128)
                     .unwrap_or(i128::MAX))
-                    .checked_div(10_000i128)
-                    .unwrap_or(i128::MAX);
-                let diff = if rate > prev_rate { rate - prev_rate } else { prev_rate - rate };
+                .checked_div(10_000i128)
+                .unwrap_or(i128::MAX);
+                let diff = if rate > prev_rate {
+                    rate - prev_rate
+                } else {
+                    prev_rate - rate
+                };
                 if diff > allowed_delta {
                     return Err(PayrollError::ExchangeRateInvalid);
                 }
@@ -2063,13 +2097,16 @@ pub fn set_exchange_rate(
 
     DataKey::set_exchange_rate(env, &base, &quote, rate);
 
-    emit_exchange_rate_changed(env, ExchangeRateChangedEvent {
-        base,
-        quote,
-        new_rate: rate,
-        prev_rate,
-        updated_at: env.ledger().timestamp(),
-    });
+    emit_exchange_rate_changed(
+        env,
+        ExchangeRateChangedEvent {
+            base,
+            quote,
+            new_rate: rate,
+            prev_rate,
+            updated_at: env.ledger().timestamp(),
+        },
+    );
 
     Ok(())
 }
@@ -2250,7 +2287,10 @@ fn claim_payroll_inner(
 
     // Invariant check: claimed_periods <= num_periods (if defined)
     if let Some(num_periods) = agreement.num_periods {
-        assert!(claimed_periods <= num_periods, "Invariant violation: claimed_periods > num_periods");
+        assert!(
+            claimed_periods <= num_periods,
+            "Invariant violation: claimed_periods > num_periods"
+        );
     }
 
     // Calculate periods to pay
@@ -2264,7 +2304,11 @@ fn claim_payroll_inner(
     let mut salary_per_period = DataKey::get_employee_salary(env, agreement_id, employee_index)
         .ok_or(PayrollError::AgreementNotFound)?;
 
-    if let Some(salary_adj_addr) = env.storage().persistent().get::<_, Address>(&StorageKey::SalaryAdjustmentContract) {
+    if let Some(salary_adj_addr) = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::SalaryAdjustmentContract)
+    {
         let client = SalaryAdjustmentClient::new(env, &salary_adj_addr);
         if let Some(adjusted_salary) = client.get_employee_salary(&employee) {
             salary_per_period = adjusted_salary;
@@ -2810,10 +2854,13 @@ fn batch_claim_payroll_inner(
         // Must have unclaimed periods
         let claimed_periods =
             DataKey::get_employee_claimed_periods(env, agreement_id, employee_index);
-        
+
         // Invariant check: claimed_periods <= num_periods (if defined)
         if let Some(num_periods) = agreement.num_periods {
-            assert!(claimed_periods <= num_periods, "Invariant violation: claimed_periods > num_periods");
+            assert!(
+                claimed_periods <= num_periods,
+                "Invariant violation: claimed_periods > num_periods"
+            );
         }
 
         if total_elapsed_periods <= claimed_periods {
@@ -2845,7 +2892,11 @@ fn batch_claim_payroll_inner(
                 }
             };
 
-        if let Some(salary_adj_addr) = env.storage().persistent().get::<_, Address>(&StorageKey::SalaryAdjustmentContract) {
+        if let Some(salary_adj_addr) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&StorageKey::SalaryAdjustmentContract)
+        {
             let client = SalaryAdjustmentClient::new(env, &salary_adj_addr);
             if let Some(adjusted_salary) = client.get_employee_salary(&employee) {
                 salary_per_period = adjusted_salary;
@@ -3047,7 +3098,10 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollErro
     }
 
     // Invariant check
-    assert!(claimed_periods <= num_periods, "Invariant violation: claimed_periods > num_periods");
+    assert!(
+        claimed_periods <= num_periods,
+        "Invariant violation: claimed_periods > num_periods"
+    );
 
     // Allow claims if:
     // 1. Agreement is Active, OR

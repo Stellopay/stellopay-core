@@ -188,7 +188,9 @@ fn test_guard_released_allows_subsequent_claim() {
     });
 
     advance_time(&env, ONE_DAY + 1);
-    assert!(client.try_claim_payroll(&employee, &agreement_id, &0).is_ok());
+    assert!(client
+        .try_claim_payroll(&employee, &agreement_id, &0)
+        .is_ok());
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &0), 1);
 
     // Escrow was decremented (effect persisted), confirming a real claim ran.
@@ -202,7 +204,9 @@ fn test_guard_released_allows_subsequent_claim() {
     // After another period elapses, a second claim succeeds — proving the guard
     // was cleared and not stranded by the first claim.
     advance_time(&env, ONE_DAY + 1);
-    assert!(client.try_claim_payroll(&employee, &agreement_id, &0).is_ok());
+    assert!(client
+        .try_claim_payroll(&employee, &agreement_id, &0)
+        .is_ok());
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &0), 2);
 }
 

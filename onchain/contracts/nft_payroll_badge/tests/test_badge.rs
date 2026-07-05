@@ -27,7 +27,13 @@ fn setup(env: &Env) -> (Address, NftPayrollBadgeContractClient<'static>) {
     (owner, client)
 }
 
-fn mint_n(env: &Env, client: &NftPayrollBadgeContractClient, owner: &Address, recipient: &Address, n: u32) {
+fn mint_n(
+    env: &Env,
+    client: &NftPayrollBadgeContractClient,
+    owner: &Address,
+    recipient: &Address,
+    n: u32,
+) {
     for _ in 0..n {
         let name = String::from_str(env, "Payroll Badge");
         client.mint(owner, recipient, &name);

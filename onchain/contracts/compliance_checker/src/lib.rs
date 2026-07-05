@@ -87,9 +87,15 @@ pub enum TraceRule {
 pub struct TraceEntry {
     pub rule: TraceRule,
     pub result: Decision,
-    /// Denial reason that caused this rule to decide `Deny`, or `None` for
-    /// allowed path evaluations.
-    pub reason: Option<ReasonCode>,
+    /// Denial reason that caused this rule to decide `Deny`, or
+    /// `ReasonCode::Allowed` for allowed path evaluations.
+    ///
+    /// Note: this is a plain `ReasonCode` rather than `Option<ReasonCode>`
+    /// because Soroban's `#[contracttype]` codegen (under the `testutils`
+    /// feature) cannot derive an `ScVal` conversion for `Option<T>` where `T`
+    /// is a user-defined enum/struct — only primitive-wrapped `Option<T>` is
+    /// supported. `ReasonCode::Allowed` is used as the "no denial" sentinel.
+    pub reason: ReasonCode,
 }
 
 /// Result payload returned by rule evaluation.
@@ -194,18 +200,22 @@ impl ComplianceCheckerContract {
             .persistent()
             .get::<_, bool>(&StorageKey::EmergencyPause)
             .unwrap_or(false);
-        
-        let pause_result = if is_paused { Decision::Deny } else { Decision::Allow };
+
+        let pause_result = if is_paused {
+            Decision::Deny
+        } else {
+            Decision::Allow
+        };
         traces.push_back(TraceEntry {
             rule: TraceRule::EmergencyPause,
             result: pause_result,
             reason: if is_paused {
-                Some(ReasonCode::EmergencyPaused)
+                ReasonCode::EmergencyPaused
             } else {
-                None
+                ReasonCode::Allowed
             },
         });
-        
+
         if is_paused {
             return Self::make_decision(Decision::Deny, ReasonCode::EmergencyPaused, traces);
         }
@@ -213,31 +223,43 @@ impl ComplianceCheckerContract {
         // 2. Auxiliary Not Allowed check
         if executor != actor {
             let is_allowed = Self::is_auxiliary_allowed(env.clone(), executor);
-            let aux_result = if is_allowed { Decision::Allow } else { Decision::Deny };
+            let aux_result = if is_allowed {
+                Decision::Allow
+            } else {
+                Decision::Deny
+            };
             traces.push_back(TraceEntry {
                 rule: TraceRule::AuxiliaryNotAllowed,
                 result: aux_result,
                 reason: if is_allowed {
-                    None
+                    ReasonCode::Allowed
                 } else {
-                    Some(ReasonCode::AuxiliaryNotAllowed)
+                    ReasonCode::AuxiliaryNotAllowed
                 },
             });
             if !is_allowed {
-                return Self::make_decision(Decision::Deny, ReasonCode::AuxiliaryNotAllowed, traces);
+                return Self::make_decision(
+                    Decision::Deny,
+                    ReasonCode::AuxiliaryNotAllowed,
+                    traces,
+                );
             }
         }
 
         // 3. Terminal State check
         let is_terminal = current_state == AgreementStatus::Completed;
-        let terminal_result = if is_terminal { Decision::Deny } else { Decision::Allow };
+        let terminal_result = if is_terminal {
+            Decision::Deny
+        } else {
+            Decision::Allow
+        };
         traces.push_back(TraceEntry {
             rule: TraceRule::TerminalState,
             result: terminal_result,
             reason: if is_terminal {
-                Some(ReasonCode::TerminalState)
+                ReasonCode::TerminalState
             } else {
-                None
+                ReasonCode::Allowed
             },
         });
         if is_terminal {
@@ -246,14 +268,18 @@ impl ComplianceCheckerContract {
 
         // 4. Invalid Current State check
         let is_current_valid = Self::is_action_allowed_from_state(action, current_state);
-        let current_valid_result = if is_current_valid { Decision::Allow } else { Decision::Deny };
+        let current_valid_result = if is_current_valid {
+            Decision::Allow
+        } else {
+            Decision::Deny
+        };
         traces.push_back(TraceEntry {
             rule: TraceRule::InvalidCurrentState,
             result: current_valid_result,
             reason: if is_current_valid {
-                None
+                ReasonCode::Allowed
             } else {
-                Some(ReasonCode::InvalidCurrentState)
+                ReasonCode::InvalidCurrentState
             },
         });
         if !is_current_valid {
@@ -263,14 +289,18 @@ impl ComplianceCheckerContract {
         // 5. Invalid Target State check
         let expected_target = Self::expected_target_state(action, current_state);
         let is_target_valid = target_state == expected_target;
-        let target_valid_result = if is_target_valid { Decision::Allow } else { Decision::Deny };
+        let target_valid_result = if is_target_valid {
+            Decision::Allow
+        } else {
+            Decision::Deny
+        };
         traces.push_back(TraceEntry {
             rule: TraceRule::InvalidTargetState,
             result: target_valid_result,
             reason: if is_target_valid {
-                None
+                ReasonCode::Allowed
             } else {
-                Some(ReasonCode::InvalidTargetState)
+                ReasonCode::InvalidTargetState
             },
         });
         if !is_target_valid {
@@ -282,25 +312,37 @@ impl ComplianceCheckerContract {
             || action == PayrollAction::ClaimTimeBased
             || action == PayrollAction::ClaimMilestone;
         if is_claim_action && current_state == AgreementStatus::Cancelled {
-            let grace_result = if grace_period_active { Decision::Allow } else { Decision::Deny };
+            let grace_result = if grace_period_active {
+                Decision::Allow
+            } else {
+                Decision::Deny
+            };
             traces.push_back(TraceEntry {
                 rule: TraceRule::GracePeriodRequired,
                 result: grace_result,
                 reason: if grace_period_active {
-                    None
+                    ReasonCode::Allowed
                 } else {
-                    Some(ReasonCode::GracePeriodRequired)
+                    ReasonCode::GracePeriodRequired
                 },
             });
             if !grace_period_active {
-                return Self::make_decision(Decision::Deny, ReasonCode::GracePeriodRequired, traces);
+                return Self::make_decision(
+                    Decision::Deny,
+                    ReasonCode::GracePeriodRequired,
+                    traces,
+                );
             }
         }
 
         Self::make_decision(Decision::Allow, ReasonCode::Allowed, traces)
     }
 
-    fn make_decision(decision: Decision, reason: ReasonCode, traces: soroban_sdk::Vec<TraceEntry>) -> ComplianceDecision {
+    fn make_decision(
+        decision: Decision,
+        reason: ReasonCode,
+        traces: soroban_sdk::Vec<TraceEntry>,
+    ) -> ComplianceDecision {
         ComplianceDecision {
             decision,
             reason,
@@ -308,7 +350,10 @@ impl ComplianceCheckerContract {
         }
     }
 
-    fn expected_target_state(action: PayrollAction, current_state: AgreementStatus) -> AgreementStatus {
+    fn expected_target_state(
+        action: PayrollAction,
+        current_state: AgreementStatus,
+    ) -> AgreementStatus {
         match action {
             PayrollAction::AddEmployee => AgreementStatus::Created,
             PayrollAction::ActivateAgreement => AgreementStatus::Active,
@@ -331,7 +376,8 @@ impl ComplianceCheckerContract {
             PayrollAction::PauseAgreement => current_state == AgreementStatus::Active,
             PayrollAction::ResumeAgreement => current_state == AgreementStatus::Paused,
             PayrollAction::CancelAgreement => {
-                current_state == AgreementStatus::Created || current_state == AgreementStatus::Active
+                current_state == AgreementStatus::Created
+                    || current_state == AgreementStatus::Active
             }
             PayrollAction::FinalizeGracePeriod => current_state == AgreementStatus::Cancelled,
             PayrollAction::RaiseDispute => {
@@ -343,7 +389,8 @@ impl ComplianceCheckerContract {
             PayrollAction::ClaimPayroll
             | PayrollAction::ClaimTimeBased
             | PayrollAction::ClaimMilestone => {
-                current_state == AgreementStatus::Active || current_state == AgreementStatus::Cancelled
+                current_state == AgreementStatus::Active
+                    || current_state == AgreementStatus::Cancelled
             }
         }
     }

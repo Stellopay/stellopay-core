@@ -307,7 +307,10 @@ fn test_add_milestone_wrong_status_fails() {
     client.approve_milestone(&agreement_id, &1);
     client.claim_milestone(&agreement_id, &1);
     let result = client.try_add_milestone(&agreement_id, &200);
-    assert_eq!(result, Err(Ok(PayrollError::MilestoneAgreementInvalidStatus)));
+    assert_eq!(
+        result,
+        Err(Ok(PayrollError::MilestoneAgreementInvalidStatus))
+    );
 }
 
 /// Only employer can add milestones; non-employer must fail.
@@ -393,7 +396,10 @@ fn test_approve_wrong_status_fails() {
     client.add_milestone(&agreement_id, &100);
     client.pause_agreement(&agreement_id);
     let result = client.try_approve_milestone(&agreement_id, &1);
-    assert_eq!(result, Err(Ok(PayrollError::MilestoneAgreementInvalidStatus)));
+    assert_eq!(
+        result,
+        Err(Ok(PayrollError::MilestoneAgreementInvalidStatus))
+    );
 }
 
 /// Only employer can approve; contributor cannot approve.
@@ -518,7 +524,10 @@ fn test_agreement_completes_all_claimed() {
     assert!(client.get_milestone(&agreement_id, &1).unwrap().claimed);
     assert!(client.get_milestone(&agreement_id, &2).unwrap().claimed);
     let result = client.try_add_milestone(&agreement_id, &300);
-    assert_eq!(result, Err(Ok(PayrollError::MilestoneAgreementInvalidStatus)));
+    assert_eq!(
+        result,
+        Err(Ok(PayrollError::MilestoneAgreementInvalidStatus))
+    );
 }
 
 // -----------------------------------------------------------------------------
@@ -602,7 +611,8 @@ fn test_batch_claim_empty_fails() {
     client.add_milestone(&agreement_id, &100);
     client.approve_milestone(&agreement_id, &1);
 
-    let result = client.try_batch_claim_milestones(&agreement_id, &soroban_sdk::Vec::<u32>::new(&env));
+    let result =
+        client.try_batch_claim_milestones(&agreement_id, &soroban_sdk::Vec::<u32>::new(&env));
     assert_eq!(result, Err(Ok(PayrollError::InvalidData)));
 }
 

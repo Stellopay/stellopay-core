@@ -89,10 +89,7 @@ pub(crate) fn compute_percentage_fee(gross_amount: i128, fee_bps: u32) -> i128 {
 }
 
 /// Computes a tiered fee based on the gross amount and a schedule of tiers.
-pub(crate) fn compute_tiered_fee(
-    gross_amount: i128,
-    schedule: soroban_sdk::Vec<FeeTier>,
-) -> i128 {
+pub(crate) fn compute_tiered_fee(gross_amount: i128, schedule: soroban_sdk::Vec<FeeTier>) -> i128 {
     if gross_amount == 0 || schedule.is_empty() {
         return 0;
     }

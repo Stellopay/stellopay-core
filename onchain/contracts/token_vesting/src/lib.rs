@@ -201,20 +201,25 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
                     // The result is guaranteed to be <= total_amount since elapsed <= duration.
                     let elapsed_i128 = i128::from(elapsed as i64);
                     let duration_i128 = i128::from(duration as i64);
-                    
+
                     // Main term: (total / duration) * elapsed
                     let quotient = schedule.total_amount / duration_i128;
-                    let main_term = quotient.checked_mul(elapsed_i128).unwrap_or(schedule.total_amount);
-                    
+                    let main_term = quotient
+                        .checked_mul(elapsed_i128)
+                        .unwrap_or(schedule.total_amount);
+
                     // Remainder term: (total % duration) * elapsed / duration
                     let remainder = schedule.total_amount % duration_i128;
                     let remainder_term = remainder
                         .checked_mul(elapsed_i128)
                         .and_then(|p| p.checked_div(duration_i128))
                         .unwrap_or(0);
-                    
+
                     // Sum and cap at total_amount (should not exceed, but safe guard)
-                    main_term.checked_add(remainder_term).unwrap_or(schedule.total_amount).min(schedule.total_amount)
+                    main_term
+                        .checked_add(remainder_term)
+                        .unwrap_or(schedule.total_amount)
+                        .min(schedule.total_amount)
                 }
             }
         }

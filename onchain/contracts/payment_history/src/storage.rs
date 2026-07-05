@@ -93,7 +93,6 @@ pub enum StorageKey {
     PaymentByHash(BytesN<32>),
 
     // ── Agreement index ────────────────────────────────────────────────────
-
     /// Total number of payments recorded for this agreement.
     /// Doubles as the 1-based position of the most recently appended entry.
     AgreementPaymentCount(u128), // key: agreement_id
@@ -104,7 +103,6 @@ pub enum StorageKey {
     AgreementPayment(u128, u32), // key: (agreement_id, 1-based position)
 
     // ── Employer (from) index ──────────────────────────────────────────────
-
     /// Total number of payments originating from this employer address.
     EmployerPaymentCount(Address), // key: employer
 
@@ -114,7 +112,6 @@ pub enum StorageKey {
     EmployerPayment(Address, u32), // key: (employer, 1-based position)
 
     // ── Employee (to) index ────────────────────────────────────────────────
-
     /// Total number of payments received by this employee address.
     EmployeePaymentCount(Address), // key: employee
 
