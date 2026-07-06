@@ -9,8 +9,7 @@
 //! window so reviewers can enforce that only current schemas are used for new payrolls.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
-    String,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env, String,
 };
 
 /// Persistent storage keys.
@@ -110,7 +109,11 @@ impl TemplateVersioning {
     }
 
     /// Register a named template; returns a stable `template_id`. The authenticated `owner` may later publish versions.
-    pub fn register_template(env: Env, owner: Address, name: String) -> Result<u64, VersioningError> {
+    pub fn register_template(
+        env: Env,
+        owner: Address,
+        name: String,
+    ) -> Result<u64, VersioningError> {
         owner.require_auth();
         Self::require_initialized(&env)?;
         if name.is_empty() {
@@ -181,7 +184,8 @@ impl TemplateVersioning {
             return Err(VersioningError::Unauthorized);
         }
         let key = DataKey::TemplateVersion(template_id, version);
-        let mut rec: TemplateVersionRecord = storage.get(&key).ok_or(VersioningError::VersionNotFound)?;
+        let mut rec: TemplateVersionRecord =
+            storage.get(&key).ok_or(VersioningError::VersionNotFound)?;
         rec.deprecated = true;
         storage.set(&key, &rec);
 

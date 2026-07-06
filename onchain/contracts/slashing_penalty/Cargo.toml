@@ -1,9 +1,5 @@
 [package]
-<<<<<<< HEAD
-name = "slashing-penalty"
-=======
 name = "slashing_penalty"
->>>>>>> origin/main
 version = "0.0.0"
 edition = "2021"
 publish = false
@@ -17,7 +13,3 @@ soroban-sdk = { workspace = true, features = ["alloc"] }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
-<<<<<<< HEAD
-=======
-
->>>>>>> origin/main

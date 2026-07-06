@@ -25,15 +25,19 @@
 //! ensuring ledger TTL extensions if long-term on-chain retention is required.
 //! Off-chain indexers should consume events and snapshot data independently.
 
+use audit_logger::{AuditLogEntry, AuditLoggerContractClient};
+use payment_history::{PaymentHistoryContractClient, PaymentRecord};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Vec,
 };
-use audit_logger::{AuditLogEntry, AuditLoggerContractClient};
-use payment_history::{PaymentHistoryContractClient, PaymentRecord};
 
 /// Maximum number of records that can be returned in a single `generate_report`
 /// call. Prevents instruction-limit overflows on Soroban.
 pub const MAX_QUERY_LIMIT: u32 = 100;
+
+/// Maximum byte length of metadata in a compliance record.
+/// Prevents unbounded storage growth from oversized off-chain references.
+pub const MAX_METADATA_LENGTH: u32 = 1024;
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -290,10 +294,7 @@ impl ComplianceReportingContract {
             .persistent()
             .set(&DataKey::Publisher(admin.clone()), &true);
 
-        env.events().publish(
-            (symbol_short!("init"),),
-            (admin,),
-        );
+        env.events().publish((symbol_short!("init"),), (admin,));
 
         Ok(())
     }
@@ -322,10 +323,8 @@ impl ComplianceReportingContract {
             .persistent()
             .set(&DataKey::Publisher(publisher.clone()), &authorized);
 
-        env.events().publish(
-            (symbol_short!("pub_set"),),
-            (publisher, authorized),
-        );
+        env.events()
+            .publish((symbol_short!("pub_set"),), (publisher, authorized));
 
         Ok(())
     }
@@ -354,8 +353,12 @@ impl ComplianceReportingContract {
         Self::require_initialized(&env)?;
         Self::require_admin(&env, &caller)?;
 
-        env.storage().persistent().set(&DataKey::AuditLogger, &audit_logger);
-        env.storage().persistent().set(&DataKey::PaymentHistory, &payment_history);
+        env.storage()
+            .persistent()
+            .set(&DataKey::AuditLogger, &audit_logger);
+        env.storage()
+            .persistent()
+            .set(&DataKey::PaymentHistory, &payment_history);
 
         Ok(())
     }
@@ -376,10 +379,7 @@ impl ComplianceReportingContract {
 
         env.storage().instance().set(&DataKey::Paused, &paused);
 
-        env.events().publish(
-            (symbol_short!("paused"),),
-            (paused,),
-        );
+        env.events().publish((symbol_short!("paused"),), (paused,));
 
         Ok(())
     }
@@ -443,14 +443,13 @@ impl ComplianceReportingContract {
             return Err(ComplianceError::InvalidAmount);
         }
 
+        if metadata.len() > MAX_METADATA_LENGTH {
+            return Err(ComplianceError::InvalidAmount);
+        }
+
         // Assign per-employer ID.
         let count_key = DataKey::RecordCount(employer.clone());
-        let next_id: u32 = env
-            .storage()
-            .persistent()
-            .get(&count_key)
-            .unwrap_or(0u32)
-            + 1;
+        let next_id: u32 = env.storage().persistent().get(&count_key).unwrap_or(0u32) + 1;
 
         // Assign global sequence number.
         let global_seq: u64 = env

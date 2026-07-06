@@ -20,8 +20,14 @@ fn setup() -> (Env, Address, EmployeeRolesContractClient<'static>) {
 }
 
 /// Setup with owner, and employees holding Employee, Manager, and Admin roles.
-fn setup_with_roles(
-) -> (Env, Address, Address, Address, Address, EmployeeRolesContractClient<'static>) {
+fn setup_with_roles() -> (
+    Env,
+    Address,
+    Address,
+    Address,
+    Address,
+    EmployeeRolesContractClient<'static>,
+) {
     let (env, owner, client) = setup();
     let emp = Address::generate(&env);
     let mgr = Address::generate(&env);
@@ -146,7 +152,10 @@ fn test_employee_cannot_self_grant_admin() {
     client.assign_role(&owner, &emp, &BuiltInRole::Employee);
 
     let result = client.try_assign_role(&emp, &emp, &BuiltInRole::Admin);
-    assert!(result.is_err(), "Employee must not be able to self-grant Admin");
+    assert!(
+        result.is_err(),
+        "Employee must not be able to self-grant Admin"
+    );
 }
 
 #[test]
@@ -188,13 +197,9 @@ const ADMIN_ACTIONS: &[PayrollAction] = &[
 fn test_matrix_owner_can_perform_all_actions() {
     let (_env, owner, client) = setup();
 
-    for action in [
-        EMPLOYEE_ACTIONS,
-        MANAGER_ACTIONS,
-        ADMIN_ACTIONS,
-    ]
-    .into_iter()
-    .flatten()
+    for action in [EMPLOYEE_ACTIONS, MANAGER_ACTIONS, ADMIN_ACTIONS]
+        .into_iter()
+        .flatten()
     {
         assert!(
             client.can_perform(&owner, action),
@@ -321,7 +326,10 @@ fn test_require_capability_denies_employee_manager_action() {
     let (_env, _owner, emp, _mgr, _adm, client) = setup_with_roles();
 
     let result = client.try_require_capability(&emp, &PayrollAction::CreatePayrollRecord);
-    assert!(result.is_err(), "Employee must not have CreatePayrollRecord capability");
+    assert!(
+        result.is_err(),
+        "Employee must not have CreatePayrollRecord capability"
+    );
 }
 
 #[test]
@@ -329,7 +337,10 @@ fn test_require_capability_denies_employee_admin_action() {
     let (_env, _owner, emp, _mgr, _adm, client) = setup_with_roles();
 
     let result = client.try_require_capability(&emp, &PayrollAction::AssignRoles);
-    assert!(result.is_err(), "Employee must not have AssignRoles capability");
+    assert!(
+        result.is_err(),
+        "Employee must not have AssignRoles capability"
+    );
 }
 
 #[test]
@@ -345,7 +356,10 @@ fn test_require_capability_denies_manager_admin_action() {
     let (_env, _owner, _emp, mgr, _adm, client) = setup_with_roles();
 
     let result = client.try_require_capability(&mgr, &PayrollAction::EmergencyPause);
-    assert!(result.is_err(), "Manager must not have EmergencyPause capability");
+    assert!(
+        result.is_err(),
+        "Manager must not have EmergencyPause capability"
+    );
 }
 
 #[test]

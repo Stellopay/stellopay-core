@@ -22,9 +22,7 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    testutils::Address as _,
-    token::StellarAssetClient,
-    Address, Env, String, Symbol,
+    testutils::Address as _, token::StellarAssetClient, Address, Env, String, Symbol,
 };
 
 use audit_logger::{AuditLoggerContract, AuditLoggerContractClient};
@@ -237,7 +235,10 @@ fn test_double_approval_does_not_duplicate_audit_entry() {
 
     // Second approval attempt: the expense is no longer Pending, so it fails.
     let result = expense_client.try_approve_expense(&approver, &eid, &amount);
-    assert!(result.is_err(), "re-approving an approved expense must fail");
+    assert!(
+        result.is_err(),
+        "re-approving an approved expense must fail"
+    );
 
     // No new audit entry, and the stored linkage is unchanged.
     assert_eq!(

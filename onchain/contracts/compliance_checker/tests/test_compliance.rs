@@ -40,8 +40,8 @@ fn test_valid_transition_allows_activate_created_to_active() {
 
     assert_eq!(decision.decision, Decision::Allow);
     assert_eq!(decision.reason, ReasonCode::Allowed);
-    
-    // Verify traces: 
+
+    // Verify traces:
     // 1. EmergencyPause: Allow
     // 2. TerminalState: Allow
     // 3. InvalidCurrentState: Allow
@@ -143,7 +143,11 @@ fn test_invalid_current_state_matrix_is_denied() {
     let actor = Address::generate(&env);
 
     let deny_cases = [
-        (PayrollAction::AddEmployee, AgreementStatus::Active, AgreementStatus::Created),
+        (
+            PayrollAction::AddEmployee,
+            AgreementStatus::Active,
+            AgreementStatus::Created,
+        ),
         (
             PayrollAction::ActivateAgreement,
             AgreementStatus::Paused,
@@ -248,8 +252,7 @@ fn test_invalid_target_state_is_denied() {
     ];
 
     for (action, current, bad_target) in cases {
-        let decision =
-            client.check_action(&actor, &actor, &action, &current, &bad_target, &false);
+        let decision = client.check_action(&actor, &actor, &action, &current, &bad_target, &false);
         assert_eq!(decision.decision, Decision::Deny);
         assert_eq!(decision.reason, ReasonCode::InvalidTargetState);
     }
@@ -311,7 +314,7 @@ fn test_deny_traces_include_rule_and_reason() {
     let trace = emergency.traces.get(1).unwrap();
     assert_eq!(trace.rule, TraceRule::AuxiliaryNotAllowed);
     assert_eq!(trace.result, Decision::Deny);
-    assert_eq!(trace.reason, Some(ReasonCode::AuxiliaryNotAllowed));
+    assert_eq!(trace.reason, ReasonCode::AuxiliaryNotAllowed);
 
     client.set_emergency_pause(&admin, &true);
     let emergency = client.check_action(
@@ -327,7 +330,7 @@ fn test_deny_traces_include_rule_and_reason() {
     let trace = emergency.traces.get(0).unwrap();
     assert_eq!(trace.rule, TraceRule::EmergencyPause);
     assert_eq!(trace.result, Decision::Deny);
-    assert_eq!(trace.reason, Some(ReasonCode::EmergencyPaused));
+    assert_eq!(trace.reason, ReasonCode::EmergencyPaused);
 }
 
 #[test]
@@ -349,6 +352,6 @@ fn test_allow_path_traces_have_none_reasons() {
     assert_eq!(decision.reason, ReasonCode::Allowed);
     assert_eq!(decision.traces.len(), 4);
     for i in 0..decision.traces.len() {
-        assert!(decision.traces.get(i).unwrap().reason.is_none());
+        assert_eq!(decision.traces.get(i).unwrap().reason, ReasonCode::Allowed);
     }
 }

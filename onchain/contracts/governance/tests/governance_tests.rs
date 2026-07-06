@@ -61,7 +61,14 @@ fn setup(env: &Env) -> TestContracts {
     multisig.initialize(&owner, &signers, &2u32, &None);
 
     timelock.initialize(&governance_id, &60u64);
-    governance.initialize(&owner, &rbac_id, &multisig_id, &timelock_id, &2u32, &3600u64);
+    governance.initialize(
+        &owner,
+        &rbac_id,
+        &multisig_id,
+        &timelock_id,
+        &2u32,
+        &3600u64,
+    );
 
     TestContracts {
         governance,
@@ -399,9 +406,10 @@ fn list_proposals_basic_pagination() {
     assert_eq!(page.proposals.get(2).unwrap().id, 3);
 
     // Fetch second page using cursor
-    let page2: ProposalPage = setup
-        .governance
-        .list_proposals(&page.next_cursor.unwrap(), &3, &None);
+    let page2: ProposalPage =
+        setup
+            .governance
+            .list_proposals(&page.next_cursor.unwrap(), &3, &None);
     assert_eq!(page2.proposals.len(), 2);
     assert_eq!(page2.proposals.get(0).unwrap().id, 4);
     assert_eq!(page2.proposals.get(1).unwrap().id, 5);
@@ -427,7 +435,7 @@ fn list_proposals_status_filter() {
     setup
         .governance
         .cast_vote(&setup.owner, &defeated_id, &VoteChoice::Against);
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&defeated_id);
 
     let succeeded_id = setup.governance.create_proposal(
@@ -440,7 +448,7 @@ fn list_proposals_status_filter() {
     setup
         .governance
         .cast_vote(&setup.employer_a, &succeeded_id, &VoteChoice::For);
-    advance_time(&env, 101);
+    advance_time(&env, 3601);
     setup.governance.finalize_proposal(&succeeded_id);
 
     // Filter by Active status
@@ -567,7 +575,7 @@ fn list_proposals_status_filter_with_pagination() {
         setup
             .governance
             .cast_vote(&setup.owner, &id, &VoteChoice::Against);
-        advance_time(&env, 101);
+        advance_time(&env, 3601);
         setup.governance.finalize_proposal(&id);
     }
 

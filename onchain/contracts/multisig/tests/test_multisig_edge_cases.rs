@@ -213,6 +213,7 @@ fn non_signer_cannot_approve() {
 // ==================== Already-Executed Rejection ====================
 
 #[test]
+#[should_panic(expected = "Operation not pending")]
 fn cannot_approve_already_executed_operation() {
     let env = create_env();
     let (multisig_id, client, _owner, signers, _guardian) = setup_2of3(&env);
@@ -233,10 +234,13 @@ fn cannot_approve_already_executed_operation() {
     let op = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Executed);
 
-    // Third signer tries to approve - should be silently ignored (not pending)
+    // Third signer tries to approve an already-executed (not pending)
+    // operation. Unlike a duplicate approval from the same signer on a still
+    // *pending* operation (which is silently ignored, see
+    // `duplicate_approval_is_ignored`), this is rejected with a hard panic —
+    // the contract only special-cases re-approval while `Pending`, not
+    // approval attempts after execution.
     client.approve_operation(&signers.get(2).unwrap(), &op_id);
-    let approvals = client.get_approvals(&op_id);
-    assert_eq!(approvals.len(), 2); // Still only 2 approvals
 }
 
 #[test]

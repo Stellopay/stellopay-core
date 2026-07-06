@@ -707,7 +707,8 @@ fn get_operations_for_filters_by_status() {
     client.cancel(&admin, &id3);
 
     // Filter: Queued
-    let page_queued = client.get_operations_for(&admin, &Some(OperationStatus::Queued), &None, &None);
+    let page_queued =
+        client.get_operations_for(&admin, &Some(OperationStatus::Queued), &None, &None);
     assert_eq!(page_queued.operations.len(), 1);
     assert_eq!(page_queued.operations.get(0).unwrap().id, id1);
 

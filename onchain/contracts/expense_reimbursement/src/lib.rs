@@ -1,8 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, token, xdr::ToXdr, Address, Bytes, BytesN, Env,
-    IntoVal, String, Symbol, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, token, xdr::ToXdr, Address, Bytes, BytesN,
+    Env, IntoVal, String, Symbol, Val, Vec,
 };
 
 /// ExpenseReimbursementContract manages expense submissions with approval workflows
@@ -171,7 +171,8 @@ fn append_approval_audit_log(
     subject: &Address,
     approved_amount: i128,
 ) -> Option<u64> {
-    let maybe_audit_logger: Option<Address> = env.storage().persistent().get(&StorageKey::AuditLogger);
+    let maybe_audit_logger: Option<Address> =
+        env.storage().persistent().get(&StorageKey::AuditLogger);
     maybe_audit_logger.map(|audit_logger| {
         let mut args = Vec::<Val>::new(env);
         args.push_back(approver.clone().into_val(env));
@@ -179,11 +180,7 @@ fn append_approval_audit_log(
         args.push_back(Some(subject.clone()).into_val(env));
         args.push_back(Some(approved_amount).into_val(env));
 
-        env.invoke_contract::<u64>(
-            &audit_logger,
-            &Symbol::new(env, "append_log"),
-            args,
-        )
+        env.invoke_contract::<u64>(&audit_logger, &Symbol::new(env, "append_log"), args)
     })
 }
 
@@ -311,7 +308,12 @@ impl ExpenseReimbursementContract {
     }
 
     /// Extends a pending claim by escrowing funds
-    pub fn fund_expense(env: Env, payer: Address, expense_id: u128, amount: i128) -> Result<(), Error> {
+    pub fn fund_expense(
+        env: Env,
+        payer: Address,
+        expense_id: u128,
+        amount: i128,
+    ) -> Result<(), Error> {
         require_initialized(&env);
         payer.require_auth();
         assert!(amount > 0, "Amount must be positive");
@@ -322,15 +324,24 @@ impl ExpenseReimbursementContract {
             .get(&StorageKey::Expense(expense_id))
             .expect("Expense not found");
 
-        assert!(expense.status == ExpenseStatus::Pending, "Expense not pending");
+        assert!(
+            expense.status == ExpenseStatus::Pending,
+            "Expense not pending"
+        );
 
-        expense.escrow_amount = expense.escrow_amount.checked_add(amount).ok_or(Error::EscrowOverflow)?;
-        
+        expense.escrow_amount = expense
+            .escrow_amount
+            .checked_add(amount)
+            .ok_or(Error::EscrowOverflow)?;
+
         // Register the payer if none exists; else require same payer for refunds to be coherent
         if expense.payer.is_none() {
             expense.payer = Some(payer.clone());
         } else {
-            assert!(expense.payer.unwrap() == payer, "Only initial payer can add funds");
+            assert!(
+                expense.payer.unwrap() == payer,
+                "Only initial payer can add funds"
+            );
             expense.payer = Some(payer.clone());
         }
 
@@ -367,17 +378,19 @@ impl ExpenseReimbursementContract {
         assert!(expense.approver == approver, "Unauthorized approver");
         assert!(expense.status == ExpenseStatus::Pending, "Invalid status");
         assert!(approved_amount > 0, "Approved amount must be positive");
-        assert!(approved_amount <= expense.amount, "Cannot approve more than requested");
-        assert!(expense.escrow_amount >= approved_amount, "Insufficient escrowed funds");
+        assert!(
+            approved_amount <= expense.amount,
+            "Cannot approve more than requested"
+        );
+        assert!(
+            expense.escrow_amount >= approved_amount,
+            "Insufficient escrowed funds"
+        );
 
         expense.approved_amount = Some(approved_amount);
         expense.status = ExpenseStatus::Approved;
-        let audit_log_id = append_approval_audit_log(
-            &env,
-            &approver,
-            &expense.submitter,
-            approved_amount,
-        );
+        let audit_log_id =
+            append_approval_audit_log(&env, &approver, &expense.submitter, approved_amount);
         expense.audit_log_id = audit_log_id;
         env.storage()
             .persistent()
@@ -415,7 +428,11 @@ impl ExpenseReimbursementContract {
         if expense.escrow_amount > 0 {
             if let Some(payer) = expense.payer.clone() {
                 let token_client = token::Client::new(&env, &expense.token);
-                token_client.transfer(&env.current_contract_address(), &payer, &expense.escrow_amount);
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &payer,
+                    &expense.escrow_amount,
+                );
             }
         }
 
@@ -438,7 +455,7 @@ impl ExpenseReimbursementContract {
     /// Pay an approved expense to the employee. Any surplus escrow goes back to the payer.
     pub fn pay_expense(env: Env, expense_id: u128) {
         require_initialized(&env);
-        
+
         // Anyone can execute the token payout if it's approved
 
         let mut expense: Expense = env
@@ -461,9 +478,13 @@ impl ExpenseReimbursementContract {
             .set(&StorageKey::Expense(expense_id), &expense);
 
         let token_client = token::Client::new(&env, &expense.token);
-        
+
         // Payout to employee
-        token_client.transfer(&env.current_contract_address(), &expense.submitter, &amount_to_pay);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &expense.submitter,
+            &amount_to_pay,
+        );
 
         // Refund any unapproved surplus
         let surplus = escrow_before - amount_to_pay;
@@ -503,7 +524,11 @@ impl ExpenseReimbursementContract {
         if expense.escrow_amount > 0 {
             if let Some(payer) = expense.payer.clone() {
                 let token_client = token::Client::new(&env, &expense.token);
-                token_client.transfer(&env.current_contract_address(), &payer, &expense.escrow_amount);
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &payer,
+                    &expense.escrow_amount,
+                );
             }
         }
         expense.escrow_amount = 0;

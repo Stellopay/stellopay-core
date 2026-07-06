@@ -211,9 +211,7 @@ impl NftPayrollBadgeContract {
 
     /// Returns the badge metadata for a given `badge_id`, or `None` if not found.
     pub fn get_badge(env: Env, badge_id: u64) -> Option<Badge> {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::Badge(badge_id))
+        env.storage().persistent().get(&StorageKey::Badge(badge_id))
     }
 
     /// Returns the total number of badges held by `owner`.

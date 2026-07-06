@@ -176,8 +176,7 @@ fn seed_payroll_agreement(
     escrow_amount: i128,
 ) -> u128 {
     let grace_period: u64 = 7 * 24 * 3600;
-    let agreement_id =
-        payroll_client.create_payroll_agreement(employer, base_token, &grace_period);
+    let agreement_id = payroll_client.create_payroll_agreement(employer, base_token, &grace_period);
     payroll_client.add_employee_to_agreement(&agreement_id, employee, &salary_per_period);
     payroll_client.activate_agreement(&agreement_id);
 
@@ -230,7 +229,10 @@ fn test_oracle_push_propagates_rate_and_claim_converts_correctly() {
 
     // Verify the rate landed in the payroll contract.
     let converted = payroll_client.convert_currency(&base, &quote, &1_000i128);
-    assert_eq!(converted, 2_000, "1_000 base × 2.0 should equal 2_000 quote");
+    assert_eq!(
+        converted, 2_000,
+        "1_000 base × 2.0 should equal 2_000 quote"
+    );
 
     // Set up a payroll agreement denominated in base, funded in quote.
     let employer = Address::generate(&env);
@@ -312,9 +314,7 @@ fn test_claim_in_token_without_oracle_rate_returns_exchange_rate_not_found() {
     let _ = payroll_id;
 
     let base_admin = Address::generate(&env);
-    let base = env
-        .register_stellar_asset_contract_v2(base_admin)
-        .address();
+    let base = env.register_stellar_asset_contract_v2(base_admin).address();
     let quote_admin = Address::generate(&env);
     let quote = env
         .register_stellar_asset_contract_v2(quote_admin)
@@ -344,8 +344,7 @@ fn test_claim_in_token_without_oracle_rate_returns_exchange_rate_not_found() {
     // Advance one period — but NO rate has been set.
     env.ledger().with_mut(|li| li.timestamp += period_seconds);
 
-    let result =
-        payroll_client.try_claim_payroll_in_token(&employee, &agreement_id, &0u32, &quote);
+    let result = payroll_client.try_claim_payroll_in_token(&employee, &agreement_id, &0u32, &quote);
 
     assert_eq!(
         result,
@@ -401,10 +400,7 @@ fn test_oracle_rejects_stale_price_and_payroll_rate_unchanged() {
     let result = oracle_client.try_push_price(&source, &base, &quote, &stale_rate, &1_000u64);
 
     // Oracle must reject the stale submission.
-    assert!(
-        result.is_err(),
-        "Oracle must reject stale price submission"
-    );
+    assert!(result.is_err(), "Oracle must reject stale price submission");
 
     // Payroll rate must remain at the initial value.
     assert_eq!(
@@ -426,8 +422,7 @@ fn test_oracle_rejects_future_timestamp() {
         full_setup(&env);
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
-    let result =
-        oracle_client.try_push_price(&source, &base, &quote, &(2 * FX_SCALE), &1_001u64);
+    let result = oracle_client.try_push_price(&source, &base, &quote, &(2 * FX_SCALE), &1_001u64);
 
     assert!(result.is_err(), "Future timestamp must be rejected");
 
@@ -461,7 +456,10 @@ fn test_oracle_rejects_rate_below_min_and_payroll_unchanged() {
     assert!(result.is_err(), "Rate below min must be rejected");
 
     let result2 = payroll_client.try_convert_currency(&base, &quote, &1_000i128);
-    assert!(result2.is_err(), "No rate should exist after out-of-bounds rejection");
+    assert!(
+        result2.is_err(),
+        "No rate should exist after out-of-bounds rejection"
+    );
 
     let _ = payroll_owner;
 }
@@ -477,12 +475,14 @@ fn test_oracle_rejects_rate_above_max_and_payroll_unchanged() {
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     // MAX_RATE = 10_000_000; submit 10_000_001.
-    let result =
-        oracle_client.try_push_price(&source, &base, &quote, &10_000_001i128, &1_000u64);
+    let result = oracle_client.try_push_price(&source, &base, &quote, &10_000_001i128, &1_000u64);
     assert!(result.is_err(), "Rate above max must be rejected");
 
     let result2 = payroll_client.try_convert_currency(&base, &quote, &1_000i128);
-    assert!(result2.is_err(), "No rate should exist after out-of-bounds rejection");
+    assert!(
+        result2.is_err(),
+        "No rate should exist after out-of-bounds rejection"
+    );
 
     let _ = payroll_owner;
 }
@@ -501,7 +501,10 @@ fn test_oracle_rejects_zero_rate() {
     assert!(result.is_err(), "Zero rate must be rejected");
 
     let result2 = payroll_client.try_convert_currency(&base, &quote, &1_000i128);
-    assert!(result2.is_err(), "No rate should exist after zero-rate rejection");
+    assert!(
+        result2.is_err(),
+        "No rate should exist after zero-rate rejection"
+    );
 
     let _ = payroll_owner;
 }
@@ -558,8 +561,7 @@ fn test_quorum_n2_requires_two_sources_before_rate_propagates() {
 
     let converted = payroll_client.convert_currency(&base, &quote, &1_000i128);
     assert_eq!(
-        converted,
-        3_000,
+        converted, 3_000,
         "Rate must propagate after quorum is reached"
     );
 }
@@ -602,7 +604,10 @@ fn test_quorum_duplicate_vote_rejected() {
 
     // Rate must still not have propagated.
     let result2 = payroll_client.try_convert_currency(&base, &quote, &1_000i128);
-    assert!(result2.is_err(), "Rate must not propagate after duplicate vote");
+    assert!(
+        result2.is_err(),
+        "Rate must not propagate after duplicate vote"
+    );
 }
 
 // ============================================================================
@@ -623,7 +628,10 @@ fn test_disabled_oracle_pair_cannot_update_payroll_rate() {
     let initial_rate: i128 = 2 * FX_SCALE;
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &initial_rate, &1_000u64);
-    assert_eq!(payroll_client.convert_currency(&base, &quote, &1_000i128), 2_000);
+    assert_eq!(
+        payroll_client.convert_currency(&base, &quote, &1_000i128),
+        2_000
+    );
 
     // Disable the pair.
     oracle_client.disable_pair(&oracle_owner, &base, &quote);
@@ -686,9 +694,7 @@ fn test_rate_update_propagates_to_subsequent_claims() {
     oracle_client.add_source(&oracle_owner, &source);
 
     let base_admin = Address::generate(&env);
-    let base = env
-        .register_stellar_asset_contract_v2(base_admin)
-        .address();
+    let base = env.register_stellar_asset_contract_v2(base_admin).address();
     let quote_admin = Address::generate(&env);
     let quote = env
         .register_stellar_asset_contract_v2(quote_admin)
@@ -779,9 +785,7 @@ fn test_claim_in_same_token_does_not_require_fx_rate() {
     let _ = (payroll_id, payroll_owner);
 
     let base_admin = Address::generate(&env);
-    let base = env
-        .register_stellar_asset_contract_v2(base_admin)
-        .address();
+    let base = env.register_stellar_asset_contract_v2(base_admin).address();
 
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
@@ -836,9 +840,7 @@ fn test_overflow_in_conversion_returns_exchange_rate_overflow() {
     let _ = payroll_id;
 
     let base_admin = Address::generate(&env);
-    let base = env
-        .register_stellar_asset_contract_v2(base_admin)
-        .address();
+    let base = env.register_stellar_asset_contract_v2(base_admin).address();
     let quote_admin = Address::generate(&env);
     let quote = env
         .register_stellar_asset_contract_v2(quote_admin)
@@ -872,8 +874,7 @@ fn test_overflow_in_conversion_returns_exchange_rate_overflow() {
 
     env.ledger().with_mut(|li| li.timestamp += period_seconds);
 
-    let result =
-        payroll_client.try_claim_payroll_in_token(&employee, &agreement_id, &0u32, &quote);
+    let result = payroll_client.try_claim_payroll_in_token(&employee, &agreement_id, &0u32, &quote);
 
     assert_eq!(
         result,
@@ -902,9 +903,7 @@ fn test_multi_period_claim_converts_accumulated_salary() {
     let _ = payroll_id;
 
     let base_admin = Address::generate(&env);
-    let base = env
-        .register_stellar_asset_contract_v2(base_admin)
-        .address();
+    let base = env.register_stellar_asset_contract_v2(base_admin).address();
     let quote_admin = Address::generate(&env);
     let quote = env
         .register_stellar_asset_contract_v2(quote_admin)
@@ -935,7 +934,8 @@ fn test_multi_period_claim_converts_accumulated_salary() {
     quote_asset_client.mint(&payroll_client.address, &escrow_amount);
 
     // Advance 3 full periods.
-    env.ledger().with_mut(|li| li.timestamp += 3 * period_seconds);
+    env.ledger()
+        .with_mut(|li| li.timestamp += 3 * period_seconds);
 
     payroll_client.claim_payroll_in_token(&employee, &agreement_id, &0u32, &quote);
 
@@ -1048,7 +1048,10 @@ fn test_monotonic_oracle_update_does_not_overwrite_newer_rate_in_payroll() {
     // Push a fresh rate at t=2_000.
     env.ledger().with_mut(|li| li.timestamp = 2_000);
     oracle_client.push_price(&source, &base, &quote, &(3 * FX_SCALE), &2_000u64);
-    assert_eq!(payroll_client.convert_currency(&base, &quote, &1_000i128), 3_000);
+    assert_eq!(
+        payroll_client.convert_currency(&base, &quote, &1_000i128),
+        3_000
+    );
 
     // Attempt to push an older rate (t=1_500) — must be silently ignored.
     env.ledger().with_mut(|li| li.timestamp = 2_100);
@@ -1077,9 +1080,7 @@ fn test_pair_direction_isolation_in_payroll() {
     let _ = payroll_id;
 
     let base_admin = Address::generate(&env);
-    let base = env
-        .register_stellar_asset_contract_v2(base_admin)
-        .address();
+    let base = env.register_stellar_asset_contract_v2(base_admin).address();
     let quote_admin = Address::generate(&env);
     let quote = env
         .register_stellar_asset_contract_v2(quote_admin)
@@ -1089,7 +1090,10 @@ fn test_pair_direction_isolation_in_payroll() {
     payroll_client.set_exchange_rate(&payroll_owner, &base, &quote, &(2 * FX_SCALE));
 
     // (base → quote) works.
-    assert_eq!(payroll_client.convert_currency(&base, &quote, &1_000i128), 2_000);
+    assert_eq!(
+        payroll_client.convert_currency(&base, &quote, &1_000i128),
+        2_000
+    );
 
     // (quote → base) must fail — no rate configured.
     let result = payroll_client.try_convert_currency(&quote, &base, &1_000i128);
@@ -1114,9 +1118,7 @@ fn test_insufficient_payout_escrow_returns_error() {
     let _ = payroll_id;
 
     let base_admin = Address::generate(&env);
-    let base = env
-        .register_stellar_asset_contract_v2(base_admin)
-        .address();
+    let base = env.register_stellar_asset_contract_v2(base_admin).address();
     let quote_admin = Address::generate(&env);
     let quote = env
         .register_stellar_asset_contract_v2(quote_admin)
@@ -1149,8 +1151,7 @@ fn test_insufficient_payout_escrow_returns_error() {
 
     env.ledger().with_mut(|li| li.timestamp += period_seconds);
 
-    let result =
-        payroll_client.try_claim_payroll_in_token(&employee, &agreement_id, &0u32, &quote);
+    let result = payroll_client.try_claim_payroll_in_token(&employee, &agreement_id, &0u32, &quote);
 
     assert_eq!(
         result,
@@ -1159,7 +1160,11 @@ fn test_insufficient_payout_escrow_returns_error() {
     );
 
     let quote_token = soroban_sdk::token::Client::new(&env, &quote);
-    assert_eq!(quote_token.balance(&employee), 0, "No tokens transferred on failure");
+    assert_eq!(
+        quote_token.balance(&employee),
+        0,
+        "No tokens transferred on failure"
+    );
     assert_eq!(
         payroll_client.get_employee_claimed_periods(&agreement_id, &0u32),
         0,

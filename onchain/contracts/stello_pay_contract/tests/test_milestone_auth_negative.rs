@@ -9,7 +9,13 @@ use soroban_sdk::{testutils::Address as _, Address, Env};
 use stello_pay_contract::storage::PayrollError;
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
-fn create_env() -> (Env, Address, Address, Address, PayrollContractClient<'static>) {
+fn create_env() -> (
+    Env,
+    Address,
+    Address,
+    Address,
+    PayrollContractClient<'static>,
+) {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register_contract(None, PayrollContract);
@@ -66,7 +72,10 @@ fn test_double_claim_fails() {
 fn test_approve_non_existent_agreement_fails() {
     let (_env, _employer, _contributor, _token, client) = create_env();
     let result = client.try_approve_milestone(&9999u128, &0u32);
-    assert!(result.is_err(), "Approve on non-existent agreement must fail");
+    assert!(
+        result.is_err(),
+        "Approve on non-existent agreement must fail"
+    );
 }
 
 // ---- Claim non-existent milestone fails ----
@@ -86,13 +95,22 @@ fn test_state_machine_approve_then_claim() {
     let (env, employer, contributor, token, client) = create_env();
     let id = create_funded_agreement(&env, &client, &employer, &contributor, &token);
     let m = client.get_milestone(&id, &1u32).unwrap();
-    assert!(!m.approved && !m.claimed, "Should start unapproved/unclaimed");
+    assert!(
+        !m.approved && !m.claimed,
+        "Should start unapproved/unclaimed"
+    );
     client.approve_milestone(&id, &1u32);
     let m = client.get_milestone(&id, &1u32).unwrap();
-    assert!(m.approved && !m.claimed, "Should be approved but not claimed");
+    assert!(
+        m.approved && !m.claimed,
+        "Should be approved but not claimed"
+    );
     client.claim_milestone(&id, &1u32);
     let m = client.get_milestone(&id, &1u32).unwrap();
-    assert!(m.approved && m.claimed, "Should be both approved and claimed");
+    assert!(
+        m.approved && m.claimed,
+        "Should be both approved and claimed"
+    );
 }
 
 // ---- Batch claim: skipping already-claimed milestones ----
@@ -111,5 +129,8 @@ fn test_batch_claim_second_milestone_after_first_claimed() {
     let ids = soroban_sdk::vec![&env, 1u32, 2u32];
     let result = client.batch_claim_milestones(&id, &ids);
     assert_eq!(result.successful_claims, 1, "Only one claim should succeed");
-    assert_eq!(result.failed_claims, 1, "Already-claimed milestone should fail");
+    assert_eq!(
+        result.failed_claims, 1,
+        "Already-claimed milestone should fail"
+    );
 }

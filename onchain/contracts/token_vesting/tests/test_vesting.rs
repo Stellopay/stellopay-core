@@ -3,7 +3,7 @@
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, IntoVal, Vec, vec,
+    vec, Address, Env, IntoVal, Vec,
 };
 
 use token_vesting::{
@@ -1288,8 +1288,8 @@ fn cliff_plus_linear_full_spectrum() {
     );
 
     let cases = [
-        (0, 0),    // before start + cliff
-        (10, 0),   // after start, before cliff
+        (0, 0),  // before start + cliff
+        (10, 0), // after start, before cliff
         (20, 0),
         (30, 300), // exactly at cliff -> 1000 * 30/100 = 300
         (40, 400),
@@ -1449,7 +1449,7 @@ fn linear_large_total_no_overflow() {
     let vested = client.get_vested_amount(&sid);
     // Should be approximately half (truncates toward zero)
     assert!(vested > 0 && vested <= large_total);
-    
+
     // At end: should vest full amount
     set_time(&env, 100);
     assert_eq!(client.get_vested_amount(&sid), large_total);
@@ -1484,11 +1484,11 @@ fn linear_long_duration_no_overflow() {
     set_time(&env, long_duration / 4);
     let vested_quarter = client.get_vested_amount(&sid);
     assert!(vested_quarter > 0 && vested_quarter <= large_total);
-    
+
     set_time(&env, long_duration / 2);
     let vested_half = client.get_vested_amount(&sid);
     assert!(vested_half > vested_quarter && vested_half <= large_total);
-    
+
     set_time(&env, long_duration);
     assert_eq!(client.get_vested_amount(&sid), large_total);
 }
@@ -1520,9 +1520,15 @@ fn linear_vested_never_exceeds_total() {
     for t in [0u64, 10, 25, 50, 75, 90, 99, 100, 200] {
         set_time(&env, t);
         let vested = client.get_vested_amount(&sid);
-        assert!(vested <= total, "Vested amount {} exceeds total {} at time {}", vested, total, t);
+        assert!(
+            vested <= total,
+            "Vested amount {} exceeds total {} at time {}",
+            vested,
+            total,
+            t
+        );
     }
-    
+
     // At end, should equal total
     set_time(&env, 100);
     assert_eq!(client.get_vested_amount(&sid), total);

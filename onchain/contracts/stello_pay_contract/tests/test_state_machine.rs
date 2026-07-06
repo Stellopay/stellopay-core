@@ -417,7 +417,7 @@ fn test_milestone_created_to_paused() {
     env.as_contract(&cid, || {
         let status: AgreementStatus = env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::Status(ms_id))
             .unwrap();
         assert_eq!(status, AgreementStatus::Paused);
@@ -441,7 +441,7 @@ fn test_milestone_paused_to_active() {
     env.as_contract(&cid, || {
         let status: AgreementStatus = env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::Status(ms_id))
             .unwrap();
         assert_eq!(status, AgreementStatus::Active);
@@ -472,7 +472,7 @@ fn test_milestone_complete_on_last_claim() {
     env.as_contract(&cid, || {
         let status: AgreementStatus = env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::Status(ms_id))
             .unwrap();
         assert_ne!(status, AgreementStatus::Completed);
@@ -483,7 +483,7 @@ fn test_milestone_complete_on_last_claim() {
     env.as_contract(&cid, || {
         let status: AgreementStatus = env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::Status(ms_id))
             .unwrap();
         assert_eq!(status, AgreementStatus::Completed);
@@ -1054,7 +1054,9 @@ fn test_get_agreement_bumps_ttl() {
     });
 
     // Accessing the agreement keeps it live and re-bumps its TTL.
-    let a = client.get_agreement(&id).expect("agreement must still be live");
+    let a = client
+        .get_agreement(&id)
+        .expect("agreement must still be live");
     assert_eq!(a.status, AgreementStatus::Active);
 
     env.as_contract(&cid, || {
@@ -1090,10 +1092,14 @@ fn test_escrow_balance_ttl_survives_ledger_advance() {
     mint(&env, &token, &cid, total);
     env.as_contract(&cid, || {
         DataKey::set_agreement_escrow_balance(&env, id, &token, total);
-        let ttl = env.storage().persistent().get_ttl(
-            &DataKey::AgreementEscrowBalance(id, token.clone()),
+        let ttl = env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::AgreementEscrowBalance(id, token.clone()));
+        assert!(
+            ttl >= PERSISTENT_BUMP_AMOUNT,
+            "escrow TTL not bumped on write"
         );
-        assert!(ttl >= PERSISTENT_BUMP_AMOUNT, "escrow TTL not bumped on write");
     });
 
     // Advance until near expiry, then access through the read helper.
@@ -1101,13 +1107,17 @@ fn test_escrow_balance_ttl_survives_ledger_advance() {
     let balance = env.as_contract(&cid, || {
         DataKey::get_agreement_escrow_balance(&env, id, &token)
     });
-    assert_eq!(balance, total, "escrow balance must remain live and correct");
+    assert_eq!(
+        balance, total,
+        "escrow balance must remain live and correct"
+    );
 
     // The read bumped the TTL back up.
     env.as_contract(&cid, || {
-        let ttl = env.storage().persistent().get_ttl(
-            &DataKey::AgreementEscrowBalance(id, token.clone()),
-        );
+        let ttl = env
+            .storage()
+            .persistent()
+            .get_ttl(&DataKey::AgreementEscrowBalance(id, token.clone()));
         assert!(
             ttl >= PERSISTENT_BUMP_AMOUNT - 10,
             "escrow TTL not bumped on read"

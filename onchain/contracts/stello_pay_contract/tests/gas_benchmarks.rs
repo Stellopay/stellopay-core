@@ -49,8 +49,9 @@ const BATCH_CLAIM_MILESTONES: [usize; 3] = [1, 5, MAX_BATCH_SIZE as usize];
 /// Documented ceiling for max-size milestone batches. This is intentionally
 /// higher than the committed baseline tolerance so the test records both the
 /// exact regression baseline and an absolute safe ceiling for `MAX_BATCH_SIZE`.
-/// Updated for MAX_BATCH_SIZE=20: measured baseline is ~7_123_086 instructions.
-const MAX_BATCH_CLAIM_MILESTONE_INSTRUCTIONS: u64 = 8_000_000;
+/// Updated for MAX_BATCH_SIZE=20: measured baseline is ~8_442_457 instructions
+/// (includes the per-claim reentrancy guard added to the claim paths).
+const MAX_BATCH_CLAIM_MILESTONE_INSTRUCTIONS: u64 = 9_500_000;
 
 // ---------------------------------------------------------------------------
 // Baseline I/O
@@ -431,5 +432,8 @@ fn gas_benchmark_edge_unauthorized_caller() {
         .try_claim_payroll(&impostor, &agreement_id, &0u32)
         .unwrap_err()
         .unwrap();
-    assert_eq!(err, stello_pay_contract::storage::PayrollError::Unauthorized);
+    assert_eq!(
+        err,
+        stello_pay_contract::storage::PayrollError::Unauthorized
+    );
 }

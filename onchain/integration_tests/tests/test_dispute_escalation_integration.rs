@@ -38,10 +38,7 @@ fn test_escalation_appeal_full_flow() {
     let id = 201u128;
 
     client.file_dispute(&user, &id);
-    assert_eq!(
-        client.get_dispute(&id).unwrap().status,
-        DisputeStatus::Open
-    );
+    assert_eq!(client.get_dispute(&id).unwrap().status, DisputeStatus::Open);
 
     client.escalate_dispute(&user, &id);
     let d = client.get_dispute(&id).unwrap();

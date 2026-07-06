@@ -1,9 +1,10 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env, Symbol, Vec};
+use soroban_sdk::{testutils::Address as _, testutils::Events, Address, Env, IntoVal, Symbol, Vec};
 
 use tax_withholding::{
-    RulesetMetadata, TaxComputation, TaxError, TaxWithholdingContract, TaxWithholdingContractClient,
+    EmployeeVersionMigratedEvent, RulesetMetadata, TaxComputation, TaxError,
+    TaxWithholdingContract, TaxWithholdingContractClient,
 };
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -223,14 +224,69 @@ fn test_migrate_employee_to_new_version() {
     assert_eq!(result1.ruleset_version, 1);
     assert_eq!(result1.total_tax, 1_000);
 
-    // Migrate employee to version 2
+    // Migrate employee to version 2.
+    //
+    // Read events immediately after the mutating call: `env.events().all()`
+    // only retains events from the most recent top-level invocation, so any
+    // further contract call (even a read-only getter) would clear this event
+    // before it could be inspected.
     client.migrate_employee_to_version(&owner, &employee, &2);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    assert_eq!(last_event.0, client.address);
+    let event: EmployeeVersionMigratedEvent = last_event.2.into_val(&env);
+    assert_eq!(event.employee, employee);
+    assert_eq!(event.from_version, 1);
+    assert_eq!(event.to_version, 2);
+    assert_eq!(event.caller, owner);
+
     assert_eq!(client.get_employee_ruleset_version(&employee), 2);
 
     // Now employee uses version 2 rates
     let result2: TaxComputation = client.calculate_withholding(&employee, &10_000i128);
     assert_eq!(result2.ruleset_version, 2);
     assert_eq!(result2.total_tax, 1_500);
+}
+
+#[test]
+fn test_migrate_employee_to_active_version_allowed() {
+    let (env, owner, client) = setup();
+
+    let employee = Address::generate(&env);
+
+    client.publish_ruleset_version(&owner, &Symbol::new(&env, "v2"));
+    client.migrate_employee_to_version(&owner, &employee, &1);
+    client.set_active_ruleset_version(&owner, &2);
+
+    // Read events immediately after the mutating call: `env.events().all()`
+    // only retains events from the most recent top-level invocation.
+    client.migrate_employee_to_version(&owner, &employee, &2);
+
+    let events = env.events().all();
+    let event: EmployeeVersionMigratedEvent = events.last().unwrap().2.into_val(&env);
+    assert_eq!(event.employee, employee);
+    assert_eq!(event.from_version, 1);
+    assert_eq!(event.to_version, 2);
+    assert_eq!(event.caller, owner);
+
+    assert_eq!(client.get_employee_ruleset_version(&employee), 2);
+}
+
+#[test]
+fn test_migrate_employee_to_deprecated_version_rejected() {
+    let (env, owner, client) = setup();
+
+    let employee = Address::generate(&env);
+    client.publish_ruleset_version(&owner, &Symbol::new(&env, "v2"));
+    client.deprecate_ruleset_version(&owner, &2);
+
+    let metadata = client.get_ruleset_metadata(&2).unwrap();
+    assert!(metadata.deprecated);
+
+    let res = client.try_migrate_employee_to_version(&owner, &employee, &2);
+    assert_eq!(res, Err(Ok(TaxError::DeprecatedVersion)));
+    assert_eq!(client.get_employee_ruleset_version(&employee), 1);
 }
 
 #[test]

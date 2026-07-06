@@ -76,6 +76,9 @@ fn append_log_increments_count() {
 #[test]
 fn append_log_records_all_fields() {
     let (env, _owner, client) = setup();
+    // Advance the ledger so the recorded timestamp is non-zero; a fresh
+    // `Env::default()` starts at timestamp 0.
+    env.ledger().with_mut(|li| li.timestamp += 1);
     let actor = Address::generate(&env);
     let subject = Address::generate(&env);
     let action = Symbol::new(&env, "pay_salary");
@@ -188,16 +191,16 @@ fn get_log_before_first_returns_none() {
 #[test]
 fn get_logs_empty_result() {
     let (env, _owner, client) = setup();
-    let result = client.get_logs(&0u32, &5u32).unwrap();
-    assert_eq!(result.len(), 0);
+    let result = client.try_get_logs(&0u32, &5u32).unwrap().unwrap();
+    assert_eq!(result.entries.len(), 0);
 }
 
 #[test]
 fn get_logs_limit_zero_returns_error() {
     let (_env, _owner, client) = setup();
-    let result = client.get_logs(&0u32, &0u32);
+    let result = client.try_get_logs(&0u32, &0u32);
     assert!(result.is_err());
-    assert_eq!(result.unwrap_err(), AuditError::InvalidArguments);
+    assert_eq!(result.unwrap_err().unwrap(), AuditError::InvalidArguments);
 }
 
 #[test]
@@ -206,8 +209,8 @@ fn get_logs_offset_beyond_count() {
     let actor = Address::generate(&env);
     client.append_log(&actor, &Symbol::new(&env, "a"), &None, &None);
 
-    let result = client.get_logs(&10u32, &5u32).unwrap();
-    assert_eq!(result.len(), 0);
+    let result = client.try_get_logs(&10u32, &5u32).unwrap().unwrap();
+    assert_eq!(result.entries.len(), 0);
 }
 
 #[test]
@@ -220,9 +223,9 @@ fn get_logs_partial_page() {
         env.ledger().with_mut(|li| li.timestamp += 1);
     }
 
-    let page = client.get_logs(&1u32, &10u32).unwrap();
-    assert_eq!(page.len(), 2); // Only 2 entries after offset 1
-    assert_eq!(page.get(0).unwrap().id, 2);
+    let page = client.try_get_logs(&1u32, &10u32).unwrap().unwrap();
+    assert_eq!(page.entries.len(), 2); // Only 2 entries after offset 1
+    assert_eq!(page.entries.get(0).unwrap().id, 2);
 }
 
 // ==================== Latest Logs ====================
@@ -237,7 +240,7 @@ fn get_latest_logs_returns_newest_first() {
         env.ledger().with_mut(|li| li.timestamp += 1);
     }
 
-    let latest = client.get_latest_logs(&3u32).unwrap();
+    let latest = client.try_get_latest_logs(&3u32).unwrap().unwrap();
     assert_eq!(latest.len(), 3);
     assert_eq!(latest.get(0).unwrap().id, 3); // oldest of the 3
     assert_eq!(latest.get(2).unwrap().id, 5); // newest
@@ -246,14 +249,14 @@ fn get_latest_logs_returns_newest_first() {
 #[test]
 fn get_latest_logs_limit_zero_returns_error() {
     let (_env, _owner, client) = setup();
-    let result = client.get_latest_logs(&0u32);
+    let result = client.try_get_latest_logs(&0u32);
     assert!(result.is_err());
 }
 
 #[test]
 fn get_latest_logs_empty_collection() {
     let (_env, _owner, client) = setup();
-    let result = client.get_latest_logs(&5u32).unwrap();
+    let result = client.try_get_latest_logs(&5u32).unwrap().unwrap();
     assert_eq!(result.len(), 0);
 }
 

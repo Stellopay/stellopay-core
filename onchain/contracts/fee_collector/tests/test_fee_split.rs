@@ -45,7 +45,7 @@ fn test_split_treasury_routes_all_fees() {
     let client = setup(&env, &admin, &treasury, 100);
 
     // Set explicit treasury split
-    client.update_fee_split(&admin, &Some(FeeSplit::Treasury(treasury.clone())));
+    client.update_fee_split(&admin, &FeeSplit::Treasury(treasury.clone()));
 
     let (net, fee) = client.collect_fee(&payer, &recipient, &tok.address, &1_000);
 
@@ -73,7 +73,7 @@ fn test_split_burn_routes_all_fees_to_burn_address() {
 
     let client = setup(&env, &admin, &treasury, 100);
 
-    client.update_fee_split(&admin, &Some(FeeSplit::Burn(burn_addr.clone())));
+    client.update_fee_split(&admin, &FeeSplit::Burn(burn_addr.clone()));
 
     let (net, fee) = client.collect_fee(&payer, &recipient, &tok.address, &1_000);
 
@@ -103,12 +103,7 @@ fn test_split_50_50_between_treasury_and_burn() {
 
     client.update_fee_split(
         &admin,
-        &Some(FeeSplit::Split {
-            treasury: treasury.clone(),
-            burn: burn_addr.clone(),
-            treasury_bps: 5_000, // 50%
-            burn_bps: 5_000,     // 50%
-        }),
+        &FeeSplit::Split(treasury.clone(), burn_addr.clone(), 5_000, 5_000),
     );
 
     let (net, fee) = client.collect_fee(&payer, &recipient, &tok.address, &10_000);
@@ -138,12 +133,7 @@ fn test_split_80_20_between_treasury_and_burn() {
 
     client.update_fee_split(
         &admin,
-        &Some(FeeSplit::Split {
-            treasury: treasury.clone(),
-            burn: burn_addr.clone(),
-            treasury_bps: 8_000, // 80%
-            burn_bps: 2_000,     // 20%
-        }),
+        &FeeSplit::Split(treasury.clone(), burn_addr.clone(), 8_000, 2_000),
     );
 
     let (net, fee) = client.collect_fee(&payer, &recipient, &tok.address, &1_000);
@@ -170,12 +160,7 @@ fn test_split_bps_must_sum_to_10000() {
 
     client.update_fee_split(
         &admin,
-        &Some(FeeSplit::Split {
-            treasury: treasury.clone(),
-            burn: burn_addr.clone(),
-            treasury_bps: 6_000,
-            burn_bps: 3_000, // sums to 9_000, not 10_000
-        }),
+        &FeeSplit::Split(treasury.clone(), burn_addr.clone(), 6_000, 3_000),
     );
 }
 
@@ -196,12 +181,12 @@ fn test_split_none_returns_to_default_routing() {
     let client = setup(&env, &admin, &treasury, 100);
 
     // First: set burn split
-    client.update_fee_split(&admin, &Some(FeeSplit::Burn(burn_addr.clone())));
+    client.update_fee_split(&admin, &FeeSplit::Burn(burn_addr.clone()));
     client.collect_fee(&payer, &recipient, &tok.address, &1_000);
     assert_eq!(tok.balance(&burn_addr), 10);
 
     // Then: remove split → back to default treasury routing
-    client.update_fee_split(&admin, &None);
+    client.update_fee_split(&admin, &FeeSplit::None);
     client.collect_fee(&payer, &recipient, &tok.address, &1_000);
     assert_eq!(tok.balance(&treasury), 10);
 }
@@ -218,12 +203,12 @@ fn test_get_config_reflects_split() {
     let client = setup(&env, &admin, &treasury, 100);
 
     // Initially no split
-    assert!(client.get_config().split.is_none());
+    assert_eq!(client.get_config().split, FeeSplit::None);
 
     // Set split
-    client.update_fee_split(&admin, &Some(FeeSplit::Treasury(treasury.clone())));
+    client.update_fee_split(&admin, &FeeSplit::Treasury(treasury.clone()));
     let cfg = client.get_config();
-    assert!(cfg.split.is_some());
+    assert_ne!(cfg.split, FeeSplit::None);
 }
 
 // ==================== Total fees accumulate with split ====================
@@ -246,12 +231,7 @@ fn test_total_fees_accumulate_with_split() {
 
     client.update_fee_split(
         &admin,
-        &Some(FeeSplit::Split {
-            treasury: treasury.clone(),
-            burn: burn_addr.clone(),
-            treasury_bps: 5_000,
-            burn_bps: 5_000,
-        }),
+        &FeeSplit::Split(treasury.clone(), burn_addr.clone(), 5_000, 5_000),
     );
 
     client.collect_fee(&payer, &recipient, &tok.address, &1_000);

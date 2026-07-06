@@ -466,6 +466,11 @@ fn test_milestone_full_lifecycle() {
         assert!(!m.claimed);
     }
 
+    // Fund the agreement: `approve_milestone` requires the accounted escrow
+    // balance to cover all unclaimed milestones before approval is allowed.
+    mint(&env, &tok, &employer, 3000);
+    client.fund_milestone_agreement(&aid, &employer, &3000);
+
     // Approve all milestones
     client.approve_milestone(&aid, &1);
     client.approve_milestone(&aid, &2);
@@ -503,6 +508,11 @@ fn test_milestone_selective_approval() {
     client.add_milestone(&aid, &200);
     client.add_milestone(&aid, &300);
 
+    // Fund the agreement: `approve_milestone` requires the accounted escrow
+    // balance to cover all unclaimed milestones before approval is allowed.
+    mint(&env, &tok, &employer, 600);
+    client.fund_milestone_agreement(&aid, &employer, &600);
+
     // Only approve milestone 2
     client.approve_milestone(&aid, &2);
 
@@ -522,7 +532,7 @@ fn test_milestone_selective_approval() {
 #[test]
 fn test_milestone_batch_claim() {
     let env = env();
-    let (cid, client) = deploy_payroll(&env);
+    let (_cid, client) = deploy_payroll(&env);
     let employer = addr(&env);
     let contributor = addr(&env);
     let tok = token(&env);
@@ -532,12 +542,16 @@ fn test_milestone_batch_claim() {
     client.add_milestone(&aid, &200);
     client.add_milestone(&aid, &300);
 
+    // Fund the agreement (not just a raw mint to the contract): `approve_milestone`
+    // checks the *accounted* escrow balance, which only `fund_milestone_agreement`
+    // updates — an unrelated deposit to the contract's raw token balance does not
+    // satisfy that invariant.
+    mint(&env, &tok, &employer, 600);
+    client.fund_milestone_agreement(&aid, &employer, &600);
+
     // Approve milestones 1 and 3, but not 2
     client.approve_milestone(&aid, &1);
     client.approve_milestone(&aid, &3);
-
-    // Fund the contract so transfers succeed
-    mint(&env, &tok, &cid, 500);
 
     // Batch claim all three — milestone 2 should fail (not approved)
     let ids = Vec::from_array(&env, [1u32, 2u32, 3u32]);
@@ -565,16 +579,20 @@ fn test_milestone_batch_claim() {
 #[test]
 fn test_milestone_batch_claim_duplicate_ids() {
     let env = env();
-    let (cid, client) = deploy_payroll(&env);
+    let (_cid, client) = deploy_payroll(&env);
     let employer = addr(&env);
     let contributor = addr(&env);
     let tok = token(&env);
 
     let aid = client.create_milestone_agreement(&employer, &contributor, &tok);
     client.add_milestone(&aid, &500);
-    client.approve_milestone(&aid, &1);
 
-    mint(&env, &tok, &cid, 1000);
+    // Fund the agreement: `approve_milestone` requires the accounted escrow
+    // balance to cover all unclaimed milestones before approval is allowed.
+    mint(&env, &tok, &employer, 1000);
+    client.fund_milestone_agreement(&aid, &employer, &1000);
+
+    client.approve_milestone(&aid, &1);
 
     let ids = Vec::from_array(&env, [1u32, 1u32]);
     let result = client.batch_claim_milestones(&aid, &ids);
@@ -599,6 +617,12 @@ fn test_milestone_pause_resume() {
 
     let aid = client.create_milestone_agreement(&employer, &contributor, &tok);
     client.add_milestone(&aid, &1000);
+
+    // Fund the agreement: `approve_milestone` requires the accounted escrow
+    // balance to cover all unclaimed milestones before approval is allowed.
+    mint(&env, &tok, &employer, 1000);
+    client.fund_milestone_agreement(&aid, &employer, &1000);
+
     client.approve_milestone(&aid, &1);
 
     // Pause via milestone path
@@ -630,6 +654,13 @@ fn test_milestone_many_milestones_lifecycle() {
         client.add_milestone(&aid, &(i * 100));
     }
     assert_eq!(client.get_milestone_count(&aid), 10);
+
+    // Fund the agreement: `approve_milestone` requires the accounted escrow
+    // balance to cover all unclaimed milestones before approval is allowed.
+    // Total across all 10 milestones: 100 + 200 + ... + 1000 = 5500.
+    let total: i128 = (1..=10i128).map(|i| i * 100).sum();
+    mint(&env, &tok, &employer, total);
+    client.fund_milestone_agreement(&aid, &employer, &total);
 
     for id in 1..=10u32 {
         client.approve_milestone(&aid, &id);
@@ -1529,14 +1560,21 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
     let incentive_id =
         bonus_client.create_one_time_bonus(&employer, &employee_b, &approver, &tok, &250, &1_000);
     bonus_client.approve_incentive(&approver, &incentive_id);
-    assert_eq!(bonus_client.claim_incentive(&employee_b, &incentive_id), 250);
+    assert_eq!(
+        bonus_client.claim_incentive(&employee_b, &incentive_id),
+        250
+    );
 
     // Mirror the payroll dispute into the escalation module so the integration
     // test covers the off-chain coordination sequence as well as token effects.
     payroll_client.raise_dispute(&employee_b, &agreement_id);
     dispute_client.file_dispute(&employee_b, &agreement_id);
     dispute_client.escalate_dispute(&employee_b, &agreement_id);
-    dispute_client.resolve_dispute(&dispute_admin, &agreement_id, &DisputeOutcome::UpholdPayment);
+    dispute_client.resolve_dispute(
+        &dispute_admin,
+        &agreement_id,
+        &DisputeOutcome::UpholdPayment,
+    );
     payroll_client.resolve_dispute(&arbiter, &agreement_id, &600, &400);
 
     record_payment_as_payroll(
@@ -1576,7 +1614,10 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
         env.ledger().timestamp(),
     );
 
-    assert_eq!(payroll_client.get_dispute_status(&agreement_id), DisputeStatus::Resolved);
+    assert_eq!(
+        payroll_client.get_dispute_status(&agreement_id),
+        DisputeStatus::Resolved
+    );
     assert_eq!(
         payroll_client.get_agreement(&agreement_id).unwrap().status,
         AgreementStatus::Completed
@@ -1651,11 +1692,8 @@ fn test_cross_contract_workflow_failure_injection_preserves_state() {
     );
     escrow_client.fund_agreement(&employer, &agreement_id, &employer, &600);
 
-    let unauthorized_admin = dispute_client.try_set_level_time_limit(
-        &outsider,
-        &EscalationLevel::Level1,
-        &60,
-    );
+    let unauthorized_admin =
+        dispute_client.try_set_level_time_limit(&outsider, &EscalationLevel::Level1, &60);
     assert_eq!(
         unauthorized_admin,
         Err(Ok(EscalationError::Unauthorized.into()))
@@ -1862,6 +1900,11 @@ fn test_concurrent_milestone_agreements() {
 
     assert_eq!(client.get_milestone_count(&a1), 2);
     assert_eq!(client.get_milestone_count(&a2), 1);
+
+    // Fund a1: `approve_milestone` requires the accounted escrow balance to
+    // cover all unclaimed milestones before approval is allowed.
+    mint(&env, &tok, &employer, 300);
+    client.fund_milestone_agreement(&a1, &employer, &300);
 
     // Approve and claim from a1 does not affect a2
     client.approve_milestone(&a1, &1);

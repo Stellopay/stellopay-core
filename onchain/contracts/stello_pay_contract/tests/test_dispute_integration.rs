@@ -19,7 +19,11 @@ fn stellar_token<'a>(
     admin: &Address,
 ) -> (Address, token::Client<'a>, token::StellarAssetClient<'a>) {
     let t = e.register_stellar_asset_contract_v2(admin.clone());
-    (t.address(), token::Client::new(e, &t.address()), token::StellarAssetClient::new(e, &t.address()))
+    (
+        t.address(),
+        token::Client::new(e, &t.address()),
+        token::StellarAssetClient::new(e, &t.address()),
+    )
 }
 
 /// Payroll mode: arbiter split distributes pay_employee equally among employees.

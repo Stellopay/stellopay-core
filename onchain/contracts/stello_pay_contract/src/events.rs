@@ -274,3 +274,22 @@ pub struct ExchangeRateChangedEvent {
 pub fn emit_exchange_rate_changed(env: &Env, event: ExchangeRateChangedEvent) {
     event.publish(env);
 }
+
+/// Event: multisig approval configuration changed via `set_multisig_config`.
+/// Emitted whenever the linked multisig contract or its approval thresholds
+/// are updated, so off-chain monitors can track approval-requirement changes
+/// mid-lifecycle.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MultisigConfigChangedEvent {
+    pub caller: Address,
+    pub multisig_contract: Address,
+    pub old_large_threshold: i128,
+    pub new_large_threshold: i128,
+    pub old_dispute_threshold: i128,
+    pub new_dispute_threshold: i128,
+}
+
+pub fn emit_multisig_config_changed(env: &Env, event: MultisigConfigChangedEvent) {
+    event.publish(env);
+}
