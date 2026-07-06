@@ -129,18 +129,18 @@ pub fn emit_set_arbiter(env: &Env, event: ArbiterSetEvent) {
     event.publish(env);
 }
 
-/// Event: ArbiteDisputeRaisedrSet
+/// Event: ArbiterSet
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct DisputeRaisedEvent {
     pub agreement_id: u128,
 }
 
-pub fn emit_dsipute_raised(env: &Env, event: DisputeRaisedEvent) {
+pub fn emit_dispute_raised(env: &Env, event: DisputeRaisedEvent) {
     event.publish(env);
 }
 
-/// Event: ArbiteDisputeRaisedrSet
+/// Event: ArbiterSet
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct DisputeResolvedEvent {
@@ -149,7 +149,7 @@ pub struct DisputeResolvedEvent {
     pub refund_employer: i128,
 }
 
-pub fn emit_dsipute_resolved(env: &Env, event: DisputeResolvedEvent) {
+pub fn emit_dispute_resolved(env: &Env, event: DisputeResolvedEvent) {
     event.publish(env);
 }
 pub fn emit_payroll_claimed(env: &Env, event: PayrollClaimedEvent) {
