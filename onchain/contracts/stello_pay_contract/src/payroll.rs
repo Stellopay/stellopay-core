@@ -10,6 +10,7 @@ use crate::events::{
     emit_payment_received, emit_payment_sent, emit_payroll_claimed, emit_set_arbiter,
     AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent,
     AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent,
+    BatchClaimFailedEvent,
     DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, ExchangeRateChangedEvent,
     GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
     MilestoneClaimed, MilestoneFundedEvent, MultisigConfigChangedEvent, PaymentReceivedEvent,
@@ -844,6 +845,15 @@ pub fn batch_claim_milestones(
         // Duplicate guard
         if processed.iter().any(|p| p == milestone_id) {
             failed_claims += 1;
+            emit_batch_claim_failed(
+                env,
+                BatchClaimFailedEvent {
+                    agreement_id,
+                    employee: contributor.clone(),
+                    entry_id: milestone_id,
+                    error_code: 1,
+                },
+            );
             results.push_back(MilestoneClaimResult {
                 milestone_id,
                 success: false,
@@ -857,6 +867,15 @@ pub fn batch_claim_milestones(
         // Bounds check (1-based, mirrors claim_milestone)
         if milestone_id == 0 || milestone_id > count {
             failed_claims += 1;
+            emit_batch_claim_failed(
+                env,
+                BatchClaimFailedEvent {
+                    agreement_id,
+                    employee: contributor.clone(),
+                    entry_id: milestone_id,
+                    error_code: 2,
+                },
+            );
             results.push_back(MilestoneClaimResult {
                 milestone_id,
                 success: false,
@@ -874,6 +893,15 @@ pub fn batch_claim_milestones(
             .unwrap_or(false);
         if !approved {
             failed_claims += 1;
+            emit_batch_claim_failed(
+                env,
+                BatchClaimFailedEvent {
+                    agreement_id,
+                    employee: contributor.clone(),
+                    entry_id: milestone_id,
+                    error_code: 3,
+                },
+            );
             results.push_back(MilestoneClaimResult {
                 milestone_id,
                 success: false,
@@ -891,6 +919,15 @@ pub fn batch_claim_milestones(
             .unwrap_or(false);
         if already_claimed {
             failed_claims += 1;
+            emit_batch_claim_failed(
+                env,
+                BatchClaimFailedEvent {
+                    agreement_id,
+                    employee: contributor.clone(),
+                    entry_id: milestone_id,
+                    error_code: 4,
+                },
+            );
             results.push_back(MilestoneClaimResult {
                 milestone_id,
                 success: false,
@@ -911,6 +948,15 @@ pub fn batch_claim_milestones(
                 // would abort the batch after earlier milestones in this loop
                 // had already transferred funds.
                 failed_claims += 1;
+                emit_batch_claim_failed(
+                    env,
+                    BatchClaimFailedEvent {
+                        agreement_id,
+                        employee: contributor.clone(),
+                        entry_id: milestone_id,
+                        error_code: 2,
+                    },
+                );
                 results.push_back(MilestoneClaimResult {
                     milestone_id,
                     success: false,
@@ -2802,6 +2848,15 @@ fn batch_claim_payroll_inner(
         // Duplicate guard
         if processed.iter().any(|p| p == employee_index) {
             failed_claims += 1;
+            emit_batch_claim_failed(
+                env,
+                BatchClaimFailedEvent {
+                    agreement_id,
+                    employee: caller.clone(),
+                    entry_id: employee_index,
+                    error_code: PayrollError::InvalidData as u32,
+                },
+            );
             results.push_back(PayrollClaimResult {
                 employee_index,
                 success: false,
@@ -2815,6 +2870,15 @@ fn batch_claim_payroll_inner(
         // Bounds check
         if employee_index >= employee_count {
             failed_claims += 1;
+            emit_batch_claim_failed(
+                env,
+                BatchClaimFailedEvent {
+                    agreement_id,
+                    employee: caller.clone(),
+                    entry_id: employee_index,
+                    error_code: PayrollError::InvalidEmployeeIndex as u32,
+                },
+            );
             results.push_back(PayrollClaimResult {
                 employee_index,
                 success: false,
@@ -2829,6 +2893,15 @@ fn batch_claim_payroll_inner(
             Some(addr) => addr,
             None => {
                 failed_claims += 1;
+                emit_batch_claim_failed(
+                    env,
+                    BatchClaimFailedEvent {
+                        agreement_id,
+                        employee: caller.clone(),
+                        entry_id: employee_index,
+                        error_code: PayrollError::AgreementNotFound as u32,
+                    },
+                );
                 results.push_back(PayrollClaimResult {
                     employee_index,
                     success: false,
@@ -2842,6 +2915,15 @@ fn batch_claim_payroll_inner(
         // Caller must be this specific employee (same check as claim_payroll)
         if *caller != employee {
             failed_claims += 1;
+            emit_batch_claim_failed(
+                env,
+                BatchClaimFailedEvent {
+                    agreement_id,
+                    employee: caller.clone(),
+                    entry_id: employee_index,
+                    error_code: PayrollError::Unauthorized as u32,
+                },
+            );
             results.push_back(PayrollClaimResult {
                 employee_index,
                 success: false,
@@ -2865,6 +2947,15 @@ fn batch_claim_payroll_inner(
 
         if total_elapsed_periods <= claimed_periods {
             failed_claims += 1;
+            emit_batch_claim_failed(
+                env,
+                BatchClaimFailedEvent {
+                    agreement_id,
+                    employee: caller.clone(),
+                    entry_id: employee_index,
+                    error_code: PayrollError::NoPeriodsToClaim as u32,
+                },
+            );
             results.push_back(PayrollClaimResult {
                 employee_index,
                 success: false,
@@ -2882,6 +2973,15 @@ fn batch_claim_payroll_inner(
                 Some(s) => s,
                 None => {
                     failed_claims += 1;
+                    emit_batch_claim_failed(
+                        env,
+                        BatchClaimFailedEvent {
+                            agreement_id,
+                            employee: caller.clone(),
+                            entry_id: employee_index,
+                            error_code: PayrollError::AgreementNotFound as u32,
+                        },
+                    );
                     results.push_back(PayrollClaimResult {
                         employee_index,
                         success: false,
@@ -2908,6 +3008,15 @@ fn batch_claim_payroll_inner(
             Some(a) => a,
             None => {
                 failed_claims += 1;
+                emit_batch_claim_failed(
+                    env,
+                    BatchClaimFailedEvent {
+                        agreement_id,
+                        employee: caller.clone(),
+                        entry_id: employee_index,
+                        error_code: PayrollError::InvalidData as u32,
+                    },
+                );
                 results.push_back(PayrollClaimResult {
                     employee_index,
                     success: false,
@@ -2921,6 +3030,15 @@ fn batch_claim_payroll_inner(
         // Check in-memory escrow
         if escrow_balance < amount {
             failed_claims += 1;
+            emit_batch_claim_failed(
+                env,
+                BatchClaimFailedEvent {
+                    agreement_id,
+                    employee: caller.clone(),
+                    entry_id: employee_index,
+                    error_code: PayrollError::InsufficientEscrowBalance as u32,
+                },
+            );
             results.push_back(PayrollClaimResult {
                 employee_index,
                 success: false,

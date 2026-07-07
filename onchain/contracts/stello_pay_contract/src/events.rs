@@ -239,6 +239,28 @@ pub fn emit_batch_milestone_claimed(env: &Env, event: BatchMilestoneClaimedEvent
     event.publish(env);
 }
 
+/// Event: A single entry in `batch_claim_payroll` / `batch_claim_milestones` failed.
+///
+/// Emitted once per failed employee/milestone so off-chain indexers and
+/// dashboards can surface partial-batch failures without re-simulating the
+/// batch. Only the claimant (`employee`) and the `error_code` are revealed —
+/// never another party's balance.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BatchClaimFailedEvent {
+    pub agreement_id: u128,
+    /// The claimant for the failed entry (payroll employee or milestone contributor).
+    pub employee: Address,
+    /// Which entry failed: the employee index (payroll) or milestone id (milestones).
+    pub entry_id: u32,
+    /// The same error code recorded in the batch result vector for this entry.
+    pub error_code: u32,
+}
+
+pub fn emit_batch_claim_failed(env: &Env, event: BatchClaimFailedEvent) {
+    event.publish(env);
+}
+
 /// Event: Milestone agreement funded by employer.
 ///
 /// Emitted when an employer deposits tokens into the contract for a specific
