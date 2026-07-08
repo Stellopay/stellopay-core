@@ -177,7 +177,7 @@ fn batch_claim_milestones_emits_failure_event_per_failed_entry() {
 
     // caller = contributor (valid id 1, duplicate id 1, out-of-bounds id 99)
     let ids = Vec::from_array(&env, [1u32, 1u32, 99u32]);
-    let result = client.batch_claim_milestones(&contributor, &agreement_id, &ids);
+    let result = client.batch_claim_milestones(&agreement_id, &ids);
 
     assert_eq!(result.successful_claims, 1);
     assert_eq!(result.failed_claims, 2);
