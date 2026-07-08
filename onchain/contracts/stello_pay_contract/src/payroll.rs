@@ -4,16 +4,17 @@ use soroban_sdk::{Address, Env, Vec};
 use crate::audit::{record_entry, AuditEvent};
 use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
-    emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
-    emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
-    emit_grace_period_finalized, emit_milestone_funded, emit_multisig_config_changed,
-    emit_payment_received, emit_payment_sent, emit_payroll_claimed, emit_set_arbiter,
-    AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent,
-    AgreementResumedEvent, ArbiterSetEvent, BatchClaimFailedEvent, BatchMilestoneClaimedEvent,
-    BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
-    ExchangeRateChangedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded,
-    MilestoneApproved, MilestoneClaimed, MilestoneFundedEvent, MultisigConfigChangedEvent,
-    PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
+    emit_agreement_paused, emit_agreement_resumed, emit_batch_claim_failed, emit_dsipute_raised,
+    emit_dsipute_resolved, emit_employee_added, emit_exchange_rate_changed,
+    emit_grace_period_extended, emit_grace_period_finalized, emit_milestone_funded,
+    emit_multisig_config_changed, emit_payment_received, emit_payment_sent, emit_payroll_claimed,
+    emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
+    AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent, BatchClaimFailedEvent,
+    BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent,
+    EmployeeAddedEvent, ExchangeRateChangedEvent, GracePeriodExtendedEvent,
+    GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved, MilestoneClaimed,
+    MilestoneFundedEvent, MultisigConfigChangedEvent, PaymentReceivedEvent, PaymentSentEvent,
+    PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
