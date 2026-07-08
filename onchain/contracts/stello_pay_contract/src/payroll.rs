@@ -9,12 +9,11 @@ use crate::events::{
     emit_grace_period_finalized, emit_milestone_funded, emit_multisig_config_changed,
     emit_payment_received, emit_payment_sent, emit_payroll_claimed, emit_set_arbiter,
     AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent,
-    AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent,
-    BatchClaimFailedEvent,
-    DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, ExchangeRateChangedEvent,
-    GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
-    MilestoneClaimed, MilestoneFundedEvent, MultisigConfigChangedEvent, PaymentReceivedEvent,
-    PaymentSentEvent, PayrollClaimedEvent,
+    AgreementResumedEvent, ArbiterSetEvent, BatchClaimFailedEvent, BatchMilestoneClaimedEvent,
+    BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
+    ExchangeRateChangedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded,
+    MilestoneApproved, MilestoneClaimed, MilestoneFundedEvent, MultisigConfigChangedEvent,
+    PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
