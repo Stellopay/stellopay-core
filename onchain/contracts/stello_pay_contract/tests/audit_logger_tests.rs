@@ -163,27 +163,39 @@ fn records_dispute_raised_and_resolved_audit_entries() {
     payroll_client.raise_dispute(&employee, &agreement_id);
     payroll_client.resolve_dispute(&arbiter, &agreement_id, &0, &0);
 
-    assert_eq!(payroll_client.get_audit_entry_count(), 3);
-    let raised = payroll_client.get_audit_entry(&2).unwrap();
+    // `set_arbiter` now records a lifecycle audit entry (ArbiterSet), so the
+    // dispute flow produces 4 entries total:
+    //   1 = ArbiterSet, 2 = AgreementCreated, 3 = DisputeRaised, 4 = DisputeResolved.
+    assert_eq!(payroll_client.get_audit_entry_count(), 4);
+
+    let arbiter_set = payroll_client.get_audit_entry(&1).unwrap();
+    assert_eq!(arbiter_set.actor, employer);
+    assert_eq!(arbiter_set.event, AuditEvent::ArbiterSet);
+    assert_eq!(arbiter_set.agreement_id, 0);
+    assert_eq!(arbiter_set.subject, Some(arbiter.clone()));
+    assert_eq!(arbiter_set.amount, None);
+    assert_eq!(arbiter_set.external_log_id, Some(1));
+
+    let raised = payroll_client.get_audit_entry(&3).unwrap();
     assert_eq!(raised.actor, employee);
     assert_eq!(raised.event, AuditEvent::DisputeRaised);
     assert_eq!(raised.subject, Some(employer.clone()));
     assert_eq!(raised.amount, Some(1000));
-    assert_eq!(raised.external_log_id, Some(2));
+    assert_eq!(raised.external_log_id, Some(3));
 
-    let resolved = payroll_client.get_audit_entry(&3).unwrap();
+    let resolved = payroll_client.get_audit_entry(&4).unwrap();
     assert_eq!(resolved.actor, arbiter);
     assert_eq!(resolved.event, AuditEvent::DisputeResolved);
     assert_eq!(resolved.subject, Some(employer));
     assert_eq!(resolved.amount, Some(0));
-    assert_eq!(resolved.external_log_id, Some(3));
+    assert_eq!(resolved.external_log_id, Some(4));
 
     assert_eq!(
-        audit_client.get_log(&2).unwrap().action,
+        audit_client.get_log(&3).unwrap().action,
         Symbol::new(&env, "dispute_raised")
     );
     assert_eq!(
-        audit_client.get_log(&3).unwrap().action,
+        audit_client.get_log(&4).unwrap().action,
         Symbol::new(&env, "dispute_resolved")
     );
 }
