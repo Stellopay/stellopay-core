@@ -470,7 +470,7 @@ fn test_fund_payment_emits_payment_funded_event() {
     if let Some(funded_event) = events.iter().find(|e| {
         let topics: Vec<Val> = e.1.clone();
         if let Some(first) = topics.get(0) {
-            if let Ok(s) = String::try_from_val(&env, &first) {
+            if let Ok(s) = String::try_from_val(&env, first) {
                 return s == String::from_str(&env, "payment_funded");
             }
         }
@@ -526,7 +526,7 @@ fn test_fund_payment_emits_per_funding() {
         .filter(|e| {
             let topics: Vec<Val> = e.1.clone();
             if let Some(first) = topics.get(0) {
-                if let Ok(s) = String::try_from_val(&env, &first) {
+                if let Ok(s) = String::try_from_val(&env, first) {
                     return s == String::from_str(&env, "payment_funded");
                 }
             }

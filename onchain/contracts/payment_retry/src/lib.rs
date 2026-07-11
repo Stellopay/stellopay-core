@@ -601,7 +601,7 @@ impl PaymentRetryContract {
         payer.require_auth();
         assert!(amount > 0, "Amount must be positive");
 
-        let payment = read_payment(&env, payment_id);
+        let payment = read_payment(&env, payment_id.clone());
         assert!(payment.payer == payer, "Only payer can fund payment");
         assert!(
             payment.state != RetryState::Success && payment.state != RetryState::Failed,
