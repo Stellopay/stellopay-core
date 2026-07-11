@@ -189,6 +189,17 @@ pub struct PaymentFailedEvent {
     pub notifier: Address,
 }
 
+/// Emitted after a `fund_payment` deposit is persisted into escrow, so
+/// off-chain indexers can attribute the funding to the payer.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentFundedEvent {
+    pub payment_id: BytesN<32>,
+    pub funder: Address,
+    pub token: Address,
+    pub amount: i128,
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -599,6 +610,18 @@ impl PaymentRetryContract {
 
         let token_client = token::Client::new(&env, &payment.token);
         token_client.transfer(&payer, env.current_contract_address(), &amount);
+
+        // Emit after the deposit is persisted so indexers never observe an
+        // uncommitted funding event (emit-after-commit policy).
+        env.events().publish(
+            ("payment_funded", payment_id.clone()),
+            PaymentFundedEvent {
+                payment_id: payment_id.clone(),
+                funder: payer,
+                token: payment.token,
+                amount,
+            },
+        );
     }
 
     /// Processes up to `max_payments` due payment requests in a single call.
