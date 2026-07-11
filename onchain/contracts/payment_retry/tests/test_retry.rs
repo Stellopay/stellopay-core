@@ -9,9 +9,9 @@ use payment_retry::{
     PaymentFundedEvent, PaymentRetryContract, PaymentRetryContractClient, RetryConfig, RetryState,
 };
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, BytesN, Env, String, Val, Vec,
+    Address, BytesN, Env, String, TryFromVal, Val, Vec,
 };
 
 fn create_env() -> Env {
