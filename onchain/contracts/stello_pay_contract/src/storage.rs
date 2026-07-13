@@ -426,6 +426,10 @@ pub enum PayrollError {
     /// reentrancy guard was already set, indicating an in-progress claim
     /// re-entered (e.g. via a hostile or hook-enabled token during transfer).
     ReentrancyDetected = 43,
+    /// `set_arbiter` rejected the assignment: the caller attempted to
+    /// self-appoint (caller == arbiter), or the supplied arbiter is identical
+    /// to the currently-set arbiter (no-op duplicate assignment).
+    InvalidArbiter = 44,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.
