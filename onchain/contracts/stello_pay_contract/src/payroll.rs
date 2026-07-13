@@ -1533,10 +1533,23 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
 pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
     caller.require_auth();
 
+    let arbiter_for_log = arbiter.clone();
     env.storage()
         .persistent()
         .set(&StorageKey::Arbiter, &arbiter);
     emit_set_arbiter(env, ArbiterSetEvent { arbiter });
+
+    // Record a lifecycle audit entry so `set_arbiter` is observable in the
+    // audit trail (contract-level event: sentinel `agreement_id` 0, subject
+    // is the newly-set arbiter).
+    record_entry(
+        env,
+        caller,
+        AuditEvent::ArbiterSet,
+        0,
+        Some(arbiter_for_log),
+        None,
+    );
 
     true
 }
