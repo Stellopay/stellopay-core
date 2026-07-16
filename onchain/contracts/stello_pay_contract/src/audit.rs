@@ -14,6 +14,11 @@ pub enum AuditEvent {
     /// This is a contract-level event not tied to an agreement; entries use a
     /// sentinel `agreement_id` of `0`.
     MultisigConfigChanged,
+    /// An arbiter was assigned via `set_arbiter`.
+    ///
+    /// Contract-level event not tied to an agreement; entries use a sentinel
+    /// `agreement_id` of `0` and `subject` is the newly-set arbiter.
+    ArbiterSet,
 }
 
 /// Append-only audit entry for critical agreement lifecycle transitions.
@@ -48,6 +53,7 @@ impl AuditEvent {
             AuditEvent::DisputeRaised => Symbol::new(env, "dispute_raised"),
             AuditEvent::DisputeResolved => Symbol::new(env, "dispute_resolved"),
             AuditEvent::MultisigConfigChanged => Symbol::new(env, "multisig_config_changed"),
+            AuditEvent::ArbiterSet => Symbol::new(env, "arbiter_set"),
         }
     }
 }

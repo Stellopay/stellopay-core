@@ -1533,10 +1533,35 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
 pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
     caller.require_auth();
 
+    // Validation: reject self-appointment (caller == arbiter).
+    if arbiter == caller {
+        panic_with_error!(env, PayrollError::InvalidArbiter);
+    }
+
+    // Validation: reject a no-op duplicate (arbiter already set to this address).
+    if let Some(existing) = get_arbiter(env) {
+        if existing == arbiter {
+            panic_with_error!(env, PayrollError::InvalidArbiter);
+        }
+    }
+
+    let arbiter_for_log = arbiter.clone();
     env.storage()
         .persistent()
         .set(&StorageKey::Arbiter, &arbiter);
     emit_set_arbiter(env, ArbiterSetEvent { arbiter });
+
+    // Record a lifecycle audit entry so `set_arbiter` is observable in the
+    // audit trail (contract-level event: sentinel `agreement_id` 0, subject
+    // is the newly-set arbiter).
+    record_entry(
+        env,
+        caller,
+        AuditEvent::ArbiterSet,
+        0,
+        Some(arbiter_for_log),
+        None,
+    );
 
     true
 }

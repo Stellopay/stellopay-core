@@ -215,6 +215,56 @@ fn test_dispute_rejects_negative_amounts() {
     assert_eq!(neg_refund, Err(Ok(PayrollError::InvalidPayout)));
 }
 
+/// @notice Verifies that set_arbiter rejects self-appointment.
+#[test]
+fn test_set_arbiter_rejects_self() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, payroll_client) = setup_payroll(&env);
+    let employer = Address::generate(&env);
+
+    // Employer tries to set themselves as arbiter.
+    let result = payroll_client.try_set_arbiter(&employer, &employer);
+    assert!(result.is_err());
+}
+
+/// @notice Verifies that set_arbiter rejects a no-op duplicate.
+#[test]
+fn test_set_arbiter_rejects_duplicate() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, payroll_client) = setup_payroll(&env);
+    let employer = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+
+    // First set succeeds.
+    payroll_client.set_arbiter(&employer, &arbiter);
+
+    // Same arbiter again must be rejected.
+    let result = payroll_client.try_set_arbiter(&employer, &arbiter);
+    assert!(result.is_err());
+}
+
+/// @notice Verifies that set_arbiter accepts a valid change.
+#[test]
+fn test_set_arbiter_valid_change() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_, payroll_client) = setup_payroll(&env);
+    let employer = Address::generate(&env);
+    let arbiter1 = Address::generate(&env);
+    let arbiter2 = Address::generate(&env);
+
+    // Initial set.
+    payroll_client.set_arbiter(&employer, &arbiter1);
+
+    // Change to a different arbiter.
+    payroll_client.set_arbiter(&employer, &arbiter2);
+    // No assertion needed — if it panicked, the test fails.
+}
 /// @notice When a real escrow balance is tracked, a payout that fits within
 /// `total_amount` but exceeds the actual escrow balance is rejected, and a valid
 /// resolution decrements the tracked escrow by exactly the distributed amount.
