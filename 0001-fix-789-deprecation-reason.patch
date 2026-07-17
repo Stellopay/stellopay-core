@@ -1,0 +1,281 @@
+From 0c0c863964154d3e706176e3f8d4f4b132330c2b Mon Sep 17 00:00:00 2001
+From: JesseJohn7 <JesseJohn7@users.noreply.github.com>
+Date: Fri, 17 Jul 2026 09:55:23 +0000
+Subject: [PATCH] feat(template_versioning): add optional deprecation reason
+
+- Add deprecation_reason: Option<String> to TemplateVersionRecord,
+  stored alongside the deprecated flag and readable via get_version
+  (the existing version-query read path).
+- deprecate_version now takes an optional reason param; existing
+  callers can pass None to preserve prior behavior.
+- Include the reason on the TemplateVersionDeprecated event so
+  off-chain indexers get it without an extra query.
+- Add tests covering deprecation with and without a reason, and
+  update existing call sites for the new signature.
+
+Closes #789
+---
+ .../contracts/template_versioning/src/lib.rs  |  16 +++
+ .../tests/test_versioning.rs                  | 129 +++++++++++++++++-
+ 2 files changed, 139 insertions(+), 6 deletions(-)
+
+diff --git a/onchain/contracts/template_versioning/src/lib.rs b/onchain/contracts/template_versioning/src/lib.rs
+index 981e533..54ec527 100644
+--- a/onchain/contracts/template_versioning/src/lib.rs
++++ b/onchain/contracts/template_versioning/src/lib.rs
+@@ -42,6 +42,10 @@ pub struct TemplateVersionRecord {
+     pub created_at: u64,
+     /// When true, `create_agreement` rejects this version unless explicitly allowed.
+     pub deprecated: bool,
++    /// Optional human-readable reason for deprecation (e.g. "security fix",
++    /// "legal change", "routine update"). `None` until the version is
++    /// deprecated, or if the caller chose not to supply one.
++    pub deprecation_reason: Option<String>,
+ }
+ 
+ /// Agreement created from a specific template version.
+@@ -65,6 +69,7 @@ pub struct AgreementBinding {
+ /// - `template_id` – Stable identifier of the owning template.
+ /// - `version`     – Version number that was deprecated.
+ /// - `timestamp`   – Ledger timestamp at the moment of deprecation.
++/// - `reason`      – Optional human-readable reason for the deprecation.
+ #[contracttype]
+ #[derive(Clone, Debug, PartialEq)]
+ pub struct TemplateVersionDeprecated {
+@@ -74,6 +79,8 @@ pub struct TemplateVersionDeprecated {
+     pub version: u32,
+     /// Ledger timestamp at the moment of deprecation.
+     pub timestamp: u64,
++    /// Optional human-readable reason for the deprecation.
++    pub reason: Option<String>,
+ }
+ 
+ #[contracterror]
+@@ -162,6 +169,7 @@ impl TemplateVersioning {
+             migration_notes,
+             created_at: now,
+             deprecated,
++            deprecation_reason: None,
+         };
+         storage.set(&DataKey::TemplateVersion(template_id, version), &record);
+         storage.set(&DataKey::TemplateLatest(template_id), &version);
+@@ -169,11 +177,17 @@ impl TemplateVersioning {
+     }
+ 
+     /// Mark a version as deprecated so new agreements cannot use it (unless caller uses force).
++    ///
++    /// `reason` is an optional human-readable explanation (e.g. "security fix",
++    /// "legal change", "routine update") stored alongside the `deprecated` flag
++    /// and readable via [`TemplateVersioning::get_version`]. Pass `None` to
++    /// deprecate without recording a reason.
+     pub fn deprecate_version(
+         env: Env,
+         owner: Address,
+         template_id: u64,
+         version: u32,
++        reason: Option<String>,
+     ) -> Result<(), VersioningError> {
+         owner.require_auth();
+         let storage = env.storage().persistent();
+@@ -187,6 +201,7 @@ impl TemplateVersioning {
+         let mut rec: TemplateVersionRecord =
+             storage.get(&key).ok_or(VersioningError::VersionNotFound)?;
+         rec.deprecated = true;
++        rec.deprecation_reason = reason.clone();
+         storage.set(&key, &rec);
+ 
+         let now = env.ledger().timestamp();
+@@ -196,6 +211,7 @@ impl TemplateVersioning {
+                 template_id,
+                 version,
+                 timestamp: now,
++                reason,
+             },
+         );
+ 
+diff --git a/onchain/contracts/template_versioning/tests/test_versioning.rs b/onchain/contracts/template_versioning/tests/test_versioning.rs
+index 6946dd2..e0c4513 100644
+--- a/onchain/contracts/template_versioning/tests/test_versioning.rs
++++ b/onchain/contracts/template_versioning/tests/test_versioning.rs
+@@ -82,11 +82,20 @@ fn template_version_lifecycle() {
+     assert_eq!(ag.template_id, tid);
+ 
+     client
+-        .try_deprecate_version(&employer, &tid, &1)
++        .try_deprecate_version(
++            &employer,
++            &tid,
++            &1,
++            &Some(String::from_str(&env, "superseded by v2")),
++        )
+         .unwrap()
+         .unwrap();
+     let dep: TemplateVersionRecord = client.try_get_version(&tid, &1).unwrap().unwrap();
+     assert!(dep.deprecated);
++    assert_eq!(
++        dep.deprecation_reason,
++        Some(String::from_str(&env, "superseded by v2"))
++    );
+ 
+     assert!(client
+         .try_create_agreement(&employer, &tid, &1, &String::from_str(&env, "should fail"),)
+@@ -158,7 +167,12 @@ fn deprecate_version_emits_event() {
+         .unwrap();
+ 
+     client
+-        .try_deprecate_version(&owner, &tid, &ver)
++        .try_deprecate_version(
++            &owner,
++            &tid,
++            &ver,
++            &Some(String::from_str(&env, "security fix")),
++        )
+         .unwrap()
+         .unwrap();
+ 
+@@ -171,6 +185,7 @@ fn deprecate_version_emits_event() {
+     assert_eq!(emitted.template_id, tid);
+     assert_eq!(emitted.version, ver);
+     assert_eq!(emitted.timestamp, 2_000_000u64);
++    assert_eq!(emitted.reason, Some(String::from_str(&env, "security fix")));
+ }
+ 
+ /// Deprecating an already-deprecated version should still emit the event.
+@@ -207,13 +222,19 @@ fn deprecate_already_deprecated_emits_event() {
+ 
+     // First deprecation
+     client
+-        .try_deprecate_version(&owner, &tid, &ver)
++        .try_deprecate_version(&owner, &tid, &ver, &None)
+         .unwrap()
+         .unwrap();
+ 
+-    // Second deprecation (idempotent flag flip, event still emitted)
++    // Second deprecation (idempotent flag flip, event still emitted), this
++    // time supplying a reason to confirm it overwrites the stored value.
+     client
+-        .try_deprecate_version(&owner, &tid, &ver)
++        .try_deprecate_version(
++            &owner,
++            &tid,
++            &ver,
++            &Some(String::from_str(&env, "legal change")),
++        )
+         .unwrap()
+         .unwrap();
+ 
+@@ -233,6 +254,100 @@ fn deprecate_already_deprecated_emits_event() {
+         })
+         .count();
+     assert_eq!(count, 1);
++
++    // Stored record reflects the most recent deprecation call's reason.
++    let rec: TemplateVersionRecord = client.try_get_version(&tid, &ver).unwrap().unwrap();
++    assert_eq!(
++        rec.deprecation_reason,
++        Some(String::from_str(&env, "legal change"))
++    );
++}
++
++/// Deprecating with a reason stores it and it's readable via `get_version`,
++/// and is also included on the emitted event.
++#[test]
++fn deprecate_with_reason_is_stored_and_readable() {
++    let env = Env::default();
++    env.mock_all_auths();
++    ledger_ts(&env, 4_000_000);
++
++    let contract_id = env.register(TemplateVersioning, ());
++    let client = TemplateVersioningClient::new(&env, &contract_id);
++
++    let admin = Address::generate(&env);
++    let owner = Address::generate(&env);
++
++    client.initialize(&admin);
++    let tid = client
++        .try_register_template(&owner, &String::from_str(&env, "Template"))
++        .unwrap()
++        .unwrap();
++
++    let hash = BytesN::from_array(&env, &[11u8; 32]);
++    let ver = client
++        .try_publish_template_version(&owner, &tid, &hash, &String::from_str(&env, "v1"), &false)
++        .unwrap()
++        .unwrap();
++
++    // Freshly published, non-deprecated version has no reason yet.
++    let fresh: TemplateVersionRecord = client.try_get_version(&tid, &ver).unwrap().unwrap();
++    assert_eq!(fresh.deprecation_reason, None);
++
++    let reason = String::from_str(&env, "security fix: fixes reentrancy in payout path");
++    client
++        .try_deprecate_version(&owner, &tid, &ver, &Some(reason.clone()))
++        .unwrap()
++        .unwrap();
++
++    let rec: TemplateVersionRecord = client.try_get_version(&tid, &ver).unwrap().unwrap();
++    assert!(rec.deprecated);
++    assert_eq!(rec.deprecation_reason, Some(reason.clone()));
++
++    let all_events = env.events().all();
++    let last = all_events.last().unwrap();
++    let emitted: TemplateVersionDeprecated = last.2.into_val(&env);
++    assert_eq!(emitted.reason, Some(reason));
++}
++
++/// Deprecating without a reason (existing-caller behavior) still succeeds and
++/// leaves `deprecation_reason` as `None`.
++#[test]
++fn deprecate_without_reason_still_works() {
++    let env = Env::default();
++    env.mock_all_auths();
++    ledger_ts(&env, 5_000_000);
++
++    let contract_id = env.register(TemplateVersioning, ());
++    let client = TemplateVersioningClient::new(&env, &contract_id);
++
++    let admin = Address::generate(&env);
++    let owner = Address::generate(&env);
++
++    client.initialize(&admin);
++    let tid = client
++        .try_register_template(&owner, &String::from_str(&env, "Template"))
++        .unwrap()
++        .unwrap();
++
++    let hash = BytesN::from_array(&env, &[12u8; 32]);
++    let ver = client
++        .try_publish_template_version(&owner, &tid, &hash, &String::from_str(&env, "v1"), &false)
++        .unwrap()
++        .unwrap();
++
++    client
++        .try_deprecate_version(&owner, &tid, &ver, &None)
++        .unwrap()
++        .unwrap();
++
++    let rec: TemplateVersionRecord = client.try_get_version(&tid, &ver).unwrap().unwrap();
++    assert!(rec.deprecated);
++    assert_eq!(rec.deprecation_reason, None);
++
++    let all_events = env.events().all();
++    let last = all_events.last().unwrap();
++    let emitted: TemplateVersionDeprecated = last.2.into_val(&env);
++    assert_eq!(emitted.reason, None);
+ }
+ 
+ /// Non-owner cannot deprecate, so no event is emitted.
+@@ -263,7 +378,9 @@ fn non_owner_cannot_deprecate() {
+         .unwrap();
+ 
+     // Attacker attempt should fail
+-    assert!(client.try_deprecate_version(&attacker, &tid, &ver).is_err());
++    assert!(client
++        .try_deprecate_version(&attacker, &tid, &ver, &None)
++        .is_err());
+ 
+     // No deprecation event should exist
+     let all_events = env.events().all();
+-- 
+2.43.0
+
