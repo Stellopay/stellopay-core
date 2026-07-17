@@ -37,6 +37,58 @@ Selected variants and intended meaning:
 - `ZeroPeriodDuration (22)` – invalid configuration, duration per period must be > 0
 - `ZeroNumPeriods (23)` – invalid configuration, number of periods must be > 0
 
+### Full `PayrollError` catalogue (all variants)
+
+The complete, current set of `PayrollError` variants with their stable `#[repr(u32)]` discriminants. Source of truth: [`onchain/contracts/stello_pay_contract/src/storage.rs`](onchain/contracts/stello_pay_contract/src/storage.rs).
+
+| Discriminant | Variant | Meaning |
+|-------------:|---------|---------|
+| 1 | `DisputeAlreadyRaised` | A dispute is already active for this agreement. |
+| 2 | `NotInGracePeriod` | Operation requires the agreement to be in its grace period. |
+| 3 | `NotParty` | Caller is not the employer or employee for this agreement. |
+| 4 | `NotArbiter` | Caller is not the configured arbiter. |
+| 5 | `InvalidPayout` | `pay_employee + refund_employer` exceeds total locked funds. |
+| 6 | `ActiveDispute` | Operation blocked while a dispute is active. |
+| 7 | `AgreementNotFound` | Referenced agreement id does not exist. |
+| 8 | `NoDispute` | Attempting to resolve or query a non-existent dispute. |
+| 9 | `NoEmployee` | Employee index or address not present in the agreement. |
+| 10 | `NotActivated` | Agreement (or related state) must be active. |
+| 11 | `Unauthorized` | Generic access-control violation (wrong caller/role). |
+| 12 | `InvalidEmployeeIndex` | Out-of-range employee index. |
+| 13 | `InvalidData` | Malformed or inconsistent stored data. |
+| 14 | `TransferFailed` | Token transfer client call returned an error. |
+| 15 | `InsufficientEscrowBalance` | Agreement escrow does not cover the requested payment. |
+| 16 | `NoPeriodsToClaim` | Time-based escrow has no newly claimable periods. |
+| 17 | `AgreementNotActivated` | Agreement must be activated before the operation. |
+| 18 | `InvalidAgreementMode` | Operation incompatible with the agreement mode. |
+| 19 | `AgreementPaused` | Operation not allowed while the agreement is `Paused`. |
+| 20 | `AllPeriodsClaimed` | All time-based periods have already been claimed. |
+| 21 | `ZeroAmountPerPeriod` | Config invalid: amount per period must be > 0. |
+| 22 | `ZeroPeriodDuration` | Config invalid: duration per period must be > 0. |
+| 23 | `ZeroNumPeriods` | Config invalid: number of periods must be > 0. |
+| 24 | `EmergencyPaused` | Operation not allowed while the emergency pause is active. |
+| 25 | `NotGuardian` | Caller is not the emergency guardian. |
+| 26 | `TimelockActive` | A withdrawal/action timelock is still active. |
+| 27 | `InvalidTimelock` | Supplied timelock configuration/value is invalid. |
+| 28 | `MultisigApprovalRequired` | Operation requires multisig approval before execution. |
+| 29 | `ExchangeRateNotFound` | Missing or unconfigured FX rate for a currency pair. |
+| 30 | `ExchangeRateOverflow` | Arithmetic overflow/underflow during FX conversion. |
+| 31 | `ExchangeRateInvalid` | Invalid FX rate (e.g. non-positive). |
+| 32 | `GraceExtensionInvalid` | Grace-extension args invalid (zero, overflow, wrong status, unauthorized). |
+| 33 | `GraceExtensionCapExceeded` | Extension would exceed the owner-configured cumulative cap. |
+| 34 | `RateLimited` | Rate limiter rejected the call (too many requests for the caller). |
+| 35 | `BatchTooLarge` | Caller supplied more than `MAX_BATCH_SIZE` batch items. |
+| 36 | `MilestoneAmountInvalid` | Milestone amount must be strictly positive. |
+| 37 | `MilestoneAgreementInvalidStatus` | Milestone agreement not in a valid status for the operation. |
+| 38 | `MilestoneNotFound` | Referenced milestone (or its agreement record) was not found. |
+| 39 | `MilestoneAlreadyApproved` | Milestone has already been approved. |
+| 40 | `MilestoneNotApproved` | Milestone has not been approved yet. |
+| 41 | `MilestoneAlreadyClaimed` | Milestone has already been claimed. |
+| 42 | `EmployeeAlreadyExists` | Employee address already present; duplicate add would break the 1:1 mapping. |
+| 43 | `ReentrancyDetected` | Reentrant call into a guarded claim path was detected. |
+
+> **Append-only convention:** new variants are always **appended** with the next sequential `#[repr(u32)]` discriminant (the list currently ends at `43`). Never reorder, renumber, or insert a variant in the middle — existing on-chain clients and stored discriminants depend on this stability. Always update the table above when adding or removing a variant (source: [`storage.rs`](onchain/contracts/stello_pay_contract/src/storage.rs)).
+
 These codes are surfaced in batch results:
 
 - `PayrollClaimResult.error_code` (0 = success, otherwise `PayrollError` discriminant)
