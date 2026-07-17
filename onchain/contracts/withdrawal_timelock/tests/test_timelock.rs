@@ -830,3 +830,71 @@ fn queue_admin_change_not_affected_by_withdrawal_validation() {
     let op: TimelockedOperation = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Queued);
 }
+
+// ─── Group H: Maturity × cancel interaction (issue #754) ──────────────────────
+// The contract has no dedicated guardian/veto role, so per the issue's stated
+// fallback scope this group documents and tests the *current* cancel/maturity
+// interaction: a withdrawal that has already matured (its `eta` has passed) but
+// has not yet been executed can still be cancelled by the admin. This proves
+// funds can never be locked into an un-executable, un-cancellable state.
+
+#[test]
+fn matured_withdrawal_can_be_cancelled_before_execution() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    // Queue and advance past the maturity timestamp so the op is matured.
+    let op_id = queue_and_advance(&client, &admin, withdrawal_kind(&env), &env);
+
+    // Sanity: the operation is matured (ledger time >= eta) but still Queued.
+    let before = client.get_operation(&op_id).unwrap();
+    assert_eq!(before.status, OperationStatus::Queued);
+    assert!(env.ledger().timestamp() >= before.eta);
+
+    // Cancelling a matured-but-unexecuted withdrawal must succeed. This is the
+    // veto path that prevents a matured withdrawal from ever being locked.
+    client.cancel(&admin, &op_id);
+
+    let after = client.get_operation(&op_id).unwrap();
+    assert_eq!(after.status, OperationStatus::Cancelled);
+    assert!(after.cancelled_at.is_some());
+    assert!(after.executed_at.is_none());
+    // The queued counter must be released so the slot is not stuck forever.
+    assert_eq!(client.get_queued_count(), 0u32);
+}
+
+#[test]
+fn matured_withdrawal_cancel_then_execute_fails() {
+    // Security property: a matured, cancelled withdrawal can neither be
+    // re-executed nor left in a stuck-forever state.
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    let op_id = queue_and_advance(&client, &admin, withdrawal_kind(&env), &env);
+    client.cancel(&admin, &op_id);
+
+    let res = client.try_execute(&admin, &op_id);
+    assert_eq!(res, Err(Ok(TimelockError::AlreadyExecutedOrCancelled)));
+
+    // State is terminal and consistent — no double execution, no lock.
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Cancelled);
+    assert!(op.cancelled_at.is_some());
+    assert!(op.executed_at.is_none());
+}
+
+#[test]
+fn matured_withdrawal_executes_normally() {
+    // Execution after legitimate maturity must continue to work unchanged.
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    let op_id = queue_and_advance(&client, &admin, withdrawal_kind(&env), &env);
+
+    client.execute(&admin, &op_id);
+
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Executed);
+    assert!(op.executed_at.is_some());
+    assert!(op.cancelled_at.is_none());
+}

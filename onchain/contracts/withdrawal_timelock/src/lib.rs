@@ -406,6 +406,11 @@ impl WithdrawalTimelock {
     /// @notice Cancels a queued operation before it is executed.
     /// @dev Admin-only. Sets `cancelled_at` for the audit trail.
     ///      Already-executed operations cannot be cancelled.
+    ///      Cancellation is permitted at any point while the operation remains
+    ///      in the `Queued` state — including *after* it has matured (its `eta`
+    ///      has passed) but before it is executed. This guarantees a matured
+    ///      withdrawal can always be vetoed/cancelled, so funds can never be
+    ///      locked into an un-executable, un-cancellable state.
     ///      Emits: `("timelock_cancelled", op_id) → ()`.
     /// @param caller Admin address cancelling the operation; must authenticate.
     /// @param op_id  Operation identifier returned by `queue`.
