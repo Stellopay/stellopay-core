@@ -85,6 +85,7 @@ The Soroban workspace is defined in [`onchain/Cargo.toml`](onchain/Cargo.toml). 
 - [Examples](docs/examples/README.md)
 - [Best practices](docs/best-practices/README.md)
 - [Developer tools](docs/dev-tools/README.md)
+- [CI and local checks](docs/ci.md)
 - [Migrations](docs/migrations.md)
 - [Upgrade and migration strategy](docs/upgrade-migration-strategy.md)
 - [Windows build notes](docs/windows-build.md)
@@ -124,7 +125,7 @@ See [Building on Windows](docs/windows-build.md) for the full Windows guidance.
 
 ## CI
 
-The on-chain workspace uses GitHub Actions to build and test Soroban contracts on pull requests and pushes to the main branches. See [`onchain/README.md`](onchain/README.md) for the CI overview and local setup notes.
+The on-chain workspace uses GitHub Actions to build and test Soroban contracts on pull requests and pushes to the main branches. See [`onchain/README.md`](onchain/README.md) for the CI overview and local setup notes. For the exact list of commands CI runs and how to run them locally, see [CI and local checks](docs/ci.md).
 
 ## Contributing and security
 

@@ -16,6 +16,34 @@ It performs:
 4. **WASM build** — `stellar contract build` in `onchain/contracts/stello_pay_contract` and `onchain/contracts/template_versioning`.
 5. **Coverage** — `cargo llvm-cov` over the same two packages; produces `onchain/codecov.json` and uploads it as a workflow artifact.
 
+## Run locally (matches Contracts CI)
+
+The commands below mirror **exactly** what the **Contracts CI** job runs in
+[`.github/workflows/contracts.yml`](.github/workflows/contracts.yml) on every push
+and pull request targeting `main`. Run them from the `onchain` workspace root so the
+working directory matches CI.
+
+```bash
+cd onchain
+
+# 1. Formatting gate — must be clean (identical to CI)
+cargo fmt --all -- --check
+
+# 2. Build every contract crate in the workspace
+cargo build --workspace --verbose
+
+# 3. Run the full test suite across the workspace
+cargo test --workspace --verbose
+```
+
+> **Keep this section in sync with `.github/workflows/contracts.yml`.**
+> If the workflow changes its command sequence, update the three steps above to match.
+
+The `wasm32-unknown-unknown` target and the `stellar` CLI are **not** part of the CI
+gate above — they are only needed when you also want to produce a deployable WASM. For
+those supplementary commands see the [Local environment](#local-environment) →
+[Commands](#commands) section below.
+
 ### Optional Codecov
 
 To publish reports to [Codecov](https://codecov.io), add a repository secret `CODECOV_TOKEN` and uncomment (or enable) the Codecov step in `contracts.yml`. The job is configured so missing token does not fail the workflow by default.
