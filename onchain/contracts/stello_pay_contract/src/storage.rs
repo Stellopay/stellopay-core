@@ -359,7 +359,25 @@ pub struct BatchEscrowCreateResult {
     pub results: Vec<EscrowCreateResult>,
 }
 
-/// Error types for payroll operations
+/// Error codes returned by payroll operations.
+///
+/// # ⚠️ Discriminant stability — APPEND ONLY
+///
+/// These numeric codes are part of the contract's **stable interface**:
+/// off-chain indexers, explorers, and client SDKs match on the *numeric
+/// discriminant*, not the variant name. Treat a shipped assignment as frozen.
+///
+/// **Rules (enforced by `tests/test_payroll_error_discriminants.rs`):**
+/// - New variants MUST be **appended** at the end with the next consecutive
+///   integer (`= N`).
+/// - Never insert a variant in the middle, never reorder, never renumber an
+///   existing variant, and never reuse a retired number.
+/// - Violating any of these silently renumbers existing errors and can make an
+///   off-chain system misinterpret one failure type as another — low
+///   likelihood, but high confusion cost.
+///
+/// The dedicated test fails the build if any existing variant's discriminant
+/// changes, so accidental renumbering is caught in CI before release.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
