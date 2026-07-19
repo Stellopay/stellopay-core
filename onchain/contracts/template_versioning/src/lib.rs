@@ -42,6 +42,10 @@ pub struct TemplateVersionRecord {
     pub created_at: u64,
     /// When true, `create_agreement` rejects this version unless explicitly allowed.
     pub deprecated: bool,
+    /// Optional human-readable reason for deprecation (e.g. "security fix",
+    /// "legal change", "routine update"). `None` until the version is
+    /// deprecated, or if the caller chose not to supply one.
+    pub deprecation_reason: Option<String>,
 }
 
 /// Agreement created from a specific template version.
@@ -65,6 +69,7 @@ pub struct AgreementBinding {
 /// - `template_id` – Stable identifier of the owning template.
 /// - `version`     – Version number that was deprecated.
 /// - `timestamp`   – Ledger timestamp at the moment of deprecation.
+/// - `reason`      – Optional human-readable reason for the deprecation.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct TemplateVersionDeprecated {
@@ -74,6 +79,8 @@ pub struct TemplateVersionDeprecated {
     pub version: u32,
     /// Ledger timestamp at the moment of deprecation.
     pub timestamp: u64,
+    /// Optional human-readable reason for the deprecation.
+    pub reason: Option<String>,
 }
 
 #[contracterror]
@@ -162,6 +169,7 @@ impl TemplateVersioning {
             migration_notes,
             created_at: now,
             deprecated,
+            deprecation_reason: None,
         };
         storage.set(&DataKey::TemplateVersion(template_id, version), &record);
         storage.set(&DataKey::TemplateLatest(template_id), &version);
@@ -169,11 +177,17 @@ impl TemplateVersioning {
     }
 
     /// Mark a version as deprecated so new agreements cannot use it (unless caller uses force).
+    ///
+    /// `reason` is an optional human-readable explanation (e.g. "security fix",
+    /// "legal change", "routine update") stored alongside the `deprecated` flag
+    /// and readable via [`TemplateVersioning::get_version`]. Pass `None` to
+    /// deprecate without recording a reason.
     pub fn deprecate_version(
         env: Env,
         owner: Address,
         template_id: u64,
         version: u32,
+        reason: Option<String>,
     ) -> Result<(), VersioningError> {
         owner.require_auth();
         let storage = env.storage().persistent();
@@ -187,6 +201,7 @@ impl TemplateVersioning {
         let mut rec: TemplateVersionRecord =
             storage.get(&key).ok_or(VersioningError::VersionNotFound)?;
         rec.deprecated = true;
+        rec.deprecation_reason = reason.clone();
         storage.set(&key, &rec);
 
         let now = env.ledger().timestamp();
@@ -196,6 +211,7 @@ impl TemplateVersioning {
                 template_id,
                 version,
                 timestamp: now,
+                reason,
             },
         );
 

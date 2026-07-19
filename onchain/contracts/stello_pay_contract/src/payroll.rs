@@ -1,19 +1,19 @@
 use soroban_sdk::token::TokenClient;
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{Address, Env, String, Vec};
 
 use crate::audit::{record_entry, AuditEvent};
 use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
     emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
-    emit_grace_period_finalized, emit_milestone_funded, emit_multisig_config_changed,
-    emit_payment_received, emit_payment_sent, emit_payroll_claimed, emit_set_arbiter,
-    AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent,
-    AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent,
-    DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, ExchangeRateChangedEvent,
-    GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
-    MilestoneClaimed, MilestoneFundedEvent, MultisigConfigChangedEvent, PaymentReceivedEvent,
-    PaymentSentEvent, PayrollClaimedEvent,
+    emit_grace_period_finalized, emit_milestone_funded, emit_milestone_rejected,
+    emit_multisig_config_changed, emit_payment_received, emit_payment_sent, emit_payroll_claimed,
+    emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
+    AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
+    BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
+    ExchangeRateChangedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded,
+    MilestoneApproved, MilestoneClaimed, MilestoneFundedEvent, MilestoneRejectedEvent,
+    MultisigConfigChangedEvent, PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
@@ -590,6 +590,16 @@ pub fn approve_milestone(
         return Err(PayrollError::MilestoneAlreadyApproved);
     }
 
+    // Guard: cannot approve a milestone that has been rejected.
+    let already_rejected: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneRejected(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_rejected {
+        return Err(PayrollError::MilestoneAlreadyRejected);
+    }
+
     env.storage().persistent().set(
         &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
         &true,
@@ -617,7 +627,116 @@ pub fn approve_milestone(
     Ok(())
 }
 
-/// Claims payment for an approved milestone
+/// Rejects a milestone, preventing it from being approved or claimed.
+///
+/// Only the employer may reject a milestone. A rejected milestone is
+/// permanently excluded from the approval-claim lifecycle; it can be neither
+/// approved nor claimed after this call. The stored escrow balance is **not**
+/// adjusted — the employer should fund a replacement milestone or cancel the
+/// agreement to recover unused escrow.
+///
+/// # Arguments
+/// * `env`          - Contract environment.
+/// * `agreement_id` - ID of the milestone agreement.
+/// * `milestone_id` - 1-based ID of the milestone to reject.
+/// * `reason`       - Optional human-readable rationale. Pass an empty string
+///                    when no reason is required.
+///
+/// # Errors
+/// * `PayrollError::AgreementNotFound`                — agreement or employer record missing.
+/// * `PayrollError::MilestoneAgreementInvalidStatus`  — agreement is not `Created` or `Active`.
+/// * `PayrollError::MilestoneNotFound`                — `milestone_id` is out of range.
+/// * `PayrollError::MilestoneAlreadyRejected`         — milestone was already rejected.
+/// * `PayrollError::MilestoneAlreadyApprovedCannotReject` — milestone is already approved.
+/// * `PayrollError::MilestoneAlreadyClaimedCannotReject`  — milestone is already claimed.
+///
+/// # Events
+/// Emits [`MilestoneRejectedEvent`] on success.
+pub fn reject_milestone(
+    env: Env,
+    agreement_id: u128,
+    milestone_id: u32,
+    reason: String,
+) -> Result<(), PayrollError> {
+    // Auth: only the employer may reject a milestone.
+    let employer: Address = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::Employer(agreement_id))
+        .ok_or(PayrollError::AgreementNotFound)?;
+    employer.require_auth();
+
+    // Agreement must exist and be in a mutable state.
+    let status: AgreementStatus = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::Status(agreement_id))
+        .ok_or(PayrollError::AgreementNotFound)?;
+    if status != AgreementStatus::Created && status != AgreementStatus::Active {
+        return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
+
+    // Milestone must exist.
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
+        .ok_or(PayrollError::MilestoneNotFound)?;
+    if milestone_id == 0 || milestone_id > count {
+        return Err(PayrollError::MilestoneNotFound);
+    }
+
+    // Guard: cannot re-reject.
+    let already_rejected: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneRejected(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_rejected {
+        return Err(PayrollError::MilestoneAlreadyRejected);
+    }
+
+    // Guard: cannot reject a milestone that has already been claimed.
+    // Checked before the approved guard because a claimed milestone is also
+    // approved; the more specific error takes priority.
+    let already_claimed: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_claimed {
+        return Err(PayrollError::MilestoneAlreadyClaimedCannotReject);
+    }
+
+    // Guard: cannot reject a milestone that has already been approved.
+    let already_approved: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_approved {
+        return Err(PayrollError::MilestoneAlreadyApprovedCannotReject);
+    }
+
+    // Mark the milestone as rejected.
+    env.storage().persistent().set(
+        &MilestoneKey::MilestoneRejected(agreement_id, milestone_id),
+        &true,
+    );
+
+    // Emit the structured rejection event so off-chain indexers can track it.
+    emit_milestone_rejected(
+        &env,
+        MilestoneRejectedEvent {
+            agreement_id,
+            milestone_id,
+            rejected_by: employer,
+            reason,
+        },
+    );
+
+    Ok(())
+}
 ///
 /// # Arguments
 /// * `env` - Contract environment

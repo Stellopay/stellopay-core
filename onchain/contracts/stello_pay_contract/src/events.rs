@@ -293,3 +293,28 @@ pub struct MultisigConfigChangedEvent {
 pub fn emit_multisig_config_changed(env: &Env, event: MultisigConfigChangedEvent) {
     event.publish(env);
 }
+
+/// Event: A milestone was rejected by the employer.
+///
+/// Emitted when an employer explicitly rejects a submitted milestone via
+/// `reject_milestone`. The `rejected_by` field records the employer address
+/// at the time of rejection and `reason` is the optional human-readable
+/// rationale supplied by the caller. Off-chain indexers can use this event
+/// to update milestone status, notify contributors, and track rejection history.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MilestoneRejectedEvent {
+    /// The milestone agreement that contains the rejected milestone.
+    pub agreement_id: u128,
+    /// 1-based identifier of the rejected milestone within the agreement.
+    pub milestone_id: u32,
+    /// The employer address that performed the rejection.
+    pub rejected_by: Address,
+    /// Optional free-text reason provided by the employer.
+    pub reason: soroban_sdk::String,
+}
+
+/// Emits a [`MilestoneRejectedEvent`] for the given rejection.
+pub fn emit_milestone_rejected(env: &Env, event: MilestoneRejectedEvent) {
+    event.publish(env);
+}
