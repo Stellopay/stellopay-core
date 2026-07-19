@@ -299,14 +299,18 @@ fn deprecate_with_reason_is_stored_and_readable() {
         .unwrap()
         .unwrap();
 
-    let rec: TemplateVersionRecord = client.try_get_version(&tid, &ver).unwrap().unwrap();
-    assert!(rec.deprecated);
-    assert_eq!(rec.deprecation_reason, Some(reason.clone()));
-
+    // Inspect the emitted event right after the call that produced it — the
+    // test env's event log only reflects the most recent top-level
+    // invocation, so a subsequent `get_version` call (itself a fresh
+    // invocation) would clear it before we get a chance to look.
     let all_events = env.events().all();
     let last = all_events.last().unwrap();
     let emitted: TemplateVersionDeprecated = last.2.into_val(&env);
-    assert_eq!(emitted.reason, Some(reason));
+    assert_eq!(emitted.reason, Some(reason.clone()));
+
+    let rec: TemplateVersionRecord = client.try_get_version(&tid, &ver).unwrap().unwrap();
+    assert!(rec.deprecated);
+    assert_eq!(rec.deprecation_reason, Some(reason));
 }
 
 /// Deprecating without a reason (existing-caller behavior) still succeeds and
@@ -340,14 +344,17 @@ fn deprecate_without_reason_still_works() {
         .unwrap()
         .unwrap();
 
-    let rec: TemplateVersionRecord = client.try_get_version(&tid, &ver).unwrap().unwrap();
-    assert!(rec.deprecated);
-    assert_eq!(rec.deprecation_reason, None);
-
+    // Inspect the emitted event right after the call that produced it, before
+    // the follow-up `get_version` read (itself a fresh top-level invocation)
+    // clears the test env's event log.
     let all_events = env.events().all();
     let last = all_events.last().unwrap();
     let emitted: TemplateVersionDeprecated = last.2.into_val(&env);
     assert_eq!(emitted.reason, None);
+
+    let rec: TemplateVersionRecord = client.try_get_version(&tid, &ver).unwrap().unwrap();
+    assert!(rec.deprecated);
+    assert_eq!(rec.deprecation_reason, None);
 }
 
 /// Non-owner cannot deprecate, so no event is emitted.
