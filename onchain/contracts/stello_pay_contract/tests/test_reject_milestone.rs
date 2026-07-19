@@ -32,7 +32,13 @@ use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-fn setup() -> (Env, Address, Address, Address, PayrollContractClient<'static>) {
+fn setup() -> (
+    Env,
+    Address,
+    Address,
+    Address,
+    PayrollContractClient<'static>,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -110,7 +116,8 @@ fn test_reject_milestone_empty_reason_accepted() {
     let (agreement_id, milestone_id) =
         funded_milestone(&client, &employer, &contributor, &token, 1_000, 300);
 
-    let result = client.try_reject_milestone(&agreement_id, &milestone_id, &String::from_str(&env, ""));
+    let result =
+        client.try_reject_milestone(&agreement_id, &milestone_id, &String::from_str(&env, ""));
     assert!(result.is_ok(), "empty reason should be accepted");
 }
 
@@ -122,7 +129,11 @@ fn test_rejected_milestone_cannot_be_approved() {
     let (agreement_id, milestone_id) =
         funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
 
-    client.reject_milestone(&agreement_id, &milestone_id, &String::from_str(&env, "rejected"));
+    client.reject_milestone(
+        &agreement_id,
+        &milestone_id,
+        &String::from_str(&env, "rejected"),
+    );
 
     let result = client.try_approve_milestone(&agreement_id, &milestone_id);
     assert_eq!(
@@ -140,7 +151,11 @@ fn test_rejected_milestone_cannot_be_claimed() {
 
     // Reject before approval — the milestone was never approved, so claim
     // fails with MilestoneNotApproved (the approved flag is still false).
-    client.reject_milestone(&agreement_id, &milestone_id, &String::from_str(&env, "not accepted"));
+    client.reject_milestone(
+        &agreement_id,
+        &milestone_id,
+        &String::from_str(&env, "not accepted"),
+    );
 
     let result = client.try_claim_milestone(&agreement_id, &milestone_id);
     assert_eq!(
@@ -156,9 +171,17 @@ fn test_reject_already_rejected_milestone_returns_error() {
     let (agreement_id, milestone_id) =
         funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
 
-    client.reject_milestone(&agreement_id, &milestone_id, &String::from_str(&env, "first"));
+    client.reject_milestone(
+        &agreement_id,
+        &milestone_id,
+        &String::from_str(&env, "first"),
+    );
 
-    let result = client.try_reject_milestone(&agreement_id, &milestone_id, &String::from_str(&env, "second"));
+    let result = client.try_reject_milestone(
+        &agreement_id,
+        &milestone_id,
+        &String::from_str(&env, "second"),
+    );
     assert_eq!(
         result,
         Err(Ok(PayrollError::MilestoneAlreadyRejected)),
@@ -174,7 +197,11 @@ fn test_reject_approved_milestone_returns_error() {
 
     client.approve_milestone(&agreement_id, &milestone_id);
 
-    let result = client.try_reject_milestone(&agreement_id, &milestone_id, &String::from_str(&env, "too late"));
+    let result = client.try_reject_milestone(
+        &agreement_id,
+        &milestone_id,
+        &String::from_str(&env, "too late"),
+    );
     assert_eq!(
         result,
         Err(Ok(PayrollError::MilestoneAlreadyApprovedCannotReject)),
@@ -196,7 +223,11 @@ fn test_reject_claimed_milestone_returns_error() {
     // If there were unclaimed milestones in the same agreement, the status
     // would still be Active/Created and the MilestoneAlreadyClaimedCannotReject
     // guard would fire instead (see test_reject_claimed_milestone_with_pending).
-    let result = client.try_reject_milestone(&agreement_id, &milestone_id, &String::from_str(&env, "already paid"));
+    let result = client.try_reject_milestone(
+        &agreement_id,
+        &milestone_id,
+        &String::from_str(&env, "already paid"),
+    );
     assert_eq!(
         result,
         Err(Ok(PayrollError::MilestoneAgreementInvalidStatus)),
@@ -222,7 +253,11 @@ fn test_reject_claimed_milestone_with_pending() {
     // Agreement is still Active (milestone 2 is unclaimed).
 
     // Trying to reject milestone 1 (already claimed) should return the specific error.
-    let result = client.try_reject_milestone(&agreement_id, &1u32, &String::from_str(&env, "already paid"));
+    let result = client.try_reject_milestone(
+        &agreement_id,
+        &1u32,
+        &String::from_str(&env, "already paid"),
+    );
     assert_eq!(
         result,
         Err(Ok(PayrollError::MilestoneAlreadyClaimedCannotReject)),
@@ -269,8 +304,7 @@ fn test_reject_milestone_non_employer_panics() {
 #[test]
 fn test_reject_milestone_id_zero_returns_not_found() {
     let (env, employer, contributor, token, client) = setup();
-    let (agreement_id, _) =
-        funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
+    let (agreement_id, _) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
 
     let result = client.try_reject_milestone(&agreement_id, &0u32, &String::from_str(&env, ""));
     assert_eq!(
@@ -283,8 +317,7 @@ fn test_reject_milestone_id_zero_returns_not_found() {
 #[test]
 fn test_reject_milestone_out_of_range_returns_not_found() {
     let (env, employer, contributor, token, client) = setup();
-    let (agreement_id, _) =
-        funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
+    let (agreement_id, _) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
 
     let result = client.try_reject_milestone(&agreement_id, &99u32, &String::from_str(&env, ""));
     assert_eq!(
@@ -315,10 +348,17 @@ fn test_reject_milestone_does_not_change_escrow_balance() {
         funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
 
     let before = TokenClient::new(&env, &token).balance(&contract_address);
-    client.reject_milestone(&agreement_id, &milestone_id, &String::from_str(&env, "rejected; escrow unchanged"));
+    client.reject_milestone(
+        &agreement_id,
+        &milestone_id,
+        &String::from_str(&env, "rejected; escrow unchanged"),
+    );
     let after = TokenClient::new(&env, &token).balance(&contract_address);
 
-    assert_eq!(before, after, "escrow balance should be unchanged after rejection");
+    assert_eq!(
+        before, after,
+        "escrow balance should be unchanged after rejection"
+    );
 }
 
 // ── multi-milestone scenarios ─────────────────────────────────────────────────
@@ -335,7 +375,11 @@ fn test_reject_one_milestone_does_not_affect_others() {
     client.add_milestone(&agreement_id, &900i128);
 
     // Reject milestone 2 only.
-    client.reject_milestone(&agreement_id, &2u32, &String::from_str(&env, "milestone 2 rejected"));
+    client.reject_milestone(
+        &agreement_id,
+        &2u32,
+        &String::from_str(&env, "milestone 2 rejected"),
+    );
 
     // Milestones 1 and 3 should still be approvable and claimable.
     client.approve_milestone(&agreement_id, &1u32);
