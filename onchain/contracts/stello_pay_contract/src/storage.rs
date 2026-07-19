@@ -103,6 +103,11 @@ pub enum MilestoneKey {
     MilestoneApproved(u128, u32),
     /// Milestone claim status: (agreement_id, milestone_id) -> bool
     MilestoneClaimed(u128, u32),
+    /// Milestone rejection status: (agreement_id, milestone_id) -> bool
+    ///
+    /// Set to `true` by `reject_milestone`. A rejected milestone cannot be
+    /// approved or claimed and cannot be rejected again.
+    MilestoneRejected(u128, u32),
     /// Accounted escrow balance for a milestone agreement: agreement_id -> i128
     ///
     /// Tracks only tokens explicitly deposited via `fund_milestone_agreement`.
@@ -430,6 +435,14 @@ pub enum PayrollError {
     /// self-appoint (caller == arbiter), or the supplied arbiter is identical
     /// to the currently-set arbiter (no-op duplicate assignment).
     InvalidArbiter = 44,
+    /// The milestone has already been rejected by the employer.
+    /// Re-rejecting is idempotent-safe via an error so callers know the
+    /// milestone was not transitioned again.
+    MilestoneAlreadyRejected = 45,
+    /// Cannot reject a milestone that has already been approved.
+    MilestoneAlreadyApprovedCannotReject = 46,
+    /// Cannot reject a milestone that has already been claimed.
+    MilestoneAlreadyClaimedCannotReject = 47,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.

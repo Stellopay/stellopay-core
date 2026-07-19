@@ -405,6 +405,31 @@ impl PayrollContract {
         payroll::approve_milestone(env, agreement_id, milestone_id)
     }
 
+    /// Rejects a milestone, preventing it from being approved or claimed.
+    ///
+    /// Only the employer may reject a milestone. The milestone cannot be
+    /// re-rejected, approved, or claimed after this call. The stored escrow
+    /// balance is not adjusted — the employer should fund a replacement
+    /// milestone or cancel the agreement to recover unused escrow.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the milestone agreement.
+    /// * `milestone_id` - 1-based ID of the milestone to reject.
+    /// * `reason`       - Optional human-readable reason (pass empty string if none).
+    ///
+    /// # Requirements
+    /// - Caller must be the employer.
+    /// - Agreement must be in `Created` or `Active` status.
+    /// - Milestone must not already be rejected, approved, or claimed.
+    pub fn reject_milestone(
+        env: Env,
+        agreement_id: u128,
+        milestone_id: u32,
+        reason: soroban_sdk::String,
+    ) -> Result<(), PayrollError> {
+        payroll::reject_milestone(env, agreement_id, milestone_id, reason)
+    }
+
     /// Claims payment for an approved milestone.
     ///
     /// # Invariants
