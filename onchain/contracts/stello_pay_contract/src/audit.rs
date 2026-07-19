@@ -35,6 +35,19 @@ pub struct LifecycleAuditEntry {
     pub external_log_id: Option<u64>,
 }
 
+/// Paginated result of an employer-scoped audit query.
+///
+/// `next_start_id` is the append-only audit id to pass as `start_id` on a
+/// follow-up call to continue scanning where this page left off. It is
+/// `None` once the local audit log has been fully scanned, meaning there are
+/// no further entries to check (not necessarily that more matches exist).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmployerAuditPage {
+    pub entries: Vec<LifecycleAuditEntry>,
+    pub next_start_id: Option<u64>,
+}
+
 #[contracttype]
 #[derive(Clone)]
 enum AuditStorageKey {
@@ -95,6 +108,55 @@ pub fn get_audit_entry(env: &Env, audit_id: u64) -> Option<LifecycleAuditEntry> 
     env.storage()
         .persistent()
         .get(&AuditStorageKey::AuditEntry(audit_id))
+}
+
+/// @notice Returns lifecycle audit entries belonging to a specific employer's agreements.
+/// @dev Read-only: does not introduce any new write authorization surface. Scans local
+/// audit entries starting at `start_id` (an id of `0` is treated as `1`, i.e. the start of
+/// the log) in append-only id order. For each entry, resolves `agreement_id` to its
+/// `Agreement` and keeps only entries whose agreement `employer` matches the requested
+/// address.
+///
+/// Contract-level entries that use the sentinel `agreement_id` of `0` (e.g.
+/// `MultisigConfigChanged`, `ArbiterSet`) are not tied to any agreement and therefore have
+/// no employer to scope by — they are always excluded from employer-filtered results,
+/// even when their `actor` happens to be the requested employer.
+///
+/// Stops once `limit` matching entries have been collected or the audit log is exhausted.
+/// The unfiltered `get_audit_entry_count` / `get_audit_entry` behavior is unchanged by
+/// this function; it only adds a filtered view on top of the same underlying log.
+pub fn get_audit_entries_by_employer(
+    env: &Env,
+    employer: Address,
+    start_id: u64,
+    limit: u32,
+) -> EmployerAuditPage {
+    let mut entries = Vec::new(env);
+    let count = get_audit_entry_count(env);
+    let mut id = if start_id == 0 { 1 } else { start_id };
+    let mut next_start_id: Option<u64> = None;
+
+    while id <= count {
+        if entries.len() >= limit {
+            next_start_id = Some(id);
+            break;
+        }
+        if let Some(entry) = get_audit_entry(env, id) {
+            if entry.agreement_id != 0 {
+                if let Some(agreement) = crate::payroll::get_agreement(env, entry.agreement_id) {
+                    if agreement.employer == employer {
+                        entries.push_back(entry);
+                    }
+                }
+            }
+        }
+        id += 1;
+    }
+
+    EmployerAuditPage {
+        entries,
+        next_start_id,
+    }
 }
 
 /// @notice Records a successful lifecycle transition locally and in the configured audit logger.

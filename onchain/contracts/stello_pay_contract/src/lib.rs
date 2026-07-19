@@ -634,6 +634,22 @@ impl PayrollContract {
         audit::get_audit_entry(&env, audit_id)
     }
 
+    /// @notice Returns lifecycle audit entries scoped to a specific employer's agreements.
+    /// @dev Read-only query, no new write authorization surface. Filters the same local
+    /// audit log used by `get_audit_entry`, keeping only entries whose agreement belongs
+    /// to `employer`. Contract-level entries not tied to an agreement (sentinel
+    /// `agreement_id` of `0`) are excluded, since they have no employer to scope by.
+    /// Paginated via `start_id` (use `1` for the first page) and `limit`; the returned
+    /// `next_start_id` is passed as `start_id` on the next call, `None` once exhausted.
+    pub fn get_audit_entries_by_employer(
+        env: Env,
+        employer: Address,
+        start_id: u64,
+        limit: u32,
+    ) -> audit::EmployerAuditPage {
+        audit::get_audit_entries_by_employer(&env, employer, start_id, limit)
+    }
+
     /// Raise Dispute
     ///
     /// # Arguments
