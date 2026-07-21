@@ -181,9 +181,7 @@ fn chaos_batch_partial_completion_and_rollback() {
     advance_time(&env, ONE_DAY + 1);
 
     let indices = soroban_sdk::Vec::from_array(&env, [0u32, 1u32]);
-    let batch = client
-        .batch_claim_payroll(&e1, &agreement_id, &indices)
-        .unwrap();
+    let batch = client.batch_claim_payroll(&e1, &agreement_id, &indices);
 
     assert_eq!(batch.successful_claims, 1);
     assert_eq!(batch.failed_claims, 1);
@@ -193,15 +191,18 @@ fn chaos_batch_partial_completion_and_rollback() {
 
     assert!(r0.success);
     assert!(!r1.success);
-    assert_eq!(r1.error_code, PayrollError::InsufficientEscrowBalance as u32);
+    assert_eq!(
+        r1.error_code,
+        PayrollError::InsufficientEscrowBalance as u32
+    );
 
     // State: e1 has claimed one period, e2 still at zero.
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &0u32), 1);
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &1u32), 0);
 }
 
-/// Chaos test: simulate a failure during `claim_payroll_in_token` (e.g. payout 
-/// token transfer panics) and verify that the conversion rolls back cleanly 
+/// Chaos test: simulate a failure during `claim_payroll_in_token` (e.g. payout
+/// token transfer panics) and verify that the conversion rolls back cleanly
 /// without partial state mutation or locked funds.
 #[test]
 fn chaos_claim_in_token_transfer_failure_does_not_corrupt_state() {
@@ -223,7 +224,7 @@ fn chaos_claim_in_token_transfer_failure_does_not_corrupt_state() {
         DataKey::set_exchange_rate(&env, &base_token, &payout_token, rate);
     });
 
-    // Set up DataKey-based escrow tracking for the payout token but do NOT mint 
+    // Set up DataKey-based escrow tracking for the payout token but do NOT mint
     // any tokens to the contract to force a transfer panic mid-claim.
     env.as_contract(&contract_id, || {
         DataKey::set_agreement_activation_time(&env, agreement_id, env.ledger().timestamp());
@@ -263,7 +264,8 @@ fn chaos_claim_in_token_transfer_failure_does_not_corrupt_state() {
 
     // Now mint the tokens and verify the claim succeeds (no stuck funds).
     mint(&env, &payout_token, &contract_id, 10_000);
-    let res_retry = client.try_claim_payroll_in_token(&employee, &agreement_id, &0u32, &payout_token);
+    let res_retry =
+        client.try_claim_payroll_in_token(&employee, &agreement_id, &0u32, &payout_token);
     assert!(res_retry.is_ok());
 
     let claimed_final = client.get_employee_claimed_periods(&agreement_id, &0u32);
