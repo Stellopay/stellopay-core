@@ -6,7 +6,9 @@ use soroban_sdk::{
     Address, BytesN, Env, Vec,
 };
 
-use multisig::{MultisigContract, MultisigContractClient, OperationKind, OperationStatus};
+use multisig::{
+    MultisigContract, MultisigContractClient, OperationKind, OperationStatus, OperationType,
+};
 
 fn create_env() -> Env {
     let env = Env::default();
@@ -326,6 +328,111 @@ fn guardian_cannot_execute_cancelled_operation() {
 }
 
 // ==================== Security: Threshold Changes Mid-Flight ====================
+
+#[test]
+fn lowering_override_requires_current_override_threshold() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let raise = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::SetThresholdOverride(OperationType::ContractUpgrade, Some(3)),
+    );
+    client.approve_operation(&signers.get(1).unwrap(), &raise);
+
+    let lower = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::SetThresholdOverride(OperationType::ContractUpgrade, Some(1)),
+    );
+    client.approve_operation(&signers.get(1).unwrap(), &lower);
+
+    assert_eq!(
+        client.get_operation(&lower).unwrap().status,
+        OperationStatus::Pending
+    );
+    assert_eq!(
+        client.get_threshold_override(&OperationType::ContractUpgrade),
+        Some(3)
+    );
+
+    client.approve_operation(&signers.get(2).unwrap(), &lower);
+    assert_eq!(
+        client.get_operation(&lower).unwrap().status,
+        OperationStatus::Executed
+    );
+    assert_eq!(
+        client.get_effective_threshold(&OperationType::ContractUpgrade),
+        1
+    );
+}
+
+#[test]
+fn guardian_cannot_bypass_threshold_for_override_change() {
+    let env = create_env();
+    let (_id, client, _owner, signers, guardian) = setup_2of3(&env);
+
+    let change = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::SetThresholdOverride(OperationType::LargePayment, Some(1)),
+    );
+    let result = client.try_emergency_execute(&guardian, &change);
+
+    assert!(result.is_err());
+    assert_eq!(
+        client.get_operation(&change).unwrap().status,
+        OperationStatus::Pending
+    );
+    assert_eq!(
+        client.get_threshold_override(&OperationType::LargePayment),
+        None
+    );
+}
+
+#[test]
+fn invalid_threshold_overrides_are_rejected() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    for threshold in [0, 4] {
+        let result = client.try_propose_operation(
+            &signers.get(0).unwrap(),
+            &OperationKind::SetThresholdOverride(OperationType::DisputeResolution, Some(threshold)),
+        );
+        assert!(result.is_err());
+    }
+}
+
+#[test]
+fn removing_override_requires_override_then_restores_default() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let raise = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::SetThresholdOverride(OperationType::DisputeResolution, Some(3)),
+    );
+    client.approve_operation(&signers.get(1).unwrap(), &raise);
+
+    let remove = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::SetThresholdOverride(OperationType::DisputeResolution, None),
+    );
+    client.approve_operation(&signers.get(1).unwrap(), &remove);
+    assert_eq!(
+        client.get_operation(&remove).unwrap().status,
+        OperationStatus::Pending
+    );
+
+    client.approve_operation(&signers.get(2).unwrap(), &remove);
+    assert_eq!(
+        client.get_threshold_override(&OperationType::DisputeResolution),
+        None
+    );
+    assert_eq!(
+        client.get_effective_threshold(&OperationType::DisputeResolution),
+        2
+    );
+}
 
 #[test]
 fn approve_with_threshold_higher_than_current_still_counts() {
