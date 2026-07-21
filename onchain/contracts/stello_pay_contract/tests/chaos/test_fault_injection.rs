@@ -222,4 +222,25 @@ fn chaos_claim_in_token_transfer_failure_does_not_corrupt_state() {
     env.as_contract(&contract_id, || {
         DataKey::set_exchange_rate(&env, &base_token, &payout_token, rate);
     });
+
+    // Set up DataKey-based escrow tracking for the payout token but do NOT mint 
+    // any tokens to the contract to force a transfer panic mid-claim.
+    env.as_contract(&contract_id, || {
+        DataKey::set_agreement_activation_time(&env, agreement_id, env.ledger().timestamp());
+        DataKey::set_agreement_period_duration(&env, agreement_id, ONE_DAY);
+        DataKey::set_agreement_token(&env, agreement_id, &base_token);
+        DataKey::set_agreement_escrow_balance(&env, agreement_id, &payout_token, 10_000);
+        DataKey::set_employee_count(&env, agreement_id, 1);
+        DataKey::set_employee(&env, agreement_id, 0, &employee);
+        DataKey::set_employee_salary(&env, agreement_id, 0, 1_000);
+        DataKey::set_employee_claimed_periods(&env, agreement_id, 0, 0);
+    });
+
+    let status_before = client.get_agreement(&agreement_id).unwrap().status;
+    let claimed_before = client.get_employee_claimed_periods(&agreement_id, &0u32);
+    let escrow_before: i128 = env.as_contract(&contract_id, || {
+        DataKey::get_agreement_escrow_balance(&env, agreement_id, &payout_token)
+    });
+
+    advance_time(&env, ONE_DAY + 1);
 }
