@@ -260,4 +260,12 @@ fn chaos_claim_in_token_transfer_failure_does_not_corrupt_state() {
     assert_eq!(claimed_before, 0);
     assert_eq!(claimed_after, 0);
     assert_eq!(escrow_before, escrow_after);
+
+    // Now mint the tokens and verify the claim succeeds (no stuck funds).
+    mint(&env, &payout_token, &contract_id, 10_000);
+    let res_retry = client.try_claim_payroll_in_token(&employee, &agreement_id, &0u32, &payout_token);
+    assert!(res_retry.is_ok());
+
+    let claimed_final = client.get_employee_claimed_periods(&agreement_id, &0u32);
+    assert_eq!(claimed_final, 1);
 }
