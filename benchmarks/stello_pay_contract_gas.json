@@ -1,7 +1,7 @@
 {
   "version": 1,
   "sdk_version": "23.5.2",
-  "captured_at": "2026-05-31",
+  "captured_at": "2026-07-21",
   "regression_tolerance_pct": 5,
   "host": "soroban-sdk test host (native Rust, not WASM)",
   "claim_payroll": {
@@ -13,11 +13,11 @@
     ]
   },
   "batch_claim_milestones": {
-    "description": "CPU instructions for batch_claim_milestones with N approved milestones",
+    "description": "CPU instructions for batch_claim_milestones with N approved milestones. Baseline bumped 2026-07-21 after #834 (operation-specific multisig thresholds) added a per-call threshold lookup, pushing n=20 ~6.2% over the prior baseline.",
     "cases": [
-      { "milestones": 1, "instructions": 406849 },
-      { "milestones": 5, "instructions": 1748134 },
-      { "milestones": 20, "instructions": 8442457 },
+      { "milestones": 1, "instructions": 408917 },
+      { "milestones": 5, "instructions": 1750598 },
+      { "milestones": 20, "instructions": 8965821 },
     ]
   }
 }
