@@ -215,4 +215,11 @@ fn chaos_claim_in_token_transfer_failure_does_not_corrupt_state() {
     let agreement_id = client.create_payroll_agreement(&employer, &base_token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, &employee, &1_000i128);
     client.activate_agreement(&agreement_id);
+
+    // Set a valid exchange rate so convert_amount succeeds.
+    // 1 base = 2 payout (rate = 2_000_000)
+    let rate: i128 = 2_000_000;
+    env.as_contract(&contract_id, || {
+        DataKey::set_exchange_rate(&env, &base_token, &payout_token, rate);
+    });
 }
