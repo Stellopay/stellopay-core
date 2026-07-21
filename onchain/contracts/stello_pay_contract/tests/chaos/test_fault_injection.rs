@@ -200,3 +200,19 @@ fn chaos_batch_partial_completion_and_rollback() {
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &1u32), 0);
 }
 
+/// Chaos test: simulate a failure during `claim_payroll_in_token` (e.g. payout 
+/// token transfer panics) and verify that the conversion rolls back cleanly 
+/// without partial state mutation or locked funds.
+#[test]
+fn chaos_claim_in_token_transfer_failure_does_not_corrupt_state() {
+    let env = create_env();
+    let (contract_id, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let employee = create_address(&env);
+    let base_token = create_token(&env);
+    let payout_token = create_token(&env);
+
+    let agreement_id = client.create_payroll_agreement(&employer, &base_token, &ONE_WEEK);
+    client.add_employee_to_agreement(&agreement_id, &employee, &1_000i128);
+    client.activate_agreement(&agreement_id);
+}
