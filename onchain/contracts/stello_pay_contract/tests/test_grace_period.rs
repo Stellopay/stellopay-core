@@ -1156,3 +1156,204 @@ fn test_time_boundary_cases() {
     let grace_end2 = client.get_grace_period_end(&agreement_id2).unwrap();
     assert_eq!(grace_end2, large_time + ONE_WEEK);
 }
+
+// ============================================================================
+// SECTION 6: MID-GRACE-PERIOD EXTENSION TESTS (Issue #820)
+// ============================================================================
+
+/// Test that extending a grace period while already partway through the original
+/// window computes the new deadline as `cancelled_at + base_grace + extension`,
+/// NOT as `current_time + extension`. The extension anchors to the original
+/// cancellation timestamp, not to the moment the extension is applied.
+#[test]
+fn test_extend_mid_grace_period() {
+    let env = create_test_environment();
+    let (_contract_id, client) = setup_contract(&env);
+    let employer = create_test_address(&env);
+    let token = create_token(&env);
+
+    let base_grace: u64 = ONE_HOUR; // 1-hour base window
+    let extension: u64 = ONE_HOUR / 2; // extend by 30 minutes
+
+    // Create and activate an agreement with a 1-hour grace period.
+    let agreement_id = setup_payroll_agreement_with_grace(
+        &env,
+        &client,
+        &employer,
+        &token,
+        ONE_DAY,
+        base_grace,
+        AgreementStatus::Active,
+    );
+
+    // Cancel and record the exact cancellation timestamp.
+    let cancelled_at = cancel_and_get_timestamp(&env, &client, agreement_id);
+
+    // Confirm the original grace window.
+    let original_end = client.get_grace_period_end(&agreement_id).unwrap();
+    assert_eq!(original_end, cancelled_at + base_grace);
+    assert!(client.is_grace_period_active(&agreement_id));
+
+    // Advance time to halfway through the original grace window — we are now
+    // inside the window but it has not yet expired.
+    advance_time(&env, base_grace / 2);
+    let mid_grace_time = get_current_time(&env);
+    assert!(mid_grace_time > cancelled_at);
+    assert!(client.is_grace_period_active(&agreement_id));
+
+    // Extend the grace period while still inside the original window.
+    client.extend_grace_period(&employer, &agreement_id, &extension);
+
+    // The new deadline MUST be anchored to cancelled_at, not to current time.
+    //   expected = cancelled_at + base_grace + extension
+    //   (NOT current_time + extension, which would be a different and incorrect value)
+    let expected_new_end = cancelled_at + base_grace + extension;
+    let actual_new_end = client.get_grace_period_end(&agreement_id).unwrap();
+    assert_eq!(
+        actual_new_end, expected_new_end,
+        "New deadline must be cancelled_at + base_grace + extension, not now + extension"
+    );
+
+    // The extension should be larger than what "now + extension" would give,
+    // proving the deadline is not accidentally computed from current time.
+    let now_plus_extension = mid_grace_time + extension;
+    assert!(
+        actual_new_end > now_plus_extension,
+        "Deadline extended from cancelled_at must exceed now + extension"
+    );
+
+    // Grace period must still be active (we have not reached the new end yet).
+    assert!(client.is_grace_period_active(&agreement_id));
+
+    // Advance to just before the new end — still active.
+    set_time(&env, expected_new_end - 1);
+    assert!(client.is_grace_period_active(&agreement_id));
+
+    // Advance to exactly the new end — no longer active (end is exclusive).
+    set_time(&env, expected_new_end);
+    assert!(!client.is_grace_period_active(&agreement_id));
+
+    // Advance past the new end — definitely expired.
+    set_time(&env, expected_new_end + 1);
+    assert!(!client.is_grace_period_active(&agreement_id));
+}
+
+/// Test that a claim made one second before the extended deadline succeeds, and
+/// a claim made at (or after) the extended deadline is rejected. Uses a funded
+/// payroll agreement so claims can actually complete token transfers.
+#[test]
+fn test_claim_boundary_mid_grace_extension() {
+    // --- Setup for "claim just before deadline succeeds" ---
+    {
+        let env = create_test_environment();
+        let (contract_id, client) = setup_contract(&env);
+        let employer = create_test_address(&env);
+        let token = create_token(&env);
+        let employee = create_test_address(&env);
+
+        let base_grace: u64 = ONE_HOUR;
+        let extension: u64 = ONE_HOUR / 2; // 30 minutes
+
+        let employees = vec![(employee.clone(), STANDARD_SALARY)];
+        let agreement_id = setup_funded_payroll_agreement(
+            &env,
+            &client,
+            &contract_id,
+            &employer,
+            &token,
+            &employees,
+            base_grace,
+        );
+
+        // Provide tokens for the contract to transfer out during claims.
+        mint(&env, &token, &contract_id, LARGE_AMOUNT);
+
+        // Advance 1 period so there is salary to claim.
+        advance_time(&env, ONE_DAY);
+
+        // Cancel the agreement.
+        let cancelled_at = cancel_and_get_timestamp(&env, &client, agreement_id);
+
+        // Move partway into the grace window (halfway).
+        advance_time(&env, base_grace / 2);
+        assert!(client.is_grace_period_active(&agreement_id));
+
+        // Extend the grace period while inside the window.
+        client.extend_grace_period(&employer, &agreement_id, &extension);
+        let new_deadline = client.get_grace_period_end(&agreement_id).unwrap();
+        assert_eq!(new_deadline, cancelled_at + base_grace + extension);
+
+        // Advance to one second before the extended deadline.
+        set_time(&env, new_deadline - 1);
+        assert!(client.is_grace_period_active(&agreement_id));
+
+        // Claim just before the deadline — MUST succeed.
+        let result = client.try_claim_payroll(&employee, &agreement_id, &0);
+        assert!(
+            result.is_ok(),
+            "Claim one second before extended deadline must succeed"
+        );
+        assert_eq!(get_balance(&env, &token, &employee), STANDARD_SALARY);
+    }
+
+    // --- Setup for "claim at/after deadline fails" ---
+    {
+        let env = create_test_environment();
+        let (contract_id, client) = setup_contract(&env);
+        let employer = create_test_address(&env);
+        let token = create_token(&env);
+        let employee = create_test_address(&env);
+
+        let base_grace: u64 = ONE_HOUR;
+        let extension: u64 = ONE_HOUR / 2; // 30 minutes
+
+        let employees = vec![(employee.clone(), STANDARD_SALARY)];
+        let agreement_id = setup_funded_payroll_agreement(
+            &env,
+            &client,
+            &contract_id,
+            &employer,
+            &token,
+            &employees,
+            base_grace,
+        );
+
+        mint(&env, &token, &contract_id, LARGE_AMOUNT);
+
+        // Advance 1 period so there is salary to claim.
+        advance_time(&env, ONE_DAY);
+
+        // Cancel the agreement.
+        let cancelled_at = cancel_and_get_timestamp(&env, &client, agreement_id);
+
+        // Move partway into the grace window.
+        advance_time(&env, base_grace / 2);
+
+        // Extend while inside the window.
+        client.extend_grace_period(&employer, &agreement_id, &extension);
+        let new_deadline = client.get_grace_period_end(&agreement_id).unwrap();
+        assert_eq!(new_deadline, cancelled_at + base_grace + extension);
+
+        // Advance to exactly the deadline — grace is expired.
+        set_time(&env, new_deadline);
+        assert!(!client.is_grace_period_active(&agreement_id));
+
+        // Claim AT the deadline — MUST fail.
+        let result_at = client.try_claim_payroll(&employee, &agreement_id, &0);
+        assert!(
+            result_at.is_err(),
+            "Claim at exactly the extended deadline must fail"
+        );
+
+        // Advance one second past the deadline — still expired.
+        set_time(&env, new_deadline + 1);
+        assert!(!client.is_grace_period_active(&agreement_id));
+
+        // Claim AFTER the deadline — MUST also fail.
+        let result_after = client.try_claim_payroll(&employee, &agreement_id, &0);
+        assert!(
+            result_after.is_err(),
+            "Claim one second after extended deadline must fail"
+        );
+    }
+}
