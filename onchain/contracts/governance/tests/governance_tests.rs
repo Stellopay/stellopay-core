@@ -160,6 +160,54 @@ fn employer_can_create_vote_finalize_and_multisig_signer_executes() {
 }
 
 #[test]
+fn backward_compatible_aliases_follow_full_lifecycle() {
+    let env = create_env();
+    let setup = setup(&env);
+    let key = Symbol::new(&env, "alias_parameter");
+
+    let proposal_id = setup.governance.propose(
+        &setup.owner,
+        &ProposalKind::ParameterChange(key.clone(), 42i128),
+    );
+    setup
+        .governance
+        .vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .vote(&setup.employer_a, &proposal_id, &VoteChoice::Abstain);
+
+    assert_eq!(
+        setup.governance.get_vote(&proposal_id, &setup.owner),
+        Some(VoteChoice::For)
+    );
+    assert_eq!(
+        setup.governance.get_vote(&proposal_id, &setup.employer_a),
+        Some(VoteChoice::Abstain)
+    );
+
+    advance_time(&env, 3601);
+    setup.governance.queue(&proposal_id);
+    advance_time(&env, 60);
+    setup.governance.execute(&setup.signer_a, &proposal_id);
+
+    assert_eq!(
+        setup.governance.get_proposal(&proposal_id).unwrap().status,
+        ProposalStatus::Executed
+    );
+    assert_eq!(setup.governance.get_parameter(&key), Some(42i128));
+
+    let cancelled_id = setup.governance.propose(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+    setup.governance.cancel(&setup.owner, &cancelled_id);
+    assert_eq!(
+        setup.governance.get_proposal(&cancelled_id).unwrap().status,
+        ProposalStatus::Cancelled
+    );
+}
+
+#[test]
 fn outsider_cannot_propose_or_vote() {
     let env = create_env();
     let setup = setup(&env);
@@ -214,6 +262,86 @@ fn proposal_is_defeated_without_quorum() {
     let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
     assert_eq!(proposal.status, ProposalStatus::Defeated);
     assert!(proposal.timelock_operation_id.is_none());
+}
+
+#[test]
+fn quorum_is_snapshotted_when_voting_power_changes_mid_vote() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // This proposal captures the initial quorum of two votes.
+    let existing_proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+    assert_eq!(
+        setup
+            .governance
+            .get_proposal(&existing_proposal_id)
+            .unwrap()
+            .quorum_votes,
+        2u32
+    );
+
+    // Add a voter and raise the configured quorum while voting is active.
+    // Neither change may retroactively alter the proposal's snapshot.
+    setup
+        .rbac
+        .grant_role(&setup.owner, &setup.outsider, &Role::Employer);
+    setup
+        .governance
+        .update_config(&setup.owner, &3u32, &3600u64);
+    setup
+        .governance
+        .cast_vote(&setup.owner, &existing_proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &existing_proposal_id, &VoteChoice::For);
+
+    let still_open = setup
+        .governance
+        .try_finalize_proposal(&existing_proposal_id);
+    assert_eq!(still_open, Err(Ok(GovernanceError::VotingStillOpen)));
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&existing_proposal_id);
+
+    let existing_proposal = setup
+        .governance
+        .get_proposal(&existing_proposal_id)
+        .unwrap();
+    assert_eq!(existing_proposal.quorum_votes, 2u32);
+    assert_eq!(existing_proposal.status, ProposalStatus::Succeeded);
+
+    // A proposal created after the update captures the new quorum of three.
+    let new_proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+    assert_eq!(
+        setup
+            .governance
+            .get_proposal(&new_proposal_id)
+            .unwrap()
+            .quorum_votes,
+        3u32
+    );
+
+    // Lowering the global configuration mid-vote cannot make this proposal
+    // pass with only one vote.
+    setup
+        .governance
+        .cast_vote(&setup.owner, &new_proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .update_config(&setup.owner, &1u32, &3600u64);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&new_proposal_id);
+
+    let new_proposal = setup.governance.get_proposal(&new_proposal_id).unwrap();
+    assert_eq!(new_proposal.quorum_votes, 3u32);
+    assert_eq!(new_proposal.status, ProposalStatus::Defeated);
 }
 
 #[test]
