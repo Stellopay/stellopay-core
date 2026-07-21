@@ -6,7 +6,9 @@ use soroban_sdk::{
     Address, BytesN, Env, Vec,
 };
 
-use multisig::{MultisigContract, MultisigContractClient, OperationKind, OperationStatus};
+use multisig::{
+    MultisigContract, MultisigContractClient, OperationKind, OperationStatus, OperationType,
+};
 
 fn create_env() -> Env {
     let env = Env::default();
@@ -136,6 +138,59 @@ fn threshold_execution_for_large_payment() {
     let op = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Executed);
     assert_eq!(token.balance(&recipient), 500i128);
+}
+
+#[test]
+fn operation_type_override_takes_effect_without_changing_default() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_initialized(&env);
+
+    let set_override = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::SetThresholdOverride(OperationType::ContractUpgrade, Some(3)),
+    );
+    client.approve_operation(&signers.get(1).unwrap(), &set_override);
+
+    assert_eq!(
+        client.get_threshold_override(&OperationType::ContractUpgrade),
+        Some(3)
+    );
+    assert_eq!(
+        client.get_effective_threshold(&OperationType::ContractUpgrade),
+        3
+    );
+    assert_eq!(
+        client.get_effective_threshold(&OperationType::DisputeResolution),
+        2
+    );
+
+    let upgrade = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::ContractUpgrade(
+            Address::generate(&env),
+            BytesN::from_array(&env, &[2u8; 32]),
+        ),
+    );
+    client.approve_operation(&signers.get(1).unwrap(), &upgrade);
+    assert_eq!(
+        client.get_operation(&upgrade).unwrap().status,
+        OperationStatus::Pending
+    );
+    client.approve_operation(&signers.get(2).unwrap(), &upgrade);
+    assert_eq!(
+        client.get_operation(&upgrade).unwrap().status,
+        OperationStatus::Executed
+    );
+
+    let dispute = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 7, 10, 0),
+    );
+    client.approve_operation(&signers.get(1).unwrap(), &dispute);
+    assert_eq!(
+        client.get_operation(&dispute).unwrap().status,
+        OperationStatus::Executed
+    );
 }
 
 #[test]
