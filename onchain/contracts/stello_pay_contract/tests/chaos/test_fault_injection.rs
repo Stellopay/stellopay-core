@@ -243,4 +243,21 @@ fn chaos_claim_in_token_transfer_failure_does_not_corrupt_state() {
     });
 
     advance_time(&env, ONE_DAY + 1);
+
+    // Attempting a claim should panic inside the payout token contract due to missing
+    // on-chain balance; catch the error via try_ wrapper.
+    let res = client.try_claim_payroll_in_token(&employee, &agreement_id, &0u32, &payout_token);
+    assert!(res.is_err());
+
+    let status_after = client.get_agreement(&agreement_id).unwrap().status;
+    let claimed_after = client.get_employee_claimed_periods(&agreement_id, &0u32);
+    let escrow_after: i128 = env.as_contract(&contract_id, || {
+        DataKey::get_agreement_escrow_balance(&env, agreement_id, &payout_token)
+    });
+
+    assert_eq!(status_before, AgreementStatus::Active);
+    assert_eq!(status_after, AgreementStatus::Active);
+    assert_eq!(claimed_before, 0);
+    assert_eq!(claimed_after, 0);
+    assert_eq!(escrow_before, escrow_after);
 }
