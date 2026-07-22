@@ -181,9 +181,7 @@ fn chaos_batch_partial_completion_and_rollback() {
     advance_time(&env, ONE_DAY + 1);
 
     let indices = soroban_sdk::Vec::from_array(&env, [0u32, 1u32]);
-    let batch = client
-        .batch_claim_payroll(&e1, &agreement_id, &indices)
-        .unwrap();
+    let batch = client.batch_claim_payroll(&e1, &agreement_id, &indices);
 
     assert_eq!(batch.successful_claims, 1);
     assert_eq!(batch.failed_claims, 1);
@@ -193,10 +191,83 @@ fn chaos_batch_partial_completion_and_rollback() {
 
     assert!(r0.success);
     assert!(!r1.success);
-    assert_eq!(r1.error_code, PayrollError::InsufficientEscrowBalance as u32);
+    assert_eq!(
+        r1.error_code,
+        PayrollError::InsufficientEscrowBalance as u32
+    );
 
     // State: e1 has claimed one period, e2 still at zero.
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &0u32), 1);
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &1u32), 0);
 }
 
+/// Chaos test: simulate a failure during `claim_payroll_in_token` (e.g. payout
+/// token transfer panics) and verify that the conversion rolls back cleanly
+/// without partial state mutation or locked funds.
+#[test]
+fn chaos_claim_in_token_transfer_failure_does_not_corrupt_state() {
+    let env = create_env();
+    let (contract_id, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let employee = create_address(&env);
+    let base_token = create_token(&env);
+    let payout_token = create_token(&env);
+
+    let agreement_id = client.create_payroll_agreement(&employer, &base_token, &ONE_WEEK);
+    client.add_employee_to_agreement(&agreement_id, &employee, &1_000i128);
+    client.activate_agreement(&agreement_id);
+
+    // Set a valid exchange rate so convert_amount succeeds.
+    // 1 base = 2 payout (rate = 2_000_000)
+    let rate: i128 = 2_000_000;
+    env.as_contract(&contract_id, || {
+        DataKey::set_exchange_rate(&env, &base_token, &payout_token, rate);
+    });
+
+    // Set up DataKey-based escrow tracking for the payout token but do NOT mint
+    // any tokens to the contract to force a transfer panic mid-claim.
+    env.as_contract(&contract_id, || {
+        DataKey::set_agreement_activation_time(&env, agreement_id, env.ledger().timestamp());
+        DataKey::set_agreement_period_duration(&env, agreement_id, ONE_DAY);
+        DataKey::set_agreement_token(&env, agreement_id, &base_token);
+        DataKey::set_agreement_escrow_balance(&env, agreement_id, &payout_token, 10_000);
+        DataKey::set_employee_count(&env, agreement_id, 1);
+        DataKey::set_employee(&env, agreement_id, 0, &employee);
+        DataKey::set_employee_salary(&env, agreement_id, 0, 1_000);
+        DataKey::set_employee_claimed_periods(&env, agreement_id, 0, 0);
+    });
+
+    let status_before = client.get_agreement(&agreement_id).unwrap().status;
+    let claimed_before = client.get_employee_claimed_periods(&agreement_id, &0u32);
+    let escrow_before: i128 = env.as_contract(&contract_id, || {
+        DataKey::get_agreement_escrow_balance(&env, agreement_id, &payout_token)
+    });
+
+    advance_time(&env, ONE_DAY + 1);
+
+    // Attempting a claim should panic inside the payout token contract due to missing
+    // on-chain balance; catch the error via try_ wrapper.
+    let res = client.try_claim_payroll_in_token(&employee, &agreement_id, &0u32, &payout_token);
+    assert!(res.is_err());
+
+    let status_after = client.get_agreement(&agreement_id).unwrap().status;
+    let claimed_after = client.get_employee_claimed_periods(&agreement_id, &0u32);
+    let escrow_after: i128 = env.as_contract(&contract_id, || {
+        DataKey::get_agreement_escrow_balance(&env, agreement_id, &payout_token)
+    });
+
+    assert_eq!(status_before, AgreementStatus::Active);
+    assert_eq!(status_after, AgreementStatus::Active);
+    assert_eq!(claimed_before, 0);
+    assert_eq!(claimed_after, 0);
+    assert_eq!(escrow_before, escrow_after);
+
+    // Now mint the tokens and verify the claim succeeds (no stuck funds).
+    mint(&env, &payout_token, &contract_id, 10_000);
+    let res_retry =
+        client.try_claim_payroll_in_token(&employee, &agreement_id, &0u32, &payout_token);
+    assert!(res_retry.is_ok());
+
+    let claimed_final = client.get_employee_claimed_periods(&agreement_id, &0u32);
+    assert_eq!(claimed_final, 1);
+}
