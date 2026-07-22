@@ -115,6 +115,11 @@ pub struct Proposal {
     pub proposer: Address,
     pub kind: ProposalKind,
     pub status: ProposalStatus,
+    /// Absolute quorum threshold captured when the proposal is created.
+    ///
+    /// Later configuration or RBAC changes must not alter this proposal's
+    /// participation requirement.
+    pub quorum_votes: u32,
     pub for_votes: u32,
     pub against_votes: u32,
     pub abstain_votes: u32,
@@ -477,6 +482,7 @@ impl GovernanceContract {
         require_eligible_voter(&env, &proposer)?;
 
         let voting_period = read_voting_period(&env)?;
+        let quorum_votes = read_quorum_votes(&env)?;
         let now = env.ledger().timestamp();
         let proposal_id = next_proposal_id(&env);
         let proposal = Proposal {
@@ -484,6 +490,7 @@ impl GovernanceContract {
             proposer,
             kind,
             status: ProposalStatus::Active,
+            quorum_votes,
             for_votes: 0,
             against_votes: 0,
             abstain_votes: 0,
@@ -564,10 +571,9 @@ impl GovernanceContract {
             .for_votes
             .saturating_add(proposal.against_votes)
             .saturating_add(proposal.abstain_votes);
-        let quorum_votes = read_quorum_votes(&env)?;
         let outcome = proposal.for_votes.cmp(&proposal.against_votes);
 
-        if total_votes < quorum_votes || outcome != Ordering::Greater {
+        if total_votes < proposal.quorum_votes || outcome != Ordering::Greater {
             proposal.status = ProposalStatus::Defeated;
             write_proposal(&env, &proposal);
             return Ok(());
