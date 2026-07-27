@@ -1,18 +1,18 @@
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{Address, Env, String, Vec};
 
-use crate::audit::{record_entry, AuditEvent};
-use crate::events::{
+use crate::audit::{record_entry, AuditEvent};use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
     emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
     emit_grace_period_finalized, emit_milestone_funded, emit_milestone_rejected,
-    emit_multisig_config_changed, emit_payment_received, emit_payment_sent, emit_payroll_claimed,
-    emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
-    AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
-    BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
-    ExchangeRateChangedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded,
-    MilestoneApproved, MilestoneClaimed, MilestoneFundedEvent, MilestoneRejectedEvent,
+    emit_milestone_expired, emit_multisig_config_changed, emit_payment_received, emit_payment_sent,
+    emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent,
+    AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent,
+    BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent,
+    EmployeeAddedEvent, ExchangeRateChangedEvent, GracePeriodExtendedEvent,
+    GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved, MilestoneClaimed,
+    MilestoneExpiredEvent, MilestoneFundedEvent, MilestoneRejectedEvent,
     MultisigConfigChangedEvent, PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
 };
 use crate::storage::{
@@ -737,11 +737,165 @@ pub fn reject_milestone(
 
     Ok(())
 }
+
+/// Marks a milestone as expired, recording that it was never approved, claimed,
+/// or rejected before the employer declared it ineligible.
+///
+/// This is an employer-initiated operation — only the agreement's employer may
+/// expire a milestone. The function does **not** release escrowed funds; the
+/// employer should fund a replacement milestone or cancel the agreement to
+/// recover unused escrow.
+///
+/// # When to use
+///
+/// Call `expire_milestone` when a milestone deadline has passed and neither
+/// party has moved it forward (no approval, claim, or rejection).  This cleanly
+/// closes the milestone's lifecycle slot so off-chain systems and auditors have
+/// a definitive terminal state rather than an ambiguous "never touched" record.
+///
+/// # Hook convention (`on_milestone_expired`)
+///
+/// After persisting the expiry flag and emitting `MilestoneExpiredEvent`, this
+/// function invokes `MilestoneContractInterface::on_milestone_expired` on any
+/// contract address stored under `StorageKey::MilestoneHookContract`.  The
+/// call is a best-effort fire-and-forget from the implementing contract's
+/// perspective; if no hook address is configured the call is skipped entirely.
+/// If the hook panics the whole transaction is rolled back by the Soroban host.
 ///
 /// # Arguments
-/// * `env` - Contract environment
-/// * `agreement_id` - ID of the agreement
-/// * `milestone_id` - ID of the milestone to claim
+/// * `env`          - Contract environment.
+/// * `agreement_id` - ID of the milestone agreement.
+/// * `milestone_id` - 1-based ID of the milestone to expire.
+///
+/// # Errors
+/// * `PayrollError::AgreementNotFound`                  — agreement or employer record missing.
+/// * `PayrollError::MilestoneAgreementInvalidStatus`    — agreement is not `Created` or `Active`.
+/// * `PayrollError::MilestoneNotFound`                  — `milestone_id` is out of range.
+/// * `PayrollError::MilestoneAlreadyExpired`            — milestone was already expired.
+/// * `PayrollError::MilestoneAlreadyApproved`           — milestone is already approved (contributor still has the right to claim it).
+/// * `PayrollError::MilestoneAlreadyClaimed`            — milestone is already claimed.
+/// * `PayrollError::MilestoneAlreadyRejected`           — milestone is already rejected.
+///
+/// # Events
+/// Emits [`MilestoneExpiredEvent`] on success.
+pub fn expire_milestone(
+    env: Env,
+    agreement_id: u128,
+    milestone_id: u32,
+) -> Result<(), PayrollError> {
+    // Auth: only the employer may expire a milestone.
+    let employer: Address = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::Employer(agreement_id))
+        .ok_or(PayrollError::AgreementNotFound)?;
+    employer.require_auth();
+
+    // Agreement must exist and be in a mutable state.
+    let status: AgreementStatus = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::Status(agreement_id))
+        .ok_or(PayrollError::AgreementNotFound)?;
+    if status != AgreementStatus::Created && status != AgreementStatus::Active {
+        return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
+
+    // Milestone must exist.
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
+        .ok_or(PayrollError::MilestoneNotFound)?;
+    if milestone_id == 0 || milestone_id > count {
+        return Err(PayrollError::MilestoneNotFound);
+    }
+
+    // Guard: cannot re-expire.
+    let already_expired: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneExpired(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_expired {
+        return Err(PayrollError::MilestoneAlreadyExpired);
+    }
+
+    // Guard: cannot expire a milestone that has already been claimed.
+    let already_claimed: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_claimed {
+        // Reuses MilestoneAlreadyClaimed (existing error) — callers can
+        // distinguish "cannot expire because claimed" from the claimed state.
+        return Err(PayrollError::MilestoneAlreadyClaimed);
+    }
+
+    // Guard: cannot expire a milestone that has already been approved
+    // (the contributor still has the right to claim it).
+    let already_approved: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_approved {
+        // Reuses MilestoneAlreadyApproved (existing error).
+        return Err(PayrollError::MilestoneAlreadyApproved);
+    }
+
+    // Guard: cannot expire a milestone that has already been rejected.
+    let already_rejected: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneRejected(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_rejected {
+        // Reuses MilestoneAlreadyRejected (existing error).
+        return Err(PayrollError::MilestoneAlreadyRejected);
+    }
+
+    // Retrieve the locked amount for the event (best-effort; 0 if not set).
+    let locked_amount: i128 = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
+        .unwrap_or(0i128);
+
+    // Mark the milestone as expired.
+    env.storage().persistent().set(
+        &MilestoneKey::MilestoneExpired(agreement_id, milestone_id),
+        &true,
+    );
+
+    // Emit the structured expiry event so off-chain indexers can track it.
+    emit_milestone_expired(
+        &env,
+        MilestoneExpiredEvent {
+            agreement_id,
+            milestone_id,
+            locked_amount,
+            expired_by: employer.clone(),
+        },
+    );
+
+    // Fire the on_milestone_expired hook if a hook contract address is
+    // configured.  This is a convention-based call — the hook contract must
+    // implement MilestoneContractInterface and its `on_milestone_expired`
+    // override.  The default no-op means contracts without an override are
+    // unaffected.  No hook address configured → silently skip.
+    if let Some(hook_addr) = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::MilestoneHookContract)
+    {
+        let hook_client = milestone_interface::MilestoneContractClient::new(&env, &hook_addr);
+        hook_client.on_milestone_expired(&agreement_id, &milestone_id);
+    }
+
+    Ok(())
+}
 ///
 /// # Requirements
 /// - Agreement must not be Paused
