@@ -2350,6 +2350,7 @@ dependencies = [
  "base64 0.21.7",
  "criterion",
  "hmac",
+ "milestone-interface",
  "multisig",
  "pbkdf2",
  "price_oracle",
