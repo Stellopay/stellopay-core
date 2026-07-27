@@ -17,12 +17,22 @@ async fn main() -> anyhow::Result<()> {
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     }
 
-    // Load configuration
-    let config = match load_config(&cli.config).await {
+    // Load configuration from the --config path (CLI flag, layer 1).
+    let cli_config = match load_config(&cli.config).await {
         Ok(config) => config,
         Err(e) => {
             eprintln!("Error loading config: {}", e);
             process::exit(classify_error(&e).as_u8());
+        }
+    };
+
+    // Merge with env vars and the optional project-local stellopay.toml
+    // (layers 2–4).  Precedence: CLI flag > env var > stellopay.toml > default.
+    let config = match resolve_config_with_project_file(Some(&cli_config), PROJECT_CONFIG_FILE) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Error resolving config: {}", e);
+            process::exit(1);
         }
     };
 

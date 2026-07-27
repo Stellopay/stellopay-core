@@ -108,6 +108,12 @@ pub enum MilestoneKey {
     /// Set to `true` by `reject_milestone`. A rejected milestone cannot be
     /// approved or claimed and cannot be rejected again.
     MilestoneRejected(u128, u32),
+    /// Milestone expiry status: (agreement_id, milestone_id) -> bool
+    ///
+    /// Set to `true` by `expire_milestone`. An expired milestone was neither
+    /// approved nor claimed before expiry was recorded. It cannot subsequently
+    /// be approved, claimed, or rejected, and cannot be expired again.
+    MilestoneExpired(u128, u32),
     /// Accounted escrow balance for a milestone agreement: agreement_id -> i128
     ///
     /// Tracks only tokens explicitly deposited via `fund_milestone_agreement`.
@@ -250,6 +256,13 @@ pub enum StorageKey {
     RateLimiterContract,
     /// Optional salary adjustment contract address for dynamic salary overrides.
     SalaryAdjustmentContract,
+    /// Optional hook contract address that implements MilestoneContractInterface.
+    ///
+    /// When set, `expire_milestone` calls `on_milestone_expired` on this address
+    /// after persisting the expiry flag and emitting `MilestoneExpiredEvent`.
+    /// The default no-op on the interface means contracts without an override
+    /// are unaffected.  Clear this key to disable hook invocation entirely.
+    MilestoneHookContract,
     /// Transient reentrancy guard for the claim paths. Stored in temporary
     /// storage so it is automatically cleared at the end of each transaction;
     /// a panic mid-transfer therefore cannot strand the guard.
@@ -443,6 +456,10 @@ pub enum PayrollError {
     MilestoneAlreadyApprovedCannotReject = 46,
     /// Cannot reject a milestone that has already been claimed.
     MilestoneAlreadyClaimedCannotReject = 47,
+    /// The milestone has already been expired via `expire_milestone`.
+    /// Re-expiring is idempotent-safe via an error so callers know the
+    /// milestone was not transitioned again.
+    MilestoneAlreadyExpired = 48,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.

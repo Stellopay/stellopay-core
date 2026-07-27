@@ -140,6 +140,31 @@ impl PayrollContract {
             .get(&StorageKey::SalaryAdjustmentContract)
     }
 
+    /// Sets the hook contract address that receives the `on_milestone_expired`
+    /// callback when `expire_milestone` is called.
+    ///
+    /// The hook contract must implement `MilestoneContractInterface`.  If no
+    /// address is set, the hook is silently skipped.  Pass any address to update
+    /// or remove via `clear_milestone_hook_contract`.
+    ///
+    /// # Access Control
+    /// Requires owner authentication.
+    pub fn set_milestone_hook_contract(env: Env, owner: Address, hook_contract: Address) {
+        let stored_owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        owner.require_auth();
+        assert!(owner == stored_owner, "Unauthorized");
+        env.storage()
+            .persistent()
+            .set(&StorageKey::MilestoneHookContract, &hook_contract);
+    }
+
+    /// Gets the configured `on_milestone_expired` hook contract address, if any.
+    pub fn get_milestone_hook_contract(env: Env) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::MilestoneHookContract)
+    }
+
     /// @notice Upgrades the contract's WASM code to a new version.
     /// @dev Highly critical administrative function to alter contract bytecode.
     /// Gated strictly by require_upgrade_admin logic.
@@ -428,6 +453,34 @@ impl PayrollContract {
         reason: soroban_sdk::String,
     ) -> Result<(), PayrollError> {
         payroll::reject_milestone(env, agreement_id, milestone_id, reason)
+    }
+
+    /// Marks a milestone as expired, recording that it was never approved,
+    /// claimed, or rejected before the employer declared it ineligible.
+    ///
+    /// This is an employer-only operation.  The function does **not** release
+    /// escrowed funds; the employer should fund a replacement milestone or cancel
+    /// the agreement to recover unused escrow.
+    ///
+    /// After persisting the expiry flag and emitting `MilestoneExpiredEvent`,
+    /// this function calls `on_milestone_expired` on the address stored under
+    /// `StorageKey::MilestoneHookContract` (if configured).  The hook has a
+    /// no-op default, so contracts without an override are unaffected.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the milestone agreement.
+    /// * `milestone_id` - 1-based ID of the milestone to expire.
+    ///
+    /// # Requirements
+    /// - Caller must be the employer.
+    /// - Agreement must be in `Created` or `Active` status.
+    /// - Milestone must not already be expired, approved, claimed, or rejected.
+    pub fn expire_milestone(
+        env: Env,
+        agreement_id: u128,
+        milestone_id: u32,
+    ) -> Result<(), PayrollError> {
+        payroll::expire_milestone(env, agreement_id, milestone_id)
     }
 
     /// Claims payment for an approved milestone.

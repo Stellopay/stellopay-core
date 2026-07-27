@@ -8,7 +8,7 @@ use tokio::fs;
 
 use stellopay_cli::commands::emergency_withdraw;
 use stellopay_cli::config::{get_secret_key, load_config};
-use stellopay_cli::utils::SorobanHttpClient;
+use stellopay_cli::utils::{RetryPolicy, SorobanHttpClient};
 use stellopay_cli::{AuthConfig, Config, ContractConfig, DefaultsConfig, Error, NetworkConfig};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -37,6 +37,7 @@ fn make_config(secret_key: Option<&str>) -> Config {
             token: None,
             frequency: "monthly".to_string(),
         },
+        retry: RetryPolicy::default(),
     }
 }
 

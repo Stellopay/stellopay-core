@@ -1,18 +1,18 @@
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{Address, Env, String, Vec};
 
-use crate::audit::{record_entry, AuditEvent};
-use crate::events::{
+use crate::audit::{record_entry, AuditEvent};use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
     emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
     emit_grace_period_finalized, emit_milestone_funded, emit_milestone_rejected,
-    emit_multisig_config_changed, emit_payment_received, emit_payment_sent, emit_payroll_claimed,
-    emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
-    AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
-    BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
-    ExchangeRateChangedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded,
-    MilestoneApproved, MilestoneClaimed, MilestoneFundedEvent, MilestoneRejectedEvent,
+    emit_milestone_expired, emit_multisig_config_changed, emit_payment_received, emit_payment_sent,
+    emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent,
+    AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent,
+    BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent,
+    EmployeeAddedEvent, ExchangeRateChangedEvent, GracePeriodExtendedEvent,
+    GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved, MilestoneClaimed,
+    MilestoneExpiredEvent, MilestoneFundedEvent, MilestoneRejectedEvent,
     MultisigConfigChangedEvent, PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
 };
 use crate::storage::{
@@ -737,11 +737,165 @@ pub fn reject_milestone(
 
     Ok(())
 }
+
+/// Marks a milestone as expired, recording that it was never approved, claimed,
+/// or rejected before the employer declared it ineligible.
+///
+/// This is an employer-initiated operation — only the agreement's employer may
+/// expire a milestone. The function does **not** release escrowed funds; the
+/// employer should fund a replacement milestone or cancel the agreement to
+/// recover unused escrow.
+///
+/// # When to use
+///
+/// Call `expire_milestone` when a milestone deadline has passed and neither
+/// party has moved it forward (no approval, claim, or rejection).  This cleanly
+/// closes the milestone's lifecycle slot so off-chain systems and auditors have
+/// a definitive terminal state rather than an ambiguous "never touched" record.
+///
+/// # Hook convention (`on_milestone_expired`)
+///
+/// After persisting the expiry flag and emitting `MilestoneExpiredEvent`, this
+/// function invokes `MilestoneContractInterface::on_milestone_expired` on any
+/// contract address stored under `StorageKey::MilestoneHookContract`.  The
+/// call is a best-effort fire-and-forget from the implementing contract's
+/// perspective; if no hook address is configured the call is skipped entirely.
+/// If the hook panics the whole transaction is rolled back by the Soroban host.
 ///
 /// # Arguments
-/// * `env` - Contract environment
-/// * `agreement_id` - ID of the agreement
-/// * `milestone_id` - ID of the milestone to claim
+/// * `env`          - Contract environment.
+/// * `agreement_id` - ID of the milestone agreement.
+/// * `milestone_id` - 1-based ID of the milestone to expire.
+///
+/// # Errors
+/// * `PayrollError::AgreementNotFound`                  — agreement or employer record missing.
+/// * `PayrollError::MilestoneAgreementInvalidStatus`    — agreement is not `Created` or `Active`.
+/// * `PayrollError::MilestoneNotFound`                  — `milestone_id` is out of range.
+/// * `PayrollError::MilestoneAlreadyExpired`            — milestone was already expired.
+/// * `PayrollError::MilestoneAlreadyApproved`           — milestone is already approved (contributor still has the right to claim it).
+/// * `PayrollError::MilestoneAlreadyClaimed`            — milestone is already claimed.
+/// * `PayrollError::MilestoneAlreadyRejected`           — milestone is already rejected.
+///
+/// # Events
+/// Emits [`MilestoneExpiredEvent`] on success.
+pub fn expire_milestone(
+    env: Env,
+    agreement_id: u128,
+    milestone_id: u32,
+) -> Result<(), PayrollError> {
+    // Auth: only the employer may expire a milestone.
+    let employer: Address = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::Employer(agreement_id))
+        .ok_or(PayrollError::AgreementNotFound)?;
+    employer.require_auth();
+
+    // Agreement must exist and be in a mutable state.
+    let status: AgreementStatus = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::Status(agreement_id))
+        .ok_or(PayrollError::AgreementNotFound)?;
+    if status != AgreementStatus::Created && status != AgreementStatus::Active {
+        return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
+
+    // Milestone must exist.
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
+        .ok_or(PayrollError::MilestoneNotFound)?;
+    if milestone_id == 0 || milestone_id > count {
+        return Err(PayrollError::MilestoneNotFound);
+    }
+
+    // Guard: cannot re-expire.
+    let already_expired: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneExpired(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_expired {
+        return Err(PayrollError::MilestoneAlreadyExpired);
+    }
+
+    // Guard: cannot expire a milestone that has already been claimed.
+    let already_claimed: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_claimed {
+        // Reuses MilestoneAlreadyClaimed (existing error) — callers can
+        // distinguish "cannot expire because claimed" from the claimed state.
+        return Err(PayrollError::MilestoneAlreadyClaimed);
+    }
+
+    // Guard: cannot expire a milestone that has already been approved
+    // (the contributor still has the right to claim it).
+    let already_approved: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_approved {
+        // Reuses MilestoneAlreadyApproved (existing error).
+        return Err(PayrollError::MilestoneAlreadyApproved);
+    }
+
+    // Guard: cannot expire a milestone that has already been rejected.
+    let already_rejected: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneRejected(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_rejected {
+        // Reuses MilestoneAlreadyRejected (existing error).
+        return Err(PayrollError::MilestoneAlreadyRejected);
+    }
+
+    // Retrieve the locked amount for the event (best-effort; 0 if not set).
+    let locked_amount: i128 = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
+        .unwrap_or(0i128);
+
+    // Mark the milestone as expired.
+    env.storage().persistent().set(
+        &MilestoneKey::MilestoneExpired(agreement_id, milestone_id),
+        &true,
+    );
+
+    // Emit the structured expiry event so off-chain indexers can track it.
+    emit_milestone_expired(
+        &env,
+        MilestoneExpiredEvent {
+            agreement_id,
+            milestone_id,
+            locked_amount,
+            expired_by: employer.clone(),
+        },
+    );
+
+    // Fire the on_milestone_expired hook if a hook contract address is
+    // configured.  This is a convention-based call — the hook contract must
+    // implement MilestoneContractInterface and its `on_milestone_expired`
+    // override.  The default no-op means contracts without an override are
+    // unaffected.  No hook address configured → silently skip.
+    if let Some(hook_addr) = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::MilestoneHookContract)
+    {
+        let hook_client = milestone_interface::MilestoneContractClient::new(&env, &hook_addr);
+        hook_client.on_milestone_expired(&agreement_id, &milestone_id);
+    }
+
+    Ok(())
+}
 ///
 /// # Requirements
 /// - Agreement must not be Paused
@@ -1262,17 +1416,31 @@ fn create_payroll_agreement_internal(
 
 /// Creates multiple payroll agreements in a single transaction.
 ///
+/// # Atomicity
+///
+/// This function is **all-or-nothing**: it validates every item in `items`
+/// before writing any state.  If any entry fails validation the function
+/// returns `Err(PayrollError::InvalidData)` and **zero** agreements are
+/// created.  This prevents partial batch application from leaving the system
+/// in an inconsistent state.
+///
+/// # Validation rules (per item)
+/// * `grace_period_seconds` must be > 0 — a zero grace period is ambiguous
+///   and prevents any dispute or claim window from opening after cancellation.
+///
 /// # Arguments
 /// * `env` - Contract environment
 /// * `employer` - Address of the employer creating the agreements
-/// * `items` - Vector of payroll creation parameters
+/// * `items` - Vector of payroll creation parameters.
 ///   At most `MAX_BATCH_SIZE` items are accepted.
 ///
 /// # Returns
-/// `Ok(BatchPayrollCreateResult)` — always succeeds at the batch level
-/// unless `items` is empty; inspect per-item results for failures.
+/// `Ok(BatchPayrollCreateResult)` — every item was valid and all agreements
+/// were created successfully.
 ///
-/// # Batch-level errors
+/// # Errors
+/// * `PayrollError::InvalidData` — `items` is empty **or** any item fails
+///   per-item validation.  No agreements are created in either case.
 /// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` items.
 ///
 /// # Gas rationale
@@ -1293,10 +1461,21 @@ pub fn batch_create_payroll_agreements(
         return Err(PayrollError::BatchTooLarge);
     }
 
+    // ── Validation pass ──────────────────────────────────────────────────────
+    // Inspect every item BEFORE writing any state.  A single invalid entry
+    // causes the whole batch to be rejected so no partial set of agreements
+    // is ever persisted.
+    for params in items.iter() {
+        if params.grace_period_seconds == 0 {
+            return Err(PayrollError::InvalidData);
+        }
+    }
+
+    // ── Creation pass ────────────────────────────────────────────────────────
+    // All items passed validation; now commit every agreement.
     let mut agreement_ids: Vec<u128> = Vec::new(env);
     let mut results: Vec<PayrollCreateResult> = Vec::new(env);
     let mut total_created: u32 = 0;
-    let total_failed: u32 = 0;
 
     for params in items.iter() {
         let id = create_payroll_agreement_internal(
@@ -1316,7 +1495,7 @@ pub fn batch_create_payroll_agreements(
 
     Ok(BatchPayrollCreateResult {
         total_created,
-        total_failed,
+        total_failed: 0,
         agreement_ids,
         results,
     })
@@ -1441,17 +1620,32 @@ fn create_escrow_agreement_internal(
 
 /// Creates multiple escrow agreements in a single transaction.
 ///
+/// # Atomicity
+///
+/// This function is **all-or-nothing**: it validates every item in `items`
+/// before writing any state.  If any entry fails validation the function
+/// returns `Err` with the first validation error encountered and **zero**
+/// agreements are created.  This prevents partial batch application from
+/// leaving the system in an inconsistent state.
+///
+/// # Validation rules (per item, mirrors `create_escrow_agreement_internal`)
+/// * `amount_per_period` must be > 0  → `ZeroAmountPerPeriod`
+/// * `period_seconds` must be > 0     → `ZeroPeriodDuration`
+/// * `num_periods` must be > 0        → `ZeroNumPeriods`
+///
 /// # Arguments
 /// * `env` - Contract environment
 /// * `employer` - Address of the employer
-/// * `items` - Vector of escrow creation parameters
+/// * `items` - Vector of escrow creation parameters.
 ///   At most `MAX_BATCH_SIZE` items are accepted.
 ///
 /// # Returns
-/// `Ok(BatchEscrowCreateResult)` — always succeeds at the batch level
-/// unless `items` is empty; inspect per-item `results` for failures.
+/// `Ok(BatchEscrowCreateResult)` — every item was valid and all agreements
+/// were created successfully.
 ///
-/// # Batch-level errors
+/// # Errors
+/// * First per-item `PayrollError` — `items` is empty **or** any item fails
+///   per-item validation.  No agreements are created in either case.
 /// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` items.
 ///
 /// # Gas rationale
@@ -1472,13 +1666,33 @@ pub fn batch_create_escrow_agreements(
         return Err(PayrollError::BatchTooLarge);
     }
 
+    // ── Validation pass ──────────────────────────────────────────────────────
+    // Inspect every item BEFORE writing any state.  A single invalid entry
+    // causes the whole batch to be rejected so no partial set of agreements
+    // is ever persisted.
+    for params in items.iter() {
+        if params.amount_per_period <= 0 {
+            return Err(PayrollError::ZeroAmountPerPeriod);
+        }
+        if params.period_seconds == 0 {
+            return Err(PayrollError::ZeroPeriodDuration);
+        }
+        if params.num_periods == 0 {
+            return Err(PayrollError::ZeroNumPeriods);
+        }
+    }
+
+    // ── Creation pass ────────────────────────────────────────────────────────
+    // All items passed validation; now commit every agreement.
     let mut agreement_ids: Vec<u128> = Vec::new(env);
     let mut results: Vec<EscrowCreateResult> = Vec::new(env);
     let mut total_created: u32 = 0;
-    let mut total_failed: u32 = 0;
 
     for params in items.iter() {
-        match create_escrow_agreement_internal(
+        // create_escrow_agreement_internal performs the same checks — this
+        // call can only fail if there is a bug in our validation pass above,
+        // so we propagate any unexpected error rather than silently swallowing it.
+        let id = create_escrow_agreement_internal(
             env,
             employer.clone(),
             params.contributor.clone(),
@@ -1486,30 +1700,19 @@ pub fn batch_create_escrow_agreements(
             params.amount_per_period,
             params.period_seconds,
             params.num_periods,
-        ) {
-            Ok(id) => {
-                agreement_ids.push_back(id);
-                results.push_back(EscrowCreateResult {
-                    agreement_id: Some(id),
-                    success: true,
-                    error_code: 0,
-                });
-                total_created += 1;
-            }
-            Err(err) => {
-                results.push_back(EscrowCreateResult {
-                    agreement_id: None,
-                    success: false,
-                    error_code: err as u32,
-                });
-                total_failed += 1;
-            }
-        }
+        )?;
+        agreement_ids.push_back(id);
+        results.push_back(EscrowCreateResult {
+            agreement_id: Some(id),
+            success: true,
+            error_code: 0,
+        });
+        total_created += 1;
     }
 
     Ok(BatchEscrowCreateResult {
         total_created,
-        total_failed,
+        total_failed: 0,
         agreement_ids,
         results,
     })
@@ -3396,10 +3599,49 @@ fn get_next_agreement_id(env: &Env) -> u128 {
 }
 
 /// Internal helper: convert `amount` from `from_token` into `to_token` using
+/// Convert `amount` from `from_token` units into `to_token` units using
 /// the configured FX rate stored in `DataKey::ExchangeRate`.
 ///
-/// The rate is interpreted as `quote_per_base * FX_SCALE`, where `from_token`
-/// is the base and `to_token` is the quote.
+/// # Rate encoding
+///
+/// The rate is a fixed-point integer interpreted as
+/// `quote_per_base * FX_SCALE` (where `FX_SCALE = 1_000_000`).  Examples:
+/// - `rate = 1_000_000` → 1 base = 1 quote (1:1 parity)
+/// - `rate = 2_000_000` → 1 base = 2 quote
+/// - `rate =   500_000` → 1 base = 0.5 quote
+///
+/// # Rounding convention — floor (truncation toward zero)
+///
+/// The conversion uses **integer floor division**:
+/// ```text
+/// converted = (amount * rate) / FX_SCALE   (truncated, not rounded)
+/// ```
+/// Any fractional remainder is silently discarded.  Callers that require
+/// exact amounts should ensure `amount * rate` is divisible by `FX_SCALE`,
+/// or accumulate multiple periods before claiming so the truncated dust
+/// remains negligible relative to the total payout.
+///
+/// # Dust guard — conversion-to-zero is rejected
+///
+/// If the floor-division result is less than `DUST_THRESHOLD` (= 1), the
+/// function returns `Err(PayrollError::ExchangeRateInvalid)` instead of
+/// crediting zero tokens.  This prevents a scenario where:
+/// 1. An employee claims a period.
+/// 2. The claimed period is marked as paid (`claimed_periods` increments).
+/// 3. The employee receives **zero** tokens — effectively burning the salary.
+///
+/// Concretely: a `salary_per_period` of 1 with a sub-parity rate
+/// (e.g. `rate = 999_999`) gives `(1 * 999_999) / 1_000_000 = 0`, which
+/// triggers the dust guard.  The employee must either accumulate more periods
+/// or use a larger salary so the conversion yields ≥ 1 quote unit.
+///
+/// # Errors
+///
+/// | Error | Condition |
+/// |---|---|
+/// | `ExchangeRateNotFound` | No rate configured for the pair, or rate is stale |
+/// | `ExchangeRateInvalid` | Rate ≤ 0, timestamp inconsistency, or result < `DUST_THRESHOLD` |
+/// | `ExchangeRateOverflow` | `amount * rate` overflows `i128` |
 fn convert_amount(
     env: &Env,
     from_token: &Address,
