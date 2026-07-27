@@ -4,6 +4,7 @@ pub mod utils;
 
 pub use config::{create_config_file, get_secret_key, load_config};
 
+use crate::utils::RetryPolicy;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -172,6 +173,11 @@ pub struct Config {
     pub contract: ContractConfig,
     pub auth: AuthConfig,
     pub defaults: DefaultsConfig,
+    /// Retry policy for read-only (`query`) RPC calls. Defaults are applied
+    /// automatically when the key is absent from a TOML config, so existing
+    /// config files keep loading.
+    #[serde(default)]
+    pub retry: RetryPolicy,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -309,6 +315,7 @@ impl Default for Config {
                 token: None,
                 frequency: "monthly".to_string(),
             },
+            retry: RetryPolicy::default(),
         }
     }
 }

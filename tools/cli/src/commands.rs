@@ -533,8 +533,9 @@ pub async fn webhook_list_command(
 
     println!("Webhooks for Owner: {}", owner);
 
-    // Call contract to list webhooks
-    let contract_client = SorobanHttpClient::new(&config.network.rpc_url);
+    // Call contract to list webhooks (read-only → safe to retry)
+    let contract_client = SorobanHttpClient::new(&config.network.rpc_url)
+        .with_retry_policy(config.retry);
 
     let webhook_ids: Vec<u64> = contract_client
         .query_as(&contract_id, "list_owner_webhooks", vec![("owner", &owner)])
@@ -570,8 +571,9 @@ pub async fn webhook_get_command(
     println!("Webhook Information:");
     println!("  Webhook ID: {}", webhook_id);
 
-    // Call contract to get webhook
-    let contract_client = SorobanHttpClient::new(&config.network.rpc_url);
+    // Call contract to get webhook (read-only → safe to retry)
+    let contract_client = SorobanHttpClient::new(&config.network.rpc_url)
+        .with_retry_policy(config.retry);
 
     let webhook: WebhookInfo = contract_client
         .query_as(
@@ -615,8 +617,9 @@ pub async fn webhook_stats_command(contract_id: Option<String>, config: &Config)
 
     println!("Webhook Statistics:");
 
-    // Call contract to get webhook stats
-    let contract_client = SorobanHttpClient::new(&config.network.rpc_url);
+    // Call contract to get webhook stats (read-only → safe to retry)
+    let contract_client = SorobanHttpClient::new(&config.network.rpc_url)
+        .with_retry_policy(config.retry);
 
     let stats: WebhookStats = contract_client
         .query_as(&contract_id, "get_webhook_stats", vec![])
