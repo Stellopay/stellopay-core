@@ -621,3 +621,21 @@ async fn test_query_as_returns_err_on_shape_mismatch() {
         "expected shape-mismatch error, got: {err}"
     );
 }
+
+// --- Issue #803: `--version` flag and structured exit codes ------------------
+
+#[test]
+fn version_flag_prints_version_and_exits_zero() {
+    let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
+    cmd.arg("--version");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("stellopay-cli").and(predicate::str::contains("0.1.0")));
+}
+
+#[test]
+fn unknown_flag_exits_with_usage_code() {
+    let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
+    cmd.arg("--no-such-flag");
+    cmd.assert().failure().code(2);
+}
