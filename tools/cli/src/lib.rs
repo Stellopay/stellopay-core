@@ -7,6 +7,7 @@ pub use config::{
     resolve_config, resolve_config_with_project_file, FileConfig, PROJECT_CONFIG_FILE,
 };
 
+use crate::utils::RetryPolicy;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -175,6 +176,11 @@ pub struct Config {
     pub contract: ContractConfig,
     pub auth: AuthConfig,
     pub defaults: DefaultsConfig,
+    /// Retry policy for read-only (`query`) RPC calls. Defaults are applied
+    /// automatically when the key is absent from a TOML config, so existing
+    /// config files keep loading.
+    #[serde(default)]
+    pub retry: RetryPolicy,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -312,6 +318,7 @@ impl Default for Config {
                 token: None,
                 frequency: "monthly".to_string(),
             },
+            retry: RetryPolicy::default(),
         }
     }
 }

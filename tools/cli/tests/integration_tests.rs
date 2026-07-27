@@ -8,7 +8,7 @@ use tokio::fs;
 
 use stellopay_cli::commands::emergency_withdraw;
 use stellopay_cli::config::{get_secret_key, load_config};
-use stellopay_cli::utils::SorobanHttpClient;
+use stellopay_cli::utils::{RetryPolicy, SorobanHttpClient};
 use stellopay_cli::{AuthConfig, Config, ContractConfig, DefaultsConfig, Error, NetworkConfig};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -37,6 +37,7 @@ fn make_config(secret_key: Option<&str>) -> Config {
             token: None,
             frequency: "monthly".to_string(),
         },
+        retry: RetryPolicy::default(),
     }
 }
 
@@ -620,4 +621,72 @@ async fn test_query_as_returns_err_on_shape_mismatch() {
         err.to_string().contains("did not match expected shape"),
         "expected shape-mismatch error, got: {err}"
     );
+}
+
+#[tokio::test]
+async fn test_query_retries_transient_failure_then_succeeds() {
+    // A flaky RPC endpoint that fails the first two attempts but succeeds on
+    // the third must yield a successful result without a manual re-run.
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/query"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("transient"))
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/query"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "result": "ok" })))
+        .mount(&server)
+        .await;
+
+    let client = SorobanHttpClient::new(&server.uri()).with_retry_policy(RetryPolicy {
+        max_attempts: 3,
+        base_delay_ms: 0,
+        max_delay_ms: 0,
+    });
+
+    let result = client
+        .query(VALID_CONTRACT, "get_webhook_stats", vec![])
+        .await
+        .expect("transient failures should be retried until success");
+
+    assert_eq!(result, "ok");
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3, "should have retried up to the 3rd attempt");
+}
+
+#[tokio::test]
+async fn test_query_exhausts_retries_on_persistent_failure() {
+    // A persistently failing endpoint must surface a clear error after the
+    // configured number of attempts (and must not loop forever).
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/query"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("down"))
+        .mount(&server)
+        .await;
+
+    let client = SorobanHttpClient::new(&server.uri()).with_retry_policy(RetryPolicy {
+        max_attempts: 3,
+        base_delay_ms: 0,
+        max_delay_ms: 0,
+    });
+
+    let err = client
+        .query(VALID_CONTRACT, "get_webhook_stats", vec![])
+        .await
+        .expect_err("persistent failure must surface as Err after max attempts");
+
+    assert!(
+        err.to_string().contains("after 3 attempt"),
+        "error should cite the attempt count, got: {err}"
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3, "should attempt exactly max_attempts times");
 }
