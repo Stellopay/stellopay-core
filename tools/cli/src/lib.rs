@@ -2,7 +2,10 @@ pub mod commands;
 pub mod config;
 pub mod utils;
 
-pub use config::{create_config_file, get_secret_key, load_config};
+pub use config::{
+    create_config_file, get_secret_key, load_config, load_project_config,
+    resolve_config, resolve_config_with_project_file, FileConfig, PROJECT_CONFIG_FILE,
+};
 
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
