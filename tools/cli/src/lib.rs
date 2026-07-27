@@ -342,3 +342,103 @@ impl TokenClient {
         Ok(())
     }
 }
+
+// ---------------------------------------------------------------------------
+// CLI exit codes
+// ---------------------------------------------------------------------------
+
+/// Process exit codes emitted by the CLI, grouped by failure category.
+///
+/// Scripts and CI wrappers can branch on these to tell a usage mistake apart
+/// from a transient network failure. See `tools/cli/EXIT_CODES.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitCode {
+    /// Successful execution.
+    Success = 0,
+    /// Unspecified / generic failure (default catch-all).
+    Generic = 1,
+    /// Command-line usage error (bad flags, unknown subcommand).
+    Usage = 2,
+    /// Configuration error (missing / unreadable / invalid config).
+    Config = 3,
+    /// Network / RPC failure talking to a Soroban endpoint.
+    Network = 4,
+    /// Verification failure (e.g. deployed WASM hash mismatch).
+    Verification = 5,
+}
+
+impl ExitCode {
+    /// Numeric value to hand to [`std::process::exit`].
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+/// Map an error to a stable [`ExitCode`] category.
+///
+/// CLI errors are surfaced as `anyhow::Error`; we classify heuristically by
+/// walking the cause chain and matching known keywords so callers/scripts can
+/// react differently per failure kind. Clap itself emits `Usage` (2) for
+/// argument-parse errors before this handler is ever reached.
+pub fn classify_error(e: &anyhow::Error) -> ExitCode {
+    let mut msg = e.to_string();
+    for cause in e.chain().skip(1) {
+        msg.push(' ');
+        msg.push_str(&cause.to_string());
+    }
+    let m = msg.to_lowercase();
+    if m.contains("verif") || m.contains("hash mismatch") || m.contains("drift") {
+        ExitCode::Verification
+    } else if m.contains("config") || m.contains("toml") || m.contains("config file") {
+        ExitCode::Config
+    } else if m.contains("network")
+        || m.contains("rpc")
+        || m.contains("soroban")
+        || m.contains("connection")
+        || m.contains("timeout")
+        || m.contains("http")
+    {
+        ExitCode::Network
+    } else {
+        ExitCode::Generic
+    }
+}
+
+#[cfg(test)]
+mod exit_code_tests {
+    use super::*;
+
+    #[test]
+    fn exit_code_values_are_stable() {
+        assert_eq!(ExitCode::Success.as_u8(), 0);
+        assert_eq!(ExitCode::Generic.as_u8(), 1);
+        assert_eq!(ExitCode::Usage.as_u8(), 2);
+        assert_eq!(ExitCode::Config.as_u8(), 3);
+        assert_eq!(ExitCode::Network.as_u8(), 4);
+        assert_eq!(ExitCode::Verification.as_u8(), 5);
+    }
+
+    #[test]
+    fn classifies_config_errors() {
+        let e = anyhow::anyhow!("could not read config file: invalid toml");
+        assert_eq!(classify_error(&e), ExitCode::Config);
+    }
+
+    #[test]
+    fn classifies_network_errors() {
+        let e = anyhow::anyhow!("Soroban RPC error: connection refused");
+        assert_eq!(classify_error(&e), ExitCode::Network);
+    }
+
+    #[test]
+    fn classifies_verification_errors() {
+        let e = anyhow::anyhow!("deployed WASM hash mismatch (drift detected)");
+        assert_eq!(classify_error(&e), ExitCode::Verification);
+    }
+
+    #[test]
+    fn falls_back_to_generic() {
+        let e = anyhow::anyhow!("something unexpected happened");
+        assert_eq!(classify_error(&e), ExitCode::Generic);
+    }
+}

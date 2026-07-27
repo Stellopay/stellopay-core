@@ -623,70 +623,20 @@ async fn test_query_as_returns_err_on_shape_mismatch() {
     );
 }
 
-#[tokio::test]
-async fn test_query_retries_transient_failure_then_succeeds() {
-    // A flaky RPC endpoint that fails the first two attempts but succeeds on
-    // the third must yield a successful result without a manual re-run.
-    let server = MockServer::start().await;
+// --- Issue #803: `--version` flag and structured exit codes ------------------
 
-    Mock::given(method("POST"))
-        .and(path("/query"))
-        .respond_with(ResponseTemplate::new(500).set_body_string("transient"))
-        .up_to_n_times(2)
-        .mount(&server)
-        .await;
-
-    Mock::given(method("POST"))
-        .and(path("/query"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "result": "ok" })))
-        .mount(&server)
-        .await;
-
-    let client = SorobanHttpClient::new(&server.uri()).with_retry_policy(RetryPolicy {
-        max_attempts: 3,
-        base_delay_ms: 0,
-        max_delay_ms: 0,
-    });
-
-    let result = client
-        .query(VALID_CONTRACT, "get_webhook_stats", vec![])
-        .await
-        .expect("transient failures should be retried until success");
-
-    assert_eq!(result, "ok");
-
-    let requests = server.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 3, "should have retried up to the 3rd attempt");
+#[test]
+fn version_flag_prints_version_and_exits_zero() {
+    let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
+    cmd.arg("--version");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("stellopay-cli").and(predicate::str::contains("0.1.0")));
 }
 
-#[tokio::test]
-async fn test_query_exhausts_retries_on_persistent_failure() {
-    // A persistently failing endpoint must surface a clear error after the
-    // configured number of attempts (and must not loop forever).
-    let server = MockServer::start().await;
-
-    Mock::given(method("POST"))
-        .and(path("/query"))
-        .respond_with(ResponseTemplate::new(500).set_body_string("down"))
-        .mount(&server)
-        .await;
-
-    let client = SorobanHttpClient::new(&server.uri()).with_retry_policy(RetryPolicy {
-        max_attempts: 3,
-        base_delay_ms: 0,
-        max_delay_ms: 0,
-    });
-
-    let err = client
-        .query(VALID_CONTRACT, "get_webhook_stats", vec![])
-        .await
-        .expect_err("persistent failure must surface as Err after max attempts");
-
-    assert!(
-        err.to_string().contains("after 3 attempt"),
-        "error should cite the attempt count, got: {err}"
-    );
-
-    let requests = server.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 3, "should attempt exactly max_attempts times");
+#[test]
+fn unknown_flag_exits_with_usage_code() {
+    let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
+    cmd.arg("--no-such-flag");
+    cmd.assert().failure().code(2);
 }

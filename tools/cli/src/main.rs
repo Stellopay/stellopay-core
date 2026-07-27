@@ -4,7 +4,7 @@ use std::process;
 use anyhow::anyhow;
 use stellopay_cli::commands::*;
 use stellopay_cli::config::*;
-use stellopay_cli::{Cli, Commands, Config, Error, WebhookCommands, resolve_config_with_project_file, PROJECT_CONFIG_FILE};
+use stellopay_cli::{classify_error, Cli, Commands, Config, Error, ExitCode, WebhookCommands};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -22,7 +22,7 @@ async fn main() -> anyhow::Result<()> {
         Ok(config) => config,
         Err(e) => {
             eprintln!("Error loading config: {}", e);
-            process::exit(1);
+            process::exit(classify_error(&e).as_u8());
         }
     };
 
@@ -79,7 +79,7 @@ async fn main() -> anyhow::Result<()> {
         Ok(()) => {}
         Err(e) => {
             eprintln!("Error: {}", e);
-            process::exit(1);
+            process::exit(classify_error(&e).as_u8());
         }
     }
     Ok(())
