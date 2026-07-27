@@ -1262,17 +1262,31 @@ fn create_payroll_agreement_internal(
 
 /// Creates multiple payroll agreements in a single transaction.
 ///
+/// # Atomicity
+///
+/// This function is **all-or-nothing**: it validates every item in `items`
+/// before writing any state.  If any entry fails validation the function
+/// returns `Err(PayrollError::InvalidData)` and **zero** agreements are
+/// created.  This prevents partial batch application from leaving the system
+/// in an inconsistent state.
+///
+/// # Validation rules (per item)
+/// * `grace_period_seconds` must be > 0 — a zero grace period is ambiguous
+///   and prevents any dispute or claim window from opening after cancellation.
+///
 /// # Arguments
 /// * `env` - Contract environment
 /// * `employer` - Address of the employer creating the agreements
-/// * `items` - Vector of payroll creation parameters
+/// * `items` - Vector of payroll creation parameters.
 ///   At most `MAX_BATCH_SIZE` items are accepted.
 ///
 /// # Returns
-/// `Ok(BatchPayrollCreateResult)` — always succeeds at the batch level
-/// unless `items` is empty; inspect per-item results for failures.
+/// `Ok(BatchPayrollCreateResult)` — every item was valid and all agreements
+/// were created successfully.
 ///
-/// # Batch-level errors
+/// # Errors
+/// * `PayrollError::InvalidData` — `items` is empty **or** any item fails
+///   per-item validation.  No agreements are created in either case.
 /// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` items.
 ///
 /// # Gas rationale
@@ -1293,10 +1307,21 @@ pub fn batch_create_payroll_agreements(
         return Err(PayrollError::BatchTooLarge);
     }
 
+    // ── Validation pass ──────────────────────────────────────────────────────
+    // Inspect every item BEFORE writing any state.  A single invalid entry
+    // causes the whole batch to be rejected so no partial set of agreements
+    // is ever persisted.
+    for params in items.iter() {
+        if params.grace_period_seconds == 0 {
+            return Err(PayrollError::InvalidData);
+        }
+    }
+
+    // ── Creation pass ────────────────────────────────────────────────────────
+    // All items passed validation; now commit every agreement.
     let mut agreement_ids: Vec<u128> = Vec::new(env);
     let mut results: Vec<PayrollCreateResult> = Vec::new(env);
     let mut total_created: u32 = 0;
-    let total_failed: u32 = 0;
 
     for params in items.iter() {
         let id = create_payroll_agreement_internal(
@@ -1316,7 +1341,7 @@ pub fn batch_create_payroll_agreements(
 
     Ok(BatchPayrollCreateResult {
         total_created,
-        total_failed,
+        total_failed: 0,
         agreement_ids,
         results,
     })
@@ -1441,17 +1466,32 @@ fn create_escrow_agreement_internal(
 
 /// Creates multiple escrow agreements in a single transaction.
 ///
+/// # Atomicity
+///
+/// This function is **all-or-nothing**: it validates every item in `items`
+/// before writing any state.  If any entry fails validation the function
+/// returns `Err` with the first validation error encountered and **zero**
+/// agreements are created.  This prevents partial batch application from
+/// leaving the system in an inconsistent state.
+///
+/// # Validation rules (per item, mirrors `create_escrow_agreement_internal`)
+/// * `amount_per_period` must be > 0  → `ZeroAmountPerPeriod`
+/// * `period_seconds` must be > 0     → `ZeroPeriodDuration`
+/// * `num_periods` must be > 0        → `ZeroNumPeriods`
+///
 /// # Arguments
 /// * `env` - Contract environment
 /// * `employer` - Address of the employer
-/// * `items` - Vector of escrow creation parameters
+/// * `items` - Vector of escrow creation parameters.
 ///   At most `MAX_BATCH_SIZE` items are accepted.
 ///
 /// # Returns
-/// `Ok(BatchEscrowCreateResult)` — always succeeds at the batch level
-/// unless `items` is empty; inspect per-item `results` for failures.
+/// `Ok(BatchEscrowCreateResult)` — every item was valid and all agreements
+/// were created successfully.
 ///
-/// # Batch-level errors
+/// # Errors
+/// * First per-item `PayrollError` — `items` is empty **or** any item fails
+///   per-item validation.  No agreements are created in either case.
 /// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` items.
 ///
 /// # Gas rationale
@@ -1472,13 +1512,33 @@ pub fn batch_create_escrow_agreements(
         return Err(PayrollError::BatchTooLarge);
     }
 
+    // ── Validation pass ──────────────────────────────────────────────────────
+    // Inspect every item BEFORE writing any state.  A single invalid entry
+    // causes the whole batch to be rejected so no partial set of agreements
+    // is ever persisted.
+    for params in items.iter() {
+        if params.amount_per_period <= 0 {
+            return Err(PayrollError::ZeroAmountPerPeriod);
+        }
+        if params.period_seconds == 0 {
+            return Err(PayrollError::ZeroPeriodDuration);
+        }
+        if params.num_periods == 0 {
+            return Err(PayrollError::ZeroNumPeriods);
+        }
+    }
+
+    // ── Creation pass ────────────────────────────────────────────────────────
+    // All items passed validation; now commit every agreement.
     let mut agreement_ids: Vec<u128> = Vec::new(env);
     let mut results: Vec<EscrowCreateResult> = Vec::new(env);
     let mut total_created: u32 = 0;
-    let mut total_failed: u32 = 0;
 
     for params in items.iter() {
-        match create_escrow_agreement_internal(
+        // create_escrow_agreement_internal performs the same checks — this
+        // call can only fail if there is a bug in our validation pass above,
+        // so we propagate any unexpected error rather than silently swallowing it.
+        let id = create_escrow_agreement_internal(
             env,
             employer.clone(),
             params.contributor.clone(),
@@ -1486,30 +1546,19 @@ pub fn batch_create_escrow_agreements(
             params.amount_per_period,
             params.period_seconds,
             params.num_periods,
-        ) {
-            Ok(id) => {
-                agreement_ids.push_back(id);
-                results.push_back(EscrowCreateResult {
-                    agreement_id: Some(id),
-                    success: true,
-                    error_code: 0,
-                });
-                total_created += 1;
-            }
-            Err(err) => {
-                results.push_back(EscrowCreateResult {
-                    agreement_id: None,
-                    success: false,
-                    error_code: err as u32,
-                });
-                total_failed += 1;
-            }
-        }
+        )?;
+        agreement_ids.push_back(id);
+        results.push_back(EscrowCreateResult {
+            agreement_id: Some(id),
+            success: true,
+            error_code: 0,
+        });
+        total_created += 1;
     }
 
     Ok(BatchEscrowCreateResult {
         total_created,
-        total_failed,
+        total_failed: 0,
         agreement_ids,
         results,
     })
