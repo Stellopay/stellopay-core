@@ -3396,10 +3396,49 @@ fn get_next_agreement_id(env: &Env) -> u128 {
 }
 
 /// Internal helper: convert `amount` from `from_token` into `to_token` using
+/// Convert `amount` from `from_token` units into `to_token` units using
 /// the configured FX rate stored in `DataKey::ExchangeRate`.
 ///
-/// The rate is interpreted as `quote_per_base * FX_SCALE`, where `from_token`
-/// is the base and `to_token` is the quote.
+/// # Rate encoding
+///
+/// The rate is a fixed-point integer interpreted as
+/// `quote_per_base * FX_SCALE` (where `FX_SCALE = 1_000_000`).  Examples:
+/// - `rate = 1_000_000` → 1 base = 1 quote (1:1 parity)
+/// - `rate = 2_000_000` → 1 base = 2 quote
+/// - `rate =   500_000` → 1 base = 0.5 quote
+///
+/// # Rounding convention — floor (truncation toward zero)
+///
+/// The conversion uses **integer floor division**:
+/// ```text
+/// converted = (amount * rate) / FX_SCALE   (truncated, not rounded)
+/// ```
+/// Any fractional remainder is silently discarded.  Callers that require
+/// exact amounts should ensure `amount * rate` is divisible by `FX_SCALE`,
+/// or accumulate multiple periods before claiming so the truncated dust
+/// remains negligible relative to the total payout.
+///
+/// # Dust guard — conversion-to-zero is rejected
+///
+/// If the floor-division result is less than `DUST_THRESHOLD` (= 1), the
+/// function returns `Err(PayrollError::ExchangeRateInvalid)` instead of
+/// crediting zero tokens.  This prevents a scenario where:
+/// 1. An employee claims a period.
+/// 2. The claimed period is marked as paid (`claimed_periods` increments).
+/// 3. The employee receives **zero** tokens — effectively burning the salary.
+///
+/// Concretely: a `salary_per_period` of 1 with a sub-parity rate
+/// (e.g. `rate = 999_999`) gives `(1 * 999_999) / 1_000_000 = 0`, which
+/// triggers the dust guard.  The employee must either accumulate more periods
+/// or use a larger salary so the conversion yields ≥ 1 quote unit.
+///
+/// # Errors
+///
+/// | Error | Condition |
+/// |---|---|
+/// | `ExchangeRateNotFound` | No rate configured for the pair, or rate is stale |
+/// | `ExchangeRateInvalid` | Rate ≤ 0, timestamp inconsistency, or result < `DUST_THRESHOLD` |
+/// | `ExchangeRateOverflow` | `amount * rate` overflows `i128` |
 fn convert_amount(
     env: &Env,
     from_token: &Address,
