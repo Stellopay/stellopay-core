@@ -12,6 +12,15 @@
 //! let client = MilestoneContractClient::new(&env, &milestone_contract_address);
 //! let milestone = client.get_milestone(&agreement_id, &milestone_id);
 //! ```
+//!
+//! # Conformance testing
+//!
+//! Contracts that implement this trait should include a conformance test that
+//! exercises the trait surface via `MilestoneContractClient` and compares
+//! results against direct contract-client calls.  See
+//! `test_milestone_interface_conformance` in
+//! `stello_pay_contract/tests/test_milestones.rs` for a reference
+//! implementation.
 
 #![no_std]
 
