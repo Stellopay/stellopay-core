@@ -147,9 +147,14 @@ pub struct DisputeExpiredEvent {
     pub agreement_id: u128,
 }
 
-/// Emitted when a keeper calls `keeper_advance_stage` after an SLA deadline
-/// has elapsed.  The dispute moves from `Open`/`Escalated`/`Appealed` into
-/// `PendingReview`, opening a bounded admin-review window.
+/// Emitted only when `keeper_advance_stage` advances a dispute because an SLA
+/// deadline has elapsed. The dispute moves from `Open`/`Escalated`/`Appealed`
+/// into `PendingReview`, opening a bounded admin-review window.
+///
+/// Off-chain SLA monitors should treat this event as the canonical signal for
+/// an SLA violation. Normal in-window escalation continues to emit only
+/// `dispute_escalated`, so indexers can distinguish timeout-driven advancement
+/// from normal-flow advancement without inspecting contract state.
 ///
 /// # Fields
 /// * `agreement_id`   — identifies the dispute.
@@ -159,7 +164,7 @@ pub struct DisputeExpiredEvent {
 ///   `expire_dispute`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DisputeSlaBreachedEvent {
+pub struct DisputeSlaViolationAdvancedEvent {
     pub agreement_id: u128,
     pub level: EscalationLevel,
     pub breached_at: u64,
@@ -397,8 +402,8 @@ impl DisputeEscalationContract {
         storage::set_dispute(&env, agreement_id, &dispute);
 
         env.events().publish(
-            ("dispute_sla_breached",),
-            DisputeSlaBreachedEvent {
+            ("sla_violation_advanced",),
+            DisputeSlaViolationAdvancedEvent {
                 agreement_id,
                 level: dispute.level,
                 breached_at: now,
