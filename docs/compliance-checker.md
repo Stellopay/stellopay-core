@@ -40,7 +40,40 @@ The contract assumes that all auxiliary contracts must be explicitly allowlisted
 
 ### Admin Controls
 
-The admin address has the authority to:
+### Admin-only Guard on `set_emergency_pause`
+
+The `set_emergency_pause` function enforces an admin-only guard via the internal
+`require_admin` helper. The guard performs two checks:
+
+1. `caller.require_auth()` — the caller must authenticate via Soroban's host
+   authentication framework.
+2. `assert!(*caller == admin, "Not admin")` — the authenticated caller must
+   match the admin address stored during `initialize`.
+
+This guarantees that a non-admin principal cannot toggle the emergency pause
+flag, even if they have been granted some other access to the contract.
+
+### Immediacy Guarantee
+
+The `set_emergency_pause` function writes the `EmergencyPause` storage key using
+the Soroban persistent storage layer. Because the `check_action` function reads
+this same key on every invocation, the new pause state takes effect
+**immediately** — there is no stale-read window, block delay, or asynchronous
+propagation.
+
+The read path is:
+
+```rust
+let is_paused = env.storage().persistent().get::<_, bool>(&StorageKey::EmergencyPause).unwrap_or(false);
+```
+
+This read occurs **before any other rule evaluation** in `check_action` (rule
+precedence #1), so the pause state is latched at the very start of every
+compliance check. A successful `set_emergency_pause(true)` followed by
+`check_action` in the same transaction (or any subsequent transaction) will
+correctly see the paused state.
+
+### Operational Assumption
 
 - Set emergency pause state
 - Add or remove auxiliary contracts from the allowlist
@@ -202,3 +235,15 @@ cargo test -p compliance_checker
 ```bash
 cargo test -p compliance_checker
 
+- non-allowlisted auxiliary deny paths;
+- emergency-pause precedence;
+- terminal-state denial across all actions;
+- invalid current-state matrix for each action;
+- invalid target-state denial;
+- grace-period denial for cancelled claims;
+- **`test_set_emergency_pause_rejects_non_admin`** — verifies that a non-admin
+  caller is rejected before the pause flag is toggled;
+- **`test_set_emergency_pause_immediate_effect`** — verifies that the very next
+  `check_action` call after `set_emergency_pause(true)` returns
+  `Deny/EmergencyPaused` with the correct trace entry, confirming zero-latency
+  propagation.
