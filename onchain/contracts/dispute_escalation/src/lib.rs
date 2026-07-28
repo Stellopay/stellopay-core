@@ -855,8 +855,16 @@ impl DisputeEscalationContract {
         storage::get_dispute(&env, agreement_id)
     }
 
+    /// Returns the configured SLA time limit in seconds for a specific escalation level.
+    ///
+    /// Defaults to **604 800 seconds (7 days)** for `Level1`, `Level2`, and `Level3` if not explicitly configured via `set_level_time_limit`.
+    pub fn get_level_time_limit(env: Env, level: EscalationLevel) -> u64 {
+        storage::get_level_time_limit(&env, level)
+    }
+
     /// Returns the configured pending-review time limit in seconds.
-    /// Defaults to 259 200 s (3 days) if never explicitly set.
+    ///
+    /// Defaults to **259 200 seconds (3 days)** if never explicitly set via `set_pending_review_time_limit`.
     pub fn get_pending_review_time_limit(env: Env) -> u64 {
         storage::get_pending_review_time_limit(&env)
     }

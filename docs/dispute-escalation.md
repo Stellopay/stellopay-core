@@ -67,13 +67,37 @@ appeal_ruling	now > appeal_deadline	TimeLimitExpired
 Note: "at exactly the deadline" (now == deadline) is still within
 the window — the allowed side of every inequality.
 
-Escalation Tiers
-Level	Default SLA	Description
-Level1	7 days (604 800 s)	Initial dispute — primary arbiter
-Level2	7 days (604 800 s)	Escalated review — senior arbiter
-Level3	7 days (604 800 s)	Final appeal — committee / external oracle (binding)
-Admin can override any level SLA with set_level_time_limit.
-Admin can set the PendingReview window with set_pending_review_time_limit (default 3 days).
+Escalation Tiers & Concrete SLA Timers
+
+The contract provisions configurable per-tier SLA time limits as well as a post-breach `PendingReview` window.
+
+### Default Values and Configurable Ranges
+
+| Timer Getter | Scope / Level | Default SLA | Configurable Range | Description |
+|---|---|---|---|---|
+| `get_level_time_limit(Level1)` | Level1 | 7 days (604,800 s) | 1 s – 31,536,000 s (1 yr) | Initial dispute SLA window for primary arbiter review |
+| `get_level_time_limit(Level2)` | Level2 | 7 days (604,800 s) | 1 s – 31,536,000 s (1 yr) | Escalated dispute SLA window for senior arbiter review |
+| `get_level_time_limit(Level3)` | Level3 | 7 days (604,800 s) | 1 s – 31,536,000 s (1 yr) | Final appeal SLA window for committee / oracle review |
+| `get_pending_review_time_limit()` | Global | 3 days (259,200 s) | 1 s – 31,536,000 s (1 yr) | Bounded review window granted to admin upon keeper breach trigger |
+| N/A (`appeal_ruling` window) | Level1/L2 | 3 days (259,200 s) | Hardcoded (259,200 s) | Window during which a resolved ruling may be appealed |
+
+Admin can override any level SLA with `set_level_time_limit(caller, level, seconds)` and the `PendingReview` window with `set_pending_review_time_limit(caller, seconds)`. Updates affect future phase deadlines.
+
+### Worked Example: Multi-Stage SLA Timeout & Keeper Advancement
+
+Below is a complete worked example tracing an active dispute through filing, normal escalation, SLA timeout, keeper advancement (`keeper_advance_stage`), appeal, second SLA timeout, second keeper advancement, and final resolution.
+
+*Assumptions*: Default SLA limits (`get_level_time_limit` = 7 days = 604,800 s; `get_pending_review_time_limit` = 3 days = 259,200 s; Appeal window = 3 days = 259,200 s). Initial timestamp $T_0 = 1,700,000,000$.
+
+| Timestamp ($t$) | Delta | Function Call | Caller | Status Before | Status After | Level | Phase Deadline | Details / Events Emitted |
+|---|---|---|---|---|---|---|---|---|
+| $1,700,000,000$ | $T_0$ | `file_dispute` | Payer | None | `Open` | `Level1` | $1,700,604,800$ | Dispute opened; SLA clock starts ($T_0 + 7\text{d}$). |
+| $1,700,100,000$ | $+100,000\text{s}$ | `escalate_dispute` | Payee | `Open` | `Escalated` | `Level2` | $1,700,704,800$ | Escalated to L2 within SLA window ($t \le \text{deadline}$). SLA clock reset to $t + 7\text{d}$. |
+| $1,700,704,801$ | $+600,001\text{s}$ | `keeper_advance_stage` | Keeper | `Escalated` | `PendingReview` | `Level2` | $1,700,964,001$ | SLA timed out ($t > \text{deadline}$). Keeper advances dispute to `PendingReview`. Deadline set to $t + 3\text{d}$. Emits `sla_violation_advanced`. |
+| $1,700,800,000$ | $+95,999\text{s}$ | `resolve_dispute` | Admin | `PendingReview` | `Resolved` | `Level2` | $1,701,059,200$ | Admin issues ruling `UpholdPayment` during review window. Appeal window opened for 3 days ($t + 3\text{d}$). |
+| $1,700,850,000$ | $+50,000\text{s}$ | `appeal_ruling` | Payee | `Resolved` | `Appealed` | `Level3` | $1,701,454,800$ | Ruling appealed within appeal window ($t \le \text{appeal\_deadline}$). Advances to L3; SLA set to $t + 7\text{d}$. |
+| $1,701,454,801$ | $+604,801\text{s}$ | `keeper_advance_stage` | Keeper | `Appealed` | `PendingReview` | `Level3` | $1,701,714,001$ | L3 SLA timed out ($t > \text{deadline}$). Keeper advances to `PendingReview` @ L3. Review deadline set to $t + 3\text{d}$. Emits `sla_violation_advanced`. |
+| $1,701,500,000$ | $+45,199\text{s}$ | `resolve_dispute` | Admin | `PendingReview` | `Finalised` | `Level3` | $1,701,500,000$ | Admin issues final ruling `GrantClaim` @ L3. Dispute becomes terminal (`Finalised`). Escrow resumed. |
 
 Contract Functions
 Lifecycle
@@ -85,12 +109,13 @@ keeper_advance_stage(caller, agreement_id)	any	✓	After SLA elapsed: Open/Escal
 resolve_dispute(caller, agreement_id, outcome)	admin	✗	Issue binding ruling; opens 3-day appeal window at L1/L2
 appeal_ruling(caller, agreement_id)	any	✓	Appeal a Level1/2 ruling within the appeal window
 expire_dispute(caller, agreement_id)	any	✓	Close a stuck dispute after its current deadline
-Configuration
+Configuration & Queries
 Function	Caller	Description
 set_level_time_limit(caller, level, seconds)	admin	Override SLA for a tier (affects future phases)
 set_pending_review_time_limit(caller, seconds)	admin	Override the PendingReview window (affects next keeper call)
 get_dispute(agreement_id)	any	Read full DisputeDetails
-get_pending_review_time_limit()	any	Read configured PendingReview window
+get_level_time_limit(level)	any	Read configured SLA time limit for a tier (default 7 days)
+get_pending_review_time_limit()	any	Read configured PendingReview window (default 3 days)
 Sequential Escalation Ordering
 The contract strictly enforces a Level1 → Level2 → Level3 walk. There is
 no legitimate way to bypass an intermediate tier, and the public API offers no

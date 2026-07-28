@@ -2090,3 +2090,40 @@ fn test_expire_dispute_does_not_emit_sla_violation_advanced() {
         "dispute_expired must be emitted on expiry"
     );
 }
+
+/// Test: query SLA timer values for `get_level_time_limit` and `get_pending_review_time_limit`
+/// both with defaults and after custom configuration.
+#[test]
+fn test_get_level_time_limit_and_pending_review_queries() {
+    let (_env, client, _owner, admin, _user) = setup();
+
+    // Verify defaults
+    assert_eq!(
+        client.get_level_time_limit(&EscalationLevel::Level1),
+        DEFAULT_LEVEL_LIMIT
+    );
+    assert_eq!(
+        client.get_level_time_limit(&EscalationLevel::Level2),
+        DEFAULT_LEVEL_LIMIT
+    );
+    assert_eq!(
+        client.get_level_time_limit(&EscalationLevel::Level3),
+        DEFAULT_LEVEL_LIMIT
+    );
+    assert_eq!(
+        client.get_pending_review_time_limit(),
+        PENDING_REVIEW_WINDOW
+    );
+
+    // Update time limits
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &86400u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &172800u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level3, &259200u64);
+    client.set_pending_review_time_limit(&admin, &43200u64);
+
+    // Verify configured values
+    assert_eq!(client.get_level_time_limit(&EscalationLevel::Level1), 86400);
+    assert_eq!(client.get_level_time_limit(&EscalationLevel::Level2), 172800);
+    assert_eq!(client.get_level_time_limit(&EscalationLevel::Level3), 259200);
+    assert_eq!(client.get_pending_review_time_limit(), 43200);
+}
