@@ -1,6 +1,3 @@
-use soroban_sdk::token::TokenClient;
-use soroban_sdk::{Address, Env, String, Vec};
-
 use crate::audit::{record_entry, AuditEvent};
 use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
@@ -22,38 +19,6 @@ use crate::storage::{
     EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
     MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
     PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE,
-};
-use soroban_sdk::{
-    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contractclient, contracttype, panic_with_error, token,
-    token::TokenClient,
-    Address, Env, IntoVal, String, Symbol, Val, Vec,
-};
-
-use crate::{
-    audit::{record_entry, AuditEvent},
-    events::{
-        emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
-        emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
-        emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
-        emit_grace_period_finalized, emit_milestone_expired, emit_milestone_funded,
-        emit_milestone_rejected, emit_multisig_config_changed, emit_payment_received,
-        emit_payment_sent, emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent,
-        AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent,
-        AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
-        BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
-        ExchangeRateChangedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent,
-        MilestoneAdded, MilestoneApproved, MilestoneClaimed, MilestoneExpiredEvent,
-        MilestoneFundedEvent, MilestoneRejectedEvent, MultisigConfigChangedEvent,
-        PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
-    },
-    storage::{
-        Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
-        BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
-        EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
-        MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
-        PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE,
-    },
 };
 
 /// Minimal interface for cross-contract calls into the deployed multisig contract.
@@ -474,9 +439,12 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), P
         .persistent()
         .get(&MilestoneKey::TotalAmount(agreement_id))
         .unwrap_or(0);
+    let new_total = total
+        .checked_add(amount)
+        .ok_or(PayrollError::InvalidData)?;
     env.storage()
         .persistent()
-        .set(&MilestoneKey::TotalAmount(agreement_id), &(total + amount));
+        .set(&MilestoneKey::TotalAmount(agreement_id), &new_total);
 
     // Post-invariant: total amount should equal sum of milestones
     #[cfg(debug_assertions)]
@@ -518,11 +486,14 @@ fn sum_all_milestones(env: &Env, agreement_id: u128) -> i128 {
         .unwrap_or(0);
     let mut sum = 0i128;
     for i in 1..=count {
-        sum += env
-            .storage()
-            .persistent()
-            .get::<_, i128>(&MilestoneKey::MilestoneAmount(agreement_id, i))
-            .unwrap_or(0);
+        sum = sum
+            .checked_add(
+                env.storage()
+                    .persistent()
+                    .get::<_, i128>(&MilestoneKey::MilestoneAmount(agreement_id, i))
+                    .unwrap_or(0),
+            )
+            .expect("milestone total summation overflow");
     }
     sum
 }

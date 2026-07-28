@@ -390,3 +390,209 @@ fn test_long_window_rounding_drift_never_exceeds_theoretical_capacity() {
     let expected_allowed = BURST + (SECONDS as u32 * REFILL_RATE);
     assert_eq!(allowed, expected_allowed);
 }
+
+/// # Fallback precedence: per-address override → default (global) limit
+///
+/// After `clear_limit_for`, `get_limit_config` returns `DefaultBurst` /
+/// `DefaultRefillRate`.  This test proves that `check_and_consume` also uses
+/// those defaults — i.e. the call succeeds and draws from the correct bucket
+/// — rather than leaving the address with no limit at all or a stale override.
+///
+/// Scenario:
+/// 1. Initialize with `default_burst = 3, default_refill_rate = 0` (no refill,
+///    so any over-consumption is detectable immediately).
+/// 2. Set a generous per-address override (`burst = 10`) for the subject.
+/// 3. Consume 3 tokens through the override to prove it is active.
+/// 4. Clear the override via `clear_limit_for`.
+/// 5. Assert `get_limit_for` now returns the default config.
+/// 6. Reset the address's *usage* so the bucket starts fresh at the default
+///    burst capacity (the usage state is orthogonal to the limit config).
+/// 7. Consume exactly `default_burst` (3) tokens through `check_and_consume`.
+///    Each call must succeed — proving fallback to the default limit is live.
+/// 8. Assert the very next call is rejected — proving the default burst cap
+///    (not the old override cap) is being enforced.
+#[test]
+fn test_clear_limit_falls_back_to_default_and_check_and_consume_works() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    // Step 1: default burst = 3, no refill, admin bypass off
+    client.initialize(&admin, &3u32, &0u32, &false);
+
+    // Step 2: give the user a generous override so they differ clearly from the default
+    client.set_limit_for(&user, &10u32, &0u32);
+    let override_config = client.get_limit_for(&user);
+    assert_eq!(
+        override_config.burst, 10,
+        "override should be active before clear"
+    );
+
+    // Step 3: consume 3 tokens via override to build up usage state
+    client.check_and_consume(&user);
+    client.check_and_consume(&user);
+    client.check_and_consume(&user);
+
+    // Step 4: remove the per-address override
+    client.clear_limit_for(&user);
+
+    // Step 5: config must now reflect default values
+    let default_config = client.get_limit_for(&user);
+    assert_eq!(
+        default_config.burst, 3,
+        "burst must fall back to default after clear"
+    );
+    assert_eq!(
+        default_config.refill_rate, 0,
+        "refill_rate must fall back to default after clear"
+    );
+
+    // Step 6: reset usage so the bucket is fresh at the default burst capacity
+    client.reset_usage(&user);
+
+    // Step 7: consume exactly default_burst tokens — all must succeed
+    // This is the core assertion: check_and_consume uses the fallback default,
+    // not the cleared override and not a missing/zero limit.
+    let r1 = client.check_and_consume(&user);
+    let r2 = client.check_and_consume(&user);
+    let r3 = client.check_and_consume(&user);
+    assert_eq!(r1, 2, "first call should leave 2 tokens");
+    assert_eq!(r2, 1, "second call should leave 1 token");
+    assert_eq!(r3, 0, "third call should exhaust the default bucket");
+
+    // Step 8: one more call must be rejected — default cap is enforced
+    let exhausted = client.try_check_and_consume(&user);
+    assert!(
+        exhausted.is_err(),
+        "check_and_consume must fail when default bucket is empty"
+    );
+}
+
+/// # Clearing an address that never had an override is a safe no-op
+///
+/// `clear_limit_for` calls `env.storage().persistent().remove(key)`.  On
+/// Soroban, removing a key that does not exist is a no-op (no panic).  This
+/// test proves that calling `clear_limit_for` on an address that never had an
+/// explicit override does not disrupt the address's subsequent ability to
+/// consume tokens under the default limit.
+///
+/// Scenario:
+/// 1. Initialize with `default_burst = 2, default_refill_rate = 0`.
+/// 2. Call `clear_limit_for` on a fresh address that has no override.
+/// 3. Assert `get_limit_for` still returns the default config — the clear
+///    must not zero-out or corrupt the default.
+/// 4. Assert `check_and_consume` succeeds for exactly `default_burst` calls
+///    — proving the address is still governed by the default limit.
+/// 5. Assert the next call fails — the cap is still enforced.
+#[test]
+fn test_clear_limit_for_address_with_no_override_is_safe_noop() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    // Step 1: default burst = 2, no refill
+    client.initialize(&admin, &2u32, &0u32, &false);
+
+    // Step 2: clear with no prior override — must not panic
+    client.clear_limit_for(&user);
+
+    // Step 3: config is still the default
+    let config = client.get_limit_for(&user);
+    assert_eq!(
+        config.burst, 2,
+        "default burst must be intact after no-op clear"
+    );
+    assert_eq!(
+        config.refill_rate, 0,
+        "default refill_rate must be intact after no-op clear"
+    );
+
+    // Step 4: check_and_consume still works under the default limit
+    let r1 = client.check_and_consume(&user);
+    let r2 = client.check_and_consume(&user);
+    assert_eq!(r1, 1, "first call should leave 1 token");
+    assert_eq!(r2, 0, "second call should exhaust the bucket");
+
+    // Step 5: next call must be rejected (cap is enforced)
+    assert!(
+        client.try_check_and_consume(&user).is_err(),
+        "check_and_consume must fail when default bucket is empty after no-op clear"
+    );
+}
+
+/// # Long idle gap refill is capped at burst capacity
+///
+/// This test verifies that after an idle gap far longer than the configured
+/// refill window, the bucket refills up to its configured cap exactly, without
+/// over-crediting extra tokens proportional to the excess elapsed time beyond
+/// the cap.
+///
+/// This is a critical security property: an attacker should not be able to
+/// "farm" tokens by waiting a very long time between calls. The token bucket
+/// must always cap at `burst`, regardless of how much time has elapsed.
+///
+/// Scenario:
+/// 1. Initialize with `burst = 10, refill_rate = 2` (refill window = 5 seconds to full).
+/// 2. Consume 9 tokens, leaving 1 token remaining.
+/// 3. Advance ledger timestamp by 100 seconds (20x the refill window).
+/// 4. Assert bucket refills to exactly burst = 10 (not 1 + 100*2 = 201).
+/// 5. Consume 1 token → 9 remaining.
+/// 6. Consume 1 token → 8 remaining.
+/// 7. Assert the bucket behavior is consistent with a capped refill.
+#[test]
+fn test_long_idle_gap_refill_is_capped_at_burst_capacity() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    const BURST: u32 = 10;
+    const REFILL_RATE: u32 = 2;
+    const START_TIMESTAMP: u64 = 1000;
+
+    // Step 1: initialize with burst=10, refill_rate=2
+    env.ledger().with_mut(|li| li.timestamp = START_TIMESTAMP);
+    client.initialize(&admin, &BURST, &REFILL_RATE, &false);
+
+    // Step 2: consume 9 tokens, leaving 1 token remaining
+    for _ in 0..9 {
+        client.check_and_consume(&user);
+    }
+    assert_eq!(client.check_and_consume(&user), 0);
+
+    // Step 3: advance ledger by 100 seconds (20x the 5-second refill window)
+    // Without capping, this would give 1 + 100*2 = 201 tokens
+    // With capping, this should give exactly burst = 10 tokens
+    env.ledger()
+        .with_mut(|li| li.timestamp = START_TIMESTAMP + 100);
+
+    // Step 4: assert bucket refilled to exactly burst capacity
+    // First call after long idle should succeed and leave burst-1 tokens
+    let remaining = client.check_and_consume(&user);
+    assert_eq!(
+        remaining,
+        BURST - 1,
+        "after long idle, bucket should be at full burst capacity, not over-credited"
+    );
+
+    // Step 5: consume another token → burst-2 remaining
+    let remaining = client.check_and_consume(&user);
+    assert_eq!(
+        remaining,
+        BURST - 2,
+        "second consumption should debit from capped balance"
+    );
+
+    // Step 6: verify we can consume exactly burst-2 more tokens to empty the bucket
+    for _ in 0..(BURST - 2) {
+        client.check_and_consume(&user);
+    }
+
+    // Step 7: bucket should now be empty
+    assert!(
+        client.try_check_and_consume(&user).is_err(),
+        "bucket should be empty after consuming burst tokens from capped refill"
+    );
+}
