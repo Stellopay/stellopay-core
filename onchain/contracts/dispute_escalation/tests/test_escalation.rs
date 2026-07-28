@@ -1,10 +1,13 @@
 #![cfg(test)]
 
-use dispute_escalation::types::{DisputeError, DisputeOutcome, DisputeStatus, EscalationLevel};
-use dispute_escalation::{DisputeEscalationContract, DisputeEscalationContractClient};
+use dispute_escalation::{
+    types::{DisputeError, DisputeOutcome, DisputeStatus, EscalationLevel},
+    DisputeEscalatedEvent, DisputeEscalationContract, DisputeEscalationContractClient,
+    DisputeSlaViolationAdvancedEvent,
+};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    Address, Env,
+    testutils::{Address as _, Events, Ledger},
+    Address, Env, Symbol, TryFromVal, Val, Vec,
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -47,6 +50,39 @@ fn advance(env: &Env, seconds: u64) {
 /// Return the current ledger timestamp.
 fn now(env: &Env) -> u64 {
     env.ledger().timestamp()
+}
+
+/// Return true when the provided Soroban event topic starts with `event_name`.
+fn event_topic_matches(env: &Env, topic: &Vec<Val>, event_name: &str) -> bool {
+    if topic.is_empty() {
+        return false;
+    }
+
+    let Ok(symbol) = Symbol::try_from_val(env, &topic.get(0).unwrap()) else {
+        return false;
+    };
+
+    symbol.to_string() == event_name
+}
+
+/// Return true if any emitted event has the requested first topic symbol.
+fn has_event(env: &Env, event_name: &str) -> bool {
+    env.events()
+        .all()
+        .iter()
+        .any(|(_, topic, _)| event_topic_matches(env, &topic, event_name))
+}
+
+/// Return the last event whose first topic symbol matches `event_name`.
+fn last_event(
+    env: &Env,
+    event_name: &str,
+) -> Option<(Address, Vec<Val>, Val)> {
+    env.events()
+        .all()
+        .iter()
+        .filter(|(_, topic, _)| event_topic_matches(env, topic, event_name))
+        .last()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -485,6 +521,46 @@ fn test_keeper_advance_stage_from_open() {
     assert_eq!(d.phase_started_at, now(&env));
     // review deadline is set to now + PENDING_REVIEW_WINDOW
     assert_eq!(d.phase_deadline, now(&env) + PENDING_REVIEW_WINDOW);
+}
+
+#[test]
+fn test_normal_escalation_emits_only_dispute_escalated_event() {
+    let (env, client, _owner, _admin, user) = setup();
+    let id = 1_401u128;
+
+    client.file_dispute(&user, &id);
+    client.escalate_dispute(&user, &id);
+
+    assert!(has_event(&env, "dispute_escalated"));
+    assert!(!has_event(&env, "sla_violation_advanced"));
+
+    let event = last_event(&env, "dispute_escalated").expect("dispute_escalated event");
+    let payload = DisputeEscalatedEvent::try_from_val(&env, &event.2).unwrap();
+    assert_eq!(payload.agreement_id, id);
+    assert_eq!(payload.new_level, EscalationLevel::Level2);
+    assert_eq!(payload.phase_deadline, now(&env) + DEFAULT_LEVEL_LIMIT);
+}
+
+#[test]
+fn test_keeper_timeout_emits_sla_violation_advanced_event_only() {
+    let (env, client, _owner, _admin, user) = setup();
+    let id = 1_402u128;
+
+    client.file_dispute(&user, &id);
+    advance(&env, DEFAULT_LEVEL_LIMIT + 1);
+    let breached_at = now(&env);
+
+    client.keeper_advance_stage(&user, &id);
+
+    assert!(has_event(&env, "sla_violation_advanced"));
+    assert!(!has_event(&env, "dispute_escalated"));
+
+    let event = last_event(&env, "sla_violation_advanced").expect("sla_violation_advanced event");
+    let payload = DisputeSlaViolationAdvancedEvent::try_from_val(&env, &event.2).unwrap();
+    assert_eq!(payload.agreement_id, id);
+    assert_eq!(payload.level, EscalationLevel::Level1);
+    assert_eq!(payload.breached_at, breached_at);
+    assert_eq!(payload.review_deadline, breached_at + PENDING_REVIEW_WINDOW);
 }
 
 #[test]

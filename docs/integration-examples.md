@@ -166,3 +166,70 @@ Security notes:
 - Revocation freezes vesting at `revoked_at`; later ledger movement must not increase `releasable_amount`.
 - Repeated same-ledger claims are rejected once no additional payroll period or vested amount is available.
 - Off-chain services should persist the payroll `agreement_id` to vesting `schedule_id` mapping and verify the employer, beneficiary, and token match before presenting combined lifecycle actions.
+
+---
+
+### Payroll Badge Minting on Agreement Activation
+
+The `stello_pay_contract` and `nft_payroll_badge` contracts are composed via **orchestration** (not direct on-chain cross-contract calls). An off-chain orchestrator activates a payroll agreement and, as a follow-up, mints a badge for the employee that references the agreement in its metadata.
+
+#### Orchestrated Pattern (current)
+
+1. Employer calls `activate_agreement(agreement_id)` on the payroll contract.
+2. The orchestrator reads the resulting `agreement_id` and the employee list.
+3. The orchestrator (or badge contract owner) calls `mint(caller, recipient, name, metadata_uri)` on the badge contract, embedding the agreement reference in `metadata_uri` (e.g. `ipfs://stellopay/badge/{agreement_id}/employee/{index}`).
+
+```rust
+// Pseudocode for an off-chain Rust orchestrator
+use nft_payroll_badge::NftPayrollBadgeContractClient;
+use stello_pay_contract::PayrollContractClient;
+
+fn on_agreement_activated(
+    payroll: &PayrollContractClient,
+    badge: &NftPayrollBadgeContractClient,
+    badge_owner: &Address,
+    agreement_id: u128,
+) {
+    // Activate the agreement
+    payroll.activate_agreement(&agreement_id);
+
+    // Determine employee(s) from the agreement
+    let employees = payroll.get_agreement_employees(&agreement_id);
+
+    // Mint a badge for each employee, referencing the agreement
+    for (i, employee) in employees.iter().enumerate() {
+        let metadata_uri = format!("ipfs://stellopay/badge/{}/employee/{}", agreement_id, i);
+        badge.mint(
+            badge_owner,
+            &employee,
+            &"Active Payroll Badge".into(),
+            &metadata_uri.into(),
+        );
+    }
+}
+```
+
+#### Future Direct On-Chain Integration
+
+A future enhancement would have the payroll contract call the badge contract directly during `activate_agreement`, eliminating the need for an off-chain orchestrator. This requires:
+
+- The payroll contract to store the badge contract address (similar to `set_salary_adjustment_contract` / `set_rate_limiter_contract`).
+- A new `set_badge_contract` entrypoint on the payroll contract, owner-gated.
+- An inline mint call in `activate_agreement` when the badge contract is configured.
+
+#### Security Assumptions
+
+- **Ownership boundary**: Only the badge contract owner may mint badges. The orchestrator must either be the badge contract owner or sign a transaction for the badge owner.
+- **Metadata integrity**: The `metadata_uri` must faithfully reference the agreement. Off-chain indexers should verify the agreement exists and is active before accepting a badge as valid.
+- **Idempotency**: The orchestrator must guard against double-minting (e.g. track which agreements have already had badges minted). The badge contract itself does not enforce 1:1 agreement-to-badge uniqueness.
+- **Cancellation**: Badges minted against an active agreement are not invalidated if the agreement is later cancelled. The badge remains a historical record; off-chain consumers should check current agreement status.
+
+#### Integration Tests
+
+See `onchain/integration_tests/tests/test_badge_activation_integration.rs` for the full test suite covering:
+
+- End-to-end happy path: activate agreement → mint badge → verify metadata
+- Multiple employee badges after a single activation
+- Non-owner badge mint rejection
+- Badge persistence after agreement cancellation
+- Paginated badge queries across multiple agreements

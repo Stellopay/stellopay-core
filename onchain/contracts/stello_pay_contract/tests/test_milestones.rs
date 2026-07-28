@@ -9,8 +9,10 @@
 
 use milestone_interface::{MilestoneContractClient, MilestoneView};
 use soroban_sdk::{testutils::Address as _, Address, Env};
-use stello_pay_contract::storage::{Milestone, PayrollError};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{Milestone, PayrollError},
+    PayrollContract, PayrollContractClient,
+};
 
 // ============================================================================
 // HELPERS
@@ -710,9 +712,7 @@ fn assert_milestone_eq(direct: &Option<Milestone>, via_interface: &Option<Milest
         }
         (None, None) => {}
         (d, i) => {
-            panic!(
-                "milestone presence mismatch: direct={d:?} interface={i:?}"
-            );
+            panic!("milestone presence mismatch: direct={d:?} interface={i:?}");
         }
     }
 }
@@ -728,8 +728,8 @@ fn assert_milestone_eq(direct: &Option<Milestone>, via_interface: &Option<Milest
 /// # Conformance checks
 /// 1. `get_milestone_count` — parity after create, add, approve, claim, reject
 /// 2. `get_milestone`       — parity for each milestone's id/amount/approved/claimed
-/// 3. `MilestoneView`       — scalar fields match `Milestone` at every lifecycle
-///    state (created, approved, claimed, rejected, expired)
+/// 3. `MilestoneView`       — scalar fields match `Milestone` at every lifecycle state (created,
+///    approved, claimed, rejected, expired)
 #[test]
 fn test_milestone_interface_conformance() {
     let env = Env::default();
@@ -747,8 +747,7 @@ fn test_milestone_interface_conformance() {
 
     // ── 1. Create and fund a milestone agreement ────────────────────────────
     let fund_amount: i128 = 100_000;
-    soroban_sdk::token::StellarAssetClient::new(&env, &token)
-        .mint(&employer, &fund_amount);
+    soroban_sdk::token::StellarAssetClient::new(&env, &token).mint(&employer, &fund_amount);
     let agreement_id = direct.create_milestone_agreement(&employer, &contributor, &token);
     direct.fund_milestone_agreement(&agreement_id, &employer, &fund_amount);
 

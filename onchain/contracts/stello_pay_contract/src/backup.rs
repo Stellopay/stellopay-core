@@ -6,36 +6,34 @@
 //!
 //! ## Design
 //!
-//! * **Serialisation** – Agreement fields are encoded into a compact,
-//!   deterministic byte layout (little-endian fixed-width integers + length-
-//!   prefixed byte slices for `Address` values).
-//! * **Key derivation** – A 256-bit AES key is derived from a caller-supplied
-//!   passphrase using PBKDF2-HMAC-SHA256 with a 16-byte salt and 100 000
-//!   iterations.  The salt is stored in the backup envelope so that the same
-//!   passphrase can always reproduce the key.
-//! * **Encryption** – AES-256-GCM with a random 12-byte nonce.  The nonce is
-//!   prepended to the ciphertext in the envelope.
+//! * **Serialisation** – Agreement fields are encoded into a compact, deterministic byte layout
+//!   (little-endian fixed-width integers + length- prefixed byte slices for `Address` values).
+//! * **Key derivation** – A 256-bit AES key is derived from a caller-supplied passphrase using
+//!   PBKDF2-HMAC-SHA256 with a 16-byte salt and 100 000 iterations.  The salt is stored in the
+//!   backup envelope so that the same passphrase can always reproduce the key.
+//! * **Encryption** – AES-256-GCM with a random 12-byte nonce.  The nonce is prepended to the
+//!   ciphertext in the envelope.
 //! * **Envelope format** (all lengths in bytes):
 //!
 //!   ```text
 //!   [ version: 1 ][ salt: 16 ][ nonce: 12 ][ ciphertext: variable ]
 //!   ```
 //!
-//! * **Recovery** – The admin calls `restore_agreement_from_backup` with the
-//!   encrypted envelope and the passphrase.  The function decrypts, deserialises,
-//!   and re-writes the agreement into persistent storage.
+//! * **Recovery** – The admin calls `restore_agreement_from_backup` with the encrypted envelope and
+//!   the passphrase.  The function decrypts, deserialises, and re-writes the agreement into
+//!   persistent storage.
 //!
 //! ## Security assumptions
 //!
-//! * The passphrase / key material is **never** stored on-chain.  It must be
-//!   managed by the operator in a secure key-management system (HSM, KMS, etc.).
-//! * The 12-byte nonce is generated from `env.prng()` which is seeded by the
-//!   Stellar network's verifiable random function — it is not reused across
-//!   backups as long as the ledger sequence advances between calls.
-//! * AES-GCM authentication tags protect against ciphertext tampering; any
-//!   modification to the envelope will cause decryption to fail.
-//! * PBKDF2 with 100 000 iterations provides reasonable brute-force resistance
-//!   for passphrases of adequate entropy.
+//! * The passphrase / key material is **never** stored on-chain.  It must be managed by the
+//!   operator in a secure key-management system (HSM, KMS, etc.).
+//! * The 12-byte nonce is generated from `env.prng()` which is seeded by the Stellar network's
+//!   verifiable random function — it is not reused across backups as long as the ledger sequence
+//!   advances between calls.
+//! * AES-GCM authentication tags protect against ciphertext tampering; any modification to the
+//!   envelope will cause decryption to fail.
+//! * PBKDF2 with 100 000 iterations provides reasonable brute-force resistance for passphrases of
+//!   adequate entropy.
 
 #![allow(dead_code)]
 
@@ -290,9 +288,21 @@ pub fn deserialize_agreement(env: &Env, data: &[u8]) -> Result<Agreement, Backup
 /// Derive a 256-bit AES key from `passphrase` and `salt` using
 /// PBKDF2-HMAC-SHA256.
 ///
-/// # Arguments
-/// * `passphrase` – caller-supplied secret; never stored on-chain.
-/// * `salt`       – 16-byte random salt stored in the backup envelope.
+/// @dev This function implements key derivation using PBKDF2-HMAC-SHA256 with
+///      100,000 iterations to provide brute-force resistance. The salt is
+///      stored in the backup envelope to enable deterministic key regeneration.
+///
+/// @param passphrase - Caller-supplied secret; never stored on-chain. Must be
+///                     managed securely by the operator (e.g., HSM, KMS).
+/// @param salt       - 16-byte random salt stored in the backup envelope. Must
+///                     be unique per backup to prevent rainbow table attacks.
+///
+/// @return [u8; 32] - 256-bit AES key suitable for AES-256-GCM encryption.
+///
+/// @security The passphrase is never stored on-chain. The salt is public but
+///           combined with high-iteration PBKDF2 to resist brute-force attacks.
+///           Key rotation requires changing the passphrase; old backups remain
+///           decryptable only with the old passphrase.
 pub fn derive_key(passphrase: &[u8], salt: &[u8]) -> [u8; KEY_LEN] {
     let mut key = [0u8; KEY_LEN];
     pbkdf2_hmac::<Sha256>(passphrase, salt, PBKDF2_ITERATIONS, &mut key);
@@ -305,11 +315,22 @@ pub fn derive_key(passphrase: &[u8], salt: &[u8]) -> [u8; KEY_LEN] {
 
 /// Encrypt `plaintext` with AES-256-GCM.
 ///
-/// Returns the envelope: `[ version(1) | salt(16) | nonce(12) | ciphertext ]`
+/// @dev This function encrypts the plaintext using AES-256-GCM with a key
+///      derived from the passphrase via PBKDF2. The envelope format includes
+///      version, salt, nonce, and ciphertext for decryption.
 ///
-/// Salt and nonce are caller-supplied so this function works both inside a
-/// Soroban contract (use `env.prng().gen()`) and in off-chain / test contexts
-/// (use any CSPRNG or fixed test vectors).
+/// @param plaintext    - Data to encrypt (e.g., serialized agreement).
+/// @param passphrase   - Secret passphrase used to derive the encryption key.
+/// @param salt         - 16-byte random salt (must be unique per backup).
+/// @param nonce_bytes  - 12-byte nonce (must be unique per encryption).
+///
+/// @return Vec<u8> - Envelope in format: `[ version(1) | salt(16) | nonce(12) | ciphertext ]`
+///
+/// @security Salt and nonce must be cryptographically random and unique per
+///           backup. In Soroban contracts, use `env.prng().gen()`. Off-chain,
+///           use any CSPRNG. Nonce reuse with the same key compromises security.
+///           The salt is stored in the envelope to enable key derivation during
+///           decryption.
 pub fn encrypt_backup(
     plaintext: &[u8],
     passphrase: &[u8],
@@ -335,11 +356,24 @@ pub fn encrypt_backup(
 
 /// Decrypt an envelope produced by [`encrypt_backup`].
 ///
-/// Returns the plaintext bytes on success, or a [`BackupError`] on failure.
+/// @dev This function decrypts an envelope by extracting the version, salt,
+///      nonce, and ciphertext, then deriving the key from the passphrase and
+///      salt. AES-GCM authentication ensures ciphertext integrity.
 ///
-/// # Arguments
-/// * `envelope`   – bytes in the format `[ version | salt | nonce | ciphertext ]`.
-/// * `passphrase` – must match the passphrase used during encryption.
+/// @param envelope   - Bytes in format: `[ version | salt | nonce | ciphertext ]`.
+/// @param passphrase - Must match the passphrase used during encryption.
+///
+/// @return Result<Vec<u8>, BackupError> - Plaintext bytes on success, or error on failure.
+///
+/// @error BufferTooShort  - Envelope is too short to contain valid data.
+/// @error UnknownVersion  - Version byte does not match BACKUP_VERSION.
+/// @error DecryptionFailed - Wrong passphrase, tampered ciphertext, or invalid data.
+///
+/// @security Decryption fails if: (1) passphrase is incorrect, (2) ciphertext
+///           was tampered with (AES-GCM authentication), or (3) envelope format
+///           is invalid. This provides cryptographic assurance of data integrity.
+///           Key rotation: backups encrypted with old passphrase cannot be
+///           decrypted with new passphrase (regression test coverage required).
 pub fn decrypt_backup(envelope: &[u8], passphrase: &[u8]) -> Result<StdVec<u8>, BackupError> {
     let min_len = 1 + SALT_LEN + NONCE_LEN + 16; // 16 = AES-GCM tag
     if envelope.len() < min_len {
@@ -380,9 +414,22 @@ pub fn decrypt_backup(envelope: &[u8], passphrase: &[u8]) -> Result<StdVec<u8>, 
 
 /// Produce an encrypted backup envelope for a single `Agreement`.
 ///
-/// Salt and nonce must be unique random bytes per backup. Inside a contract
-/// use `env.prng().gen::<BytesN<16>>().to_array()` etc. In tests or off-chain
-/// tooling use any CSPRNG.
+/// @dev High-level helper that serializes an agreement and encrypts it with
+///      the provided passphrase. The resulting envelope can be stored off-chain
+///      and later restored via `restore_agreement`.
+///
+/// @param env        - Soroban environment (for serialization context).
+/// @param agreement  - Agreement to backup.
+/// @param passphrase - Secret passphrase for encryption.
+/// @param salt       - 16-byte random salt (must be unique per backup).
+/// @param nonce      - 12-byte nonce (must be unique per backup).
+///
+/// @return Vec<u8> - Encrypted backup envelope.
+///
+/// @security Salt and nonce must be unique per backup. In Soroban contracts,
+///           use `env.prng().gen::<BytesN<16>>().to_array()` for salt and
+///           `env.prng().gen::<BytesN<12>>().to_array()` for nonce. Off-chain,
+///           use any CSPRNG. Store envelopes securely off-chain.
 pub fn backup_agreement(
     env: &Env,
     agreement: &Agreement,
@@ -395,6 +442,26 @@ pub fn backup_agreement(
 }
 
 /// Decrypt and deserialise an agreement backup envelope.
+///
+/// @dev High-level helper that decrypts an envelope and deserializes the
+///      resulting plaintext into an Agreement struct. This is the inverse of
+///      `backup_agreement`.
+///
+/// @param env        - Soroban environment (for deserialization context).
+/// @param envelope   - Encrypted backup envelope from `backup_agreement`.
+/// @param passphrase - Must match the passphrase used during backup.
+///
+/// @return Result<Agreement, BackupError> - Recovered agreement on success.
+///
+/// @error DecryptionFailed - Wrong passphrase or tampered envelope.
+/// @error InvalidData      - Deserialization failed (corrupted data).
+/// @error BufferTooShort   - Envelope too short to be valid.
+/// @error UnknownVersion   - Envelope version not supported.
+///
+/// @security This function validates data integrity via AES-GCM authentication
+///           before deserialization. Failed decryption indicates either wrong
+///           passphrase or envelope tampering. Key rotation: use the passphrase
+///           that was active when the backup was created.
 pub fn restore_agreement(
     env: &Env,
     envelope: &[u8],
@@ -566,4 +633,120 @@ fn read_option_i128(data: &[u8], pos: &mut usize) -> Result<Option<i128>, Backup
     } else {
         Ok(Some(read_i128(data, pos)?))
     }
+}
+
+// ---------------------------------------------------------------------------
+// Dry-run / validation helpers  (Issue #786)
+// ---------------------------------------------------------------------------
+
+/// Result of a dry-run backup validation.
+///
+/// Returned by [`validate_backup`] and [`restore_dry_run`].  The caller can
+/// inspect which fields would change without any state being written.
+#[derive(Debug, PartialEq)]
+pub struct DryRunResult {
+    /// `true` if the envelope decrypts and deserialises correctly.
+    pub valid: bool,
+    /// The `agreement_id` encoded in the backup, if decryption succeeded.
+    pub agreement_id: Option<u128>,
+    /// Human-readable description of what the restore would do (or why it
+    /// failed).  Intentionally coarse — no decrypted field values are
+    /// included, only metadata that would also be visible to the real restore.
+    pub message: &'static str,
+}
+
+/// Validate an encrypted backup envelope without writing any state.
+///
+/// Performs the same decryption and deserialisation steps that the real
+/// restore path does, but skips the final `storage.set(...)` call.  The
+/// returned [`DryRunResult`] tells the caller whether the backup is intact
+/// and what agreement it encodes.
+///
+/// # Security
+/// Only the `agreement_id` — a non-sensitive u128 identifier — is surfaced
+/// in the result.  No decrypted payload fields are exposed beyond what the
+/// real restore path would already reveal to the same caller.
+///
+/// # Arguments
+/// * `env`        – Soroban environment (used for address parsing).
+/// * `envelope`   – Encrypted backup bytes (version | salt | nonce | ciphertext).
+/// * `passphrase` – Decryption passphrase; never stored on-chain.
+pub fn validate_backup(
+    env: &Env,
+    envelope: &[u8],
+    passphrase: &[u8],
+) -> DryRunResult {
+    match decrypt_backup(envelope, passphrase) {
+        Err(BackupError::BufferTooShort) => DryRunResult {
+            valid: false,
+            agreement_id: None,
+            message: "envelope too short to be a valid backup",
+        },
+        Err(BackupError::UnknownVersion) => DryRunResult {
+            valid: false,
+            agreement_id: None,
+            message: "unrecognised backup envelope version",
+        },
+        Err(BackupError::DecryptionFailed) => DryRunResult {
+            valid: false,
+            agreement_id: None,
+            message: "decryption failed: wrong passphrase or tampered envelope",
+        },
+        Err(_) => DryRunResult {
+            valid: false,
+            agreement_id: None,
+            message: "backup validation failed",
+        },
+        Ok(plaintext) => match deserialize_agreement(env, &plaintext) {
+            Err(_) => DryRunResult {
+                valid: false,
+                agreement_id: None,
+                message: "decryption succeeded but payload is malformed",
+            },
+            Ok(agreement) => DryRunResult {
+                valid: true,
+                agreement_id: Some(agreement.id),
+                message: "backup is valid; restore would overwrite existing agreement state",
+            },
+        },
+    }
+}
+
+/// On-chain dry-run entrypoint: validates an encrypted backup envelope and
+/// returns a structured result without mutating persistent storage.
+///
+/// This is a read-only companion to [`admin_restore_from_encrypted`].  Use it
+/// to verify a backup is intact before committing a real restore in production.
+///
+/// # Arguments
+/// * `env`        – Soroban environment.
+/// * `envelope`   – Encrypted backup bytes (version | salt | nonce | ciphertext).
+/// * `passphrase` – Decryption passphrase as `Bytes`; never stored on-chain.
+///
+/// # Returns
+/// * `Ok((valid, agreement_id_or_zero))` on success — `valid` is `true` when
+///   the backup decrypts and deserialises without error; the second element is
+///   the `agreement_id` from the payload (0 when validation failed).
+/// * `Err(PayrollError::InvalidData)` only when the envelope is structurally
+///   unreadable even before decryption (e.g. empty slice).
+///
+/// # Access Control
+/// No authentication required — this is a pure read.  However, a passphrase
+/// is still required to decrypt, so only callers with the correct key can
+/// obtain meaningful results.
+pub fn admin_restore_dry_run(
+    env: &Env,
+    envelope: Bytes,
+    passphrase: Bytes,
+) -> Result<(bool, u128), crate::storage::PayrollError> {
+    let env_bytes: StdVec<u8> = envelope.iter().collect();
+    let pass_bytes: StdVec<u8> = passphrase.iter().collect();
+
+    if env_bytes.is_empty() {
+        return Err(crate::storage::PayrollError::InvalidData);
+    }
+
+    let result = validate_backup(env, &env_bytes, &pass_bytes);
+    let agreement_id = result.agreement_id.unwrap_or(0);
+    Ok((result.valid, agreement_id))
 }

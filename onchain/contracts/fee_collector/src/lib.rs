@@ -6,15 +6,36 @@
 //!
 //! ## Fee Modes
 //!
-//! | Mode          | Calculation                              | Config key  |
-//! |---------------|------------------------------------------|-------------|
-//! | `Percentage`  | `floor(gross × fee_bps / 10 000)`        | `fee_bps`   |
-//! | `Flat`        | fixed amount per payment (capped at gross)| `flat_fee`  |
+//! | Mode          | Calculation                                       | Config key         |
+//! |---------------|---------------------------------------------------|--------------------|
+//! | `Percentage`  | `floor(gross × fee_bps / 10 000)`                 | `fee_bps`          |
+//! | `Flat`        | fixed amount per payment (capped at gross)        | `flat_fee`         |
+//! | `Tiered`      | tier-selected bps applied to gross amount         | `tiered_schedule`  |
+//!
+//! ### Tiered Mode
+//!
+//! A [`FeeTier`] list is stored as the `tiered_schedule`. On each `collect_fee`
+//! call the contract walks the list in order and selects the first tier whose
+//! `limit ≥ gross_amount`; if no tier matches the last tier's `fee_bps` is used
+//! as a catch-all. Set the last tier's `limit` to `i128::MAX` to create an
+//! explicit open-ended top tier.
+//!
+//! ## Running-Total Invariant
+//!
+//! `get_total_fees_collected()` is a monotonically increasing counter:
+//!
+//! ```text
+//! get_total_fees_collected() == Σ fee_amount  for every collect_fee call since deployment
+//! ```
+//!
+//! The counter is **never** reset by [`FeeCollectorContract::update_tiered_schedule`],
+//! [`FeeCollectorContract::update_fee_config`], or any other admin operation. This
+//! makes it safe to use as an audit trail across schedule changes.
 //!
 //! ## Security Model
 //!
-//! * Only the **admin** can change fee config, fee recipient, pause state, or
-//!   transfer admin rights.
+//! * Only the **admin** can change fee config, fee recipient, pause state, or transfer admin
+//!   rights.
 //! * The admin must call `require_auth()` on every privileged operation.
 //! * The percentage fee is hard-capped at [`MAX_FEE_BPS`] (1 000 bps = 10 %).
 //! * State counters are updated **before** token transfers (state-before-interaction).
@@ -41,16 +62,20 @@ mod storage;
 mod types;
 
 pub use events::{
-    AdminTransferredEvent, FeeCollectedEvent, FeeConfigUpdatedEvent, PauseStateChangedEvent,
-    RecipientUpdatedEvent, TieredScheduleUpdatedEvent,
+    AdminProposedEvent, AdminTransferCancelledEvent, AdminTransferredEvent, FeeCollectedEvent,
+    FeeConfigUpdatedEvent, PauseStateChangedEvent, RecipientUpdatedEvent,
+    TieredScheduleUpdatedEvent,
 };
 pub use storage::StorageKey;
 pub use types::{FeeConfig, FeeMode, FeeQuote, FeeSplit, FeeTier};
 
 use helpers::{
-    apply_basis_points, bump_ttl, compute_fee_internal, require_admin, require_initialized, require_not_paused,
+    apply_basis_points, bump_ttl, compute_fee_internal, require_admin, require_initialized,
+    require_not_paused,
 };
 use soroban_sdk::{contract, contractimpl, token, Address, Env};
+pub use storage::StorageKey;
+pub use types::{FeeConfig, FeeMode, FeeSplit, FeeTier};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -85,8 +110,8 @@ pub const TTL_MAX_LEDGERS: u32 = 6_307_200;
 /// # Lifecycle
 ///
 /// 1. Deploy and call `initialize` once to configure admin, fee recipient, and rate.
-/// 2. External contracts call `collect_fee` per payment — the fee is transferred
-///    to the treasury and the net amount to the intended recipient.
+/// 2. External contracts call `collect_fee` per payment — the fee is transferred to the treasury
+///    and the net amount to the intended recipient.
 /// 3. Admin may update config or recipient at any time via privileged methods.
 /// 4. Admin may pause `collect_fee` in emergencies via `set_paused`.
 #[contract]
@@ -106,13 +131,13 @@ impl FeeCollectorContract {
     /// # Arguments
     ///
     /// * `env`           — Soroban environment.
-    /// * `admin`         — Admin address; must authenticate. Receives full control over
-    ///                     fee configuration and emergency pause.
+    /// * `admin`         — Admin address; must authenticate. Receives full control over fee
+    ///   configuration and emergency pause.
     /// * `fee_recipient` — Treasury address that will receive all collected fees.
-    /// * `fee_bps`       — Initial percentage fee in basis points (0 – [`MAX_FEE_BPS`]).
-    ///                     Pass `0` for fee-free operation. Only used when `mode = Percentage`.
-    /// * `flat_fee`      — Initial flat fee amount in token units (≥ 0).
-    ///                     Only used when `mode = Flat`.
+    /// * `fee_bps`       — Initial percentage fee in basis points (0 – [`MAX_FEE_BPS`]). Pass `0`
+    ///   for fee-free operation. Only used when `mode = Percentage`.
+    /// * `flat_fee`      — Initial flat fee amount in token units (≥ 0). Only used when `mode =
+    ///   Flat`.
     /// * `mode`          — Initial [`FeeMode`].
     ///
     /// # Panics
@@ -190,8 +215,8 @@ impl FeeCollectorContract {
     /// # Arguments
     ///
     /// * `env`               — Soroban environment.
-    /// * `payer`             — Payment originator (must authenticate). Their allowance
-    ///                         is spent for both the fee and the net payment.
+    /// * `payer`             — Payment originator (must authenticate). Their allowance is spent for
+    ///   both the fee and the net payment.
     /// * `payment_recipient` — Address that receives the net payment after fee deduction.
     /// * `token`             — Token contract address for the payment.
     /// * `gross_amount`      — Total payment amount before fee deduction. Must be `> 0`.
@@ -426,8 +451,47 @@ impl FeeCollectorContract {
 
     /// Updates the tiered fee schedule.
     ///
-    /// The schedule is a list of thresholds; the first threshold that is greater
-    /// than or equal to the gross amount determines the fee rate.
+    /// Replaces the entire tier list atomically. The active fee rate applied to
+    /// any subsequent `collect_fee` call is determined by the **new** schedule
+    /// immediately after this call returns.
+    ///
+    /// # Tier Selection Algorithm
+    ///
+    /// For a given `gross_amount` the contract walks the schedule in order and
+    /// selects the **first** tier whose `limit ≥ gross_amount`. If no tier
+    /// matches (i.e., `gross_amount` exceeds every listed limit), the last
+    /// tier's `fee_bps` is used as a catch-all. Use `limit: i128::MAX` as the
+    /// final tier to make the catch-all explicit.
+    ///
+    /// # Running Total Continuity
+    ///
+    /// `get_total_fees_collected` is a **monotonically increasing** counter that
+    /// is never reset by a schedule change. Fees collected under the old schedule
+    /// are preserved; fees collected after the change are additive. The invariant
+    ///
+    /// ```text
+    /// get_total_fees_collected() == Σ fee_amount for every collect_fee call
+    /// ```
+    ///
+    /// holds across any number of `update_tiered_schedule` calls.
+    ///
+    /// # Arguments
+    ///
+    /// * `env`          — Soroban environment.
+    /// * `admin`        — Current admin (must authenticate).
+    /// * `new_schedule` — Ordered list of [`FeeTier`] values. Must be strictly
+    ///   increasing by `limit` and each `fee_bps` must be ≤ [`MAX_FEE_BPS`].
+    ///
+    /// # Panics
+    ///
+    /// * `"Unauthorized: caller is not admin"` — if `admin` is not the stored admin.
+    /// * `"Tier limits must be strictly increasing and positive"` — if any `limit`
+    ///   is ≤ the previous tier's limit (or ≤ 0 for the first tier).
+    /// * `"Fee in tier exceeds maximum allowed"` — if any `fee_bps > MAX_FEE_BPS`.
+    ///
+    /// # Events
+    ///
+    /// Emits `("tiered_schedule_updated",)` carrying a [`TieredScheduleUpdatedEvent`].
     pub fn update_tiered_schedule(
         env: Env,
         admin: Address,
@@ -575,34 +639,134 @@ impl FeeCollectorContract {
         env.storage().instance().set(&StorageKey::FeeSplit, &split);
     }
 
-    /// Transfers admin rights to a new address, effective immediately.
+    /// Proposes a new admin address as the first step of a two-step admin handoff.
     ///
-    /// **Security note**: this is a one-way, immediate transfer with no confirmation
-    /// step. Verify `new_admin` thoroughly before calling. Consider using a multi-sig
-    /// wallet as `admin`.
+    /// The proposed address is stored as pending. It has **no privileges** until it
+    /// explicitly calls [`FeeCollectorContract::accept_admin`]. The current admin
+    /// retains full control until acceptance.
+    ///
+    /// Call [`FeeCollectorContract::cancel_admin_transfer`] at any time to revoke
+    /// the pending proposal before it is accepted.
     ///
     /// # Arguments
     ///
-    /// * `env`       — Soroban environment.
-    /// * `admin`     — Current admin (must authenticate).
-    /// * `new_admin` — Address to receive admin rights.
+    /// * `env`           — Soroban environment.
+    /// * `admin`         — Current admin (must authenticate).
+    /// * `proposed_admin`— Address being nominated as the new admin.
+    ///
+    /// # Panics
+    ///
+    /// * `"Unauthorized: caller is not admin"` — if `admin` is not the current admin.
     ///
     /// # Events
     ///
-    /// Emits `("admin_transferred",)` carrying an [`AdminTransferredEvent`].
-    pub fn transfer_admin(env: Env, admin: Address, new_admin: Address) {
+    /// Emits `("admin_proposed",)` carrying an [`AdminProposedEvent`].
+    pub fn propose_admin(env: Env, admin: Address, proposed_admin: Address) {
         require_initialized(&env);
         bump_ttl(&env);
         admin.require_auth();
         require_admin(&env, &admin);
 
-        env.storage().instance().set(&StorageKey::Admin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&StorageKey::PendingAdmin, &proposed_admin);
+
+        env.events().publish(
+            ("admin_proposed",),
+            AdminProposedEvent {
+                current_admin: admin,
+                proposed_admin,
+            },
+        );
+    }
+
+    /// Completes a pending two-step admin handoff.
+    ///
+    /// Only the address that was proposed via [`FeeCollectorContract::propose_admin`]
+    /// can call this. Once accepted, the caller becomes the new admin and the pending
+    /// proposal is cleared.
+    ///
+    /// # Arguments
+    ///
+    /// * `env`    — Soroban environment.
+    /// * `caller` — Must be the pending admin (must authenticate).
+    ///
+    /// # Panics
+    ///
+    /// * `"No pending admin transfer"` — if no proposal is outstanding.
+    /// * `"Caller is not the proposed admin"` — if `caller` is not the proposed address.
+    ///
+    /// # Events
+    ///
+    /// Emits `("admin_transferred",)` carrying an [`AdminTransferredEvent`].
+    pub fn accept_admin(env: Env, caller: Address) {
+        require_initialized(&env);
+        bump_ttl(&env);
+        caller.require_auth();
+
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::PendingAdmin)
+            .expect("No pending admin transfer");
+
+        assert!(caller == pending, "Caller is not the proposed admin");
+
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::Admin)
+            .expect("Admin not set");
+
+        env.storage().instance().set(&StorageKey::Admin, &caller);
+        env.storage().instance().remove(&StorageKey::PendingAdmin);
 
         env.events().publish(
             ("admin_transferred",),
             AdminTransferredEvent {
-                old_admin: admin,
-                new_admin,
+                old_admin,
+                new_admin: caller,
+            },
+        );
+    }
+
+    /// Cancels a pending admin transfer, clearing the proposed address.
+    ///
+    /// Only the **current admin** can cancel. Has no effect if there is no
+    /// outstanding proposal, other than bumping the TTL.
+    ///
+    /// # Arguments
+    ///
+    /// * `env`   — Soroban environment.
+    /// * `admin` — Current admin (must authenticate).
+    ///
+    /// # Panics
+    ///
+    /// * `"Unauthorized: caller is not admin"` — if `admin` is not the current admin.
+    /// * `"No pending admin transfer"` — if no proposal is outstanding.
+    ///
+    /// # Events
+    ///
+    /// Emits `("admin_transfer_cancelled",)` carrying an [`AdminTransferCancelledEvent`].
+    pub fn cancel_admin_transfer(env: Env, admin: Address) {
+        require_initialized(&env);
+        bump_ttl(&env);
+        admin.require_auth();
+        require_admin(&env, &admin);
+
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::PendingAdmin)
+            .expect("No pending admin transfer");
+
+        env.storage().instance().remove(&StorageKey::PendingAdmin);
+
+        env.events().publish(
+            ("admin_transfer_cancelled",),
+            AdminTransferCancelledEvent {
+                admin,
+                cancelled_admin: pending,
             },
         );
     }
@@ -684,5 +848,20 @@ impl FeeCollectorContract {
             .instance()
             .get(&StorageKey::Admin)
             .expect("Admin not set")
+    }
+
+    /// Returns the pending admin address, if a two-step transfer is in progress.
+    ///
+    /// Returns `None` when no transfer has been proposed or after it has been
+    /// accepted or cancelled.
+    ///
+    /// # Access Control
+    /// Read-only — no authentication required.
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        require_initialized(&env);
+        bump_ttl(&env);
+        env.storage()
+            .instance()
+            .get(&StorageKey::PendingAdmin)
     }
 }

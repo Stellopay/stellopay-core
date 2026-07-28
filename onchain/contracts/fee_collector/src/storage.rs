@@ -32,4 +32,7 @@ pub enum StorageKey {
     Initialized,
     /// Fee split routing policy. Defaults to `FeeSplit::None` when unset.
     FeeSplit,
+    /// Pending admin address awaiting acceptance via `accept_admin`.
+    /// Present only while a two-step admin handoff is in progress.
+    PendingAdmin,
 }
