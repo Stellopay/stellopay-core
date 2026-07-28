@@ -36,6 +36,25 @@ total_funded == total_released + total_refunded + remaining_balance
 
 Property-based fuzz tests in `onchain/contracts/payroll_escrow/tests/fuzz/test_fuzzing.rs` generate randomized fund / release / refund sequences and assert this invariant after every successful step. Integration tests in `onchain/integration_tests` verify the same property across a multi-contract lifecycle (fund → partial release → refund).
 
+### 7. Cumulative Release Cap
+
+Repeated calls to `release` can never, in aggregate, release more than the originally funded amount for a given `agreement_id`. This is enforced by the `assert!(balance >= amount, "Insufficient balance")` guard inside `release`, which compares the live `AgreementBalance` counter against the requested amount before any token transfer occurs.
+
+**Key properties of this invariant:**
+
+- `get_agreement_balance(agreement_id)` equals `funded - cumulative_released` after every individual `release` call.
+- A release that would push the cumulative total past `funded` fails immediately with `"Insufficient balance"`.
+- On failure, **no partial or truncated transfer occurs** — the requested amount is either transferred in full or nothing moves.
+- Contract token custody (actual on-chain balance) and the internal `AgreementBalance` counter stay in lock-step at all times.
+
+**Test coverage** — three dedicated tests in `src/tests/test_escrow.rs`:
+
+| Test | What it verifies |
+|------|-----------------|
+| `test_cumulative_release_cap_many_small_releases_never_exceed_funded` | 10 micro-releases of 100 each from a 1 000-funded agreement; cap invariant and counter checked after every step |
+| `test_cumulative_release_cap_over_funded_amount_errors_not_truncates` | After a 300/500 partial release, an attempt to release 201 (total would be 501 > 500) errors; no partial transfer; subsequent valid 200 release succeeds |
+| `test_cumulative_release_internal_balance_tracks_funded_minus_released_after_every_call` | Variable-step sequence [50, 75, 25, 100, 200, 50]; `get_agreement_balance == funded - released` asserted after every individual call |
+
 ## Interaction Flow
 
 1. **Initialization**: Admin sets the token address and the Manager contract address.
