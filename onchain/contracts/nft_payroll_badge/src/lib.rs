@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
 
 /// Maximum number of badge IDs returned in a single paginated query.
 /// Clamps any caller-supplied `limit` to prevent memory/instruction exhaustion.
@@ -19,8 +19,22 @@ pub struct Badge {
     pub owner: Address,
     /// Human-readable badge name (e.g., "Q1 2025 Payroll").
     pub name: soroban_sdk::String,
+    /// Off-chain metadata URI for this badge.
+    pub metadata_uri: soroban_sdk::String,
     /// Ledger timestamp at which the badge was minted.
     pub issued_at: u64,
+}
+
+/// Emitted when an admin updates an existing badge's metadata URI.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetadataUpdated {
+    /// Badge whose metadata URI changed.
+    pub token_id: u64,
+    /// Metadata URI stored before the update.
+    pub old_uri: soroban_sdk::String,
+    /// Metadata URI stored after the update.
+    pub new_uri: soroban_sdk::String,
 }
 
 /// Result returned by [`NftPayrollBadgeContract::badges_of_paged`].
@@ -92,6 +106,16 @@ fn append_badge_to_owner(env: &Env, owner: &Address, badge_id: u64) {
         .set(&StorageKey::OwnerBadgeCount(owner.clone()), &(count + 1));
 }
 
+fn require_owner(env: &Env, caller: &Address) {
+    caller.require_auth();
+    let owner: Address = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::Owner)
+        .expect("Owner not set");
+    assert!(*caller == owner, "Only owner can manage badges");
+}
+
 #[contractimpl]
 impl NftPayrollBadgeContract {
     /// Initializes the contract and designates an admin owner.
@@ -116,21 +140,22 @@ impl NftPayrollBadgeContract {
     ///
     /// # Returns
     /// The newly assigned badge ID.
-    pub fn mint(env: Env, caller: Address, recipient: Address, name: soroban_sdk::String) -> u64 {
+    pub fn mint(
+        env: Env,
+        caller: Address,
+        recipient: Address,
+        name: soroban_sdk::String,
+        metadata_uri: soroban_sdk::String,
+    ) -> u64 {
         require_initialized(&env);
-        caller.require_auth();
-        let owner: Address = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::Owner)
-            .expect("Owner not set");
-        assert!(caller == owner, "Only owner can mint badges");
+        require_owner(&env, &caller);
 
         let badge_id = next_badge_id(&env);
         let badge = Badge {
             id: badge_id,
             owner: recipient.clone(),
             name,
+            metadata_uri,
             issued_at: env.ledger().timestamp(),
         };
 
@@ -140,6 +165,40 @@ impl NftPayrollBadgeContract {
         append_badge_to_owner(&env, &recipient, badge_id);
 
         badge_id
+    }
+
+    /// Updates the metadata URI for an already-minted badge.
+    ///
+    /// Only the contract owner may update metadata. The update is scoped to a
+    /// single `token_id` and emits [`MetadataUpdated`] with the previous and
+    /// replacement URI for indexers and audit trails.
+    pub fn update_metadata_uri(
+        env: Env,
+        caller: Address,
+        token_id: u64,
+        new_uri: soroban_sdk::String,
+    ) {
+        require_initialized(&env);
+        require_owner(&env, &caller);
+
+        let key = StorageKey::Badge(token_id);
+        let mut badge: Badge = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("Badge not found");
+        let old_uri = badge.metadata_uri.clone();
+        badge.metadata_uri = new_uri.clone();
+        env.storage().persistent().set(&key, &badge);
+
+        env.events().publish(
+            (symbol_short!("meta_upd"), token_id),
+            MetadataUpdated {
+                token_id,
+                old_uri,
+                new_uri,
+            },
+        );
     }
 
     /// Returns ALL badge IDs held by `owner` in a single call.
