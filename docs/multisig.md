@@ -197,6 +197,21 @@ The test suite covers:
 - Adversarial threshold lowering and guardian-bypass prevention
 - Override removal and invalid override rejection
 
+#### Below-Minimum-Threshold Signer Removal Rejection Tests (issue #1082)
+
+The test suite ensures the contract cannot be left with fewer signers than the
+configured threshold:
+
+- `test_reject_signer_reduction_below_threshold` — Verifies that removing
+  signers down to 1 while keeping the threshold at 2 is rejected, because the
+  new threshold (2) would exceed the number of signers (1).
+- `test_reject_update_signers_threshold_exceeding_count` — Verifies that
+  calling `update_signers` with a new signer count of 2 and a threshold of 3
+  is rejected, because 3 > 2.
+- `test_signer_reduction_with_threshold_adjustment_succeeds` — Verifies that
+  reducing from 3-of-3 to 2-of-2 (the intended recovery path) succeeds and
+  the reduced signer set can still reach quorum and execute operations.
+
 #### Integration Test Coverage for claim_payroll_multisig (issue #853)
 
 The `onchain/contracts/stello_pay_contract/tests/test_multisig_integration.rs`

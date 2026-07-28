@@ -835,6 +835,103 @@ fn test_removed_signer_cannot_newly_confirm() {
     assert!(res.is_err());
 }
 
+// ==================== Below-Minimum-Threshold Signer Removal Rejection ====================
+
+#[test]
+fn test_reject_signer_reduction_below_threshold() {
+    // Verifies that removing signers such that the new threshold exceeds the
+    // new signer count is rejected. With 3 signers and threshold 2, attempting
+    // to reduce to 1 signer while keeping threshold 2 must fail because
+    // 2 > 1.
+    let env = create_env();
+    let (_multisig_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let mut new_signers = Vec::new(&env);
+    new_signers.push_back(signers.get(0).unwrap());
+
+    let res = client.try_update_signers(&new_signers, &2u32);
+    assert!(
+        res.is_err(),
+        "Must reject reducing signers to 1 while threshold remains 2"
+    );
+
+    // Verify the signer set was not modified.
+    let stored_signers = client.get_signers();
+    assert_eq!(stored_signers.len(), 3);
+    assert_eq!(client.get_threshold(), 2u32);
+}
+
+#[test]
+fn test_reject_update_signers_threshold_exceeding_count() {
+    // Verifies that calling update_signers with a threshold higher than the
+    // new signer count is rejected. With 3 signers total, setting 2 signers
+    // with threshold 3 must fail because 3 > 2.
+    let env = create_env();
+    let (_multisig_id, client, _owner, signers, _guardian) = setup_3of3(&env);
+
+    let mut new_signers = Vec::new(&env);
+    new_signers.push_back(signers.get(0).unwrap());
+    new_signers.push_back(signers.get(1).unwrap());
+
+    let res = client.try_update_signers(&new_signers, &3u32);
+    assert!(
+        res.is_err(),
+        "Must reject setting threshold 3 when only 2 signers remain"
+    );
+
+    // Verify the signer set and threshold were not modified.
+    let stored_signers = client.get_signers();
+    assert_eq!(stored_signers.len(), 3);
+    assert_eq!(client.get_threshold(), 3u32);
+}
+
+#[test]
+fn test_signer_reduction_with_threshold_adjustment_succeeds() {
+    // Verifies that reducing both signers and threshold together succeeds
+    // when the new threshold is <= the new signer count. Starting from 3-of-3,
+    // reducing to 2 signers with threshold 2 is valid because 2 <= 2.
+    // This is the intended recovery path when a signer must be removed.
+    let env = create_env();
+    let (_multisig_id, client, _owner, signers, _guardian) = setup_3of3(&env);
+
+    let mut new_signers = Vec::new(&env);
+    new_signers.push_back(signers.get(0).unwrap());
+    new_signers.push_back(signers.get(1).unwrap());
+
+    client.update_signers(&new_signers, &2u32);
+
+    let stored_signers = client.get_signers();
+    assert_eq!(stored_signers.len(), 2);
+    assert_eq!(stored_signers.get(0).unwrap(), signers.get(0).unwrap());
+    assert_eq!(stored_signers.get(1).unwrap(), signers.get(1).unwrap());
+    assert_eq!(client.get_threshold(), 2u32);
+
+    // Confirm operations can still reach quorum with the new 2-of-2 setup.
+    let token = create_token_contract(&env, &Address::generate(&env));
+    let token_admin = StellarAssetClient::new(&env, &token.address);
+    token_admin.mint(&_multisig_id, &1_000i128);
+
+    let recipient = Address::generate(&env);
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::LargePayment(token.address.clone(), recipient.clone(), 100i128),
+    );
+
+    // 1 approval (proposer) is not enough for threshold 2
+    assert_eq!(
+        client.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending
+    );
+
+    // Second signer approves, reaching threshold
+    client.approve_operation(&signers.get(1).unwrap(), &op_id);
+    assert_eq!(
+        client.get_operation(&op_id).unwrap().status,
+        OperationStatus::Executed
+    );
+    assert_eq!(token.balance(&recipient), 100i128);
+}
+
 #[test]
 fn test_quorum_override_recalculation_after_signer_removal() {
     let env = create_env();
