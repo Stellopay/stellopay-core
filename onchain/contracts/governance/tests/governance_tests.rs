@@ -882,3 +882,129 @@ fn proposer_cannot_cancel_defeated_proposal() {
         .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
     assert_eq!(res, Err(Ok(GovernanceError::ProposalNotActive)));
 }
+
+// ---------------------------------------------------------------------------
+// timelock enforcement tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn execution_rejected_one_second_before_timelock_elapses() {
+    let env = create_env();
+    let setup = setup(&env);
+    let key = Symbol::new(&env, "timelock_test_param");
+
+    let proposal_id = setup.governance.create_proposal(
+        &setup.employer_a,
+        &ProposalKind::ParameterChange(key.clone(), 999i128),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, ProposalStatus::Succeeded);
+    assert!(proposal.eta.is_some());
+
+    let eta = proposal.eta.unwrap();
+    let current_time = env.ledger().timestamp();
+
+    // Advance time to one second before the timelock elapses
+    let time_to_advance = eta.saturating_sub(current_time).saturating_sub(1);
+    advance_time(&env, time_to_advance);
+
+    // Attempt execution one second before timelock elapses - should fail
+    let early_execution = setup
+        .governance
+        .try_execute_proposal(&setup.signer_a, &proposal_id);
+    assert_eq!(early_execution, Err(Ok(GovernanceError::TimelockNotReady)));
+
+    // Verify proposal is still not executed
+    let not_executed = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(not_executed.status, ProposalStatus::Succeeded);
+    assert_eq!(setup.governance.get_parameter(&key), None);
+}
+
+#[test]
+fn execution_succeeds_exactly_at_timelock_boundary() {
+    let env = create_env();
+    let setup = setup(&env);
+    let key = Symbol::new(&env, "boundary_test_param");
+
+    let proposal_id = setup.governance.create_proposal(
+        &setup.employer_a,
+        &ProposalKind::ParameterChange(key.clone(), 777i128),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    let eta = proposal.eta.unwrap();
+    let current_time = env.ledger().timestamp();
+
+    // Advance time exactly to the timelock boundary
+    let time_to_advance = eta.saturating_sub(current_time);
+    advance_time(&env, time_to_advance);
+
+    // Execution should succeed exactly at the boundary
+    setup
+        .governance
+        .execute_proposal(&setup.signer_a, &proposal_id);
+
+    let executed = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(executed.status, ProposalStatus::Executed);
+    assert_eq!(setup.governance.get_parameter(&key).unwrap(), 777i128);
+}
+
+#[test]
+fn execution_succeeds_after_timelock_boundary() {
+    let env = create_env();
+    let setup = setup(&env);
+    let key = Symbol::new(&env, "after_boundary_param");
+
+    let proposal_id = setup.governance.create_proposal(
+        &setup.employer_a,
+        &ProposalKind::ParameterChange(key.clone(), 555i128),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    let eta = proposal.eta.unwrap();
+    let current_time = env.ledger().timestamp();
+
+    // Advance time past the timelock boundary by 10 seconds
+    let time_to_advance = eta.saturating_sub(current_time).saturating_add(10);
+    advance_time(&env, time_to_advance);
+
+    // Execution should succeed after the boundary
+    setup
+        .governance
+        .execute_proposal(&setup.signer_b, &proposal_id);
+
+    let executed = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(executed.status, ProposalStatus::Executed);
+    assert_eq!(setup.governance.get_parameter(&key).unwrap(), 555i128);
+}
