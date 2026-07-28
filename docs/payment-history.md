@@ -175,6 +175,21 @@ the existing `global_id` without writing any new storage. The global counter,
 all index counts, and the stored record are unchanged. `record_payment` is
 safe to retry on network failures.
 
+### Idempotency is keyed on the hash, not on metadata
+
+Deduplication is scoped strictly to the `payment_hash`. Two payments that share
+identical **metadata** — same `amount`, `timestamp`, `token`, `from`, `to`, and
+`agreement_id` — but carry **distinct** `payment_hash` values are recorded as
+two fully independent entries. This is by construction: records are keyed only
+by the caller-supplied `payment_hash` and a sequential `global_id`, never by a
+hash derived from the metadata, so matching metadata can never collapse two
+transfers into one or let one silently overwrite the other. Both remain
+independently retrievable by id and by hash, and every counter (global,
+agreement, employer, employee) reflects both records.
+
+Only a replayed `payment_hash` collapses to a single entry, which is the
+intended replay-protection behavior above.
+
 ---
 
 ## Security Model

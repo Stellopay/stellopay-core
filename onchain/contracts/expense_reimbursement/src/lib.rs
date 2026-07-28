@@ -228,17 +228,19 @@ fn read_period_spent(env: &Env, employee: &Address, period: u64) -> i128 {
 /// Adds an amount to the employee's cumulative period spending.
 fn add_period_spent(env: &Env, employee: &Address, period: u64, amount: i128) {
     let current = read_period_spent(env, employee, period);
-    env.storage()
-        .persistent()
-        .set(&StorageKey::PeriodSpent(employee.clone(), period), &(current + amount));
+    env.storage().persistent().set(
+        &StorageKey::PeriodSpent(employee.clone(), period),
+        &(current + amount),
+    );
 }
 
 /// Subtracts an amount from the employee's cumulative period spending.
 fn sub_period_spent(env: &Env, employee: &Address, period: u64, amount: i128) {
     let current = read_period_spent(env, employee, period);
-    env.storage()
-        .persistent()
-        .set(&StorageKey::PeriodSpent(employee.clone(), period), &(current - amount));
+    env.storage().persistent().set(
+        &StorageKey::PeriodSpent(employee.clone(), period),
+        &(current - amount),
+    );
 }
 
 #[contractimpl]
