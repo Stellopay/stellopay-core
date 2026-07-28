@@ -7,7 +7,8 @@
 #![cfg(test)]
 
 use nft_payroll_badge::{
-    MetadataUpdated, NftPayrollBadgeContract, NftPayrollBadgeContractClient, MAX_PAGE_SIZE,
+    BadgeBurned, MetadataUpdated, NftPayrollBadgeContract, NftPayrollBadgeContractClient,
+    MAX_PAGE_SIZE,
 };
 use soroban_sdk::{
     testutils::{Address as _, Events},

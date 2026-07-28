@@ -28,6 +28,7 @@ The Expense Reimbursement Contract provides a secure, auditable system for manag
 
 - **Owner Controls**: Only owner can add/remove approvers.
 - **Approver Authorization**: Only designated approvers can approve/reject specific expenses. Approvers cannot approve their own expenses.
+- **Approver Removal Semantics**: Removing an approver immediately prevents that address from approving or rejecting pending expenses, including expenses for which it was previously designated. Approval decisions already recorded before removal persist in the expense state and remain payable; role changes never retroactively discount or revoke them.
 - **Submitter Rights**: Only submitters can cancel their pending expenses.
 - **Refund Assurances**: Escrows naturally return to the `payer` recorded upon funding, avoiding owner confiscation.
 - **Authentication**: All sensitive operations require strict caller authentication via Soroban `require_auth`.
