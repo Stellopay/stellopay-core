@@ -27,6 +27,8 @@ pub enum TaxError {
     InvalidVersion = 7,
     /// Ruleset version is locked and cannot be changed.
     VersionLocked = 8,
+    /// Requested remittance exceeds the accrued, unremitted liability.
+    AmountExceedsAccrued = 9,
 }
 
 /// Storage keys for the tax withholding contract.
@@ -677,8 +679,8 @@ impl TaxWithholdingContract {
             .unwrap_or(0)
     }
 
-    /// Remittance hook: transfers the full accrued balance for a jurisdiction
-    /// to its configured treasury.
+    /// Remittance hook: transfers a specified portion of the accrued balance
+    /// for a jurisdiction to its configured treasury.
     ///
     /// State is updated **before** the token transfer (state-before-interaction
     /// pattern) to prevent re-entrancy.
@@ -686,9 +688,11 @@ impl TaxWithholdingContract {
     /// # Arguments
     /// * `caller`       — Must be the contract owner. Tokens are transferred
     ///                    **from** this address, so the caller must hold the
-    ///                    accrued amount in `token`.
+    ///                    requested amount in `token`.
     /// * `jurisdiction` — Jurisdiction whose balance is being remitted.
     /// * `token`        — Token contract address for the transfer.
+    /// * `amount`       — Positive amount to remit, not greater than the
+    ///                    currently accrued liability.
     ///
     /// # Returns
     /// Amount remitted.
@@ -707,11 +711,14 @@ impl TaxWithholdingContract {
     /// * `Unauthorized`   — caller is not the owner.
     /// * `TreasuryNotSet` — no treasury configured for the jurisdiction.
     /// * `NothingToRemit` — accrued balance is zero.
+    /// * `AmountExceedsAccrued` — `amount` is non-positive or exceeds the
+    ///                             currently accrued balance.
     pub fn remit_withholding(
         env: Env,
         caller: Address,
         jurisdiction: Symbol,
         token: Address,
+        amount: i128,
     ) -> Result<i128, TaxError> {
         caller.require_auth();
         Self::require_owner(&env, &caller)?;
@@ -723,14 +730,24 @@ impl TaxWithholdingContract {
             .ok_or(TaxError::TreasuryNotSet)?;
 
         let key = StorageKey::AccruedWithholding(jurisdiction.clone());
-        let amount: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        let accrued: i128 = env.storage().persistent().get(&key).unwrap_or(0);
 
-        if amount == 0 {
+        if accrued == 0 {
             return Err(TaxError::NothingToRemit);
         }
 
+        // A remittance can only settle liability previously recorded by
+        // `accrue_withholding`. This prevents a stale or duplicated request
+        // from transferring more than is outstanding.
+        if amount <= 0 || amount > accrued {
+            return Err(TaxError::AmountExceedsAccrued);
+        }
+
         // Update state BEFORE external token transfer (state-before-interaction).
-        env.storage().persistent().set(&key, &0i128);
+        let remaining = accrued
+            .checked_sub(amount)
+            .ok_or(TaxError::ArithmeticError)?;
+        env.storage().persistent().set(&key, &remaining);
 
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&caller, &treasury, &amount);

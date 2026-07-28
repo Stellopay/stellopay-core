@@ -1177,9 +1177,9 @@ version = "0.0.0"
 dependencies = [
  "bonus_system",
  "dispute_escalation",
+ "employee_roles",
+ "governance",
  "payment_history",
- "payment_retry",
- "payment_scheduler",
  "payroll_escrow",
  "rbac",
  "soroban-sdk",
