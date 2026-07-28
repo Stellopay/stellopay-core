@@ -200,14 +200,9 @@ fn test_failed_duplicate_create_leaves_existing_tree_intact() {
     // 1. Create the original organization and build a department tree.
     let acme_id = client.create_organization(&owner, &symbol_short!("Acme"));
     let eng_id = client.create_department(&owner, &acme_id, &symbol_short!("Eng"), &None);
-    let sales_id =
-        client.create_department(&owner, &acme_id, &symbol_short!("Sales"), &None);
-    let direct_id = client.create_department(
-        &owner,
-        &acme_id,
-        &symbol_short!("Dir"),
-        &Some(sales_id),
-    );
+    let sales_id = client.create_department(&owner, &acme_id, &symbol_short!("Sales"), &None);
+    let direct_id =
+        client.create_department(&owner, &acme_id, &symbol_short!("Dir"), &Some(sales_id));
     let emp = Address::generate(&env);
     client.assign_employee_to_department(&owner, &acme_id, &sales_id, &emp);
 
@@ -215,7 +210,11 @@ fn test_failed_duplicate_create_leaves_existing_tree_intact() {
     let before_depts = client.get_org_departments(&acme_id);
     assert_eq!(before_depts.len(), 3, "pre-condition: tree has 3 depts");
     let before_emp_in_sales = client.get_department_employees(&sales_id);
-    assert_eq!(before_emp_in_sales.len(), 1, "pre-condition: one emp in Sales");
+    assert_eq!(
+        before_emp_in_sales.len(),
+        1,
+        "pre-condition: one emp in Sales"
+    );
 
     // 2. Attempt to re-create "Acme" with a different owner — must panic.
     let stranger = Address::generate(&env);
@@ -253,7 +252,10 @@ fn test_failed_duplicate_create_leaves_existing_tree_intact() {
     assert_eq!(direct.parent_id, Some(sales_id));
 
     // 6. Employee membership and computed report are still intact.
-    assert_eq!(client.get_employee_department(&emp, &acme_id), Some(sales_id));
+    assert_eq!(
+        client.get_employee_department(&emp, &acme_id),
+        Some(sales_id)
+    );
     assert_eq!(client.get_department_employees(&sales_id).len(), 1);
     let (sales_count, sales_children, _) = client.get_department_report(&sales_id);
     assert_eq!(sales_count, 1, "Sales still reports its assigned employee");
@@ -271,7 +273,10 @@ fn test_create_organization_names_are_case_sensitive() {
     let owner = Address::generate(&env);
     let id_uc = client.create_organization(&owner, &symbol_short!("Acme"));
     let id_lc = client.create_organization(&owner, &symbol_short!("acme"));
-    assert_ne!(id_uc, id_lc, "case-different names must yield distinct orgs");
+    assert_ne!(
+        id_uc, id_lc,
+        "case-different names must yield distinct orgs"
+    );
     let uc = client.get_organization(&id_uc);
     let lc = client.get_organization(&id_lc);
     assert_eq!(uc.name, symbol_short!("Acme"));
@@ -304,10 +309,7 @@ fn test_failed_duplicate_does_not_increment_next_org_id() {
 
     // Next legitimate create gets id = 2 (sequential, no gaps).
     let second = client.create_organization(&owner, &symbol_short!("Beta"));
-    assert_eq!(
-        second, 2,
-        "rejected duplicate must not increment NextOrgId"
-    );
+    assert_eq!(second, 2, "rejected duplicate must not increment NextOrgId");
 }
 
 /// @notice Sanity check: many distinct names are accepted in sequence; the
@@ -1560,4 +1562,167 @@ fn test_merge_source_wrong_org_fails() {
     let source = client.create_department(&owner, &org1, &symbol_short!("Src"), &None);
     let target = client.create_department(&owner, &org2, &symbol_short!("Tgt"), &None);
     client.merge_departments(&owner, &org1, &source, &target);
+}
+
+// ---------------------------------------------------------------------------
+// Reverse-index consistency tests
+//
+// These tests prove that the two storage indexes that track employee placement
+// — the *forward* index `EmployeeDepartment(addr, org_id) -> dept_id` and the
+// *reverse* index `DepartmentEmployees(dept_id) -> Vec<Address>` — remain
+// mutually consistent through assign → remove → reassign cycles.
+//
+// Invariant being tested (documented in docs/department-management.md):
+//   After every public operation (assign / remove) the following always holds:
+//   1. `get_employee_department(emp, org)` returns `Some(dept)` iff
+//      `get_department_employees(dept)` contains `emp`.
+//   2. For any department `d` that is NOT the employee's current department,
+//      `get_department_employees(d)` does NOT contain `emp`.
+// ---------------------------------------------------------------------------
+
+/// Verifies the full assign → remove → reassign cycle leaves both indexes in
+/// a consistent state pointing exclusively to the new department.
+///
+/// Sequence:
+/// 1. Assign `emp` to `dept_a`   → forward: dept_a, reverse: dept_a contains emp
+/// 2. Remove `emp` from dept      → forward: None,   reverse: dept_a empty
+/// 3. Reassign `emp` to `dept_b`  → forward: dept_b, reverse: dept_b contains emp
+///                                                             dept_a still empty
+///
+/// This is the primary regression guard: without proper cleanup a stale
+/// `EmployeeDepartment` entry would survive step 2, leaving `get_employee_department`
+/// returning `Some(dept_a)` even after step 3 replaces it.
+#[test]
+fn test_assign_remove_reassign_indexes_are_consistent() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_a = client.create_department(&owner, &org_id, &symbol_short!("DeptA"), &None);
+    let dept_b = client.create_department(&owner, &org_id, &symbol_short!("DeptB"), &None);
+    let emp = Address::generate(&env);
+
+    // Step 1: Assign to dept_a — both indexes must reflect dept_a.
+    client.assign_employee_to_department(&owner, &org_id, &dept_a, &emp);
+    assert_eq!(
+        client.get_employee_department(&emp, &org_id),
+        Some(dept_a),
+        "after assign: forward index must point to dept_a"
+    );
+    assert!(
+        client.get_department_employees(&dept_a).contains(&emp),
+        "after assign: reverse index for dept_a must contain emp"
+    );
+    assert_eq!(
+        client.get_department_employees(&dept_b).len(),
+        0,
+        "after assign: dept_b reverse index must be empty"
+    );
+
+    // Step 2: Remove from org — both indexes must show no assignment.
+    client.remove_employee_from_department(&owner, &org_id, &emp);
+    assert_eq!(
+        client.get_employee_department(&emp, &org_id),
+        None,
+        "after remove: forward index must return None"
+    );
+    assert_eq!(
+        client.get_department_employees(&dept_a).len(),
+        0,
+        "after remove: reverse index for dept_a must be empty"
+    );
+
+    // Step 3: Reassign to dept_b — both indexes must now reflect dept_b only.
+    client.assign_employee_to_department(&owner, &org_id, &dept_b, &emp);
+    assert_eq!(
+        client.get_employee_department(&emp, &org_id),
+        Some(dept_b),
+        "after reassign: forward index must point to dept_b"
+    );
+    assert!(
+        client.get_department_employees(&dept_b).contains(&emp),
+        "after reassign: reverse index for dept_b must contain emp"
+    );
+    assert_eq!(
+        client.get_department_employees(&dept_a).len(),
+        0,
+        "after reassign: dept_a reverse index must remain empty (no stale entry)"
+    );
+}
+
+/// Verifies that after an employee is moved away from their original department,
+/// that department's employee list no longer includes them — even when other
+/// employees remain in it.
+///
+/// Setup:
+///   dept_a: [emp1, emp2]   dept_b: []
+///
+/// After moving emp1 to dept_b:
+///   dept_a: [emp2]         dept_b: [emp1]
+///
+/// This guards against a regression where the reverse index (`DepartmentEmployees`)
+/// retains a stale entry for the departed employee while the forward index
+/// (`EmployeeDepartment`) already points to the new department.
+#[test]
+fn test_original_department_excludes_moved_employee() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_a = client.create_department(&owner, &org_id, &symbol_short!("DeptA"), &None);
+    let dept_b = client.create_department(&owner, &org_id, &symbol_short!("DeptB"), &None);
+    let emp1 = Address::generate(&env);
+    let emp2 = Address::generate(&env);
+
+    // Assign both employees to dept_a.
+    client.assign_employee_to_department(&owner, &org_id, &dept_a, &emp1);
+    client.assign_employee_to_department(&owner, &org_id, &dept_a, &emp2);
+    assert_eq!(
+        client.get_department_employees(&dept_a).len(),
+        2,
+        "pre-condition: dept_a must have 2 employees"
+    );
+
+    // Move emp1 from dept_a to dept_b via direct reassignment.
+    client.assign_employee_to_department(&owner, &org_id, &dept_b, &emp1);
+
+    // emp1 must no longer appear in dept_a's employee list.
+    let dept_a_employees = client.get_department_employees(&dept_a);
+    assert_eq!(
+        dept_a_employees.len(),
+        1,
+        "dept_a must have exactly 1 employee after emp1 moved out"
+    );
+    assert!(
+        !dept_a_employees.contains(&emp1),
+        "dept_a reverse index must NOT contain emp1 after it was reassigned"
+    );
+    assert!(
+        dept_a_employees.contains(&emp2),
+        "dept_a reverse index must still contain emp2 (not moved)"
+    );
+
+    // emp1 must appear exclusively in dept_b's employee list.
+    let dept_b_employees = client.get_department_employees(&dept_b);
+    assert_eq!(
+        dept_b_employees.len(),
+        1,
+        "dept_b must have exactly 1 employee after emp1 moved in"
+    );
+    assert!(
+        dept_b_employees.contains(&emp1),
+        "dept_b reverse index must contain emp1"
+    );
+
+    // Forward index must agree with the reverse index.
+    assert_eq!(
+        client.get_employee_department(&emp1, &org_id),
+        Some(dept_b),
+        "forward index must point to dept_b for emp1"
+    );
+    assert_eq!(
+        client.get_employee_department(&emp2, &org_id),
+        Some(dept_a),
+        "forward index must still point to dept_a for emp2"
+    );
 }

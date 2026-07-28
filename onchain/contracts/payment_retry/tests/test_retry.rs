@@ -450,6 +450,8 @@ fn test_get_payment_retry_count_increments_per_attempt() {
             intervals: &[30, 60, 120],
         },
     );
+    assert_eq!(pay.next_retry_at, 40, "next_retry_at = 10 + 30");
+    assert_eq!(pay.state, RetryState::Retrying);
 
     // --- Attempt 1 ---
     env.ledger().with_mut(|li| li.timestamp = 10);

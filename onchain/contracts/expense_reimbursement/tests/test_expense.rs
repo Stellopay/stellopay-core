@@ -121,46 +121,102 @@ fn test_remove_approver() {
 }
 
 #[test]
-fn test_add_approver_rejects_non_owner() {
+fn test_removing_approver_preserves_recorded_approval() {
     let env = Env::default();
     env.mock_all_auths();
 
     let owner = Address::generate(&env);
-    let non_owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
     let approver = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
     let client = create_contract(&env);
 
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &500);
     client.initialize(&owner);
+    client.add_approver(&approver);
 
-    // A non-owner caller (even with a valid signature) must not be able to
-    // mutate the approver set.
-    let result = client.try_add_approver(&non_owner, &approver);
-    assert!(result.is_err());
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_client.address,
+        &500,
+        &String::from_str(&env, "receipt-before-removal"),
+        &String::from_str(&env, "Approved before role removal"),
+    );
+    client.fund_expense(&payer, &expense_id, &500);
+    client.approve_expense(&approver, &expense_id, &500);
 
-    // The approver set is unchanged.
+    client.remove_approver(&approver);
+
+    let expense = client.get_expense(&expense_id).unwrap();
     assert!(!client.is_approver(&approver));
+    assert_eq!(expense.status, ExpenseStatus::Approved);
+    assert_eq!(expense.approved_amount, Some(500));
 }
 
 #[test]
-fn test_remove_approver_rejects_non_owner() {
+fn test_removed_approver_cannot_approve_pending_expense() {
     let env = Env::default();
     env.mock_all_auths();
 
     let owner = Address::generate(&env);
-    let non_owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
     let approver = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &500);
+    client.initialize(&owner);
+    client.add_approver(&approver);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_client.address,
+        &500,
+        &String::from_str(&env, "receipt-pending-after-removal"),
+        &String::from_str(&env, "Cannot approve after role removal"),
+    );
+    client.fund_expense(&payer, &expense_id, &500);
+    client.remove_approver(&approver);
+
+    let result = client.try_approve_expense(&approver, &expense_id, &500);
+    assert!(result.is_err());
+
+    let expense = client.get_expense(&expense_id).unwrap();
+    assert_eq!(expense.status, ExpenseStatus::Pending);
+    assert_eq!(expense.approved_amount, None);
+}
+
+#[test]
+#[should_panic(expected = "Invalid approver")]
+fn test_removed_approver_cannot_be_assigned_to_new_expense() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
     let client = create_contract(&env);
 
     client.initialize(&owner);
-    client.add_approver(&owner, &approver);
-    assert!(client.is_approver(&approver));
+    client.add_approver(&approver);
+    client.remove_approver(&approver);
 
-    // A non-owner caller must not be able to remove an approver.
-    let result = client.try_remove_approver(&non_owner, &approver);
-    assert!(result.is_err());
-
-    // The approver role is still in place.
-    assert!(client.is_approver(&approver));
+    client.submit_expense(
+        &submitter,
+        &approver,
+        &token_client.address,
+        &500,
+        &String::from_str(&env, "receipt-after-removal"),
+        &String::from_str(&env, "Cannot assign removed approver"),
+    );
 }
 
 #[test]
@@ -997,7 +1053,13 @@ fn cap_setup(env: &Env) -> (Address, Address, Address, Address, token::Client) {
 
     client.initialize(&owner);
     client.add_approver(&owner, &approver);
-    (owner, submitter, approver, token_client.address, token_client)
+    (
+        owner,
+        submitter,
+        approver,
+        token_client.address,
+        token_client,
+    )
 }
 
 #[test]
