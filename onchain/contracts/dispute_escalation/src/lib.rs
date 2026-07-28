@@ -77,6 +77,7 @@
 //! act on the `outcome` field to release or redirect funds.
 
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 pub mod storage;
 pub mod types;
 

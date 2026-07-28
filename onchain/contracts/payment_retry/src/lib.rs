@@ -65,6 +65,7 @@
 //! `PaymentFailedEvent` so indexers can route the alert to the correct employer.
 
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, Vec};
 
