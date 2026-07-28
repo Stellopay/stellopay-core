@@ -1094,3 +1094,140 @@ fn test_paged_zero_limit_uses_max_page_size() {
     assert_eq!(page.len(), 2);
     assert_eq!(next, None);
 }
+
+// ---------------------------------------------------------------------------
+// merge_departments tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_merge_departments_moves_members() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let source = client.create_department(&owner, &org_id, &symbol_short!("Src"), &None);
+    let target = client.create_department(&owner, &org_id, &symbol_short!("Tgt"), &None);
+
+    let emp = Address::generate(&env);
+    client.assign_employee_to_department(&owner, &org_id, &source, &emp);
+    assert_eq!(client.get_department_employees(&source).len(), 1);
+    assert_eq!(client.get_department_employees(&target).len(), 0);
+
+    client.merge_departments(&owner, &org_id, &source, &target);
+
+    assert_eq!(client.get_department_employees(&target).len(), 1);
+    assert_eq!(client.get_department_employees(&target).get(0), Some(emp.clone()));
+    assert_eq!(client.get_employee_department(&emp, &org_id), Some(target));
+}
+
+#[test]
+fn test_merge_departments_moves_children() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let source = client.create_department(&owner, &org_id, &symbol_short!("Src"), &None);
+    let target = client.create_department(&owner, &org_id, &symbol_short!("Tgt"), &None);
+    let child = client.create_department(&owner, &org_id, &symbol_short!("Child"), &Some(source));
+
+    assert_eq!(client.get_child_departments(&source).len(), 1);
+    assert_eq!(client.get_child_departments(&target).len(), 0);
+    assert_eq!(client.get_department(&child).parent_id, Some(source));
+
+    client.merge_departments(&owner, &org_id, &source, &target);
+
+    assert_eq!(client.get_child_departments(&target).len(), 1);
+    assert_eq!(client.get_child_departments(&target).get(0), Some(child));
+    assert_eq!(client.get_department(&child).parent_id, Some(target));
+    // Source is removed, so it no longer appears as a child of target
+    assert_eq!(client.get_child_departments(&source).len(), 0);
+}
+
+#[test]
+fn test_merge_departments_removes_source() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let source = client.create_department(&owner, &org_id, &symbol_short!("Src"), &None);
+    let target = client.create_department(&owner, &org_id, &symbol_short!("Tgt"), &None);
+
+    client.merge_departments(&owner, &org_id, &source, &target);
+
+    // source no longer exists in org department list
+    let org_depts = client.get_org_departments(&org_id);
+    assert_eq!(org_depts.len(), 1);
+    assert_eq!(org_depts.get(0), Some(target));
+}
+
+#[test]
+#[should_panic(expected = "Cannot merge a department into itself")]
+fn test_merge_self_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let dept = client.create_department(&owner, &org_id, &symbol_short!("A"), &None);
+    client.merge_departments(&owner, &org_id, &dept, &dept);
+}
+
+#[test]
+#[should_panic(expected = "Cycle detected")]
+fn test_merge_into_descendant_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let a = client.create_department(&owner, &org_id, &symbol_short!("A"), &None);
+    let b = client.create_department(&owner, &org_id, &symbol_short!("B"), &Some(a));
+    // b is a descendant of a; merging a into b would create a cycle
+    client.merge_departments(&owner, &org_id, &a, &b);
+}
+
+#[test]
+#[should_panic(expected = "Not organization owner")]
+fn test_merge_non_owner_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let other = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let source = client.create_department(&owner, &org_id, &symbol_short!("Src"), &None);
+    let target = client.create_department(&owner, &org_id, &symbol_short!("Tgt"), &None);
+    client.merge_departments(&other, &org_id, &source, &target);
+}
+
+#[test]
+#[should_panic(expected = "Department not found")]
+fn test_merge_bad_source_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let target = client.create_department(&owner, &org_id, &symbol_short!("Tgt"), &None);
+    client.merge_departments(&owner, &org_id, &999u128, &target);
+}
+
+#[test]
+#[should_panic(expected = "Department not found")]
+fn test_merge_bad_target_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let source = client.create_department(&owner, &org_id, &symbol_short!("Src"), &None);
+    client.merge_departments(&owner, &org_id, &source, &999u128);
+}
+
+#[test]
+#[should_panic(expected = "Department not in this org")]
+fn test_merge_source_wrong_org_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org1 = client.create_organization(&owner, &symbol_short!("OrgA"));
+    let org2 = client.create_organization(&owner, &symbol_short!("OrgB"));
+    let source = client.create_department(&owner, &org1, &symbol_short!("Src"), &None);
+    let target = client.create_department(&owner, &org2, &symbol_short!("Tgt"), &None);
+    client.merge_departments(&owner, &org1, &source, &target);
+}

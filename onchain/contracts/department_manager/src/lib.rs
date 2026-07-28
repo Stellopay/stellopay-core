@@ -626,6 +626,172 @@ impl DepartmentManagerContract {
             .publish((symbol_short!("dept_mvd"), dept_id), dept_id);
     }
 
+    /// Merges two departments within the same organization.
+    ///
+    /// Moves all members and child departments from `source` into `target`,
+    /// then removes `source`.
+    ///
+    /// # Arguments
+    /// * `caller` - Must be the **org owner** (must authenticate).
+    /// * `org_id`  - Organization ID.
+    /// * `source`  - Department to merge (will be removed).
+    /// * `target`  - Department to merge into (will absorb members/children).
+    ///
+    /// # Panics
+    /// - `"Organization not found"` – org_id does not exist.
+    /// - `"Not organization owner"` – caller is not the org owner.
+    /// - `"Department not found"` – source or target does not exist.
+    /// - `"Department not in this org"` – source or target belongs to a different org.
+    /// - `"Cannot merge a department into itself"` – source == target.
+    /// - `"Cycle detected"` – target is a descendant of source.
+    ///
+    /// # Events
+    /// Publishes `("dept_merged", source)` with target as data on success.
+    pub fn merge_departments(
+        env: Env,
+        caller: Address,
+        org_id: u128,
+        source: u128,
+        target: u128,
+    ) {
+        caller.require_auth();
+        Self::require_initialized(&env);
+
+        let source_dept: Department = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Department(source))
+            .expect("Department not found");
+        assert!(source_dept.org_id == org_id, "Department not in this org");
+
+        let target_dept: Department = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Department(target))
+            .expect("Department not found");
+        assert!(target_dept.org_id == org_id, "Department not in this org");
+
+        let org: Organization = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Organization(org_id))
+            .expect("Organization not found");
+        assert!(org.owner == caller, "Not organization owner");
+
+        assert!(source != target, "Cannot merge a department into itself");
+        assert!(
+            !Self::has_cycle(&env, source, target),
+            "Cycle detected"
+        );
+
+        // Move all members from source to target
+        let source_employees: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::DepartmentEmployees(source))
+            .unwrap_or_else(|| Vec::new(&env));
+        for emp in source_employees.iter() {
+            Self::remove_employee_from_dept_internal(&env, source, emp);
+            env.storage().persistent().set(
+                &StorageKey::EmployeeInDepartment(target, emp.clone()),
+                &(),
+            );
+            env.storage().persistent().set(
+                &StorageKey::EmployeeDepartment(emp.clone(), org_id),
+                &target,
+            );
+            let mut target_employees: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::DepartmentEmployees(target))
+                .unwrap_or_else(|| Vec::new(&env));
+            target_employees.push_back(emp.clone());
+            env.storage()
+                .persistent()
+                .set(&StorageKey::DepartmentEmployees(target), &target_employees);
+        }
+
+        // Move all child departments from source to target
+        let source_children: Vec<u128> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::DepartmentChildren(source))
+            .unwrap_or_else(|| Vec::new(&env));
+        for child_id in source_children.iter() {
+            let mut child: Department = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::Department(*child_id))
+                .expect("Department not found");
+            child.parent_id = Some(target);
+            env.storage()
+                .persistent()
+                .set(&StorageKey::Department(*child_id), &child);
+
+            let mut target_children: Vec<u128> = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::DepartmentChildren(target))
+                .unwrap_or_else(|| Vec::new(&env));
+            target_children.push_back(*child_id);
+            env.storage()
+                .persistent()
+                .set(&StorageKey::DepartmentChildren(target), &target_children);
+        }
+
+        // Remove source from its parent's children list
+        if let Some(parent_id) = source_dept.parent_id {
+            let mut parent_children: Vec<u128> = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::DepartmentChildren(parent_id))
+                .unwrap_or_else(|| Vec::new(&env));
+            let mut i = 0u32;
+            while i < parent_children.len() {
+                if parent_children.get(i) == Some(&source) {
+                    parent_children.remove(i);
+                    break;
+                }
+                i += 1;
+            }
+            env.storage()
+                .persistent()
+                .set(&StorageKey::DepartmentChildren(parent_id), &parent_children);
+        }
+
+        // Remove source from org's department list
+        let mut org_depts: Vec<u128> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::OrgDepartments(org_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut i = 0u32;
+        while i < org_depts.len() {
+            if org_depts.get(i) == Some(&source) {
+                org_depts.remove(i);
+                break;
+            }
+            i += 1;
+        }
+        env.storage()
+            .persistent()
+            .set(&StorageKey::OrgDepartments(org_id), &org_depts);
+
+        // Clean up source storage entries
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::Department(source));
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::DepartmentChildren(source));
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::DepartmentEmployees(source));
+
+        env.events()
+            .publish((symbol_short!("dept_merged", source), source), target);
+    }
+
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
