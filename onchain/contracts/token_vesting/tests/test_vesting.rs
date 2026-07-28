@@ -1533,3 +1533,111 @@ fn linear_vested_never_exceeds_total() {
     set_time(&env, 100);
     assert_eq!(client.get_vested_amount(&sid), total);
 }
+
+// ===========================================================================
+// Issue #790 – Zero-checkpoint Custom schedule validation
+// ===========================================================================
+
+/// Creating a Custom schedule with zero checkpoints must be rejected.
+///
+/// The `assert!(!checkpoints.is_empty(), "At least one checkpoint required")`
+/// guard in `create_custom_schedule` should fire and the call must return an
+/// error rather than storing an unusable schedule.
+#[test]
+fn custom_zero_checkpoints_rejected_at_creation() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let empty_checkpoints: Vec<CustomCheckpoint> = Vec::new(&env);
+
+    let result = client.try_create_custom_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &empty_checkpoints,
+        &false,
+    );
+
+    // Must be rejected — the contract must not allow a zero-checkpoint custom
+    // schedule to be persisted.
+    assert!(
+        result.is_err(),
+        "Expected error for zero-checkpoint custom schedule, got Ok"
+    );
+}
+
+/// `compute_vested_amount` (exercised via `get_vested_amount`) must never
+/// panic even if — hypothetically — a Custom schedule with zero checkpoints
+/// were somehow stored.  The code path returns 0 in that case.
+///
+/// We verify this indirectly by creating a valid schedule, then checking that
+/// the public query helpers remain infallible for edge-case timestamps.  The
+/// direct zero-checkpoint code path in `compute_vested_amount` is the
+/// `if schedule.checkpoints.is_empty() { return 0; }` guard; its correctness
+/// is exercised together with the creation-rejection test above — if creation
+/// is rejected, a consumer can never obtain a schedule_id whose checkpoints
+/// are empty, so there is nothing to panic on at query time.
+#[test]
+fn custom_vested_amount_never_panics_at_boundary_timestamps() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    let mut checkpoints = Vec::new(&env);
+    checkpoints.push_back(CustomCheckpoint {
+        time: 100,
+        cumulative_amount: 1_000,
+    });
+
+    set_time(&env, 0);
+    let sid = client.create_custom_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &checkpoints,
+        &false,
+    );
+
+    // Well before first checkpoint — must return 0, no panic.
+    set_time(&env, 0);
+    assert_eq!(client.get_vested_amount(&sid), 0);
+
+    // Exactly at the checkpoint — must return full amount, no panic.
+    set_time(&env, 100);
+    assert_eq!(client.get_vested_amount(&sid), 1_000);
+
+    // Far past the checkpoint — capped at total_amount, no panic.
+    set_time(&env, u64::MAX / 2);
+    assert_eq!(client.get_vested_amount(&sid), 1_000);
+}
+
+/// Zero total_amount is also rejected at creation time, ensuring
+/// `compute_vested_amount` short-circuit is never needed defensively.
+#[test]
+fn custom_zero_total_amount_rejected() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let mut checkpoints = Vec::new(&env);
+    checkpoints.push_back(CustomCheckpoint {
+        time: 10,
+        cumulative_amount: 0,
+    });
+
+    let result = client.try_create_custom_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &0i128,
+        &checkpoints,
+        &false,
+    );
+
+    assert!(
+        result.is_err(),
+        "Expected error for zero total_amount, got Ok"
+    );
+}
