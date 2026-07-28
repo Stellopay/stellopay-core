@@ -1377,3 +1377,152 @@ fn test_keeper_advance_stage_overflow_returns_distinct_error() {
     let res = client.try_keeper_advance_stage(&user, &id);
     assert_eq!(res, Err(Ok(DisputeError::SlaDeadlineOverflow)));
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §14  EDGE-CASE TESTS: L3 DEADLINE BOUNDARY, L3 WITHOUT L2 RULING, DUPLICATE L3
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Policy: `resolve_dispute` has no deadline gate — admin may resolve at any
+/// time while the dispute is in a resolvable state.  A Level3 ruling issued
+/// exactly when `env.ledger().timestamp() == phase_deadline` must therefore
+/// succeed and produce a `Finalised` terminal state.
+///
+/// This test documents and locks that behaviour.
+#[test]
+fn test_level3_ruling_exactly_at_phase_deadline_accepted() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1402u128;
+
+    // Use short limits so we can control time precisely.
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &100u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &100u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level3, &100u64);
+
+    // Reach Level3 via the standard appeal path.
+    client.file_dispute(&user, &id);
+    client.escalate_dispute(&user, &id); // → Level2
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment); // → Resolved L2
+    client.appeal_ruling(&user, &id); // → Appealed L3
+
+    // Advance time to exactly the Level3 phase_deadline.
+    let deadline = client.get_dispute(&id).unwrap().phase_deadline;
+    let current = now(&env);
+    advance(&env, deadline - current);
+    assert_eq!(now(&env), deadline);
+
+    // Admin resolves at exactly the deadline — must succeed (no deadline gate on resolve).
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Finalised);
+    assert_eq!(d.outcome, DisputeOutcome::GrantClaim);
+    assert_eq!(d.level, EscalationLevel::Level3);
+}
+
+/// A dispute can reach Level3 by escalating twice (L1→L2→L3) without any
+/// Level2 ruling ever being issued.  This path bypasses `resolve_dispute` at
+/// Level2 entirely.  The contract must accept a Level3 resolution in this
+/// state and produce `Finalised`.
+#[test]
+fn test_level3_reached_without_level2_ruling() {
+    let (_env, client, _owner, admin, user) = setup();
+    let id = 1403u128;
+
+    // Escalate directly: L1 → L2 → L3 (no ruling at any intermediate level).
+    client.file_dispute(&user, &id);
+    client.escalate_dispute(&user, &id); // Open L1 → Escalated L2
+    client.escalate_dispute(&user, &id); // Escalated L2 → Escalated L3
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Escalated);
+    assert_eq!(d.level, EscalationLevel::Level3);
+    assert_eq!(d.outcome, DisputeOutcome::Unset); // no ruling yet
+
+    // Admin issues the first and only ruling directly at Level3.
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Finalised);
+    assert_eq!(d.outcome, DisputeOutcome::GrantClaim);
+    assert_eq!(d.level, EscalationLevel::Level3);
+}
+
+/// A Level3 ruling is binding and final.  Any attempt to issue a second ruling
+/// (regardless of timing) must be rejected with `AlreadyFinalised`.
+/// This confirms that the `Finalised` terminal state truly cannot be altered.
+#[test]
+fn test_duplicate_level3_ruling_rejected() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1404u128;
+
+    // Reach Finalised via the full appeal path.
+    client.file_dispute(&user, &id);
+    client.escalate_dispute(&user, &id); // → L2
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment); // → Resolved L2
+    client.appeal_ruling(&user, &id); // → Appealed L3
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim); // → Finalised
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Finalised);
+    assert_eq!(d.outcome, DisputeOutcome::GrantClaim);
+
+    // Advance time to simulate a "late" attempt — must still be rejected.
+    advance(&env, DEFAULT_LEVEL_LIMIT + 1);
+
+    // Second ruling attempt: must be rejected regardless of outcome value.
+    let res = client.try_resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    assert_eq!(res, Err(Ok(DisputeError::AlreadyFinalised)));
+
+    // Outcome must remain unchanged — GrantClaim, not UpholdPayment.
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.outcome, DisputeOutcome::GrantClaim);
+}
+
+/// Late Level3 ruling via PendingReview path — keeper advances a Level3
+/// dispute to PendingReview, then a second resolve attempt after the first
+/// finalisation must be rejected.
+#[test]
+fn test_late_level3_ruling_via_pending_review_rejected() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1405u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &50u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level3, &50u64);
+    client.set_pending_review_time_limit(&admin, &100u64);
+
+    // Reach Level3 via escalate + appeal.
+    client.file_dispute(&user, &id);
+    client.escalate_dispute(&user, &id); // → L2
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment); // → Resolved L2
+    client.appeal_ruling(&user, &id); // → Appealed L3
+
+    // Let L3 SLA lapse → keeper advances to PendingReview.
+    advance(&env, 51);
+    client.keeper_advance_stage(&user, &id);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::PendingReview
+    );
+
+    // Admin resolves from PendingReview at Level3 → Finalised.
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Finalised
+    );
+    assert_eq!(
+        client.get_dispute(&id).unwrap().outcome,
+        DisputeOutcome::GrantClaim
+    );
+
+    // Any further resolve attempt must be rejected — binding outcome is immutable.
+    let res = client.try_resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    assert_eq!(res, Err(Ok(DisputeError::AlreadyFinalised)));
+
+    // Outcome is unchanged.
+    assert_eq!(
+        client.get_dispute(&id).unwrap().outcome,
+        DisputeOutcome::GrantClaim
+    );
+}
