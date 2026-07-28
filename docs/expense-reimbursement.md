@@ -43,6 +43,23 @@ The Expense Reimbursement Contract provides a secure, auditable system for manag
 6. **Optional audit linkage**: if `audit_logger` is configured, approval writes `append_log(actor=approver, action="expense_approved", subject=submitter, amount=approved_amount)` and stores returned `audit_log_id`.
 7. **Payment released** via `pay_expense`. Employee gets their portion, Employer is refunded any unapproved surplus automatically. Status enters `Paid` — this is a **terminal state**: the expense status transitions to `Paid` and `escrow_amount` is zeroed **before** any token transfer occurs (checks-effects-interactions). Any subsequent `pay_expense` call for the same expense id is rejected, guaranteeing the expense cannot be paid more than once.
 
+## Settlement Currency Model
+
+Each expense carries its **own** token, chosen by the submitter at
+`submit_expense` time and stored on the `Expense` record. Every later step
+operates on that same stored token:
+
+- `fund_expense` escrows the expense's `token`.
+- `pay_expense` pays the employee, and refunds any unapproved surplus to the
+  payer, in the expense's `token`.
+
+There is no global or per-agreement "settlement currency" that an expense is
+validated against; the contract is intentionally multi-token, with each expense
+fully self-contained in a single currency. Because no step ever references a
+second token, a paid-out expense can never mis-convert an amount or transfer a
+different token than the one submitted, and distinct expenses in distinct tokens
+cannot interfere with one another.
+
 ## Receipt Hashing Scheme
 
 - Hash function: `SHA-256`

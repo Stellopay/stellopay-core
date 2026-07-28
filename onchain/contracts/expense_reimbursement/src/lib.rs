@@ -285,7 +285,7 @@ impl ExpenseReimbursementContract {
     /// NatSpec: Removal prevents this address from approving or rejecting any
     /// pending expense going forward. It does not alter approval decisions
     /// already recorded on expenses; those decisions remain valid and payable.
-    pub fn remove_approver(env: Env, approver: Address) {
+    pub fn remove_approver(env: Env, caller: Address, approver: Address) {
         require_initialized(&env);
         require_owner(&env, &caller);
 
