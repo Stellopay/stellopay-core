@@ -1433,4 +1433,38 @@ impl PayrollContract {
         }
         backup::admin_restore_from_encrypted(&env, envelope, passphrase)
     }
+
+    /// Read-only dry-run: validates an encrypted backup envelope and reports
+    /// what a real restore would do, without writing any state.
+    ///
+    /// Use this to confirm a backup is intact and targets the expected
+    /// `agreement_id` before committing `admin_restore_from_encrypted` in
+    /// production.
+    ///
+    /// # Arguments
+    /// * `envelope`   – encrypted backup bytes (version | salt | nonce | ciphertext).
+    /// * `passphrase` – decryption passphrase; never stored on-chain.
+    ///
+    /// # Returns
+    /// `(valid, agreement_id)` — `valid` is `true` when the backup decrypts
+    /// and deserialises without error; `agreement_id` is the id encoded in the
+    /// payload (0 when validation failed).
+    ///
+    /// # Errors
+    /// * `PayrollError::InvalidData` — envelope bytes are empty.
+    ///
+    /// # Access Control
+    /// No authentication required. A correct passphrase is still necessary to
+    /// obtain a meaningful result.
+    ///
+    /// # Security
+    /// Does not leak decrypted payload contents beyond `agreement_id`.
+    /// No state is written under any circumstance.
+    pub fn admin_restore_dry_run(
+        env: Env,
+        envelope: soroban_sdk::Bytes,
+        passphrase: soroban_sdk::Bytes,
+    ) -> Result<(bool, u128), storage::PayrollError> {
+        backup::admin_restore_dry_run(&env, envelope, passphrase)
+    }
 }

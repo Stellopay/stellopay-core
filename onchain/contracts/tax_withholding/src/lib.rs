@@ -422,11 +422,15 @@ impl TaxWithholdingContract {
             .get(&StorageKey::RulesetMetadata(version))
     }
 
-    /// Locks a ruleset version to prevent further modifications.
+    /// Locks a specific ruleset version to prevent further rate modifications.
+    ///
+    /// The lock is scoped strictly to the specified `version` (e.g. version N).
+    /// Freezing version N prevents `set_jurisdiction_rate` edits for version N
+    /// while leaving other versions (e.g. N+1 or newly published versions) editable.
     ///
     /// # Arguments
     /// * `caller` - Must be the contract owner.
-    /// * `version` - Version number to lock.
+    /// * `version` - Specific ruleset version number to lock.
     ///
     /// # Access Control
     /// Caller must be the contract owner.
@@ -496,7 +500,11 @@ impl TaxWithholdingContract {
         Ok(())
     }
 
-    /// Checks if a ruleset version is locked.
+    /// Checks if a specific ruleset version is locked.
+    ///
+    /// Returns `true` if the targeted `version` has been locked via
+    /// `lock_ruleset_version`, and `false` otherwise. Lock status is scoped
+    /// per version and does not affect lock queries on other versions.
     pub fn is_ruleset_locked(env: Env, version: u32) -> bool {
         env.storage()
             .persistent()

@@ -424,19 +424,13 @@ fn test_payroll_pause_resume_lifecycle() {
 
     // Pause — claims should fail
     client.pause_agreement(&aid);
-    assert_eq!(
-        client.get_agreement(&aid).unwrap().status,
-        AgreementStatus::Paused
-    );
+    assert_eq!(client.get_agreement(&aid).unwrap().status, AgreementStatus::Paused);
     let result = client.try_claim_payroll(&emp, &aid, &0);
     assert!(result.is_err());
 
     // Resume — claims work again
     client.resume_agreement(&aid);
-    assert_eq!(
-        client.get_agreement(&aid).unwrap().status,
-        AgreementStatus::Active
-    );
+    assert_eq!(client.get_agreement(&aid).unwrap().status, AgreementStatus::Active);
     client.claim_payroll(&emp, &aid, &0);
     assert_eq!(balance(&env, &tok, &emp), SALARY);
 }
@@ -1086,10 +1080,7 @@ fn test_cross_escrow_funding_and_release() {
     escrow_client.fund_agreement(&employer, &1u128, &employer, &5000);
 
     assert_eq!(escrow_client.get_agreement_balance(&1u128), 5000);
-    assert_eq!(
-        escrow_client.get_agreement_employer(&1u128).unwrap(),
-        employer
-    );
+    assert_eq!(escrow_client.get_agreement_employer(&1u128).unwrap(), employer);
 
     // Manager (payroll contract) releases funds to recipient
     mint(&env, &tok, &escrow_id, 0); // ensure token is known
@@ -1149,13 +1140,9 @@ fn test_cross_escrow_fund_partial_release_then_refund_conservation() {
     assert_eq!(
         balance(&env, &tok, &employer),
         employer_after_fund + remaining,
-        "employer receives refunded remainder"
+        "employer receives refunded remainder",
     );
-    assert_eq!(
-        funded,
-        released + remaining,
-        "funded == released + refunded"
-    );
+    assert_eq!(funded, released + remaining, "funded == released + refunded");
 }
 
 /// Second refund after a successful refund must be rejected.
@@ -1566,10 +1553,7 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
     let incentive_id =
         bonus_client.create_one_time_bonus(&employer, &employee_b, &approver, &tok, &250, &1_000);
     bonus_client.approve_incentive(&approver, &incentive_id);
-    assert_eq!(
-        bonus_client.claim_incentive(&employee_b, &incentive_id),
-        250
-    );
+    assert_eq!(bonus_client.claim_incentive(&employee_b, &incentive_id), 250);
 
     // Mirror the payroll dispute into the escalation module so the integration
     // test covers the off-chain coordination sequence as well as token effects.
@@ -1622,11 +1606,11 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
 
     assert_eq!(
         payroll_client.get_dispute_status(&agreement_id),
-        DisputeStatus::Resolved
+        DisputeStatus::Resolved,
     );
     assert_eq!(
         payroll_client.get_agreement(&agreement_id).unwrap().status,
-        AgreementStatus::Completed
+        AgreementStatus::Completed,
     );
 
     let escalated = dispute_client.get_dispute(&agreement_id).unwrap();
@@ -1699,10 +1683,7 @@ fn test_cross_contract_workflow_failure_injection_preserves_state() {
 
     let unauthorized_admin =
         dispute_client.try_set_level_time_limit(&outsider, &EscalationLevel::Level1, &60);
-    assert_eq!(
-        unauthorized_admin,
-        Err(Ok(EscalationError::Unauthorized.into()))
-    );
+    assert_eq!(unauthorized_admin, Err(Ok(EscalationError::Unauthorized.into())));
     assert_eq!(history_client.get_agreement_payment_count(&agreement_id), 0);
 
     let unauthorized_release = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1726,10 +1707,7 @@ fn test_cross_contract_workflow_failure_injection_preserves_state() {
     dispute_client.file_dispute(&employee, &agreement_id);
     advance(&env, ONE_WEEK + 1);
     let escalation_attempt = dispute_client.try_escalate_dispute(&employee, &agreement_id);
-    assert_eq!(
-        escalation_attempt,
-        Err(Ok(EscalationError::TimeLimitExpired.into()))
-    );
+    assert_eq!(escalation_attempt, Err(Ok(EscalationError::TimeLimitExpired.into())));
     let frozen = dispute_client.get_dispute(&agreement_id).unwrap();
     assert_eq!(frozen.status, EscalationStatus::Open);
     assert_eq!(frozen.level, EscalationLevel::Level1);
@@ -1795,22 +1773,10 @@ fn test_multi_agreement_different_states() {
     client.cancel_agreement(&a4);
 
     // Verify each is in the expected state
-    assert_eq!(
-        client.get_agreement(&a1).unwrap().status,
-        AgreementStatus::Created
-    );
-    assert_eq!(
-        client.get_agreement(&a2).unwrap().status,
-        AgreementStatus::Active
-    );
-    assert_eq!(
-        client.get_agreement(&a3).unwrap().status,
-        AgreementStatus::Paused
-    );
-    assert_eq!(
-        client.get_agreement(&a4).unwrap().status,
-        AgreementStatus::Cancelled
-    );
+    assert_eq!(client.get_agreement(&a1).unwrap().status, AgreementStatus::Created);
+    assert_eq!(client.get_agreement(&a2).unwrap().status, AgreementStatus::Active);
+    assert_eq!(client.get_agreement(&a3).unwrap().status, AgreementStatus::Paused);
+    assert_eq!(client.get_agreement(&a4).unwrap().status, AgreementStatus::Cancelled);
 }
 
 /// Escrow + milestone agreements coexist; independent ID counters.
@@ -1832,14 +1798,8 @@ fn test_mixed_agreement_types_coexist() {
     let m1 = client.create_milestone_agreement(&employer, &contributor, &tok);
 
     // Payroll and escrow share the same counter; milestone has its own
-    assert_eq!(
-        client.get_agreement(&p1).unwrap().mode,
-        AgreementMode::Payroll
-    );
-    assert_eq!(
-        client.get_agreement(&e1).unwrap().mode,
-        AgreementMode::Escrow
-    );
+    assert_eq!(client.get_agreement(&p1).unwrap().mode, AgreementMode::Payroll);
+    assert_eq!(client.get_agreement(&e1).unwrap().mode, AgreementMode::Escrow);
     assert!(client.get_milestone_count(&m1) == 0);
 }
 
@@ -2119,6 +2079,12 @@ fn test_hire_to_resolve_full_workflow() {
     let contributor = addr(&env);
     let arbiter = addr(&env);
 
+    // Escrow: 500 per period, 1-day periods, 6 periods total = 3000
+    let amount_per_period = 500i128;
+    let period_seconds = ONE_DAY;
+    let num_periods = 6u32;
+    let total_agreement_value = amount_per_period * (num_periods as i128); // 3000
+
     // Mint ALL tokens upfront so token conservation can be checked by tracking
     // transfers among the tracked addresses (mint would inflate the total).
     let external_escrow_amount = 1_000i128;
@@ -2140,10 +2106,6 @@ fn test_hire_to_resolve_full_workflow() {
     assert_eq!(payroll_client.get_arbiter().unwrap(), arbiter);
 
     // Escrow: 500 per period, 1-day periods, 6 periods total = 3000
-    let amount_per_period = 500i128;
-    let period_seconds = ONE_DAY;
-    let num_periods = 6u32;
-    let total_agreement_value = amount_per_period * (num_periods as i128); // 3000
 
     let agreement_id = payroll_client.create_escrow_agreement(
         &employer,
@@ -2176,10 +2138,7 @@ fn test_hire_to_resolve_full_workflow() {
 
     // Also fund the external PayrollEscrowContract for cross-contract coverage.
     escrow_client.fund_agreement(&employer, &agreement_id, &employer, &external_escrow_amount);
-    assert_eq!(
-        escrow_client.get_agreement_balance(&agreement_id),
-        external_escrow_amount
-    );
+    assert_eq!(escrow_client.get_agreement_balance(&agreement_id), external_escrow_amount);
 
     // Advance 2 periods so at least one is claimable.
     advance(&env, ONE_DAY * 2);
@@ -2187,10 +2146,7 @@ fn test_hire_to_resolve_full_workflow() {
     // Claim one period as the milestone payment.
     let contributor_before_claim = balance(&env, &tok, &contributor);
     payroll_client.claim_time_based(&agreement_id);
-    assert_eq!(
-        balance(&env, &tok, &contributor),
-        contributor_before_claim + amount_per_period
-    );
+    assert_eq!(balance(&env, &tok, &contributor), contributor_before_claim + amount_per_period);
     assert_eq!(payroll_client.get_claimed_periods(&agreement_id), 2);
 
     // Record the payment in payment history.
@@ -2213,10 +2169,7 @@ fn test_hire_to_resolve_full_workflow() {
     payroll_client.raise_dispute(&contributor, &agreement_id);
     let agr = payroll_client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agr.status, AgreementStatus::Disputed);
-    assert_eq!(
-        payroll_client.get_dispute_status(&agreement_id),
-        DisputeStatus::Raised
-    );
+    assert_eq!(payroll_client.get_dispute_status(&agreement_id), DisputeStatus::Raised);
 
     // Verify that direct claims are blocked while the dispute is active.
     let blocked_claim = payroll_client.try_claim_time_based(&agreement_id);
@@ -2269,10 +2222,7 @@ fn test_hire_to_resolve_full_workflow() {
     payroll_client.resolve_dispute(&arbiter, &agreement_id, &pay_employee, &refund_employer);
     let agr = payroll_client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agr.status, AgreementStatus::Completed);
-    assert_eq!(
-        payroll_client.get_dispute_status(&agreement_id),
-        DisputeStatus::Resolved
-    );
+    assert_eq!(payroll_client.get_dispute_status(&agreement_id), DisputeStatus::Resolved);
 
     // Record the dispute-resolution payments in history.
     record_payment_as_payroll(
@@ -2303,14 +2253,11 @@ fn test_hire_to_resolve_full_workflow() {
     // ── 5. Assert cross-contract final state ────────────────────────────────
     // stello_pay_contract: agreement is completed, dispute resolved.
     assert_eq!(agr.status, AgreementStatus::Completed);
-    assert_eq!(
-        payroll_client.get_dispute_status(&agreement_id),
-        DisputeStatus::Resolved
-    );
+    assert_eq!(payroll_client.get_dispute_status(&agreement_id), DisputeStatus::Resolved);
     assert_eq!(
         agr.claimed_periods,
         Some(2),
-        "must have claimed exactly 2 periods (milestone payment)"
+        "must have claimed exactly 2 periods (milestone payment)",
     );
 
     // dispute_escalation: dispute is finalised with UpholdPayment outcome.
@@ -2330,7 +2277,7 @@ fn test_hire_to_resolve_full_workflow() {
     assert_eq!(
         escrow_client.get_agreement_balance(&agreement_id),
         external_escrow_amount - escrow_release_amount,
-        "external escrow balance reduced by release amount"
+        "external escrow balance reduced by release amount",
     );
 
     // Refund the remaining escrow back to the employer.
@@ -2338,14 +2285,14 @@ fn test_hire_to_resolve_full_workflow() {
     assert_eq!(
         escrow_client.get_agreement_balance(&agreement_id),
         0,
-        "external escrow fully cleared after refund"
+        "external escrow fully cleared after refund",
     );
 
     // payment_history: 3 payment records (milestone claim + dispute payout split).
     assert_eq!(
         history_client.get_agreement_payment_count(&agreement_id),
         3,
-        "three payment records must exist: milestone claim + dispute resolution (employee + employer)"
+        "three payment records must exist: milestone claim + dispute resolution (employee + employer)",
     );
 
     // Token conservation: total across all tracked addresses must be unchanged
@@ -2353,7 +2300,7 @@ fn test_hire_to_resolve_full_workflow() {
     let final_total = tracked_total(&env, &tok, &tracked);
     assert_eq!(
         final_total, initial_total,
-        "token conservation must hold: total before == total after"
+        "token conservation must hold: total before == total after",
     );
 
     // ── 6. Verify no double-payout or stuck funds ───────────────────────────

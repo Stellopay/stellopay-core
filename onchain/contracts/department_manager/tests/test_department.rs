@@ -1099,6 +1099,128 @@ fn test_paged_zero_limit_uses_max_page_size() {
 }
 
 // ---------------------------------------------------------------------------
+// Cycle-detection tests (Issue #763)
+// ---------------------------------------------------------------------------
+
+/// Verifies that reparenting a department under its own descendant in a 4-level
+/// hierarchy is rejected with a clear error. This is the core correctness guard
+/// against tree corruption and infinite traversal loops.
+///
+/// Builds a 4-level hierarchy:
+/// ```text
+///     Eng (level 0)
+///      └── Backend (level 1)
+///           └── Rust (level 2)
+///                └── Tokio (level 3)
+/// ```
+///
+/// Attempt 1: Reparent `Eng` under `Tokio` (deepest leaf) → must be rejected.
+/// Attempt 2: Reparent `Eng` under `Rust` (mid-level descendant) → must be rejected.
+/// Attempt 3: Reparent `Eng` under `Backend` (direct child) → must be rejected.
+///
+/// After all cycle attempts, verify valid reparenting still works by moving
+/// `Tokio` to be a child of `Backend` (no longer under `Rust`).
+#[test]
+fn test_reparent_4level_cycle_detection_rejected() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+
+    // Build 4-level hierarchy: Eng → Backend → Rust → Tokio
+    let eng = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+    let backend = client.create_department(&owner, &org_id, &symbol_short!("Backend"), &Some(eng));
+    let rust = client.create_department(&owner, &org_id, &symbol_short!("Rust"), &Some(backend));
+    let tokio = client.create_department(&owner, &org_id, &symbol_short!("Tokio"), &Some(rust));
+
+    // Verify the hierarchy is correct before cycle attempts
+    assert_eq!(client.get_department(&eng).parent_id, None);
+    assert_eq!(client.get_department(&backend).parent_id, Some(eng));
+    assert_eq!(client.get_department(&rust).parent_id, Some(backend));
+    assert_eq!(client.get_department(&tokio).parent_id, Some(rust));
+
+    // Attempt 1: Reparent Eng (root of subtree) under Tokio (deepest leaf)
+    // This would create: Eng → Backend → Rust → Tokio → Eng (cycle)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.update_department(&owner, &eng, &Some(tokio));
+    }));
+    assert!(
+        result.is_err(),
+        "Reparenting Eng under Tokio (its own descendant) must be rejected"
+    );
+
+    // Attempt 2: Reparent Eng under Rust (mid-level descendant)
+    // This would create: Eng → Backend → Rust → Eng (cycle)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.update_department(&owner, &eng, &Some(rust));
+    }));
+    assert!(
+        result.is_err(),
+        "Reparenting Eng under Rust (its own descendant) must be rejected"
+    );
+
+    // Attempt 3: Reparent Eng under Backend (direct child)
+    // This would create: Eng → Backend → Eng (cycle)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.update_department(&owner, &eng, &Some(backend));
+    }));
+    assert!(
+        result.is_err(),
+        "Reparenting Eng under Backend (its own direct child) must be rejected"
+    );
+
+    // Verify hierarchy is unchanged after all cycle attempts
+    assert_eq!(client.get_department(&eng).parent_id, None);
+    assert_eq!(client.get_department(&backend).parent_id, Some(eng));
+    assert_eq!(client.get_department(&rust).parent_id, Some(backend));
+    assert_eq!(client.get_department(&tokio).parent_id, Some(rust));
+
+    // Verify valid reparenting still works: move Tokio from under Rust to under Backend
+    client.update_department(&owner, &tokio, &Some(backend));
+    assert_eq!(client.get_department(&tokio).parent_id, Some(backend));
+    // Rust no longer has Tokio as child
+    assert_eq!(client.get_child_departments(&rust).len(), 0);
+    // Backend now has both Rust and Tokio as children
+    let backend_children = client.get_child_departments(&backend);
+    assert_eq!(backend_children.len(), 2);
+}
+
+/// Verifies that reparenting a leaf department to a non-descendant (valid move)
+/// works correctly while cycle detection is active for other operations.
+#[test]
+fn test_valid_reparent_amid_cycle_guard() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+
+    // Build: Root → [A → A1, B]
+    let root = client.create_department(&owner, &org_id, &symbol_short!("Root"), &None);
+    let a = client.create_department(&owner, &org_id, &symbol_short!("A"), &Some(root));
+    let a1 = client.create_department(&owner, &org_id, &symbol_short!("A1"), &Some(a));
+    let b = client.create_department(&owner, &org_id, &symbol_short!("B"), &Some(root));
+
+    // Valid: move A1 from under A to under B (A1 is not an ancestor of B)
+    client.update_department(&owner, &a1, &Some(b));
+    assert_eq!(client.get_department(&a1).parent_id, Some(b));
+    assert_eq!(client.get_child_departments(&a).len(), 0);
+    assert_eq!(client.get_child_departments(&b).get(0), Some(a1));
+
+    // Valid: move A1 to top-level
+    client.update_department(&owner, &a1, &None);
+    assert_eq!(client.get_department(&a1).parent_id, None);
+
+    // Cycle: try to move Root under A (would create Root → A → Root)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.update_department(&owner, &root, &Some(a));
+    }));
+    assert!(
+        result.is_err(),
+        "Cycle must still be detected after valid reparents"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // merge_departments tests
 // ---------------------------------------------------------------------------
 

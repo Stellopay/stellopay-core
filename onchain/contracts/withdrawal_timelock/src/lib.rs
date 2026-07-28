@@ -416,6 +416,10 @@ impl WithdrawalTimelock {
     ///      permanently stuck: at least one of `execute` or `cancel` is always
     ///      available to a `Queued` operation.
     ///
+    ///      Once cancelled, an operation enters a terminal state. It is removed
+    ///      from active consideration and any subsequent attempt to execute it
+    ///      will be rejected, even if its original maturity timestamp has passed.
+    ///
     ///      Emits: `("timelock_cancelled", op_id) → ()`.
     /// @param caller Admin address cancelling the operation; must authenticate.
     /// @param op_id  Operation identifier returned by `queue`.

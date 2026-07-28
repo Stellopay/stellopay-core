@@ -137,6 +137,31 @@ fn test_local_role_override() {
 }
 
 #[test]
+fn test_mid_transaction_role_revocation() {
+    let env = env();
+    let (rbac_client, er_client, rbac_owner, _er_owner) = setup(&env);
+    let user = addr(&env);
+
+    er_client.set_rbac_address(&rbac_client.address);
+
+    // Grant user the Employer role in RBAC (satisfies Manager-level ER actions)
+    rbac_client.grant_role(&rbac_owner, &user, &Role::Employer);
+
+    // Step 1 of a Manager-gated flow — succeeds via RBAC inheritance
+    assert!(er_client
+        .require_capability(&user, &PayrollAction::CreatePayrollRecord)
+        .is_ok());
+
+    // Mid-transaction: revoke the role
+    rbac_client.revoke_role(&rbac_owner, &user, &Role::Employer);
+
+    // Step 2 — rejected without the role
+    assert!(er_client
+        .require_capability(&user, &PayrollAction::CreatePayrollRecord)
+        .is_err());
+}
+
+#[test]
 fn test_unlinked_behavior() {
     let env = env();
     let (rbac_client, er_client, rbac_owner, _er_owner) = setup(&env);
