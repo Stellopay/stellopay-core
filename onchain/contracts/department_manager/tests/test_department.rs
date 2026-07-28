@@ -540,6 +540,89 @@ fn test_get_department_employees_empty_initial() {
     assert_eq!(employees.len(), 0);
 }
 
+/// @notice Verifies get_department_report aggregates employees across a three-level
+///         department tree (root → child → grandchild), not just direct children.
+///
+/// Builds:
+/// ```
+///        Corp (root, emp A)
+///        /         \
+///     Eng          Sales (emp C)
+///    /    \
+/// Front  Back (emp B)
+/// ```
+///
+/// Expected rollup for Corp: 4 employees (A + B + C + D in Front)
+/// Expected rollup for Eng: 2 employees (D in Front + B)
+/// Expected rollup for Sales: 1 employee (C)
+#[test]
+fn test_multi_level_department_report_aggregation() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+
+    // Level 0: root
+    let root_id = client.create_department(&owner, &org_id, &symbol_short!("Corp"), &None);
+    // Level 1: children
+    let eng_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &Some(root_id));
+    let sales_id = client.create_department(&owner, &org_id, &symbol_short!("Sales"), &Some(root_id));
+    // Level 2: grandchildren
+    let frontend_id = client.create_department(&owner, &org_id, &symbol_short!("Front"), &Some(eng_id));
+    let backend_id = client.create_department(&owner, &org_id, &symbol_short!("Back"), &Some(eng_id));
+
+    // Assign employees
+    let emp_a = Address::generate(&env);
+    let emp_b = Address::generate(&env);
+    let emp_c = Address::generate(&env);
+    let emp_d = Address::generate(&env);
+    client.assign_employee_to_department(&owner, &org_id, &root_id, &emp_a);
+    client.assign_employee_to_department(&owner, &org_id, &backend_id, &emp_b);
+    client.assign_employee_to_department(&owner, &org_id, &sales_id, &emp_c);
+    client.assign_employee_to_department(&owner, &org_id, &frontend_id, &emp_d);
+
+    // Root report should aggregate all 4 employees across the full tree
+    let (root_count, root_children, root_addrs) = client.get_department_report(&root_id);
+    assert_eq!(
+        root_count, 4,
+        "root department should report 4 employees (A + B + C + D) across all descendants"
+    );
+    assert_eq!(root_addrs.len(), 4);
+    assert_eq!(root_children.len(), 2);
+    // Direct children only (not grandchildren)
+    assert_eq!(root_children.get(0), Some(eng_id));
+    assert_eq!(root_children.get(1), Some(sales_id));
+
+    // Eng report should aggregate 0 direct + 1 in Front + 1 in Back = 2
+    let (eng_count, eng_children, eng_addrs) = client.get_department_report(&eng_id);
+    assert_eq!(
+        eng_count, 2,
+        "Eng should report 2 employees (D in Front + B in Back)"
+    );
+    assert_eq!(eng_addrs.len(), 2);
+    assert_eq!(eng_children.len(), 2);
+    assert_eq!(eng_children.get(0), Some(frontend_id));
+    assert_eq!(eng_children.get(1), Some(backend_id));
+
+    // Sales leaf — direct employee only
+    let (sales_count, sales_children, sales_addrs) = client.get_department_report(&sales_id);
+    assert_eq!(sales_count, 1, "Sales should report 1 employee (C)");
+    assert_eq!(sales_addrs.len(), 1);
+    assert_eq!(sales_children.len(), 0);
+
+    // Backend leaf — direct employee only
+    let (be_count, be_children, be_addrs) = client.get_department_report(&backend_id);
+    assert_eq!(be_count, 1, "Backend should report 1 employee (B)");
+    assert_eq!(be_addrs.len(), 1);
+    assert_eq!(be_children.len(), 0);
+
+    // Frontend leaf — direct employee only
+    let (fe_count, fe_children, fe_addrs) = client.get_department_report(&frontend_id);
+    assert_eq!(fe_count, 1, "Frontend should report 1 employee (D)");
+    assert_eq!(fe_addrs.len(), 1);
+    assert_eq!(fe_children.len(), 0);
+}
+
 // ---------------------------------------------------------------------------
 // Hierarchical constraint tests
 // ---------------------------------------------------------------------------

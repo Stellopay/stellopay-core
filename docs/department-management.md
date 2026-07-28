@@ -122,7 +122,13 @@ Returns the department ID for the employee in that org, or `None` if not assigne
 ```rust
 get_department_report(department_id: u128) -> (u32, Vec<u128>, Vec<Address>)
 ```
-Returns `(employee_count, child_department_ids, employee_addresses)` for a department.
+Returns `(total_employee_count, direct_child_department_ids, all_employee_addresses)` for a department.  
+
+**Aggregation rules:**
+- `employee_count` and `employee_addresses` include employees from the queried department **and** all descendant departments (children, grandchildren, etc.), recursively.
+- `child_department_ids` contains only **direct** children (one level), enabling tree traversal.
+- A leaf department (no children) returns only its own employees.
+- Zero employees in a subtree produces `count = 0` and an empty addresses vector.
 
 ---
 
