@@ -474,6 +474,11 @@ pub enum PayrollError {
     /// Re-expiring is idempotent-safe via an error so callers know the
     /// milestone was not transitioned again.
     MilestoneAlreadyExpired = 48,
+    /// The rejection reason must be non-empty and contain at least one
+    /// non-whitespace character.  Callers must provide a meaningful
+    /// justification so that off-chain indexers and dispute reviewers
+    /// can reconstruct the audit trail.
+    MilestoneRejectionReasonEmpty = 49,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.
@@ -825,5 +830,6 @@ mod test {
         );
         assert_eq!(PayrollError::MilestoneAlreadyClaimedCannotReject as u32, 47);
         assert_eq!(PayrollError::MilestoneAlreadyExpired as u32, 48);
+        assert_eq!(PayrollError::MilestoneRejectionReasonEmpty as u32, 49);
     }
 }

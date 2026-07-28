@@ -10,57 +10,16 @@ The `template_versioning` contract (`onchain/contracts/template_versioning`) sto
 - **Version**: A monotonically increasing number per template. Each version stores a `schema_hash` (typically a SHA-256 of the canonical schema or ABI), optional migration notes, and a `deprecated` flag.
 - **Agreement**: A record that references a specific template version. Agreements are immutable with respect to the template version they were created with.
 
----
+## Version pinning guarantee
 
-## Naming-Collision Policy (issue #940)
+Once an agreement is created with `create_agreement`, it is **permanently pinned** to the exact `(template_id, template_version)` pair specified at creation time. This is a critical security invariant:
 
-Template names form a **shared namespace** visible to all agreement creators. Registering a new template under a name that already belongs to an **active** (non-deprecated) template is rejected with `VersioningError::NameCollision (9)`.
+- Publishing a new template version via `publish_template_version` does **not** affect existing agreements
+- Existing agreements continue to resolve to their originally pinned version, even after newer versions become the latest
+- To use a new template version, a new agreement must be explicitly created with the new version number
+- This prevents silent schema migrations that could break agreement validation logic
 
-### Why
-
-An agreement creator selecting a template by name must be able to trust that the name resolves unambiguously to the schema they intend to use. Allowing two templates to share a name while one is active would silently shadow the existing one, causing new agreements to bind to a different schema than expected.
-
-### When a name is available
-
-| Situation | Name available? |
-|-----------|----------------|
-| Name never registered | ✅ Yes |
-| Name registered but no version ever published | ✅ Yes (template is inert) |
-| Name registered, latest version is deprecated | ✅ Yes |
-| Name registered, latest version is **not** deprecated | ❌ No — `NameCollision` |
-
-The check inspects the **latest published version** of every template ever registered under the name. If that version is non-deprecated, the name is blocked.
-
-### Freeing a name
-
-Deprecate every published version of every template that uses the name via
-`deprecate_version`. Once the most-recently-published version is marked deprecated,
-the name is available for a new registration.
-
-```
-register_template("Payroll")        → tid_a  (active)
-publish_template_version(tid_a, …)  → v1     (not deprecated)
-register_template("Payroll")        → NameCollision ❌
-
-deprecate_version(tid_a, v1)        (all versions now deprecated)
-register_template("Payroll")        → tid_b  ✅
-```
-
-### Collision-check algorithm
-
-`register_template` consults an **append-only** index key
-`TemplateNameIndex(name)` that stores the ordered list of all template IDs ever
-registered under a given name. For each ID:
-
-1. Read `TemplateLatest(id)`. If `0`, the template is versionless (inert) — skip.
-2. Read `TemplateVersion(id, latest)`. If the record is not deprecated, reject with `NameCollision`.
-3. If all IDs pass, write the new ID to the index and proceed with registration.
-
-The index is append-only and written exclusively by `register_template` under
-caller authentication. Entries are never removed, so the check is exhaustive
-across all historical registrations.
-
----
+This guarantee is tested in `agreement_pinned_to_version_n_after_version_n_plus_one_published` and `new_agreement_uses_latest_version_after_publish`.
 
 ## API overview
 

@@ -131,6 +131,9 @@ pub enum StorageKey {
     /// Time window (in seconds) the admin has to act once a dispute enters
     /// `PendingReview`. Defaults to 3 days (259_200 s) if not explicitly set.
     PendingReviewTimeLimit,
+    /// Address of the `payroll_escrow` contract to pause/resume on dispute
+    /// lifecycle events.
+    PayrollEscrow,
 }
 
 /// Errors specific to the dispute escalation logic.

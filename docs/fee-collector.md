@@ -22,10 +22,11 @@ The `FeeCollector` contract is a composable protocol fee layer for StelloPay. It
 
 ## Fee Modes
 
-| Mode          | Formula                                     | Config key   |
-|---------------|---------------------------------------------|--------------|
-| `Percentage`  | `floor(gross × fee_bps / 10 000)`           | `fee_bps`    |
-| `Flat`        | fixed amount (capped at `gross_amount`)     | `flat_fee`   |
+| Mode          | Formula                                     | Config key          |
+|---------------|---------------------------------------------|---------------------|
+| `Percentage`  | `floor(gross × fee_bps / 10 000)`           | `fee_bps`           |
+| `Flat`        | fixed amount (capped at `gross_amount`)     | `flat_fee`          |
+| `Tiered`      | tier-selected bps applied to gross amount   | `tiered_schedule`   |
 
 ### Basis Points Reference
 
@@ -43,6 +44,44 @@ The `FeeCollector` contract is a composable protocol fee layer for StelloPay. It
 All basis point math in this contract is consolidated into a single helper function, `apply_basis_points(amount, bps)`, which ensures:
 - Standard floor rounding applies across all calculation endpoints (both during fee calculation/collection and fee split routing).
 - Tie-breaking roundings (such as exactly half `0.5` or `1.5` token fractions) are rounded down (e.g., `3` tokens at `50%` yields a `1` token fee).
+
+### Tiered Mode
+
+When `mode = Tiered`, the fee rate is resolved from a stored `tiered_schedule` (a list of
+[`FeeTier`](#feecollector-types) values set via
+[`update_tiered_schedule`](#update_tiered_schedule)).
+
+**Tier selection algorithm:**
+
+1. Walk the schedule from the first entry to the last.
+2. Select the **first** tier whose `limit ≥ gross_amount`.
+3. If no tier matches (all limits are below `gross_amount`), use the last tier's `fee_bps` as the
+   catch-all.
+4. Apply `floor(gross_amount × selected_fee_bps / 10 000)`.
+
+Use `limit: i128::MAX` for the final tier to create an explicit open-ended top tier.
+
+**Example schedule:**
+
+| Tier | Limit       | `fee_bps` | Rate   |
+|------|-------------|-----------|--------|
+| 1    | `1 000`     | `500`     | 5 %    |
+| 2    | `5 000`     | `250`     | 2.5 %  |
+| 3    | `i128::MAX` | `100`     | 1 %    |
+
+A gross amount of `800` → Tier 1 → fee = `floor(800 × 500 / 10 000)` = `40`.  
+A gross amount of `3 000` → Tier 2 → fee = `floor(3 000 × 250 / 10 000)` = `75`.  
+A gross amount of `10 000` → Tier 3 → fee = `floor(10 000 × 100 / 10 000)` = `100`.
+
+**Running-Total Invariant:**
+
+`get_total_fees_collected()` is a **monotonically increasing** counter that is never reset
+by `update_tiered_schedule`, `update_fee_config`, or any other admin operation. After any
+number of schedule rotations the following holds exactly:
+
+```
+get_total_fees_collected() == Σ fee_amount  for every collect_fee call since deployment
+```
 
 ---
 
@@ -134,6 +173,8 @@ pub fn calculate_fee(
 
 Pure read — no token transfers, no state mutation. Use for UI previews and pre-flight checks.
 
+The contract caches the most recently computed quote for a given `gross_amount` so a later `collect_fee` call can settle against the same amounts even if the admin updates the active config in between. A fresh `calculate_fee` call overwrites that cached quote for the same gross amount.
+
 **Panics**: `"Gross amount must be non-negative"` — `gross_amount < 0`.
 
 ---
@@ -150,9 +191,37 @@ pub fn update_fee_config(
 )
 ```
 
-Admin-only. Applies immediately to all subsequent `collect_fee` calls.
+Admin-only. Applies immediately to all subsequent `collect_fee` calls that do not have a cached quote for the same `gross_amount`. A previously computed quote remains stable for settlement until a fresh `calculate_fee` call updates it.
 
 **Emits**: `("fee_config_updated",)` → `FeeConfigUpdatedEvent`
+
+---
+
+### `update_tiered_schedule`
+
+```rust
+pub fn update_tiered_schedule(
+    env: Env,
+    admin: Address,
+    new_schedule: Vec<FeeTier>,  // Ordered list of (limit, fee_bps) pairs.
+)
+```
+
+Admin-only. Replaces the entire tier list atomically. Changes take effect immediately on the
+next `collect_fee` call. The running total (`TotalFeesCollected`) is **not reset** — fees
+collected under the old schedule are preserved and the counter remains additive across all
+schedule changes.
+
+**Validation rules:**
+- Tier `limit` values must be strictly increasing and all positive (> 0).
+- Each tier's `fee_bps` must be ≤ `MAX_FEE_BPS` (1 000).
+
+**Panics:**
+- `"Unauthorized: caller is not admin"` — if `admin` is not the stored admin.
+- `"Tier limits must be strictly increasing and positive"` — on invalid limit ordering.
+- `"Fee in tier exceeds maximum allowed"` — if any `fee_bps > MAX_FEE_BPS`.
+
+**Emits**: `("tiered_schedule_updated",)` → `TieredScheduleUpdatedEvent`
 
 ---
 
@@ -443,22 +512,30 @@ cargo build --release --target wasm32-unknown-unknown -p fee_collector
 
 ### Test Coverage Summary
 
-| Category                              | Tests |
-|---------------------------------------|-------|
-| Initialization                        | 7     |
-| `collect_fee` (percentage)            | 7     |
-| `collect_fee` (flat)                  | 4     |
-| `calculate_fee`                       | 4     |
-| Config update                         | 4     |
-| Recipient update                      | 3     |
-| Pause / unpause                       | 3     |
-| Two-step admin transfer               | 13    |
-| Cumulative totals                     | 3     |
-| Collect fee error cases               | 2     |
-| `calculate_fee` error cases           | 1     |
-| View helpers / edge cases             | 2     |
-| Rounding tie-breaker                  | 1     |
-| **Total**                             | **54**|
+| Category                                          | Tests |
+|---------------------------------------------------|-------|
+| Initialization                                    | 7     |
+| `collect_fee` (percentage)                        | 7     |
+| `collect_fee` (flat)                              | 4     |
+| `calculate_fee`                                   | 4     |
+| Config update                                     | 4     |
+| Recipient update                                  | 3     |
+| Pause / unpause                                   | 3     |
+| Two-step admin transfer                           | 13    |
+| Cumulative totals                                 | 3     |
+| Collect fee error cases                           | 2     |
+| `calculate_fee` error cases                       | 1     |
+| View helpers / edge cases                         | 2     |
+| Rounding tie-breaker                              | 1     |
+| Tiered: tier selection & validation               | 9     |
+| Tiered: running-total reconciliation              | 5     |
+| **Total**                                         | **68**|
+
+The five tiered reconciliation tests in `tests/test_tiered_fees.rs` explicitly verify the
+running-total invariant (`get_total_fees_collected() == Σ fee_amount`) by independently
+summing each `collect_fee` return value and asserting exact equality after every call.
+Schedule changes mid-sequence are also covered, confirming the counter is additive and
+never reset by `update_tiered_schedule`.
 
 ---
 
@@ -468,3 +545,4 @@ cargo build --release --target wasm32-unknown-unknown -p fee_collector
 |---------|---------------------------------------------------------------------------------------------|
 | 0.0.0   | Initial implementation — percentage and flat fee modes, pause, admin transfer, cumulative totals |
 | 0.1.0   | Replaced single-step `transfer_admin` with two-step `propose_admin` / `accept_admin` / `cancel_admin_transfer` handoff (issue #919). Added `PendingAdmin` storage key, `AdminProposedEvent`, `AdminTransferCancelledEvent`, and `get_pending_admin` view. |
+| 0.2.0   | Added `Tiered` fee mode: `FeeTier` type, `tiered_schedule` storage key, `update_tiered_schedule` entry-point, `TieredScheduleUpdatedEvent`. Expanded doc comments in `lib.rs` with Tier Selection Algorithm and Running-Total Continuity guarantee. Added 14 tests in `test_tiered_fees.rs` including 5 reconciliation tests that assert `get_total_fees_collected() == Σ fee_amount` across all tiers and across `update_tiered_schedule` mid-sequence changes. |

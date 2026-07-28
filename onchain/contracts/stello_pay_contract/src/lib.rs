@@ -443,12 +443,14 @@ impl PayrollContract {
     /// # Arguments
     /// * `agreement_id` - ID of the milestone agreement.
     /// * `milestone_id` - 1-based ID of the milestone to reject.
-    /// * `reason`       - Optional human-readable reason (pass empty string if none).
+    /// * `reason`       - Human-readable justification (must be non-empty and
+    ///                    contain at least one non-whitespace character).
     ///
     /// # Requirements
     /// - Caller must be the employer.
     /// - Agreement must be in `Created` or `Active` status.
     /// - Milestone must not already be rejected, approved, or claimed.
+    /// - `reason` must be non-empty and not whitespace-only.
     pub fn reject_milestone(
         env: Env,
         agreement_id: u128,
@@ -1433,7 +1435,7 @@ impl PayrollContract {
     /// # Errors
     /// Panics with "Unauthorized" when the caller lacks admin privileges.
     /// Panics with "InvalidAmount" when `amount` is negative.
-    pub fn admin_set_agreement_escrow_balance(
+    pub fn admin_set_agr_escrow_balance(
         env: Env,
         operator: Address,
         agreement_id: u128,
@@ -1482,7 +1484,7 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires owner or RBAC Admin authentication.
-    pub fn admin_set_agreement_activation_time(
+    pub fn admin_set_agr_activation_time(
         env: Env,
         operator: Address,
         agreement_id: u128,
@@ -1508,7 +1510,7 @@ impl PayrollContract {
     ///
     /// # Errors
     /// Panics with "InvalidDuration" when `duration` is 0.
-    pub fn admin_set_agreement_period_duration(
+    pub fn admin_set_agr_period_duration(
         env: Env,
         operator: Address,
         agreement_id: u128,
