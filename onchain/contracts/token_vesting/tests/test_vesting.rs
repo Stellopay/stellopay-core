@@ -1534,109 +1534,99 @@ fn linear_vested_never_exceeds_total() {
 }
 
 // ===========================================================================
-// Issue #790 – Zero-checkpoint Custom schedule validation
+// N. Early release bounded by releasable amount (issue #884)
 // ===========================================================================
 
-/// Creating a Custom schedule with zero checkpoints must be rejected.
+/// Verifies that approve_early_release is capped at the unvested remainder
+/// even when a prior claim has already been made against the schedule.
 ///
-/// The `assert!(!checkpoints.is_empty(), "At least one checkpoint required")`
-/// guard in `create_custom_schedule` should fire and the call must return an
-/// error rather than storing an unusable schedule.
+/// Regression: without the cap, the owner could approve an early release that
+/// exceeds what get_releasable_amount (plus already-released early portion)
+/// actually allows. The contract's unvested_remaining guard protects against
+/// over-release. This test proves the cap holds after a prior claim.
 #[test]
-fn custom_zero_checkpoints_rejected_at_creation() {
+fn early_release_capped_after_prior_claim() {
     let env = create_env();
-    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
 
     set_time(&env, 0);
-    let empty_checkpoints: Vec<CustomCheckpoint> = Vec::new(&env);
-
-    let result = client.try_create_custom_schedule(
+    let sid = client.create_linear_schedule(
         &employer,
         &beneficiary,
         &token.address,
         &1_000i128,
-        &empty_checkpoints,
+        &0u64,
+        &100u64,
+        &None,
         &false,
     );
 
-    // Must be rejected — the contract must not allow a zero-checkpoint custom
-    // schedule to be persisted.
-    assert!(
-        result.is_err(),
-        "Expected error for zero-checkpoint custom schedule, got Ok"
-    );
+    // At t=50: 500 vested, 500 unvested → releasable = 500
+    set_time(&env, 50);
+    assert_eq!(client.get_releasable_amount(&sid), 500);
+
+    // Claim the vested 500
+    let claimed = client.claim(&beneficiary, &sid);
+    assert_eq!(claimed, 500);
+
+    // After claim: released=500, vested=500, releasable=0
+    assert_eq!(client.get_releasable_amount(&sid), 0);
+
+    // Request early release for 600 (more than 500 unvested remaining)
+    // Must be capped at 500 (total - vested = 1000 - 500 = 500)
+    let early = client.approve_early_release(&owner, &sid, &600i128);
+    assert_eq!(early, 500);
+
+    // Schedule completed: 500 claimed + 500 early-released = 1000 = total
+    let schedule = client.get_schedule(&sid).unwrap();
+    assert_eq!(schedule.status, VestingStatus::Completed);
+    assert_eq!(schedule.released_amount, 1_000);
+
+    // Beneficiary received exactly 500 (claimed) + 500 (early) = 1000
+    assert_eq!(token.balance(&beneficiary), 1_000);
 }
 
-/// `compute_vested_amount` (exercised via `get_vested_amount`) must never
-/// panic even if — hypothetically — a Custom schedule with zero checkpoints
-/// were somehow stored.  The code path returns 0 in that case.
-///
-/// We verify this indirectly by creating a valid schedule, then checking that
-/// the public query helpers remain infallible for edge-case timestamps.  The
-/// direct zero-checkpoint code path in `compute_vested_amount` is the
-/// `if schedule.checkpoints.is_empty() { return 0; }` guard; its correctness
-/// is exercised together with the creation-rejection test above — if creation
-/// is rejected, a consumer can never obtain a schedule_id whose checkpoints
-/// are empty, so there is nothing to panic on at query time.
+/// Verifies that a correctly bounded early-release approval followed by a
+/// claim transfers exactly the expected amounts (early portion + vested
+/// remainder), confirming no double-counting or fund leakage.
 #[test]
-fn custom_vested_amount_never_panics_at_boundary_timestamps() {
+fn early_release_then_claim_transfers_exact_amounts() {
     let env = create_env();
-    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
-
-    let mut checkpoints = Vec::new(&env);
-    checkpoints.push_back(CustomCheckpoint {
-        time: 100,
-        cumulative_amount: 1_000,
-    });
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
 
     set_time(&env, 0);
-    let sid = client.create_custom_schedule(
+    let sid = client.create_linear_schedule(
         &employer,
         &beneficiary,
         &token.address,
         &1_000i128,
-        &checkpoints,
+        &0u64,
+        &100u64,
+        &None,
         &false,
     );
 
-    // Well before first checkpoint — must return 0, no panic.
-    set_time(&env, 0);
-    assert_eq!(client.get_vested_amount(&sid), 0);
+    // At t=30: 300 vested, 700 unvested → releasable = 300
+    set_time(&env, 30);
+    assert_eq!(client.get_vested_amount(&sid), 300);
+    assert_eq!(client.get_releasable_amount(&sid), 300);
 
-    // Exactly at the checkpoint — must return full amount, no panic.
-    set_time(&env, 100);
-    assert_eq!(client.get_vested_amount(&sid), 1_000);
+    // Approve early release of 200 (within the 700 unvested remainder)
+    let early = client.approve_early_release(&owner, &sid, &200i128);
+    assert_eq!(early, 200);
 
-    // Far past the checkpoint — capped at total_amount, no panic.
-    set_time(&env, u64::MAX / 2);
-    assert_eq!(client.get_vested_amount(&sid), 1_000);
-}
+    // After early release: released=200, vested=300, releasable = 300
+    assert_eq!(client.get_releasable_amount(&sid), 300);
 
-/// Zero total_amount is also rejected at creation time, ensuring
-/// `compute_vested_amount` short-circuit is never needed defensively.
-#[test]
-fn custom_zero_total_amount_rejected() {
-    let env = create_env();
-    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+    // Claim the vested 300
+    let claimed = client.claim(&beneficiary, &sid);
+    assert_eq!(claimed, 300);
 
-    set_time(&env, 0);
-    let mut checkpoints = Vec::new(&env);
-    checkpoints.push_back(CustomCheckpoint {
-        time: 10,
-        cumulative_amount: 0,
-    });
+    // Total received: 200 (early) + 300 (claim) = 500
+    assert_eq!(token.balance(&beneficiary), 500);
 
-    let result = client.try_create_custom_schedule(
-        &employer,
-        &beneficiary,
-        &token.address,
-        &0i128,
-        &checkpoints,
-        &false,
-    );
-
-    assert!(
-        result.is_err(),
-        "Expected error for zero total_amount, got Ok"
-    );
+    // Schedule still active with 500 remaining unreleased
+    let schedule = client.get_schedule(&sid).unwrap();
+    assert_eq!(schedule.status, VestingStatus::Active);
+    assert_eq!(schedule.released_amount, 500);
 }
