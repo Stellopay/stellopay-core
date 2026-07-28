@@ -419,6 +419,9 @@ impl AuditLoggerContract {
             return Err(AuditError::InvalidArguments);
         }
 
+        // Clamp to MAX_PAGE_SIZE to bound ledger-read budget, same as get_logs.
+        let effective_limit = limit.min(MAX_PAGE_SIZE);
+
         let first_id: u64 = env
             .storage()
             .persistent()
@@ -434,7 +437,7 @@ impl AuditLoggerContract {
             return Ok(Vec::new(&env));
         }
 
-        let total = core::cmp::min(limit as u64, log_count);
+        let total = core::cmp::min(effective_limit as u64, log_count);
         let start_id = first_id + log_count - total;
 
         let mut results = Vec::new(&env);

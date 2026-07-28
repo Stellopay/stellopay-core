@@ -197,6 +197,26 @@ The test suite covers:
 - Adversarial threshold lowering and guardian-bypass prevention
 - Override removal and invalid override rejection
 
+#### Integration Test Coverage for claim_payroll_multisig (issue #853)
+
+The `onchain/contracts/stello_pay_contract/tests/test_multisig_integration.rs`
+test suite covers:
+
+- **2-of-3 approval at threshold**: Propose + 2 signers approve → claim succeeds
+- **1-of-2 below threshold**: Propose only, op stays Pending → claim rejected with
+  `PayrollError::MultisigApprovalRequired`
+- **Direct path blocked**: `claim_payroll` (non-multisig) returns
+  `MultisigApprovalRequired` when amount ≥ threshold
+- **Below-threshold bypass**: `claim_payroll` succeeds when amount < threshold
+- **3-of-3 approval at threshold**: All 3 signers must approve → claim succeeds
+  (regression: ensures maximum-restrictive configuration works)
+- **2-of-3 below threshold of 3**: Even a majority (2/3) is insufficient when
+  the threshold is 3 → claim rejected with `MultisigApprovalRequired`
+- **Wrong employee rejection**: LargePayment op with mismatched `to` field →
+  claim rejected with `MultisigApprovalRequired`
+- **Wrong op kind rejection**: DisputeResolution op used for `claim_payroll_multisig`
+  → claim rejected with `MultisigApprovalRequired`
+
 ### Observability: payroll multisig threshold changes
 
 The `stello_pay_contract` payroll contract gates large payments and dispute

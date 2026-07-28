@@ -41,8 +41,9 @@ mod storage;
 mod types;
 
 pub use events::{
-    AdminTransferredEvent, FeeCollectedEvent, FeeConfigUpdatedEvent, PauseStateChangedEvent,
-    RecipientUpdatedEvent, TieredScheduleUpdatedEvent,
+    AdminProposedEvent, AdminTransferCancelledEvent, AdminTransferredEvent, FeeCollectedEvent,
+    FeeConfigUpdatedEvent, PauseStateChangedEvent, RecipientUpdatedEvent,
+    TieredScheduleUpdatedEvent,
 };
 use helpers::{
     apply_basis_points, bump_ttl, compute_fee_internal, require_admin, require_initialized,
@@ -545,34 +546,134 @@ impl FeeCollectorContract {
         env.storage().instance().set(&StorageKey::FeeSplit, &split);
     }
 
-    /// Transfers admin rights to a new address, effective immediately.
+    /// Proposes a new admin address as the first step of a two-step admin handoff.
     ///
-    /// **Security note**: this is a one-way, immediate transfer with no confirmation
-    /// step. Verify `new_admin` thoroughly before calling. Consider using a multi-sig
-    /// wallet as `admin`.
+    /// The proposed address is stored as pending. It has **no privileges** until it
+    /// explicitly calls [`FeeCollectorContract::accept_admin`]. The current admin
+    /// retains full control until acceptance.
+    ///
+    /// Call [`FeeCollectorContract::cancel_admin_transfer`] at any time to revoke
+    /// the pending proposal before it is accepted.
     ///
     /// # Arguments
     ///
-    /// * `env`       — Soroban environment.
-    /// * `admin`     — Current admin (must authenticate).
-    /// * `new_admin` — Address to receive admin rights.
+    /// * `env`           — Soroban environment.
+    /// * `admin`         — Current admin (must authenticate).
+    /// * `proposed_admin`— Address being nominated as the new admin.
+    ///
+    /// # Panics
+    ///
+    /// * `"Unauthorized: caller is not admin"` — if `admin` is not the current admin.
     ///
     /// # Events
     ///
-    /// Emits `("admin_transferred",)` carrying an [`AdminTransferredEvent`].
-    pub fn transfer_admin(env: Env, admin: Address, new_admin: Address) {
+    /// Emits `("admin_proposed",)` carrying an [`AdminProposedEvent`].
+    pub fn propose_admin(env: Env, admin: Address, proposed_admin: Address) {
         require_initialized(&env);
         bump_ttl(&env);
         admin.require_auth();
         require_admin(&env, &admin);
 
-        env.storage().instance().set(&StorageKey::Admin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&StorageKey::PendingAdmin, &proposed_admin);
+
+        env.events().publish(
+            ("admin_proposed",),
+            AdminProposedEvent {
+                current_admin: admin,
+                proposed_admin,
+            },
+        );
+    }
+
+    /// Completes a pending two-step admin handoff.
+    ///
+    /// Only the address that was proposed via [`FeeCollectorContract::propose_admin`]
+    /// can call this. Once accepted, the caller becomes the new admin and the pending
+    /// proposal is cleared.
+    ///
+    /// # Arguments
+    ///
+    /// * `env`    — Soroban environment.
+    /// * `caller` — Must be the pending admin (must authenticate).
+    ///
+    /// # Panics
+    ///
+    /// * `"No pending admin transfer"` — if no proposal is outstanding.
+    /// * `"Caller is not the proposed admin"` — if `caller` is not the proposed address.
+    ///
+    /// # Events
+    ///
+    /// Emits `("admin_transferred",)` carrying an [`AdminTransferredEvent`].
+    pub fn accept_admin(env: Env, caller: Address) {
+        require_initialized(&env);
+        bump_ttl(&env);
+        caller.require_auth();
+
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::PendingAdmin)
+            .expect("No pending admin transfer");
+
+        assert!(caller == pending, "Caller is not the proposed admin");
+
+        let old_admin: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::Admin)
+            .expect("Admin not set");
+
+        env.storage().instance().set(&StorageKey::Admin, &caller);
+        env.storage().instance().remove(&StorageKey::PendingAdmin);
 
         env.events().publish(
             ("admin_transferred",),
             AdminTransferredEvent {
-                old_admin: admin,
-                new_admin,
+                old_admin,
+                new_admin: caller,
+            },
+        );
+    }
+
+    /// Cancels a pending admin transfer, clearing the proposed address.
+    ///
+    /// Only the **current admin** can cancel. Has no effect if there is no
+    /// outstanding proposal, other than bumping the TTL.
+    ///
+    /// # Arguments
+    ///
+    /// * `env`   — Soroban environment.
+    /// * `admin` — Current admin (must authenticate).
+    ///
+    /// # Panics
+    ///
+    /// * `"Unauthorized: caller is not admin"` — if `admin` is not the current admin.
+    /// * `"No pending admin transfer"` — if no proposal is outstanding.
+    ///
+    /// # Events
+    ///
+    /// Emits `("admin_transfer_cancelled",)` carrying an [`AdminTransferCancelledEvent`].
+    pub fn cancel_admin_transfer(env: Env, admin: Address) {
+        require_initialized(&env);
+        bump_ttl(&env);
+        admin.require_auth();
+        require_admin(&env, &admin);
+
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&StorageKey::PendingAdmin)
+            .expect("No pending admin transfer");
+
+        env.storage().instance().remove(&StorageKey::PendingAdmin);
+
+        env.events().publish(
+            ("admin_transfer_cancelled",),
+            AdminTransferCancelledEvent {
+                admin,
+                cancelled_admin: pending,
             },
         );
     }
@@ -654,5 +755,20 @@ impl FeeCollectorContract {
             .instance()
             .get(&StorageKey::Admin)
             .expect("Admin not set")
+    }
+
+    /// Returns the pending admin address, if a two-step transfer is in progress.
+    ///
+    /// Returns `None` when no transfer has been proposed or after it has been
+    /// accepted or cancelled.
+    ///
+    /// # Access Control
+    /// Read-only — no authentication required.
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        require_initialized(&env);
+        bump_ttl(&env);
+        env.storage()
+            .instance()
+            .get(&StorageKey::PendingAdmin)
     }
 }
