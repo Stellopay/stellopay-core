@@ -11,9 +11,10 @@ use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env,
 };
-
-use stello_pay_contract::storage::{DataKey, PayrollError};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{DataKey, PayrollError},
+    PayrollContract, PayrollContractClient,
+};
 
 fn setup_contract(env: &Env) -> (Address, PayrollContractClient<'static>, Address) {
     let contract_id = env.register_contract(None, PayrollContract);

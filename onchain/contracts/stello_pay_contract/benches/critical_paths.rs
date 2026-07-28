@@ -7,9 +7,10 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{testutils::Address as _, vec, Address, Env, Vec};
-
-use stello_pay_contract::storage::{PayrollCreateParams, MAX_BATCH_SIZE};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{PayrollCreateParams, MAX_BATCH_SIZE},
+    PayrollContract, PayrollContractClient,
+};
 
 fn main() {
     let env = Env::default();

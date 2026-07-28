@@ -1,5 +1,6 @@
-use crate::types::{DisputeDetails, EscalationLevel, StorageKey};
 use soroban_sdk::{Address, Env};
+
+use crate::types::{DisputeDetails, EscalationLevel, StorageKey};
 
 /// Set the time limit (in seconds) for a specific escalation level
 pub fn set_level_time_limit(env: &Env, level: EscalationLevel, limit_seconds: u64) {

@@ -5,7 +5,6 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient},
     vec, Address, Env, IntoVal, Vec,
 };
-
 use token_vesting::{
     ClaimedEvent, CreatedEvent, CustomCheckpoint, EarlyReleaseEvent, RevokedEvent,
     TokenVestingContract, TokenVestingContractClient, VestingKind, VestingStatus,
