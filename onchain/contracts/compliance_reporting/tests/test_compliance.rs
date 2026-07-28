@@ -1549,7 +1549,8 @@ fn test_generate_report_window_filters_total() {
 }
 
 /// Verifies that records from different employers are never mixed:
-/// each employer's report contains only its own totals.
+/// each employer's report contains only its own totals and records,
+/// even when records are interleaved temporally and by global sequence in storage.
 #[test]
 fn test_generate_report_multi_employer_isolation() {
     let (env, client, _) = setup();
@@ -1558,6 +1559,7 @@ fn test_generate_report_multi_employer_isolation() {
     let employee = Address::generate(&env);
     let token = Address::generate(&env);
 
+    // Interleave employer A and employer B's log records in time
     env.ledger().set_timestamp(1000);
     log_as_employer(
         &client,
@@ -1565,43 +1567,85 @@ fn test_generate_report_multi_employer_isolation() {
         &employer_a,
         &employee,
         &token,
-        1000,
+        100,
         &ReportType::Payroll,
     );
-    log_as_employer(
-        &client,
-        &env,
-        &employer_a,
-        &employee,
-        &token,
-        2000,
-        &ReportType::Tax,
-    );
+
+    env.ledger().set_timestamp(2000);
     log_as_employer(
         &client,
         &env,
         &employer_b,
         &employee,
         &token,
-        9999,
+        200,
+        &ReportType::Tax,
+    );
+
+    env.ledger().set_timestamp(3000);
+    log_as_employer(
+        &client,
+        &env,
+        &employer_a,
+        &employee,
+        &token,
+        300,
         &ReportType::Payroll,
+    );
+
+    env.ledger().set_timestamp(4000);
+    log_as_employer(
+        &client,
+        &env,
+        &employer_b,
+        &employee,
+        &token,
+        400,
+        &ReportType::Regulatory,
+    );
+
+    env.ledger().set_timestamp(5000);
+    log_as_employer(
+        &client,
+        &env,
+        &employer_a,
+        &employee,
+        &token,
+        500,
+        &ReportType::Tax,
     );
 
     let report_a = client.get_withholding_records(&employer_a, &employee, &0, &9999, &None, &100);
     let report_b = client.get_withholding_records(&employer_b, &employee, &0, &9999, &None, &100);
 
-    // employer_a's totals must not include employer_b's record.
+    // employer_a's totals must not include employer_b's records.
     assert_eq!(report_a.employer, employer_a);
     assert_eq!(
-        report_a.total_amount, 3000,
-        "employer_a total must be 1000+2000"
+        report_a.total_amount, 900,
+        "employer_a total must be exactly 100+300+500"
     );
-    assert_eq!(report_a.record_count, 2);
+    assert_eq!(
+        report_a.record_count, 3,
+        "employer_a must have exactly 3 records"
+    );
+    // ensure no cross-contamination in the returned records array
+    for record in report_a.records.iter() {
+        assert_eq!(record.employer, employer_a, "employer A report contains non-A record");
+    }
 
     // employer_b's totals must not include employer_a's records.
     assert_eq!(report_b.employer, employer_b);
-    assert_eq!(report_b.total_amount, 9999, "employer_b total must be 9999");
-    assert_eq!(report_b.record_count, 1);
+    assert_eq!(
+        report_b.total_amount, 600, 
+        "employer_b total must be exactly 200+400"
+    );
+    assert_eq!(
+        report_b.record_count, 2,
+        "employer_b must have exactly 2 records"
+    );
+    for record in report_b.records.iter() {
+        assert_eq!(record.employer, employer_b, "employer B report contains non-B record");
+    }
 }
 
 // ---------------------------------------------------------------------------
