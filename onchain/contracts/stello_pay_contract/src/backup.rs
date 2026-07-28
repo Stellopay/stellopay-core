@@ -288,9 +288,21 @@ pub fn deserialize_agreement(env: &Env, data: &[u8]) -> Result<Agreement, Backup
 /// Derive a 256-bit AES key from `passphrase` and `salt` using
 /// PBKDF2-HMAC-SHA256.
 ///
-/// # Arguments
-/// * `passphrase` – caller-supplied secret; never stored on-chain.
-/// * `salt`       – 16-byte random salt stored in the backup envelope.
+/// @dev This function implements key derivation using PBKDF2-HMAC-SHA256 with
+///      100,000 iterations to provide brute-force resistance. The salt is
+///      stored in the backup envelope to enable deterministic key regeneration.
+///
+/// @param passphrase - Caller-supplied secret; never stored on-chain. Must be
+///                     managed securely by the operator (e.g., HSM, KMS).
+/// @param salt       - 16-byte random salt stored in the backup envelope. Must
+///                     be unique per backup to prevent rainbow table attacks.
+///
+/// @return [u8; 32] - 256-bit AES key suitable for AES-256-GCM encryption.
+///
+/// @security The passphrase is never stored on-chain. The salt is public but
+///           combined with high-iteration PBKDF2 to resist brute-force attacks.
+///           Key rotation requires changing the passphrase; old backups remain
+///           decryptable only with the old passphrase.
 pub fn derive_key(passphrase: &[u8], salt: &[u8]) -> [u8; KEY_LEN] {
     let mut key = [0u8; KEY_LEN];
     pbkdf2_hmac::<Sha256>(passphrase, salt, PBKDF2_ITERATIONS, &mut key);
@@ -303,11 +315,22 @@ pub fn derive_key(passphrase: &[u8], salt: &[u8]) -> [u8; KEY_LEN] {
 
 /// Encrypt `plaintext` with AES-256-GCM.
 ///
-/// Returns the envelope: `[ version(1) | salt(16) | nonce(12) | ciphertext ]`
+/// @dev This function encrypts the plaintext using AES-256-GCM with a key
+///      derived from the passphrase via PBKDF2. The envelope format includes
+///      version, salt, nonce, and ciphertext for decryption.
 ///
-/// Salt and nonce are caller-supplied so this function works both inside a
-/// Soroban contract (use `env.prng().gen()`) and in off-chain / test contexts
-/// (use any CSPRNG or fixed test vectors).
+/// @param plaintext    - Data to encrypt (e.g., serialized agreement).
+/// @param passphrase   - Secret passphrase used to derive the encryption key.
+/// @param salt         - 16-byte random salt (must be unique per backup).
+/// @param nonce_bytes  - 12-byte nonce (must be unique per encryption).
+///
+/// @return Vec<u8> - Envelope in format: `[ version(1) | salt(16) | nonce(12) | ciphertext ]`
+///
+/// @security Salt and nonce must be cryptographically random and unique per
+///           backup. In Soroban contracts, use `env.prng().gen()`. Off-chain,
+///           use any CSPRNG. Nonce reuse with the same key compromises security.
+///           The salt is stored in the envelope to enable key derivation during
+///           decryption.
 pub fn encrypt_backup(
     plaintext: &[u8],
     passphrase: &[u8],
@@ -333,11 +356,24 @@ pub fn encrypt_backup(
 
 /// Decrypt an envelope produced by [`encrypt_backup`].
 ///
-/// Returns the plaintext bytes on success, or a [`BackupError`] on failure.
+/// @dev This function decrypts an envelope by extracting the version, salt,
+///      nonce, and ciphertext, then deriving the key from the passphrase and
+///      salt. AES-GCM authentication ensures ciphertext integrity.
 ///
-/// # Arguments
-/// * `envelope`   – bytes in the format `[ version | salt | nonce | ciphertext ]`.
-/// * `passphrase` – must match the passphrase used during encryption.
+/// @param envelope   - Bytes in format: `[ version | salt | nonce | ciphertext ]`.
+/// @param passphrase - Must match the passphrase used during encryption.
+///
+/// @return Result<Vec<u8>, BackupError> - Plaintext bytes on success, or error on failure.
+///
+/// @error BufferTooShort  - Envelope is too short to contain valid data.
+/// @error UnknownVersion  - Version byte does not match BACKUP_VERSION.
+/// @error DecryptionFailed - Wrong passphrase, tampered ciphertext, or invalid data.
+///
+/// @security Decryption fails if: (1) passphrase is incorrect, (2) ciphertext
+///           was tampered with (AES-GCM authentication), or (3) envelope format
+///           is invalid. This provides cryptographic assurance of data integrity.
+///           Key rotation: backups encrypted with old passphrase cannot be
+///           decrypted with new passphrase (regression test coverage required).
 pub fn decrypt_backup(envelope: &[u8], passphrase: &[u8]) -> Result<StdVec<u8>, BackupError> {
     let min_len = 1 + SALT_LEN + NONCE_LEN + 16; // 16 = AES-GCM tag
     if envelope.len() < min_len {
@@ -378,9 +414,22 @@ pub fn decrypt_backup(envelope: &[u8], passphrase: &[u8]) -> Result<StdVec<u8>, 
 
 /// Produce an encrypted backup envelope for a single `Agreement`.
 ///
-/// Salt and nonce must be unique random bytes per backup. Inside a contract
-/// use `env.prng().gen::<BytesN<16>>().to_array()` etc. In tests or off-chain
-/// tooling use any CSPRNG.
+/// @dev High-level helper that serializes an agreement and encrypts it with
+///      the provided passphrase. The resulting envelope can be stored off-chain
+///      and later restored via `restore_agreement`.
+///
+/// @param env        - Soroban environment (for serialization context).
+/// @param agreement  - Agreement to backup.
+/// @param passphrase - Secret passphrase for encryption.
+/// @param salt       - 16-byte random salt (must be unique per backup).
+/// @param nonce      - 12-byte nonce (must be unique per backup).
+///
+/// @return Vec<u8> - Encrypted backup envelope.
+///
+/// @security Salt and nonce must be unique per backup. In Soroban contracts,
+///           use `env.prng().gen::<BytesN<16>>().to_array()` for salt and
+///           `env.prng().gen::<BytesN<12>>().to_array()` for nonce. Off-chain,
+///           use any CSPRNG. Store envelopes securely off-chain.
 pub fn backup_agreement(
     env: &Env,
     agreement: &Agreement,
@@ -393,6 +442,26 @@ pub fn backup_agreement(
 }
 
 /// Decrypt and deserialise an agreement backup envelope.
+///
+/// @dev High-level helper that decrypts an envelope and deserializes the
+///      resulting plaintext into an Agreement struct. This is the inverse of
+///      `backup_agreement`.
+///
+/// @param env        - Soroban environment (for deserialization context).
+/// @param envelope   - Encrypted backup envelope from `backup_agreement`.
+/// @param passphrase - Must match the passphrase used during backup.
+///
+/// @return Result<Agreement, BackupError> - Recovered agreement on success.
+///
+/// @error DecryptionFailed - Wrong passphrase or tampered envelope.
+/// @error InvalidData      - Deserialization failed (corrupted data).
+/// @error BufferTooShort   - Envelope too short to be valid.
+/// @error UnknownVersion   - Envelope version not supported.
+///
+/// @security This function validates data integrity via AES-GCM authentication
+///           before deserialization. Failed decryption indicates either wrong
+///           passphrase or envelope tampering. Key rotation: use the passphrase
+///           that was active when the backup was created.
 pub fn restore_agreement(
     env: &Env,
     envelope: &[u8],
