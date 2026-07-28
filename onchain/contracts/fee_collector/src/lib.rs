@@ -252,10 +252,7 @@ impl FeeCollectorContract {
             .get(&StorageKey::FeeRecipient)
             .expect("Fee recipient not set");
 
-        let quote: Option<FeeQuote> = env
-            .storage()
-            .instance()
-            .get(&StorageKey::LatestFeeQuote);
+        let quote: Option<FeeQuote> = env.storage().instance().get(&StorageKey::LatestFeeQuote);
         let (fee_amount, net_amount) = match quote {
             Some(stored_quote) if stored_quote.gross_amount == gross_amount => {
                 (stored_quote.fee_amount, stored_quote.net_amount)
@@ -369,7 +366,9 @@ impl FeeCollectorContract {
                 fee_amount: 0,
                 net_amount: 0,
             };
-            env.storage().instance().set(&StorageKey::LatestFeeQuote, &quote);
+            env.storage()
+                .instance()
+                .set(&StorageKey::LatestFeeQuote, &quote);
             return (0, 0);
         }
         let fee_amount = compute_fee_internal(&env, gross_amount);
@@ -381,7 +380,9 @@ impl FeeCollectorContract {
             fee_amount,
             net_amount,
         };
-        env.storage().instance().set(&StorageKey::LatestFeeQuote, &quote);
+        env.storage()
+            .instance()
+            .set(&StorageKey::LatestFeeQuote, &quote);
         (net_amount, fee_amount)
     }
 

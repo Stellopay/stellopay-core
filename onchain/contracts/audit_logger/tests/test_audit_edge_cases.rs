@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use audit_logger::{AuditError, AuditLoggerContract, AuditLoggerContractClient};
+use audit_logger::{AuditError, AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env, Symbol,

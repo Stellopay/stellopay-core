@@ -1049,8 +1049,13 @@ fn test_retroactive_adjustment_does_not_affect_prior_normal_adjustment() {
     // with effective_date=200 (way before the first adjustment).
     set_time(&env, 3000);
     let id2 = client.create_retroactive_adjustment(
-        &owner, &employer, &employee, &approver,
-        &8_000, &10_000, &200,
+        &owner,
+        &employer,
+        &employee,
+        &approver,
+        &8_000,
+        &10_000,
+        &200,
         &reason_hash(&env, 99),
     );
     client.approve_adjustment(&approver, &id2);

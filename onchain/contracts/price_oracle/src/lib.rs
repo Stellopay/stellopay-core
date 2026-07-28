@@ -432,6 +432,9 @@ impl PriceOracleContract {
         env.storage()
             .temporary()
             .remove(&DataKey::PendingBucket(base.clone(), quote.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey::PairState(base.clone(), quote.clone()));
 
         env.events().publish(
             (symbol_short!("oracle"), symbol_short!("disable")),
@@ -690,6 +693,10 @@ impl PriceOracleContract {
             .instance()
             .get::<_, PairConfig>(&DataKey::PairConfig(base, quote))
             .ok_or(OracleError::PairNotConfigured)?;
+
+        if !cfg.enabled {
+            return Err(OracleError::PairNotConfigured);
+        }
 
         let now = env.ledger().timestamp();
         let age = now.saturating_sub(state.last_updated_ts);

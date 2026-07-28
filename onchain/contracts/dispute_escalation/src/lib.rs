@@ -96,7 +96,8 @@ use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Env, IntoV
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 use types::{
-    DisputeDetails, DisputeError, DisputeOutcome, DisputeStatus, EscalationLevel, StorageKey,
+    DisputeDetails, DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel,
+    StorageKey, MAX_OTHER_REASON_LEN,
 };
 
 // ─── Events ──────────────────────────────────────────────────────────────────
@@ -109,6 +110,7 @@ pub struct DisputeFiledEvent {
     pub initiator: Address,
     pub level: EscalationLevel,
     pub phase_deadline: u64,
+    pub reason: DisputeReason,
 }
 
 /// Emitted when a dispute is escalated to a higher tier.
@@ -258,13 +260,33 @@ impl DisputeEscalationContract {
     ///
     /// The SLA clock starts immediately: `phase_deadline = now + level_time_limit(Level1)`.
     ///
+    /// # Arguments
+    /// * `caller`       — party filing the dispute; must authenticate.
+    /// * `agreement_id` — ID of the agreement under dispute.
+    /// * `reason`       — structured reason for the dispute. `Other(text)` is
+    ///   capped at [`MAX_OTHER_REASON_LEN`] bytes; longer text returns
+    ///   `ReasonTooLong`.
+    ///
     /// # State transition
     /// `(none)` → `Open @ Level1`
     ///
     /// # Errors
     /// * `InvalidTransition` — a dispute for this agreement already exists.
-    pub fn file_dispute(env: Env, caller: Address, agreement_id: u128) -> Result<(), DisputeError> {
+    /// * `ReasonTooLong`     — `Other` text exceeds the maximum allowed length.
+    pub fn file_dispute(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        reason: DisputeReason,
+    ) -> Result<(), DisputeError> {
         caller.require_auth();
+
+        // Validate the free-text cap before touching storage.
+        if let DisputeReason::Other(ref text) = reason {
+            if text.len() > MAX_OTHER_REASON_LEN {
+                return Err(DisputeError::ReasonTooLong);
+            }
+        }
 
         if storage::get_dispute(&env, agreement_id).is_some() {
             return Err(DisputeError::InvalidTransition);
@@ -282,6 +304,7 @@ impl DisputeEscalationContract {
             phase_started_at: now,
             phase_deadline: deadline,
             outcome: DisputeOutcome::Unset,
+            reason: reason.clone(),
         };
 
         storage::set_dispute(&env, agreement_id, &dispute);
@@ -306,6 +329,7 @@ impl DisputeEscalationContract {
                 initiator: caller,
                 level: EscalationLevel::Level1,
                 phase_deadline: deadline,
+                reason,
             },
         );
 

@@ -27,6 +27,11 @@ pub const MIN_VOTING_PERIOD_SECONDS: u64 = 3_600;
 /// governance. Values above this bound are rejected.
 pub const MAX_VOTING_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60;
 
+/// Execution window in seconds (14 days) after the timelock eta during which a proposal can be executed.
+///
+/// If a proposal is not executed within this window, it expires and can no longer be executed.
+pub const PROPOSAL_EXECUTION_WINDOW_SECONDS: u64 = 14 * 24 * 60 * 60;
+
 /// Errors returned by the governance contract.
 #[contracterror]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -55,6 +60,8 @@ pub enum GovernanceError {
     /// Quorum has already been reached and the proposal can no longer be
     /// cancelled by the proposer.
     ProposalNotCancellable = 19,
+    /// The execution window for the proposal has expired.
+    ProposalExpired = 20,
 }
 
 /// Validates that `voting_period_seconds` falls within the supported bounds.
@@ -99,6 +106,7 @@ pub enum ProposalStatus {
     Defeated,
     Cancelled,
     Executed,
+    Expired,
 }
 
 /// Supported vote options.
@@ -729,6 +737,14 @@ impl GovernanceContract {
             return Err(GovernanceError::ProposalNotSucceeded);
         }
 
+        if let Some(eta) = proposal.eta {
+            if env.ledger().timestamp() > eta.saturating_add(PROPOSAL_EXECUTION_WINDOW_SECONDS) {
+                proposal.status = ProposalStatus::Expired;
+                write_proposal(&env, &proposal);
+                return Err(GovernanceError::ProposalExpired);
+            }
+        }
+
         let timelock_operation_id = proposal
             .timelock_operation_id
             .ok_or(GovernanceError::TimelockExecutionFailed)?;
@@ -829,10 +845,8 @@ impl GovernanceContract {
         proposal.status = ProposalStatus::Cancelled;
         write_proposal(&env, &proposal);
 
-        env.events().publish(
-            (symbol_short!("prop_cncl"), proposal_id),
-            (),
-        );
+        env.events()
+            .publish((symbol_short!("prop_cncl"), proposal_id), ());
 
         Ok(())
     }
