@@ -54,6 +54,7 @@ Paused → Active
 Trigger: resume_agreement
 Conditions: caller is employer; status is Paused
 Effects: status = Active
+Invalid transitions: resume_agreement panics if called when status is Created, Active, Cancelled, Completed, or Disputed. This precondition is enforced by an explicit `assert!` in the contract implementation and is covered by regression tests (see `test_resume_rejects_all_non_paused_statuses` and individual `test_resume_*_agreement_panics` tests in `test_state_machine.rs`).
 Created/Active → Cancelled
 
 Trigger: cancel_agreement
