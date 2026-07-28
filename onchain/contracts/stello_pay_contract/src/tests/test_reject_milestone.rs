@@ -14,7 +14,8 @@
 //  - Agreement not found returns AgreementNotFound.
 //  - Agreement in invalid status (Completed/Paused) returns MilestoneAgreementInvalidStatus.
 //  - Rejection with a non-empty reason string is recorded in the event.
-//  - Rejection with an empty reason string is accepted.
+//  - Rejection with an empty or whitespace-only reason string is rejected with
+//    MilestoneRejectionReasonEmpty.
 
 use crate::{
     storage::PayrollError,
@@ -23,7 +24,7 @@ use crate::{
 use soroban_sdk::{
     testutils::Address as _,
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, String,
+    Address, Env, Map, String, Symbol, TryFromVal, TryIntoVal, Vec,
 };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -104,13 +105,74 @@ fn test_reject_milestone_emits_event() {
 }
 
 #[test]
-fn test_reject_milestone_empty_reason_is_accepted() {
+fn test_reject_milestone_reason_propagated_to_event() {
+    let (env, employer, contributor, token, client) = setup();
+    let (agreement_id, milestone_id) =
+        funded_milestone(&client, &employer, &contributor, &token, 1_000, 500);
+
+    let expected_reason = "Incomplete deliverables — not approved";
+    let reason = String::from_str(&env, expected_reason);
+    client
+        .reject_milestone(&agreement_id, &milestone_id, &reason)
+        .unwrap();
+
+    use soroban_sdk::testutils::Events;
+
+    let all_events = env.events().all();
+    let milestone_rejected_events: Vec<_> = all_events
+        .iter()
+        .filter(|e| {
+            e.1.len() > 0
+                && Symbol::new(&env, "milestone_rejected_event")
+                    == Symbol::try_from_val(&env, &e.1.get(0).unwrap()).unwrap_or(Symbol::new(&env, ""))
+        })
+        .collect();
+
+    assert!(
+        !milestone_rejected_events.is_empty(),
+        "Expected at least one milestone_rejected event"
+    );
+
+    let event_data = &milestone_rejected_events.get(0).unwrap().2;
+    let map: Map<Symbol, soroban_sdk::Val> = event_data.try_into_val(&env).unwrap();
+    let reason_field: soroban_sdk::String = map
+        .get(Symbol::new(&env, "reason"))
+        .expect("reason field should be present in milestone_rejected event")
+        .try_into_val(&env)
+        .unwrap();
+    assert_eq!(
+        reason_field.to_string(),
+        expected_reason,
+        "The reason in the event should match the one passed to reject_milestone"
+    );
+}
+
+#[test]
+fn test_reject_milestone_empty_reason_rejected() {
     let (env, employer, contributor, token, client) = setup();
     let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 300);
 
     let empty_reason = String::from_str(&env, "");
     let result = client.reject_milestone(&agreement_id, &milestone_id, &empty_reason);
-    assert!(result.is_ok(), "empty reason should be accepted: {:?}", result);
+    assert_eq!(
+        result,
+        Err(PayrollError::MilestoneRejectionReasonEmpty),
+        "empty reason should be rejected with MilestoneRejectionReasonEmpty"
+    );
+}
+
+#[test]
+fn test_reject_milestone_whitespace_only_reason_rejected() {
+    let (env, employer, contributor, token, client) = setup();
+    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 300);
+
+    let space_reason = String::from_str(&env, "   ");
+    let result = client.reject_milestone(&agreement_id, &milestone_id, &space_reason);
+    assert_eq!(
+        result,
+        Err(PayrollError::MilestoneRejectionReasonEmpty),
+        "whitespace-only reason should be rejected with MilestoneRejectionReasonEmpty"
+    );
 }
 
 // ── state-machine guards ──────────────────────────────────────────────────────
@@ -214,26 +276,26 @@ fn test_reject_milestone_non_employer_panics() {
     // Disable the blanket mock so that only explicit auths are satisfied.
     let stranger = Address::generate(&env);
     env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &stranger,
-        invoke: &soroban_sdk::testutils::MockAuthInvoke {
-            contract: &client.address,
-            fn_name: "reject_milestone",
-            args: soroban_sdk::vec![
-                &env,
-                soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(&agreement_id, &env),
-                soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(&milestone_id, &env),
-                soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(
-                    &String::from_str(&env, ""),
+            address: &stranger,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "reject_milestone",
+                args: soroban_sdk::vec![
                     &env,
-                ),
-            ],
-            sub_invokes: &[],
-        },
-    }]);
+                    soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(&agreement_id, &env),
+                    soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(&milestone_id, &env),
+                    soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(
+                        &String::from_str(&env, "unauthorized rejection"),
+                        &env,
+                    ),
+                ],
+                sub_invokes: &[],
+            },
+        }]);
 
     // This should panic because stranger is not the employer.
     client
-        .reject_milestone(&agreement_id, &milestone_id, &String::from_str(&env, ""))
+        .reject_milestone(&agreement_id, &milestone_id, &String::from_str(&env, "unauthorized rejection"))
         .unwrap();
 }
 
@@ -244,7 +306,7 @@ fn test_reject_milestone_id_zero_returns_not_found() {
     let (env, employer, contributor, token, client) = setup();
     let (agreement_id, _) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
 
-    let result = client.reject_milestone(&agreement_id, &0u32, &String::from_str(&env, ""));
+    let result = client.reject_milestone(&agreement_id, &0u32, &String::from_str(&env, "valid reason"));
     assert_eq!(
         result,
         Err(PayrollError::MilestoneNotFound),
@@ -257,7 +319,7 @@ fn test_reject_milestone_out_of_range_returns_not_found() {
     let (env, employer, contributor, token, client) = setup();
     let (agreement_id, _) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
     // Only milestone 1 exists; 99 is out of range.
-    let result = client.reject_milestone(&agreement_id, &99u32, &String::from_str(&env, ""));
+    let result = client.reject_milestone(&agreement_id, &99u32, &String::from_str(&env, "valid reason"));
     assert_eq!(
         result,
         Err(PayrollError::MilestoneNotFound),

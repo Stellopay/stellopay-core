@@ -639,12 +639,13 @@ pub fn approve_milestone(
 /// * `env`          - Contract environment.
 /// * `agreement_id` - ID of the milestone agreement.
 /// * `milestone_id` - 1-based ID of the milestone to reject.
-/// * `reason`       - Optional human-readable rationale. Pass an empty string
-///                    when no reason is required.
+/// * `reason`       - Human-readable justification for the rejection. Must
+///                    contain at least one non-whitespace character.
 ///
 /// # Errors
 /// * `PayrollError::AgreementNotFound`                — agreement or employer record missing.
 /// * `PayrollError::MilestoneAgreementInvalidStatus`  — agreement is not `Created` or `Active`.
+/// * `PayrollError::MilestoneRejectionReasonEmpty`    — `reason` is empty or whitespace-only.
 /// * `PayrollError::MilestoneNotFound`                — `milestone_id` is out of range.
 /// * `PayrollError::MilestoneAlreadyRejected`         — milestone was already rejected.
 /// * `PayrollError::MilestoneAlreadyApprovedCannotReject` — milestone is already approved.
@@ -674,6 +675,26 @@ pub fn reject_milestone(
         .ok_or(PayrollError::AgreementNotFound)?;
     if status != AgreementStatus::Created && status != AgreementStatus::Active {
         return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
+
+    // Reason must be non-empty and contain at least one non-whitespace character
+    // so that off-chain indexers and dispute reviewers can reconstruct the audit trail.
+    if reason.is_empty() {
+        return Err(PayrollError::MilestoneRejectionReasonEmpty);
+    }
+    {
+        let bytes = reason.to_bytes();
+        let mut all_whitespace = true;
+        for i in 0..bytes.len() {
+            let b = bytes.get(i).unwrap();
+            if !(b == b' ' || b == b'\t' || b == b'\n' || b == b'\r') {
+                all_whitespace = false;
+                break;
+            }
+        }
+        if all_whitespace {
+            return Err(PayrollError::MilestoneRejectionReasonEmpty);
+        }
     }
 
     // Milestone must exist.
