@@ -419,6 +419,44 @@ fn test_remit_partial_then_accrue_and_remit_again() {
     assert_eq!(client.get_accrued_balance(&jurisdiction), 0);
 }
 
+#[test]
+fn test_remit_withholding_idempotent_after_full_remittance() {
+    // Verifies that attempting to remit the same accrued balance twice
+    // is safely rejected rather than under/overflowing or double-counting.
+    let (env, owner, client) = setup();
+
+    let employee = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let jurisdiction = Symbol::new(&env, "US_FED");
+
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
+    client.set_jurisdiction_treasury(&owner, &jurisdiction, &treasury);
+    let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
+    client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
+
+    let token_admin = Address::generate(&env);
+    let tok = create_token(&env, &token_admin);
+    token::StellarAssetClient::new(&env, &tok.address).mint(&owner, &1_000i128);
+
+    // Accrue and remit once
+    client.accrue_withholding(&owner, &employee, &10_000i128);
+    assert_eq!(client.get_accrued_balance(&jurisdiction), 1_000);
+
+    let remitted = client.remit_withholding(&owner, &jurisdiction, &tok.address);
+    assert_eq!(remitted, 1_000);
+    assert_eq!(client.get_accrued_balance(&jurisdiction), 0);
+    assert_eq!(tok.balance(&treasury), 1_000);
+
+    // Attempt to remit the same (now-zero) balance again
+    // This should be rejected with NothingToRemit, not cause underflow or double-counting
+    let res = client.try_remit_withholding(&owner, &jurisdiction, &tok.address);
+    assert_eq!(res, Err(Ok(TaxError::NothingToRemit)));
+
+    // Verify state remains unchanged: balance still zero, treasury still has 1_000
+    assert_eq!(client.get_accrued_balance(&jurisdiction), 0);
+    assert_eq!(tok.balance(&treasury), 1_000);
+}
+
 // ─── Security invariant tests ─────────────────────────────────────────────────
 
 #[test]
