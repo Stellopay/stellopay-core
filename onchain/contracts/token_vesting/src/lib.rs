@@ -167,6 +167,35 @@ fn write_schedule(env: &Env, schedule: &VestingSchedule) {
 /// The cumulative amount vested at `now`, as an `i128`. Never exceeds
 /// `schedule.total_amount`.
 ///
+/// # Monotonicity invariant
+///
+/// **This function is guaranteed to be monotonically non-decreasing in `now`.**
+///
+/// For any two timestamps `t1 <= t2`:
+/// ```text
+/// compute_vested_amount(t1, schedule) <= compute_vested_amount(t2, schedule)
+/// ```
+///
+/// This invariant holds for all three schedule kinds:
+///
+/// - **Linear** (with or without cliff): the result grows proportionally with
+///   time after `start_time` (and after `cliff_time` when set), reaching
+///   `total_amount` at `end_time` and remaining capped there forever.
+/// - **Cliff**: the result is 0 until `cliff_time` and `total_amount` at or
+///   after `cliff_time`. The step is upward only.
+/// - **Custom**: checkpoints are validated at creation to be sorted by `time`
+///   with non-decreasing `cumulative_amount`, so the step function can only
+///   stay flat or increase as time advances.
+///
+/// For revoked schedules the effective timestamp is frozen at `revoked_at`,
+/// so the vested amount is constant for all `now >= revoked_at` and the
+/// invariant continues to hold.
+///
+/// Security note: monotonicity is a prerequisite for the anti-double-claim
+/// invariant enforced by `claim`. If vested amounts could decrease, a
+/// beneficiary might be able to re-claim tokens after a prior withdrawal
+/// reduced `released_amount` below the (incorrectly lower) vested amount.
+///
 /// # Panics
 ///
 /// Never. Pure computation — does not access storage or require auth.
@@ -675,6 +704,15 @@ impl TokenVestingContract {
     /// @notice Returns the cumulative amount vested so far for a schedule.
     /// @param schedule_id Unique identifier of the schedule.
     /// @dev Read-only; no authentication required.
+    ///
+    /// @invariant Monotonicity — for any two calls where the ledger timestamp
+    ///   advances (t1 <= t2), the returned value is non-decreasing:
+    ///
+    ///     get_vested_amount(id) @ t1  <=  get_vested_amount(id) @ t2
+    ///
+    ///   This holds for Linear, Cliff, and Custom schedules as well as for
+    ///   revoked schedules (where the vested amount is frozen at revoked_at).
+    ///   See `compute_vested_amount` for the formal invariant proof.
     pub fn get_vested_amount(env: Env, schedule_id: u128) -> i128 {
         let schedule = read_schedule(&env, schedule_id);
         let now = env.ledger().timestamp();

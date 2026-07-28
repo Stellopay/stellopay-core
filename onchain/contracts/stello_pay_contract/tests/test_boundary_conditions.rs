@@ -864,9 +864,7 @@ fn test_get_milestone_count_nonexistent_agreement_returns_zero() {
 // ============================================================================
 
 /// Helper: deploys a stello_pay_contract and returns (client, owner).
-fn setup_admin_contract(
-    env: &Env,
-) -> (PayrollContractClient<'static>, soroban_sdk::Address) {
+fn setup_admin_contract(env: &Env) -> (PayrollContractClient<'static>, soroban_sdk::Address) {
     let contract_id = env.register(PayrollContract, ());
     let client = PayrollContractClient::new(env, &contract_id);
     let owner = create_test_address(env);

@@ -481,19 +481,16 @@ impl TemplateVersioning {
         };
 
         for id in ids.iter() {
-            let latest: u32 = storage
-                .get(&DataKey::TemplateLatest(id))
-                .unwrap_or(0);
+            let latest: u32 = storage.get(&DataKey::TemplateLatest(id)).unwrap_or(0);
             if latest == 0 {
                 // Template registered but no version published — inert, skip.
                 continue;
             }
-            let rec: TemplateVersionRecord = match storage
-                .get(&DataKey::TemplateVersion(id, latest))
-            {
-                Some(r) => r,
-                None => continue, // storage inconsistency — treat as inert
-            };
+            let rec: TemplateVersionRecord =
+                match storage.get(&DataKey::TemplateVersion(id, latest)) {
+                    Some(r) => r,
+                    None => continue, // storage inconsistency — treat as inert
+                };
             if !rec.deprecated {
                 return Err(VersioningError::NameCollision);
             }

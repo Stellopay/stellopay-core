@@ -26,6 +26,7 @@
 //! | `EmployeeInDepartment(dept_id, addr)`| `()`               | Membership flag                   |
 //! | `EmployeeDepartment(addr, org_id)`   | `u128`              | Employee → current dept in org    |
 //! | `DepartmentEmployees(dept_id)`       | `Vec<Address>`      | All employees in a dept           |
+//! | `OrgByName(name)`                    | `u128`              | Reverse index: name → org_id (enforces name uniqueness) |
 
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
 
@@ -62,6 +63,11 @@ enum StorageKey {
     EmployeeDepartment(Address, u128),
     /// List of employee addresses in a department: dept_id -> Vec<Address>
     DepartmentEmployees(u128),
+    /// Reverse index enforcing organization name uniqueness: name -> org_id.
+    /// Presence of this entry under `name` indicates the name is already claimed
+    /// by the org whose ID matches the stored value. Acts as the unique-organization-id
+    /// guard for `create_organization`.
+    OrgByName(soroban_sdk::Symbol),
 }
 
 /// Organization record
@@ -124,18 +130,50 @@ impl DepartmentManagerContract {
 
     /// Creates a new organization. The caller becomes the **org owner**.
     ///
+    /// # Uniqueness Invariant (Issue #917)
+    /// Each `name` is **globally unique** across the entire contract. If `name`
+    /// is already claimed by an existing organization (regardless of owner), the
+    /// call is rejected and **all state mutations are rolled back**, so the
+    /// original organization's record and its `OrgDepartments` tree are left
+    /// fully intact. This guards against a re-creation that would otherwise
+    /// reset or overwrite the org's department tree.
+    ///
+    /// Symbols are case-sensitive in Soroban, so `"Acme"` and `"acme"` are
+    /// distinct identifiers. There is no `delete_organization`, so claiming a
+    /// name locks it permanently for the lifetime of the contract.
+    ///
     /// # Arguments
     /// * `owner` - Caller (must authenticate); becomes org owner.
-    /// * `name`  - Symbol name for the organization.
+    /// * `name`  - Symbol name for the organization (must be unique).
     ///
     /// # Returns
     /// The new organization ID (starts at 1, increments by 1).
+    ///
+    /// # Panics
+    /// - `"Organization name already in use"` – `name` already maps to an
+    ///   existing organization via the `OrgByName` reverse index.
+    /// - `"Contract not initialized"` – `initialize` was not called.
     ///
     /// # Events
     /// Publishes `("org_created", org_id)` on success.
     pub fn create_organization(env: Env, owner: Address, name: soroban_sdk::Symbol) -> u128 {
         owner.require_auth();
         Self::require_initialized(&env);
+
+        // === Unique-organization-id guard ===
+        // Reject BEFORE allocating any state (NextOrgId, Organization record,
+        // OrgDepartments Vec). On panic, Soroban rolls back storage writes from
+        // this call, so the check is also safe if placed later; doing it first
+        // keeps the invariant explicit and prevents wasting an org_id on a
+        // duplicate-name attempt.
+        assert!(
+            env.storage()
+                .persistent()
+                .get::<_, u128>(&StorageKey::OrgByName(name.clone()))
+                .is_none(),
+            "Organization name already in use"
+        );
+
         let next_id: u128 = env
             .storage()
             .persistent()
@@ -146,7 +184,7 @@ impl DepartmentManagerContract {
             .set(&StorageKey::NextOrgId, &(next_id + 1));
         let org = Organization {
             id: next_id,
-            name,
+            name: name.clone(),
             owner: owner.clone(),
             created_at: env.ledger().timestamp(),
         };
@@ -157,6 +195,12 @@ impl DepartmentManagerContract {
         env.storage()
             .persistent()
             .set(&StorageKey::OrgDepartments(next_id), &empty);
+
+        // Register the name in the reverse index so future calls with the same
+        // name are rejected by the guard above.
+        env.storage()
+            .persistent()
+            .set(&StorageKey::OrgByName(name), &next_id);
 
         env.events()
             .publish((symbol_short!("org_crtd"), next_id), next_id);

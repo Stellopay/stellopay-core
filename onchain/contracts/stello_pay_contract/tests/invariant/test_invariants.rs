@@ -57,20 +57,23 @@ fn mint(env: &Env, token: &Address, to: &Address, amount: i128) {
 
 /// Helper: sum of all employee salaries tracked in `AgreementEmployees`.
 fn sum_employee_salaries(env: &Env, agreement_id: u128) -> i128 {
-    env.as_contract(&Address::from_contract_id(&env, &env.current_contract()), || {
-        let employees: Vec<EmployeeInfo> = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::AgreementEmployees(agreement_id))
-            .unwrap_or(Vec::new(env));
+    env.as_contract(
+        &Address::from_contract_id(&env, &env.current_contract()),
+        || {
+            let employees: Vec<EmployeeInfo> = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::AgreementEmployees(agreement_id))
+                .unwrap_or(Vec::new(env));
 
-        let mut total: i128 = 0;
-        for i in 0..employees.len() {
-            let info = employees.get(i).unwrap();
-            total += info.salary_per_period;
-        }
-        total
-    })
+            let mut total: i128 = 0;
+            for i in 0..employees.len() {
+                let info = employees.get(i).unwrap();
+                total += info.salary_per_period;
+            }
+            total
+        },
+    )
 }
 
 /// Core agreement invariants that must hold for all modes.
@@ -101,14 +104,15 @@ fn assert_agreement_core_invariants(env: &Env, contract_id: &Address, agreement_
             let amount_per_period = agreement
                 .amount_per_period
                 .expect("escrow must have amount_per_period");
-            let num_periods = agreement
-                .num_periods
-                .expect("escrow must have num_periods");
+            let num_periods = agreement.num_periods.expect("escrow must have num_periods");
             let claimed_periods = agreement
                 .claimed_periods
                 .expect("escrow must track claimed_periods");
 
-            assert!(amount_per_period > 0, "escrow amount_per_period must be > 0");
+            assert!(
+                amount_per_period > 0,
+                "escrow amount_per_period must be > 0"
+            );
             assert!(num_periods > 0, "escrow num_periods must be > 0");
             assert!(
                 claimed_periods <= num_periods,
@@ -177,10 +181,7 @@ fn assert_agreement_core_invariants(env: &Env, contract_id: &Address, agreement_
         // never be negative and cannot exceed total_amount.
         let escrow_balance =
             DataKey::get_agreement_escrow_balance(env, agreement_id, &agreement.token);
-        assert!(
-            escrow_balance >= 0,
-            "escrow balance must be non-negative"
-        );
+        assert!(escrow_balance >= 0, "escrow balance must be non-negative");
         assert!(
             escrow_balance + agreement.paid_amount <= agreement.total_amount,
             "paid_amount + escrow_balance must not exceed total_amount"
@@ -446,8 +447,6 @@ fn test_invariants_pause_and_resume_flow() {
     assert_agreement_core_invariants(&env, &contract_id, agreement_id);
 }
 
-
-
 // ============================================================================
 // Conservation-of-funds invariant tests
 // ============================================================================
@@ -473,7 +472,7 @@ fn test_conservation_payroll_multi_claim_sequence() {
     let employee1 = create_address(&env);
     let employee2 = create_address(&env);
     let employee3 = create_address(&env);
-    
+
     client.add_employee_to_agreement(&agreement_id, &employee1, &1000);
     client.add_employee_to_agreement(&agreement_id, &employee2, &1500);
     client.add_employee_to_agreement(&agreement_id, &employee3, &2000);
@@ -512,7 +511,9 @@ fn test_conservation_payroll_multi_claim_sequence() {
                 remaining + paid,
                 initial_escrow,
                 "Conservation violated: {} + {} != {}",
-                remaining, paid, initial_escrow
+                remaining,
+                paid,
+                initial_escrow
             );
         });
     };
@@ -554,7 +555,7 @@ fn test_conservation_multi_employee_dispute_integer_division() {
     let employee1 = create_address(&env);
     let employee2 = create_address(&env);
     let employee3 = create_address(&env);
-    
+
     client.add_employee_to_agreement(&agreement_id, &employee1, &100);
     client.add_employee_to_agreement(&agreement_id, &employee2, &100);
     client.add_employee_to_agreement(&agreement_id, &employee3, &100);
@@ -582,7 +583,9 @@ fn test_conservation_multi_employee_dispute_integer_division() {
     let employee2_balance_before = sac.balance(&employee2);
     let employee3_balance_before = sac.balance(&employee3);
 
-    client.resolve_dispute(&arbiter, &agreement_id, &employee_payout, &employer_refund).unwrap();
+    client
+        .resolve_dispute(&arbiter, &agreement_id, &employee_payout, &employer_refund)
+        .unwrap();
 
     // **Assert conservation**: sum of all transfers == escrow_balance
     let employer_balance_after = sac.balance(&employer);
@@ -590,11 +593,10 @@ fn test_conservation_multi_employee_dispute_integer_division() {
     let employee2_balance_after = sac.balance(&employee2);
     let employee3_balance_after = sac.balance(&employee3);
 
-    let total_distributed = 
-        (employer_balance_after - employer_balance_before) +
-        (employee1_balance_after - employee1_balance_before) +
-        (employee2_balance_after - employee2_balance_before) +
-        (employee3_balance_after - employee3_balance_before);
+    let total_distributed = (employer_balance_after - employer_balance_before)
+        + (employee1_balance_after - employee1_balance_before)
+        + (employee2_balance_after - employee2_balance_before)
+        + (employee3_balance_after - employee3_balance_before);
 
     assert_eq!(
         total_distributed,
@@ -660,22 +662,24 @@ fn test_conservation_batch_claim_payroll() {
     env.ledger().with_mut(|li| li.timestamp += 86400 + 1);
 
     // Batch claim for all employees
-    let employee_indices: SorobanVec<u32> = vec![0u32, 1, 2, 3]
-        .into_iter()
-        .collect();
-    
-    client.try_batch_claim_payroll(&agreement_id, &employee_indices).ok();
+    let employee_indices: SorobanVec<u32> = vec![0u32, 1, 2, 3].into_iter().collect();
+
+    client
+        .try_batch_claim_payroll(&agreement_id, &employee_indices)
+        .ok();
 
     // **Assert conservation**
     env.as_contract(&contract_id, || {
         let remaining = DataKey::get_agreement_escrow_balance(&env, agreement_id, &token);
         let paid = DataKey::get_agreement_paid_amount(&env, agreement_id);
-        
+
         assert_eq!(
             remaining + paid,
             initial_escrow,
             "Conservation violated after batch claim: {} + {} != {}",
-            remaining, paid, initial_escrow
+            remaining,
+            paid,
+            initial_escrow
         );
     });
 }
@@ -701,7 +705,12 @@ fn test_invariant_claimed_periods_never_exceeds_available() {
         DataKey::set_agreement_activation_time(&env, agreement_id, now);
         DataKey::set_agreement_period_duration(&env, agreement_id, 86400);
         DataKey::set_agreement_token(&env, agreement_id, &token);
-        DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, 1000 * (max_periods as i128));
+        DataKey::set_agreement_escrow_balance(
+            &env,
+            agreement_id,
+            &token,
+            1000 * (max_periods as i128),
+        );
         DataKey::set_employee_count(&env, agreement_id, 1);
         DataKey::set_employee(&env, agreement_id, 0, &employee);
         DataKey::set_employee_salary(&env, agreement_id, 0, 1000);
@@ -722,7 +731,8 @@ fn test_invariant_claimed_periods_never_exceeds_available() {
             assert!(
                 claimed <= max_periods,
                 "claimed_periods ({}) exceeded max ({})",
-                claimed, max_periods
+                claimed,
+                max_periods
             );
         });
     }
@@ -742,14 +752,16 @@ fn test_invariant_cancelled_agreement_grace_period_conservation() {
 
     let amount_per_period = 1000i128;
     let num_periods = 5u32;
-    let agreement_id = client.create_escrow_agreement(
-        &employer,
-        &contributor,
-        &token,
-        &amount_per_period,
-        &86400,
-        &num_periods,
-    ).unwrap();
+    let agreement_id = client
+        .create_escrow_agreement(
+            &employer,
+            &contributor,
+            &token,
+            &amount_per_period,
+            &86400,
+            &num_periods,
+        )
+        .unwrap();
 
     let total_amount = amount_per_period * (num_periods as i128);
     mint(&env, &token, &contract_id, total_amount);
@@ -784,13 +796,18 @@ fn test_invariant_cancelled_agreement_grace_period_conservation() {
     env.as_contract(&contract_id, || {
         let final_escrow = DataKey::get_agreement_escrow_balance(&env, agreement_id, &token);
         let final_paid = DataKey::get_agreement_paid_amount(&env, agreement_id);
-        
-        assert!(final_paid >= paid_before_cancel, "Paid amount should never decrease");
+
+        assert!(
+            final_paid >= paid_before_cancel,
+            "Paid amount should never decrease"
+        );
         assert_eq!(
             final_escrow + final_paid,
             total_amount,
             "Conservation violated: {} + {} != {}",
-            final_escrow, final_paid, total_amount
+            final_escrow,
+            final_paid,
+            total_amount
         );
     });
 }

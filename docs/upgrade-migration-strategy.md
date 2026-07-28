@@ -138,3 +138,71 @@ See the rollback section in [`docs/migrations.md`](./migrations.md) for CLI/scri
 - Operators should treat WASM hashes as immutable release artifacts.
 - Always back up state before applying upgrades or migrations.
 
+
+---
+
+## Schema-Version Downgrade Guard (#851)
+
+### Invariant
+
+`migrate_state` enforces **monotonic version advancement**:
+
+```
+from_version == current_stored_version
+```
+
+This assertion is checked at the start of every `migrate_state` call. Because the migration bumps the stored version before returning, the same `from_version` can never be used twice.
+
+### What is prevented
+
+| Scenario | Result | Why it matters |
+|---|---|---|
+| `from_version < current_version` (downgrade) | Panic `"Invalid migration version"` | Prevents re-running an old migration against a newer schema, which could overwrite or corrupt v1+ data with v0 logic. |
+| Repeated call with same `from_version` after successful migration | Panic `"Invalid migration version"` | The stored version has already been bumped; the call is equivalent to a downgrade. |
+| `from_version > current_version` (future version) | Panic `"Invalid migration version"` | Prevents the operator from skipping migration steps. |
+| Non-admin caller | Panic via `require_upgrade_admin` | Migrations are as privileged as upgrades. |
+
+### Guard implementation
+
+In `onchain/contracts/stello_pay_contract/src/lib.rs`:
+
+```rust
+pub fn migrate_state(env: Env, operator: Address, from_version: u32) {
+    Self::require_upgrade_admin(&env, &operator);
+
+    let current: u32 = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::ContractVersion)
+        .unwrap_or(0u32);
+
+    // Monotonicity guard: from_version must exactly match the stored version.
+    // Any value lower (downgrade) or higher (skip) is rejected.
+    assert!(from_version == current, "Invalid migration version");
+
+    // Migration logic …
+}
+```
+
+### Version progression
+
+```
+Legacy deployment  →  ContractVersion = 0 (unset, defaults to 0)
+migrate_state(0)   →  ContractVersion = 1
+migrate_state(1)   →  ContractVersion = 2  (when v1→v2 is added)
+```
+
+Attempting `migrate_state(0)` after the first migration has already run returns the `"Invalid migration version"` panic because the stored version is now `1`, not `0`.
+
+### Regression Tests
+
+All downgrade-guard scenarios are covered in `tests/upgrade_migration_tests.rs`:
+
+| Test | Scenario | Expected outcome |
+|---|---|---|
+| `test_migrate_state_rejects_downgrade_from_version` | Run v0→v1, then call `migrate_state(from=0)` | Rejected (downgrade) |
+| `test_migrate_state_same_version_repeated_call_is_rejected` | Two consecutive calls with `from=0` | Second call rejected |
+| `test_migrate_state_forward_migration_updates_contract_version` | v0→v1 succeeds; follow-up call confirms version bumped | Version is now 1 |
+| `test_migrate_state_rejects_non_admin_caller` | Non-admin calls `migrate_state` | Rejected (unauthorized) |
+| `test_migrate_state_rejects_future_from_version` | `from_version = 999` on a fresh contract | Rejected (future version) |
+| `test_migrate_state_forward_preserves_existing_agreements` | Create agreement, migrate v0→v1, verify data | Agreement intact |

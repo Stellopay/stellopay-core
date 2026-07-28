@@ -125,6 +125,13 @@ balance for active schedules.
   and the maximum the beneficiary can claim is `vested - released_amount`.
   The two are disjoint: the first draws from the unvested pool, the second
   from the vested pool, and neither exceeds its respective bound.
+- **Monotonicity** — `get_vested_amount` is non-decreasing as ledger time
+  advances. For any two timestamps `t1 <= t2`:
+  `get_vested_amount(id) @ t1  <=  get_vested_amount(id) @ t2`.
+  This invariant holds for all three schedule kinds (Linear, Cliff, Custom)
+  and is preserved by revocation (frozen clock). See
+  [Monotonicity guarantee](#monotonicity-guarantee) below for a full
+  statement and rationale.
 - Schedule IDs are auto-incremented and never reused.
 
 **Input validation:**
@@ -140,6 +147,65 @@ balance for active schedules.
 
 - No cross-contract integration tests with `stello_pay_contract` yet.
 
+### Monotonicity Guarantee
+
+**Core invariant (issue #886):** `get_vested_amount` is guaranteed to be
+monotonically non-decreasing as ledger time advances. For any schedule `id`
+and any two ledger timestamps `t1 <= t2`:
+
+```
+get_vested_amount(id) @ t1  <=  get_vested_amount(id) @ t2
+```
+
+This invariant holds unconditionally for all three schedule kinds and all
+schedule states.
+
+#### Per-kind proof sketch
+
+| Kind | Why it is monotonic |
+|---|---|
+| **Linear** | The vested amount equals `total * (now - start) / (end - start)`, which is a non-decreasing linear function of `now` once `now > start` (and `now >= cliff` when a cliff is set). Before `start` (or before the cliff) the value is 0; after `end` it is `total`. The function is piecewise linear and each piece is non-decreasing. |
+| **Cliff** | The function is 0 for `now < cliff_time` and `total_amount` for `now >= cliff_time`. The single step is upward only; once it reaches `total_amount` it stays there. |
+| **Custom** | Checkpoints are validated at creation to be sorted by `time` with non-decreasing `cumulative_amount`. The step-function evaluator scans checkpoints in order, so the returned value can only stay flat or increase as `now` advances. The cap at `total_amount` is also non-decreasing. |
+
+#### Revoked schedules
+
+When a schedule is revoked, `revoked_at` is set and the effective timestamp
+used by `compute_vested_amount` is frozen at `revoked_at` for all future
+queries. The vested amount is therefore constant (non-decreasing) for all
+`now >= revoked_at`, and still non-decreasing for `now < revoked_at` because
+the schedule was Active up to that point.
+
+#### Why this matters for security
+
+Monotonicity is a prerequisite for the anti-double-claim invariant enforced by
+`claim`. The releasable amount is computed as `vested - released_amount`. If
+the vested amount could ever decrease, a beneficiary's `released_amount` might
+exceed the (erroneously lower) vested amount, causing `releasable` to become
+negative. This would either silently skip a payment or, in a buggy
+implementation, allow re-claiming tokens that were already withdrawn. The
+monotonicity guarantee closes this class of vulnerability entirely.
+
+#### Test coverage (issue #886)
+
+Category O in `tests/test_vesting.rs` adds eleven dedicated property tests:
+
+| Test | Schedule kind | What is verified |
+|---|---|---|
+| `prop_linear_vested_amount_is_monotonic` | Linear (no cliff) | 10 LCG seeds × 50 timestamps each, full lifecycle range |
+| `prop_linear_with_cliff_vested_amount_is_monotonic` | Linear + cliff | 5 seeds × 60 timestamps, cliff straddle |
+| `prop_linear_cliff_boundary_monotonic` | Linear + cliff | Dense 1-second sweep [0, 110] |
+| `prop_cliff_vested_amount_is_monotonic` | Cliff | 5 seeds × 50 timestamps, pre/post cliff |
+| `prop_cliff_boundary_step_is_monotonic` | Cliff | Dense sweep [995, 1005], exact boundary check |
+| `prop_custom_vested_amount_is_monotonic` | Custom (3 checkpoints) | 8 seeds × 60 timestamps |
+| `prop_custom_checkpoint_boundaries_monotonic` | Custom (3 checkpoints) | Dense sweep [0, 200], spot-check step values |
+| `prop_custom_single_checkpoint_is_monotonic` | Custom (1 checkpoint) | LCG sequence [0, 200] |
+| `prop_linear_large_total_is_monotonic` | Linear, near i128::MAX/4 | Overflow-safe path, 80 timestamps |
+| `prop_custom_dense_checkpoints_monotonic` | Custom (5 checkpoints, 1 s apart) | Dense sweep [0, 10] |
+
+All tests use only Soroban SDK primitives (no external `proptest` or
+`quickcheck` crates) and are fully reproducible with fixed LCG seeds.
+
 ### Bug Fixes
 
 - **Linear + cliff gate** (issue #198): The `VestingKind::Linear` branch previously
@@ -149,7 +215,7 @@ balance for active schedules.
 
 ### Testing Focus
 
-The test suite contains **44 tests** across 11 categories:
+The test suite contains **54 tests** across 15 categories:
 
 | Category | Count | What it covers |
 |---|---|---|
@@ -167,6 +233,7 @@ The test suite contains **44 tests** across 11 categories:
 | L. Cliff + Linear | 5 | Full spectrum, cliff=end, cliff=start, small amount, revoked (issue #516) |
 | M. Overflow Safety | 3 | Large total near i128::MAX, long duration, vested never exceeds total |
 | N. Early Release Bound | 2 | Prior claim + capped early release, bounded early release + claim exact transfers (issue #884) |
+| O. Monotonicity Property | 10 | Non-decreasing vested amount for Linear (with/without cliff), Cliff, and Custom schedules across pseudo-random timestamp sequences and dense boundary sweeps (issue #886) |
 
 ### Edge Case Reference
 
