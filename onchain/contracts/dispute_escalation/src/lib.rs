@@ -247,11 +247,21 @@ impl DisputeEscalationContract {
         Ok(())
     }
 
-    /// Escalates an open or previously escalated dispute to the next tier.
+    /// Escalates an open or previously escalated dispute to the **next** tier.
     ///
     /// This is a **permissionless** call — any caller may trigger it, provided
     /// the SLA window has not yet elapsed.  The new phase SLA starts from the
     /// current ledger timestamp.
+    ///
+    /// # Invariant: single-tier step
+    /// `escalate_dispute` accepts **only** `agreement_id`; there is no
+    /// caller-supplied target tier.  The destination level is computed purely
+    /// from the current level via the closed `next_level` mapping
+    /// (`Level1 → Level2`, `Level2 → Level3`, `Level3 → MaxEscalationReached`).
+    /// As a consequence, this function **cannot** jump two tiers in a single
+    /// call — Level1 → Level3 in one transaction is structurally impossible.
+    /// The corresponding regression tests live in
+    /// `tests/test_escalation.rs` (see §13 and the new tests added for #890).
     ///
     /// # State transitions
     /// `Open @ LevelN`      (now ≤ deadline) → `Escalated @ Level(N+1)`
@@ -264,7 +274,7 @@ impl DisputeEscalationContract {
     /// * `AlreadyTerminal`       — dispute is in terminal `Expired` state.
     /// * `InvalidTransition`     — dispute is in `PendingReview` (SLA already breached; escalation window has passed).
     /// * `TimeLimitExpired`      — escalation window has passed.
-    /// * `MaxEscalationReached`  — already at Level3.
+    /// * `MaxEscalationReached`  — already at Level3 (no higher tier exists).
     pub fn escalate_dispute(
         env: Env,
         caller: Address,
@@ -687,6 +697,17 @@ impl DisputeEscalationContract {
 
     /// Returns the next escalation level, or `Err(MaxEscalationReached)` if
     /// already at `Level3`.
+    ///
+    /// # Invariant: closed one-step mapping
+    /// This helper is the **sole** authority on what the next escalation tier
+    /// is.  The mapping is deliberately closed: there is exactly one
+    /// successor to `Level1` and to `Level2`, and `Level3` has no successor.
+    /// The explicit `match` below has **no** `_ =>` wildcard arm — *do not
+    /// add one*.  A wildcard arm would silently absorb any future variant of
+    /// `EscalationLevel` and quietly break the closed-mapping invariant.
+    /// When a new level variant is introduced, extend this `match`
+    /// arm-by-arm explicitly and decide each transition on its own merits;
+    /// never relax the no-wildcard rule.
     fn next_level(level: &EscalationLevel) -> Result<EscalationLevel, DisputeError> {
         match level {
             EscalationLevel::Level1 => Ok(EscalationLevel::Level2),
