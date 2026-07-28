@@ -104,6 +104,11 @@ use storage::StorageKey;
 /// silently; no error is raised.
 pub const MAX_PAGE_SIZE: u32 = 100;
 
+/// Error message emitted when `from_ts > to_ts` is supplied to a date-range
+/// filtered query.  Both bounds are inclusive; swapping them is never done
+/// silently.
+pub const ERR_INVALID_RANGE: &str = "InvalidRange: from_ts must be <= to_ts";
+
 #[contract]
 pub struct PaymentHistoryContract;
 
