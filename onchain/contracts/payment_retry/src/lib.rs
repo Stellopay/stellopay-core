@@ -692,10 +692,42 @@ impl PaymentRetryContract {
 
     /// Returns a payment request by ID, or `None` if it does not exist.
     ///
+    /// # Returned Fields — Retry Semantics
+    ///
+    /// Off-chain monitoring dashboards and indexers can rely on the following
+    /// per-attempt field invariants:
+    ///
+    /// * **`retry_count`** (u32):
+    ///   - Starts at `0` when the request is created via `schedule_retry`.
+    ///   - Incremented by `1` for each **failed** transfer attempt (insufficient
+    ///     escrow balance).  It is **never** incremented on a successful attempt.
+    ///   - Remains at its latest value after a terminal state (`Success` or
+    ///     `Failed`) is reached.
+    ///   - A successful payment that required zero retries will have
+    ///     `retry_count = 0`.
+    ///
+    /// * **`next_retry_at`** (u64):
+    ///   - Initialised to `created_at` (the ledger timestamp at scheduling time).
+    ///   - On each failed attempt the contract computes
+    ///     `next_retry_at = now + interval_for_retry(retry_intervals, retry_count)`
+    ///     where the interval is drawn from `retry_intervals` (index clamped to
+    ///     the last element for attempts beyond the list length).
+    ///   - After a terminal state (`Success` or `Failed`) the field retains the
+    ///     value set during the last attempt; callers should gate on `state`
+    ///     rather than this timestamp.
+    ///
+    /// * **`state`** (RetryState):
+    ///   - Reflects the lifecycle: `Scheduled` → `Retrying` (after ≥1 failure) →
+    ///     `Success` or `Failed`.
+    ///
     /// # Arguments
     ///
     /// * `env`        — Soroban environment.
     /// * `payment_id` — Request identifier.
+    ///
+    /// # Returns
+    ///
+    /// `Some(PaymentRequest)` if the payment exists, `None` otherwise.
     pub fn get_payment(env: Env, payment_id: BytesN<32>) -> Option<PaymentRequest> {
         env.storage()
             .persistent()

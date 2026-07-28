@@ -423,3 +423,114 @@ fn test_cancelled_record_is_skipped_by_batch_processing() {
     assert_eq!(client.get_payment(&id).unwrap().state, RetryState::Failed);
     assert_eq!(client.process_due_payments(&10), 0);
 }
+
+#[test]
+fn test_get_payment_retry_count_increments_per_attempt() {
+    let env = create_env();
+    let (_contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+
+    client.initialize(&owner);
+    env.ledger().with_mut(|li| li.timestamp = 0);
+
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 11,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 3,
+            intervals: &[30, 60, 120],
+        },
+    );
+
+    // --- Attempt 1 ---
+    env.ledger().with_mut(|li| li.timestamp = 10);
+    client.process_retry(&id);
+    let pay = client.get_payment(&id).unwrap();
+    assert_eq!(pay.retry_count, 1, "retry_count should be 1 after first failure");
+    assert_eq!(pay.next_retry_at, 40, "next_retry_at = 10 + 30");
+    assert_eq!(pay.state, RetryState::Retrying);
+
+    // --- Attempt 2 ---
+    env.ledger().with_mut(|li| li.timestamp = 40);
+    client.process_retry(&id);
+    let pay = client.get_payment(&id).unwrap();
+    assert_eq!(pay.retry_count, 2, "retry_count should be 2 after second failure");
+    assert_eq!(pay.next_retry_at, 100, "next_retry_at = 40 + 60");
+    assert_eq!(pay.state, RetryState::Retrying);
+
+    // --- Attempt 3 ---
+    env.ledger().with_mut(|li| li.timestamp = 100);
+    client.process_retry(&id);
+    let pay = client.get_payment(&id).unwrap();
+    assert_eq!(pay.retry_count, 3, "retry_count should be 3 after third failure");
+    assert_eq!(pay.next_retry_at, 220, "next_retry_at = 100 + 120 (last interval reused)");
+    assert_eq!(pay.state, RetryState::Retrying);
+
+    // --- Attempt 4 (terminal) ---
+    env.ledger().with_mut(|li| li.timestamp = 220);
+    client.process_retry(&id);
+    let pay = client.get_payment(&id).unwrap();
+    assert_eq!(pay.retry_count, 4, "retry_count should be 4 after terminal failure");
+    assert_eq!(pay.state, RetryState::Failed, "request should be Failed after max_retries exhausted");
+}
+
+#[test]
+fn test_get_payment_successful_retry_leaves_count_unchanged() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    client.initialize(&owner);
+    env.ledger().with_mut(|li| li.timestamp = 0);
+
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 12,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+
+    // First attempt fails (no funds)
+    client.process_retry(&id);
+    let pay = client.get_payment(&id).unwrap();
+    assert_eq!(pay.retry_count, 1, "retry_count should be 1 after first failure");
+    assert_eq!(pay.state, RetryState::Retrying);
+
+    // Fund escrow so the next attempt succeeds
+    asset_admin.mint(&payer, &100);
+    client.fund_payment(&payer, &id, &100);
+    assert_eq!(token.balance(&contract_id), 100);
+
+    // Second attempt succeeds — retry_count must NOT be incremented
+    env.ledger().with_mut(|li| li.timestamp = 30);
+    client.process_retry(&id);
+    let pay = client.get_payment(&id).unwrap();
+    assert_eq!(pay.state, RetryState::Success);
+    assert_eq!(
+        pay.retry_count, 1,
+        "retry_count must remain 1 (not incremented on success)"
+    );
+    assert_eq!(token.balance(&recipient), 100);
+    assert_eq!(token.balance(&contract_id), 0);
+}

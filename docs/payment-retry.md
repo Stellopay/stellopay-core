@@ -104,6 +104,16 @@ Cancels a `Pending` request. Only the original payer may cancel. Escrowed funds 
 
 Returns the full payment record, or `None` if it does not exist.
 
+**Retry field semantics** (relevant for off-chain monitoring dashboards):
+
+| Field | Initial value | On failed attempt | On successful attempt | After terminal state |
+|---|---|---|---|---|
+| `retry_count` | `0` | Incremented by `1` | **Unchanged** (never incremented) | Retains last value |
+| `next_retry_at` | `created_at` | Set to `now + interval_for_retry(...)` | Not modified by success path | Retains last computed value |
+| `state` | `Scheduled` | → `Retrying` (if retries remain) / `Failed` (if exhausted) | → `Success` | Terminal (`Success` or `Failed`) |
+
+> **Security note**: `retry_count` is only incremented *after* a failed escrow-balance check (state-before-interaction pattern). A successful transfer never bumps the counter, preventing callers from inflating retries to prematurely exhaust the policy.
+
 ---
 
 ### `get_owner() -> Option<Address>`
@@ -243,5 +253,6 @@ Test coverage includes:
 - `fund_payment` — happy path, wrong payer, terminal state guard
 - `process_due_payments` — immediate success, retry on insufficient balance, backoff timing, last-interval reuse, terminal failure, alternate payout routing, `max_payments` bound, idempotency
 - `cancel_payment` — cancels pending, prevents processing, wrong payer, completed guard
+- `get_payment` — `retry_count` increments per failed attempt, `next_retry_at` updates each retry, successful retry leaves `retry_count` unchanged
 - Security: infinite-retry drain prevention, max_retry_attempts cap enforcement
 - View helpers (`get_payment`, `get_owner`)
