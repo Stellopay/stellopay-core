@@ -10,9 +10,7 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env,
 };
-
-use stello_pay_contract::storage::DataKey;
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{storage::DataKey, PayrollContract, PayrollContractClient};
 
 const ONE_DAY: u64 = 86_400;
 const ONE_WEEK: u64 = 604_800;

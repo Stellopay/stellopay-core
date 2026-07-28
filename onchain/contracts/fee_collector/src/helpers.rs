@@ -7,9 +7,11 @@
 
 use soroban_sdk::{Address, Env};
 
-use crate::storage::StorageKey;
-use crate::types::{FeeMode, FeeTier};
-use crate::{BPS_DENOMINATOR, TTL_MAX_LEDGERS, TTL_MIN_LEDGERS};
+use crate::{
+    storage::StorageKey,
+    types::{FeeMode, FeeTier},
+    BPS_DENOMINATOR, TTL_MAX_LEDGERS, TTL_MIN_LEDGERS,
+};
 
 // ---------------------------------------------------------------------------
 // TTL
@@ -95,8 +97,8 @@ pub(crate) fn apply_basis_points(amount: i128, bps: u32) -> i128 {
 /// # Guarantees
 ///
 /// * Returns `0` when `fee_bps == 0` or `gross_amount == 0`.
-/// * Since `fee_bps ≤ MAX_FEE_BPS (1 000) < BPS_DENOMINATOR (10 000)`, the
-///   result is always strictly less than `gross_amount` for positive inputs.
+/// * Since `fee_bps ≤ MAX_FEE_BPS (1 000) < BPS_DENOMINATOR (10 000)`, the result is always
+///   strictly less than `gross_amount` for positive inputs.
 /// * Panics on overflow (unreachable with `i128` and fees ≤ 10 %).
 pub(crate) fn compute_percentage_fee(gross_amount: i128, fee_bps: u32) -> i128 {
     apply_basis_points(gross_amount, fee_bps)

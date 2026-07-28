@@ -6,10 +6,10 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env,
 };
-use stello_pay_contract::storage::{
-    Agreement, AgreementMode, AgreementStatus, DataKey, DisputeStatus, StorageKey,
+use stello_pay_contract::{
+    storage::{Agreement, AgreementMode, AgreementStatus, DataKey, DisputeStatus, StorageKey},
+    PayrollContract, PayrollContractClient,
 };
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 // ============================================================================
 // CONSTANTS

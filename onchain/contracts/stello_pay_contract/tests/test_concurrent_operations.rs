@@ -38,8 +38,10 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env, Vec,
 };
-use stello_pay_contract::storage::{AgreementStatus, DataKey, DisputeStatus, PayrollError};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{AgreementStatus, DataKey, DisputeStatus, PayrollError},
+    PayrollContract, PayrollContractClient,
+};
 
 // ============================================================================
 // HELPERS
@@ -783,8 +785,16 @@ fn test_race_dispute_before_escrow_claim_blocks_claim() {
     let (env, employer, token, _arbiter, client) = create_test_env();
     let contributor = Address::generate(&env);
 
-    let agreement_id =
-        setup_funded_escrow(&env, &client, &employer, &contributor, &token, 1_000, 86400, 4);
+    let agreement_id = setup_funded_escrow(
+        &env,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        1_000,
+        86400,
+        4,
+    );
     env.ledger().with_mut(|li| li.timestamp += 86400);
 
     // ── Simulated ledger close ──────────────────────────────────────────────
@@ -801,9 +811,16 @@ fn test_race_dispute_before_escrow_claim_blocks_claim() {
     );
 
     let tok = soroban_sdk::token::Client::new(&env, &token);
-    assert_eq!(tok.balance(&contributor), 0, "no funds must reach contributor");
+    assert_eq!(
+        tok.balance(&contributor),
+        0,
+        "no funds must reach contributor"
+    );
 
-    assert_eq!(client.get_dispute_status(&agreement_id), DisputeStatus::Raised);
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
     assert_eq!(
         client.get_agreement(&agreement_id).unwrap().status,
         AgreementStatus::Disputed
@@ -826,8 +843,16 @@ fn test_race_escrow_claim_before_dispute_no_double_payment() {
     let contributor = Address::generate(&env);
 
     let amount = 1_000i128;
-    let agreement_id =
-        setup_funded_escrow(&env, &client, &employer, &contributor, &token, amount, 86400, 4);
+    let agreement_id = setup_funded_escrow(
+        &env,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        amount,
+        86400,
+        4,
+    );
     env.ledger().with_mut(|li| li.timestamp += 86400);
 
     // ── Simulated ledger close ──────────────────────────────────────────────
@@ -839,7 +864,10 @@ fn test_race_escrow_claim_before_dispute_no_double_payment() {
 
     let tok = soroban_sdk::token::Client::new(&env, &token);
     assert_eq!(tok.balance(&contributor), amount, "exactly one period paid");
-    assert_eq!(client.get_dispute_status(&agreement_id), DisputeStatus::Raised);
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
     assert_eq!(
         client.get_claimed_periods(&agreement_id),
         1u32,
@@ -908,7 +936,10 @@ fn test_race_dispute_before_payroll_claim_blocks_claim() {
 
     let tok = soroban_sdk::token::Client::new(&env, &token);
     assert_eq!(tok.balance(&employee), 0, "no funds must reach employee");
-    assert_eq!(client.get_dispute_status(&agreement_id), DisputeStatus::Raised);
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
     assert_eq!(
         client.get_agreement(&agreement_id).unwrap().status,
         AgreementStatus::Disputed
@@ -961,7 +992,10 @@ fn test_race_payroll_claim_before_dispute_no_double_payment() {
 
     let tok = soroban_sdk::token::Client::new(&env, &token);
     assert_eq!(tok.balance(&employee), salary, "exactly one period paid");
-    assert_eq!(client.get_dispute_status(&agreement_id), DisputeStatus::Raised);
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
 
     // A second claim after dispute must be blocked.
     env.ledger().with_mut(|li| li.timestamp += period_s);
@@ -1036,7 +1070,14 @@ fn test_race_claim_then_dispute_then_resolve_no_double_payment() {
     let total = amount * num_periods as i128; // 4_000
 
     let agreement_id = setup_funded_escrow(
-        &env, &client, &employer, &contributor, &token, amount, 86400, num_periods,
+        &env,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        amount,
+        86400,
+        num_periods,
     );
     env.ledger().with_mut(|li| li.timestamp += 86400);
 
@@ -1047,7 +1088,10 @@ fn test_race_claim_then_dispute_then_resolve_no_double_payment() {
 
     // TX 1: employer raises dispute (3_000 remain in tracked escrow).
     client.raise_dispute(&employer, &agreement_id);
-    assert_eq!(client.get_dispute_status(&agreement_id), DisputeStatus::Raised);
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
 
     // Arbiter attempts to distribute the full original total — must FAIL because
     // only 3_000 remain in the tracked escrow balance.
@@ -1074,7 +1118,10 @@ fn test_race_claim_then_dispute_then_resolve_no_double_payment() {
         total,
         "sum of all payouts must equal original total_amount"
     );
-    assert_eq!(client.get_dispute_status(&agreement_id), DisputeStatus::Resolved);
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Resolved
+    );
 }
 
 // ----------------------------------------------------------------------------
@@ -1134,5 +1181,8 @@ fn test_race_dispute_between_batch_payroll_calls_blocks_second_batch() {
 
     assert_eq!(tok.balance(&e2), 0, "e2 must receive nothing");
     assert_eq!(tok.balance(&e1), salary, "e1 balance must be preserved");
-    assert_eq!(client.get_dispute_status(&agreement_id), DisputeStatus::Raised);
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
 }

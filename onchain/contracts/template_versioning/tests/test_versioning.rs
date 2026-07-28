@@ -1,6 +1,6 @@
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger, LedgerInfo},
-    Address, BytesN, Env, IntoVal, String, Vec,
+    Address, BytesN, Env, IntoVal, String,
 };
 use template_versioning::{
     AgreementBinding, TemplateVersionDeprecated, TemplateVersionRecord, TemplateVersioning,
