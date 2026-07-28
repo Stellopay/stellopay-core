@@ -2222,7 +2222,10 @@ fn test_hire_to_resolve_full_workflow() {
     payroll_client.resolve_dispute(&arbiter, &agreement_id, &pay_employee, &refund_employer);
     let agr = payroll_client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agr.status, AgreementStatus::Completed);
-    assert_eq!(payroll_client.get_dispute_status(&agreement_id), DisputeStatus::Resolved);
+    assert_eq!(
+        payroll_client.get_dispute_status(&agreement_id),
+        DisputeStatus::Resolved
+    );
 
     // Record the dispute-resolution payments in history.
     record_payment_as_payroll(
@@ -2253,7 +2256,10 @@ fn test_hire_to_resolve_full_workflow() {
     // ── 5. Assert cross-contract final state ────────────────────────────────
     // stello_pay_contract: agreement is completed, dispute resolved.
     assert_eq!(agr.status, AgreementStatus::Completed);
-    assert_eq!(payroll_client.get_dispute_status(&agreement_id), DisputeStatus::Resolved);
+    assert_eq!(
+        payroll_client.get_dispute_status(&agreement_id),
+        DisputeStatus::Resolved
+    );
     assert_eq!(
         agr.claimed_periods,
         Some(2),
