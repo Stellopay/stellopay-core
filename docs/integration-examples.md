@@ -314,3 +314,71 @@ The full lifecycle described above is exercised in:
 - **Auth is index-based in stello_pay_contract.** The employee address is fixed at `add_employee_to_agreement` time. Department membership of any address — including the employee or a stranger — has no influence on `require_auth` checks inside `claim_payroll`.
 - **Event-driven offboarding.** Off-chain systems listening to `emp_rmvd` events should trigger a payroll-cancellation workflow rather than assuming payroll access was revoked automatically.
 - **Grace period as a buffer.** The grace period in `stello_pay_contract` is intentionally sized to give employees time to claim outstanding periods after a cancellation. Factor this into offboarding timelines.
+
+---
+
+### Salary Adjustment + Payroll Claim Integration
+
+`salary_adjustment` and `stello_pay_contract` are linked at the contract level via `set_salary_adjustment_contract`. When configured, `claim_payroll` reads the employee's current salary from the salary adjustment contract and uses it as an override.
+
+#### Integration Contract Binding
+
+The payroll contract stores the salary adjustment contract address in its persistent storage under `SalaryAdjustmentContract`. The owner sets it once:
+
+```rust
+payroll_client.set_salary_adjustment_contract(&employer, &salary_adjustment_id);
+```
+
+#### How Claim Payroll Consumes the Adjustment
+
+Inside `claim_payroll_inner` (payroll.rs:2681-2690):
+
+```
+1. Read salary_per_period from payroll agreement storage.
+2. If SalaryAdjustmentContract is configured, call get_employee_salary(employee).
+3. If get_employee_salary returns Some(adjusted_salary), override salary_per_period.
+```
+
+The override only activates **after** `apply_adjustment` is called on the salary adjustment contract. A `Pending` or `Approved` (but not `Applied`) adjustment has no effect on payouts.
+
+#### Lifecycle
+
+```
+1. Employer calls salary_adjustment::create_adjustment        → Pending
+2. Approver calls salary_adjustment::approve_adjustment       → Approved
+3. Employer calls salary_adjustment::apply_adjustment         → Applied; EmployeeSalary updated
+4. Employee calls stello_pay_contract::claim_payroll          → Payout uses new salary
+```
+
+At step 3, `apply_adjustment` writes `EmployeeSalary(employee) = new_salary`. At step 4, the `SalaryAdjustmentClient::get_employee_salary` cross-contract call reads that stored value.
+
+#### Security Assumptions
+
+| Concern | Enforcement |
+|---------|-------------|
+| Only applied adjustments affect payroll | `get_employee_salary` reads `EmployeeSalary` storage, which is only written by `apply_adjustment` |
+| Employer controls adjustment lifecycle | `create_adjustment`, `apply_adjustment` require `employer.require_auth()` |
+| Approver cannot apply | Approve/Reject are the only actions available to the approver address |
+| Payroll contract cannot be tricked into stale salaries | The override is an additive read — if `get_employee_salary` returns `None`, the original payroll-stored salary is used unchanged |
+| Adjustment scope is per-employee | `EmployeeSalary` is keyed by `Address`; one employee's adjustment never leaks to another |
+
+#### Integration Tests
+
+See `onchain/integration_tests/tests/test_salary_adjustment_payroll_integration.rs` for the full test suite covering:
+
+| Test | Scenario |
+|------|----------|
+| `test_salary_adjustment_apply_updates_payroll_salary` | Full happy path: apply increase, claim reflects new rate |
+| `test_salary_decrease_affects_payroll_claim` | Salary decrease is correctly reflected in payout |
+| `test_applied_adjustment_reflected_in_next_claim` | Very next claim after `apply_adjustment` uses new salary, not stale figure |
+| `test_pending_adjustment_does_not_affect_claim_amount` | Approved-but-unapplied adjustment is invisible to `claim_payroll` |
+| `test_second_pending_adjustment_ignored_after_first_applied` | Sequential adjustments: applied one is active, pending one is ignored |
+| `test_no_adjustment_yet_returns_none` | `get_employee_salary` returns `None` before first `apply_adjustment` |
+
+#### Security Notes
+
+- **Only `Applied` status overrides payroll.** A `Pending` or `Approved` adjustment must never reach the payroll claim flow. The integration test `test_pending_adjustment_does_not_affect_claim_amount` locks in this invariant.
+- **Cross-contract reads are additive.** The payroll contract uses the adjustment contract's salary as an override, never as a replacement of its own stored salary. If the salary adjustment contract is removed or returns `None`, the payroll contract falls back to its own `EmployeeSalary` value.
+- **One adjustment contract per payroll contract.** The binding is a single address set by the owner. There is no multi-contract aggregation; a single source of truth avoids ambiguity.
+- **No retroactive payout recalculation.** The adjustment affects only future claims. Past claims at the old salary are not retroactively adjusted.
+- **Effective date gating.** `apply_adjustment` enforces `now >= effective_date`. The payroll contract does not re-check the effective date — it trusts the salary adjustment contract's state machine. This is safe because `apply_adjustment` is the only path that writes `EmployeeSalary`.
