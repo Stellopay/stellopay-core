@@ -494,6 +494,83 @@ fn multiple_operations_independent() {
     assert_eq!(token.balance(&r2), 0i128);
 }
 
+// ==================== Replay Protection: Cancelled Operations Are Terminal ====================
+
+#[test]
+#[should_panic(expected = "Operation not pending")]
+fn cannot_approve_cancelled_operation() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+
+    // Cancel the pending operation
+    client.cancel_operation(&signers.get(0).unwrap(), &op_id);
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Cancelled);
+
+    // Attempt to approve the cancelled operation — must panic.
+    // A cancelled operation is terminal; it cannot be resurrected.
+    client.approve_operation(&signers.get(1).unwrap(), &op_id);
+}
+
+#[test]
+fn cannot_cancel_already_cancelled_operation() {
+    let env = create_env();
+    let (_id, client, owner, signers, _guardian) = setup_2of3(&env);
+
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+
+    // Cancel once — succeeds
+    client.cancel_operation(&signers.get(0).unwrap(), &op_id);
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Cancelled);
+
+    // Creator tries to cancel again — rejected
+    let res = client.try_cancel_operation(&signers.get(0).unwrap(), &op_id);
+    assert!(res.is_err());
+
+    // Owner tries to cancel the already-cancelled operation — also rejected
+    let res = client.try_cancel_operation(&owner, &op_id);
+    assert!(res.is_err());
+}
+
+#[test]
+fn cancelled_operation_id_is_not_reused() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    // Propose and cancel first operation
+    let op1_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+    client.cancel_operation(&signers.get(0).unwrap(), &op1_id);
+
+    // Propose a second operation — must get a strictly higher id
+    let op2_id = client.propose_operation(
+        &signers.get(1).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 2u128, 20, 0),
+    );
+    assert!(
+        op2_id > op1_id,
+        "Operation ids must be strictly increasing; cancelled id {} was reused as {}",
+        op1_id,
+        op2_id
+    );
+
+    // The second operation is a completely fresh independent operation
+    let op2 = client.get_operation(&op2_id).unwrap();
+    assert_eq!(op2.status, OperationStatus::Pending);
+    assert!(op2.id > op1_id);
+}
+
 // ==================== Large Payment Validation ====================
 
 #[test]
@@ -615,7 +692,7 @@ fn get_nonexistent_operation_returns_none() {
 #[test]
 fn test_signer_removal_prior_confirmation_policy() {
     let env = create_env();
-    let (multisig_id, client, owner, signers, _guardian) = setup_3of3(&env);
+    let (multisig_id, client, _owner, signers, _guardian) = setup_3of3(&env);
 
     let admin = Address::generate(&env);
     let token = create_token_contract(&env, &admin);
@@ -640,7 +717,7 @@ fn test_signer_removal_prior_confirmation_policy() {
     let mut new_signers = Vec::new(&env);
     new_signers.push_back(signers.get(0).unwrap());
     new_signers.push_back(signers.get(2).unwrap());
-    client.update_signers(&owner, &new_signers, &2u32);
+    client.update_signers(&new_signers, &2u32);
 
     // Policy Check: S2's prior approval should NOT count anymore since S2 is removed.
     // The active approvals count should drop back to 1 (only S1).
@@ -657,7 +734,7 @@ fn test_signer_removal_prior_confirmation_policy() {
 #[test]
 fn test_removed_signer_cannot_newly_confirm() {
     let env = create_env();
-    let (_multisig_id, client, owner, signers, _guardian) = setup_3of3(&env);
+    let (_multisig_id, client, _owner, signers, _guardian) = setup_3of3(&env);
 
     let op_id = client.propose_operation(
         &signers.get(0).unwrap(),
@@ -668,7 +745,7 @@ fn test_removed_signer_cannot_newly_confirm() {
     let mut new_signers = Vec::new(&env);
     new_signers.push_back(signers.get(0).unwrap());
     new_signers.push_back(signers.get(2).unwrap());
-    client.update_signers(&owner, &new_signers, &2u32);
+    client.update_signers(&new_signers, &2u32);
 
     // S2 attempts to approve, which must fail
     let res = client.try_approve_operation(&signers.get(1).unwrap(), &op_id);
@@ -685,7 +762,7 @@ fn test_removed_signer_cannot_newly_confirm() {
 #[test]
 fn test_quorum_override_recalculation_after_signer_removal() {
     let env = create_env();
-    let (_multisig_id, client, owner, signers, _guardian) = setup_3of3(&env);
+    let (_multisig_id, client, _owner, signers, _guardian) = setup_3of3(&env);
 
     // S1 proposes a threshold override of 3 for ContractUpgrade.
     let override_op = client.propose_operation(
@@ -705,7 +782,7 @@ fn test_quorum_override_recalculation_after_signer_removal() {
     let mut new_signers = Vec::new(&env);
     new_signers.push_back(signers.get(0).unwrap());
     new_signers.push_back(signers.get(1).unwrap());
-    client.update_signers(&owner, &new_signers, &2u32);
+    client.update_signers(&new_signers, &2u32);
 
     // The override of 3 should have been capped/recalculated to 2 (since the new signer count is 2).
     assert_eq!(

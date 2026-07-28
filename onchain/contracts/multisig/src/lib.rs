@@ -403,7 +403,7 @@ impl MultisigContract {
                 if override_val > signer_count as u32 {
                     env.storage().persistent().set(
                         &StorageKey::ThresholdOverride(op_type),
-                        signer_count,
+                        &signer_count,
                     );
                 }
             }
