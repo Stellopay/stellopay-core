@@ -553,8 +553,8 @@ impl BonusSystemContract {
     }
 
     /// @notice Claims currently available payouts for an approved incentive.
-    /// @dev One-time bonus claims exactly one payout after unlock. Recurring claims all accrued payouts.
-    /// @param employee Employee claiming funds.
+    /// @dev One-time bonus claims exactly one payout after unlock. Recurring claims all accrued
+    /// payouts. @param employee Employee claiming funds.
     /// @param incentive_id Incentive identifier.
     /// @return amount Claimed token amount.
     pub fn claim_incentive(env: Env, employee: Address, incentive_id: u128) -> i128 {

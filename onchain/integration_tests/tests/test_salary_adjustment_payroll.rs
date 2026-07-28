@@ -11,10 +11,10 @@
 //!
 //! 1. Setting up a live payroll agreement with a known initial salary.
 //! 2. Creating, approving, and applying an adjustment (increase or decrease).
-//! 3. Manually updating the `EmployeeSalary` DataKey to the `new_salary`
-//!    (simulating the on-chain write that an integrating workflow would perform)
-//! 4. Advancing time and claiming payroll — asserting the payout reflects the
-//!    new salary, not the old one.
+//! 3. Manually updating the `EmployeeSalary` DataKey to the `new_salary` (simulating the on-chain
+//!    write that an integrating workflow would perform)
+//! 4. Advancing time and claiming payroll — asserting the payout reflects the new salary, not the
+//!    old one.
 //!
 //! Edge cases covered:
 //! - Salary increase reflected in subsequent payout.
@@ -25,17 +25,15 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
+use salary_adjustment::{
+    AdjustmentKind, AdjustmentStatus, SalaryAdjustmentContract, SalaryAdjustmentContractClient,
+};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env,
 };
-
-use salary_adjustment::{
-    AdjustmentKind, AdjustmentStatus, SalaryAdjustmentContract, SalaryAdjustmentContractClient,
-};
-use stello_pay_contract::storage::DataKey;
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{storage::DataKey, PayrollContract, PayrollContractClient};
 
 // ============================================================================
 // Constants

@@ -9,15 +9,13 @@
 //! Scope: test only — no runtime logic, storage schema, or APIs are changed.
 #![cfg(test)]
 
+use salary_adjustment::{SalaryAdjustmentContract, SalaryAdjustmentContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env,
 };
-
-use salary_adjustment::{SalaryAdjustmentContract, SalaryAdjustmentContractClient};
-use stello_pay_contract::storage::DataKey;
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{storage::DataKey, PayrollContract, PayrollContractClient};
 
 // ============================================================================
 // CONSTANTS

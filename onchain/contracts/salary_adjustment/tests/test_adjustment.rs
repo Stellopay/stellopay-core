@@ -5,8 +5,10 @@ use salary_adjustment::{
     AdjustmentKind, AdjustmentStatus, SalaryAdjustmentContract, SalaryAdjustmentContractClient,
     DEFAULT_MAX_SALARY,
 };
-use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{Address, BytesN, Env, Symbol};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, BytesN, Env, Symbol,
+};
 
 // ============================================================================
 // TEST HELPERS
