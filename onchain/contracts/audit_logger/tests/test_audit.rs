@@ -4,6 +4,7 @@ use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env, Symbol,
 };
+use std::collections::HashSet;
 
 use audit_logger::{AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
 
@@ -169,4 +170,153 @@ fn test_get_logs_skips_retention_orphans() {
     assert_eq!(page.entries.get(4).unwrap().id, 8u64);
     // No more pages.
     assert_eq!(page.next_cursor, None);
+}
+
+/// Verifies that get_latest_logs returns entries in strictly increasing append
+/// order with no gaps when interleaved with append_log calls. This test confirms
+/// the core invariant that reads reflect exactly the entries appended so far,
+/// in order, with no skipped or duplicated entries.
+#[test]
+fn test_interleaved_append_and_get_latest_logs_maintains_order() {
+    let (env, owner, client) = setup();
+
+    // Set unlimited retention to ensure all entries remain visible.
+    client.set_retention_limit(&owner, &0u32);
+
+    let actor = Address::generate(&env);
+    let mut expected_ids: Vec<u64> = Vec::new();
+
+    // Interleave 10 append operations with reads after each append.
+    for i in 1..=10u64 {
+        let label = format!("action_{}", i);
+        let action = Symbol::new(&env, label.as_str());
+        
+        // Append a new log entry.
+        let id = client.append_log(&actor, &action, &None, &Some(i as i128));
+        assert_eq!(id, i, "append_log should return sequential ID {}", i);
+        
+        expected_ids.push(i);
+        env.ledger().with_mut(|li| li.timestamp += 1);
+
+        // Read all latest logs after this append.
+        let latest = client.get_latest_logs(&10u32);
+        
+        // Verify the count matches expected.
+        assert_eq!(
+            latest.len(),
+            expected_ids.len() as u32,
+            "After {} appends, get_latest_logs should return {} entries",
+            i,
+            expected_ids.len()
+        );
+
+        // Verify each entry is present and in strictly increasing order.
+        for (idx, entry) in latest.iter().enumerate() {
+            let expected_id = expected_ids[idx];
+            assert_eq!(
+                entry.id,
+                expected_id,
+                "Entry at index {} should have ID {} after {} appends",
+                idx,
+                expected_id,
+                i
+            );
+            assert_eq!(
+                entry.action,
+                Symbol::new(&env, format!("action_{}", expected_id).as_str()),
+                "Entry action should match appended action"
+            );
+        }
+
+        // Verify no gaps: IDs should be consecutive from 1 to i.
+        for (idx, entry) in latest.iter().enumerate() {
+            assert_eq!(
+                entry.id,
+                (idx + 1) as u64,
+                "IDs should be consecutive starting from 1, got {} at index {}",
+                entry.id,
+                idx
+            );
+        }
+    }
+
+    // Final verification: get_latest_logs with limit=10 should return all 10 entries.
+    let final_latest = client.get_latest_logs(&10u32);
+    assert_eq!(final_latest.len(), 10, "Should return all 10 entries");
+    
+    // Verify strict ordering one more time.
+    for (idx, entry) in final_latest.iter().enumerate() {
+        assert_eq!(
+            entry.id,
+            (idx + 1) as u64,
+            "Final verification: IDs should be consecutive"
+        );
+    }
+}
+
+/// Verifies that get_log and get_latest_logs return consistent results when
+/// called interleaved with append_log. No entry should be skipped or duplicated
+/// across different read methods.
+#[test]
+fn test_interleaved_append_and_read_consistency() {
+    let (env, owner, client) = setup();
+
+    // Set unlimited retention.
+    client.set_retention_limit(&owner, &0u32);
+
+    let actor = Address::generate(&env);
+    let mut appended_ids: Vec<u64> = Vec::new();
+
+    // Append 5 entries, reading with both methods after each.
+    for i in 1..=5u64 {
+        let label = format!("event_{}", i);
+        let action = Symbol::new(&env, label.as_str());
+        
+        let id = client.append_log(&actor, &action, &None, &Some(i as i128));
+        appended_ids.push(id);
+        env.ledger().with_mut(|li| li.timestamp += 1);
+
+        // Verify get_log returns the just-appended entry.
+        let single_entry = client.get_log(&id).unwrap();
+        assert_eq!(single_entry.id, id);
+        assert_eq!(single_entry.action, action);
+
+        // Verify get_latest_logs includes all entries so far.
+        let latest = client.get_latest_logs(&10u32);
+        assert_eq!(latest.len(), i as u32);
+
+        // Verify each appended ID is present in get_latest_logs.
+        for (idx, entry) in latest.iter().enumerate() {
+            assert_eq!(
+                entry.id,
+                appended_ids[idx],
+                "get_latest_logs entry {} should match appended ID {}",
+                idx,
+                appended_ids[idx]
+            );
+        }
+
+        // Verify no duplicates in get_latest_logs.
+        let mut seen_ids = HashSet::new();
+        for entry in latest.iter() {
+            assert!(
+                seen_ids.insert(entry.id),
+                "Duplicate ID {} found in get_latest_logs after {} appends",
+                entry.id,
+                i
+            );
+        }
+    }
+
+    // Verify all individual get_log calls succeed.
+    for id in &appended_ids {
+        assert!(
+            client.get_log(id).is_some(),
+            "get_log should return entry for ID {}",
+            id
+        );
+    }
+
+    // Verify get_log fails for non-existent ID.
+    assert!(client.get_log(&999u64).is_none());
 }
