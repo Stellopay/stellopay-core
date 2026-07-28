@@ -3,7 +3,7 @@
 #![cfg(test)]
 
 use dispute_escalation::{
-    types::{DisputeError, DisputeOutcome, DisputeStatus, EscalationLevel},
+    types::{DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel},
     DisputeEscalationContract, DisputeEscalationContractClient,
 };
 use payroll_escrow::{PayrollEscrowContract, PayrollEscrowContractClient};
@@ -41,7 +41,7 @@ fn test_escalation_appeal_full_flow() {
     let (_env, client, _owner, admin, user) = setup();
     let id = 201u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     assert_eq!(client.get_dispute(&id).unwrap().status, DisputeStatus::Open);
 
     client.escalate_dispute(&user, &id);
@@ -71,7 +71,7 @@ fn test_escalation_appeal_full_flow() {
 fn test_escalation_resolve_unauthorized_integration() {
     let (_env, client, _owner, _admin, user) = setup();
     let id = 202u128;
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     let res = client.try_resolve_dispute(&user, &id, &DisputeOutcome::UpholdPayment);
     assert_eq!(res, Err(Ok(DisputeError::Unauthorized)));
@@ -84,7 +84,7 @@ fn test_escalation_deadline_expiry_preserves_open_state_integration() {
     let id = 203u128;
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &60u64);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     advance(&env, 61);
     let res = client.try_escalate_dispute(&user, &id);
@@ -104,7 +104,7 @@ fn test_escalation_custom_deadlines_apply_to_appeals_integration() {
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &120u64);
     client.set_level_time_limit(&admin, &EscalationLevel::Level2, &240u64);
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     let opened = client.get_dispute(&id).unwrap();
     assert_eq!(opened.phase_deadline, opened.phase_started_at + 120);
 
@@ -132,7 +132,7 @@ fn test_binding_finality_at_level3_integration() {
     let (_env, client, _owner, admin, user) = setup();
     let id = 205u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
     client.appeal_ruling(&user, &id);
@@ -159,7 +159,7 @@ fn test_missed_escalation_window_expires_integration() {
     let id = 206u128;
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &30u64);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     advance(&env, 31);
 
@@ -181,8 +181,8 @@ fn test_concurrent_disputes_independent_integration() {
     let id_a = 207u128;
     let id_b = 208u128;
 
-    client.file_dispute(&user, &id_a);
-    client.file_dispute(&user, &id_b);
+    client.file_dispute(&user, &id_a, &DisputeReason::PaymentDispute);
+    client.file_dispute(&user, &id_b, &DisputeReason::PaymentDispute);
 
     // Resolve A → Finalised via Level3
     client.escalate_dispute(&user, &id_a);
@@ -205,7 +205,7 @@ fn test_no_double_resolve_integration() {
     let (_env, client, _owner, admin, user) = setup();
     let id = 209u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
 
     let res = client.try_resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
@@ -275,7 +275,7 @@ fn test_dispute_pauses_escrow_resolve_resumes() {
     assert_eq!(escrow_client.get_agreement_balance(&agreement_id), 1000);
 
     // Release succeeds before dispute (manager = dispute contract)
-    dispute_client.file_dispute(&user, &agreement_id);
+    dispute_client.file_dispute(&user, &agreement_id, &DisputeReason::PaymentDispute);
     // Resolve immediately so the release below succeeds before we test pause
     dispute_client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::UpholdPayment);
 
@@ -283,7 +283,7 @@ fn test_dispute_pauses_escrow_resolve_resumes() {
     assert_eq!(escrow_client.get_agreement_balance(&agreement_id), 800);
 
     // File a new dispute — this triggers pause_agreement on the escrow
-    dispute_client.file_dispute(&user, &agreement_id);
+    dispute_client.file_dispute(&user, &agreement_id, &DisputeReason::PaymentDispute);
 
     // Release is now blocked because the agreement is paused
     let paused_release = escrow_client.try_release(
@@ -322,7 +322,7 @@ fn test_dispute_expiry_resumes_escrow() {
 
     // File a dispute — pauses escrow
     dispute_client.set_level_time_limit(&admin, &EscalationLevel::Level1, &60);
-    dispute_client.file_dispute(&user, &agreement_id);
+    dispute_client.file_dispute(&user, &agreement_id, &DisputeReason::PaymentDispute);
 
     // Release blocked
     let paused_release = escrow_client.try_release(
@@ -352,7 +352,7 @@ fn test_dispute_appeal_repauses_escrow() {
     escrow_client.fund_agreement(&employer, &agreement_id, &employer, &1000);
 
     // File dispute → escrow paused
-    dispute_client.file_dispute(&user, &agreement_id);
+    dispute_client.file_dispute(&user, &agreement_id, &DisputeReason::PaymentDispute);
 
     // Resolve → escrow resumed
     dispute_client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::PartialSettlement);
