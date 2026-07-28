@@ -978,3 +978,168 @@ fn test_release_after_refund_fails() {
     client.refund_remaining(&manager, &1);
     client.release(&manager, &1, &recipient, &100);
 }
+
+// ============================================================================
+// Storage key collision regression tests
+// ============================================================================
+
+#[test]
+fn test_agreement_balance_key_collision_adjacent_ids() {
+    // Regression test: ensures adjacent agreement IDs resolve to distinct storage slots.
+    // A key-derivation bug here would let one agreement's funding silently overwrite another's.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &10_000);
+
+    // Fund adjacent agreement IDs
+    let id1 = 1000u128;
+    let id2 = 1001u128;
+    let id3 = 1002u128;
+
+    client.fund_agreement(&employer, &id1, &employer, &100);
+    client.fund_agreement(&employer, &id2, &employer, &200);
+    client.fund_agreement(&employer, &id3, &employer, &300);
+
+    // Verify balances are independent
+    assert_eq!(client.get_agreement_balance(&id1), 100);
+    assert_eq!(client.get_agreement_balance(&id2), 200);
+    assert_eq!(client.get_agreement_balance(&id3), 300);
+
+    // Release from middle agreement should not affect others
+    client.release(&manager, &id2, &Address::generate(&env), &50);
+    assert_eq!(
+        client.get_agreement_balance(&id1),
+        100,
+        "id1 balance unchanged"
+    );
+    assert_eq!(
+        client.get_agreement_balance(&id2),
+        150,
+        "id2 balance decreased"
+    );
+    assert_eq!(
+        client.get_agreement_balance(&id3),
+        300,
+        "id3 balance unchanged"
+    );
+}
+
+#[test]
+fn test_agreement_balance_key_collision_edge_values() {
+    // Regression test: ensures zero and max value agreement IDs resolve to distinct slots.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &10_000);
+
+    // Fund edge case agreement IDs
+    let id_zero = 0u128;
+    let id_one = 1u128;
+    let id_max = u128::MAX;
+
+    client.fund_agreement(&employer, &id_zero, &employer, &100);
+    client.fund_agreement(&employer, &id_one, &employer, &200);
+    client.fund_agreement(&employer, &id_max, &employer, &300);
+
+    // Verify balances are independent
+    assert_eq!(client.get_agreement_balance(&id_zero), 100);
+    assert_eq!(client.get_agreement_balance(&id_one), 200);
+    assert_eq!(client.get_agreement_balance(&id_max), 300);
+
+    // Release from zero ID should not affect others
+    client.release(&manager, &id_zero, &Address::generate(&env), &50);
+    assert_eq!(
+        client.get_agreement_balance(&id_zero),
+        50,
+        "zero ID balance decreased"
+    );
+    assert_eq!(
+        client.get_agreement_balance(&id_one),
+        200,
+        "one ID balance unchanged"
+    );
+    assert_eq!(
+        client.get_agreement_balance(&id_max),
+        300,
+        "max ID balance unchanged"
+    );
+}
+
+#[test]
+fn test_agreement_balance_key_collision_release_isolation() {
+    // Regression test: ensures releasing one agreement never mutates another's balance.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &10_000);
+
+    // Fund multiple agreements with structurally similar IDs
+    let id_a = 12345u128;
+    let id_b = 12346u128;
+    let id_c = 12347u128;
+
+    client.fund_agreement(&employer, &id_a, &employer, &1000);
+    client.fund_agreement(&employer, &id_b, &employer, &1000);
+    client.fund_agreement(&employer, &id_c, &employer, &1000);
+
+    // Fully release agreement B
+    client.release(&manager, &id_b, &recipient, &1000);
+
+    // Verify only B's balance changed
+    assert_eq!(
+        client.get_agreement_balance(&id_a),
+        1000,
+        "A balance unchanged"
+    );
+    assert_eq!(client.get_agreement_balance(&id_b), 0, "B balance zeroed");
+    assert_eq!(
+        client.get_agreement_balance(&id_c),
+        1000,
+        "C balance unchanged"
+    );
+
+    // Refund agreement A
+    client.refund_remaining(&manager, &id_a);
+
+    // Verify only A's balance changed
+    assert_eq!(client.get_agreement_balance(&id_a), 0, "A balance zeroed");
+    assert_eq!(
+        client.get_agreement_balance(&id_b),
+        0,
+        "B balance still zero"
+    );
+    assert_eq!(
+        client.get_agreement_balance(&id_c),
+        1000,
+        "C balance unchanged"
+    );
+}

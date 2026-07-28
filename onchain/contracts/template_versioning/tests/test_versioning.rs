@@ -1,6 +1,6 @@
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger, LedgerInfo},
-    Address, BytesN, Env, IntoVal, String, Vec,
+    Address, BytesN, Env, IntoVal, String,
 };
 use template_versioning::{
     AgreementBinding, TemplateVersionDeprecated, TemplateVersionRecord, TemplateVersioning,
@@ -400,4 +400,150 @@ fn non_owner_cannot_deprecate() {
         })
         .count();
     assert_eq!(dep_count, 0);
+}
+
+/// Agreements are pinned to the template version they were created with.
+/// Publishing a new version does not change what an existing agreement resolves to.
+#[test]
+fn agreement_pinned_to_version_n_after_version_n_plus_one_published() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Payroll"))
+        .unwrap()
+        .unwrap();
+
+    // Publish version 1
+    let h1 = BytesN::from_array(&env, &[1u8; 32]);
+    let v1 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &h1,
+            &String::from_str(&env, "v1 initial"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v1, 1);
+
+    // Create agreement pinned to version 1
+    let aid1 = client
+        .try_create_agreement(&owner, &tid, &1, &String::from_str(&env, "Agreement A"))
+        .unwrap()
+        .unwrap();
+    let ag1: AgreementBinding = client.try_get_agreement(&aid1).unwrap().unwrap();
+    assert_eq!(ag1.template_version, 1);
+    assert_eq!(ag1.template_id, tid);
+
+    // Publish version 2 (new latest)
+    ledger_ts(&env, 2_000_000);
+    let h2 = BytesN::from_array(&env, &[2u8; 32]);
+    let v2 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &h2,
+            &String::from_str(&env, "v2 updated schema"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v2, 2);
+
+    // Verify latest version is now 2
+    assert_eq!(client.try_latest_version(&tid).unwrap().unwrap(), 2);
+
+    // Critical: existing agreement still resolves to version 1
+    let ag1_after: AgreementBinding = client.try_get_agreement(&aid1).unwrap().unwrap();
+    assert_eq!(ag1_after.template_version, 1);
+    assert_eq!(ag1_after.template_id, tid);
+
+    // Verify the version 1 record still exists and is unchanged
+    let v1_record: TemplateVersionRecord = client.try_get_version(&tid, &1).unwrap().unwrap();
+    assert_eq!(v1_record.schema_hash, h1);
+    assert_eq!(v1_record.version, 1);
+    assert!(!v1_record.deprecated);
+}
+
+/// New agreements created after publishing a new version correctly use the latest version.
+#[test]
+fn new_agreement_uses_latest_version_after_publish() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Payroll"))
+        .unwrap()
+        .unwrap();
+
+    // Publish version 1
+    let h1 = BytesN::from_array(&env, &[1u8; 32]);
+    let v1 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &h1,
+            &String::from_str(&env, "v1 initial"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v1, 1);
+
+    // Create agreement with version 1
+    let aid1 = client
+        .try_create_agreement(&owner, &tid, &1, &String::from_str(&env, "Agreement A"))
+        .unwrap()
+        .unwrap();
+    let ag1: AgreementBinding = client.try_get_agreement(&aid1).unwrap().unwrap();
+    assert_eq!(ag1.template_version, 1);
+
+    // Publish version 2 (new latest)
+    ledger_ts(&env, 2_000_000);
+    let h2 = BytesN::from_array(&env, &[2u8; 32]);
+    let v2 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &h2,
+            &String::from_str(&env, "v2 updated schema"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v2, 2);
+
+    // Create new agreement explicitly using version 2
+    let aid2 = client
+        .try_create_agreement(&owner, &tid, &2, &String::from_str(&env, "Agreement B"))
+        .unwrap()
+        .unwrap();
+    let ag2: AgreementBinding = client.try_get_agreement(&aid2).unwrap().unwrap();
+    assert_eq!(ag2.template_version, 2);
+    assert_eq!(ag2.template_id, tid);
+
+    // Verify version 2 record has correct schema hash
+    let v2_record: TemplateVersionRecord = client.try_get_version(&tid, &2).unwrap().unwrap();
+    assert_eq!(v2_record.schema_hash, h2);
+    assert_eq!(v2_record.version, 2);
 }

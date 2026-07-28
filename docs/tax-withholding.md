@@ -86,6 +86,7 @@ Floor division means any sub-unit fractional remainder stays with the employee i
 | Only owner can configure rates, treasuries, and employee jurisdictions | `require_owner` helper checks caller == stored owner before any write |
 | Withheld funds cannot be redirected to arbitrary addresses | `remit_withholding` reads treasury from owner-controlled `JurisdictionTreasury` storage — the caller supplies only the token, never the destination |
 | No re-entrancy on remittance | Accrued balance is reset to `0` before `token.transfer` is called |
+| Idempotent remittance prevents double-remittance | Once an accrued balance is remitted to zero, subsequent calls return `NothingToRemit` rather than causing underflow or double-counting |
 | Overflow-safe arithmetic | All multiplications and additions use `checked_*` and return `ArithmeticError` on overflow |
 | Total withholding ≤ gross | Validated after summation; returns `ArithmeticError` if combined rates exceed 100% |
 | Historical accrual preservation | `set_employee_jurisdictions` changes are forward-only; prior `AccruedWithholding` balances and event logs are never erased or retroactively modified |

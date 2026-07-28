@@ -879,6 +879,214 @@ fn test_get_withholding_records_returns_newest_first() {
 }
 
 // ---------------------------------------------------------------------------
+// Cross-publisher global sequence guarantees
+// ---------------------------------------------------------------------------
+
+/// Verifies that `global_seq` is strictly increasing across interleaved
+/// `log_record` calls from three distinct authorized publishers (none of
+/// whom is the employer). This is the core cross-publisher sequencing
+/// guarantee: the contract-wide counter advances regardless of caller.
+#[test]
+fn test_global_seq_strictly_increases_across_interleaved_publishers() {
+    let (env, client, admin) = setup();
+    let employer = Address::generate(&env);
+    let publisher_a = Address::generate(&env);
+    let publisher_b = Address::generate(&env);
+    let publisher_c = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // Authorize three distinct publishers (none are the employer).
+    client.set_publisher(&admin, &publisher_a, &true);
+    client.set_publisher(&admin, &publisher_b, &true);
+    client.set_publisher(&admin, &publisher_c, &true);
+
+    env.ledger().set_timestamp(1000);
+
+    // Interleave calls from all three publishers and observe `get_global_seq`
+    // after each write. The sequence must be 1, 2, 3, 4, 5, 6.
+    let mut observed_seqs: Vec<u64> = Vec::new();
+
+    // Call 1: publisher_a
+    let _ = client.log_record(
+        &publisher_a,
+        &employer,
+        &employee,
+        &token,
+        &100,
+        &ReportType::Payroll,
+        &Bytes::new(&env),
+    );
+    observed_seqs.push(client.get_global_seq());
+
+    // Call 2: publisher_b
+    let _ = client.log_record(
+        &publisher_b,
+        &employer,
+        &employee,
+        &token,
+        &200,
+        &ReportType::Tax,
+        &Bytes::new(&env),
+    );
+    observed_seqs.push(client.get_global_seq());
+
+    // Call 3: publisher_c
+    let _ = client.log_record(
+        &publisher_c,
+        &employer,
+        &employee,
+        &token,
+        &300,
+        &ReportType::Regulatory,
+        &Bytes::new(&env),
+    );
+    observed_seqs.push(client.get_global_seq());
+
+    // Call 4: publisher_a again
+    let _ = client.log_record(
+        &publisher_a,
+        &employer,
+        &employee,
+        &token,
+        &400,
+        &ReportType::Payroll,
+        &Bytes::new(&env),
+    );
+    observed_seqs.push(client.get_global_seq());
+
+    // Call 5: publisher_b again
+    let _ = client.log_record(
+        &publisher_b,
+        &employer,
+        &employee,
+        &token,
+        &500,
+        &ReportType::Tax,
+        &Bytes::new(&env),
+    );
+    observed_seqs.push(client.get_global_seq());
+
+    // Call 6: publisher_c again
+    let _ = client.log_record(
+        &publisher_c,
+        &employer,
+        &employee,
+        &token,
+        &600,
+        &ReportType::Regulatory,
+        &Bytes::new(&env),
+    );
+    observed_seqs.push(client.get_global_seq());
+
+    // Every subsequent value must be strictly greater than the previous.
+    for i in 1..observed_seqs.len() {
+        assert!(
+            observed_seqs[i] > observed_seqs[i - 1],
+            "global_seq must strictly increase: {} was not greater than {}",
+            observed_seqs[i],
+            observed_seqs[i - 1]
+        );
+    }
+
+    assert_eq!(observed_seqs.len(), 6);
+    assert_eq!(observed_seqs[0], 1);
+    assert_eq!(observed_seqs[5], 6);
+}
+
+/// Verifies that no two `ComplianceRecord` entries share the same
+/// `global_seq`, even when records are written by different publishers
+/// on behalf of different employers. Collisions would break indexer
+/// timeline reconstruction.
+#[test]
+fn test_no_two_records_share_global_seq() {
+    let (env, client, admin) = setup();
+    let employer_a = Address::generate(&env);
+    let employer_b = Address::generate(&env);
+    let publisher_a = Address::generate(&env);
+    let publisher_b = Address::generate(&env);
+    let employee_a = Address::generate(&env);
+    let employee_b = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    client.set_publisher(&admin, &publisher_a, &true);
+    client.set_publisher(&admin, &publisher_b, &true);
+
+    env.ledger().set_timestamp(1000);
+
+    let mut all_global_seqs: Vec<u64> = Vec::new();
+
+    // 1. employer_a logs as themselves.
+    let _ = log_as_employer(&client, &env, &employer_a, &employee_a, &token, 100, &ReportType::Payroll);
+    all_global_seqs.push(client.get_record(&employer_a, &1).unwrap().global_seq);
+
+    // 2. publisher_a logs for employer_a.
+    let _ = client.log_record(
+        &publisher_a,
+        &employer_a,
+        &employee_a,
+        &token,
+        &200,
+        &ReportType::Tax,
+        &Bytes::new(&env),
+    );
+    all_global_seqs.push(client.get_record(&employer_a, &2).unwrap().global_seq);
+
+    // 3. publisher_b logs for employer_b.
+    let _ = client.log_record(
+        &publisher_b,
+        &employer_b,
+        &employee_b,
+        &token,
+        &300,
+        &ReportType::Regulatory,
+        &Bytes::new(&env),
+    );
+    all_global_seqs.push(client.get_record(&employer_b, &1).unwrap().global_seq);
+
+    // 4. employer_b logs as themselves.
+    let _ = log_as_employer(&client, &env, &employer_b, &employee_b, &token, 400, &ReportType::Payroll);
+    all_global_seqs.push(client.get_record(&employer_b, &2).unwrap().global_seq);
+
+    // 5. publisher_a logs for employer_b.
+    let _ = client.log_record(
+        &publisher_a,
+        &employer_b,
+        &employee_b,
+        &token,
+        &500,
+        &ReportType::Tax,
+        &Bytes::new(&env),
+    );
+    all_global_seqs.push(client.get_record(&employer_b, &3).unwrap().global_seq);
+
+    // 6. publisher_b logs for employer_a.
+    let _ = client.log_record(
+        &publisher_b,
+        &employer_a,
+        &employee_a,
+        &token,
+        &600,
+        &ReportType::Regulatory,
+        &Bytes::new(&env),
+    );
+    all_global_seqs.push(client.get_record(&employer_a, &3).unwrap().global_seq);
+
+    // Sort and assert no duplicates.
+    let mut sorted_seqs = all_global_seqs.clone();
+    sorted_seqs.sort_unstable();
+    for i in 1..sorted_seqs.len() {
+        assert_ne!(
+            sorted_seqs[i], sorted_seqs[i - 1],
+            "Two records share the same global_seq: {}",
+            sorted_seqs[i]
+        );
+    }
+
+    assert_eq!(client.get_global_seq(), 6);
+}
+
+// ---------------------------------------------------------------------------
 // Tamper-evidence / replay resistance
 // ---------------------------------------------------------------------------
 
