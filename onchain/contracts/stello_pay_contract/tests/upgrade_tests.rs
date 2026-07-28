@@ -1,13 +1,12 @@
 #![cfg(test)]
 
 use proptest::prelude::*;
+use rbac::{RbacContract, RbacContractClient, Role};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, BytesN, Env,
 };
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
-
-use rbac::{RbacContract, RbacContractClient, Role};
 
 const NEW_CONTRACT_WASM: &[u8] = include_bytes!("./stello_pay_contract.wasm");
 

@@ -23,6 +23,23 @@ pub struct PayrollEscrowContract;
 #[derive(Clone)]
 pub enum StorageKey {
     /// Agreement balance: agreement_id -> i128
+    ///
+    /// # Storage Key Layout
+    /// Each agreement ID maps to a distinct persistent storage slot containing
+    /// the escrowed balance for that agreement. The Soroban SDK's `#[contracttype]`
+    /// derive macro ensures that distinct `u128` values always resolve to distinct
+    /// storage keys, preventing cross-agreement balance collisions.
+    ///
+    /// # Key Derivation
+    /// - `AgreementBalance(0)` → unique slot for agreement ID 0
+    /// - `AgreementBalance(1)` → unique slot for agreement ID 1
+    /// - `AgreementBalance(u128::MAX)` → unique slot for max agreement ID
+    ///
+    /// # Security Invariant
+    /// Two distinct agreement IDs must never resolve to the same storage slot.
+    /// A key-derivation bug here would let one agreement's funding silently overwrite
+    /// another's, enabling fund theft or loss. Regression tests verify this invariant
+    /// for adjacent IDs, edge values (0, 1, MAX), and structurally similar IDs.
     AgreementBalance(u128),
     /// Agreement employer: agreement_id -> Address
     AgreementEmployer(u128),
@@ -292,8 +309,8 @@ impl PayrollEscrowContract {
     ///
     /// # Invariants
     ///
-    /// - Sum of all `release` and `refund_remaining` calls for an agreement
-    ///   cannot exceed total `fund_agreement` deposits.
+    /// - Sum of all `release` and `refund_remaining` calls for an agreement cannot exceed total
+    ///   `fund_agreement` deposits.
     /// - Individual `AgreementBalance` is reduced by the exact `amount`.
     ///
     /// # Invariant

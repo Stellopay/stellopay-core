@@ -92,3 +92,27 @@ pub struct AdminTransferredEvent {
     /// New admin address.
     pub new_admin: Address,
 }
+
+/// Emitted when the current admin proposes a new admin via `propose_admin`.
+///
+/// The proposed address is stored as pending and has no privileges until it
+/// calls `accept_admin`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposedEvent {
+    /// Current admin who initiated the proposal.
+    pub current_admin: Address,
+    /// Address proposed to become the new admin.
+    pub proposed_admin: Address,
+}
+
+/// Emitted when a pending admin transfer is cancelled by the current admin
+/// via `cancel_admin_transfer`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferCancelledEvent {
+    /// Admin who cancelled the pending transfer.
+    pub admin: Address,
+    /// The pending address that was cancelled.
+    pub cancelled_admin: Address,
+}

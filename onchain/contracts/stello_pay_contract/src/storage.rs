@@ -250,7 +250,8 @@ pub enum StorageKey {
     MultisigContract,
     /// Minimum payout amount (inclusive) that requires multisig approval for LargePayment.
     LargePaymentThreshold,
-    /// Minimum total payout amount (inclusive) that requires multisig approval for DisputeResolution.
+    /// Minimum total payout amount (inclusive) that requires multisig approval for
+    /// DisputeResolution.
     DisputeResolutionThreshold,
     /// Optional rate limiter contract address for throttling claims.
     RateLimiterContract,
@@ -377,7 +378,20 @@ pub struct BatchEscrowCreateResult {
     pub results: Vec<EscrowCreateResult>,
 }
 
-/// Error types for payroll operations
+/// Error types for payroll operations.
+///
+/// # Discriminant stability (append-only convention)
+///
+/// Every variant is assigned an **explicit `u32` discriminant** that must
+/// **never be changed or re-used**.  New variants **must always be appended**
+/// with the next available integer — never inserted between or before existing
+/// variants — because off-chain indexers, clients, and on-chain error-code
+/// fields match on these numeric values across contract upgrades.
+///
+/// A silently renumbered or repurposed discriminant would cause a downstream
+/// system to misinterpret one failure type as another.  The companion test
+/// [`test_payroll_error_discriminants_stable`] (in the `tests` module below)
+/// locks every current variant's value and will fail if any is altered.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -739,5 +753,77 @@ impl DataKey {
         env.storage()
             .persistent()
             .set(&StorageKey::ExchangeRateMaxRateSanityBound, &max_rate);
+    }
+}
+
+// ============================================================================
+// PayrollError discriminant stability test
+// ============================================================================
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Asserts that every [`PayrollError`] variant retains its expected `u32`
+    /// discriminant.  If this test fails after a code change it means a variant
+    /// was renumbered, inserted between existing variants, or a previously
+    /// assigned value was re-used — all of which break the append-only
+    /// convention for off-chain error-code consumers.
+    ///
+    /// When adding a new error variant, add a corresponding assertion here
+    /// with the next integer discriminant.
+    #[test]
+    fn test_payroll_error_discriminants_stable() {
+        assert_eq!(PayrollError::DisputeAlreadyRaised as u32, 1);
+        assert_eq!(PayrollError::NotInGracePeriod as u32, 2);
+        assert_eq!(PayrollError::NotParty as u32, 3);
+        assert_eq!(PayrollError::NotArbiter as u32, 4);
+        assert_eq!(PayrollError::InvalidPayout as u32, 5);
+        assert_eq!(PayrollError::ActiveDispute as u32, 6);
+        assert_eq!(PayrollError::AgreementNotFound as u32, 7);
+        assert_eq!(PayrollError::NoDispute as u32, 8);
+        assert_eq!(PayrollError::NoEmployee as u32, 9);
+        assert_eq!(PayrollError::NotActivated as u32, 10);
+        assert_eq!(PayrollError::Unauthorized as u32, 11);
+        assert_eq!(PayrollError::InvalidEmployeeIndex as u32, 12);
+        assert_eq!(PayrollError::InvalidData as u32, 13);
+        assert_eq!(PayrollError::TransferFailed as u32, 14);
+        assert_eq!(PayrollError::InsufficientEscrowBalance as u32, 15);
+        assert_eq!(PayrollError::NoPeriodsToClaim as u32, 16);
+        assert_eq!(PayrollError::AgreementNotActivated as u32, 17);
+        assert_eq!(PayrollError::InvalidAgreementMode as u32, 18);
+        assert_eq!(PayrollError::AgreementPaused as u32, 19);
+        assert_eq!(PayrollError::AllPeriodsClaimed as u32, 20);
+        assert_eq!(PayrollError::ZeroAmountPerPeriod as u32, 21);
+        assert_eq!(PayrollError::ZeroPeriodDuration as u32, 22);
+        assert_eq!(PayrollError::ZeroNumPeriods as u32, 23);
+        assert_eq!(PayrollError::EmergencyPaused as u32, 24);
+        assert_eq!(PayrollError::NotGuardian as u32, 25);
+        assert_eq!(PayrollError::TimelockActive as u32, 26);
+        assert_eq!(PayrollError::InvalidTimelock as u32, 27);
+        assert_eq!(PayrollError::MultisigApprovalRequired as u32, 28);
+        assert_eq!(PayrollError::ExchangeRateNotFound as u32, 29);
+        assert_eq!(PayrollError::ExchangeRateOverflow as u32, 30);
+        assert_eq!(PayrollError::ExchangeRateInvalid as u32, 31);
+        assert_eq!(PayrollError::GraceExtensionInvalid as u32, 32);
+        assert_eq!(PayrollError::GraceExtensionCapExceeded as u32, 33);
+        assert_eq!(PayrollError::RateLimited as u32, 34);
+        assert_eq!(PayrollError::BatchTooLarge as u32, 35);
+        assert_eq!(PayrollError::MilestoneAmountInvalid as u32, 36);
+        assert_eq!(PayrollError::MilestoneAgreementInvalidStatus as u32, 37);
+        assert_eq!(PayrollError::MilestoneNotFound as u32, 38);
+        assert_eq!(PayrollError::MilestoneAlreadyApproved as u32, 39);
+        assert_eq!(PayrollError::MilestoneNotApproved as u32, 40);
+        assert_eq!(PayrollError::MilestoneAlreadyClaimed as u32, 41);
+        assert_eq!(PayrollError::EmployeeAlreadyExists as u32, 42);
+        assert_eq!(PayrollError::ReentrancyDetected as u32, 43);
+        assert_eq!(PayrollError::InvalidArbiter as u32, 44);
+        assert_eq!(PayrollError::MilestoneAlreadyRejected as u32, 45);
+        assert_eq!(
+            PayrollError::MilestoneAlreadyApprovedCannotReject as u32,
+            46
+        );
+        assert_eq!(PayrollError::MilestoneAlreadyClaimedCannotReject as u32, 47);
+        assert_eq!(PayrollError::MilestoneAlreadyExpired as u32, 48);
     }
 }

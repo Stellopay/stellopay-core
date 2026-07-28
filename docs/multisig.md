@@ -115,8 +115,24 @@ configuration change applies consistently to subsequent approvals.
 
 ### Security Properties
 
-#### Replay Protection
-Each operation has a monotonically increasing ID. Once executed or cancelled, the status is immutable. Re-approving an executed operation is a no-op.
+### Replay Protection
+
+Each operation has a monotonically increasing ID (see `OperationCounter`). Once
+an operation reaches a terminal status (`Executed` or `Cancelled`), its status is
+immutable:
+
+- `approve_operation` panics when called against a non-pending (executed or
+  cancelled) operation.
+- `cancel_operation` panics when called against a non-pending operation.
+- `emergency_execute` panics when called against a non-pending operation.
+- `perform_execute` silently returns for non-pending operations, preventing
+  any code path from accidentally executing a cancelled or already-executed op.
+
+**Cancelled operations are terminal and non-resurrectable.** Once cancelled,
+no function can revive the operation toward execution. The operation's ID is
+never reused; every `propose_operation` call atomically increments the global
+`OperationCounter`, guaranteeing that a new proposal always receives a strictly
+higher ID than any previously cancelled operation.
 
 #### Duplicate Approval Prevention
 The `has_approved` check ensures each signer can only contribute one approval per operation, regardless of how many times `approve_operation` is called.
@@ -165,8 +181,12 @@ The test suite covers:
 - 2-of-3 standard threshold flow
 - Duplicate approval prevention
 - Non-signer rejection (propose and approve)
-- Already-executed rejection
+- Already-executed rejection (approve and cancel)
 - Cancel by creator and owner
+- Cancelled operation replay protection:
+  - approve against cancelled operation is rejected (panic)
+  - cancel against already-cancelled operation is rejected
+  - cancelled operation ID is never reused (monotonic counter increases)
 - Guardian-only rescue
 - Guardian cannot execute executed/cancelled ops
 - Multiple independent operations
@@ -176,6 +196,26 @@ The test suite covers:
 - Per-operation override enforcement and default fallback
 - Adversarial threshold lowering and guardian-bypass prevention
 - Override removal and invalid override rejection
+
+#### Integration Test Coverage for claim_payroll_multisig (issue #853)
+
+The `onchain/contracts/stello_pay_contract/tests/test_multisig_integration.rs`
+test suite covers:
+
+- **2-of-3 approval at threshold**: Propose + 2 signers approve → claim succeeds
+- **1-of-2 below threshold**: Propose only, op stays Pending → claim rejected with
+  `PayrollError::MultisigApprovalRequired`
+- **Direct path blocked**: `claim_payroll` (non-multisig) returns
+  `MultisigApprovalRequired` when amount ≥ threshold
+- **Below-threshold bypass**: `claim_payroll` succeeds when amount < threshold
+- **3-of-3 approval at threshold**: All 3 signers must approve → claim succeeds
+  (regression: ensures maximum-restrictive configuration works)
+- **2-of-3 below threshold of 3**: Even a majority (2/3) is insufficient when
+  the threshold is 3 → claim rejected with `MultisigApprovalRequired`
+- **Wrong employee rejection**: LargePayment op with mismatched `to` field →
+  claim rejected with `MultisigApprovalRequired`
+- **Wrong op kind rejection**: DisputeResolution op used for `claim_payroll_multisig`
+  → claim rejected with `MultisigApprovalRequired`
 
 ### Observability: payroll multisig threshold changes
 

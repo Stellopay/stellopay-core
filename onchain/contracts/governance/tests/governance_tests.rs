@@ -724,3 +724,161 @@ fn list_proposals_status_filter_with_pagination() {
 
     assert_eq!(active_proposals.len(), 5);
 }
+
+// ---------------------------------------------------------------------------
+// proposer_cancel_proposal tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn proposer_cancels_successfully_pre_quorum() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // Cast only 1 vote (quorum is 2)
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+
+    // Proposer cancels before quorum is reached
+    setup
+        .governance
+        .proposer_cancel_proposal(&setup.owner, &proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, ProposalStatus::Cancelled);
+}
+
+#[test]
+fn non_proposer_cannot_cancel_proposal() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.employer_a,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    let res = setup
+        .governance
+        .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
+    assert_eq!(res, Err(Ok(GovernanceError::NotOwner)));
+}
+
+#[test]
+fn proposer_cannot_cancel_after_quorum_reached() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // Cast enough votes to reach quorum (2 votes, quorum is 2)
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    // Proposer tries to cancel after quorum is reached
+    let res = setup
+        .governance
+        .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
+    assert_eq!(res, Err(Ok(GovernanceError::ProposalNotCancellable)));
+}
+
+#[test]
+fn proposer_cannot_cancel_already_cancelled_proposal() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    setup
+        .governance
+        .proposer_cancel_proposal(&setup.owner, &proposal_id);
+
+    let res = setup
+        .governance
+        .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
+    assert_eq!(res, Err(Ok(GovernanceError::ProposalNotActive)));
+}
+
+#[test]
+fn boundary_quorum_minus_one_allows_cancel() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // Cast 1 vote when quorum is 2 (one short of quorum)
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+
+    // Should still be allowed to cancel
+    setup
+        .governance
+        .proposer_cancel_proposal(&setup.owner, &proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, ProposalStatus::Cancelled);
+}
+
+#[test]
+fn exactly_at_quorum_rejects_cancel() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // Cast exactly quorum votes (2 = quorum)
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Against);
+
+    // Exactly at quorum — cancellation must be rejected
+    let res = setup
+        .governance
+        .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
+    assert_eq!(res, Err(Ok(GovernanceError::ProposalNotCancellable)));
+}
+
+#[test]
+fn proposer_cannot_cancel_defeated_proposal() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // Cast only against votes so the proposal is defeated on finalization
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::Against);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Against);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    let res = setup
+        .governance
+        .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
+    assert_eq!(res, Err(Ok(GovernanceError::ProposalNotActive)));
+}

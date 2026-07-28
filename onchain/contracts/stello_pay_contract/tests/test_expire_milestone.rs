@@ -28,9 +28,9 @@
 //!  - Hook contract with default no-op is called and does not break expiry.
 //!
 //! ## Trait / compile-time coverage
-//!  - A struct that delegates `on_milestone_expired` as a no-op still compiles
-//!    and registers as a contract — confirming the hook can be added with zero
-//!    business logic (body is `{}`) without breaking the interface.
+//!  - A struct that delegates `on_milestone_expired` as a no-op still compiles and registers as a
+//!    contract — confirming the hook can be added with zero business logic (body is `{}`) without
+//!    breaking the interface.
 
 #![cfg(test)]
 
@@ -40,8 +40,7 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env,
 };
-use stello_pay_contract::storage::PayrollError;
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{storage::PayrollError, PayrollContract, PayrollContractClient};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Compile-time check: a minimal implementor of MilestoneContractInterface that

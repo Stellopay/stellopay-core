@@ -16,8 +16,10 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env, Vec,
 };
-use stello_pay_contract::storage::{DataKey, PayrollError};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{DataKey, PayrollError},
+    PayrollContract, PayrollContractClient,
+};
 
 /// Creates a fresh test environment with mocked auth and initialized contract.
 ///

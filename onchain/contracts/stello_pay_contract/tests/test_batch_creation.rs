@@ -39,10 +39,10 @@ use soroban_sdk::{
     testutils::{Address as _, Events},
     Address, Env, Symbol, TryFromVal, Vec,
 };
-use stello_pay_contract::storage::{
-    EscrowCreateParams, PayrollCreateParams, PayrollError, MAX_BATCH_SIZE,
+use stello_pay_contract::{
+    storage::{EscrowCreateParams, PayrollCreateParams, PayrollError, MAX_BATCH_SIZE},
+    PayrollContract, PayrollContractClient,
 };
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 // ============================================================================
 // Helpers

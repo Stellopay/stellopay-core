@@ -1,13 +1,12 @@
 #![cfg(test)]
 
+use multisig::{
+    MultisigContract, MultisigContractClient, OperationKind, OperationStatus, OperationType,
+};
 use soroban_sdk::{
     testutils::Address as _,
     token::{Client as TokenClient, StellarAssetClient},
     Address, BytesN, Env, Vec,
-};
-
-use multisig::{
-    MultisigContract, MultisigContractClient, OperationKind, OperationStatus, OperationType,
 };
 
 fn create_env() -> Env {

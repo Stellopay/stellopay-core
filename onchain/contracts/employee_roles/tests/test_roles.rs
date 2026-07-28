@@ -1,10 +1,9 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env};
-
 use employee_roles::{
     BuiltInRole, EmployeeRolesContract, EmployeeRolesContractClient, PayrollAction,
 };
+use soroban_sdk::{testutils::Address as _, Address, Env};
 
 fn setup() -> (Env, Address, EmployeeRolesContractClient<'static>) {
     let env = Env::default();

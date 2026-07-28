@@ -1,12 +1,18 @@
 //! Comprehensive test suite for nft_payroll_badge contract.
 //!
-//! Covers: initialization, minting, `badges_of`, `badges_of_paged` (empty,
-//! single page, multi-page, exact-multiple-of-limit, oversized-limit clamping).
+//! Covers: initialization, minting, admin metadata URI updates, `badges_of`,
+//! `badges_of_paged` (empty, single page, multi-page, exact-multiple-of-limit,
+//! oversized-limit clamping).
 
 #![cfg(test)]
 
-use nft_payroll_badge::{NftPayrollBadgeContract, NftPayrollBadgeContractClient, MAX_PAGE_SIZE};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use nft_payroll_badge::{
+    MetadataUpdated, NftPayrollBadgeContract, NftPayrollBadgeContractClient, MAX_PAGE_SIZE,
+};
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Address, Env, IntoVal, String,
+};
 
 // ============================================================================
 // Helpers
@@ -36,7 +42,8 @@ fn mint_n(
 ) {
     for _ in 0..n {
         let name = String::from_str(env, "Payroll Badge");
-        client.mint(owner, recipient, &name);
+        let metadata_uri = String::from_str(env, "ipfs://payroll-badge");
+        client.mint(owner, recipient, &name, &metadata_uri);
     }
 }
 
@@ -69,8 +76,18 @@ fn test_mint_assigns_sequential_ids() {
     let (owner, client) = setup(&env);
     let recipient = Address::generate(&env);
 
-    let id1 = client.mint(&owner, &recipient, &String::from_str(&env, "First"));
-    let id2 = client.mint(&owner, &recipient, &String::from_str(&env, "Second"));
+    let id1 = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "First"),
+        &String::from_str(&env, "ipfs://first"),
+    );
+    let id2 = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Second"),
+        &String::from_str(&env, "ipfs://second"),
+    );
     assert_eq!(id1, 1);
     assert_eq!(id2, 2);
 }
@@ -81,23 +98,76 @@ fn test_mint_records_badge_metadata() {
     let (owner, client) = setup(&env);
     let recipient = Address::generate(&env);
     let name = String::from_str(&env, "Q1 2025 Payroll");
+    let metadata_uri = String::from_str(&env, "ipfs://q1-2025-payroll");
 
-    let id = client.mint(&owner, &recipient, &name);
+    let id = client.mint(&owner, &recipient, &name, &metadata_uri);
     let badge = client.get_badge(&id).expect("badge should exist");
 
     assert_eq!(badge.id, id);
     assert_eq!(badge.owner, recipient);
     assert_eq!(badge.name, name);
+    assert_eq!(badge.metadata_uri, metadata_uri);
 }
 
 #[test]
-#[should_panic(expected = "Only owner can mint badges")]
+#[should_panic(expected = "Only owner can manage badges")]
 fn test_non_owner_cannot_mint() {
     let env = create_env();
     let (_owner, client) = setup(&env);
     let attacker = Address::generate(&env);
     let recipient = Address::generate(&env);
-    client.mint(&attacker, &recipient, &String::from_str(&env, "Fake"));
+    client.mint(
+        &attacker,
+        &recipient,
+        &String::from_str(&env, "Fake"),
+        &String::from_str(&env, "ipfs://fake"),
+    );
+}
+
+#[test]
+fn test_admin_can_update_metadata_uri_for_existing_token() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let recipient = Address::generate(&env);
+    let old_uri = String::from_str(&env, "ipfs://old-payroll-badge");
+    let new_uri = String::from_str(&env, "ipfs://new-payroll-badge");
+
+    let id = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Payroll Badge"),
+        &old_uri,
+    );
+
+    client.update_metadata_uri(&owner, &id, &new_uri);
+
+    let events = env.events().all();
+    let event: MetadataUpdated = events.last().unwrap().2.into_val(&env);
+    assert_eq!(event.token_id, id);
+    assert_eq!(event.old_uri, old_uri);
+    assert_eq!(event.new_uri, new_uri);
+
+    let badge = client.get_badge(&id).expect("badge should exist");
+    assert_eq!(badge.metadata_uri, new_uri);
+    assert_eq!(badge.owner, recipient);
+}
+
+#[test]
+#[should_panic(expected = "Only owner can manage badges")]
+fn test_non_admin_cannot_update_metadata_uri() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let attacker = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let old_uri = String::from_str(&env, "ipfs://original");
+    let id = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Payroll Badge"),
+        &old_uri,
+    );
+
+    client.update_metadata_uri(&attacker, &id, &String::from_str(&env, "ipfs://attack"));
 }
 
 // ============================================================================

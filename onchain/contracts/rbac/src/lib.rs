@@ -1,8 +1,7 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
-
 pub use rbac_interface::Role;
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -232,6 +231,46 @@ impl RbacContract {
             let role = roles_to_grant.get(i).unwrap();
             if !has_exact_role(&current, &role) {
                 current.push_back(role);
+            }
+        }
+        write_roles(&env, &target, &current);
+    }
+
+    /// @notice Revokes multiple roles from a target in a single call.
+    /// @dev Caller must have `Admin` role. Duplicates within the batch
+    ///      or already-not-held roles are silently skipped. The owner's
+    ///      `Admin` role cannot be revoked (prevents lockout).
+    /// @param caller Address requesting the change; must authenticate.
+    /// @param target Address to lose the roles.
+    /// @param roles  Vector of roles to revoke.
+    pub fn bulk_revoke(env: Env, caller: Address, target: Address, roles_to_revoke: Vec<Role>) {
+        require_initialized(&env);
+        caller.require_auth();
+
+        assert!(
+            has_implied_role(&env, &caller, &Role::Admin),
+            "Only admin can revoke roles"
+        );
+
+        let owner = read_owner(&env);
+
+        let mut current = read_roles(&env, &target);
+        for i in 0..roles_to_revoke.len() {
+            let role = roles_to_revoke.get(i).unwrap();
+
+            // Prevent revoking Admin from the contract owner – avoids lockout.
+            if target == owner && role == Role::Admin {
+                continue;
+            }
+
+            // Remove the role if present; skip if already not held.
+            let mut j = 0u32;
+            while j < current.len() {
+                if current.get(j).as_ref().map(|r| *r == role).unwrap_or(false) {
+                    current.remove(j);
+                    break;
+                }
+                j += 1;
             }
         }
         write_roles(&env, &target, &current);

@@ -304,3 +304,26 @@ High-level:
 
 This flow is validated in the `test_grace_period.rs` suite and underpins all time-based termination behavior for agreements.
 
+---
+
+## Milestone-Interface Conformance
+
+The milestone query functions (`get_milestone`, `get_milestone_count`, and the `on_milestone_expired` hook) are declared as a shared trait in `onchain/contracts/milestone-interface/src/lib.rs`. Any contract can depend on this crate (rlib) and use the generated `MilestoneContractClient` to call milestone queries on any deployed `stello_pay_contract`.
+
+### Conformance test suite
+
+See `test_milestone_interface_conformance` in `onchain/contracts/stello_pay_contract/tests/test_milestones.rs`. It verifies:
+
+1. **Function-level parity** — every call through `MilestoneContractClient` returns the same result as the equivalent direct `PayrollContractClient` call, for every milestone lifecycle state (created, approved, claimed, rejected, expired).
+2. **Edge-case parity** — out-of-range IDs, zero IDs, and non-existent agreements return `None` through both clients.
+3. **Count accuracy** — `get_milestone_count` is consistent after every lifecycle transition.
+4. **Field fidelity** — all `MilestoneView` scalar fields (`id`, `amount`, `approved`, `claimed`) match their `Milestone` counterparts bit-for-bit.
+
+Adding the `MilestoneContractClient` to the test harness is a single import:
+
+```rust
+use milestone_interface::{MilestoneContractClient, MilestoneView};
+```
+
+Future milestone-capable contracts should add a similar conformance test to confirm they satisfy the trait contract.
+

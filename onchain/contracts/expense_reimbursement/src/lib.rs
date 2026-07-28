@@ -51,7 +51,8 @@ pub struct Expense {
     pub payer: Option<Address>,
     pub status: ExpenseStatus,
     /// NatSpec: `receipt_hash` is a deterministic commitment (e.g., SHA-256) of the
-    /// receipt document, allowing off-chain auditing of original receipts corresponding to on-chain payouts.
+    /// receipt document, allowing off-chain auditing of original receipts corresponding to
+    /// on-chain payouts.
     pub receipt_hash: BytesN<32>,
     pub audit_log_id: Option<u64>,
     pub description: String,
@@ -453,6 +454,19 @@ impl ExpenseReimbursementContract {
     }
 
     /// Pay an approved expense to the employee. Any surplus escrow goes back to the payer.
+    ///
+    /// # Double-Payment Guard
+    ///
+    /// This function implements a checks-effects-interactions pattern to prevent
+    /// double-payment of the same expense:
+    /// 1. **Checks**: Verifies the expense is in `Approved` status.
+    /// 2. **Effects**: Atomically transitions the expense to `Paid` and zeroes `escrow_amount`
+    ///    **before** any token transfer occurs.
+    /// 3. **Interactions**: Only after the terminal state is committed does the function perform
+    ///    token transfers (payout to submitter, surplus refund to payer).
+    ///
+    /// Once `Paid`, any subsequent call will fail the status check at step 1,
+    /// guaranteeing the expense cannot be paid more than once.
     pub fn pay_expense(env: Env, expense_id: u128) {
         require_initialized(&env);
 

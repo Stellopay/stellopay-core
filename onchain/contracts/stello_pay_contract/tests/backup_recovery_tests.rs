@@ -7,12 +7,14 @@ extern crate alloc;
 use alloc::vec::Vec as StdVec;
 
 use soroban_sdk::{testutils::Address as _, Address, Bytes, Env};
-use stello_pay_contract::backup::{
-    backup_agreement, decrypt_backup, deserialize_agreement, encrypt_backup, restore_agreement,
-    serialize_agreement, AgreementBalance, BackupError, BACKUP_VERSION, NONCE_LEN, SALT_LEN,
+use stello_pay_contract::{
+    backup::{
+        backup_agreement, decrypt_backup, deserialize_agreement, encrypt_backup, restore_agreement,
+        serialize_agreement, AgreementBalance, BackupError, BACKUP_VERSION, NONCE_LEN, SALT_LEN,
+    },
+    storage::{Agreement, AgreementMode, AgreementStatus, DisputeStatus},
+    PayrollContract, PayrollContractClient,
 };
-use stello_pay_contract::storage::{Agreement, AgreementMode, AgreementStatus, DisputeStatus};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 // Fixed test vectors — deterministic, no PRNG needed outside a contract.
 const TEST_SALT: [u8; SALT_LEN] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
