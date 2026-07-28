@@ -1499,3 +1499,133 @@ fn test_rate_limit_zero_interval_is_disabled() {
     let res = oracle_client.try_push_price(&source, &base, &quote, &2_100_000i128, &1_001u64);
     assert!(res.is_ok());
 }
+
+// ===========================================================================
+// 13. get_price_checked — freshness-guarded read path
+// ===========================================================================
+
+/// Fresh price within max_age is returned successfully.
+#[test]
+fn test_get_price_checked_fresh_price_succeeds() {
+    let env = create_env();
+    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // 60 seconds later — price is 60s old, max_age = 300s → fresh
+    env.ledger().with_mut(|li| li.timestamp = 1_060);
+    let state = oracle_client.get_price_checked(&base, &quote, &300u64);
+    assert_eq!(state.rate, 2_000_000);
+    assert_eq!(state.last_updated_ts, 1_000);
+}
+
+/// Price age exactly equal to max_age is still accepted (boundary: age == max_age is not stale).
+#[test]
+fn test_get_price_checked_at_exact_max_age_succeeds() {
+    let env = create_env();
+    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // Advance to exactly max_age seconds later.
+    env.ledger().with_mut(|li| li.timestamp = 1_300); // age = 300
+    let state = oracle_client.get_price_checked(&base, &quote, &300u64);
+    assert_eq!(state.rate, 2_000_000);
+}
+
+/// Price age one second beyond max_age is rejected with PriceTooOld.
+#[test]
+fn test_get_price_checked_one_second_past_max_age_rejected() {
+    let env = create_env();
+    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // age = 301 > max_age = 300 → stale
+    env.ledger().with_mut(|li| li.timestamp = 1_301);
+    let res = oracle_client.try_get_price_checked(&base, &quote, &300u64);
+    assert_eq!(res, Err(Ok(OracleError::PriceTooOld)));
+}
+
+/// No price ever pushed → PairNotConfigured (no state entry exists).
+#[test]
+fn test_get_price_checked_no_price_yet_returns_not_configured() {
+    let env = create_env();
+    let (oracle_client, _, _, _, base, quote) = full_setup(&env);
+
+    // Pair is configured but no price has been pushed.
+    let res = oracle_client.try_get_price_checked(&base, &quote, &300u64);
+    assert_eq!(res, Err(Ok(OracleError::PairNotConfigured)));
+}
+
+/// Existing unchecked get_pair_state is unaffected and still returns the state
+/// without any freshness gate, even when the price is very old.
+#[test]
+fn test_get_pair_state_unchecked_unaffected_by_staleness() {
+    let env = create_env();
+    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // Advance far into the future — price is very old.
+    env.ledger().with_mut(|li| li.timestamp = 1_000_000);
+
+    // Checked read rejects it.
+    let res = oracle_client.try_get_price_checked(&base, &quote, &300u64);
+    assert_eq!(res, Err(Ok(OracleError::PriceTooOld)));
+
+    // Unchecked read returns it without error.
+    let state = oracle_client.get_pair_state(&base, &quote);
+    assert!(state.is_some());
+    assert_eq!(state.unwrap().rate, 2_000_000);
+}
+
+/// Simulate a source outage: after the source stops pushing, the checked read
+/// starts rejecting once the price ages past max_age, protecting consumers.
+#[test]
+fn test_get_price_checked_source_outage_detected() {
+    let env = create_env();
+    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
+
+    // Source pushes a fresh price.
+    env.ledger().with_mut(|li| li.timestamp = 5_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &5_000u64);
+
+    // 100s later — still fresh with max_age = 600.
+    env.ledger().with_mut(|li| li.timestamp = 5_100);
+    let state = oracle_client.get_price_checked(&base, &quote, &600u64);
+    assert_eq!(state.rate, 2_000_000);
+
+    // Source goes offline — no further updates.
+    // 601s after last update — stale.
+    env.ledger().with_mut(|li| li.timestamp = 5_601);
+    let res = oracle_client.try_get_price_checked(&base, &quote, &600u64);
+    assert_eq!(res, Err(Ok(OracleError::PriceTooOld)));
+}
+
+/// After a stale price is refreshed by the source, checked reads succeed again.
+#[test]
+fn test_get_price_checked_recovers_after_fresh_update() {
+    let env = create_env();
+    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // Price goes stale.
+    env.ledger().with_mut(|li| li.timestamp = 2_000); // age = 1000 > max_age = 300
+    let res = oracle_client.try_get_price_checked(&base, &quote, &300u64);
+    assert_eq!(res, Err(Ok(OracleError::PriceTooOld)));
+
+    // Source pushes a fresh price.
+    oracle_client.push_price(&source, &base, &quote, &2_500_000i128, &2_000u64);
+
+    // Checked read recovers.
+    let state = oracle_client.get_price_checked(&base, &quote, &300u64);
+    assert_eq!(state.rate, 2_500_000);
+    assert_eq!(state.last_updated_ts, 2_000);
+}
