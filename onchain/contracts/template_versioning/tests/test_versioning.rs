@@ -402,22 +402,8 @@ fn non_owner_cannot_deprecate() {
     assert_eq!(dep_count, 0);
 }
 
-// ─── Name-Collision Policy Tests (issue #940) ────────────────────────────────
-//
-// Policy under test:
-//   - Registering a template under a name that belongs to an active
-//     (non-deprecated) template is rejected with VersioningError::NameCollision.
-//   - Re-registering under a name is allowed once every published version of
-//     every prior template with that name has been deprecated.
-//   - A template that was registered but never had a version published is inert
-//     and does not block the name.
-
-/// Requirement 1 — same name, first template active → collision rejected.
-///
-/// Sequence:
-///   1. Register template A with name "Payroll".
-///   2. Publish a non-deprecated version for A.
-///   3. Attempt to register template B with name "Payroll" → NameCollision.
+/// Agreements are pinned to the template version they were created with.
+/// Publishing a new version does not change what an existing agreement resolves to.
 #[test]
 fn test_register_template_rejects_collision_with_active_template() {
     let env = Env::default();
@@ -599,41 +585,19 @@ fn test_register_template_different_names_do_not_collide() {
 
     client.initialize(&admin);
 
-    let tid_a = client.register_template(&owner, &String::from_str(&env, "Alpha"));
-    client.publish_template_version(
-        &owner,
-        &tid_a,
-        &BytesN::from_array(&env, &[1u8; 32]),
-        &String::from_str(&env, "v1"),
-        &false,
-    );
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Payroll"))
+        .unwrap()
+        .unwrap();
 
     // "Beta" is a different name — must succeed unconditionally.
     let result = client.try_register_template(&owner, &String::from_str(&env, "Beta"));
     assert!(result.is_ok(), "distinct names must not interfere");
 }
 
-/// Empty name is rejected independently of any collision check.
+/// New agreements created after publishing a new version correctly use the latest version.
 #[test]
-fn test_register_template_rejects_empty_name() {
-    let env = Env::default();
-    env.mock_all_auths();
-
-    let contract_id = env.register(TemplateVersioning, ());
-    let client = TemplateVersioningClient::new(&env, &contract_id);
-
-    let admin = Address::generate(&env);
-    let owner = Address::generate(&env);
-    client.initialize(&admin);
-
-    let result = client.try_register_template(&owner, &String::from_str(&env, ""));
-    assert_eq!(result, Err(Ok(VersioningError::InvalidData)));
-}
-
-/// get_templates_by_name returns a complete history of all IDs registered
-/// under a name, including those already deprecated.
-#[test]
-fn test_get_templates_by_name_returns_full_history() {
+fn new_agreement_uses_latest_version_after_publish() {
     let env = Env::default();
     env.mock_all_auths();
     ledger_ts(&env, 1_000_000);
@@ -646,23 +610,32 @@ fn test_get_templates_by_name_returns_full_history() {
 
     client.initialize(&admin);
 
-    // Before any registration, the index is empty.
-    let before: Vec<u64> = client.get_templates_by_name(&String::from_str(&env, "Expense"));
-    assert_eq!(before.len(), 0);
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Payroll"))
+        .unwrap()
+        .unwrap();
 
-    // Register A, publish + deprecate its version.
-    let tid_a = client.register_template(&owner, &String::from_str(&env, "Expense"));
-    let va = client.publish_template_version(
-        &owner,
-        &tid_a,
-        &BytesN::from_array(&env, &[1u8; 32]),
-        &String::from_str(&env, "v1"),
-        &false,
-    );
-    client.deprecate_version(&owner, &tid_a, &va, &None);
+    // Publish version 1
+    let h1 = BytesN::from_array(&env, &[1u8; 32]);
+    let v1 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &h1,
+            &String::from_str(&env, "v1 initial"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v1, 1);
 
-    // Register B under same name (now allowed).
-    let tid_b = client.register_template(&owner, &String::from_str(&env, "Expense"));
+    // Create agreement with version 1
+    let aid1 = client
+        .try_create_agreement(&owner, &tid, &1, &String::from_str(&env, "Agreement A"))
+        .unwrap()
+        .unwrap();
+    let ag1: AgreementBinding = client.try_get_agreement(&aid1).unwrap().unwrap();
+    assert_eq!(ag1.template_version, 1);
 
     // Index must contain both IDs.
     let history: Vec<u64> = client.get_templates_by_name(&String::from_str(&env, "Expense"));

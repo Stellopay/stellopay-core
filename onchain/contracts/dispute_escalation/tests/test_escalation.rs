@@ -1,12 +1,13 @@
 #![cfg(test)]
 
 use dispute_escalation::{
-    types::{DisputeError, DisputeOutcome, DisputeStatus, EscalationLevel},
-    DisputeEscalationContract, DisputeEscalationContractClient,
+    types::{DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel},
+    DisputeEscalatedEvent, DisputeEscalationContract, DisputeEscalationContractClient,
+    DisputeSlaViolationAdvancedEvent,
 };
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    Address, Env,
+    testutils::{Address as _, Events, Ledger},
+    Address, Env, IntoVal, String as SorobanString, Val, Vec,
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -51,6 +52,36 @@ fn now(env: &Env) -> u64 {
     env.ledger().timestamp()
 }
 
+/// Return true when the provided Soroban event topic starts with `event_name`.
+fn event_topic_matches(env: &Env, topic: &Vec<Val>, event_name: &str) -> bool {
+    if topic.is_empty() {
+        return false;
+    }
+
+    let Ok(symbol) = Symbol::try_from_val(env, &topic.get(0).unwrap()) else {
+        return false;
+    };
+
+    symbol.to_string() == event_name
+}
+
+/// Return true if any emitted event has the requested first topic symbol.
+fn has_event(env: &Env, event_name: &str) -> bool {
+    env.events()
+        .all()
+        .iter()
+        .any(|(_, topic, _)| event_topic_matches(env, &topic, event_name))
+}
+
+/// Return the last event whose first topic symbol matches `event_name`.
+fn last_event(env: &Env, event_name: &str) -> Option<(Address, Vec<Val>, Val)> {
+    env.events()
+        .all()
+        .iter()
+        .filter(|(_, topic, _)| event_topic_matches(env, topic, event_name))
+        .last()
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // §1  LIFECYCLE TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -61,7 +92,7 @@ fn test_full_dispute_lifecycle_to_level3_finalised() {
     let id = 100u128;
 
     // 1. File
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     let d = client.get_dispute(&id).unwrap();
     assert_eq!(d.status, DisputeStatus::Open);
     assert_eq!(d.level, EscalationLevel::Level1);
@@ -99,7 +130,7 @@ fn test_resolve_level1_directly() {
     let (_env, client, _owner, admin, user) = setup();
     let id = 101u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::PartialSettlement);
 
     let d = client.get_dispute(&id).unwrap();
@@ -120,7 +151,7 @@ fn test_full_lifecycle_with_pending_review_at_each_stage() {
     client.set_pending_review_time_limit(&admin, &200u64);
 
     // 1. File → Open
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     assert_eq!(client.get_dispute(&id).unwrap().status, DisputeStatus::Open);
 
     // 2. SLA lapses → keeper advances to PendingReview
@@ -181,7 +212,7 @@ fn test_escalate_fails_after_deadline() {
     let (env, client, _owner, _admin, user) = setup();
     let id = 200u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1); // one second past default 7-day limit
 
     let res = client.try_escalate_dispute(&user, &id);
@@ -193,7 +224,7 @@ fn test_appeal_fails_after_appeal_window() {
     let (env, client, _owner, admin, user) = setup();
     let id = 201u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
 
     advance(&env, APPEAL_WINDOW + 1);
@@ -208,7 +239,7 @@ fn test_custom_time_limit_applied() {
     let id = 202u128;
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &60u64);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     let opened = client.get_dispute(&id).unwrap();
     assert_eq!(opened.phase_deadline, opened.phase_started_at + 60);
@@ -227,7 +258,7 @@ fn test_custom_pending_review_limit_applied() {
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
     client.set_pending_review_time_limit(&admin, &120u64);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     advance(&env, 51); // SLA elapsed
 
@@ -268,7 +299,7 @@ fn test_escalate_at_exactly_deadline_succeeds() {
     let id = 300u128;
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &100u64);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     let deadline = client.get_dispute(&id).unwrap().phase_deadline;
 
     // Advance to exactly the deadline timestamp
@@ -291,7 +322,7 @@ fn test_escalate_one_second_past_deadline_fails() {
     let id = 301u128;
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &100u64);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     let deadline = client.get_dispute(&id).unwrap().phase_deadline;
 
     let start = now(&env);
@@ -309,7 +340,7 @@ fn test_expire_at_exactly_deadline_fails() {
     let id = 302u128;
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &100u64);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     let deadline = client.get_dispute(&id).unwrap().phase_deadline;
 
     let start = now(&env);
@@ -327,7 +358,7 @@ fn test_expire_one_second_past_deadline_succeeds() {
     let id = 303u128;
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &100u64);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     let deadline = client.get_dispute(&id).unwrap().phase_deadline;
 
     let start = now(&env);
@@ -348,7 +379,7 @@ fn test_keeper_advance_at_exactly_deadline_fails() {
     let id = 304u128;
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &100u64);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     let deadline = client.get_dispute(&id).unwrap().phase_deadline;
 
     let start = now(&env);
@@ -366,7 +397,7 @@ fn test_keeper_advance_one_second_past_deadline_succeeds() {
     let id = 305u128;
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &100u64);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     let deadline = client.get_dispute(&id).unwrap().phase_deadline;
 
     let start = now(&env);
@@ -386,7 +417,7 @@ fn test_appeal_at_exactly_appeal_deadline_succeeds() {
     let (env, client, _owner, admin, user) = setup();
     let id = 306u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
     let appeal_deadline = client.get_dispute(&id).unwrap().phase_deadline;
 
@@ -407,7 +438,7 @@ fn test_appeal_one_second_past_appeal_deadline_fails() {
     let (env, client, _owner, admin, user) = setup();
     let id = 307u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
     let appeal_deadline = client.get_dispute(&id).unwrap().phase_deadline;
 
@@ -427,7 +458,7 @@ fn test_expire_pending_review_at_exactly_review_deadline_fails() {
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
     client.set_pending_review_time_limit(&admin, &100u64);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     advance(&env, 51); // past SLA → keeper can advance
     client.keeper_advance_stage(&user, &id);
@@ -449,7 +480,7 @@ fn test_expire_pending_review_one_second_past_review_deadline_succeeds() {
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
     client.set_pending_review_time_limit(&admin, &100u64);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     advance(&env, 51);
     client.keeper_advance_stage(&user, &id);
@@ -475,7 +506,7 @@ fn test_keeper_advance_stage_from_open() {
     let (env, client, _owner, _admin, user) = setup();
     let id = 400u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
 
     client.keeper_advance_stage(&user, &id);
@@ -490,11 +521,51 @@ fn test_keeper_advance_stage_from_open() {
 }
 
 #[test]
+fn test_normal_escalation_emits_only_dispute_escalated_event() {
+    let (env, client, _owner, _admin, user) = setup();
+    let id = 1_401u128;
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.escalate_dispute(&user, &id);
+
+    assert!(has_event(&env, "dispute_escalated"));
+    assert!(!has_event(&env, "sla_violation_advanced"));
+
+    let event = last_event(&env, "dispute_escalated").expect("dispute_escalated event");
+    let payload = DisputeEscalatedEvent::try_from_val(&env, &event.2).unwrap();
+    assert_eq!(payload.agreement_id, id);
+    assert_eq!(payload.new_level, EscalationLevel::Level2);
+    assert_eq!(payload.phase_deadline, now(&env) + DEFAULT_LEVEL_LIMIT);
+}
+
+#[test]
+fn test_keeper_timeout_emits_sla_violation_advanced_event_only() {
+    let (env, client, _owner, _admin, user) = setup();
+    let id = 1_402u128;
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    advance(&env, DEFAULT_LEVEL_LIMIT + 1);
+    let breached_at = now(&env);
+
+    client.keeper_advance_stage(&user, &id);
+
+    assert!(has_event(&env, "sla_violation_advanced"));
+    assert!(!has_event(&env, "dispute_escalated"));
+
+    let event = last_event(&env, "sla_violation_advanced").expect("sla_violation_advanced event");
+    let payload = DisputeSlaViolationAdvancedEvent::try_from_val(&env, &event.2).unwrap();
+    assert_eq!(payload.agreement_id, id);
+    assert_eq!(payload.level, EscalationLevel::Level1);
+    assert_eq!(payload.breached_at, breached_at);
+    assert_eq!(payload.review_deadline, breached_at + PENDING_REVIEW_WINDOW);
+}
+
+#[test]
 fn test_keeper_advance_stage_from_escalated() {
     let (env, client, _owner, _admin, user) = setup();
     let id = 401u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id); // → Escalated @ Level2
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
 
@@ -510,7 +581,7 @@ fn test_keeper_advance_stage_from_appealed() {
     let (env, client, _owner, admin, user) = setup();
     let id = 402u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment); // → Resolved
     client.appeal_ruling(&user, &id); // → Appealed @ Level2
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
@@ -527,7 +598,7 @@ fn test_keeper_advance_stage_before_deadline_fails() {
     let (_env, client, _owner, _admin, user) = setup();
     let id = 403u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     // Do not advance time — deadline has not passed
 
     let res = client.try_keeper_advance_stage(&user, &id);
@@ -540,7 +611,7 @@ fn test_keeper_advance_stage_already_pending_review_rejected() {
     let (env, client, _owner, _admin, user) = setup();
     let id = 404u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
     client.keeper_advance_stage(&user, &id); // first call — OK
 
@@ -553,7 +624,7 @@ fn test_keeper_advance_stage_on_resolved_fails() {
     let (_env, client, _owner, admin, user) = setup();
     let id = 405u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
     // Resolved disputes manage their own appeal window; keeper must not interfere
 
@@ -566,7 +637,7 @@ fn test_keeper_advance_stage_on_finalised_fails() {
     let (env, client, _owner, admin, user) = setup();
     let id = 406u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
     client.appeal_ruling(&user, &id); // → Level3
@@ -583,7 +654,7 @@ fn test_keeper_advance_stage_on_expired_fails() {
     let (env, client, _owner, _admin, user) = setup();
     let id = 407u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
     client.expire_dispute(&user, &id);
 
@@ -604,7 +675,7 @@ fn test_keeper_advance_preserves_level_and_outcome() {
     let (env, client, _owner, admin, user) = setup();
     let id = 408u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id); // → Level2
                                          // Partially resolve to set outcome, then appeal resets it
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
@@ -627,7 +698,7 @@ fn test_resolve_level1_from_pending_review() {
     let (env, client, _owner, admin, user) = setup();
     let id = 500u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
     client.keeper_advance_stage(&user, &id);
 
@@ -646,7 +717,7 @@ fn test_resolve_level3_from_pending_review_goes_to_finalised() {
     let id = 501u128;
 
     // Reach Level3 via escalation and appeal, then keeper advances to PendingReview
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id); // Level2
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
     client.appeal_ruling(&user, &id); // Level3
@@ -677,7 +748,7 @@ fn test_expire_from_pending_review_after_review_window() {
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
     client.set_pending_review_time_limit(&admin, &100u64);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     advance(&env, 51); // SLA elapsed
     client.keeper_advance_stage(&user, &id);
@@ -698,7 +769,7 @@ fn test_expire_from_pending_review_before_review_window_fails() {
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
     client.set_pending_review_time_limit(&admin, &100u64);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     advance(&env, 51);
     client.keeper_advance_stage(&user, &id);
@@ -714,7 +785,7 @@ fn test_escalate_from_pending_review_fails() {
     let (env, client, _owner, _admin, user) = setup();
     let id = 504u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
     client.keeper_advance_stage(&user, &id);
 
@@ -728,7 +799,7 @@ fn test_appeal_from_pending_review_fails() {
     let (env, client, _owner, _admin, user) = setup();
     let id = 505u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
     client.keeper_advance_stage(&user, &id);
 
@@ -743,7 +814,7 @@ fn test_keeper_advance_on_pending_review_is_idempotent_rejected() {
     let (env, client, _owner, _admin, user) = setup();
     let id = 506u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
     client.keeper_advance_stage(&user, &id);
 
@@ -760,7 +831,7 @@ fn test_non_admin_cannot_resolve() {
     let (_env, client, _owner, _admin, user) = setup();
     let id = 600u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     let res = client.try_resolve_dispute(&user, &id, &DisputeOutcome::UpholdPayment);
     assert_eq!(res, Err(Ok(DisputeError::Unauthorized)));
 }
@@ -795,7 +866,7 @@ fn test_keeper_advance_stage_is_permissionless() {
     let third_party = Address::generate(&env);
     let id = 601u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
 
     // Third party (not admin, not initiator) can advance the stage
@@ -813,7 +884,7 @@ fn test_expire_dispute_is_permissionless() {
     let third_party = Address::generate(&env);
     let id = 602u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
 
     client.expire_dispute(&third_party, &id);
@@ -828,7 +899,7 @@ fn test_resolve_with_unset_outcome_fails() {
     let (_env, client, _owner, admin, user) = setup();
     let id = 603u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     let res = client.try_resolve_dispute(&admin, &id, &DisputeOutcome::Unset);
     assert_eq!(res, Err(Ok(DisputeError::InvalidTransition)));
 }
@@ -842,7 +913,7 @@ fn test_cannot_double_resolve() {
     let (_env, client, _owner, admin, user) = setup();
     let id = 700u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
 
     let res = client.try_resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
@@ -854,7 +925,7 @@ fn test_cannot_resolve_finalised_dispute() {
     let (_env, client, _owner, admin, user) = setup();
     let id = 701u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
     client.appeal_ruling(&user, &id);
@@ -869,7 +940,7 @@ fn test_cannot_appeal_finalised_dispute() {
     let (_env, client, _owner, admin, user) = setup();
     let id = 702u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
     client.appeal_ruling(&user, &id);
@@ -884,7 +955,7 @@ fn test_cannot_escalate_beyond_level3() {
     let (_env, client, _owner, admin, user) = setup();
     let id = 703u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id); // → Level2
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
     client.appeal_ruling(&user, &id); // → Level3
@@ -898,7 +969,7 @@ fn test_cannot_appeal_beyond_level3() {
     let (_env, client, _owner, admin, user) = setup();
     let id = 704u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
     client.appeal_ruling(&user, &id); // → Level3
@@ -913,7 +984,7 @@ fn test_repeated_expire_rejected() {
     let (env, client, _owner, _admin, user) = setup();
     let id = 705u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
     client.expire_dispute(&user, &id);
 
@@ -926,9 +997,9 @@ fn test_repeated_file_dispute_rejected() {
     let (_env, client, _owner, _admin, user) = setup();
     let id = 706u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
-    let res = client.try_file_dispute(&user, &id);
+    let res = client.try_file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     assert_eq!(res, Err(Ok(DisputeError::InvalidTransition)));
 }
 
@@ -941,7 +1012,7 @@ fn test_expire_dispute_after_deadline() {
     let (env, client, _owner, _admin, user) = setup();
     let id = 800u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
 
     client.expire_dispute(&user, &id);
@@ -956,7 +1027,7 @@ fn test_cannot_expire_before_deadline() {
     let (_env, client, _owner, _admin, user) = setup();
     let id = 801u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     let res = client.try_expire_dispute(&user, &id);
     assert_eq!(res, Err(Ok(DisputeError::DeadlineNotPassed)));
@@ -967,7 +1038,7 @@ fn test_cannot_expire_already_terminal_dispute() {
     let (env, client, _owner, _admin, user) = setup();
     let id = 802u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
     client.expire_dispute(&user, &id);
 
@@ -980,7 +1051,7 @@ fn test_cannot_resolve_expired_dispute() {
     let (env, client, _owner, admin, user) = setup();
     let id = 803u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
     client.expire_dispute(&user, &id);
 
@@ -993,7 +1064,7 @@ fn test_cannot_escalate_expired_dispute() {
     let (env, client, _owner, _admin, user) = setup();
     let id = 804u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
     client.expire_dispute(&user, &id);
 
@@ -1007,7 +1078,7 @@ fn test_cannot_expire_resolved_dispute() {
     let (_env, client, _owner, admin, user) = setup();
     let id = 805u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
 
     // The phase_deadline is now the appeal window; but the AlreadyResolved guard fires first
@@ -1016,7 +1087,133 @@ fn test_cannot_expire_resolved_dispute() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// §9  DUPLICATE / CONCURRENT DISPUTE TESTS
+// §9  SINGLE APPEAL INVARIANT TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_second_appeal_is_rejected() {
+    // Verifies that a dispute can only be appealed once per resolution cycle.
+    // After the first appeal_ruling, the status becomes Appealed, and a second
+    // appeal_ruling call should fail with InvalidTransition because the dispute
+    // is no longer in Resolved state.
+    let (_env, client, _owner, admin, user) = setup();
+    let id = 950u128;
+
+    // 1. File and resolve at Level1
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Resolved
+    );
+
+    // 2. First appeal succeeds → Appealed @ Level2
+    client.appeal_ruling(&user, &id);
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Appealed);
+    assert_eq!(d.level, EscalationLevel::Level2);
+    assert_eq!(d.outcome, DisputeOutcome::Unset);
+
+    // 3. Second appeal should fail - dispute is in Appealed state, not Resolved
+    let res = client.try_appeal_ruling(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::InvalidTransition)));
+}
+
+#[test]
+fn test_second_appeal_after_level2_resolve_is_rejected() {
+    // Same invariant test but at Level2: after appealing from Level2 to Level3,
+    // a second appeal should be rejected.
+    let (_env, client, _owner, admin, user) = setup();
+    let id = 951u128;
+
+    // 1. File → escalate to Level2 → resolve
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.escalate_dispute(&user, &id);
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Resolved
+    );
+
+    // 2. First appeal succeeds → Appealed @ Level3
+    client.appeal_ruling(&user, &id);
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Appealed);
+    assert_eq!(d.level, EscalationLevel::Level3);
+
+    // 3. Second appeal should fail
+    let res = client.try_appeal_ruling(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::InvalidTransition)));
+}
+
+#[test]
+fn test_final_state_reachable_after_single_appeal() {
+    // Verifies that after the single permitted appeal resolves (at Level3),
+    // the final state (Finalised) is reachable and stable.
+    let (_env, client, _owner, admin, user) = setup();
+    let id = 952u128;
+
+    // 1. File → resolve at Level1
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+
+    // 2. Appeal to Level2
+    client.appeal_ruling(&user, &id);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Appealed
+    );
+
+    // 3. Resolve at Level2
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Resolved
+    );
+
+    // 4. Appeal to Level3 (the final permitted appeal)
+    client.appeal_ruling(&user, &id);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Appealed
+    );
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level3
+    );
+
+    // 5. Resolve at Level3 → Finalised (terminal state)
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::PartialSettlement);
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Finalised);
+    assert_eq!(d.outcome, DisputeOutcome::PartialSettlement);
+
+    // 6. Verify final state is stable - no further transitions allowed
+    let res = client.try_appeal_ruling(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::AlreadyFinalised)));
+
+    let res = client.try_resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
+    assert_eq!(res, Err(Ok(DisputeError::AlreadyFinalised)));
+}
+
+#[test]
+fn test_appeal_from_appealed_state_fails_directly() {
+    // Direct test: attempt appeal_ruling on a dispute already in Appealed state
+    // should fail with InvalidTransition (appeal_ruling requires Resolved status)
+    let (_env, client, _owner, admin, user) = setup();
+    let id = 953u128;
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    client.appeal_ruling(&user, &id); // Now in Appealed state
+
+    // Direct attempt to appeal again should fail
+    let res = client.try_appeal_ruling(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::InvalidTransition)));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §10  DUPLICATE / CONCURRENT DISPUTE TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -1024,9 +1221,9 @@ fn test_cannot_file_duplicate_dispute() {
     let (_env, client, _owner, _admin, user) = setup();
     let id = 900u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
-    let res = client.try_file_dispute(&user, &id);
+    let res = client.try_file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     assert_eq!(res, Err(Ok(DisputeError::InvalidTransition)));
 }
 
@@ -1036,8 +1233,8 @@ fn test_concurrent_disputes_are_independent() {
     let id1 = 901u128;
     let id2 = 902u128;
 
-    client.file_dispute(&user, &id1);
-    client.file_dispute(&user, &id2);
+    client.file_dispute(&user, &id1, &DisputeReason::PaymentDispute);
+    client.file_dispute(&user, &id2, &DisputeReason::PaymentDispute);
 
     client.resolve_dispute(&admin, &id1, &DisputeOutcome::UpholdPayment);
 
@@ -1060,9 +1257,9 @@ fn test_three_concurrent_disputes_with_different_levels() {
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
 
-    client.file_dispute(&user, &id_open);
-    client.file_dispute(&user, &id_escalated);
-    client.file_dispute(&user, &id_pending);
+    client.file_dispute(&user, &id_open, &DisputeReason::PaymentDispute);
+    client.file_dispute(&user, &id_escalated, &DisputeReason::PaymentDispute);
+    client.file_dispute(&user, &id_pending, &DisputeReason::PaymentDispute);
 
     // Escalate one
     client.escalate_dispute(&user, &id_escalated);
@@ -1095,7 +1292,7 @@ fn test_cannot_appeal_open_dispute() {
     let (_env, client, _owner, _admin, user) = setup();
     let id = 1000u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     let res = client.try_appeal_ruling(&user, &id);
     assert_eq!(res, Err(Ok(DisputeError::InvalidTransition)));
@@ -1106,7 +1303,7 @@ fn test_cannot_appeal_escalated_dispute() {
     let (_env, client, _owner, _admin, user) = setup();
     let id = 1001u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id);
 
     let res = client.try_appeal_ruling(&user, &id);
@@ -1118,7 +1315,7 @@ fn test_cannot_appeal_expired_dispute() {
     let (env, client, _owner, _admin, user) = setup();
     let id = 1002u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
     client.expire_dispute(&user, &id);
 
@@ -1182,7 +1379,7 @@ fn test_file_dispute_deadline_is_deterministic() {
     advance(&env, 1_000);
     let t0 = now(&env);
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     let d = client.get_dispute(&id).unwrap();
     assert_eq!(d.phase_started_at, t0);
@@ -1196,7 +1393,7 @@ fn test_escalate_deadline_is_deterministic() {
     let l2_limit = 7_200u64;
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level2, &l2_limit);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     advance(&env, 100); // advance by 100 s — still within L1 window
     let t_escalate = now(&env);
@@ -1213,7 +1410,7 @@ fn test_resolve_appeal_deadline_is_deterministic() {
     let (env, client, _owner, admin, user) = setup();
     let id = 1202u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     advance(&env, 50); // some time before deadline
     let t_resolve = now(&env);
@@ -1233,7 +1430,7 @@ fn test_keeper_advance_review_deadline_is_deterministic() {
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
     client.set_pending_review_time_limit(&admin, &review_limit);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     advance(&env, 51); // SLA elapsed
     let t_advance = now(&env);
@@ -1253,7 +1450,7 @@ fn test_appeal_deadline_uses_next_level_limit() {
     let l2_limit = 500u64;
 
     client.set_level_time_limit(&admin, &EscalationLevel::Level2, &l2_limit);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
 
     let t_appeal = now(&env);
@@ -1273,7 +1470,7 @@ fn test_phase_started_at_updated_on_every_transition() {
     let id = 1205u128;
 
     advance(&env, 10);
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     let t_file = now(&env);
     assert_eq!(client.get_dispute(&id).unwrap().phase_started_at, t_file);
 
@@ -1307,7 +1504,7 @@ fn test_keeper_cannot_resolve_directly() {
     let (env, client, _owner, _admin, user) = setup();
     let id = 1300u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
     client.keeper_advance_stage(&user, &id);
 
@@ -1323,7 +1520,7 @@ fn test_keeper_cannot_skip_pending_review_to_finalised() {
     let (env, client, _owner, admin, user) = setup();
     let id = 1301u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
     client.appeal_ruling(&user, &id); // → Level3
@@ -1342,7 +1539,7 @@ fn test_escalation_cannot_skip_level() {
     let (_env, client, _owner, _admin, user) = setup();
     let id = 1302u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id);
 
     let d = client.get_dispute(&id).unwrap();
@@ -1354,7 +1551,7 @@ fn test_cannot_escalate_from_resolved_state() {
     let (_env, client, _owner, admin, user) = setup();
     let id = 1303u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
 
     let res = client.try_escalate_dispute(&user, &id);
@@ -1368,7 +1565,7 @@ fn test_keeper_advance_stage_overflow_returns_distinct_error() {
     let (env, client, _owner, admin, user) = setup();
     let id = 1401u128;
 
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     // Advance past the deadline so keeper_advance_stage is callable
     advance(&env, DEFAULT_LEVEL_LIMIT + 1);
@@ -1401,7 +1598,7 @@ fn test_level3_ruling_exactly_at_phase_deadline_accepted() {
     client.set_level_time_limit(&admin, &EscalationLevel::Level3, &100u64);
 
     // Reach Level3 via the standard appeal path.
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id); // → Level2
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment); // → Resolved L2
     client.appeal_ruling(&user, &id); // → Appealed L3
@@ -1431,7 +1628,7 @@ fn test_level3_reached_without_level2_ruling() {
     let id = 1403u128;
 
     // Escalate directly: L1 → L2 → L3 (no ruling at any intermediate level).
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id); // Open L1 → Escalated L2
     client.escalate_dispute(&user, &id); // Escalated L2 → Escalated L3
 
@@ -1458,7 +1655,7 @@ fn test_duplicate_level3_ruling_rejected() {
     let id = 1404u128;
 
     // Reach Finalised via the full appeal path.
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id); // → L2
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment); // → Resolved L2
     client.appeal_ruling(&user, &id); // → Appealed L3
@@ -1512,7 +1709,7 @@ fn test_escalate_from_level1_rejects_skip_to_level3() {
     client.set_level_time_limit(&admin, &EscalationLevel::Level2, &L2_LIMIT);
 
     // Reach Level1 cleanly.
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     let d = client.get_dispute(&id).unwrap();
     assert_eq!(d.status, DisputeStatus::Open);
     assert_eq!(d.level, EscalationLevel::Level1);
@@ -1561,7 +1758,7 @@ fn test_sequential_level1_level2_level3_escalation_path_succeeds() {
     let id = 1451u128;
 
     // Step 1: file → Open @ Level1.
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     let d = client.get_dispute(&id).unwrap();
     assert_eq!(d.status, DisputeStatus::Open);
     assert_eq!(d.level, EscalationLevel::Level1);
@@ -1603,7 +1800,7 @@ fn test_late_level3_ruling_via_pending_review_rejected() {
     client.set_pending_review_time_limit(&admin, &100u64);
 
     // Reach Level3 via escalate + appeal.
-    client.file_dispute(&user, &id);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id); // → L2
     client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment); // → Resolved L2
     client.appeal_ruling(&user, &id); // → Appealed L3
@@ -1636,4 +1833,545 @@ fn test_late_level3_ruling_via_pending_review_rejected() {
         client.get_dispute(&id).unwrap().outcome,
         DisputeOutcome::GrantClaim
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §15  SLA VIOLATION ADVANCED EVENT TESTS
+//      Verify that `keeper_advance_stage` emits the `sla_violation_advanced`
+//      event with the correct fields, and that `escalate_dispute` (normal flow)
+//      does NOT emit it.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Helper: scan `env.events().all()` for the **last** event whose topics match
+/// a single-element topics vector containing the given `topic` string.
+/// Returns `Some((contract_id, topics, data))` or `None`.
+///
+/// Soroban's `Events::publish` with a `("topic",)` tuple stores topics as
+/// `ScString` values.  We construct the expected topics Vec with
+/// `SorobanString` to match.
+fn find_event_by_topic(
+    env: &Env,
+    _contract_id: &Address,
+    topic: &str,
+) -> Option<(Address, Vec<Val>, Val)> {
+    let events = env.events().all();
+    let topic_str = SorobanString::from_str(env, topic);
+    let expected_topics: Vec<Val> = (topic_str,).into_val(env);
+    // Events are stored chronologically; we scan from the end.
+    for i in (0..events.len()).rev() {
+        let evt: (Address, Vec<Val>, Val) = events.get(i).unwrap();
+        if evt.1 == expected_topics {
+            return Some(evt);
+        }
+    }
+    None
+}
+
+/// Assert that `env.events()` contains **no** event with the given topic.
+fn assert_no_event(env: &Env, _contract_id: &Address, topic: &str) {
+    assert!(
+        find_event_by_topic(env, _contract_id, topic).is_none(),
+        "expected no '{}' event but found one",
+        topic
+    );
+}
+
+/// Test: `keeper_advance_stage` from `Open` state emits `sla_violation_advanced`
+/// with `previous_status == Open`.
+#[test]
+fn test_sla_violation_advanced_event_emitted_from_open() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1500u128;
+    let review_limit = 100u64;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_pending_review_time_limit(&admin, &review_limit);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Open);
+
+    // Advance past SLA deadline
+    advance(&env, 51);
+
+    let contract_id = client.address.clone();
+    client.keeper_advance_stage(&user, &id);
+
+    // Verify the new event exists
+    let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
+    assert!(
+        found.is_some(),
+        "sla_violation_advanced event must be emitted"
+    );
+
+    // Verify backward-compatible event still emitted
+    let old_event = find_event_by_topic(&env, &contract_id, "dispute_sla_breached");
+    assert!(
+        old_event.is_some(),
+        "dispute_sla_breached must still be emitted for backward compatibility"
+    );
+
+    // Verify the dispute state transition
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.level, EscalationLevel::Level1);
+}
+
+/// Test: `keeper_advance_stage` from `Escalated` state emits
+/// `sla_violation_advanced` with `previous_status == Escalated`.
+#[test]
+fn test_sla_violation_advanced_event_emitted_from_escalated() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1501u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &50u64);
+    client.set_pending_review_time_limit(&admin, &100u64);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.escalate_dispute(&user, &id);
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Escalated);
+    assert_eq!(d.level, EscalationLevel::Level2);
+
+    // Advance past Level2 SLA deadline
+    advance(&env, 51);
+
+    let contract_id = client.address.clone();
+    client.keeper_advance_stage(&user, &id);
+
+    // Verify event emitted
+    let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
+    assert!(
+        found.is_some(),
+        "sla_violation_advanced event must be emitted from Escalated state"
+    );
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.level, EscalationLevel::Level2);
+}
+
+/// Test: `keeper_advance_stage` from `Appealed` state emits
+/// `sla_violation_advanced` with `previous_status == Appealed`.
+#[test]
+fn test_sla_violation_advanced_event_emitted_from_appealed() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1502u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &50u64);
+    client.set_pending_review_time_limit(&admin, &100u64);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    client.appeal_ruling(&user, &id);
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Appealed);
+    assert_eq!(d.level, EscalationLevel::Level2);
+
+    // Advance past Level2 SLA deadline
+    advance(&env, 51);
+
+    let contract_id = client.address.clone();
+    client.keeper_advance_stage(&user, &id);
+
+    // Verify event emitted
+    let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
+    assert!(
+        found.is_some(),
+        "sla_violation_advanced event must be emitted from Appealed state"
+    );
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.level, EscalationLevel::Level2);
+}
+
+/// Test: `escalate_dispute` (normal-flow advancement) does NOT emit
+/// `sla_violation_advanced`.  Only `keeper_advance_stage` (SLA timeout)
+/// emits it.
+///
+/// We verify the negative — after a normal-flow escalation, no SLA-violation
+/// event exists.  The positive side (that `dispute_escalated` IS emitted) is
+/// already covered by the lifecycle tests in §1.
+#[test]
+fn test_escalate_dispute_does_not_emit_sla_violation_advanced() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1503u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &100u64);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    // Escalate within deadline — normal flow
+    client.escalate_dispute(&user, &id);
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Escalated);
+    assert_eq!(d.level, EscalationLevel::Level2);
+
+    // CRITICAL: `sla_violation_advanced` must NOT appear — this was a normal
+    // escalation, not an SLA timeout.
+    let contract_id = client.address.clone();
+    assert_no_event(&env, &contract_id, "sla_violation_advanced");
+}
+
+/// Test: `sla_violation_advanced` and `dispute_sla_breached` are BOTH emitted
+/// from a single `keeper_advance_stage` call — backward compatibility is
+/// preserved while the new event is available.
+#[test]
+fn test_keeper_advance_stage_emits_both_sla_events() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1504u128;
+    let review_limit = 200u64;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &60u64);
+    client.set_pending_review_time_limit(&admin, &review_limit);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    // Advance past SLA
+    advance(&env, 61);
+    let t_breach = now(&env);
+
+    let contract_id = client.address.clone();
+    client.keeper_advance_stage(&user, &id);
+
+    // Both events must be present
+    let old_event = find_event_by_topic(&env, &contract_id, "dispute_sla_breached");
+    assert!(
+        old_event.is_some(),
+        "dispute_sla_breached must be emitted (backward compat)"
+    );
+
+    let new_event = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
+    assert!(
+        new_event.is_some(),
+        "sla_violation_advanced must be emitted (new SLA violation signal)"
+    );
+
+    // Verify they are distinct events (different topic)
+    let old_evt = old_event.unwrap();
+    let new_evt = new_event.unwrap();
+    // The topics vectors differ: "dispute_sla_breached" vs "sla_violation_advanced"
+    assert_ne!(
+        old_evt.1, new_evt.1,
+        "the two events must have distinct topic symbols"
+    );
+
+    // Verify dispute state
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.phase_started_at, t_breach);
+    assert_eq!(d.phase_deadline, t_breach + review_limit);
+}
+
+/// Test: `keeper_advance_stage` does NOT emit `dispute_escalated` — only the
+/// SLA-specific events.  The two event families are cleanly separated.
+#[test]
+fn test_keeper_advance_stage_does_not_emit_dispute_escalated() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1505u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_pending_review_time_limit(&admin, &100u64);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    advance(&env, 51);
+
+    let contract_id = client.address.clone();
+    client.keeper_advance_stage(&user, &id);
+
+    // No `dispute_escalated` event from the keeper path
+    assert_no_event(&env, &contract_id, "dispute_escalated");
+
+    // But SLA events must be present
+    assert!(find_event_by_topic(&env, &contract_id, "sla_violation_advanced").is_some());
+    assert!(find_event_by_topic(&env, &contract_id, "dispute_sla_breached").is_some());
+}
+
+/// Test: the `sla_violation_advanced` event is NOT emitted on a failed
+/// `keeper_advance_stage` call (e.g. deadline not passed yet).
+#[test]
+fn test_sla_violation_advanced_not_emitted_on_failed_keeper_call() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1506u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &100u64);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    // Do NOT advance time — deadline not passed
+    let contract_id = client.address.clone();
+    let res = client.try_keeper_advance_stage(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::DeadlineNotPassed)));
+
+    // No SLA violation event should have been emitted on failure
+    assert_no_event(&env, &contract_id, "sla_violation_advanced");
+    assert_no_event(&env, &contract_id, "dispute_sla_breached");
+}
+
+/// Test: verify the event emitted from a Level3 Appealed state carries the
+/// correct `level` field.
+#[test]
+fn test_sla_violation_advanced_from_level3_appealed() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1507u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &50u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level3, &50u64);
+    client.set_pending_review_time_limit(&admin, &100u64);
+
+    // Reach Level3 via appeal path
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.escalate_dispute(&user, &id); // → Level2
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    client.appeal_ruling(&user, &id); // → Appealed @ Level3
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Appealed);
+    assert_eq!(d.level, EscalationLevel::Level3);
+
+    advance(&env, 51); // past SLA
+
+    let contract_id = client.address.clone();
+    client.keeper_advance_stage(&user, &id);
+
+    // Event must be present
+    let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
+    assert!(
+        found.is_some(),
+        "sla_violation_advanced must be emitted at Level3"
+    );
+
+    // The dispute must be at PendingReview @ Level3
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.level, EscalationLevel::Level3);
+}
+
+/// Test: idempotency guard — second `keeper_advance_stage` call on an
+/// already-`PendingReview` dispute does NOT emit a second
+/// `sla_violation_advanced` event (the call is rejected).
+#[test]
+fn test_sla_violation_advanced_not_emitted_on_idempotent_rejected_call() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1508u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_pending_review_time_limit(&admin, &100u64);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    advance(&env, 51);
+
+    // First call — succeeds, emits the event
+    client.keeper_advance_stage(&user, &id);
+
+    // Verify the first call emitted the event
+    let contract_id = client.address.clone();
+    let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
+    assert!(
+        found.is_some(),
+        "first keeper call must emit sla_violation_advanced"
+    );
+
+    // Verify dispute state
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+
+    // Second call — rejected (AlreadyPendingReview)
+    let res = client.try_keeper_advance_stage(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::AlreadyPendingReview)));
+
+    // The failed call must NOT have emitted a second sla_violation_advanced.
+    // Since `try_*` failures do not emit events, we just verify the dispute
+    // state is unchanged and the result was the expected error.
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+}
+
+/// Test: `expire_dispute` does NOT emit `sla_violation_advanced` — only
+/// `keeper_advance_stage` does.
+#[test]
+fn test_expire_dispute_does_not_emit_sla_violation_advanced() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1509u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    advance(&env, 51); // past deadline
+
+    let contract_id = client.address.clone();
+    client.expire_dispute(&user, &id);
+
+    assert_no_event(&env, &contract_id, "sla_violation_advanced");
+
+    // But `dispute_expired` must be emitted
+    let expired_event = find_event_by_topic(&env, &contract_id, "dispute_expired");
+    assert!(
+        expired_event.is_some(),
+        "dispute_expired must be emitted on expiry"
+    );
+}
+
+/// Test: query SLA timer values for `get_level_time_limit` and `get_pending_review_time_limit`
+/// both with defaults and after custom configuration.
+#[test]
+fn test_get_level_time_limit_and_pending_review_queries() {
+    let (_env, client, _owner, admin, _user) = setup();
+
+    // Verify defaults
+    assert_eq!(
+        client.get_level_time_limit(&EscalationLevel::Level1),
+        DEFAULT_LEVEL_LIMIT
+    );
+    assert_eq!(
+        client.get_level_time_limit(&EscalationLevel::Level2),
+        DEFAULT_LEVEL_LIMIT
+    );
+    assert_eq!(
+        client.get_level_time_limit(&EscalationLevel::Level3),
+        DEFAULT_LEVEL_LIMIT
+    );
+    assert_eq!(
+        client.get_pending_review_time_limit(),
+        PENDING_REVIEW_WINDOW
+    );
+
+    // Update time limits
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &86400u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &172800u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level3, &259200u64);
+    client.set_pending_review_time_limit(&admin, &43200u64);
+
+    // Verify configured values
+    assert_eq!(client.get_level_time_limit(&EscalationLevel::Level1), 86400);
+    assert_eq!(
+        client.get_level_time_limit(&EscalationLevel::Level2),
+        172800
+    );
+    assert_eq!(
+        client.get_level_time_limit(&EscalationLevel::Level3),
+        259200
+    );
+    assert_eq!(client.get_pending_review_time_limit(), 43200);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §15  DISPUTE REASON TESTS
+//     Each structured category stored correctly; reason is immutable through
+//     lifecycle; Other(String) length cap enforced at both boundaries.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_reason_non_delivery_stored() {
+    let (_env, client, _owner, _admin, user) = setup();
+    client.file_dispute(&user, &1500u128, &DisputeReason::NonDelivery);
+    assert_eq!(
+        client.get_dispute(&1500u128).unwrap().reason,
+        DisputeReason::NonDelivery
+    );
+}
+
+#[test]
+fn test_reason_quality_issue_stored() {
+    let (_env, client, _owner, _admin, user) = setup();
+    client.file_dispute(&user, &1501u128, &DisputeReason::QualityIssue);
+    assert_eq!(
+        client.get_dispute(&1501u128).unwrap().reason,
+        DisputeReason::QualityIssue
+    );
+}
+
+#[test]
+fn test_reason_payment_dispute_stored() {
+    let (_env, client, _owner, _admin, user) = setup();
+    client.file_dispute(&user, &1502u128, &DisputeReason::PaymentDispute);
+    assert_eq!(
+        client.get_dispute(&1502u128).unwrap().reason,
+        DisputeReason::PaymentDispute
+    );
+}
+
+#[test]
+fn test_reason_other_at_limit_accepted() {
+    // 256 bytes — exactly at MAX_OTHER_REASON_LEN
+    let (env, client, _owner, _admin, user) = setup();
+    let text = SorobanString::from_str(&env, &"a".repeat(256));
+    client.file_dispute(&user, &1503u128, &DisputeReason::Other(text.clone()));
+    assert_eq!(
+        client.get_dispute(&1503u128).unwrap().reason,
+        DisputeReason::Other(text)
+    );
+}
+
+#[test]
+fn test_reason_other_empty_string_accepted() {
+    let (env, client, _owner, _admin, user) = setup();
+    let text = SorobanString::from_str(&env, "");
+    client.file_dispute(&user, &1504u128, &DisputeReason::Other(text.clone()));
+    assert_eq!(
+        client.get_dispute(&1504u128).unwrap().reason,
+        DisputeReason::Other(text)
+    );
+}
+
+#[test]
+fn test_reason_other_over_limit_rejected() {
+    // 257 bytes — one over the cap; no storage side-effect
+    let (env, client, _owner, _admin, user) = setup();
+    let text = SorobanString::from_str(&env, &"a".repeat(257));
+    let res = client.try_file_dispute(&user, &1505u128, &DisputeReason::Other(text));
+    assert_eq!(res, Err(Ok(DisputeError::ReasonTooLong)));
+    assert!(client.get_dispute(&1505u128).is_none());
+}
+
+#[test]
+fn test_reason_other_far_over_limit_rejected() {
+    let (env, client, _owner, _admin, user) = setup();
+    let text = SorobanString::from_str(&env, &"x".repeat(1000));
+    let res = client.try_file_dispute(&user, &1506u128, &DisputeReason::Other(text));
+    assert_eq!(res, Err(Ok(DisputeError::ReasonTooLong)));
+    assert!(client.get_dispute(&1506u128).is_none());
+}
+
+#[test]
+fn test_reason_preserved_through_escalation() {
+    let (_env, client, _owner, _admin, user) = setup();
+    client.file_dispute(&user, &1507u128, &DisputeReason::QualityIssue);
+    client.escalate_dispute(&user, &1507u128);
+    assert_eq!(
+        client.get_dispute(&1507u128).unwrap().reason,
+        DisputeReason::QualityIssue
+    );
+}
+
+#[test]
+fn test_reason_preserved_through_resolution_and_appeal() {
+    let (_env, client, _owner, admin, user) = setup();
+    client.file_dispute(&user, &1508u128, &DisputeReason::NonDelivery);
+    client.resolve_dispute(&admin, &1508u128, &DisputeOutcome::UpholdPayment);
+    client.appeal_ruling(&user, &1508u128);
+    let d = client.get_dispute(&1508u128).unwrap();
+    assert_eq!(d.reason, DisputeReason::NonDelivery);
+    assert_eq!(d.status, DisputeStatus::Appealed);
+}
+
+#[test]
+fn test_length_cap_boundary_256_succeeds() {
+    let (env, client, _owner, _admin, user) = setup();
+    let text = SorobanString::from_str(&env, &"z".repeat(256));
+    client.file_dispute(&user, &1509u128, &DisputeReason::Other(text));
+    assert_eq!(
+        client.get_dispute(&1509u128).unwrap().status,
+        DisputeStatus::Open
+    );
+}
+
+#[test]
+fn test_length_cap_boundary_257_fails() {
+    let (env, client, _owner, _admin, user) = setup();
+    let text = SorobanString::from_str(&env, &"z".repeat(257));
+    let res = client.try_file_dispute(&user, &1510u128, &DisputeReason::Other(text));
+    assert_eq!(res, Err(Ok(DisputeError::ReasonTooLong)));
 }

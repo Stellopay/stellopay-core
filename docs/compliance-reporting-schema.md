@@ -193,8 +193,30 @@ audit,G_EMPLOYER,G_EMPLOYEE,1700000000,1700086400,5000,1,1,1,1700040000,0,0,0,G_
 ## Schema Versioning
 
 `get_report_schema_version()` returns the current schema version (currently `1`).
-Off-chain consumers should check this value to ensure they are parsing the
-correct field layout.
+The same value is embedded in every `ComplianceReport` as `schema_version`, so
+indexers can read it from either the accessor or the report payload.
+
+### Migration contract for downstream indexers
+
+A schema version bump (`N → N+1`) is signalled by deploying a new contract
+binary in which `get_report_schema_version()` returns `N+1`.  The following
+invariants are guaranteed across any version advance:
+
+| Guarantee | Details |
+|---|---|
+| **Existing records remain readable** | Records written under schema version N are stored in `persistent` storage keyed by `DataKey::Record(employer, id)`. A new binary never rewrites or deletes existing entries, so `get_record(employer, id)` and `get_withholding_records` will continue to deserialize them correctly. |
+| **Field values are preserved exactly** | All scalar fields (`id`, `global_seq`, `amount`, `timestamp`, `report_type`, `publisher`, `metadata`) retain their original values as written. No back-fill or default-value substitution occurs on read. |
+| **schema_version reflects the active binary** | After an upgrade, `get_report_schema_version()` and the `schema_version` field inside every newly-generated `ComplianceReport` both return `N+1`. Records fetched from storage that were written under version N still carry their original field values, but the wrapping `ComplianceReport` will have `schema_version = N+1`. |
+| **Monotonic counters are not reset** | `global_seq` and per-employer record counts continue from where they were; the upgrade does not reset or reorder them. |
+
+**Recommended indexer pattern:**
+
+1. On startup, call `get_report_schema_version()` and store the value.
+2. On each ingested event or report, compare the embedded `schema_version`.
+   - Same version → parse as usual.
+   - Higher version → apply the field mapping documented for that version before persisting.
+3. Records whose raw `ComplianceRecord` fields you already snapshotted do not
+   need to be re-fetched after an upgrade; their on-chain bytes are unchanged.
 
 ---
 

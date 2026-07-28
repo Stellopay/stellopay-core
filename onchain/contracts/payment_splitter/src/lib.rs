@@ -204,6 +204,16 @@ impl PaymentSplitterContract {
     ///    fractional remainder.
     /// 3. Break exact remainder ties using canonical recipient address order.
     ///
+    /// # Remainder convention
+    /// When the total amount does not divide evenly among the recipients (i.e., there is
+    /// rounding dust), the sum of all floored amounts is less than `total_amount`. The
+    /// difference (dust) is distributed one unit at a time to recipients sorted by
+    /// (descending remainder, ascending canonical address). This means the first `dust`
+    /// recipients in that sorted order each receive 1 extra unit.
+    ///
+    /// This ensures the invariant `sum(splits) == total_amount` always holds — no value is
+    /// ever lost or created by rounding.
+    ///
     /// # Returns
     /// `Vec<(Address, i128)>` where each tuple is a recipient and their share.
     pub fn compute_split(env: Env, split_id: u128, total_amount: i128) -> Vec<(Address, i128)> {

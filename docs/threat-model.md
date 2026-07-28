@@ -299,6 +299,25 @@ forward.
 
 ---
 
+### 6.10 SLA Violation and Keeper Stage Advancement Risk
+
+**Threat**: Inordinate delays by arbiters during Level1/Level2/Level3 dispute resolution could leave agreements locked indefinitely or lead to missed response deadlines. Alternatively, malicious keepers could attempt prematurely advancing stages or double-triggering breach transitions.
+
+**Impact**: Locked escrow funds, delayed payouts, or off-chain SLA monitoring confusion due to false positive breach signals.
+
+**Mitigations**:
+- **Deterministic Consensus Timestamps**: Every SLA check relies on `env.ledger().timestamp()`.
+- **Bounded Review Windows**: Expiration of per-tier SLAs (`get_level_time_limit`) enables permissionless `keeper_advance_stage` calls which move disputes into `PendingReview` with a bounded review window (`get_pending_review_time_limit`, default 3 days).
+- **Idempotency and Stage Ordering**: `keeper_advance_stage` enforces strict state-machine checks (`AlreadyPendingReview`, `AlreadyResolved`, `AlreadyFinalised`, `AlreadyTerminal`) to prevent duplicate transitions or stage skipping.
+- **Unambiguous SLA Event Emission**: `keeper_advance_stage` emits `sla_violation_advanced` (`SlaViolationAdvancedEvent`) exclusively when an SLA deadline is breached, allowing off-chain SLA monitors to distinguish actual SLA violations from normal user escalations (`dispute_escalated`).
+- **Comprehensive Documentation & Worked Examples**: Concrete SLA timer values, default limits, configurable ranges, and worked timeline examples are documented in [docs/dispute-escalation.md](file:///c:/Users/olani/OneDrive/Desktop/niffy/stellopay-core/docs/dispute-escalation.md#escalation-tiers--concrete-sla-timers).
+
+**Code references**:
+- [onchain/contracts/dispute_escalation/src/lib.rs](file:///c:/Users/olani/OneDrive/Desktop/niffy/stellopay-core/onchain/contracts/dispute_escalation/src/lib.rs#L428-L507): `keeper_advance_stage` logic, idempotency guards, and `SlaViolationAdvancedEvent` emission.
+- [onchain/contracts/dispute_escalation/src/storage.rs](file:///c:/Users/olani/OneDrive/Desktop/niffy/stellopay-core/onchain/contracts/dispute_escalation/src/storage.rs#L13-L34): `get_level_time_limit` and `get_pending_review_time_limit` storage methods.
+
+---
+
 ### 6.9 Misconfiguration / key compromise (off-chain)
 
 **Threat**: Leaked `secret_key` in CLI config; compromised admin wallet upgrades malicious code.
@@ -338,3 +357,62 @@ When adding new entrypoints or modules, update this document and confirm:
   - payment flows, FX/oracles, disputes, or pause mechanics change.
 
 - Prefer to add **explicit code links** (file + symbol name) and keep them current.
+
+### 6.9 Milestone Hook Reentrancy via `on_milestone_expired` (#855)
+
+**Threat**: `expire_milestone` invokes an external hook contract at `StorageKey::MilestoneHookContract` after marking the milestone expired. If the hook is malicious or misconfigured, it could attempt to re-enter `claim_milestone` during the callback. If the expiry flag or claimed state had not been committed to persistent storage before the hook call, a reentrant `claim_milestone` could succeed and transfer funds twice.
+
+**Attack Scenario**:
+
+1. Attacker deploys a malicious contract that implements `on_milestone_expired`.
+2. Owner (compromised or negligent) registers it via `set_milestone_hook_contract`.
+3. Employer calls `expire_milestone` for an approved milestone.
+4. The malicious hook fires and calls `claim_milestone` on the payroll contract before `expire_milestone` returns.
+5. Without CEI ordering: `claim_milestone` succeeds (milestone not yet marked expired), transferring funds a second time.
+
+**Mitigations**:
+
+- **Checks-Effects-Interactions (CEI) ordering** in `expire_milestone`:
+  1. **Check**: milestone not already expired/claimed/approved/rejected.
+  2. **Effect**: write `MilestoneExpired = true` to persistent storage.
+  3. **Effect**: emit `MilestoneExpiredEvent`.
+  4. **Interaction**: call `hook.on_milestone_expired(...)`.
+
+  Because the expiry flag is persisted **before** the hook call, a reentrant `expire_milestone` returns `MilestoneAlreadyExpired` and a reentrant `claim_milestone` (on an unapproved milestone) returns `MilestoneNotApproved`.
+
+- **CEI ordering in `claim_milestone`**:
+  1. **Effect**: write `MilestoneClaimed = true` before `TokenClient::transfer`.
+  2. Any reentrant `claim_milestone` during the token transfer returns `MilestoneAlreadyClaimed`.
+
+- **Hook is opt-in** — if no hook address is configured (`StorageKey::MilestoneHookContract` absent), the callback is skipped entirely; no attack surface exists by default.
+
+- **Only the owner can configure the hook** — `set_milestone_hook_contract` requires owner authentication, limiting who can register a malicious hook.
+
+**Code references**:
+
+```
+onchain/contracts/stello_pay_contract/src/payroll.rs
+  expire_milestone()  — CEI ordering around the on_milestone_expired callback
+  claim_milestone()   — CEI ordering: MilestoneClaimed set before TokenClient::transfer
+
+onchain/contracts/stello_pay_contract/src/lib.rs
+  set_milestone_hook_contract() — owner-only hook registration
+
+onchain/contracts/stello_pay_contract/src/mock_contract.rs
+  MaliciousMilestoneHook — test-only recording hook for reentrancy regression
+```
+
+**Regression Tests** (`tests/test_reentrancy.rs`):
+
+| Test | What it verifies |
+|---|---|
+| `test_claim_milestone_cei_prevents_double_claim` | Second `claim_milestone` on same milestone returns error |
+| `test_claim_milestone_state_committed_before_transfer` | `get_milestone` shows `claimed=true` immediately after a successful claim |
+| `test_expire_milestone_cei_blocks_subsequent_claim` | Expired milestone cannot be claimed via `claim_milestone` |
+| `test_expire_milestone_hook_fires_and_milestone_remains_expired` | Hook fires exactly once; milestone cannot be claimed after hook executes |
+| `test_expire_milestone_idempotency_prevents_repeated_hook_invocation` | Second `expire_milestone` call is rejected, preventing duplicate hook invocations |
+| `test_claim_milestone_reentrant_call_rejected_by_claimed_flag` | Simulated reentrant claim is rejected by the `MilestoneAlreadyClaimed` guard |
+
+**Security Assumption**: The admin is trusted. If a malicious party compromises the owner key, they can register a hostile hook. This is an admin-key compromise scenario (out of scope for this CEI analysis) — mitigated by multisig ownership (see `set_multisig_config`) and RBAC role separation.
+
+---

@@ -2,6 +2,7 @@
 pub mod audit;
 pub mod backup;
 pub mod events;
+pub mod mock_contract;
 mod payroll;
 pub mod storage;
 
@@ -442,12 +443,14 @@ impl PayrollContract {
     /// # Arguments
     /// * `agreement_id` - ID of the milestone agreement.
     /// * `milestone_id` - 1-based ID of the milestone to reject.
-    /// * `reason`       - Optional human-readable reason (pass empty string if none).
+    /// * `reason`       - Human-readable justification (must be non-empty and
+    ///                    contain at least one non-whitespace character).
     ///
     /// # Requirements
     /// - Caller must be the employer.
     /// - Agreement must be in `Created` or `Active` status.
     /// - Milestone must not already be rejected, approved, or claimed.
+    /// - `reason` must be non-empty and not whitespace-only.
     pub fn reject_milestone(
         env: Env,
         agreement_id: u128,
@@ -1369,6 +1372,156 @@ impl PayrollContract {
     // ============================================================================
     // Encrypted Backup & Recovery
     // ============================================================================
+
+    // ============================================================================
+    // Admin-Only Agreement Storage Setters (#849)
+    // ============================================================================
+    //
+    // These entrypoints allow a privileged admin to perform emergency maintenance
+    // writes directly on agreement storage fields. Every setter is gated behind
+    // `require_upgrade_admin` (owner or RBAC Admin role) and calls
+    // `operator.require_auth()` internally, so no unauthenticated caller can
+    // ever reach the underlying `DataKey::set_*` storage helpers.
+    //
+    // # Security Assumption
+    // The admin is trusted. These functions bypass the normal agreement state
+    // machine and must only be used for off-chain-verified maintenance (e.g.
+    // recovering from a known accounting bug). Misuse can corrupt escrow state.
+
+    /// @notice Admin-only: overwrite the cumulative paid amount for an agreement.
+    ///
+    /// Use this to correct accounting after a verified discrepancy. The caller
+    /// must be the contract owner or hold the RBAC `Admin` role.
+    ///
+    /// # Arguments
+    /// * `operator`     — admin address (must authenticate and hold Admin role).
+    /// * `agreement_id` — target agreement.
+    /// * `amount`       — new paid amount in token base units; must be >= 0.
+    ///
+    /// # Access Control
+    /// Requires owner or RBAC Admin authentication.
+    ///
+    /// # Errors
+    /// Panics with "Unauthorized" when the caller lacks admin privileges.
+    /// Panics with "InvalidAmount" when `amount` is negative.
+    pub fn admin_set_agreement_paid_amount(
+        env: Env,
+        operator: Address,
+        agreement_id: u128,
+        amount: i128,
+    ) {
+        Self::require_upgrade_admin(&env, &operator);
+        if amount < 0 {
+            panic!("InvalidAmount: paid amount must be non-negative");
+        }
+        storage::DataKey::set_agreement_paid_amount(&env, agreement_id, amount);
+    }
+
+    /// @notice Admin-only: overwrite the accounted escrow balance for an agreement/token pair.
+    ///
+    /// Corrects on-chain bookkeeping when an off-chain audit reveals a mismatch
+    /// between the real token balance held by the contract and the persisted
+    /// accounting value.
+    ///
+    /// # Arguments
+    /// * `operator`     — admin address (must authenticate and hold Admin role).
+    /// * `agreement_id` — target agreement.
+    /// * `token`        — token address whose escrow balance is corrected.
+    /// * `amount`       — new balance in token base units; must be >= 0.
+    ///
+    /// # Access Control
+    /// Requires owner or RBAC Admin authentication.
+    ///
+    /// # Errors
+    /// Panics with "Unauthorized" when the caller lacks admin privileges.
+    /// Panics with "InvalidAmount" when `amount` is negative.
+    pub fn admin_set_agr_escrow_balance(
+        env: Env,
+        operator: Address,
+        agreement_id: u128,
+        token: Address,
+        amount: i128,
+    ) {
+        Self::require_upgrade_admin(&env, &operator);
+        if amount < 0 {
+            panic!("InvalidAmount: escrow balance must be non-negative");
+        }
+        storage::DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, amount);
+    }
+
+    /// @notice Admin-only: overwrite the payment token for an agreement.
+    ///
+    /// Allows correcting a misconfigured token address before activation,
+    /// or migrating an agreement to a replacement token after an emergency.
+    ///
+    /// # Arguments
+    /// * `operator`     — admin address (must authenticate and hold Admin role).
+    /// * `agreement_id` — target agreement.
+    /// * `token`        — new token address.
+    ///
+    /// # Access Control
+    /// Requires owner or RBAC Admin authentication.
+    pub fn admin_set_agreement_token(
+        env: Env,
+        operator: Address,
+        agreement_id: u128,
+        token: Address,
+    ) {
+        Self::require_upgrade_admin(&env, &operator);
+        storage::DataKey::set_agreement_token(&env, agreement_id, &token);
+    }
+
+    /// @notice Admin-only: overwrite the activation timestamp for an agreement.
+    ///
+    /// Adjusts the reference point for period calculations. Only safe to call
+    /// before the first claim; calling after claims have been processed will
+    /// desynchronise period accounting.
+    ///
+    /// # Arguments
+    /// * `operator`     — admin address (must authenticate and hold Admin role).
+    /// * `agreement_id` — target agreement.
+    /// * `timestamp`    — new activation timestamp (Unix seconds, ledger time).
+    ///
+    /// # Access Control
+    /// Requires owner or RBAC Admin authentication.
+    pub fn admin_set_agr_activation_time(
+        env: Env,
+        operator: Address,
+        agreement_id: u128,
+        timestamp: u64,
+    ) {
+        Self::require_upgrade_admin(&env, &operator);
+        storage::DataKey::set_agreement_activation_time(&env, agreement_id, timestamp);
+    }
+
+    /// @notice Admin-only: overwrite the period duration for an agreement.
+    ///
+    /// Updates the cadence at which employees accrue salary periods. Only safe
+    /// to call before the first claim; adjusting after claims have been processed
+    /// will distort the elapsed-period count and may cause over- or under-payment.
+    ///
+    /// # Arguments
+    /// * `operator`     — admin address (must authenticate and hold Admin role).
+    /// * `agreement_id` — target agreement.
+    /// * `duration`     — new period duration in seconds; must be > 0.
+    ///
+    /// # Access Control
+    /// Requires owner or RBAC Admin authentication.
+    ///
+    /// # Errors
+    /// Panics with "InvalidDuration" when `duration` is 0.
+    pub fn admin_set_agr_period_duration(
+        env: Env,
+        operator: Address,
+        agreement_id: u128,
+        duration: u64,
+    ) {
+        Self::require_upgrade_admin(&env, &operator);
+        if duration == 0 {
+            panic!("InvalidDuration: period duration must be greater than zero");
+        }
+        storage::DataKey::set_agreement_period_duration(&env, agreement_id, duration);
+    }
 
     /// Admin-only: restore an `Agreement` from a pre-decrypted struct.
     ///

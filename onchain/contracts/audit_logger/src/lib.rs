@@ -81,8 +81,22 @@ pub enum AuditError {
 ///
 /// Provides append-only audit logging for on-chain operations. Each log entry
 /// is assigned a monotonically increasing identifier and timestamp, and once
-/// written, cannot be modified. Retention is enforced via a configurable
+/// written, cannot be modified or deleted. Retention is enforced via a configurable
 /// maximum number of retained entries per contract instance.
+///
+/// # Public Entrypoints & Invariants
+/// - `initialize(env, owner, retention_limit)`: One-time contract setup; accepts no record ID.
+/// - `set_retention_limit(env, caller, retention_limit)`: Configures retention window; accepts no record ID or mutating payload for existing records.
+/// - `get_retention_limit(env)`: Read-only query for retention capacity.
+/// - `append_log(env, actor, action, subject, amount)`: Appends a new log entry with a sequential ID; cannot alter existing entries.
+/// - `get_log_count(env)`: Read-only query for total retained logs.
+/// - `get_log(env, id)`: Read-only query for a single entry by ID; does not mutate state.
+/// - `get_logs(env, offset, limit)`: Read-only paginated query for log entries.
+/// - `get_latest_logs(env, limit)`: Read-only query for recent log entries.
+///
+/// **Append-Only Invariant**: None of the public entrypoints accept a record index/ID
+/// alongside mutating parameters. Once recorded, log entries cannot be modified or altered.
+/// This guarantee is explicitly relied upon by `compliance_reporting`.
 #[derive(Upgradeable)]
 #[contract]
 pub struct AuditLoggerContract;
@@ -122,6 +136,17 @@ impl AuditLoggerContract {
 
     /// Updates the log retention limit (maximum number of retained entries).
     ///
+    /// # Prune-on-Lower Semantics
+    ///
+    /// If the new `retention_limit` is lower than the current number of
+    /// retained logs, the **oldest** entries are immediately and permanently
+    /// removed to bring the retained count down to the new limit. Pruning is
+    /// deterministic by insertion order (sequential ID), not by timestamp.
+    ///
+    /// Raising the retention limit afterward does **not** resurrect pruned
+    /// entries. Once pruned, entries are permanently gone — not merely hidden
+    /// — and cannot be recovered through this contract.
+    ///
     /// # Access Control
     /// - Caller must be the contract owner.
     ///
@@ -148,6 +173,30 @@ impl AuditLoggerContract {
         caller.require_auth();
         if caller != owner {
             return Err(AuditError::Unauthorized);
+        }
+
+        // Prune oldest entries immediately when the new limit is lower than
+        // the current count. This is not deferred to the next append.
+        if retention_limit > 0 {
+            let log_count: u64 = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::LogCount)
+                .unwrap_or(0u64);
+            let first_id: u64 = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::FirstLogId)
+                .unwrap_or(1u64);
+            let r = retention_limit as u64;
+
+            if log_count > r {
+                let prune_count = log_count - r;
+                env.storage()
+                    .persistent()
+                    .set(&StorageKey::FirstLogId, &(first_id + prune_count));
+                env.storage().persistent().set(&StorageKey::LogCount, &r);
+            }
         }
 
         env.storage()

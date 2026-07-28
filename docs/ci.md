@@ -240,6 +240,12 @@ not required to pass before merging:
 - `stellar contract build` — CI uses raw `cargo build --target wasm32-unknown-unknown`.
   `stellar contract build` is functionally equivalent but is not a dependency of CI.
 - Per-package test runs — CI uses `--workspace`; there are no per-crate steps.
+- `tools/doc_checker` — the documentation linter (undocumented public
+  functions, undocumented error-enum variants, and orphaned `docs/*.md`
+  files) is a standalone tool contributors can run manually; it is not
+  wired into `.github/workflows/contracts.yml`. See
+  [`tools/doc_checker/README.md`](../tools/doc_checker/README.md) for usage,
+  including its `--strict` flag for promoting warnings to hard failures.
 
 > If any of the above are added to `.github/workflows/contracts.yml` in the
 > future, this section and the **Run locally** section above must both be

@@ -5,6 +5,9 @@ use soroban_sdk::{
     Env, IntoVal, String, Symbol, Val, Vec,
 };
 
+/// Default period duration in seconds (30 days).
+const DEFAULT_PERIOD_DURATION: u64 = 2_592_000;
+
 /// ExpenseReimbursementContract manages expense submissions with approval workflows
 /// and receipt verification with escrow capabilities for organizational expense management.
 ///
@@ -69,6 +72,15 @@ enum StorageKey {
     ReceiptHash(BytesN<32>),
     AuditLogger,
     ApproverRole(Address),
+    /// Per-employee per-period spending cap. Maps employee address to
+    /// maximum total reimbursable amount in a single period.
+    /// A value of 0 (or absent) means no cap is enforced.
+    EmployeeCap(Address),
+    /// Duration of a spending cap period in seconds.
+    PeriodDuration,
+    /// Cumulative amount spent per employee within a given period.
+    /// Key is (employee_address, period_identifier).
+    PeriodSpent(Address, u64),
 }
 
 #[contracttype]
@@ -185,6 +197,52 @@ fn append_approval_audit_log(
     })
 }
 
+// ─── Spending Cap Helpers ──────────────────────────────────────────────────
+
+/// Returns the current period identifier based on ledger timestamp.
+fn current_period(env: &Env) -> u64 {
+    let duration = env
+        .storage()
+        .persistent()
+        .get::<_, u64>(&StorageKey::PeriodDuration)
+        .unwrap_or(DEFAULT_PERIOD_DURATION);
+    env.ledger().timestamp() / duration
+}
+
+/// Reads the per-employee spending cap (0 means no cap).
+fn read_employee_cap(env: &Env, employee: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get::<_, i128>(&StorageKey::EmployeeCap(employee.clone()))
+        .unwrap_or(0)
+}
+
+/// Reads the cumulative amount an employee has spent in a given period.
+fn read_period_spent(env: &Env, employee: &Address, period: u64) -> i128 {
+    env.storage()
+        .persistent()
+        .get::<_, i128>(&StorageKey::PeriodSpent(employee.clone(), period))
+        .unwrap_or(0)
+}
+
+/// Adds an amount to the employee's cumulative period spending.
+fn add_period_spent(env: &Env, employee: &Address, period: u64, amount: i128) {
+    let current = read_period_spent(env, employee, period);
+    env.storage().persistent().set(
+        &StorageKey::PeriodSpent(employee.clone(), period),
+        &(current + amount),
+    );
+}
+
+/// Subtracts an amount from the employee's cumulative period spending.
+fn sub_period_spent(env: &Env, employee: &Address, period: u64, amount: i128) {
+    let current = read_period_spent(env, employee, period);
+    env.storage().persistent().set(
+        &StorageKey::PeriodSpent(employee.clone(), period),
+        &(current - amount),
+    );
+}
+
 #[contractimpl]
 impl ExpenseReimbursementContract {
     /// Initialize the contract with an owner
@@ -222,13 +280,12 @@ impl ExpenseReimbursementContract {
             .set(&StorageKey::ApproverRole(approver), &true);
     }
 
-    /// Remove an approver.
+    /// Remove an approver from the active approver set.
     ///
-    /// # Authorization
-    /// Authorizes the live `caller`: it requires `caller`'s signature via
-    /// `require_auth` and asserts that `caller` is the contract owner. Any
-    /// non-owner caller is rejected, so only the owner can mutate the approver set.
-    pub fn remove_approver(env: Env, caller: Address, approver: Address) {
+    /// NatSpec: Removal prevents this address from approving or rejecting any
+    /// pending expense going forward. It does not alter approval decisions
+    /// already recorded on expenses; those decisions remain valid and payable.
+    pub fn remove_approver(env: Env, approver: Address) {
         require_initialized(&env);
         require_owner(&env, &caller);
 
@@ -262,6 +319,17 @@ impl ExpenseReimbursementContract {
             "Receipt already reimbursed"
         );
 
+        // Enforce per-period spending cap (if configured).
+        let cap = read_employee_cap(&env, &submitter);
+        if cap > 0 {
+            let period = current_period(&env);
+            let spent = read_period_spent(&env, &submitter, period);
+            assert!(
+                spent.checked_add(amount).expect("Spending overflow") <= cap,
+                "Expense would exceed per-period spending cap"
+            );
+        }
+
         let expense_id: u128 = env
             .storage()
             .persistent()
@@ -293,6 +361,14 @@ impl ExpenseReimbursementContract {
         env.storage()
             .persistent()
             .set(&StorageKey::NextExpenseId, &(expense_id + 1));
+
+        // Track the full submitted amount against the period cap.
+        // If the expense is later rejected, cancelled, or partially approved,
+        // the over-counted amount is decremented from period spent.
+        if cap > 0 {
+            let period = current_period(&env);
+            add_period_spent(&env, &submitter, period, amount);
+        }
 
         env.events().publish(
             (String::from_str(&env, "expense_submitted"), expense_id),
@@ -366,6 +442,11 @@ impl ExpenseReimbursementContract {
     }
 
     /// Approve an expense, with support for partial approval.
+    ///
+    /// NatSpec: The approver must both be the expense's designated approver and
+    /// currently hold the approver role. Once recorded, this approval is part of
+    /// the expense's immutable lifecycle state and is not invalidated if the
+    /// owner later removes the approver role.
     pub fn approve_expense(env: Env, approver: Address, expense_id: u128, approved_amount: i128) {
         require_initialized(&env);
         approver.require_auth();
@@ -376,6 +457,7 @@ impl ExpenseReimbursementContract {
             .get(&StorageKey::Expense(expense_id))
             .expect("Expense not found");
 
+        assert!(is_approver(&env, &approver), "Unauthorized approver");
         assert!(expense.approver == approver, "Unauthorized approver");
         assert!(expense.status == ExpenseStatus::Pending, "Invalid status");
         assert!(approved_amount > 0, "Approved amount must be positive");
@@ -409,7 +491,10 @@ impl ExpenseReimbursementContract {
         );
     }
 
-    /// Reject an expense, refunding escrowed funds to the employer safely
+    /// Reject an expense, refunding escrowed funds to the employer safely.
+    ///
+    /// NatSpec: The designated approver must still hold the active approver
+    /// role when rejecting, matching the authorization rule for approval.
     pub fn reject_expense(env: Env, approver: Address, expense_id: u128) {
         require_initialized(&env);
         approver.require_auth();
@@ -420,6 +505,7 @@ impl ExpenseReimbursementContract {
             .get(&StorageKey::Expense(expense_id))
             .expect("Expense not found");
 
+        assert!(is_approver(&env, &approver), "Unauthorized approver");
         assert!(expense.approver == approver, "Unauthorized approver");
         assert!(expense.status == ExpenseStatus::Pending, "Invalid status");
 
@@ -439,6 +525,13 @@ impl ExpenseReimbursementContract {
 
         // Must sync escrow reduction if we refund
         expense.escrow_amount = 0;
+
+        // Decrement period spending cap since this expense is no longer active.
+        let cap = read_employee_cap(&env, &expense.submitter);
+        if cap > 0 {
+            let period = current_period(&env);
+            sub_period_spent(&env, &expense.submitter, period, expense.amount);
+        }
 
         env.storage()
             .persistent()
@@ -508,6 +601,17 @@ impl ExpenseReimbursementContract {
             }
         }
 
+        // Adjust period spending cap for partial approval: the difference
+        // between the original submitted amount and the paid amount is released.
+        let cap = read_employee_cap(&env, &expense.submitter);
+        if cap > 0 {
+            let over_counted = expense.amount - amount_to_pay;
+            if over_counted > 0 {
+                let period = current_period(&env);
+                sub_period_spent(&env, &expense.submitter, period, over_counted);
+            }
+        }
+
         env.events().publish(
             (String::from_str(&env, "expense_paid"), expense_id),
             ExpensePaidEvent {
@@ -546,6 +650,13 @@ impl ExpenseReimbursementContract {
             }
         }
         expense.escrow_amount = 0;
+
+        // Decrement period spending cap since this expense is no longer active.
+        let cap = read_employee_cap(&env, &expense.submitter);
+        if cap > 0 {
+            let period = current_period(&env);
+            sub_period_spent(&env, &expense.submitter, period, expense.amount);
+        }
 
         env.storage()
             .persistent()
@@ -586,5 +697,50 @@ impl ExpenseReimbursementContract {
     pub fn get_audit_logger(env: Env) -> Option<Address> {
         require_initialized(&env);
         env.storage().persistent().get(&StorageKey::AuditLogger)
+    }
+
+    // ── Spending Cap Management ───────────────────────────────────────────────
+
+    /// Sets a per-employee per-period spending cap.
+    ///
+    /// When `cap` is 0 (or the key is absent), no cap is enforced for that
+    /// employee. Only the contract owner may call this function.
+    pub fn set_employee_cap(env: Env, caller: Address, employee: Address, cap: i128) {
+        require_initialized(&env);
+        require_owner(&env, &caller);
+        assert!(cap >= 0, "Cap cannot be negative");
+        if cap == 0 {
+            env.storage()
+                .persistent()
+                .remove(&StorageKey::EmployeeCap(employee));
+        } else {
+            env.storage()
+                .persistent()
+                .set(&StorageKey::EmployeeCap(employee), &cap);
+        }
+    }
+
+    /// Sets the period duration in seconds (e.g. 2_592_000 for 30 days).
+    /// Only the contract owner may call this function.
+    pub fn set_period_duration(env: Env, caller: Address, duration: u64) {
+        require_initialized(&env);
+        require_owner(&env, &caller);
+        assert!(duration > 0, "Period duration must be positive");
+        env.storage()
+            .persistent()
+            .set(&StorageKey::PeriodDuration, &duration);
+    }
+
+    /// Returns the per-employee spending cap (0 means no cap).
+    pub fn get_employee_cap(env: Env, employee: Address) -> i128 {
+        require_initialized(&env);
+        read_employee_cap(&env, &employee)
+    }
+
+    /// Returns the cumulative amount the employee has spent in the current period.
+    pub fn get_employee_period_spent(env: Env, employee: Address) -> i128 {
+        require_initialized(&env);
+        let period = current_period(&env);
+        read_period_spent(&env, &employee, period)
     }
 }
