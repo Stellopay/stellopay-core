@@ -182,7 +182,7 @@ The test suite covers:
 - Duplicate approval prevention
 - Non-signer rejection (propose and approve)
 - Already-executed rejection (approve and cancel)
-- Cancel by creator and owner
+- Cancel by creator or owner (signers who are neither the proposer nor the owner cannot cancel)
 - Cancelled operation replay protection:
   - approve against cancelled operation is rejected (panic)
   - cancel against already-cancelled operation is rejected
