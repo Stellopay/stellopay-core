@@ -20,9 +20,17 @@ Separation is enforced at the storage level: accrued balances (`AccruedWithholdi
 | Function | Description |
 |----------|-------------|
 | `initialize(owner)` | Deploy-time setup; sets the contract owner |
-| `set_jurisdiction_rate(caller, jurisdiction, rate_bps)` | Set tax rate (0–10 000 bps) for a jurisdiction |
+| `set_jurisdiction_rate(caller, jurisdiction, rate_bps, version)` | Set tax rate (0–10 000 bps) for a jurisdiction in a specific ruleset version |
 | `set_jurisdiction_treasury(caller, jurisdiction, treasury)` | Bind a fixed treasury address to a jurisdiction |
 | `set_employee_jurisdictions(caller, employee, jurisdictions)` | Assign applicable jurisdictions to an employee (forward-only; historical accruals remain intact) |
+| `publish_ruleset_version(caller, description)` | Publishes a new ruleset version |
+| `lock_ruleset_version(caller, version)` | Freezes a specific ruleset version against further rate edits (scoped strictly to target version) |
+| `set_active_ruleset_version(caller, version)` | Sets active default ruleset version for new employees |
+| `deprecate_ruleset_version(caller, version)` | Deprecates a version so it cannot be activated or migrated to |
+| `migrate_employee_to_version(caller, employee, version)` | Pin an employee to a specific active/historical ruleset version |
+
+> [!NOTE]
+> **Per-Version Lock Scoping:** `lock_ruleset_version(version)` locks rate modifications (`set_jurisdiction_rate`) strictly for the targeted version (e.g. version N). Locking version N does not block rate edits for other active or newly published ruleset versions (e.g. version N+1).
 
 > [!NOTE]
 > **Forward-Only Jurisdiction Assignment:** Calling `set_employee_jurisdictions` updates the set of jurisdictions evaluated for future pay periods. It never retroactively alters or deletes existing `AccruedWithholding` records or event logs. Historical tax liabilities accrued under previously assigned jurisdictions remain intact, queryable for annual summaries and audit reporting, and eligible for remittance.
@@ -62,10 +70,14 @@ The caller must hold at least `accrued_balance` of `token` in their account.
 | Function | Returns |
 |----------|---------|
 | `calculate_withholding(employee, gross_amount)` | `TaxComputation` (no state change) |
-| `get_jurisdiction_rate(jurisdiction)` | `Option<u32>` — rate in bps |
+| `get_jurisdiction_rate(jurisdiction, version)` | `Option<u32>` — rate in bps for version |
 | `get_jurisdiction_treasury(jurisdiction)` | `Option<Address>` |
 | `get_employee_jurisdictions(employee)` | `Vec<Symbol>` |
 | `get_accrued_balance(jurisdiction)` | `i128` — unremitted balance |
+| `is_ruleset_locked(version)` | `bool` — returns true if target version is locked |
+| `get_active_ruleset_version()` | `u32` — default ruleset version |
+| `get_latest_ruleset_version()` | `u32` — highest published version number |
+| `get_ruleset_metadata(version)` | `Option<RulesetMetadata>` |
 
 ## Rounding Policy (NatSpec)
 
@@ -86,9 +98,11 @@ Floor division means any sub-unit fractional remainder stays with the employee i
 | Only owner can configure rates, treasuries, and employee jurisdictions | `require_owner` helper checks caller == stored owner before any write |
 | Withheld funds cannot be redirected to arbitrary addresses | `remit_withholding` reads treasury from owner-controlled `JurisdictionTreasury` storage — the caller supplies only the token, never the destination |
 | No re-entrancy on remittance | Accrued balance is reset to `0` before `token.transfer` is called |
+| Idempotent remittance prevents double-remittance | Once an accrued balance is remitted to zero, subsequent calls return `NothingToRemit` rather than causing underflow or double-counting |
 | Overflow-safe arithmetic | All multiplications and additions use `checked_*` and return `ArithmeticError` on overflow |
 | Total withholding ≤ gross | Validated after summation; returns `ArithmeticError` if combined rates exceed 100% |
 | Historical accrual preservation | `set_employee_jurisdictions` changes are forward-only; prior `AccruedWithholding` balances and event logs are never erased or retroactively modified |
+| Per-version ruleset locking | `lock_ruleset_version` freezes `set_jurisdiction_rate` edits for targeted version N only, keeping other versions (e.g. N+1) editable |
 
 ## Usage Example
 

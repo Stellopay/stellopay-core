@@ -155,8 +155,8 @@ pub struct DisputeExpiredEvent {
 /// * `agreement_id`   — identifies the dispute.
 /// * `level`          — escalation level at which the SLA was breached.
 /// * `breached_at`    — ledger timestamp at which the advance was triggered.
-/// * `review_deadline`— timestamp by which the admin must act before the
-///   dispute can be expired via `expire_dispute`.
+/// * `review_deadline`— timestamp by which the admin must act before the dispute can be expired via
+///   `expire_dispute`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisputeSlaBreachedEvent {
@@ -247,11 +247,21 @@ impl DisputeEscalationContract {
         Ok(())
     }
 
-    /// Escalates an open or previously escalated dispute to the next tier.
+    /// Escalates an open or previously escalated dispute to the **next** tier.
     ///
     /// This is a **permissionless** call — any caller may trigger it, provided
     /// the SLA window has not yet elapsed.  The new phase SLA starts from the
     /// current ledger timestamp.
+    ///
+    /// # Invariant: single-tier step
+    /// `escalate_dispute` accepts **only** `agreement_id`; there is no
+    /// caller-supplied target tier.  The destination level is computed purely
+    /// from the current level via the closed `next_level` mapping
+    /// (`Level1 → Level2`, `Level2 → Level3`, `Level3 → MaxEscalationReached`).
+    /// As a consequence, this function **cannot** jump two tiers in a single
+    /// call — Level1 → Level3 in one transaction is structurally impossible.
+    /// The corresponding regression tests live in
+    /// `tests/test_escalation.rs` (see §13 and the new tests added for #890).
     ///
     /// # State transitions
     /// `Open @ LevelN`      (now ≤ deadline) → `Escalated @ Level(N+1)`
@@ -262,9 +272,10 @@ impl DisputeEscalationContract {
     /// * `AlreadyResolved`       — dispute is already in `Resolved` state.
     /// * `AlreadyFinalised`      — dispute is in terminal `Finalised` state.
     /// * `AlreadyTerminal`       — dispute is in terminal `Expired` state.
-    /// * `InvalidTransition`     — dispute is in `PendingReview` (SLA already breached; escalation window has passed).
+    /// * `InvalidTransition`     — dispute is in `PendingReview` (SLA already breached; escalation
+    ///   window has passed).
     /// * `TimeLimitExpired`      — escalation window has passed.
-    /// * `MaxEscalationReached`  — already at Level3.
+    /// * `MaxEscalationReached`  — already at Level3 (no higher tier exists).
     pub fn escalate_dispute(
         env: Env,
         caller: Address,
@@ -337,8 +348,10 @@ impl DisputeEscalationContract {
     /// * `DisputeNotFound`       — no dispute for this agreement.
     /// * `AlreadyFinalised`      — dispute is in terminal `Finalised` state.
     /// * `AlreadyTerminal`       — dispute is in terminal `Expired` state.
-    /// * `AlreadyResolved`       — dispute is in `Resolved` state (appeal window manages its own deadline).
-    /// * `AlreadyPendingReview`  — `keeper_advance_stage` was already called; idempotent call rejected.
+    /// * `AlreadyResolved`       — dispute is in `Resolved` state (appeal window manages its own
+    ///   deadline).
+    /// * `AlreadyPendingReview`  — `keeper_advance_stage` was already called; idempotent call
+    ///   rejected.
     /// * `DeadlineNotPassed`     — SLA deadline has not yet elapsed; too early to advance.
     pub fn keeper_advance_stage(
         env: Env,
@@ -409,8 +422,8 @@ impl DisputeEscalationContract {
     /// `* @ L3` → `Finalised @ L3` (terminal — no further appeal)
     ///
     /// # Security
-    /// * Cannot double-resolve: `AlreadyResolved` / `AlreadyFinalised` returned
-    ///   if the dispute is already in a terminal or resolved state.
+    /// * Cannot double-resolve: `AlreadyResolved` / `AlreadyFinalised` returned if the dispute is
+    ///   already in a terminal or resolved state.
     /// * `Unset` is not a valid outcome — returns `InvalidTransition`.
     ///
     /// # Access Control
@@ -574,8 +587,8 @@ impl DisputeEscalationContract {
     /// * `DisputeNotFound`    — no dispute for this agreement.
     /// * `AlreadyFinalised`   — cannot expire a finalised dispute.
     /// * `AlreadyTerminal`    — already `Expired`.
-    /// * `AlreadyResolved`    — `Resolved` disputes have an appeal window; use
-    ///                          `appeal_ruling` or let it become de-facto binding.
+    /// * `AlreadyResolved`    — `Resolved` disputes have an appeal window; use `appeal_ruling` or
+    ///   let it become de-facto binding.
     /// * `DeadlineNotPassed`  — deadline has not yet passed.
     pub fn expire_dispute(
         env: Env,
@@ -687,6 +700,17 @@ impl DisputeEscalationContract {
 
     /// Returns the next escalation level, or `Err(MaxEscalationReached)` if
     /// already at `Level3`.
+    ///
+    /// # Invariant: closed one-step mapping
+    /// This helper is the **sole** authority on what the next escalation tier
+    /// is.  The mapping is deliberately closed: there is exactly one
+    /// successor to `Level1` and to `Level2`, and `Level3` has no successor.
+    /// The explicit `match` below has **no** `_ =>` wildcard arm — *do not
+    /// add one*.  A wildcard arm would silently absorb any future variant of
+    /// `EscalationLevel` and quietly break the closed-mapping invariant.
+    /// When a new level variant is introduced, extend this `match`
+    /// arm-by-arm explicitly and decide each transition on its own merits;
+    /// never relax the no-wildcard rule.
     fn next_level(level: &EscalationLevel) -> Result<EscalationLevel, DisputeError> {
         match level {
             EscalationLevel::Level1 => Ok(EscalationLevel::Level2),

@@ -566,10 +566,13 @@ fn test_multi_level_department_report_aggregation() {
     let root_id = client.create_department(&owner, &org_id, &symbol_short!("Corp"), &None);
     // Level 1: children
     let eng_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &Some(root_id));
-    let sales_id = client.create_department(&owner, &org_id, &symbol_short!("Sales"), &Some(root_id));
+    let sales_id =
+        client.create_department(&owner, &org_id, &symbol_short!("Sales"), &Some(root_id));
     // Level 2: grandchildren
-    let frontend_id = client.create_department(&owner, &org_id, &symbol_short!("Front"), &Some(eng_id));
-    let backend_id = client.create_department(&owner, &org_id, &symbol_short!("Back"), &Some(eng_id));
+    let frontend_id =
+        client.create_department(&owner, &org_id, &symbol_short!("Front"), &Some(eng_id));
+    let backend_id =
+        client.create_department(&owner, &org_id, &symbol_short!("Back"), &Some(eng_id));
 
     // Assign employees
     let emp_a = Address::generate(&env);
@@ -1116,7 +1119,10 @@ fn test_merge_departments_moves_members() {
     client.merge_departments(&owner, &org_id, &source, &target);
 
     assert_eq!(client.get_department_employees(&target).len(), 1);
-    assert_eq!(client.get_department_employees(&target).get(0), Some(emp.clone()));
+    assert_eq!(
+        client.get_department_employees(&target).get(0),
+        Some(emp.clone())
+    );
     assert_eq!(client.get_employee_department(&emp, &org_id), Some(target));
 }
 

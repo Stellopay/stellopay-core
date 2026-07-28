@@ -114,8 +114,17 @@ balance for active schedules.
   "Nothing to claim".
 - Revocation freezes the vesting clock at `revoked_at`; the beneficiary can
   still claim the already-vested portion, but no further tokens accrue.
-- `approve_early_release` caps the released amount at the unvested remainder,
-  so the admin cannot over-release.
+- `approve_early_release` caps the released amount at the unvested remainder
+  (`total_amount - vested`), so the admin cannot over-release even when a
+  prior `claim` has already consumed part of the vested portion. The cap
+  operates independently of prior early releases and claims, guaranteeing
+  that `released_amount` never exceeds `total_amount`.
+- The invariant `released_amount <= total_amount` holds across any sequence
+  of `claim` and `approve_early_release` calls. At any point, the maximum
+  extra amount the admin can early-release is `total_amount - vested`,
+  and the maximum the beneficiary can claim is `vested - released_amount`.
+  The two are disjoint: the first draws from the unvested pool, the second
+  from the vested pool, and neither exceeds its respective bound.
 - Schedule IDs are auto-incremented and never reused.
 
 **Input validation:**
@@ -129,9 +138,6 @@ balance for active schedules.
 
 **Known limitations:**
 
-- No event emission — unlike other contracts in this workspace, `token_vesting`
-  does not publish Soroban events. This limits off-chain indexing and
-  auditability. Recommended as a follow-up improvement.
 - No cross-contract integration tests with `stello_pay_contract` yet.
 
 ### Bug Fixes
@@ -143,7 +149,7 @@ balance for active schedules.
 
 ### Testing Focus
 
-The test suite contains **42 tests** across 10 categories:
+The test suite contains **44 tests** across 11 categories:
 
 | Category | Count | What it covers |
 |---|---|---|
@@ -157,6 +163,10 @@ The test suite contains **42 tests** across 10 categories:
 | H. State Consistency | 2 | Claim after revoke gets frozen vested remainder, schedule IDs are sequential |
 | I. Input Validation | 5 | Zero amount, end < start, cliff outside range, empty checkpoints, unsorted checkpoints |
 | J. Edge Cases | 3 | Minimal-duration linear schedule, custom vested cap, invalid schedule_id |
+| K. Events | 4 | Create, claim, revoke, and early release event data correctness |
+| L. Cliff + Linear | 5 | Full spectrum, cliff=end, cliff=start, small amount, revoked (issue #516) |
+| M. Overflow Safety | 3 | Large total near i128::MAX, long duration, vested never exceeds total |
+| N. Early Release Bound | 2 | Prior claim + capped early release, bounded early release + claim exact transfers (issue #884) |
 
 ### Edge Case Reference
 
