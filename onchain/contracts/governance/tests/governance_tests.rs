@@ -882,3 +882,67 @@ fn proposer_cannot_cancel_defeated_proposal() {
         .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
     assert_eq!(res, Err(Ok(GovernanceError::ProposalNotActive)));
 }
+
+#[test]
+fn execute_proposal_rejects_after_execution_window() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    // Advance past the timelock eta
+    advance_time(&env, 60);
+
+    // Wait past the EXECUTION_WINDOW_SECONDS (14 days = 14 * 24 * 60 * 60 = 1209600) + 1 second
+    advance_time(&env, 1209601);
+
+    // Execution should be rejected because the window lapsed
+    let res = setup
+        .governance
+        .try_execute_proposal(&setup.signer_a, &proposal_id);
+    assert_eq!(res, Err(Ok(GovernanceError::ProposalExpired)));
+}
+
+#[test]
+fn proposal_status_expired_after_window_lapses() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    // Advance past the timelock eta and the execution window
+    advance_time(&env, 60);
+    advance_time(&env, 1209601);
+
+    // Attempt to execute should return ProposalExpired and set the status to Expired
+    let _ = setup
+        .governance
+        .try_execute_proposal(&setup.signer_a, &proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, ProposalStatus::Expired);
+}
