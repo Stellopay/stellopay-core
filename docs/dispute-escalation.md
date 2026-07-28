@@ -399,6 +399,30 @@ operates normally without external audit.
 Configuration is admin-gated via `set_audit_logger`; the current logger address
 is visible via `get_audit_logger()`.
 
+---
+
+## Audit Logger Integration
+
+Every dispute lifecycle transition can optionally record a compliance entry in
+the shared `audit_logger` contract. Once wired via `set_audit_logger(admin, addr)`:
+
+| Transition | Audit action | Actor |
+|---|---|---|
+| `file_dispute` | `dispute_filed` | Caller |
+| `escalate_dispute` | `dispute_escalated` | Caller |
+| `keeper_advance_stage` | `dispute_sla_breached` | Keeper |
+| `resolve_dispute` (L1/L2) | `dispute_resolved` | Admin |
+| `resolve_dispute` (L3) | `dispute_finalised` | Admin |
+| `appeal_ruling` | `dispute_appealed` | Appellant |
+| `expire_dispute` | `dispute_expired` | Caller |
+
+Unauthorized callers cannot create audit entries — failed transitions return an
+error without recording. When no audit logger is configured, the contract
+operates normally without external audit.
+
+Configuration is admin-gated via `set_audit_logger`; the current logger address
+is visible via `get_audit_logger()`.
+
 ## Storage Keys
 
 | Key | Type | Description |
