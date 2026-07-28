@@ -613,42 +613,10 @@ impl GovernanceContract {
         Ok(())
     }
 
-    /// Finalizes a proposal after voting closes and queues timelocked execution if it passed.
-    ///
-    /// # Proposal Outcome
-    /// A proposal passes (reaches `Succeeded` status) if and only if **both** conditions are met:
-    ///
-    /// 1. **Quorum**: `total_votes >= proposal.quorum_votes`
-    ///    - `total_votes = for_votes + against_votes + abstain_votes`
-    /// 2. **Majority**: `for_votes > against_votes`
-    ///    - Abstain votes do not participate in majority calculation
-    ///
-    /// If either condition fails, the proposal is marked `Defeated`.
-    ///
-    /// # Timelocking
-    /// When a proposal passes, it queues an `AdminChange` operation in the linked
-    /// `withdrawal_timelock` contract. The proposal stores the operation ID and ETA;
-    /// `execute_proposal` will later enforce that the timelock delay has elapsed.
-    ///
-    /// # Parameters
-    /// - `env` — Soroban environment
-    /// - `proposal_id` — Proposal identifier
-    ///
-    /// # Errors
-    /// - `GovernanceError::NotInitialized` — contract not yet initialized
-    /// - `GovernanceError::ProposalNotFound` — proposal ID does not exist
-    /// - `GovernanceError::ProposalNotActive` — proposal is not in Active status (already finalized)
-    /// - `GovernanceError::VotingStillOpen` — voting period has not yet ended (current timestamp <= end_time)
-    /// - `GovernanceError::TimelockQueueFailed` — failed to queue timelock operation
-    ///
-    /// # Conditions for Success
-    /// - Voting period must be closed (`now > end_time`)
-    /// - Total participation must reach quorum (`total_votes >= quorum_votes`)
-    /// - For votes must strictly exceed Against votes (`for_votes > against_votes`)
-    ///
-    /// # Security
-    /// - Quorum is evaluated against the proposal's immutable snapshot, not the live config
-    /// - A proposal that was Defeated cannot be re-finalized; status is immutable
+    /// @notice Finalizes a proposal after voting closes and queues timelocked execution if it passed.
+    /// @dev A proposal passes when total participation reaches quorum and `for_votes > against_votes`.
+    /// @param env Contract environment.
+    /// @param proposal_id Proposal identifier.
     pub fn finalize_proposal(env: Env, proposal_id: u128) -> Result<(), GovernanceError> {
         require_initialized(&env)?;
         let mut proposal = read_proposal(&env, proposal_id)?;
@@ -846,7 +814,7 @@ impl GovernanceContract {
         write_proposal(&env, &proposal);
 
         env.events()
-            .publish((symbol_short!("prop_cncl"), proposal_id), ());
+            .publish((Symbol::new(&env, "proposal_cancelled"), proposal_id), ());
 
         Ok(())
     }
@@ -894,8 +862,7 @@ impl GovernanceContract {
     }
 
     /// @notice Returns the current governance configuration.
-    /// @return owner, rbac_contract, multisig_contract, timelock_contract, quorum_votes,
-    /// voting_period_seconds.
+    /// @return owner, rbac_contract, multisig_contract, timelock_contract, quorum_votes, voting_period_seconds.
     pub fn get_config(
         env: Env,
     ) -> Result<(Address, Address, Address, Address, u32, u64), GovernanceError> {

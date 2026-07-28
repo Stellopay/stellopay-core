@@ -145,6 +145,71 @@ These patterns can be wrapped in shell scripts, CI jobs, or higher‑level deplo
 
 ---
 
+### Dispute Escalation + Audit Logger Integration
+
+The `dispute_escalation` contract optionally records every state transition in
+the shared `audit_logger` contract for compliance and forensic audit trails.
+
+#### Wiring
+
+```rust
+use audit_logger::{AuditLoggerContract, AuditLoggerContractClient};
+use dispute_escalation::{
+    DisputeEscalationContract, DisputeEscalationContractClient,
+    types::{DisputeOutcome, DisputeStatus, EscalationLevel},
+};
+
+// Deploy both contracts
+let dispute_id = env.register(DisputeEscalationContract, ());
+let dispute_client = DisputeEscalationContractClient::new(&env, &dispute_id);
+
+let audit_id = env.register(AuditLoggerContract, ());
+let audit_client = AuditLoggerContractClient::new(&env, &audit_id);
+
+// Initialize
+dispute_client.initialize(&owner, &admin);
+audit_client.initialize(&owner, &100u32);
+
+// Wire dispute_escalation to audit_logger
+dispute_client.set_audit_logger(&admin, &audit_id);
+```
+
+#### Lifecycle
+
+After wiring, every transition emits an entry into the audit logger:
+
+| Transition | Action logged | Actor |
+|---|---|---|
+| `file_dispute` | `dispute_filed` | Caller |
+| `escalate_dispute` | `dispute_escalated` | Caller |
+| `keeper_advance_stage` | `dispute_sla_breached` | Keeper |
+| `resolve_dispute` (L1/L2) | `dispute_resolved` | Admin |
+| `resolve_dispute` (L3) | `dispute_finalised` | Admin |
+| `appeal_ruling` | `dispute_appealed` | Appellant |
+| `expire_dispute` | `dispute_expired` | Caller |
+
+Each entry stores the authenticated `actor`, a `subject` matching the caller,
+and a ledger `timestamp`. The entries are strictly ordered and non-duplicable
+— a failed transition attempt never creates an audit record.
+
+#### Verification
+
+```rust
+// After driving the dispute through its lifecycle, collect all entries
+let count = audit_client.get_log_count();
+let page = audit_client.get_logs(&0u32, &(count as u32)).unwrap();
+for entry in page.entries.iter() {
+    assert!(entry.id > 0);
+    assert!(entry.timestamp > 0);
+    // entry.action is one of the actions listed above
+}
+```
+
+When no audit logger is configured, the dispute contract operates normally
+and no external audit entries are recorded.
+
+---
+
 ### Payroll + Token Vesting Integration Assumptions
 
 The payroll and token vesting contracts are integrated by orchestration rather than by direct contract-to-contract calls. A hiring workflow should bind the same `employer`, `employee`, and `token` to:

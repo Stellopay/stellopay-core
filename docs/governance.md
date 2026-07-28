@@ -120,6 +120,12 @@ state transition.
   RBAC for governance participation, and multisig signers for execution.
 - The timelock creates a review window between approval and execution.
 - Cancelling a succeeded proposal also cancels its queued timelock operation.
+- **Repeat-execution payload safety**: `execute_proposal` checks that the
+  proposal status is exactly `Succeeded` before applying its payload. After
+  the first successful execution the status is set to `Executed`, so any
+  subsequent call fails with `ProposalNotSucceeded`. This prevents a
+  critical-parameter-change, upgrade, or arbiter-change payload from being
+  applied a second time even if called by a different multisig signer.
 - Quorum is absolute, so deployments should set `quorum_votes` to reflect the
   expected number of active governance participants.
 - Snapshotting quorum prevents configuration or voter-population changes from
@@ -220,6 +226,8 @@ The governance test suite covers:
 - multisig signer enforcement
 - proposal cancellation after success
 - parameter, arbiter, and upgrade execution paths
+- repeat-execution rejection with side-effect-only-once verification for both
+  ParameterChange and ArbiterChange proposal types
 - live RBAC role revocation impact on future voting
 - proposal-time quorum snapshots when configuration and voting power change
   during an active vote
