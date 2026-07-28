@@ -403,9 +403,19 @@ impl WithdrawalTimelock {
         Ok(())
     }
 
-    /// @notice Cancels a queued operation before it is executed.
+    /// @notice Cancels a queued operation, whether or not its timelock has matured.
     /// @dev Admin-only. Sets `cancelled_at` for the audit trail.
-    ///      Already-executed operations cannot be cancelled.
+    ///      Already-executed or already-cancelled operations cannot be cancelled
+    ///      (returns `Err(AlreadyExecutedOrCancelled)`).
+    ///
+    ///      **Maturity does not block cancellation.**  This function checks only
+    ///      `op.status`, never `op.eta`.  A matured-but-unexecuted operation
+    ///      (i.e. one whose `eta` has already passed) is still in `Queued` status,
+    ///      so the admin retains the choice to either execute it or cancel it.
+    ///      There is therefore no state in which a valid withdrawal can become
+    ///      permanently stuck: at least one of `execute` or `cancel` is always
+    ///      available to a `Queued` operation.
+    ///
     ///      Emits: `("timelock_cancelled", op_id) → ()`.
     /// @param caller Admin address cancelling the operation; must authenticate.
     /// @param op_id  Operation identifier returned by `queue`.
