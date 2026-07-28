@@ -132,9 +132,11 @@ impl ComplianceCheckerContract {
             .set(&StorageKey::Initialized, &true);
     }
 
-    /// @notice Enables or disables emergency pause checks.
-    /// @dev Highest precedence deny: when paused, all payroll action checks
-    ///      return `Deny/EmergencyPaused`.
+    /// @notice Enables or disables emergency pause. Only the admin may call this.
+    /// @dev Writes the pause flag to persistent storage. The new state is read
+    ///      synchronously by `check_action` on every invocation, so it takes
+    ///      effect immediately with no stale-read window. Non-admin callers are
+    ///      rejected by the `require_admin` guard.
     pub fn set_emergency_pause(env: Env, caller: Address, is_paused: bool) {
         Self::require_initialized(&env);
         Self::require_admin(&env, &caller);

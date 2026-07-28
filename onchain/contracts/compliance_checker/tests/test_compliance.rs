@@ -355,3 +355,69 @@ fn test_allow_path_traces_have_none_reasons() {
         assert_eq!(decision.traces.get(i).unwrap().reason, ReasonCode::Allowed);
     }
 }
+
+#[test]
+fn test_set_emergency_pause_rejects_non_admin() {
+    let env = create_env();
+    let (_cid, client, _admin) = setup(&env);
+    let non_admin = Address::generate(&env);
+
+    // An address that is not the admin must not be able to toggle the
+    // emergency-pause flag.  With `mock_all_auths` the authentication inside
+    // `require_admin` passes for any caller, but the `*caller == admin` check
+    // panics with "Not admin".
+    let result = client.try_set_emergency_pause(&non_admin, &true);
+    assert!(result.is_err(), "non-admin caller must be rejected");
+}
+
+#[test]
+fn test_set_emergency_pause_immediate_effect() {
+    let env = create_env();
+    let (_cid, client, admin) = setup(&env);
+    let actor = Address::generate(&env);
+
+    // 1. Before pausing, a valid transition is Allowed.
+    let before = client.check_action(
+        &actor,
+        &actor,
+        &PayrollAction::ActivateAgreement,
+        &AgreementStatus::Created,
+        &AgreementStatus::Active,
+        &false,
+    );
+    assert_eq!(
+        before.decision,
+        Decision::Allow,
+        "action must be allowed before emergency pause"
+    );
+
+    // 2. Pause with immediate effect.
+    client.set_emergency_pause(&admin, &true);
+
+    // 3. The very next check_action call must see the paused state —
+    //    no stale-read window or delayed propagation.
+    let after = client.check_action(
+        &actor,
+        &actor,
+        &PayrollAction::ActivateAgreement,
+        &AgreementStatus::Created,
+        &AgreementStatus::Active,
+        &false,
+    );
+    assert_eq!(
+        after.decision,
+        Decision::Deny,
+        "action must be denied immediately after emergency pause"
+    );
+    assert_eq!(
+        after.reason,
+        ReasonCode::EmergencyPaused,
+        "denial reason must be EmergencyPaused"
+    );
+    // The first trace entry must be the emergency-pause rule with Deny.
+    assert!(after.traces.len() >= 1);
+    let first_trace = after.traces.get(0).unwrap();
+    assert_eq!(first_trace.rule, TraceRule::EmergencyPause);
+    assert_eq!(first_trace.result, Decision::Deny);
+    assert_eq!(first_trace.reason, ReasonCode::EmergencyPaused);
+}
