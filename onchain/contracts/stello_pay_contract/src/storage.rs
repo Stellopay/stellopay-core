@@ -250,7 +250,8 @@ pub enum StorageKey {
     MultisigContract,
     /// Minimum payout amount (inclusive) that requires multisig approval for LargePayment.
     LargePaymentThreshold,
-    /// Minimum total payout amount (inclusive) that requires multisig approval for DisputeResolution.
+    /// Minimum total payout amount (inclusive) that requires multisig approval for
+    /// DisputeResolution.
     DisputeResolutionThreshold,
     /// Optional rate limiter contract address for throttling claims.
     RateLimiterContract,
@@ -823,7 +824,10 @@ mod test {
         assert_eq!(PayrollError::ReentrancyDetected as u32, 43);
         assert_eq!(PayrollError::InvalidArbiter as u32, 44);
         assert_eq!(PayrollError::MilestoneAlreadyRejected as u32, 45);
-        assert_eq!(PayrollError::MilestoneAlreadyApprovedCannotReject as u32, 46);
+        assert_eq!(
+            PayrollError::MilestoneAlreadyApprovedCannotReject as u32,
+            46
+        );
         assert_eq!(PayrollError::MilestoneAlreadyClaimedCannotReject as u32, 47);
         assert_eq!(PayrollError::MilestoneAlreadyExpired as u32, 48);
         assert_eq!(PayrollError::MilestoneRejectionReasonEmpty as u32, 49);

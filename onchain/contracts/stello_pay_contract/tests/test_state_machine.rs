@@ -53,8 +53,10 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env,
 };
-use stello_pay_contract::storage::{AgreementStatus, DataKey, DisputeStatus, MilestoneKey, PayrollError};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{AgreementStatus, DataKey, DisputeStatus, MilestoneKey, PayrollError},
+    PayrollContract, PayrollContractClient,
+};
 
 // ============================================================================
 // CONSTANTS
@@ -450,7 +452,8 @@ fn test_disputed_direct_claim_time_based_rejected() {
     let contributor = create_address(&env);
     let token = create_token(&env);
 
-    let id = client.create_escrow_agreement(&employer, &contributor, &token, &SALARY, &ONE_DAY, &4u32);
+    let id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &SALARY, &ONE_DAY, &4u32);
     client.activate_agreement(&id);
 
     // Fund the escrow so the claim would otherwise succeed.

@@ -36,7 +36,7 @@ The `payment_retry` contract provides a configurable retry policy for failed tok
                 └─ retry_count > max_retries ──► [Failed] + payment_retry_failed event
 ```
 
-Payers can also cancel a `Pending` request at any time via `cancel_payment()`, transitioning it to the terminal `Cancelled` state.
+Payers can also cancel a non-terminal request at any time via `cancel_payment()`, which moves it to the terminal `Failed` state and atomically refunds the payer's escrow deposit. See [`cancel_payment`](#cancel_paymentpayer-payment_id) for the full contract.
 
 ---
 
@@ -96,7 +96,14 @@ Returns the number of records evaluated.
 
 ### `cancel_payment(payer, payment_id)`
 
-Cancels a `Pending` request. Only the original payer may cancel. Escrowed funds are not automatically returned — the payer should reclaim them externally.
+Cancels a non-terminal request. Only the original payer may cancel (and must authenticate); cancelling a request that has already reached `Success` or `Failed` is rejected.
+
+Cancellation performs two effects atomically in one call:
+
+1. **Stops processing.** The request transitions to the terminal `Failed` state and is removed from the pending index, so `process_due_payments` and `process_retry` skip it thereafter and the recipient is never paid.
+2. **Refunds escrow.** The exact amount the payer deposited for this request via `fund_payment` (tracked per request and accumulated across multiple deposits) is transferred back to the payer. Cancelling an unfunded request refunds nothing.
+
+Because a request can only be cancelled from a non-terminal state, a deposit already paid out to the recipient on success can never also be refunded here, so the same funds are never double-spent, and the refund touches only this request's escrow ledger — deposits belonging to other requests are untouched. A `payment_cancelled` event is emitted carrying the `refunded_amount`.
 
 ---
 

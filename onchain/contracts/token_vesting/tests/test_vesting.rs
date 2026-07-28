@@ -5,7 +5,6 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient},
     vec, Address, Env, IntoVal, Vec,
 };
-
 use token_vesting::{
     ClaimedEvent, CreatedEvent, CustomCheckpoint, EarlyReleaseEvent, RevokedEvent,
     TokenVestingContract, TokenVestingContractClient, VestingKind, VestingStatus,
@@ -1532,4 +1531,102 @@ fn linear_vested_never_exceeds_total() {
     // At end, should equal total
     set_time(&env, 100);
     assert_eq!(client.get_vested_amount(&sid), total);
+}
+
+// ===========================================================================
+// N. Early release bounded by releasable amount (issue #884)
+// ===========================================================================
+
+/// Verifies that approve_early_release is capped at the unvested remainder
+/// even when a prior claim has already been made against the schedule.
+///
+/// Regression: without the cap, the owner could approve an early release that
+/// exceeds what get_releasable_amount (plus already-released early portion)
+/// actually allows. The contract's unvested_remaining guard protects against
+/// over-release. This test proves the cap holds after a prior claim.
+#[test]
+fn early_release_capped_after_prior_claim() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // At t=50: 500 vested, 500 unvested → releasable = 500
+    set_time(&env, 50);
+    assert_eq!(client.get_releasable_amount(&sid), 500);
+
+    // Claim the vested 500
+    let claimed = client.claim(&beneficiary, &sid);
+    assert_eq!(claimed, 500);
+
+    // After claim: released=500, vested=500, releasable=0
+    assert_eq!(client.get_releasable_amount(&sid), 0);
+
+    // Request early release for 600 (more than 500 unvested remaining)
+    // Must be capped at 500 (total - vested = 1000 - 500 = 500)
+    let early = client.approve_early_release(&owner, &sid, &600i128);
+    assert_eq!(early, 500);
+
+    // Schedule completed: 500 claimed + 500 early-released = 1000 = total
+    let schedule = client.get_schedule(&sid).unwrap();
+    assert_eq!(schedule.status, VestingStatus::Completed);
+    assert_eq!(schedule.released_amount, 1_000);
+
+    // Beneficiary received exactly 500 (claimed) + 500 (early) = 1000
+    assert_eq!(token.balance(&beneficiary), 1_000);
+}
+
+/// Verifies that a correctly bounded early-release approval followed by a
+/// claim transfers exactly the expected amounts (early portion + vested
+/// remainder), confirming no double-counting or fund leakage.
+#[test]
+fn early_release_then_claim_transfers_exact_amounts() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // At t=30: 300 vested, 700 unvested → releasable = 300
+    set_time(&env, 30);
+    assert_eq!(client.get_vested_amount(&sid), 300);
+    assert_eq!(client.get_releasable_amount(&sid), 300);
+
+    // Approve early release of 200 (within the 700 unvested remainder)
+    let early = client.approve_early_release(&owner, &sid, &200i128);
+    assert_eq!(early, 200);
+
+    // After early release: released=200, vested=300, releasable = 300
+    assert_eq!(client.get_releasable_amount(&sid), 300);
+
+    // Claim the vested 300
+    let claimed = client.claim(&beneficiary, &sid);
+    assert_eq!(claimed, 300);
+
+    // Total received: 200 (early) + 300 (claim) = 500
+    assert_eq!(token.balance(&beneficiary), 500);
+
+    // Schedule still active with 500 remaining unreleased
+    let schedule = client.get_schedule(&sid).unwrap();
+    assert_eq!(schedule.status, VestingStatus::Active);
+    assert_eq!(schedule.released_amount, 500);
 }
