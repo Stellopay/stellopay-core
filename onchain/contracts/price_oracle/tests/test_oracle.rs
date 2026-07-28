@@ -438,7 +438,7 @@ fn test_non_owner_cannot_disable_pair() {
 }
 
 // ===========================================================================
-// 5. Push price â€“ happy path
+// 5. Push price – happy path
 // ===========================================================================
 
 #[test]
@@ -500,7 +500,7 @@ fn test_push_price_at_max_staleness_boundary() {
 }
 
 // ===========================================================================
-// 6. Push price â€“ forbidden paths
+// 6. Push price – forbidden paths
 // ===========================================================================
 
 #[test]
@@ -624,7 +624,7 @@ fn test_monotonic_ignores_equal_timestamp() {
     env.ledger().with_mut(|li| li.timestamp = 2_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &2_000u64);
 
-    // Same timestamp with different rate â€” ignored.
+    // Same timestamp with different rate — ignored.
     oracle_client.push_price(&source, &base, &quote, &3_000_000i128, &2_000u64);
 
     let state = oracle_client.get_pair_state(&base, &quote).unwrap();
