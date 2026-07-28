@@ -70,19 +70,19 @@ fn setup_token(env: &Env, contract_id: &Address, initial_supply: i128) -> Addres
 /// Strategy: Generate a randomized payroll agreement configuration
 fn payroll_agreement_strategy() -> impl Strategy<Value = (u32, Vec<i128>, u64, u64)> {
     (
-        1u32..=5,                           // employee_count: 1-5 employees
+        1u32..=5,                                    // employee_count: 1-5 employees
         prop::collection::vec(100i128..5000, 1..=5), // salaries: 100-5000 per employee
-        3600u64..86400,                     // period_seconds: 1 hour to 1 day
-        0u64..604800,                       // grace_period: 0 to 1 week
+        3600u64..86400,                              // period_seconds: 1 hour to 1 day
+        0u64..604800,                                // grace_period: 0 to 1 week
     )
 }
 
 /// Strategy: Generate a randomized escrow agreement configuration
 fn escrow_agreement_strategy() -> impl Strategy<Value = (i128, u64, u32)> {
     (
-        100i128..10000,     // amount_per_period: 100-10000
-        3600u64..86400,     // period_seconds: 1 hour to 1 day
-        1u32..=10,          // num_periods: 1-10 periods
+        100i128..10000, // amount_per_period: 100-10000
+        3600u64..86400, // period_seconds: 1 hour to 1 day
+        1u32..=10,      // num_periods: 1-10 periods
     )
 }
 
@@ -169,13 +169,13 @@ proptest! {
         operations in operation_sequence_strategy(),
     ) {
         let (env, contract_id, owner, client) = setup_contract();
-        
+
         let employer = Address::generate(&env);
         let token = setup_token(&env, &contract_id, 1_000_000);
-        
+
         // Create payroll agreement
         let agreement_id = client.create_payroll_agreement(&employer, &token, &grace_period);
-        
+
         // Add employees
         let mut employees = Vec::new();
         let mut total_salary: i128 = 0;
@@ -186,7 +186,7 @@ proptest! {
             employees.push((employee, salary));
             total_salary += salary;
         }
-        
+
         // Setup DataKey storage for payroll
         let initial_escrow = total_salary * 20; // Fund for 20 periods
         env.as_contract(&contract_id, || {
@@ -202,15 +202,15 @@ proptest! {
                 DataKey::set_employee_claimed_periods(&env, agreement_id, idx as u32, 0);
             }
         });
-        
+
         client.activate_agreement(&agreement_id);
-        
+
         // Track total deposits
         let total_deposited = initial_escrow;
-        
+
         // Execute operations and track state
         let mut dispute_raised = false;
-        
+
         for op in operations {
             match op {
                 Operation::AdvanceTime(periods) => {
@@ -247,18 +247,18 @@ proptest! {
                     if !dispute_raised {
                         continue;
                     }
-                    
+
                     // Set arbiter and resolve
                     let arbiter = Address::generate(&env);
                     client.set_arbiter(&owner, &arbiter);
-                    
+
                     let remaining_escrow = env.as_contract(&contract_id, || {
                         DataKey::get_agreement_escrow_balance(&env, agreement_id, &token)
                     });
-                    
+
                     let employee_payout = (remaining_escrow * (employee_payout_ratio as i128)) / 100;
                     let employer_refund = remaining_escrow - employee_payout;
-                    
+
                     let _ = client.try_resolve_dispute(
                         &arbiter,
                         &agreement_id,
@@ -269,12 +269,12 @@ proptest! {
                 }
             }
         }
-        
+
         // **Assert conservation of funds invariant**
         env.as_contract(&contract_id, || {
             let remaining_escrow = DataKey::get_agreement_escrow_balance(&env, agreement_id, &token);
             let total_paid = DataKey::get_agreement_paid_amount(&env, agreement_id);
-            
+
             // The fundamental invariant: deposits = payouts + remaining
             prop_assert!(remaining_escrow >= 0, "Escrow balance must be non-negative");
             prop_assert!(
@@ -282,7 +282,7 @@ proptest! {
                 "Total paid ({}) + remaining ({}) must not exceed deposited ({})",
                 total_paid, remaining_escrow, total_deposited
             );
-            
+
             // Verify no funds leaked from the contract
             prop_assert_eq!(
                 total_paid + remaining_escrow,
@@ -293,7 +293,6 @@ proptest! {
         });
     }
 }
-
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(proptest_cases()))]
@@ -310,11 +309,11 @@ proptest! {
         claim_attempts in 0u32..15,
     ) {
         let (env, contract_id, _owner, client) = setup_contract();
-        
+
         let employer = Address::generate(&env);
         let contributor = Address::generate(&env);
         let token = setup_token(&env, &contract_id, 1_000_000);
-        
+
         let agreement_id = client.create_escrow_agreement(
             &employer,
             &contributor,
@@ -323,15 +322,15 @@ proptest! {
             &period_seconds,
             &num_periods,
         ).unwrap();
-        
+
         let total_amount = amount_per_period * (num_periods as i128);
-        
+
         // Fund and activate
         env.as_contract(&contract_id, || {
             DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, total_amount);
         });
         client.activate_agreement(&agreement_id);
-        
+
         // Attempt multiple claims
         for _ in 0..claim_attempts {
             env.ledger().with_mut(|li: &mut Ledger| {
@@ -339,12 +338,12 @@ proptest! {
             });
             let _ = client.try_claim_time_based(&agreement_id);
         }
-        
+
         // **Assert conservation invariant**
         env.as_contract(&contract_id, || {
             let remaining = DataKey::get_agreement_escrow_balance(&env, agreement_id, &token);
             let paid = DataKey::get_agreement_paid_amount(&env, agreement_id);
-            
+
             prop_assert!(remaining >= 0, "Escrow balance must be non-negative");
             prop_assert!(paid >= 0, "Paid amount must be non-negative");
             prop_assert_eq!(
@@ -373,11 +372,11 @@ proptest! {
         claim_sequence in prop::collection::vec(0u32..5, 1..=10),
     ) {
         let (env, contract_id, _owner, client) = setup_contract();
-        
+
         let employer = Address::generate(&env);
         let token = setup_token(&env, &contract_id, 1_000_000);
         let agreement_id = client.create_payroll_agreement(&employer, &token, &604800);
-        
+
         // Add employees
         let mut employees = Vec::new();
         let mut total_salary: i128 = 0;
@@ -388,7 +387,7 @@ proptest! {
             employees.push((employee, salary));
             total_salary += salary;
         }
-        
+
         // Setup storage
         let max_periods = 20u32;
         env.as_contract(&contract_id, || {
@@ -404,38 +403,38 @@ proptest! {
                 DataKey::set_employee_claimed_periods(&env, agreement_id, idx as u32, 0);
             }
         });
-        
+
         client.activate_agreement(&agreement_id);
-        
+
         // Track previous claimed_periods for monotonicity check
         let mut prev_claimed = vec![0u32; employee_count as usize];
-        
+
         for claim_idx in claim_sequence {
             // Advance time
             env.ledger().with_mut(|li: &mut Ledger| {
                 li.timestamp += period_seconds + 1;
             });
-            
+
             let employee_idx = claim_idx % employee_count;
             let employee = &employees[employee_idx as usize].0;
             let _ = client.try_claim_payroll(employee, &agreement_id, &employee_idx);
-            
+
             // **Assert monotonicity and bounds**
             env.as_contract(&contract_id, || {
                 let claimed = DataKey::get_employee_claimed_periods(&env, agreement_id, employee_idx);
-                
+
                 prop_assert!(
                     claimed >= prev_claimed[employee_idx as usize],
                     "claimed_periods must be non-decreasing: {} < {}",
                     claimed, prev_claimed[employee_idx as usize]
                 );
-                
+
                 prop_assert!(
                     claimed <= max_periods,
                     "claimed_periods ({}) must not exceed max_periods ({})",
                     claimed, max_periods
                 );
-                
+
                 prev_claimed[employee_idx as usize] = claimed;
             });
         }
@@ -459,15 +458,15 @@ proptest! {
         employee_payout_ratio in 0u32..=100,
     ) {
         let (env, contract_id, owner, client) = setup_contract();
-        
+
         let employer = Address::generate(&env);
         let arbiter = Address::generate(&env);
         let token = setup_token(&env, &contract_id, 1_000_000);
-        
+
         client.set_arbiter(&owner, &arbiter);
-        
+
         let agreement_id = client.create_payroll_agreement(&employer, &token, &grace);
-        
+
         // Add employees
         let mut total_salary: i128 = 0;
         for i in 0..employee_count {
@@ -476,28 +475,28 @@ proptest! {
             client.add_employee_to_agreement(&agreement_id, &employee, &salary);
             total_salary += salary;
         }
-        
+
         let escrow_balance = total_salary * 10;
         env.as_contract(&contract_id, || {
             DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, escrow_balance);
         });
-        
+
         client.activate_agreement(&agreement_id);
-        
+
         // Raise dispute
         if client.try_raise_dispute(&employer, &agreement_id).is_err() {
             return Ok(()); // Skip if dispute can't be raised
         }
-        
+
         // Calculate split
         let employee_payout = (escrow_balance * (employee_payout_ratio as i128)) / 100;
         let employer_refund = escrow_balance - employee_payout;
-        
+
         // Track balances before resolution
         let balance_before = env.as_contract(&contract_id, || {
             DataKey::get_agreement_escrow_balance(&env, agreement_id, &token)
         });
-        
+
         // Resolve dispute
         let result = client.try_resolve_dispute(
             &arbiter,
@@ -505,19 +504,19 @@ proptest! {
             &employee_payout,
             &employer_refund,
         );
-        
+
         match result {
             Ok(_) => {
                 // **Assert bounds and conservation after resolution**
                 env.as_contract(&contract_id, || {
                     let balance_after = DataKey::get_agreement_escrow_balance(&env, agreement_id, &token);
-                    
+
                     // After resolution, escrow should be depleted
                     prop_assert!(
                         balance_after <= balance_before,
                         "Escrow balance increased after dispute resolution"
                     );
-                    
+
                     // The sum of payouts must not exceed the initial balance
                     prop_assert!(
                         employee_payout + employer_refund <= balance_before,
@@ -554,15 +553,15 @@ proptest! {
         employee_payout_ratio in 1u32..=100,
     ) {
         let (env, contract_id, owner, client) = setup_contract();
-        
+
         let employer = Address::generate(&env);
         let arbiter = Address::generate(&env);
         let token = setup_token(&env, &contract_id, 1_000_000);
-        
+
         client.set_arbiter(&owner, &arbiter);
-        
+
         let agreement_id = client.create_payroll_agreement(&employer, &token, &604800);
-        
+
         // Add employees with identical salaries for simplicity
         let mut employees = Vec::new();
         for _ in 0..employee_count {
@@ -570,36 +569,36 @@ proptest! {
             client.add_employee_to_agreement(&agreement_id, &employee, &base_salary);
             employees.push(employee);
         }
-        
+
         let total_escrow = base_salary * (employee_count as i128) * 5;
         env.as_contract(&contract_id, || {
             DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, total_escrow);
         });
-        
+
         client.activate_agreement(&agreement_id);
-        
+
         // Raise and resolve dispute
         if client.try_raise_dispute(&employer, &agreement_id).is_err() {
             return Ok(());
         }
-        
+
         let employee_payout = (total_escrow * (employee_payout_ratio as i128)) / 100;
         let employer_refund = total_escrow - employee_payout;
-        
+
         let result = client.try_resolve_dispute(
             &arbiter,
             &agreement_id,
             &employee_payout,
             &employer_refund,
         );
-        
+
         if result.is_ok() {
             // **Assert no dust leakage**: total distributed equals total escrow
             // This is implicitly checked by the contract, but we verify the
             // remaining balance is zero or minimal dust
             env.as_contract(&contract_id, || {
                 let remaining = DataKey::get_agreement_escrow_balance(&env, agreement_id, &token);
-                
+
                 // After full resolution, remaining should be zero or minimal dust
                 // (less than employee_count due to integer division)
                 prop_assert!(
@@ -626,11 +625,11 @@ proptest! {
         (amount_per_period, period_seconds, num_periods) in escrow_agreement_strategy(),
     ) {
         let (env, contract_id, _owner, client) = setup_contract();
-        
+
         let employer = Address::generate(&env);
         let contributor = Address::generate(&env);
         let token = setup_token(&env, &contract_id, 1_000_000);
-        
+
         let agreement_id = client.create_escrow_agreement(
             &employer,
             &contributor,
@@ -639,35 +638,35 @@ proptest! {
             &period_seconds,
             &num_periods,
         ).unwrap();
-        
+
         let total_amount = amount_per_period * (num_periods as i128);
-        
+
         env.as_contract(&contract_id, || {
             DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, total_amount);
         });
         client.activate_agreement(&agreement_id);
-        
+
         // Advance time to allow some claims
         env.ledger().with_mut(|li: &mut Ledger| {
             li.timestamp += period_seconds * 2;
         });
-        
+
         // Make some claims
         let _ = client.try_claim_time_based(&agreement_id);
-        
+
         let claimed_before_cancel = env.as_contract(&contract_id, || {
             DataKey::get_agreement_paid_amount(&env, agreement_id)
         });
-        
+
         // Cancel agreement
         client.cancel_agreement(&agreement_id);
-        
+
         // Try to claim during grace period
         env.ledger().with_mut(|li: &mut Ledger| {
             li.timestamp += period_seconds;
         });
         let _ = client.try_claim_time_based(&agreement_id);
-        
+
         // Finalize after grace period
         if let Some(grace_end) = client.get_grace_period_end(&agreement_id) {
             env.ledger().with_mut(|li: &mut Ledger| {
@@ -675,12 +674,12 @@ proptest! {
             });
             client.finalize_grace_period(&agreement_id);
         }
-        
+
         // **Assert conservation**
         env.as_contract(&contract_id, || {
             let final_escrow = DataKey::get_agreement_escrow_balance(&env, agreement_id, &token);
             let final_paid = DataKey::get_agreement_paid_amount(&env, agreement_id);
-            
+
             prop_assert!(final_paid >= claimed_before_cancel, "Paid amount should not decrease");
             prop_assert_eq!(
                 final_escrow + final_paid,

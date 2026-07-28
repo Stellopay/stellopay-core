@@ -860,8 +860,6 @@ impl FeeCollectorContract {
     pub fn get_pending_admin(env: Env) -> Option<Address> {
         require_initialized(&env);
         bump_ttl(&env);
-        env.storage()
-            .instance()
-            .get(&StorageKey::PendingAdmin)
+        env.storage().instance().get(&StorageKey::PendingAdmin)
     }
 }

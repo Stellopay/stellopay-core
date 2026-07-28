@@ -82,8 +82,15 @@ fn test_validate_backup_valid_envelope_returns_true() {
 
     let result = validate_backup(&env, &envelope, PASSPHRASE);
 
-    assert!(result.valid, "Expected valid=true for a correctly encrypted backup");
-    assert_eq!(result.agreement_id, Some(42u128), "Expected agreement_id=42");
+    assert!(
+        result.valid,
+        "Expected valid=true for a correctly encrypted backup"
+    );
+    assert_eq!(
+        result.agreement_id,
+        Some(42u128),
+        "Expected agreement_id=42"
+    );
 }
 
 /// A wrong passphrase must produce an invalid result.
@@ -115,7 +122,10 @@ fn test_validate_backup_tampered_ciphertext_returns_invalid() {
 
     let result = validate_backup(&env, &envelope, PASSPHRASE);
 
-    assert!(!result.valid, "Expected valid=false for tampered ciphertext");
+    assert!(
+        !result.valid,
+        "Expected valid=false for tampered ciphertext"
+    );
     assert_eq!(result.agreement_id, None);
 }
 
@@ -145,7 +155,10 @@ fn test_validate_backup_unknown_version_returns_invalid() {
 
     let result = validate_backup(&env, &envelope, PASSPHRASE);
 
-    assert!(!result.valid, "Expected valid=false for unknown version byte");
+    assert!(
+        !result.valid,
+        "Expected valid=false for unknown version byte"
+    );
     assert_eq!(result.agreement_id, None);
 }
 
@@ -172,11 +185,17 @@ fn test_dry_run_valid_backup_does_not_write_state() {
     // Run dry-run — Soroban client panics on error, so no .unwrap() needed.
     let (valid, agreement_id) = client.admin_restore_dry_run(&envelope, &pass);
     assert!(valid, "dry-run should report valid=true");
-    assert_eq!(agreement_id, 42u128, "dry-run should return the correct agreement_id");
+    assert_eq!(
+        agreement_id, 42u128,
+        "dry-run should return the correct agreement_id"
+    );
 
     // Confirm the real restore succeeds (state slot was not altered by dry-run).
     let restored_id = client.admin_restore_from_encrypted(&owner, &envelope, &pass);
-    assert_eq!(restored_id, 42u128, "real restore must succeed after a dry-run");
+    assert_eq!(
+        restored_id, 42u128,
+        "real restore must succeed after a dry-run"
+    );
 }
 
 /// `admin_restore_dry_run` returns `(false, 0)` for a corrupted envelope.
@@ -199,8 +218,14 @@ fn test_dry_run_corrupted_backup_returns_invalid() {
 
     let (valid, agreement_id) = client.admin_restore_dry_run(&envelope, &pass);
 
-    assert!(!valid, "dry-run should report valid=false for corrupted backup");
-    assert_eq!(agreement_id, 0u128, "agreement_id must be 0 when validation fails");
+    assert!(
+        !valid,
+        "dry-run should report valid=false for corrupted backup"
+    );
+    assert_eq!(
+        agreement_id, 0u128,
+        "agreement_id must be 0 when validation fails"
+    );
 }
 
 /// `admin_restore_dry_run` returns `(false, 0)` for a wrong passphrase.
@@ -218,7 +243,10 @@ fn test_dry_run_wrong_passphrase_returns_invalid() {
 
     let (valid, agreement_id) = client.admin_restore_dry_run(&envelope, &wrong_pass);
 
-    assert!(!valid, "dry-run should report valid=false for wrong passphrase");
+    assert!(
+        !valid,
+        "dry-run should report valid=false for wrong passphrase"
+    );
     assert_eq!(agreement_id, 0u128);
 }
 
@@ -248,8 +276,13 @@ fn test_real_restore_path_unchanged_after_dry_run() {
     let mut agreement = make_agreement(&env, &employer);
     agreement.id = 99u128;
 
-    let envelope_raw =
-        backup_agreement(&env, &agreement, PASSPHRASE, &fixed_salt(), &[3u8; NONCE_LEN]);
+    let envelope_raw = backup_agreement(
+        &env,
+        &agreement,
+        PASSPHRASE,
+        &fixed_salt(),
+        &[3u8; NONCE_LEN],
+    );
     let envelope = to_bytes(&env, &envelope_raw);
     let pass = to_bytes(&env, PASSPHRASE);
 
@@ -274,8 +307,13 @@ fn test_dry_run_is_idempotent() {
     let mut agreement = make_agreement(&env, &employer);
     agreement.id = 7u128;
 
-    let envelope_raw =
-        backup_agreement(&env, &agreement, PASSPHRASE, &fixed_salt(), &[5u8; NONCE_LEN]);
+    let envelope_raw = backup_agreement(
+        &env,
+        &agreement,
+        PASSPHRASE,
+        &fixed_salt(),
+        &[5u8; NONCE_LEN],
+    );
     let envelope = to_bytes(&env, &envelope_raw);
     let pass = to_bytes(&env, PASSPHRASE);
 
