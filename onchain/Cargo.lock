@@ -1208,6 +1208,7 @@ dependencies = [
  "salary_adjustment",
  "soroban-sdk",
  "stello_pay_contract",
+ "template_versioning",
  "token_vesting",
  "withdrawal_timelock",
 ]
