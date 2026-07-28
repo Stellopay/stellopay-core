@@ -27,8 +27,8 @@
 use audit_logger::{AuditLogEntry, AuditLoggerContractClient};
 use payment_history::{PaymentHistoryContractClient, PaymentRecord};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env,
-    Symbol, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Symbol,
+    Vec,
 };
 
 /// Maximum number of records that can be returned in a single `generate_report`
@@ -911,13 +911,8 @@ impl ComplianceReportingContract {
         period_start: u64,
         period_end: u64,
     ) -> Result<Vec<FlatReportRow>, ComplianceError> {
-        let report = Self::generate_report(
-            env.clone(),
-            employer,
-            employee,
-            period_start,
-            period_end,
-        )?;
+        let report =
+            Self::generate_report(env.clone(), employer, employee, period_start, period_end)?;
 
         let mut rows: Vec<FlatReportRow> = Vec::new(&env);
 
