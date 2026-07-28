@@ -73,6 +73,22 @@ compliance check. A successful `set_emergency_pause(true)` followed by
 `check_action` in the same transaction (or any subsequent transaction) will
 correctly see the paused state.
 
+### `is_emergency_paused` — Cross-Contract Pause Signal
+
+`pub fn is_emergency_paused(env: Env) -> bool` is a permissionless, read-only
+view exposing the same `EmergencyPause` flag consulted internally by
+`check_action`, without requiring the heavier `check_action` call (which
+needs an `actor`/`executor`/action/state context that a non-payroll contract
+may not have). It is intended for other contracts that want to treat this
+contract's emergency pause as a shared halt signal.
+
+`payment_scheduler` is the first such consumer: when wired via
+`set_compliance_checker`, its `process_due_payments` entrypoint calls
+`is_emergency_paused` before evaluating any due job, and halts the entire
+call (evaluating zero jobs) if it returns `true`. See
+[docs/integration-examples.md](integration-examples.md#compliance-checker-emergency-pause-halting-the-payment-scheduler)
+for the full integration and its test coverage.
+
 ### Operational Assumption
 
 - Set emergency pause state

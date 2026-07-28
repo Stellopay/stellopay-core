@@ -165,6 +165,24 @@ impl ComplianceCheckerContract {
             .unwrap_or(false)
     }
 
+    /// @notice Returns whether emergency pause is currently active.
+    /// @dev Read-only, permissionless view intended for other contracts
+    ///      (e.g. `payment_scheduler`) that want to respect this contract's
+    ///      emergency pause as a shared halt signal without depending on the
+    ///      heavier `check_action` rules-engine call. Mirrors the same
+    ///      `StorageKey::EmergencyPause` flag read internally by
+    ///      `check_action`, so the two never disagree.
+    ///
+    ///      Returns `false` before `initialize` has been called — there is no
+    ///      privileged state to protect yet, so absence of initialization is
+    ///      not itself treated as a paused signal.
+    pub fn is_emergency_paused(env: Env) -> bool {
+        env.storage()
+            .persistent()
+            .get::<_, bool>(&StorageKey::EmergencyPause)
+            .unwrap_or(false)
+    }
+
     /// @notice Validates a payroll action transition.
     /// @dev Rule precedence (highest -> lowest):
     ///      1. Emergency pause deny.

@@ -90,6 +90,8 @@ pub enum SchedulerError {
     AlreadyCancelled = 10,
     /// The job is not in a cancellable state (must be `Active` or `Paused`).
     JobNotCancellable = 11,
+    /// The caller does not match the stored contract owner.
+    Unauthorized = 12,
 }
 
 // ─── Domain Types ─────────────────────────────────────────────────────────────
@@ -160,6 +162,38 @@ impl RetryContractClient {
     }
 }
 
+/// Lightweight dynamic client for querying an external `compliance_checker`
+/// contract's emergency-pause flag.
+///
+/// Uses `env.invoke_contract` (the same dynamic-invocation pattern as
+/// [`RetryContractClient`]) rather than a compile-time crate dependency on
+/// `compliance_checker`, keeping the two contracts loosely coupled: the
+/// scheduler only needs to agree with `compliance_checker` on a function
+/// name and return type, not on a shared Cargo dependency graph.
+pub struct ComplianceCheckerClient {
+    pub env: Env,
+    pub contract_id: Address,
+}
+
+impl ComplianceCheckerClient {
+    pub fn new(env: &Env, contract_id: &Address) -> Self {
+        Self {
+            env: env.clone(),
+            contract_id: contract_id.clone(),
+        }
+    }
+
+    /// Invokes the permissionless `is_emergency_paused() -> bool` view on
+    /// the configured `compliance_checker` contract.
+    pub fn is_emergency_paused(&self) -> bool {
+        self.env.invoke_contract::<bool>(
+            &self.contract_id,
+            &Symbol::new(&self.env, "is_emergency_paused"),
+            soroban_sdk::vec![&self.env],
+        )
+    }
+}
+
 /// A payment job record stored on-chain.
 ///
 /// # Idempotency note
@@ -219,6 +253,9 @@ enum StorageKey {
     ScheduleId(BytesN<32>),
     /// Address of the payment retry contract.
     RetryContract,
+    /// Optional address of a `compliance_checker` contract consulted by
+    /// `process_due_payments` for a shared emergency-pause signal (`Address`).
+    ComplianceChecker,
 }
 
 // ─── Events ───────────────────────────────────────────────────────────────────
@@ -420,6 +457,53 @@ impl PaymentSchedulerContract {
             .set(&StorageKey::Initialized, &true);
 
         Ok(())
+    }
+
+    /// @notice Configures an optional `compliance_checker` contract that
+    ///         `process_due_payments` consults for a shared emergency-pause
+    ///         signal before evaluating any due jobs.
+    /// @dev Owner-only. When unset (the default), no compliance check is
+    ///      performed and `process_due_payments` behaves exactly as before
+    ///      this integration existed. Passing a new address updates (or
+    ///      clears, functionally, if paired with a no-op checker) the link;
+    ///      there is no `unset` — deploy a checker that always reports
+    ///      unpaused if the integration should be neutralized.
+    /// @param owner Contract owner. Must authenticate and match the stored owner.
+    /// @param compliance_checker Address of a deployed contract exposing a
+    ///        permissionless `is_emergency_paused() -> bool` view (see
+    ///        `compliance_checker::ComplianceCheckerContract::is_emergency_paused`).
+    /// @return Ok(()) on success.
+    /// @security Requires `owner.require_auth()` and an exact match against
+    ///           the stored owner, preventing any other address from
+    ///           redirecting the scheduler's pause signal to a malicious
+    ///           contract that always reports "not paused".
+    pub fn set_compliance_checker(
+        env: Env,
+        owner: Address,
+        compliance_checker: Address,
+    ) -> Result<(), SchedulerError> {
+        require_initialized(&env)?;
+        let stored_owner: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Owner)
+            .ok_or(SchedulerError::NotInitialized)?;
+        owner.require_auth();
+        if owner != stored_owner {
+            return Err(SchedulerError::Unauthorized);
+        }
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ComplianceChecker, &compliance_checker);
+        Ok(())
+    }
+
+    /// @notice Returns the configured `compliance_checker` address, if any.
+    /// @return `Some(Address)` when configured, `None` otherwise.
+    pub fn get_compliance_checker(env: Env) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ComplianceChecker)
     }
 
     // ── Schedule Management ───────────────────────────────────────────────────
@@ -654,6 +738,28 @@ impl PaymentSchedulerContract {
     pub fn process_due_payments(env: Env, max_jobs: u32) -> u32 {
         if require_initialized(&env).is_err() {
             return 0;
+        }
+
+        // Shared emergency-pause gate: if a `compliance_checker` is
+        // configured and currently reports an active emergency pause, halt
+        // this call before evaluating any job. No state is read or written
+        // for any job, no transfer is attempted, and no `next_scheduled_time`
+        // is advanced — every due job remains exactly as it was, so a
+        // subsequent call (after the pause is lifted) resumes processing
+        // from the same point. Because a real keeper drives this batch
+        // through a sequence of calls (see module docs), this check is
+        // sufficient to halt "mid-batch": jobs already settled by prior
+        // calls stay settled, and jobs not yet reached remain untouched
+        // until an unpaused call processes them.
+        if let Some(compliance_checker) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&StorageKey::ComplianceChecker)
+        {
+            let compliance_client = ComplianceCheckerClient::new(&env, &compliance_checker);
+            if compliance_client.is_emergency_paused() {
+                return 0;
+            }
         }
 
         let now = env.ledger().timestamp();
