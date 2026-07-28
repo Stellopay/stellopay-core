@@ -113,18 +113,25 @@ pub fn get_latest_logs(env: Env, limit: u32) -> Result<Vec<AuditLogEntry>, Audit
 ### Security Properties
 
 #### Append-Only Guarantee
-Logs cannot be modified after creation. There are no update or delete entrypoints. The `AuditLogEntry` struct is immutable once stored.
+Logs cannot be modified or deleted after creation. Every public entrypoint in `audit_logger` has been enumerated to confirm non-mutability of existing records:
 
-#### Append-Order Invariant (Core Guarantee)
-The audit logger maintains a **strict append-order invariant** that is fundamental to its correctness:
+| Entrypoint | Type | Record ID Parameter | Accepts Mutating Parameters for Existing Records |
+|---|---|---|---|
+| `initialize` | Write (1-time) | None | No |
+| `set_retention_limit` | Write (Owner) | None | No |
+| `get_retention_limit` | Read-only | None | No |
+| `append_log` | Write | Monotonic (Returned) | No |
+| `get_log_count` | Read-only | None | No |
+| `get_log` | Read-only | Input (`id: u64`) | No |
+| `get_logs` | Read-only | Offset/Limit | No |
+| `get_latest_logs` | Read-only | Limit | No |
 
-- **Sequential IDs**: Log entries are assigned strictly increasing sequential IDs starting from 1
-- **No Gaps**: Within the retained window (`[FirstLogId, NextLogId)`), IDs have no gaps
-- **Read Consistency**: All read operations (`get_log`, `get_logs`, `get_latest_logs`) return entries in append order
-- **Interleaved Read Consistency**: When read operations are interleaved with `append_log`, each read reflects exactly the entries appended so far, in order, with no skipped or duplicated entries
-- **No Duplicates**: Each entry appears at most once in any single read result
+None of the contract's public entrypoints accept a record index/ID alongside mutating parameters (such as `update_log(id, ...)` or `delete_log(id)`). The `AuditLogEntry` struct is stored directly under `StorageKey::LogEntry(id)` and cannot be mutated by any external call.
 
-This invariant is tested by:
+> **Compliance Guarantee**: This append-only non-mutability invariant is explicitly relied upon by `compliance_reporting` (as well as `expense_reimbursement` and `salary_adjustment`). `compliance_reporting` relies on this guarantee to ensure that audit history, global sequence ordering, and recorded financial event logs cannot be retroactively tampered with, altered, or forged after commitment.
+
+This invariant is regression-tested by:
+- `test_audit_logger_append_only_invariant_regression_guard`: Appends a record, attempts all plausible mutation paths (interleaved appends, retention expansions/reductions/unlimited, query entrypoints, window filling), and asserts that original record content is unchanged when re-read.
 - `test_interleaved_append_and_get_latest_logs_maintains_order`: Verifies that `get_latest_logs` returns entries in strictly increasing order with no gaps when called interleaved with `append_log`
 - `test_interleaved_append_and_read_consistency`: Verifies that `get_log` and `get_latest_logs` return consistent results with no skipped or duplicated entries across interleaved operations
 
