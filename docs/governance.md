@@ -22,7 +22,8 @@ Stellopay. It is designed to work with three existing contracts:
 4. If quorum is met and `for_votes > against_votes`, governance queues an
    `AdminChange` operation in `withdrawal_timelock`.
 5. After the timelock `eta` is reached, a configured multisig signer calls
-   `execute_proposal`.
+   `execute_proposal` within the 14-day execution window (`PROPOSAL_EXECUTION_WINDOW_SECONDS`).
+6. If the execution window lapses, the proposal status becomes `Expired` and it can no longer be executed.
 6. Governance executes the timelock operation and then applies the proposal’s
    state change.
 
@@ -72,7 +73,7 @@ Backward-compatible aliases are also present for earlier local names:
   - Values outside this range (including zero) are rejected with
     `GovernanceError::VotingPeriodOutOfBounds`.
 - The timelock delay is owned by the linked `withdrawal_timelock` contract.
-- The governance contract does not store a separate execution delay.
+- The governance contract has a bounded 14-day execution window (`PROPOSAL_EXECUTION_WINDOW_SECONDS`) after the timelock matures, during which a proposal must be executed. Proposals executed outside this window are rejected and marked as `Expired`.
 
 ### RBAC Integration
 
