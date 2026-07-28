@@ -1,16 +1,17 @@
 use soroban_sdk::token::TokenClient;
 use soroban_sdk::{Address, Env, String, Vec};
 
-use crate::audit::{record_entry, AuditEvent};use crate::events::{
+use crate::audit::{record_entry, AuditEvent};
+use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
     emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
-    emit_grace_period_finalized, emit_milestone_funded, emit_milestone_rejected,
-    emit_milestone_expired, emit_multisig_config_changed, emit_payment_received, emit_payment_sent,
-    emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent,
-    AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent,
-    BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent,
-    EmployeeAddedEvent, ExchangeRateChangedEvent, GracePeriodExtendedEvent,
+    emit_grace_period_finalized, emit_milestone_expired, emit_milestone_funded,
+    emit_milestone_rejected, emit_multisig_config_changed, emit_payment_received,
+    emit_payment_sent, emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent,
+    AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent,
+    ArbiterSetEvent, BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent,
+    DisputeResolvedEvent, EmployeeAddedEvent, ExchangeRateChangedEvent, GracePeriodExtendedEvent,
     GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved, MilestoneClaimed,
     MilestoneExpiredEvent, MilestoneFundedEvent, MilestoneRejectedEvent,
     MultisigConfigChangedEvent, PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
@@ -24,7 +25,35 @@ use crate::storage::{
 };
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contractclient, contracttype, panic_with_error, token, IntoVal, Symbol, Val,
+    contractclient, contracttype, panic_with_error, token,
+    token::TokenClient,
+    Address, Env, IntoVal, String, Symbol, Val, Vec,
+};
+
+use crate::{
+    audit::{record_entry, AuditEvent},
+    events::{
+        emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
+        emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
+        emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
+        emit_grace_period_finalized, emit_milestone_expired, emit_milestone_funded,
+        emit_milestone_rejected, emit_multisig_config_changed, emit_payment_received,
+        emit_payment_sent, emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent,
+        AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent,
+        AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
+        BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
+        ExchangeRateChangedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent,
+        MilestoneAdded, MilestoneApproved, MilestoneClaimed, MilestoneExpiredEvent,
+        MilestoneFundedEvent, MilestoneRejectedEvent, MultisigConfigChangedEvent,
+        PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
+    },
+    storage::{
+        Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
+        BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
+        EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
+        MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
+        PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE,
+    },
 };
 
 /// Minimal interface for cross-contract calls into the deployed multisig contract.
@@ -79,7 +108,8 @@ enum OperationKind {
 /// * `owner` - Contract owner (must authenticate)
 /// * `multisig_contract` - Address of the deployed multisig contract
 /// * `large_payment_threshold` - Minimum amount requiring multisig for LargePayment (0 = disabled)
-/// * `dispute_resolution_threshold` - Minimum total payout requiring multisig for DisputeResolution (0 = disabled)
+/// * `dispute_resolution_threshold` - Minimum total payout requiring multisig for DisputeResolution
+///   (0 = disabled)
 ///
 /// # Access Control
 /// Only the contract owner can call this.
@@ -296,8 +326,8 @@ pub fn create_milestone_agreement(
 /// # Arguments
 /// * `env`          - Contract environment.
 /// * `agreement_id` - ID of the milestone agreement to fund.
-/// * `from`         - Address to pull tokens from; must be the agreement's
-///                    employer and must pass `require_auth`.
+/// * `from`         - Address to pull tokens from; must be the agreement's employer and must pass
+///   `require_auth`.
 /// * `amount`       - Number of tokens to deposit; must be strictly positive.
 ///
 /// # Access Control
@@ -504,7 +534,8 @@ fn sum_all_milestones(env: &Env, agreement_id: u128) -> i128 {
 /// * `agreement_id` - Milestone agreement identifier whose unclaimed milestones are inspected.
 ///
 /// # Returns
-/// Sum of milestone amounts that have not been claimed, treating missing boolean or amount entries as false/zero.
+/// Sum of milestone amounts that have not been claimed, treating missing boolean or amount entries
+/// as false/zero.
 ///
 /// # Cost
 /// O(n) in the stored milestone count for `agreement_id`, with one approval lookup,
@@ -547,10 +578,12 @@ fn sum_unclaimed_milestones(env: &Env, agreement_id: u128) -> i128 {
 ///
 /// # Errors
 /// * `PayrollError::AgreementNotFound` — the milestone agreement does not exist.
-/// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Created` or `Active` status.
+/// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Created` or
+///   `Active` status.
 /// * `PayrollError::MilestoneNotFound` — `milestone_id` is out of range for the agreement.
 /// * `PayrollError::MilestoneAlreadyApproved` — the milestone was already approved.
-/// * `PayrollError::InsufficientEscrowBalance` — funded escrow cannot cover all unclaimed milestones.
+/// * `PayrollError::InsufficientEscrowBalance` — funded escrow cannot cover all unclaimed
+///   milestones.
 pub fn approve_milestone(
     env: Env,
     agreement_id: u128,
@@ -639,12 +672,13 @@ pub fn approve_milestone(
 /// * `env`          - Contract environment.
 /// * `agreement_id` - ID of the milestone agreement.
 /// * `milestone_id` - 1-based ID of the milestone to reject.
-/// * `reason`       - Optional human-readable rationale. Pass an empty string
-///                    when no reason is required.
+/// * `reason`       - Optional human-readable rationale. Pass an empty string when no reason is
+///   required.
 ///
 /// # Errors
 /// * `PayrollError::AgreementNotFound`                — agreement or employer record missing.
 /// * `PayrollError::MilestoneAgreementInvalidStatus`  — agreement is not `Created` or `Active`.
+/// * `PayrollError::MilestoneRejectionReasonEmpty`    — `reason` is empty or whitespace-only.
 /// * `PayrollError::MilestoneNotFound`                — `milestone_id` is out of range.
 /// * `PayrollError::MilestoneAlreadyRejected`         — milestone was already rejected.
 /// * `PayrollError::MilestoneAlreadyApprovedCannotReject` — milestone is already approved.
@@ -674,6 +708,26 @@ pub fn reject_milestone(
         .ok_or(PayrollError::AgreementNotFound)?;
     if status != AgreementStatus::Created && status != AgreementStatus::Active {
         return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
+
+    // Reason must be non-empty and contain at least one non-whitespace character
+    // so that off-chain indexers and dispute reviewers can reconstruct the audit trail.
+    if reason.is_empty() {
+        return Err(PayrollError::MilestoneRejectionReasonEmpty);
+    }
+    {
+        let bytes = reason.to_bytes();
+        let mut all_whitespace = true;
+        for i in 0..bytes.len() {
+            let b = bytes.get(i).unwrap();
+            if !(b == b' ' || b == b'\t' || b == b'\n' || b == b'\r') {
+                all_whitespace = false;
+                break;
+            }
+        }
+        if all_whitespace {
+            return Err(PayrollError::MilestoneRejectionReasonEmpty);
+        }
     }
 
     // Milestone must exist.
@@ -772,7 +826,8 @@ pub fn reject_milestone(
 /// * `PayrollError::MilestoneAgreementInvalidStatus`    — agreement is not `Created` or `Active`.
 /// * `PayrollError::MilestoneNotFound`                  — `milestone_id` is out of range.
 /// * `PayrollError::MilestoneAlreadyExpired`            — milestone was already expired.
-/// * `PayrollError::MilestoneAlreadyApproved`           — milestone is already approved (contributor still has the right to claim it).
+/// * `PayrollError::MilestoneAlreadyApproved`           — milestone is already approved
+///   (contributor still has the right to claim it).
 /// * `PayrollError::MilestoneAlreadyClaimed`            — milestone is already claimed.
 /// * `PayrollError::MilestoneAlreadyRejected`           — milestone is already rejected.
 ///
@@ -909,7 +964,8 @@ pub fn expire_milestone(
 /// * `PayrollError::MilestoneNotFound` — `milestone_id` is out of range or its amount is missing.
 /// * `PayrollError::MilestoneNotApproved` — the milestone has not been approved.
 /// * `PayrollError::MilestoneAlreadyClaimed` — the milestone was already claimed.
-/// * `PayrollError::InsufficientEscrowBalance` — funded escrow cannot cover all unclaimed milestones.
+/// * `PayrollError::InsufficientEscrowBalance` — funded escrow cannot cover all unclaimed
+///   milestones.
 pub fn claim_milestone(
     env: Env,
     agreement_id: u128,
@@ -1039,17 +1095,16 @@ pub fn claim_milestone(
 /// # Arguments
 /// * `env`           - Contract environment
 /// * `agreement_id`  - ID of the milestone agreement
-/// * `milestone_ids` - 1-based milestone IDs to claim.
-///   Duplicates are detected in-memory and skipped.
-///   At most `MAX_BATCH_SIZE` IDs are accepted.
+/// * `milestone_ids` - 1-based milestone IDs to claim. Duplicates are detected in-memory and
+///   skipped. At most `MAX_BATCH_SIZE` IDs are accepted.
 ///
 /// # Returns
 /// `Ok(BatchMilestoneResult)` with per-milestone results.
 ///
 /// # Batch-level errors
 /// These stop the whole batch before any state mutation or transfer:
-/// * `PayrollError::AgreementNotFound` — no such agreement (contributor,
-///   status, or token record missing).
+/// * `PayrollError::AgreementNotFound` — no such agreement (contributor, status, or token record
+///   missing).
 /// * `PayrollError::InvalidData` — the milestone ID list is empty.
 /// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` IDs.
 /// * `PayrollError::AgreementPaused` — the agreement is paused.
@@ -1425,22 +1480,21 @@ fn create_payroll_agreement_internal(
 /// in an inconsistent state.
 ///
 /// # Validation rules (per item)
-/// * `grace_period_seconds` must be > 0 — a zero grace period is ambiguous
-///   and prevents any dispute or claim window from opening after cancellation.
+/// * `grace_period_seconds` must be > 0 — a zero grace period is ambiguous and prevents any dispute
+///   or claim window from opening after cancellation.
 ///
 /// # Arguments
 /// * `env` - Contract environment
 /// * `employer` - Address of the employer creating the agreements
-/// * `items` - Vector of payroll creation parameters.
-///   At most `MAX_BATCH_SIZE` items are accepted.
+/// * `items` - Vector of payroll creation parameters. At most `MAX_BATCH_SIZE` items are accepted.
 ///
 /// # Returns
 /// `Ok(BatchPayrollCreateResult)` — every item was valid and all agreements
 /// were created successfully.
 ///
 /// # Errors
-/// * `PayrollError::InvalidData` — `items` is empty **or** any item fails
-///   per-item validation.  No agreements are created in either case.
+/// * `PayrollError::InvalidData` — `items` is empty **or** any item fails per-item validation.  No
+///   agreements are created in either case.
 /// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` items.
 ///
 /// # Gas rationale
@@ -1636,16 +1690,15 @@ fn create_escrow_agreement_internal(
 /// # Arguments
 /// * `env` - Contract environment
 /// * `employer` - Address of the employer
-/// * `items` - Vector of escrow creation parameters.
-///   At most `MAX_BATCH_SIZE` items are accepted.
+/// * `items` - Vector of escrow creation parameters. At most `MAX_BATCH_SIZE` items are accepted.
 ///
 /// # Returns
 /// `Ok(BatchEscrowCreateResult)` — every item was valid and all agreements
 /// were created successfully.
 ///
 /// # Errors
-/// * First per-item `PayrollError` — `items` is empty **or** any item fails
-///   per-item validation.  No agreements are created in either case.
+/// * First per-item `PayrollError` — `items` is empty **or** any item fails per-item validation. No
+///   agreements are created in either case.
 /// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` items.
 ///
 /// # Gas rationale
@@ -1914,7 +1967,8 @@ fn effective_cancelled_grace_duration_seconds(
     base_grace_seconds.saturating_add(grace_period_extension_seconds(env, agreement_id))
 }
 
-/// Returns the owner-configured extension caps (defaults apply until `set_grace_extension_policy` runs).
+/// Returns the owner-configured extension caps (defaults apply until `set_grace_extension_policy`
+/// runs).
 pub fn get_grace_extension_policy(env: &Env) -> GracePeriodExtensionPolicy {
     env.storage()
         .persistent()
@@ -1931,10 +1985,9 @@ pub fn get_grace_extension_policy(env: &Env) -> GracePeriodExtensionPolicy {
 /// Both policy fields must be strictly positive. A zero value is treated as an
 /// invalid configuration (not "disabled"), because a zero cap silently disables
 /// all grace extensions and removes a safety mechanism with no error:
-/// - `max_cumulative_extension_bps == 0` would make every extension exceed the
-///   (zero) cumulative cap, so no extension could ever be applied.
-/// - `max_extension_per_call_seconds == 0` would reject every single-call
-///   extension.
+/// - `max_cumulative_extension_bps == 0` would make every extension exceed the (zero) cumulative
+///   cap, so no extension could ever be applied.
+/// - `max_extension_per_call_seconds == 0` would reject every single-call extension.
 ///
 /// To intentionally stop allowing extensions, set the caps to a small, explicit
 /// non-zero value rather than zero, so the configuration choice is auditable and
@@ -1977,7 +2030,8 @@ pub fn get_grace_extension_seconds(env: &Env, agreement_id: u128) -> u64 {
     grace_period_extension_seconds(env, agreement_id)
 }
 
-/// Extends the effective cancellation grace (claims, dispute window while cancelled) by `additional_seconds`.
+/// Extends the effective cancellation grace (claims, dispute window while cancelled) by
+/// `additional_seconds`.
 ///
 /// Authorization: contract owner or agreement employer. Emits [`GracePeriodExtendedEvent`].
 pub fn extend_grace_period(
@@ -2124,7 +2178,8 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
 /// # Arguments
 /// * `env` - Contract environment
 /// * `agreement_id` - Agreement ID in `DisputeStatus::Raised`
-/// * `pay_employee` - Total amount to distribute equally across employees (payroll) or to contributor (escrow)
+/// * `pay_employee` - Total amount to distribute equally across employees (payroll) or to
+///   contributor (escrow)
 /// * `refund_employer` - Amount to refund the employer
 ///
 /// # Conservation of funds
@@ -3037,12 +3092,11 @@ fn claim_payroll_in_token_inner(
 ///
 /// # Arguments
 /// * `env` - Contract environment
-/// * `caller` - Must equal the employee address at each supplied
-///   index (each claim still enforces `caller == employee`)
+/// * `caller` - Must equal the employee address at each supplied index (each claim still enforces
+///   `caller == employee`)
 /// * `agreement_id` - ID of the payroll agreement
-/// * `employee_indices` - 0-based employee indices to claim for.
-///   Duplicates are detected in-memory and skipped.
-///   At most `MAX_BATCH_SIZE` indices are accepted.
+/// * `employee_indices` - 0-based employee indices to claim for. Duplicates are detected in-memory
+///   and skipped. At most `MAX_BATCH_SIZE` indices are accepted.
 ///
 /// # Returns
 /// `Ok(BatchPayrollResult)` — always succeeds at the batch level; inspect
@@ -3770,8 +3824,10 @@ pub fn resume_agreement(env: &Env, agreement_id: u128) {
 /// Pauses a milestone-based agreement, preventing claims
 ///
 /// # Arguments
-/// * `env` - Contract environment used to authenticate the employer and update the stored agreement status.
-/// * `agreement_id` - ID of the milestone agreement to pause; must resolve to existing employer and status records.
+/// * `env` - Contract environment used to authenticate the employer and update the stored agreement
+///   status.
+/// * `agreement_id` - ID of the milestone agreement to pause; must resolve to existing employer and
+///   status records.
 ///
 /// # Returns
 /// No value. Emits `AgreementPausedEvent` after writing the paused status.
@@ -3792,7 +3848,8 @@ pub fn resume_agreement(env: &Env, agreement_id: u128) {
 ///
 /// # Errors
 /// * `PayrollError::AgreementNotFound` — the milestone agreement does not exist.
-/// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Active` or `Created` status.
+/// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Active` or
+///   `Created` status.
 pub fn pause_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
     let employer: Address = env
         .storage()
@@ -3825,8 +3882,10 @@ pub fn pause_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), Pay
 /// Resumes a paused milestone-based agreement, allowing claims again
 ///
 /// # Arguments
-/// * `env` - Contract environment used to authenticate the employer and update the stored agreement status.
-/// * `agreement_id` - ID of the paused milestone agreement to resume; must resolve to existing employer and status records.
+/// * `env` - Contract environment used to authenticate the employer and update the stored agreement
+///   status.
+/// * `agreement_id` - ID of the paused milestone agreement to resume; must resolve to existing
+///   employer and status records.
 ///
 /// # Returns
 /// No value. Emits `AgreementResumedEvent` after writing the active status.

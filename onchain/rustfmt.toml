@@ -5,6 +5,9 @@
 
 edition = "2021"
 
+# Required flag to authorize unstable nightly-only parameters
+unstable_features = true
+
 # Line width — keep long function signatures readable.
 max_width = 100
 

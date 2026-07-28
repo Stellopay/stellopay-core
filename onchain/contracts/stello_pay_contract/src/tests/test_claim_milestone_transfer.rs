@@ -15,7 +15,13 @@ use soroban_sdk::{
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-fn setup() -> (Env, Address, Address, Address, PayrollContractClient<'static>) {
+fn setup() -> (
+    Env,
+    Address,
+    Address,
+    Address,
+    PayrollContractClient<'static>,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -30,7 +36,9 @@ fn setup() -> (Env, Address, Address, Address, PayrollContractClient<'static>) {
 
     // Deploy a real Stellar Asset Contract so token balances work.
     let token_admin = Address::generate(&env);
-    let token = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
 
     // Fund employer with 10_000 tokens.
     StellarAssetClient::new(&env, &token).mint(&employer, &10_000i128);
@@ -61,7 +69,11 @@ fn test_claim_milestone_transfers_to_contributor() {
     client.claim_milestone(&agreement_id, &1u32).unwrap();
     let after = balance(&env, &token, &contributor);
 
-    assert_eq!(after - before, 400i128, "contributor should receive 400 tokens");
+    assert_eq!(
+        after - before,
+        400i128,
+        "contributor should receive 400 tokens"
+    );
 }
 
 #[test]
@@ -78,7 +90,11 @@ fn test_claim_milestone_reduces_contract_escrow() {
     client.claim_milestone(&agreement_id, &1u32).unwrap();
     let after = balance(&env, &token, &contract_id);
 
-    assert_eq!(before - after, 200i128, "contract escrow should decrease by milestone amount");
+    assert_eq!(
+        before - after,
+        200i128,
+        "contract escrow should decrease by milestone amount"
+    );
 }
 
 // ── batch_claim_milestones transfers for each milestone ───────────────────────
@@ -103,7 +119,11 @@ fn test_batch_claim_milestones_transfers_all() {
     client.batch_claim_milestones(&agreement_id, &ids);
     let after = balance(&env, &token, &contributor);
 
-    assert_eq!(after - before, 1_500i128, "batch should transfer 300+500+700=1500 tokens");
+    assert_eq!(
+        after - before,
+        1_500i128,
+        "batch should transfer 300+500+700=1500 tokens"
+    );
 }
 
 #[test]
@@ -125,5 +145,9 @@ fn test_batch_claim_partial_success_transfers_approved_only() {
     let after = balance(&env, &token, &contributor);
 
     // Only milestone 1 (400) should have been transferred.
-    assert_eq!(after - before, 400i128, "only approved milestone should be transferred");
+    assert_eq!(
+        after - before,
+        400i128,
+        "only approved milestone should be transferred"
+    );
 }

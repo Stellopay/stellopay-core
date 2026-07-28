@@ -36,6 +36,12 @@ or higher-level treasury/escrow contracts.
   this recorded intent.
 - **Queue monitoring** – The contract maintains a `QueuedCount` counter (O(1)
   read) for off-chain monitors to check queue depth without iterating all ops.
+- **Terminal state of cancellation** – Once an operation is cancelled, its status
+  is permanently set to `Cancelled`. It is removed from active consideration
+  (e.g., no longer returned in `Queued` operation queries) and any subsequent
+  attempt to `execute` it will be firmly rejected, even if the operation's
+  original `eta` has already passed. This ensures that stale or revoked queued
+  data cannot be accidentally or maliciously executed later.
 
 ### Data Model
 

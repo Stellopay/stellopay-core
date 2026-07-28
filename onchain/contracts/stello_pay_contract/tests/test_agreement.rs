@@ -7,8 +7,10 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{testutils::Address as _, Address, Env};
-use stello_pay_contract::storage::{AgreementMode, AgreementStatus};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{AgreementMode, AgreementStatus},
+    PayrollContract, PayrollContractClient,
+};
 
 // ============================================================================
 // HELPERS

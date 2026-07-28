@@ -13,4 +13,5 @@ soroban-sdk = { workspace = true, features = ["alloc"] }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
+payment_retry = { path = "../payment_retry" }
 

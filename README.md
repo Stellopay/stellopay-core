@@ -124,7 +124,18 @@ See [Building on Windows](docs/windows-build.md) for the full Windows guidance.
 
 ## CI
 
-The on-chain workspace uses GitHub Actions to build and test Soroban contracts on pull requests and pushes to the main branches. See [`onchain/README.md`](onchain/README.md) for the CI overview and local setup notes.
+The on-chain workspace uses GitHub Actions ([`.github/workflows/contracts.yml`](.github/workflows/contracts.yml)) to format-check, build, and test all Soroban contracts on every push and pull request targeting `main`.
+
+Run the same checks locally before opening a PR:
+
+```sh
+cd onchain
+cargo fmt --all -- --check   # formatting
+cargo build --workspace      # build
+cargo test --workspace       # tests
+```
+
+See [`docs/ci.md`](docs/ci.md) for the full local-run guide, prerequisite setup, and details on what CI does and does not check.
 
 ## Contributing and security
 
