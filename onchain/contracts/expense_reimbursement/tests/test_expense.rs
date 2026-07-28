@@ -1084,7 +1084,13 @@ fn cap_setup(env: &Env) -> (Address, Address, Address, Address, token::Client) {
 
     client.initialize(&owner);
     client.add_approver(&owner, &approver);
-    (owner, submitter, approver, token_client.address, token_client)
+    (
+        owner,
+        submitter,
+        approver,
+        token_client.address,
+        token_client,
+    )
 }
 
 #[test]
