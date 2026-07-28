@@ -11,7 +11,7 @@ The Expense Reimbursement Contract provides a secure, auditable system for manag
 - **Approval Workflow**: Designated approvers review and approve/reject expenses. Includes support for partial approvals.
 - **Receipt Verification**: Domain-separated SHA-256 receipt hashing with replay protection across all requests.
 - **Role-Based Access**: Owner manages approvers, approvers handle approvals. Self-approval is explicitly disabled.
-- **Status Tracking**: Complete lifecycle management (Pending → Approved/Rejected/Cancelled → Paid).
+- **Status Tracking**: Complete lifecycle management (Pending → Approved/Rejected/Cancelled → Paid). `Paid` is a **terminal** state: once set, `pay_expense` cannot be called again for the same expense id, enforcing a double-payment guard via checks-effects-interactions.
 - **Refund Guarantees**: Escrowed funds dynamically return to the originator on rejection, cancellation, or partial approval surpluses.
 - **Event Emission**: All state changes emit events for transparency.
 
@@ -40,7 +40,7 @@ The Expense Reimbursement Contract provides a secure, auditable system for manag
 4. **Approver reviews** and validates `SHA256(retrieved_document) == stored_hash`.
 5. **Approver triggers approval** using `approve_expense`. (Can approve partially). Status enters `Approved`.
 6. **Optional audit linkage**: if `audit_logger` is configured, approval writes `append_log(actor=approver, action="expense_approved", subject=submitter, amount=approved_amount)` and stores returned `audit_log_id`.
-7. **Payment released** via `pay_expense`. Employee gets their portion, Employer is refunded any unapproved surplus automatically. Status enters `Paid`.
+7. **Payment released** via `pay_expense`. Employee gets their portion, Employer is refunded any unapproved surplus automatically. Status enters `Paid` — this is a **terminal state**: the expense status transitions to `Paid` and `escrow_amount` is zeroed **before** any token transfer occurs (checks-effects-interactions). Any subsequent `pay_expense` call for the same expense id is rejected, guaranteeing the expense cannot be paid more than once.
 
 ## Receipt Hashing Scheme
 
@@ -64,6 +64,16 @@ This prevents reimbursing the same receipt payload twice, even when submitted by
 - `MAX_RECEIPT_PAYLOAD_BYTES = 4096`
 - Oversized payloads are rejected to cap hashing cost and avoid unbounded compute usage.
 - Very short payloads are valid but can increase accidental replay collisions; use canonical, sufficiently specific receipt content.
+
+## Double-Payment Guard
+
+`pay_expense` implements a strict checks-effects-interactions pattern to prevent the same approved expense from being paid twice:
+
+1. **Check**: Verifies the expense is in `Approved` status.
+2. **Effect**: Atomically sets `status = Paid` and `escrow_amount = 0` in storage **before** any token transfer.
+3. **Interaction**: Only then performs token transfers (payout to submitter, surplus refund to payer).
+
+Once `Paid`, the status check in step 1 rejects any subsequent call. This guard holds for both full and partial approval scenarios.
 
 ## Gas Optimization and Edge Cases
 

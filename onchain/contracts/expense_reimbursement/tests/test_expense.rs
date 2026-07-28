@@ -714,8 +714,121 @@ fn test_pay_expense_cannot_be_paid_twice() {
     client.approve_expense(&approver, &expense_id, &500);
     client.pay_expense(&expense_id);
 
+    let expense = client.get_expense(&expense_id).unwrap();
+    assert_eq!(expense.status, ExpenseStatus::Paid);
+
     let second = client.try_pay_expense(&expense_id);
     assert!(second.is_err());
+
+    assert_eq!(token_client.balance(&submitter), 500);
+    assert_eq!(token_client.balance(&payer), 500);
+    assert_eq!(token_client.balance(&client.address), 0);
+
+    let expense_after = client.get_expense(&expense_id).unwrap();
+    assert_eq!(expense_after.status, ExpenseStatus::Paid);
+    assert_eq!(expense_after.escrow_amount, 0);
+}
+
+#[test]
+fn test_pay_expense_state_atomic_before_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
+
+    client.initialize(&owner);
+    client.add_approver(&owner, &approver);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_client.address,
+        &500,
+        &String::from_str(&env, "receipt_hash"),
+        &String::from_str(&env, "Travel"),
+    );
+
+    client.fund_expense(&payer, &expense_id, &500);
+    client.approve_expense(&approver, &expense_id, &500);
+
+    assert_eq!(token_client.balance(&submitter), 0);
+    assert_eq!(token_client.balance(&client.address), 500);
+    assert_eq!(token_client.balance(&payer), 500);
+
+    client.pay_expense(&expense_id);
+
+    let expense = client.get_expense(&expense_id).unwrap();
+    assert_eq!(expense.status, ExpenseStatus::Paid);
+    assert_eq!(expense.escrow_amount, 0);
+
+    assert_eq!(token_client.balance(&submitter), 500);
+    assert_eq!(token_client.balance(&client.address), 0);
+    assert_eq!(token_client.balance(&payer), 500);
+
+    let expense_again = client.get_expense(&expense_id).unwrap();
+    assert_eq!(expense_again.status, ExpenseStatus::Paid);
+    assert_eq!(expense_again.escrow_amount, 0);
+
+    let second = client.try_pay_expense(&expense_id);
+    assert!(second.is_err());
+    assert_eq!(token_client.balance(&submitter), 500);
+    assert_eq!(token_client.balance(&client.address), 0);
+    assert_eq!(token_client.balance(&payer), 500);
+}
+
+#[test]
+fn test_pay_expense_double_payment_partial_refund_guard() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &1_000);
+
+    client.initialize(&owner);
+    client.add_approver(&owner, &approver);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_client.address,
+        &500,
+        &String::from_str(&env, "receipt_hash"),
+        &String::from_str(&env, "Travel"),
+    );
+
+    client.fund_expense(&payer, &expense_id, &500);
+    client.approve_expense(&approver, &expense_id, &300);
+
+    client.pay_expense(&expense_id);
+
+    let expense = client.get_expense(&expense_id).unwrap();
+    assert_eq!(expense.status, ExpenseStatus::Paid);
+
+    assert_eq!(token_client.balance(&submitter), 300);
+    assert_eq!(token_client.balance(&payer), 700);
+    assert_eq!(token_client.balance(&client.address), 0);
+
+    let second = client.try_pay_expense(&expense_id);
+    assert!(second.is_err());
+
+    assert_eq!(token_client.balance(&submitter), 300);
+    assert_eq!(token_client.balance(&payer), 700);
+    assert_eq!(token_client.balance(&client.address), 0);
 }
 
 #[test]
