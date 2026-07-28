@@ -124,6 +124,45 @@ Where:
 
 ---
 
+## Cancellation semantics (`cancel_ownership_transfer`)
+
+`cancel_ownership_transfer` is the owner's mechanism for aborting a pending two-step ownership handoff before the proposed address calls `accept_ownership`.
+
+### Invariants
+
+| Invariant | Detail |
+|-----------|--------|
+| **Storage removal** | The `PendingOwner` storage entry is unconditionally removed. After the call returns `Ok(())`, the entry is absent. |
+| **Permanent voidance** | The address that was named in the cancelled proposal has no residual claim on ownership. Any subsequent `accept_ownership` call from that address will return `NotAuthorized`. |
+| **Idempotent / no-op when empty** | If no proposal is pending, `cancel_ownership_transfer` returns `Ok(())` without error and without modifying the `Owner` entry. This makes defensive/automated cancellation safe. |
+| **Owner-only** | Only the current owner can cancel. An attacker or the pending-owner-candidate themselves cannot cancel their own handoff. |
+| **Re-proposal allowed** | After a cancel the owner may call `propose_ownership` again (to the same or a different address). The fresh proposal creates a brand-new `PendingOwner` entry. Only the newly-proposed address may then complete the transfer via `accept_ownership`. |
+| **Event emitted on cancel** | When a non-empty pending entry is cancelled, the contract emits `("oracle", "cancel")` with the voided pending-owner address. No event is emitted for a no-op cancel. |
+
+### Cancel flow diagram
+
+```
+Owner                 Contract
+  |                      |
+  |--- propose_ownership(A) -->|   PendingOwner = A
+  |                      |
+  |--- cancel_ownership_transfer() -->|   PendingOwner removed; event("cancel", A)
+  |                      |
+  | A: try_accept_ownership() --> NotAuthorized   (A cannot accept)
+  |                      |
+  |--- propose_ownership(B) -->|   PendingOwner = B  (re-proposal to B)
+  |                      |
+  | B: accept_ownership() --> OK    (B becomes new owner)
+```
+
+### Security considerations
+
+- A pending proposal that is left un-cancelled represents a live ownership claim held by the proposed address. Cancel immediately if the intention changes.
+- The idempotent behaviour (cancel when empty is a no-op) means governance scripts can call cancel defensively as a pre-condition before issuing a fresh proposal without needing to first inspect storage.
+- `cancel_ownership_transfer` does not require the pending address to cooperate or even be aware of the cancellation.
+
+---
+
 ## Validation pipeline (push_price)
 
 Each `push_price` call passes through these checks in order:
@@ -252,7 +291,7 @@ This model keeps the implementation small and storage bounded while still reduci
 | `("oracle", "owner")`     | `new_owner`             | `accept_ownership`   |
 | `("oracle", "cancel")`    | `pending_owner`         | `cancel_ownership_transfer` |
 
-## Test coverage (57 tests)
+## Test coverage (61 tests)
 
 - **Initialization** (2): owner set, double-init blocked
 - **Source management** (4): add/remove, non-owner blocked, removed source can't push
@@ -261,7 +300,7 @@ This model keeps the implementation small and storage bounded while still reduci
 - **Push price happy path** (4): full integration, min boundary, max boundary, max staleness boundary
 - **Push price forbidden** (8): unregistered source, zero rate, negative rate, below min, above max, future timestamp, stale timestamp, unconfigured pair
 - **Monotonic/multi-source** (3): older ignored, equal ignored, latest-wins with backup source
-- **Ownership transfer (two-step)** (8): propose/accept success, old owner loses access, unauthorized accept rejection, accept without propose fails, cancel transfer, non-owner propose/cancel blocked, uninitialized guards.
+- **Ownership transfer (two-step)** (12): propose/accept success, old owner loses access, unauthorized accept rejection, accept without propose fails, cancel transfer, non-owner propose/cancel blocked; **cancel voidance** — cancel then re-propose/accept succeeds, cancel without pending is no-op, cancelled address has no residual claim on ownership
 - **Uninitialized guards** (5): all admin/source functions revert before init
 - **Security scenarios** (4): compromised source blast radius, pair isolation, reconfigure tightens bounds, pair direction matters
 - **Quorum-specific edge cases** (15): quorum success, dissent without quorum, duplicate-vote rejection, tolerance-boundary acceptance, max-supporting-timestamp selection, older-bucket no-op after rollover, removed-source pending vote invalidation, FX forward failure handling, and invalid zero-quorum configuration
