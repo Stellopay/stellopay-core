@@ -355,168 +355,168 @@ fn test_allow_path_traces_have_none_reasons() {
         assert_eq!(decision.traces.get(i).unwrap().reason, ReasonCode::Allowed);
     }
 
-#[test]
-fn test_uninitialized_auxiliary_fails_closed() {
-    let env = create_env();
-    let (_cid, client, _admin) = setup(&env);
-    let actor = Address::generate(&env);
-    let unknown_auxiliary = Address::generate(&env);
+    #[test]
+    fn test_uninitialized_auxiliary_fails_closed() {
+        let env = create_env();
+        let (_cid, client, _admin) = setup(&env);
+        let actor = Address::generate(&env);
+        let unknown_auxiliary = Address::generate(&env);
 
-    // Test: check_action for an auxiliary that was NEVER initialized
-    // via set_auxiliary_allowed should fail closed (deny)
-    let decision = client.check_action(
-        &actor,
-        &unknown_auxiliary,
-        &PayrollAction::ActivateAgreement,
-        &AgreementStatus::Created,
-        &AgreementStatus::Active,
-        &false,
-    );
+        // Test: check_action for an auxiliary that was NEVER initialized
+        // via set_auxiliary_allowed should fail closed (deny)
+        let decision = client.check_action(
+            &actor,
+            &unknown_auxiliary,
+            &PayrollAction::ActivateAgreement,
+            &AgreementStatus::Created,
+            &AgreementStatus::Active,
+            &false,
+        );
 
-    // Assert it fails closed with auxiliary not allowed
-    assert_eq!(decision.decision, Decision::Deny);
-    assert_eq!(decision.reason, ReasonCode::AuxiliaryNotAllowed);
+        // Assert it fails closed with auxiliary not allowed
+        assert_eq!(decision.decision, Decision::Deny);
+        assert_eq!(decision.reason, ReasonCode::AuxiliaryNotAllowed);
 
-    // Verify the trace shows the auxiliary check was the denial reason
-    let trace = decision.traces.get(1).unwrap();
-    assert_eq!(trace.rule, TraceRule::AuxiliaryNotAllowed);
-    assert_eq!(trace.result, Decision::Deny);
-    assert_eq!(trace.reason, ReasonCode::AuxiliaryNotAllowed);
+        // Verify the trace shows the auxiliary check was the denial reason
+        let trace = decision.traces.get(1).unwrap();
+        assert_eq!(trace.rule, TraceRule::AuxiliaryNotAllowed);
+        assert_eq!(trace.result, Decision::Deny);
+        assert_eq!(trace.reason, ReasonCode::AuxiliaryNotAllowed);
 
-    // Now explicitly configure the auxiliary
-    client.set_auxiliary_allowed(&_admin, &unknown_auxiliary, &true);
+        // Now explicitly configure the auxiliary
+        client.set_auxiliary_allowed(&_admin, &unknown_auxiliary, &true);
 
-    // Test: same action should now pass with explicit configuration
-    let allowed_decision = client.check_action(
-        &actor,
-        &unknown_auxiliary,
-        &PayrollAction::ActivateAgreement,
-        &AgreementStatus::Created,
-        &AgreementStatus::Active,
-        &false,
-    );
+        // Test: same action should now pass with explicit configuration
+        let allowed_decision = client.check_action(
+            &actor,
+            &unknown_auxiliary,
+            &PayrollAction::ActivateAgreement,
+            &AgreementStatus::Created,
+            &AgreementStatus::Active,
+            &false,
+        );
 
-    // Assert it now allows the action
-    assert_eq!(allowed_decision.decision, Decision::Allow);
-    assert_eq!(allowed_decision.reason, ReasonCode::Allowed);
-}
+        // Assert it now allows the action
+        assert_eq!(allowed_decision.decision, Decision::Allow);
+        assert_eq!(allowed_decision.reason, ReasonCode::Allowed);
+    }
 
-#[test]
-fn test_multiple_uninitialized_auxiliaries_fail_closed() {
-    let env = create_env();
-    let (_cid, client, _admin) = setup(&env);
-    let actor = Address::generate(&env);
+    #[test]
+    fn test_multiple_uninitialized_auxiliaries_fail_closed() {
+        let env = create_env();
+        let (_cid, client, _admin) = setup(&env);
+        let actor = Address::generate(&env);
 
-    // Generate multiple uninitialized auxiliaries
-    let aux1 = Address::generate(&env);
-    let aux2 = Address::generate(&env);
-    let aux3 = Address::generate(&env);
+        // Generate multiple uninitialized auxiliaries
+        let aux1 = Address::generate(&env);
+        let aux2 = Address::generate(&env);
+        let aux3 = Address::generate(&env);
 
-    let actions = [
-        PayrollAction::ActivateAgreement,
-        PayrollAction::PauseAgreement,
-        PayrollAction::ClaimPayroll,
-    ];
+        let actions = [
+            PayrollAction::ActivateAgreement,
+            PayrollAction::PauseAgreement,
+            PayrollAction::ClaimPayroll,
+        ];
 
-    // Test: all uninitialized auxiliaries should fail closed for all actions
-    for aux in [aux1.clone(), aux2.clone(), aux3.clone()] {
+        // Test: all uninitialized auxiliaries should fail closed for all actions
+        for aux in [aux1.clone(), aux2.clone(), aux3.clone()] {
+            for action in actions {
+                let decision = client.check_action(
+                    &actor,
+                    &aux,
+                    &action,
+                    &AgreementStatus::Created,
+                    &AgreementStatus::Active,
+                    &false,
+                );
+
+                // Should always deny for uninitialized auxiliaries
+                assert_eq!(decision.decision, Decision::Deny);
+                assert_eq!(decision.reason, ReasonCode::AuxiliaryNotAllowed);
+
+                // Verify it's the auxiliary check that denied, not another rule
+                let trace = decision.traces.get(1).unwrap();
+                assert_eq!(trace.rule, TraceRule::AuxiliaryNotAllowed);
+                assert_eq!(trace.result, Decision::Deny);
+            }
+        }
+
+        // Explicitly configure aux1 only
+        client.set_auxiliary_allowed(&_admin, &aux1, &true);
+
+        // aux1 should now pass, aux2 and aux3 should still fail
         for action in actions {
-            let decision = client.check_action(
+            // aux1 should pass
+            let decision_aux1 = client.check_action(
                 &actor,
-                &aux,
+                &aux1,
                 &action,
                 &AgreementStatus::Created,
                 &AgreementStatus::Active,
                 &false,
             );
+            assert_eq!(decision_aux1.decision, Decision::Allow);
+            assert_eq!(decision_aux1.reason, ReasonCode::Allowed);
 
-            // Should always deny for uninitialized auxiliaries
-            assert_eq!(decision.decision, Decision::Deny);
-            assert_eq!(decision.reason, ReasonCode::AuxiliaryNotAllowed);
+            // aux2 should still fail (never initialized)
+            let decision_aux2 = client.check_action(
+                &actor,
+                &aux2,
+                &action,
+                &AgreementStatus::Created,
+                &AgreementStatus::Active,
+                &false,
+            );
+            assert_eq!(decision_aux2.decision, Decision::Deny);
+            assert_eq!(decision_aux2.reason, ReasonCode::AuxiliaryNotAllowed);
 
-            // Verify it's the auxiliary check that denied, not another rule
-            let trace = decision.traces.get(1).unwrap();
-            assert_eq!(trace.rule, TraceRule::AuxiliaryNotAllowed);
-            assert_eq!(trace.result, Decision::Deny);
+            // aux3 should still fail (never initialized)
+            let decision_aux3 = client.check_action(
+                &actor,
+                &aux3,
+                &action,
+                &AgreementStatus::Created,
+                &AgreementStatus::Active,
+                &false,
+            );
+            assert_eq!(decision_aux3.decision, Decision::Deny);
+            assert_eq!(decision_aux3.reason, ReasonCode::AuxiliaryNotAllowed);
         }
     }
 
-    // Explicitly configure aux1 only
-    client.set_auxiliary_allowed(&_admin, &aux1, &true);
+    #[test]
+    fn test_auxiliary_allowlist_removal_restores_fail_closed() {
+        let env = create_env();
+        let (_cid, client, admin) = setup(&env);
+        let actor = Address::generate(&env);
+        let auxiliary = Address::generate(&env);
 
-    // aux1 should now pass, aux2 and aux3 should still fail
-    for action in actions {
-        // aux1 should pass
-        let decision_aux1 = client.check_action(
+        // Explicitly configure and verify it works
+        client.set_auxiliary_allowed(&admin, &auxiliary, &true);
+
+        let decision = client.check_action(
             &actor,
-            &aux1,
-            &action,
+            &auxiliary,
+            &PayrollAction::ActivateAgreement,
             &AgreementStatus::Created,
             &AgreementStatus::Active,
             &false,
         );
-        assert_eq!(decision_aux1.decision, Decision::Allow);
-        assert_eq!(decision_aux1.reason, ReasonCode::Allowed);
+        assert_eq!(decision.decision, Decision::Allow);
 
-        // aux2 should still fail (never initialized)
-        let decision_aux2 = client.check_action(
+        // Remove from allowlist (de-initialize)
+        client.set_auxiliary_allowed(&admin, &auxiliary, &false);
+
+        // Should fail closed again
+        let decision_removed = client.check_action(
             &actor,
-            &aux2,
-            &action,
+            &auxiliary,
+            &PayrollAction::ActivateAgreement,
             &AgreementStatus::Created,
             &AgreementStatus::Active,
             &false,
         );
-        assert_eq!(decision_aux2.decision, Decision::Deny);
-        assert_eq!(decision_aux2.reason, ReasonCode::AuxiliaryNotAllowed);
-
-        // aux3 should still fail (never initialized)
-        let decision_aux3 = client.check_action(
-            &actor,
-            &aux3,
-            &action,
-            &AgreementStatus::Created,
-            &AgreementStatus::Active,
-            &false,
-        );
-        assert_eq!(decision_aux3.decision, Decision::Deny);
-        assert_eq!(decision_aux3.reason, ReasonCode::AuxiliaryNotAllowed);
-    }
-}
-
-#[test]
-fn test_auxiliary_allowlist_removal_restores_fail_closed() {
-    let env = create_env();
-    let (_cid, client, admin) = setup(&env);
-    let actor = Address::generate(&env);
-    let auxiliary = Address::generate(&env);
-
-    // Explicitly configure and verify it works
-    client.set_auxiliary_allowed(&admin, &auxiliary, &true);
-
-    let decision = client.check_action(
-        &actor,
-        &auxiliary,
-        &PayrollAction::ActivateAgreement,
-        &AgreementStatus::Created,
-        &AgreementStatus::Active,
-        &false,
-    );
-    assert_eq!(decision.decision, Decision::Allow);
-
-    // Remove from allowlist (de-initialize)
-    client.set_auxiliary_allowed(&admin, &auxiliary, &false);
-
-    // Should fail closed again
-    let decision_removed = client.check_action(
-        &actor,
-        &auxiliary,
-        &PayrollAction::ActivateAgreement,
-        &AgreementStatus::Created,
-        &AgreementStatus::Active,
-        &false,
-    );
-    assert_eq!(decision_removed.decision, Decision::Deny);
-    assert_eq!(decision_removed.reason, ReasonCode::AuxiliaryNotAllowed);
+        assert_eq!(decision_removed.decision, Decision::Deny);
+        assert_eq!(decision_removed.reason, ReasonCode::AuxiliaryNotAllowed);
     }
 }
