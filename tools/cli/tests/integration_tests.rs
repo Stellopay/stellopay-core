@@ -8,7 +8,7 @@ use tokio::fs;
 
 use stellopay_cli::commands::emergency_withdraw;
 use stellopay_cli::config::{get_secret_key, load_config};
-use stellopay_cli::utils::SorobanHttpClient;
+use stellopay_cli::utils::{RetryPolicy, SorobanHttpClient};
 use stellopay_cli::{AuthConfig, Config, ContractConfig, DefaultsConfig, Error, NetworkConfig};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -37,6 +37,7 @@ fn make_config(secret_key: Option<&str>) -> Config {
             token: None,
             frequency: "monthly".to_string(),
         },
+        retry: RetryPolicy::default(),
     }
 }
 
@@ -620,4 +621,40 @@ async fn test_query_as_returns_err_on_shape_mismatch() {
         err.to_string().contains("did not match expected shape"),
         "expected shape-mismatch error, got: {err}"
     );
+}
+
+// --- Issue #803: `--version` flag and structured exit codes ------------------
+
+#[test]
+fn version_flag_prints_version_and_exits_zero() {
+    let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
+    cmd.arg("--version");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("stellopay-cli").and(predicate::str::contains("0.1.0")));
+}
+
+#[test]
+fn unknown_flag_exits_with_usage_code() {
+    let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
+    cmd.arg("--no-such-flag");
+    cmd.assert().failure().code(2);
+}
+
+
+#[test]
+fn test_deploy_with_invalid_network_produces_clear_error() {
+    let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
+    cmd.arg("deploy")
+        .arg("--network")
+        .arg("garbagetown")
+        .arg("--owner")
+        .arg("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+
+    cmd.assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("unsupported network")
+                .and(predicate::str::contains("testnet, mainnet")),
+        );
 }
