@@ -214,7 +214,14 @@ fn has_approved(env: &Env, operation_id: u128, signer: &Address) -> bool {
 
 fn approval_count(env: &Env, operation_id: u128) -> u32 {
     let approvals = read_approvals(env, operation_id);
-    approvals.len()
+    let mut count = 0;
+    for i in 0..approvals.len() {
+        let addr = approvals.get(i).unwrap();
+        if is_signer(env, &addr) {
+            count += 1;
+        }
+    }
+    count
 }
 
 fn is_emergency_guardian(env: &Env, addr: &Address) -> bool {
@@ -348,6 +355,59 @@ impl MultisigContract {
         env.storage()
             .persistent()
             .set(&StorageKey::Initialized, &true);
+    }
+
+    /// @notice Updates the signer set and default threshold.
+    /// @dev Can only be called by the designated owner.
+    /// @param new_signers The new list of signers.
+    /// @param new_threshold The new default threshold.
+    pub fn update_signers(env: Env, new_signers: Vec<Address>, new_threshold: u32) {
+        require_initialized(&env);
+        let owner = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&StorageKey::Owner)
+            .expect("Owner not set");
+        owner.require_auth();
+
+        let signer_count = new_signers.len();
+        assert!(signer_count > 0, "At least one signer required");
+        assert!(
+            new_threshold > 0 && new_threshold <= signer_count,
+            "Invalid threshold"
+        );
+
+        // Ensure signer list has no duplicates.
+        for i in 0..signer_count {
+            let a = new_signers.get(i).unwrap();
+            for j in (i + 1)..signer_count {
+                let b = new_signers.get(j).unwrap();
+                assert!(a != b, "Duplicate signer");
+            }
+        }
+
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Signers, &new_signers);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Threshold, &new_threshold);
+
+        // Adjust/cap any active per-operation overrides to ensure they do not exceed the new signer count.
+        for op_type in [
+            OperationType::ContractUpgrade,
+            OperationType::LargePayment,
+            OperationType::DisputeResolution,
+        ] {
+            if let Some(override_val) = read_threshold_override(&env, &op_type) {
+                if override_val > signer_count as u32 {
+                    env.storage().persistent().set(
+                        &StorageKey::ThresholdOverride(op_type),
+                        signer_count,
+                    );
+                }
+            }
+        }
     }
 
     /// @notice Proposes a new multisig-protected operation.
