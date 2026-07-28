@@ -411,10 +411,7 @@ fn test_legitimate_tier_upgrade_bronze_to_silver() {
     );
 
     // Initial tier is Bronze
-    assert_eq!(
-        client.get_badge(&id).expect("exists").tier,
-        Tier::Bronze
-    );
+    assert_eq!(client.get_badge(&id).expect("exists").tier, Tier::Bronze);
 
     // Legitimate upgrade Bronze → Silver
     client.upgrade_tier(&owner, &id, &Tier::Silver);
@@ -424,10 +421,7 @@ fn test_legitimate_tier_upgrade_bronze_to_silver() {
 
     // Upgrade Silver → Gold (two-step progression)
     client.upgrade_tier(&owner, &id, &Tier::Gold);
-    assert_eq!(
-        client.get_badge(&id).expect("exists").tier,
-        Tier::Gold
-    );
+    assert_eq!(client.get_badge(&id).expect("exists").tier, Tier::Gold);
 }
 
 /// Mint a badge at Bronze, upgrade to Silver, then verify that a subsequent
@@ -449,10 +443,7 @@ fn test_reject_tier_downgrade_silver_to_bronze() {
 
     // Upgrade to Silver
     client.upgrade_tier(&owner, &id, &Tier::Silver);
-    assert_eq!(
-        client.get_badge(&id).expect("exists").tier,
-        Tier::Silver
-    );
+    assert_eq!(client.get_badge(&id).expect("exists").tier, Tier::Silver);
 
     // Attempted downgrade Silver → Bronze must panic
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -461,10 +452,7 @@ fn test_reject_tier_downgrade_silver_to_bronze() {
     assert!(result.is_err(), "downgrade must be rejected");
 
     // Tier must remain Silver after the failed downgrade
-    assert_eq!(
-        client.get_badge(&id).expect("exists").tier,
-        Tier::Silver
-    );
+    assert_eq!(client.get_badge(&id).expect("exists").tier, Tier::Silver);
 }
 
 /// Mint a badge at Silver, then verify that a downgrade to Bronze is rejected,
@@ -490,10 +478,7 @@ fn test_reject_tier_downgrade_gold_to_silver() {
     assert!(result.is_err(), "Gold→Silver downgrade must be rejected");
 
     // Tier must remain Gold
-    assert_eq!(
-        client.get_badge(&id).expect("exists").tier,
-        Tier::Gold
-    );
+    assert_eq!(client.get_badge(&id).expect("exists").tier, Tier::Gold);
 }
 
 /// Verify that a no-op call (same tier) is also rejected.
@@ -516,10 +501,7 @@ fn test_reject_tier_no_op_same_tier() {
     }));
     assert!(result.is_err(), "same-tier no-op must be rejected");
 
-    assert_eq!(
-        client.get_badge(&id).expect("exists").tier,
-        Tier::Silver
-    );
+    assert_eq!(client.get_badge(&id).expect("exists").tier, Tier::Silver);
 }
 
 /// Only the contract owner may upgrade tiers.
@@ -590,8 +572,5 @@ fn test_mint_records_tier() {
         &String::from_str(&env, "ipfs://gold"),
         &Tier::Gold,
     );
-    assert_eq!(
-        client.get_badge(&gold_id).expect("exists").tier,
-        Tier::Gold
-    );
+    assert_eq!(client.get_badge(&gold_id).expect("exists").tier, Tier::Gold);
 }

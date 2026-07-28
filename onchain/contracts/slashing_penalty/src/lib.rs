@@ -604,8 +604,8 @@ impl SlashingPenaltyContract {
     ///
     /// # Errors
     /// * `RecordNotFound`     — No slash record exists for the given hash.
-    /// * `InvalidState (8)`   — Record is not `Pending` (already `Executed`, `Reversed`,
-    ///                          or `AppealRejected`). **This is the double-execution guard.**
+    /// * `InvalidState (8)`   — Record is not `Pending` (already `Executed`, `Reversed`, or
+    ///   `AppealRejected`). **This is the double-execution guard.**
     /// * `QuorumNotMet`       — Attestation-based slash does not yet have enough signatures.
     /// * `AppealWindowOpen`   — Appeal deadline has not yet passed.
     pub fn execute_slash(env: Env, evidence_hash: BytesN<32>) -> Result<(), SlashError> {

@@ -406,12 +406,7 @@ impl NftPayrollBadgeContract {
     /// # Panics
     /// - If `token_id` does not exist.
     /// - If `new_tier` is not strictly greater than the badge's current tier.
-    pub fn upgrade_tier(
-        env: Env,
-        caller: Address,
-        token_id: u64,
-        new_tier: Tier,
-    ) {
+    pub fn upgrade_tier(env: Env, caller: Address, token_id: u64, new_tier: Tier) {
         require_initialized(&env);
         require_owner(&env, &caller);
 
@@ -423,10 +418,7 @@ impl NftPayrollBadgeContract {
             .expect("Badge not found");
 
         let old_tier = badge.tier;
-        assert!(
-            new_tier > old_tier,
-            "Tier downgrade or no-op rejected"
-        );
+        assert!(new_tier > old_tier, "Tier downgrade or no-op rejected");
 
         badge.tier = new_tier;
         env.storage().persistent().set(&key, &badge);

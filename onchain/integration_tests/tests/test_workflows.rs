@@ -3,40 +3,42 @@
 //!
 //! ## Coverage
 //!
-//! 1. **Payroll lifecycle** — creation, employee management, activation, funding,
-//!    claiming, cancellation, grace period, and finalization.
-//! 2. **Milestone agreement workflow** — creation, milestone management, approval,
-//!    claiming, batch claiming, auto-completion, and pause/resume.
-//! 3. **Dispute resolution workflow** — arbiter setup, dispute raising, resolution
-//!    with split payouts, and edge cases.
-//! 4. **Escrow agreement workflow** — time-based claiming, period tracking,
-//!    completion, and cancellation during active claims.
-//! 5. **Cross-contract interactions** — escrow funding via PayrollEscrowContract,
-//!    bonus system alongside payroll, payment history recording.
-//! 6. **Hire-to-resolve workflow** — milestone-style escrow payment, dispute
-//!    escalation ladder, payroll arbitration, with cross-contract state assertions
-//!    and token conservation across stello_pay_contract, payroll_escrow,
-//!    dispute_escalation, and payment_history.
+//! 1. **Payroll lifecycle** — creation, employee management, activation, funding, claiming,
+//!    cancellation, grace period, and finalization.
+//! 2. **Milestone agreement workflow** — creation, milestone management, approval, claiming, batch
+//!    claiming, auto-completion, and pause/resume.
+//! 3. **Dispute resolution workflow** — arbiter setup, dispute raising, resolution with split
+//!    payouts, and edge cases.
+//! 4. **Escrow agreement workflow** — time-based claiming, period tracking, completion, and
+//!    cancellation during active claims.
+//! 5. **Cross-contract interactions** — escrow funding via PayrollEscrowContract, bonus system
+//!    alongside payroll, payment history recording.
+//! 6. **Hire-to-resolve workflow** — milestone-style escrow payment, dispute escalation ladder,
+//!    payroll arbitration, with cross-contract state assertions and token conservation across
+//!    stello_pay_contract, payroll_escrow, dispute_escalation, and payment_history.
 
 #![cfg(test)]
 #![allow(deprecated)]
 
+use bonus_system::{BonusSystemContract, BonusSystemContractClient};
+use dispute_escalation::{
+    types::{
+        DisputeError as EscalationError, DisputeOutcome, DisputeStatus as EscalationStatus,
+        EscalationLevel,
+    },
+    DisputeEscalationContract, DisputeEscalationContractClient,
+};
+use payment_history::{PaymentHistoryContract, PaymentHistoryContractClient};
+use payroll_escrow::{PayrollEscrowContract, PayrollEscrowContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, BytesN, Env, Vec,
 };
-
-use bonus_system::{BonusSystemContract, BonusSystemContractClient};
-use dispute_escalation::types::{
-    DisputeError as EscalationError, DisputeOutcome, DisputeStatus as EscalationStatus,
-    EscalationLevel,
+use stello_pay_contract::{
+    storage::{AgreementMode, AgreementStatus, DataKey, DisputeStatus},
+    PayrollContract, PayrollContractClient,
 };
-use dispute_escalation::{DisputeEscalationContract, DisputeEscalationContractClient};
-use payment_history::{PaymentHistoryContract, PaymentHistoryContractClient};
-use payroll_escrow::{PayrollEscrowContract, PayrollEscrowContractClient};
-use stello_pay_contract::storage::{AgreementMode, AgreementStatus, DataKey, DisputeStatus};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 // ============================================================================
 // CONSTANTS
@@ -1486,8 +1488,8 @@ fn test_cross_payment_history_multi_agreement() {
 /// Threat assumptions:
 /// - The payroll contract is the only authority allowed to write payment history.
 /// - The escrow contract only releases funds when the configured manager signs.
-/// - Off-chain orchestration may combine modules, but token conservation must
-///   still hold across every contract balance and recipient balance.
+/// - Off-chain orchestration may combine modules, but token conservation must still hold across
+///   every contract balance and recipient balance.
 #[test]
 fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservation() {
     let env = env();
@@ -1652,8 +1654,7 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
 ///
 /// Threat assumptions:
 /// - Failed cross-contract calls must not mutate balances or indexed history.
-/// - Escalation deadlines must freeze the dispute phase rather than silently
-///   advancing it.
+/// - Escalation deadlines must freeze the dispute phase rather than silently advancing it.
 /// - Optional-module failures must not block later authorized recovery steps.
 #[test]
 fn test_cross_contract_workflow_failure_injection_preserves_state() {
@@ -2080,13 +2081,13 @@ fn test_payroll_claim_on_escrow_mode_rejected() {
 ///
 /// Mirrors a real deployment's orchestration:
 /// 1. **Hire** — employer creates and activates an escrow agreement.
-/// 2. **Pay a milestone** — funds are deposited (internal + external escrow),
-///    time advances, and one period is claimed as a milestone payment.
-/// 3. **Raise a dispute** — the contributor disputes the agreement via both
-///    stello_pay_contract and dispute_escalation.
-/// 4. **Resolve** — the escalation ladder is exercised (file → escalate with
-///    keeper advance → resolve with UpholdPayment outcome), then the arbiter
-///    resolves the payroll-level dispute with a split payout.
+/// 2. **Pay a milestone** — funds are deposited (internal + external escrow), time advances, and
+///    one period is claimed as a milestone payment.
+/// 3. **Raise a dispute** — the contributor disputes the agreement via both stello_pay_contract and
+///    dispute_escalation.
+/// 4. **Resolve** — the escalation ladder is exercised (file → escalate with keeper advance →
+///    resolve with UpholdPayment outcome), then the arbiter resolves the payroll-level dispute with
+///    a split payout.
 ///
 /// ## Cross-contract assertions
 ///
@@ -2098,8 +2099,8 @@ fn test_payroll_claim_on_escrow_mode_rejected() {
 ///
 /// ## Security invariants
 ///
-/// - No funds are stuck after resolution: escrow balances are released to
-///   either employees or employer.
+/// - No funds are stuck after resolution: escrow balances are released to either employees or
+///   employer.
 /// - No double-payout occurs: claimed periods are never counted twice.
 /// - Direct claim on a disputed agreement is blocked while dispute is active.
 #[test]

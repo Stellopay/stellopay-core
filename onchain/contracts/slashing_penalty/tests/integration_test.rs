@@ -903,11 +903,10 @@ fn test_replay_rejection_independent_of_prior_slash_count() {
 // ─── Double-Execution Guard (issue #938) ──────────────────────────────────────
 //
 // Requirements addressed:
-//   1. A second `execute_slash` call for the same `slash_record_id` (evidence hash)
-//      must be rejected with `SlashError::InvalidState` — it must never apply the
-//      penalty a second time.
-//   2. After a single successful execution, `get_stake_balance` must reflect exactly
-//      one penalty deduction (no double-burn, no partial accounting).
+//   1. A second `execute_slash` call for the same `slash_record_id` (evidence hash) must be
+//      rejected with `SlashError::InvalidState` — it must never apply the penalty a second time.
+//   2. After a single successful execution, `get_stake_balance` must reflect exactly one penalty
+//      deduction (no double-burn, no partial accounting).
 
 /// Requirement 1 — double-execution is rejected.
 ///

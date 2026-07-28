@@ -35,16 +35,17 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
+use department_manager::{DepartmentManagerContract, DepartmentManagerContractClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, TryFromVal,
 };
-
-use department_manager::{DepartmentManagerContract, DepartmentManagerContractClient};
-use stello_pay_contract::storage::{AgreementStatus, DataKey};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{AgreementStatus, DataKey},
+    PayrollContract, PayrollContractClient,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared constants

@@ -443,8 +443,8 @@ impl PayrollContract {
     /// # Arguments
     /// * `agreement_id` - ID of the milestone agreement.
     /// * `milestone_id` - 1-based ID of the milestone to reject.
-    /// * `reason`       - Human-readable justification (must be non-empty and
-    ///                    contain at least one non-whitespace character).
+    /// * `reason`       - Human-readable justification (must be non-empty and contain at least one
+    ///   non-whitespace character).
     ///
     /// # Requirements
     /// - Caller must be the employer.

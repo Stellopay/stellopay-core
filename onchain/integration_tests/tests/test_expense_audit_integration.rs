@@ -27,7 +27,8 @@ use expense_reimbursement::{
 };
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    token::StellarAssetClient, Address, Env, String, Symbol,
+    token::StellarAssetClient,
+    Address, Env, String, Symbol,
 };
 
 // ============================================================================
@@ -294,7 +295,10 @@ fn test_approval_audit_entry_has_correct_timestamp_actor_and_amount() {
 
     assert_eq!(entry.actor, approver);
     assert_eq!(entry.amount, Some(amount));
-    assert_eq!(entry.timestamp, expected_ts, "audit entry must record the ledger timestamp at the time of approval");
+    assert_eq!(
+        entry.timestamp, expected_ts,
+        "audit entry must record the ledger timestamp at the time of approval"
+    );
 }
 
 /// Submitting and rejecting an expense must not write any "expense_approved"
