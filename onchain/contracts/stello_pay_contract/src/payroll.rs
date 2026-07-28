@@ -1,4 +1,10 @@
 use crate::audit::{record_entry, AuditEvent};
+use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
+    contractclient, contracttype, panic_with_error, token,
+    token::TokenClient,
+    Address, Env, IntoVal, String, Symbol, Val, Vec,
+};
 use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
@@ -439,9 +445,12 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), P
         .persistent()
         .get(&MilestoneKey::TotalAmount(agreement_id))
         .unwrap_or(0);
+    let new_total = total
+        .checked_add(amount)
+        .ok_or(PayrollError::InvalidData)?;
     env.storage()
         .persistent()
-        .set(&MilestoneKey::TotalAmount(agreement_id), &(total + amount));
+        .set(&MilestoneKey::TotalAmount(agreement_id), &new_total);
 
     // Post-invariant: total amount should equal sum of milestones
     #[cfg(debug_assertions)]
@@ -483,11 +492,14 @@ fn sum_all_milestones(env: &Env, agreement_id: u128) -> i128 {
         .unwrap_or(0);
     let mut sum = 0i128;
     for i in 1..=count {
-        sum += env
-            .storage()
-            .persistent()
-            .get::<_, i128>(&MilestoneKey::MilestoneAmount(agreement_id, i))
-            .unwrap_or(0);
+        sum = sum
+            .checked_add(
+                env.storage()
+                    .persistent()
+                    .get::<_, i128>(&MilestoneKey::MilestoneAmount(agreement_id, i))
+                    .unwrap_or(0),
+            )
+            .expect("milestone total summation overflow");
     }
     sum
 }
