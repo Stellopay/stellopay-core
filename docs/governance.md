@@ -126,6 +126,87 @@ state transition.
   inflation that blocks a proposal and last-minute quorum reduction that makes
   an under-participated proposal pass.
 
+### get_approved_upgrade() — Quorum and Majority Gating
+
+The `get_approved_upgrade(target)` function returns an approved WASM hash only
+when a proposal passes **both** quorum and majority thresholds simultaneously.
+
+#### Approval Conditions
+
+Both conditions must be satisfied:
+
+| Condition | Formula | Significance |
+|-----------|---------|--------------|
+| **Quorum** | `total_votes >= proposal.quorum_votes` | Ensures sufficient participation |
+| **Majority** | `for_votes > against_votes` | Ensures clear directional consensus |
+
+Where `total_votes = for_votes + against_votes + abstain_votes`.
+
+Note: Abstain votes count toward quorum but not majority. Only For and Against
+votes participate in the majority calculation.
+
+#### Conditional Approval Matrix
+
+| Quorum Met | Majority Met | get_approved_upgrade() Returns |
+|------------|--------------|--------------------------------|
+| ❌ No     | ❌ No        | `None` (proposal defeated)     |
+| ✅ Yes    | ❌ No        | `None` (majority failed)       |
+| ❌ No     | ✅ Yes       | `None` (quorum failed)         |
+| ✅ Yes    | ✅ Yes       | `Some(hash)` (approved)        |
+
+#### Why Both Conditions Matter
+
+- **Quorum alone** would allow a small minority to approve upgrades when most
+  token holders are absent or unengaged.
+- **Majority alone** (without quorum) would allow a tiny group — even two
+  voters, one yes — to approve with 51%.
+- **Both together** ensure meaningful participation AND clear directional
+  consensus before governance decisions take effect.
+
+#### Approval Lifecycle
+
+1. A proposal of kind `UpgradeContract(target, wasm_hash)` is created.
+2. Eligible voters cast For, Against, or Abstain votes.
+3. After voting closes, `finalize_proposal` checks both conditions:
+   - If `total_votes < quorum_votes` OR `for_votes <= against_votes`, proposal
+     is marked `Defeated`.
+   - Otherwise, proposal is marked `Succeeded` and queued in timelock.
+4. After the timelock delay, a multisig signer calls `execute_proposal`.
+5. Execution persists the approved hash to storage under the target address.
+6. Calling `get_approved_upgrade(target)` returns `Some(hash)` if and only if
+   the proposal reached both thresholds.
+
+#### Configuration
+
+- `quorum_votes` — absolute number of votes required (not percentage)
+- Default in tests: 2 votes
+- Can be updated via `update_config` (affects only future proposals)
+
+#### Test Coverage
+
+Quorum and majority gating is tested with 11 dedicated tests:
+
+1. `get_approved_upgrade_neither_quorum_nor_majority()` — No votes → None
+2. `get_approved_upgrade_quorum_met_majority_not_met()` — Quorum ✓ Majority ✗ → None
+3. `get_approved_upgrade_majority_met_quorum_not_met()` — Quorum ✗ Majority ✓ → None
+4. `get_approved_upgrade_both_quorum_and_majority_met()` — Both ✓ → Some(hash)
+5. `get_approved_upgrade_abstain_votes_count_toward_quorum_not_majority()` — Validates abstain behavior
+6. `get_approved_upgrade_quorum_boundary_one_short()` — One vote short of quorum
+7. `get_approved_upgrade_quorum_boundary_at_threshold()` — Exactly at quorum
+8. `get_approved_upgrade_majority_boundary_tie_fails()` — For=Against (tie) → None
+9. `get_approved_upgrade_majority_boundary_loss_one_vote()` — For<Against → None
+10. `get_approved_upgrade_majority_boundary_win_by_one()` — For>Against (barely) → Some(hash)
+11. `get_approved_upgrade_multiple_proposals_independent()` — Multiple targets tracked independently
+
+#### Security Notes
+
+- Both conditions are checked atomically in `finalize_proposal`.
+- A proposal meeting only one condition is never surfaced.
+- Zero votes: `total_votes = 0 < quorum` → proposal defeated (no division by zero).
+- Thresholds use integer arithmetic to avoid floating-point precision issues.
+- Once persisted to storage, an approved upgrade hash represents governance
+  consensus backed by both gates and cannot be modified.
+
 ### Test Coverage
 
 The governance test suite covers:
@@ -141,6 +222,7 @@ The governance test suite covers:
 - live RBAC role revocation impact on future voting
 - proposal-time quorum snapshots when configuration and voting power change
   during an active vote
+- **quorum and majority gating for get_approved_upgrade** (11 dedicated tests)
 
 Run locally with:
 
