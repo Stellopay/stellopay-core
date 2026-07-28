@@ -65,6 +65,20 @@ Read helpers:
 - `badge_count(owner) -> u32`
 - `get_owner() -> Option<Address>`
 
+### Read-Query Error Semantics
+
+`get_badge(badge_id)` returns `Option<Badge>`:
+
+- `Some(Badge)` — the badge was minted and all fields are exactly as stored at
+  mint time (or updated by `update_metadata_uri`).
+- `None` — no badge with that ID has ever been minted. Callers **must not**
+  treat a missing return as a zero-valued or default badge; the only valid
+  interpretation is that the ID does not exist.
+
+This means downstream consumers should always pattern-match or call `.expect()`
+/ `.unwrap()` with a descriptive message, and must never assume that a `None`
+response shares any fields with a real badge.
+
 ### Security Considerations
 
 - Metadata URI updates are restricted to the initialized owner. This prevents
