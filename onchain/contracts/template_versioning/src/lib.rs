@@ -115,7 +115,8 @@ impl TemplateVersioning {
         Ok(())
     }
 
-    /// Register a named template; returns a stable `template_id`. The authenticated `owner` may later publish versions.
+    /// Register a named template; returns a stable `template_id`. The authenticated `owner` may
+    /// later publish versions.
     pub fn register_template(
         env: Env,
         owner: Address,

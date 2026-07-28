@@ -1,9 +1,8 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
-
 use rbac::{RbacContract, RbacContractClient, Role};
+use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
 
 // ===========================================================================
 // Helpers

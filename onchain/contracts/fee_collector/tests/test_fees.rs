@@ -15,8 +15,7 @@
 //! * Edge cases: 1-token payment, large amounts (overflow safety)
 
 use fee_collector::{FeeCollectorContract, FeeCollectorContractClient, FeeMode};
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{token, Address, Env};
+use soroban_sdk::{testutils::Address as _, token, Address, Env};
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 

@@ -483,11 +483,10 @@ impl PriceOracleContract {
     ///      4. Validates the rate against configured `[min_rate, max_rate]`.
     ///      5. Rejects future timestamps (`source_timestamp > ledger.timestamp`).
     ///      6. Rejects stale timestamps (age > `max_staleness_seconds`).
-    ///      7. Ignores updates older than or equal to the last accepted timestamp
-    ///         (monotonic ordering).
-    ///      8. In quorum mode, stores the vote in the active time bucket and
-    ///         only accepts once `quorum_n` distinct sources agree within
-    ///         `tolerance_bps`.
+    ///      7. Ignores updates older than or equal to the last accepted timestamp (monotonic
+    ///         ordering).
+    ///      8. In quorum mode, stores the vote in the active time bucket and only accepts once
+    ///         `quorum_n` distinct sources agree within `tolerance_bps`.
     ///      9. Persists the new `PairState`.
     ///      10. Calls `set_exchange_rate` on the downstream payroll contract.
     ///      Emits event `("oracle", "price")` with `(base, quote, rate)`.

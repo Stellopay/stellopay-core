@@ -16,10 +16,10 @@
 //! `Err(SchedulerError::DuplicateSchedule)` without consuming a new job ID.
 //!
 //! The deterministic-ID scheme means that:
-//! * Off-chain systems can predict the schedule key before submitting the
-//!   transaction and check for prior registration without an extra read.
-//! * Replay attacks (re-submitting the same `create_job` call) are rejected at
-//!   the storage-key level, not just by sequential counters.
+//! * Off-chain systems can predict the schedule key before submitting the transaction and check for
+//!   prior registration without an extra read.
+//! * Replay attacks (re-submitting the same `create_job` call) are rejected at the storage-key
+//!   level, not just by sequential counters.
 //!
 //! ## Idempotency of `process_due_payments`
 //!
@@ -32,16 +32,14 @@
 //!
 //! ## Security Model
 //!
-//! * `initialize` is one-time only; subsequent calls return
-//!   `Err(AlreadyInitialized)`.
-//! * `create_job` requires employer authentication. The employer must
-//!   separately fund the scheduler via `fund_job` or a direct token transfer.
-//! * `pause_job`, `resume_job`, `cancel_job`, and `fund_job` are gated on the
-//!   employer address stored inside the `PaymentJob` record, preventing any
-//!   other address from controlling the job.
-//! * `process_due_payments` is intentionally **permissionless**: any actor can
-//!   call it; the contract never trusts the caller — it reads all state from
-//!   storage and checks timestamps independently.
+//! * `initialize` is one-time only; subsequent calls return `Err(AlreadyInitialized)`.
+//! * `create_job` requires employer authentication. The employer must separately fund the scheduler
+//!   via `fund_job` or a direct token transfer.
+//! * `pause_job`, `resume_job`, `cancel_job`, and `fund_job` are gated on the employer address
+//!   stored inside the `PaymentJob` record, preventing any other address from controlling the job.
+//! * `process_due_payments` is intentionally **permissionless**: any actor can call it; the
+//!   contract never trusts the caller — it reads all state from storage and checks timestamps
+//!   independently.
 //! * Cancelled jobs are permanently terminal; they cannot be re-activated.
 //!
 //! ## Integration
@@ -716,7 +714,7 @@ impl PaymentSchedulerContract {
 
                         let retry_config = RetryConfig {
                             max_retries: job_mut.max_retries,
-                            retry_intervals: soroban_sdk::vec![&env, 30u64, 60u64, 120u64], // Default backoff
+                            retry_intervals: soroban_sdk::vec![&env, 30u64, 60u64, 120u64], /* Default backoff */
                         };
 
                         retry_client.schedule_retry(
