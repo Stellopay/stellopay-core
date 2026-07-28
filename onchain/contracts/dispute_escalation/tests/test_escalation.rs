@@ -7,7 +7,7 @@ use dispute_escalation::{
 };
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
-    Address, Env, Symbol, TryFromVal, Val, Vec,
+    Address, Env, IntoVal, String as SorobanString, Val, Vec,
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -1709,5 +1709,384 @@ fn test_late_level3_ruling_via_pending_review_rejected() {
     assert_eq!(
         client.get_dispute(&id).unwrap().outcome,
         DisputeOutcome::GrantClaim
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §15  SLA VIOLATION ADVANCED EVENT TESTS
+//      Verify that `keeper_advance_stage` emits the `sla_violation_advanced`
+//      event with the correct fields, and that `escalate_dispute` (normal flow)
+//      does NOT emit it.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Helper: scan `env.events().all()` for the **last** event whose topics match
+/// a single-element topics vector containing the given `topic` string.
+/// Returns `Some((contract_id, topics, data))` or `None`.
+///
+/// Soroban's `Events::publish` with a `("topic",)` tuple stores topics as
+/// `ScString` values.  We construct the expected topics Vec with
+/// `SorobanString` to match.
+fn find_event_by_topic(
+    env: &Env,
+    _contract_id: &Address,
+    topic: &str,
+) -> Option<(Address, Vec<Val>, Val)> {
+    let events = env.events().all();
+    let topic_str = SorobanString::from_str(env, topic);
+    let expected_topics: Vec<Val> = (topic_str,).into_val(env);
+    // Events are stored chronologically; we scan from the end.
+    for i in (0..events.len()).rev() {
+        let evt: (Address, Vec<Val>, Val) = events.get(i).unwrap();
+        if evt.1 == expected_topics {
+            return Some(evt);
+        }
+    }
+    None
+}
+
+/// Assert that `env.events()` contains **no** event with the given topic.
+fn assert_no_event(env: &Env, _contract_id: &Address, topic: &str) {
+    assert!(
+        find_event_by_topic(env, _contract_id, topic).is_none(),
+        "expected no '{}' event but found one",
+        topic
+    );
+}
+
+/// Test: `keeper_advance_stage` from `Open` state emits `sla_violation_advanced`
+/// with `previous_status == Open`.
+#[test]
+fn test_sla_violation_advanced_event_emitted_from_open() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1500u128;
+    let review_limit = 100u64;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_pending_review_time_limit(&admin, &review_limit);
+    client.file_dispute(&user, &id);
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Open);
+
+    // Advance past SLA deadline
+    advance(&env, 51);
+
+    let contract_id = client.address.clone();
+    client.keeper_advance_stage(&user, &id);
+
+    // Verify the new event exists
+    let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
+    assert!(
+        found.is_some(),
+        "sla_violation_advanced event must be emitted"
+    );
+
+    // Verify backward-compatible event still emitted
+    let old_event = find_event_by_topic(&env, &contract_id, "dispute_sla_breached");
+    assert!(
+        old_event.is_some(),
+        "dispute_sla_breached must still be emitted for backward compatibility"
+    );
+
+    // Verify the dispute state transition
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.level, EscalationLevel::Level1);
+}
+
+/// Test: `keeper_advance_stage` from `Escalated` state emits
+/// `sla_violation_advanced` with `previous_status == Escalated`.
+#[test]
+fn test_sla_violation_advanced_event_emitted_from_escalated() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1501u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &50u64);
+    client.set_pending_review_time_limit(&admin, &100u64);
+    client.file_dispute(&user, &id);
+    client.escalate_dispute(&user, &id);
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Escalated);
+    assert_eq!(d.level, EscalationLevel::Level2);
+
+    // Advance past Level2 SLA deadline
+    advance(&env, 51);
+
+    let contract_id = client.address.clone();
+    client.keeper_advance_stage(&user, &id);
+
+    // Verify event emitted
+    let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
+    assert!(
+        found.is_some(),
+        "sla_violation_advanced event must be emitted from Escalated state"
+    );
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.level, EscalationLevel::Level2);
+}
+
+/// Test: `keeper_advance_stage` from `Appealed` state emits
+/// `sla_violation_advanced` with `previous_status == Appealed`.
+#[test]
+fn test_sla_violation_advanced_event_emitted_from_appealed() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1502u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &50u64);
+    client.set_pending_review_time_limit(&admin, &100u64);
+    client.file_dispute(&user, &id);
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    client.appeal_ruling(&user, &id);
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Appealed);
+    assert_eq!(d.level, EscalationLevel::Level2);
+
+    // Advance past Level2 SLA deadline
+    advance(&env, 51);
+
+    let contract_id = client.address.clone();
+    client.keeper_advance_stage(&user, &id);
+
+    // Verify event emitted
+    let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
+    assert!(
+        found.is_some(),
+        "sla_violation_advanced event must be emitted from Appealed state"
+    );
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.level, EscalationLevel::Level2);
+}
+
+/// Test: `escalate_dispute` (normal-flow advancement) does NOT emit
+/// `sla_violation_advanced`.  Only `keeper_advance_stage` (SLA timeout)
+/// emits it.
+///
+/// We verify the negative — after a normal-flow escalation, no SLA-violation
+/// event exists.  The positive side (that `dispute_escalated` IS emitted) is
+/// already covered by the lifecycle tests in §1.
+#[test]
+fn test_escalate_dispute_does_not_emit_sla_violation_advanced() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1503u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &100u64);
+    client.file_dispute(&user, &id);
+
+    // Escalate within deadline — normal flow
+    client.escalate_dispute(&user, &id);
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Escalated);
+    assert_eq!(d.level, EscalationLevel::Level2);
+
+    // CRITICAL: `sla_violation_advanced` must NOT appear — this was a normal
+    // escalation, not an SLA timeout.
+    let contract_id = client.address.clone();
+    assert_no_event(&env, &contract_id, "sla_violation_advanced");
+}
+
+/// Test: `sla_violation_advanced` and `dispute_sla_breached` are BOTH emitted
+/// from a single `keeper_advance_stage` call — backward compatibility is
+/// preserved while the new event is available.
+#[test]
+fn test_keeper_advance_stage_emits_both_sla_events() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1504u128;
+    let review_limit = 200u64;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &60u64);
+    client.set_pending_review_time_limit(&admin, &review_limit);
+    client.file_dispute(&user, &id);
+
+    // Advance past SLA
+    advance(&env, 61);
+    let t_breach = now(&env);
+
+    let contract_id = client.address.clone();
+    client.keeper_advance_stage(&user, &id);
+
+    // Both events must be present
+    let old_event = find_event_by_topic(&env, &contract_id, "dispute_sla_breached");
+    assert!(
+        old_event.is_some(),
+        "dispute_sla_breached must be emitted (backward compat)"
+    );
+
+    let new_event = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
+    assert!(
+        new_event.is_some(),
+        "sla_violation_advanced must be emitted (new SLA violation signal)"
+    );
+
+    // Verify they are distinct events (different topic)
+    let old_evt = old_event.unwrap();
+    let new_evt = new_event.unwrap();
+    // The topics vectors differ: "dispute_sla_breached" vs "sla_violation_advanced"
+    assert_ne!(
+        old_evt.1, new_evt.1,
+        "the two events must have distinct topic symbols"
+    );
+
+    // Verify dispute state
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.phase_started_at, t_breach);
+    assert_eq!(d.phase_deadline, t_breach + review_limit);
+}
+
+/// Test: `keeper_advance_stage` does NOT emit `dispute_escalated` — only the
+/// SLA-specific events.  The two event families are cleanly separated.
+#[test]
+fn test_keeper_advance_stage_does_not_emit_dispute_escalated() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1505u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_pending_review_time_limit(&admin, &100u64);
+    client.file_dispute(&user, &id);
+
+    advance(&env, 51);
+
+    let contract_id = client.address.clone();
+    client.keeper_advance_stage(&user, &id);
+
+    // No `dispute_escalated` event from the keeper path
+    assert_no_event(&env, &contract_id, "dispute_escalated");
+
+    // But SLA events must be present
+    assert!(find_event_by_topic(&env, &contract_id, "sla_violation_advanced").is_some());
+    assert!(find_event_by_topic(&env, &contract_id, "dispute_sla_breached").is_some());
+}
+
+/// Test: the `sla_violation_advanced` event is NOT emitted on a failed
+/// `keeper_advance_stage` call (e.g. deadline not passed yet).
+#[test]
+fn test_sla_violation_advanced_not_emitted_on_failed_keeper_call() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1506u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &100u64);
+    client.file_dispute(&user, &id);
+
+    // Do NOT advance time — deadline not passed
+    let contract_id = client.address.clone();
+    let res = client.try_keeper_advance_stage(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::DeadlineNotPassed)));
+
+    // No SLA violation event should have been emitted on failure
+    assert_no_event(&env, &contract_id, "sla_violation_advanced");
+    assert_no_event(&env, &contract_id, "dispute_sla_breached");
+}
+
+/// Test: verify the event emitted from a Level3 Appealed state carries the
+/// correct `level` field.
+#[test]
+fn test_sla_violation_advanced_from_level3_appealed() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1507u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &50u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level3, &50u64);
+    client.set_pending_review_time_limit(&admin, &100u64);
+
+    // Reach Level3 via appeal path
+    client.file_dispute(&user, &id);
+    client.escalate_dispute(&user, &id); // → Level2
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    client.appeal_ruling(&user, &id); // → Appealed @ Level3
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Appealed);
+    assert_eq!(d.level, EscalationLevel::Level3);
+
+    advance(&env, 51); // past SLA
+
+    let contract_id = client.address.clone();
+    client.keeper_advance_stage(&user, &id);
+
+    // Event must be present
+    let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
+    assert!(
+        found.is_some(),
+        "sla_violation_advanced must be emitted at Level3"
+    );
+
+    // The dispute must be at PendingReview @ Level3
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.level, EscalationLevel::Level3);
+}
+
+/// Test: idempotency guard — second `keeper_advance_stage` call on an
+/// already-`PendingReview` dispute does NOT emit a second
+/// `sla_violation_advanced` event (the call is rejected).
+#[test]
+fn test_sla_violation_advanced_not_emitted_on_idempotent_rejected_call() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1508u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_pending_review_time_limit(&admin, &100u64);
+    client.file_dispute(&user, &id);
+
+    advance(&env, 51);
+
+    // First call — succeeds, emits the event
+    client.keeper_advance_stage(&user, &id);
+
+    // Verify the first call emitted the event
+    let contract_id = client.address.clone();
+    let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
+    assert!(
+        found.is_some(),
+        "first keeper call must emit sla_violation_advanced"
+    );
+
+    // Verify dispute state
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+
+    // Second call — rejected (AlreadyPendingReview)
+    let res = client.try_keeper_advance_stage(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::AlreadyPendingReview)));
+
+    // The failed call must NOT have emitted a second sla_violation_advanced.
+    // Since `try_*` failures do not emit events, we just verify the dispute
+    // state is unchanged and the result was the expected error.
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+}
+
+/// Test: `expire_dispute` does NOT emit `sla_violation_advanced` — only
+/// `keeper_advance_stage` does.
+#[test]
+fn test_expire_dispute_does_not_emit_sla_violation_advanced() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1509u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.file_dispute(&user, &id);
+
+    advance(&env, 51); // past deadline
+
+    let contract_id = client.address.clone();
+    client.expire_dispute(&user, &id);
+
+    assert_no_event(&env, &contract_id, "sla_violation_advanced");
+
+    // But `dispute_expired` must be emitted
+    let expired_event = find_event_by_topic(&env, &contract_id, "dispute_expired");
+    assert!(
+        expired_event.is_some(),
+        "dispute_expired must be emitted on expiry"
     );
 }

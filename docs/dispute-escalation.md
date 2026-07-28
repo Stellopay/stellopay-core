@@ -164,6 +164,11 @@ Level preservation — the dispute's level and outcome are not
 mutated; only status, phase_started_at, and phase_deadline change.
 No outcome authority — the keeper sets no outcome; only the admin
 can write a binding ruling via resolve_dispute.
+Dual event emission — every successful call emits both:
+dispute_sla_breached (DisputeSlaBreachedEvent) for backward
+compatibility, and
+sla_violation_advanced (SlaViolationAdvancedEvent) as the primary
+SLA-violation signal for off-chain monitoring systems.
 Valid source states
 Status	Can keeper advance?
 Open	✓ (if now > phase_deadline)
@@ -234,18 +239,33 @@ Unset outcome rejected	resolve_dispute returns InvalidTransition if outcome == U
 Events
 Topic	Payload	When
 dispute_filed	DisputeFiledEvent	New dispute opened
-dispute_escalated	DisputeEscalatedEvent	Moved to next tier
-sla_violation_advanced	DisputeSlaViolationAdvancedEvent	SLA elapsed; keeper advances to PendingReview
+dispute_escalated	DisputeEscalatedEvent	Moved to next tier (normal-flow)
+dispute_sla_breached	DisputeSlaBreachedEvent	SLA elapsed; keeper advances to PendingReview
+sla_violation_advanced	SlaViolationAdvancedEvent	SLA elapsed; emitted only by keeper_advance_stage — the primary signal for off-chain SLA-compliance monitoring
 dispute_resolved	DisputeResolvedEvent	Admin ruling at Level1/2 (appeal window open)
 dispute_finalised	DisputeFinalisedEvent	Admin ruling at Level3 (binding, no appeal)
 dispute_appealed	DisputeAppealedEvent	Ruling appealed to next level
 dispute_expired	DisputeExpiredEvent	Deadline passed, closed without ruling
-DisputeSlaViolationAdvancedEvent fields
+Distinguishing SLA violations from normal-flow escalations
+keeper_advance_stage emits two events when it fires due to an SLA timeout:
+
+dispute_sla_breached (DisputeSlaBreachedEvent) — backward-compatible event for existing off-chain systems.
+sla_violation_advanced (SlaViolationAdvancedEvent) — a distinct event emitted only on SLA timeout, not on normal-flow escalation.
+Off-chain SLA-compliance monitors should listen solely for sla_violation_advanced to unambiguously identify every SLA-violation trigger without false positives from dispute_escalated events (which are emitted by escalate_dispute during normal flow).
+
+DisputeSlaBreachedEvent fields
 Field	Type	Description
 agreement_id	u128	Identifies the dispute
 level	EscalationLevel	Level at which the SLA was breached
 breached_at	u64	Ledger timestamp when keeper_advance_stage was called
 review_deadline	u64	Timestamp by which admin must act before expire_dispute is valid
+SlaViolationAdvancedEvent fields
+Field	Type	Description
+agreement_id	u128	Identifies the dispute whose SLA was violated
+level	EscalationLevel	Escalation level at which the SLA was breached
+breached_at	u64	Ledger timestamp when the violation was observed and the stage was advanced
+review_deadline	u64	Timestamp by which admin must act before expire_dispute is valid
+previous_status	DisputeStatus	Dispute status before the keeper advanced the stage (Open, Escalated, or Appealed). Enables monitoring systems to distinguish the source state
 DisputeDetails Fields
 Field	Type	Description
 agreement_id	u128	ID of the agreement under dispute
@@ -305,7 +325,12 @@ client.file_dispute(&employee, &agreement_id);
 client.keeper_advance_stage(&keeper_bot, &agreement_id);
 // status = PendingReview
 // phase_deadline = now + 259_200 (3-day review window)
-// emits: DisputeSlaViolationAdvancedEvent { breached_at, review_deadline }
+// emits: DisputeSlaBreachedEvent { breached_at, review_deadline }
+// emits: SlaViolationAdvancedEvent { level, breached_at, review_deadline, previous_status }
+
+// Off-chain SLA monitors should listen for `sla_violation_advanced` to
+// unambiguously identify SLA violations without false positives from
+// normal-flow `dispute_escalated` events.
 
 // 3a. Admin acts within the review window
 client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::GrantClaim);
