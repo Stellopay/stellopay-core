@@ -588,7 +588,7 @@ impl PaymentHistoryContract {
         // Validate range before touching storage.
         if let (Some(from), Some(to)) = (from_ts, to_ts) {
             if from > to {
-                panic!("{}", ERR_INVALID_RANGE);
+                panic!("InvalidRange: from_ts must be <= to_ts");
             }
         }
 
@@ -628,7 +628,7 @@ impl PaymentHistoryContract {
     ) -> Vec<PaymentRecord> {
         if let (Some(from), Some(to)) = (from_ts, to_ts) {
             if from > to {
-                panic!("{}", ERR_INVALID_RANGE);
+                panic!("InvalidRange: from_ts must be <= to_ts");
             }
         }
 
@@ -668,7 +668,7 @@ impl PaymentHistoryContract {
     ) -> Vec<PaymentRecord> {
         if let (Some(from), Some(to)) = (from_ts, to_ts) {
             if from > to {
-                panic!("{}", ERR_INVALID_RANGE);
+                panic!("InvalidRange: from_ts must be <= to_ts");
             }
         }
 
