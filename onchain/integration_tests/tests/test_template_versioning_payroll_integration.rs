@@ -146,8 +146,7 @@ fn test_template_versioning_wired_to_payroll_agreement() {
     // ------------------------------------------------------------------
     // Step 3: Create the corresponding payroll agreement
     // ------------------------------------------------------------------
-    let payroll_agreement_id =
-        payroll.create_payroll_agreement(&employer, &tok, &ONE_WEEK);
+    let payroll_agreement_id = payroll.create_payroll_agreement(&employer, &tok, &ONE_WEEK);
     payroll.add_employee_to_agreement(&payroll_agreement_id, &employee, &BASE_SALARY);
     payroll.activate_agreement(&payroll_agreement_id);
 
@@ -156,7 +155,11 @@ fn test_template_versioning_wired_to_payroll_agreement() {
     env.as_contract(&payroll_id, || {
         use stello_pay_contract::storage::DataKey;
         DataKey::set_agreement_escrow_balance(&env, payroll_agreement_id, &tok, PAYROLL_FUND);
-        DataKey::set_agreement_activation_time(&env, payroll_agreement_id, env.ledger().timestamp());
+        DataKey::set_agreement_activation_time(
+            &env,
+            payroll_agreement_id,
+            env.ledger().timestamp(),
+        );
         DataKey::set_agreement_period_duration(&env, payroll_agreement_id, ONE_WEEK);
         DataKey::set_agreement_token(&env, payroll_agreement_id, &tok);
         DataKey::set_employee(&env, payroll_agreement_id, 0, &employee);
@@ -170,13 +173,11 @@ fn test_template_versioning_wired_to_payroll_agreement() {
     assert_eq!(payroll_agreement.employer, employer);
     assert_eq!(payroll_agreement.token, tok);
     assert_eq!(
-        payroll_agreement.grace_period_seconds,
-        ONE_WEEK,
+        payroll_agreement.grace_period_seconds, ONE_WEEK,
         "Payroll agreement should carry the correct grace period"
     );
     assert_eq!(
-        payroll_agreement.created_at,
-        100_000,
+        payroll_agreement.created_at, 100_000,
         "Payroll agreement should be created at the pinned timestamp"
     );
 
@@ -265,7 +266,10 @@ fn test_deprecated_version_does_not_affect_existing_agreements() {
         .create_agreement(&employer, &template_id, &1, &label_v1)
         .unwrap();
     assert_eq!(
-        versioning.get_agreement(&tv_agreement_id).unwrap().template_version,
+        versioning
+            .get_agreement(&tv_agreement_id)
+            .unwrap()
+            .template_version,
         1
     );
 
@@ -310,8 +314,7 @@ fn test_deprecated_version_does_not_affect_existing_agreements() {
     let v1_record = versioning.get_version(&template_id, &1).unwrap();
     assert!(v1_record.deprecated, "v1 should be marked deprecated");
     assert_eq!(
-        v1_record.deprecation_reason,
-        deprecation_reason,
+        v1_record.deprecation_reason, deprecation_reason,
         "Deprecation reason should be preserved"
     );
 }

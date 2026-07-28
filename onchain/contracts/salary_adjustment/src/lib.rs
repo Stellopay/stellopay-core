@@ -530,8 +530,14 @@ impl SalaryAdjustmentContract {
     }
 
     /// @notice Creates a retroactive salary adjustment with explicit owner approval.
-    /// @dev Requires both the employer and contract owner to authenticate. The provided
-    ///      reason hash is domain-separated with the adjustment details before storage.
+    /// @dev The `effective_date` is a constraint on when the adjustment can be
+    ///      applied (must be past the effective date). The actual salary change
+    ///      takes effect going forward from the time `apply_adjustment` is called.
+    ///      Retroactive adjustments do NOT retroactively alter already-processed
+    ///      payroll periods — past claims are not recalculated or topped up.
+    ///      Requires both the employer and contract owner to authenticate. The
+    ///      provided reason hash is domain-separated with the adjustment details
+    ///      before storage.
     ///
     /// # Panics
     /// * `"Only owner can authorize retroactive adjustment"`

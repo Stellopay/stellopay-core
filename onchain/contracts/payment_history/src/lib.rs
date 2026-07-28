@@ -104,6 +104,11 @@ use storage::StorageKey;
 /// silently; no error is raised.
 pub const MAX_PAGE_SIZE: u32 = 100;
 
+/// Error message emitted when `from_ts > to_ts` is supplied to a date-range
+/// filtered query.  Both bounds are inclusive; swapping them is never done
+/// silently.
+pub const ERR_INVALID_RANGE: &str = "InvalidRange: from_ts must be <= to_ts";
+
 #[contract]
 pub struct PaymentHistoryContract;
 
@@ -588,23 +593,17 @@ impl PaymentHistoryContract {
         // Validate range before touching storage.
         if let (Some(from), Some(to)) = (from_ts, to_ts) {
             if from > to {
-                panic!("{}", ERR_INVALID_RANGE);
+                panic!("InvalidRange: from_ts must be <= to_ts");
             }
         }
 
         let total_count = Self::get_agreement_payment_count(env.clone(), agreement_id);
-        let filtered = Self::collect_filtered(
-            &env,
-            total_count,
-            from_ts,
-            to_ts,
-            |pos| {
-                env.storage()
-                    .persistent()
-                    .get(&StorageKey::AgreementPayment(agreement_id, pos))
-                    .unwrap()
-            },
-        );
+        let filtered = Self::collect_filtered(&env, total_count, from_ts, to_ts, |pos| {
+            env.storage()
+                .persistent()
+                .get(&StorageKey::AgreementPayment(agreement_id, pos))
+                .unwrap()
+        });
         Self::paginate_filtered(&env, &filtered, start_index, limit)
     }
 
@@ -634,23 +633,17 @@ impl PaymentHistoryContract {
     ) -> Vec<PaymentRecord> {
         if let (Some(from), Some(to)) = (from_ts, to_ts) {
             if from > to {
-                panic!("{}", ERR_INVALID_RANGE);
+                panic!("InvalidRange: from_ts must be <= to_ts");
             }
         }
 
         let total_count = Self::get_employer_payment_count(env.clone(), employer.clone());
-        let filtered = Self::collect_filtered(
-            &env,
-            total_count,
-            from_ts,
-            to_ts,
-            |pos| {
-                env.storage()
-                    .persistent()
-                    .get(&StorageKey::EmployerPayment(employer.clone(), pos))
-                    .unwrap()
-            },
-        );
+        let filtered = Self::collect_filtered(&env, total_count, from_ts, to_ts, |pos| {
+            env.storage()
+                .persistent()
+                .get(&StorageKey::EmployerPayment(employer.clone(), pos))
+                .unwrap()
+        });
         Self::paginate_filtered(&env, &filtered, start_index, limit)
     }
 
@@ -680,23 +673,17 @@ impl PaymentHistoryContract {
     ) -> Vec<PaymentRecord> {
         if let (Some(from), Some(to)) = (from_ts, to_ts) {
             if from > to {
-                panic!("{}", ERR_INVALID_RANGE);
+                panic!("InvalidRange: from_ts must be <= to_ts");
             }
         }
 
         let total_count = Self::get_employee_payment_count(env.clone(), employee.clone());
-        let filtered = Self::collect_filtered(
-            &env,
-            total_count,
-            from_ts,
-            to_ts,
-            |pos| {
-                env.storage()
-                    .persistent()
-                    .get(&StorageKey::EmployeePayment(employee.clone(), pos))
-                    .unwrap()
-            },
-        );
+        let filtered = Self::collect_filtered(&env, total_count, from_ts, to_ts, |pos| {
+            env.storage()
+                .persistent()
+                .get(&StorageKey::EmployeePayment(employee.clone(), pos))
+                .unwrap()
+        });
         Self::paginate_filtered(&env, &filtered, start_index, limit)
     }
 

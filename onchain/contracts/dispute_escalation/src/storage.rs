@@ -45,6 +45,19 @@ pub fn set_dispute(env: &Env, agreement_id: u128, details: &DisputeDetails) {
     env.storage().persistent().set(&key, details);
 }
 
+/// Set the payroll escrow contract address that will be paused/resumed on
+/// dispute lifecycle events.
+pub fn set_payroll_escrow(env: &Env, addr: &Address) {
+    let key = StorageKey::PayrollEscrow;
+    env.storage().persistent().set(&key, addr);
+}
+
+/// Get the payroll escrow contract address, if configured.
+pub fn get_payroll_escrow(env: &Env) -> Option<Address> {
+    let key = StorageKey::PayrollEscrow;
+    env.storage().persistent().get(&key)
+}
+
 /// Check if a given address is the contract administrator
 pub fn is_admin(env: &Env, caller: &Address) -> bool {
     if let Some(admin) = env

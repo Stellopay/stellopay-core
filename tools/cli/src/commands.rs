@@ -8,12 +8,24 @@ use crate::{require_admin, require_not_paused, Config, Error, TokenClient, Webho
 
 const MAXIMUM_AMOUNT: i128 = 100_000_000;
 
+/// Supported Stellar network identifiers accepted by `--network`.
+const SUPPORTED_NETWORKS: &[&str] = &["testnet", "mainnet"];
+
 pub async fn deploy_command(
     network: String,
     owner: String,
     wasm: Option<PathBuf>,
     config: &Config,
 ) -> Result<()> {
+    // Validate --network against supported values before any side-effects.
+    if !SUPPORTED_NETWORKS.contains(&network.as_str()) {
+        return Err(anyhow::anyhow!(
+            "unsupported network '{}'. Supported networks: {}",
+            network,
+            SUPPORTED_NETWORKS.join(", ")
+        ));
+    }
+
     info!("Deploying contract to network: {}", network);
 
     // Determine WASM file path
