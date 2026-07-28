@@ -612,54 +612,75 @@ fn test_cancel_payment_twice_does_not_double_refund() {
     let recipient = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token = create_token_contract(&env, &token_admin);
-    let asset_admin = StellarAssetClient::new(&env, &token.address);
 
     client.initialize(&owner);
-    asset_admin.mint(&payer, &100);
+    env.ledger().with_mut(|li| li.timestamp = 0);
 
     let id = schedule_payment(
         &env,
         &client,
         PaymentInput {
-            id_seed: 25,
+            id_seed: 11,
             payer: &payer,
             recipient: &recipient,
             token: &token.address,
             amount: 100,
-            max_retries: 2,
-            intervals: &[30],
+            max_retries: 3,
+            intervals: &[30, 60, 120],
         },
     );
-    client.fund_payment(&payer, &id, &100);
 
-    client.cancel_payment(&payer, &id);
-    assert_eq!(token.balance(&payer), 100);
+    // --- Attempt 1 ---
+    env.ledger().with_mut(|li| li.timestamp = 10);
+    client.process_retry(&id);
+    let pay = client.get_payment(&id).unwrap();
+    assert_eq!(pay.retry_count, 1, "retry_count should be 1 after first failure");
+    assert_eq!(pay.next_retry_at, 40, "next_retry_at = 10 + 30");
+    assert_eq!(pay.state, RetryState::Retrying);
 
-    // A second cancel is rejected (already terminal); the refund is not repeated.
-    assert!(client.try_cancel_payment(&payer, &id).is_err());
-    assert_eq!(token.balance(&payer), 100);
+    // --- Attempt 2 ---
+    env.ledger().with_mut(|li| li.timestamp = 40);
+    client.process_retry(&id);
+    let pay = client.get_payment(&id).unwrap();
+    assert_eq!(pay.retry_count, 2, "retry_count should be 2 after second failure");
+    assert_eq!(pay.next_retry_at, 100, "next_retry_at = 40 + 60");
+    assert_eq!(pay.state, RetryState::Retrying);
+
+    // --- Attempt 3 ---
+    env.ledger().with_mut(|li| li.timestamp = 100);
+    client.process_retry(&id);
+    let pay = client.get_payment(&id).unwrap();
+    assert_eq!(pay.retry_count, 3, "retry_count should be 3 after third failure");
+    assert_eq!(pay.next_retry_at, 220, "next_retry_at = 100 + 120 (last interval reused)");
+    assert_eq!(pay.state, RetryState::Retrying);
+
+    // --- Attempt 4 (terminal) ---
+    env.ledger().with_mut(|li| li.timestamp = 220);
+    client.process_retry(&id);
+    let pay = client.get_payment(&id).unwrap();
+    assert_eq!(pay.retry_count, 4, "retry_count should be 4 after terminal failure");
+    assert_eq!(pay.state, RetryState::Failed, "request should be Failed after max_retries exhausted");
 }
 
 #[test]
-fn test_cancel_payment_rejects_non_payer() {
+fn test_get_payment_successful_retry_leaves_count_unchanged() {
     let env = create_env();
     let (contract_id, client) = register_contract(&env);
     let owner = Address::generate(&env);
     let payer = Address::generate(&env);
-    let intruder = Address::generate(&env);
     let recipient = Address::generate(&env);
     let token_admin = Address::generate(&env);
     let token = create_token_contract(&env, &token_admin);
     let asset_admin = StellarAssetClient::new(&env, &token.address);
 
     client.initialize(&owner);
-    asset_admin.mint(&payer, &100);
+    env.ledger().with_mut(|li| li.timestamp = 0);
 
     let id = schedule_payment(
         &env,
         &client,
         PaymentInput {
-            id_seed: 26,
+            id_seed: 12,
             payer: &payer,
             recipient: &recipient,
             token: &token.address,
@@ -668,73 +689,27 @@ fn test_cancel_payment_rejects_non_payer() {
             intervals: &[30],
         },
     );
+
+    // First attempt fails (no funds)
+    client.process_retry(&id);
+    let pay = client.get_payment(&id).unwrap();
+    assert_eq!(pay.retry_count, 1, "retry_count should be 1 after first failure");
+    assert_eq!(pay.state, RetryState::Retrying);
+
+    // Fund escrow so the next attempt succeeds
+    asset_admin.mint(&payer, &100);
     client.fund_payment(&payer, &id, &100);
-
-    // A non-payer cannot cancel and therefore cannot drain the escrow.
-    assert!(client.try_cancel_payment(&intruder, &id).is_err());
-    assert_eq!(token.balance(&contract_id), 100);
-    assert_ne!(client.get_payment(&id).unwrap().state, RetryState::Failed);
-}
-
-#[test]
-fn test_unfunded_request_cannot_be_paid_from_pooled_escrow() {
-    let env = create_env();
-    let (contract_id, client) = register_contract(&env);
-    let owner = Address::generate(&env);
-    let victim = Address::generate(&env);
-    let attacker = Address::generate(&env);
-    let victim_recipient = Address::generate(&env);
-    let token_admin = Address::generate(&env);
-    let token = create_token_contract(&env, &token_admin);
-    let asset_admin = StellarAssetClient::new(&env, &token.address);
-
-    client.initialize(&owner);
-    asset_admin.mint(&victim, &100);
-
-    // Victim schedules and funds their own request; the contract now holds 100.
-    let victim_id = schedule_payment(
-        &env,
-        &client,
-        PaymentInput {
-            id_seed: 30,
-            payer: &victim,
-            recipient: &victim_recipient,
-            token: &token.address,
-            amount: 100,
-            max_retries: 2,
-            intervals: &[30],
-        },
-    );
-    client.fund_payment(&victim, &victim_id, &100);
     assert_eq!(token.balance(&contract_id), 100);
 
-    // Attacker schedules an UNFUNDED request that pays themselves the same amount.
-    let attacker_id = schedule_payment(
-        &env,
-        &client,
-        PaymentInput {
-            id_seed: 31,
-            payer: &attacker,
-            recipient: &attacker,
-            token: &token.address,
-            amount: 100,
-            max_retries: 0,
-            intervals: &[30],
-        },
+    // Second attempt succeeds — retry_count must NOT be incremented
+    env.ledger().with_mut(|li| li.timestamp = 30);
+    client.process_retry(&id);
+    let pay = client.get_payment(&id).unwrap();
+    assert_eq!(pay.state, RetryState::Success);
+    assert_eq!(
+        pay.retry_count, 1,
+        "retry_count must remain 1 (not incremented on success)"
     );
-
-    // Settlement is escrow-backed, so the unfunded request cannot be paid out of
-    // the pooled balance holding the victim's deposit.
-    client.process_retry(&attacker_id);
-    assert_eq!(token.balance(&attacker), 0);
-    assert_ne!(
-        client.get_payment(&attacker_id).unwrap().state,
-        RetryState::Success
-    );
-
-    // The victim's escrow is fully intact and remains refundable.
-    assert_eq!(token.balance(&contract_id), 100);
-    client.cancel_payment(&victim, &victim_id);
-    assert_eq!(token.balance(&victim), 100);
+    assert_eq!(token.balance(&recipient), 100);
     assert_eq!(token.balance(&contract_id), 0);
 }

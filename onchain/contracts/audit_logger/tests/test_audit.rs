@@ -7,6 +7,8 @@ use soroban_sdk::{
 };
 use std::collections::HashSet;
 
+use audit_logger::{AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
+
 fn setup() -> (Env, Address, AuditLoggerContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
