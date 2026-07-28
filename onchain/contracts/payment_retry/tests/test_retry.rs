@@ -594,7 +594,10 @@ fn test_cancel_payment_refund_isolated_to_its_own_request() {
 
     // B still processes normally and pays its recipient from its own escrow.
     assert_eq!(client.process_due_payments(&10), 1);
-    assert_eq!(client.get_payment(&id_b).unwrap().state, RetryState::Success);
+    assert_eq!(
+        client.get_payment(&id_b).unwrap().state,
+        RetryState::Success
+    );
     assert_eq!(token.balance(&recipient_b), 100);
     assert_eq!(token.balance(&recipient_a), 0);
     assert_eq!(token.balance(&contract_id), 0);

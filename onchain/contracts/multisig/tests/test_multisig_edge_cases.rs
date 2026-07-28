@@ -1,13 +1,12 @@
 #![cfg(test)]
 
+use multisig::{
+    MultisigContract, MultisigContractClient, OperationKind, OperationStatus, OperationType,
+};
 use soroban_sdk::{
     testutils::Address as _,
     token::{Client as TokenClient, StellarAssetClient},
     Address, BytesN, Env, Vec,
-};
-
-use multisig::{
-    MultisigContract, MultisigContractClient, OperationKind, OperationStatus, OperationType,
 };
 
 fn create_env() -> Env {
@@ -571,6 +570,76 @@ fn cancelled_operation_id_is_not_reused() {
     assert!(op2.id > op1_id);
 }
 
+// ==================== Cancel Operation Authorization ====================
+
+#[test]
+fn signer_not_proposer_cannot_cancel() {
+    // Verifies that a signer who is neither the proposer nor the admin
+    // (owner) is rejected from cancelling a pending operation.
+    let env = create_env();
+    let (_id, client, owner, signers, _guardian) = setup_2of3(&env);
+
+    // S1 proposes an operation
+    let proposer = signers.get(0).unwrap();
+    let op_id = client.propose_operation(
+        &proposer,
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+
+    // S2 is a valid signer but NOT the proposer (S1) and NOT the owner
+    let other_signer = signers.get(1).unwrap();
+    assert_ne!(other_signer, proposer);
+    assert_ne!(other_signer, owner);
+
+    let res = client.try_cancel_operation(&other_signer, &op_id);
+    assert!(
+        res.is_err(),
+        "A signer who is not the proposer and not the owner must be rejected from cancelling"
+    );
+
+    // Operation remains pending
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Pending);
+}
+
+#[test]
+fn proposer_can_cancel_own_operation() {
+    // Verifies that the original proposer can cancel their own pending
+    // operation.
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let proposer = signers.get(0).unwrap();
+    let op_id = client.propose_operation(
+        &proposer,
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+
+    // Proposer cancels their own operation — must succeed
+    client.cancel_operation(&proposer, &op_id);
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Cancelled);
+}
+
+#[test]
+fn owner_can_cancel_any_pending_operation() {
+    // Verifies that the admin (owner) can cancel any pending operation,
+    // not just operations they proposed.
+    let env = create_env();
+    let (_id, client, owner, signers, _guardian) = setup_2of3(&env);
+
+    let proposer = signers.get(0).unwrap();
+    let op_id = client.propose_operation(
+        &proposer,
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+
+    // Owner (admin) cancels — must succeed even though owner did not propose
+    client.cancel_operation(&owner, &op_id);
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Cancelled);
+}
+
 // ==================== Large Payment Validation ====================
 
 #[test]
@@ -706,12 +775,18 @@ fn test_signer_removal_prior_confirmation_policy() {
     );
 
     // Initial state: threshold is 3. S1 proposed (which auto-approves), so 1 approval.
-    assert_eq!(client.get_operation(&op_id).unwrap().status, OperationStatus::Pending);
+    assert_eq!(
+        client.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending
+    );
     assert_eq!(client.get_approvals(&op_id).len(), 1);
 
     // S2 approves. Now 2 approvals.
     client.approve_operation(&signers.get(1).unwrap(), &op_id);
-    assert_eq!(client.get_operation(&op_id).unwrap().status, OperationStatus::Pending);
+    assert_eq!(
+        client.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending
+    );
 
     // S2 is removed, and the new signer set is S1 and S3. Threshold is updated to 2-of-2.
     let mut new_signers = Vec::new(&env);
@@ -724,7 +799,8 @@ fn test_signer_removal_prior_confirmation_policy() {
     let op = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Pending);
 
-    // If S3 approves, the valid count becomes 2 (S1, S3) which meets the threshold of 2, executing the operation.
+    // If S3 approves, the valid count becomes 2 (S1, S3) which meets the threshold of 2, executing
+    // the operation.
     client.approve_operation(&signers.get(2).unwrap(), &op_id);
     let op = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Executed);
@@ -784,7 +860,8 @@ fn test_quorum_override_recalculation_after_signer_removal() {
     new_signers.push_back(signers.get(1).unwrap());
     client.update_signers(&new_signers, &2u32);
 
-    // The override of 3 should have been capped/recalculated to 2 (since the new signer count is 2).
+    // The override of 3 should have been capped/recalculated to 2 (since the new signer count is
+    // 2).
     assert_eq!(
         client.get_threshold_override(&OperationType::ContractUpgrade),
         Some(2)

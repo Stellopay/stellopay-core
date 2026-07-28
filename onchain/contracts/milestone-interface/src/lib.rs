@@ -133,10 +133,9 @@ pub trait MilestoneContractInterface {
     ///
     /// This method is invoked by the payroll contract's `expire_milestone`
     /// entry-point after it has:
-    /// 1. Verified that the milestone is in a state eligible for expiry
-    ///    (not already approved, claimed, rejected, or previously expired).
-    /// 2. Persisted the expiry flag (`MilestoneKey::MilestoneExpired`) to
-    ///    durable storage.
+    /// 1. Verified that the milestone is in a state eligible for expiry (not already approved,
+    ///    claimed, rejected, or previously expired).
+    /// 2. Persisted the expiry flag (`MilestoneKey::MilestoneExpired`) to durable storage.
     /// 3. Emitted the `MilestoneExpiredEvent` for off-chain indexers.
     ///
     /// Implementors may use this hook to trigger additional on-chain reactions
@@ -152,8 +151,7 @@ pub trait MilestoneContractInterface {
     ///
     /// * `env`          – Contract environment provided by the Soroban host.
     /// * `agreement_id` – The milestone agreement that contains the expired milestone.
-    /// * `milestone_id` – The 1-based identifier of the expired milestone within
-    ///                    `agreement_id`.
+    /// * `milestone_id` – The 1-based identifier of the expired milestone within `agreement_id`.
     ///
     /// # Panics
     ///

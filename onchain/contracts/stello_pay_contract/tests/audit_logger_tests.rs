@@ -1,9 +1,9 @@
 #![cfg(test)]
 
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Symbol};
-use stello_pay_contract::audit::AuditEvent;
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, testutils::Address as _, Address, Env, Symbol,
+};
+use stello_pay_contract::{audit::AuditEvent, PayrollContract, PayrollContractClient};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]

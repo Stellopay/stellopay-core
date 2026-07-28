@@ -9,15 +9,14 @@
 //! Scope: test only — no runtime logic, storage schema, or APIs are changed.
 #![cfg(test)]
 
+use audit_logger::{AuditLogEntry, AuditLoggerContract, AuditLoggerContractClient};
+use expense_reimbursement::{
+    ExpenseReimbursementContract, ExpenseReimbursementContractClient, ExpenseStatus,
+};
 use soroban_sdk::{
     testutils::Address as _,
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, String, Symbol,
-};
-
-use audit_logger::{AuditLogEntry, AuditLoggerContract, AuditLoggerContractClient};
-use expense_reimbursement::{
-    ExpenseReimbursementContract, ExpenseReimbursementContractClient, ExpenseStatus,
 };
 
 // ============================================================================

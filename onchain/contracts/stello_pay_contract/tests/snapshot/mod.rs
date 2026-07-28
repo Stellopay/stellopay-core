@@ -1,4 +1,4 @@
-﻿#![cfg(test)]
+#![cfg(test)]
 
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -195,10 +195,16 @@ fn snapshot_dispute_and_fx_helpers() {
     let raised = client.get_dispute_status(&agreement_id);
 
     // Configure FX admin and rate.
-    client.set_exchange_rate_admin(&owner, &owner).expect("set fx admin");
-    client.set_exchange_rate(&owner, &base, &quote, &1_500i128).expect("set rate");
+    client
+        .set_exchange_rate_admin(&owner, &owner)
+        .expect("set fx admin");
+    client
+        .set_exchange_rate(&owner, &base, &quote, &1_500i128)
+        .expect("set rate");
 
-    let converted = client.convert_currency(&base, &quote, &1_000i128).expect("convert");
+    let converted = client
+        .convert_currency(&base, &quote, &1_000i128)
+        .expect("convert");
 
     // Resolve dispute by splitting funds.
     env.as_contract(&contract_id, || {
@@ -461,7 +467,9 @@ fn snapshot_dispute_opened_escalation_resolution() {
     // Phase 4: Resolve dispute
     let pay_employee: i128 = escrow_total / 2;
     let refund_employer: i128 = escrow_total / 2;
-    client.resolve_dispute(&arbiter, &id, &pay_employee, &refund_employer).unwrap();
+    client
+        .resolve_dispute(&arbiter, &id, &pay_employee, &refund_employer)
+        .unwrap();
     let after_resolve = client.get_agreement(&id).unwrap();
     let dispute_after = client.get_dispute_status(&id);
 
@@ -558,7 +566,9 @@ fn snapshot_emergency_pause_blocks_and_unblocks_operations() {
     );
 
     // Security: both claim types must be blocked
-    let payroll_blocked = client.try_claim_payroll(&employee, &payroll_id, &0u32).is_err();
+    let payroll_blocked = client
+        .try_claim_payroll(&employee, &payroll_id, &0u32)
+        .is_err();
     let milestone_blocked = client.try_claim_milestone(&ms_id, &1u32).is_err();
 
     // Phase 3: Unpause
@@ -566,7 +576,9 @@ fn snapshot_emergency_pause_blocks_and_unblocks_operations() {
     let paused_after_unpause = client.is_emergency_paused();
 
     // Phase 4: Claims succeed after unpause
-    let payroll_claim_ok = client.try_claim_payroll(&employee, &payroll_id, &0u32).is_ok();
+    let payroll_claim_ok = client
+        .try_claim_payroll(&employee, &payroll_id, &0u32)
+        .is_ok();
     let milestone_claim_ok = client.try_claim_milestone(&ms_id, &1u32).is_ok();
 
     let snapshot = format!(
@@ -656,13 +668,21 @@ milestone_count: {}\nreclaim_m1_rejected: {}\n\n\
 === PHASE: after_claim_m2_auto_complete ===\n\
 m2: approved={} claimed={} amount={}\n\
 final_status: {:?}\n",
-        m1_before.approved, m1_before.claimed, m1_before.amount,
-        m2_before.approved, m2_before.claimed, m2_before.amount,
+        m1_before.approved,
+        m1_before.claimed,
+        m1_before.amount,
+        m2_before.approved,
+        m2_before.claimed,
+        m2_before.amount,
         claim_while_paused,
-        m1_after.approved, m1_after.claimed, m1_after.amount,
+        m1_after.approved,
+        m1_after.claimed,
+        m1_after.amount,
         count_after_m1,
         reclaim_m1_rejected,
-        m2_after.approved, m2_after.claimed, m2_after.amount,
+        m2_after.approved,
+        m2_after.claimed,
+        m2_after.amount,
         final_status,
     );
 
@@ -707,10 +727,7 @@ fn snapshot_pause_resume_preserves_agreement_fields() {
 === PHASE: while_paused ===\nstatus: {:?}\n\n\
 === PHASE: after_resume ===\n{}\
 stable_fields_preserved_across_pause_resume: {}\n",
-        fields_before,
-        while_paused.status,
-        fields_after,
-        fields_preserved,
+        fields_before, while_paused.status, fields_after, fields_preserved,
     );
 
     assert_snapshot("pause_resume_preserves_agreement_fields", &snapshot);
@@ -784,7 +801,14 @@ fn snapshot_escrow_lifecycle_created_funded_first_claim() {
     const TOTAL: i128 = AMOUNT_PER_PERIOD * (NUM_PERIODS as i128);
 
     let id = client
-        .create_escrow_agreement(&employer, &contributor, &token, &AMOUNT_PER_PERIOD, &PERIOD, &NUM_PERIODS)
+        .create_escrow_agreement(
+            &employer,
+            &contributor,
+            &token,
+            &AMOUNT_PER_PERIOD,
+            &PERIOD,
+            &NUM_PERIODS,
+        )
         .unwrap();
 
     let after_create = client.get_agreement(&id).unwrap();

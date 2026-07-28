@@ -1199,6 +1199,7 @@ dependencies = [
  "expense_reimbursement",
  "governance",
  "multisig",
+ "nft-payroll-badge",
  "payment_history",
  "payment_retry",
  "payment_scheduler",
@@ -1207,6 +1208,7 @@ dependencies = [
  "salary_adjustment",
  "soroban-sdk",
  "stello_pay_contract",
+ "template_versioning",
  "token_vesting",
  "withdrawal_timelock",
 ]

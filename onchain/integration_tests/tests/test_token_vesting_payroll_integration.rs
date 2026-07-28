@@ -14,9 +14,10 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env,
 };
-
-use stello_pay_contract::storage::{AgreementStatus, DataKey, DisputeStatus};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{AgreementStatus, DataKey, DisputeStatus},
+    PayrollContract, PayrollContractClient,
+};
 use token_vesting::{TokenVestingContract, TokenVestingContractClient, VestingStatus};
 
 const ONE_DAY: u64 = 86_400;

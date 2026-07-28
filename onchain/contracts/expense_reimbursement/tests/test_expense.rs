@@ -3,8 +3,10 @@
 use expense_reimbursement::{
     ExpenseReimbursementContract, ExpenseReimbursementContractClient, ExpenseStatus,
 };
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String, Symbol};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, testutils::Address as _, token, Address, Env, String,
+    Symbol,
+};
 
 #[contracttype]
 #[derive(Clone)]
@@ -980,6 +982,311 @@ fn test_multiple_expenses_with_unique_receipts_work_end_to_end() {
     assert_eq!(token_client.balance(&submitter2), 700);
     assert_eq!(token_client.balance(&client.address), 0);
     assert_eq!(token_client.balance(&payer), 4000);
+}
+
+// ─── Spending Cap Tests ───────────────────────────────────────────────────
+
+/// Helper: set up a basic initialized environment with owner, approver, token, and submitter.
+fn cap_setup(env: &Env) -> (Address, Address, Address, Address, token::Client) {
+    let owner = Address::generate(env);
+    let submitter = Address::generate(env);
+    let approver = Address::generate(env);
+    let token_admin = Address::generate(env);
+    let token_client = create_token(env, &token_admin);
+    let client = create_contract(env);
+
+    client.initialize(&owner);
+    client.add_approver(&owner, &approver);
+    (owner, submitter, approver, token_client.address, token_client)
+}
+
+#[test]
+fn test_set_employee_cap_owner_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
+    let client = create_contract(&env);
+    client.initialize(&owner);
+
+    // Owner sets cap
+    client.set_employee_cap(&owner, &submitter, &1000);
+    assert_eq!(client.get_employee_cap(&submitter), 1000);
+
+    // Non-owner rejected
+    let non_owner = Address::generate(&env);
+    let result = client.try_set_employee_cap(&non_owner, &submitter, &1000);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_set_employee_cap_zero_removes_cap() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
+    let client = create_contract(&env);
+    client.initialize(&owner);
+
+    client.set_employee_cap(&owner, &submitter, &1000);
+    assert_eq!(client.get_employee_cap(&submitter), 1000);
+
+    // Setting to 0 removes the cap
+    client.set_employee_cap(&owner, &submitter, &0);
+    assert_eq!(client.get_employee_cap(&submitter), 0);
+}
+
+#[test]
+fn test_set_period_duration_owner_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let client = create_contract(&env);
+    client.initialize(&owner);
+
+    client.set_period_duration(&owner, &86_400); // 1 day
+
+    let non_owner = Address::generate(&env);
+    let result = client.try_set_period_duration(&non_owner, &86_400);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_submit_expense_under_cap_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (owner, submitter, approver, token_addr, client) = cap_setup(&env);
+    client.set_employee_cap(&owner, &submitter, &1000);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_addr,
+        &500,
+        &String::from_str(&env, "receipt_under_cap"),
+        &String::from_str(&env, "Under cap"),
+    );
+    assert_eq!(expense_id, 0);
+}
+
+#[test]
+fn test_submit_expense_at_cap_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (owner, submitter, approver, token_addr, client) = cap_setup(&env);
+    client.set_employee_cap(&owner, &submitter, &500);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_addr,
+        &500,
+        &String::from_str(&env, "receipt_at_cap"),
+        &String::from_str(&env, "At cap"),
+    );
+    assert_eq!(expense_id, 0);
+}
+
+#[test]
+#[should_panic(expected = "Expense would exceed per-period spending cap")]
+fn test_submit_expense_over_cap_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (owner, submitter, approver, token_addr, client) = cap_setup(&env);
+    client.set_employee_cap(&owner, &submitter, &500);
+
+    // Submitting 600 with a 500 cap should be rejected
+    client.submit_expense(
+        &submitter,
+        &approver,
+        &token_addr,
+        &600,
+        &String::from_str(&env, "receipt_over_cap"),
+        &String::from_str(&env, "Over cap"),
+    );
+}
+
+#[test]
+fn test_submit_expense_over_cap_rejected_after_previous_claims() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (owner, submitter, approver, token_addr, client) = cap_setup(&env);
+    client.set_employee_cap(&owner, &submitter, &1000);
+
+    // Submit 700 first (within cap)
+    client.submit_expense(
+        &submitter,
+        &approver,
+        &token_addr,
+        &700,
+        &String::from_str(&env, "receipt_first"),
+        &String::from_str(&env, "First expense"),
+    );
+
+    // Submit 400 more would exceed the 1000 cap
+    let result = client.try_submit_expense(
+        &submitter,
+        &approver,
+        &token_addr,
+        &400,
+        &String::from_str(&env, "receipt_second"),
+        &String::from_str(&env, "Second expense"),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_period_spent_decremented_on_rejection() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (owner, submitter, approver, token_addr, client) = cap_setup(&env);
+    let payer = Address::generate(&env);
+    let asset_admin = token::StellarAssetClient::new(&env, &token_addr);
+    asset_admin.mint(&payer, &10_000);
+
+    client.set_employee_cap(&owner, &submitter, &1000);
+
+    // Submit expense for 800
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_addr,
+        &800,
+        &String::from_str(&env, "receipt_reject"),
+        &String::from_str(&env, "Will be rejected"),
+    );
+    assert_eq!(client.get_employee_period_spent(&submitter), 800);
+
+    client.fund_expense(&payer, &expense_id, &800);
+    client.reject_expense(&approver, &expense_id);
+
+    // Period spent should be decremented after rejection
+    assert_eq!(client.get_employee_period_spent(&submitter), 0);
+}
+
+#[test]
+fn test_period_spent_decremented_on_cancellation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (owner, submitter, approver, token_addr, client) = cap_setup(&env);
+    let payer = Address::generate(&env);
+    let asset_admin = token::StellarAssetClient::new(&env, &token_addr);
+    asset_admin.mint(&payer, &10_000);
+
+    client.set_employee_cap(&owner, &submitter, &1000);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_addr,
+        &800,
+        &String::from_str(&env, "receipt_cancel"),
+        &String::from_str(&env, "Will be cancelled"),
+    );
+    assert_eq!(client.get_employee_period_spent(&submitter), 800);
+
+    client.fund_expense(&payer, &expense_id, &800);
+    client.cancel_expense(&submitter, &expense_id);
+
+    assert_eq!(client.get_employee_period_spent(&submitter), 0);
+}
+
+#[test]
+fn test_period_spent_adjusted_on_partial_approval() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (owner, submitter, approver, token_addr, client) = cap_setup(&env);
+    let payer = Address::generate(&env);
+    let asset_admin = token::StellarAssetClient::new(&env, &token_addr);
+    asset_admin.mint(&payer, &10_000);
+
+    client.set_employee_cap(&owner, &submitter, &1000);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_addr,
+        &800,
+        &String::from_str(&env, "receipt_partial"),
+        &String::from_str(&env, "Partial approval"),
+    );
+    assert_eq!(client.get_employee_period_spent(&submitter), 800);
+
+    client.fund_expense(&payer, &expense_id, &800);
+    client.approve_expense(&approver, &expense_id, &500); // Partial approval
+    client.pay_expense(&expense_id);
+
+    // After partial approval+payment, period spent should be reduced by surplus
+    assert_eq!(client.get_employee_period_spent(&submitter), 500);
+}
+
+#[test]
+fn test_no_cap_allows_unlimited_submissions() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (owner, submitter, approver, token_addr, client) = cap_setup(&env);
+
+    // No cap set → unlimited submissions allowed
+    for i in 0..10 {
+        let payload = format!("receipt_no_cap_{}", i);
+        let expense_id = client.submit_expense(
+            &submitter,
+            &approver,
+            &token_addr,
+            &1000,
+            &String::from_str(&env, &payload),
+            &String::from_str(&env, "No cap"),
+        );
+        assert_eq!(expense_id, i as u128);
+    }
+}
+
+#[test]
+fn test_period_rollover_resets_spent() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (owner, submitter, approver, token_addr, client) = cap_setup(&env);
+    client.set_employee_cap(&owner, &submitter, &1000);
+    client.set_period_duration(&owner, &86_400); // 1 day period
+
+    // Period 0 (timestamp / 86400 = 0)
+    env.ledger().with_mut(|li| li.timestamp = 0);
+    client.submit_expense(
+        &submitter,
+        &approver,
+        &token_addr,
+        &1000,
+        &String::from_str(&env, "receipt_period_0"),
+        &String::from_str(&env, "Period 0"),
+    );
+    assert_eq!(client.get_employee_period_spent(&submitter), 1000);
+
+    // Period 1 (timestamp / 86400 = 1) → spent should reset to 0
+    env.ledger().with_mut(|li| li.timestamp = 86_400);
+    assert_eq!(client.get_employee_period_spent(&submitter), 0);
+
+    // Can submit again in new period
+    client.submit_expense(
+        &submitter,
+        &approver,
+        &token_addr,
+        &1000,
+        &String::from_str(&env, "receipt_period_1"),
+        &String::from_str(&env, "Period 1"),
+    );
+    assert_eq!(client.get_employee_period_spent(&submitter), 1000);
 }
 
 #[test]

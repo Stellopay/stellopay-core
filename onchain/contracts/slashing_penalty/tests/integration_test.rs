@@ -1,12 +1,11 @@
 #![cfg(test)]
+use slashing_penalty::{
+    Offense, SlashError, SlashStatus, SlashingPenaltyContract, SlashingPenaltyContractClient,
+};
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
     token::StellarAssetClient,
     Address, BytesN, Env,
-};
-
-use slashing_penalty::{
-    Offense, SlashError, SlashStatus, SlashingPenaltyContract, SlashingPenaltyContractClient,
 };
 
 // ─── Test Helpers ─────────────────────────────────────────────────────────────
@@ -126,7 +125,8 @@ fn test_initialize_quorum_one_accepted() {
     let admin = Address::generate(&env);
     let token = Address::generate(&env);
 
-    // quorum = 1 is the minimum valid value and must be stored as-is (not raised to DEFAULT_QUORUM).
+    // quorum = 1 is the minimum valid value and must be stored as-is (not raised to
+    // DEFAULT_QUORUM).
     client.initialize(
         &admin, &token, &1u32, &5_000u32, &6_000i128, &9_000i128, &86_400u64,
     );
@@ -998,8 +998,7 @@ fn test_execute_slash_stake_balance_reflects_single_execution() {
     // and held in escrow — verify the intermediate balance.
     let balance_after_slash = t.client.get_stake_balance(&t.offender);
     assert_eq!(
-        balance_after_slash,
-        9_000i128,
+        balance_after_slash, 9_000i128,
         "stake must drop by exactly the slashed amount (1_000) after initiation"
     );
 
@@ -1027,8 +1026,7 @@ fn test_execute_slash_stake_balance_reflects_single_execution() {
     // Balance must be unchanged after the rejected second call — no double-burn.
     let balance_after_rejected = t.client.get_stake_balance(&t.offender);
     assert_eq!(
-        balance_after_rejected,
-        9_000i128,
+        balance_after_rejected, 9_000i128,
         "stake balance must be unchanged after the rejected double-execution attempt"
     );
 }

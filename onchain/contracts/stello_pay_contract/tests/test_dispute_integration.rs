@@ -3,8 +3,10 @@
 #![cfg(test)]
 
 use soroban_sdk::{testutils::Address as _, token, Address, Env};
-use stello_pay_contract::storage::{AgreementStatus, DisputeStatus};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{AgreementStatus, DisputeStatus},
+    PayrollContract, PayrollContractClient,
+};
 
 fn env_client() -> (Env, Address, PayrollContractClient<'static>) {
     let env = Env::default();

@@ -1,11 +1,15 @@
 //! Integration tests for dispute_escalation: full escalation ladder, binding
-//! finality, expiry, and concurrent disputes.
+//! finality, expiry, concurrent disputes, and cross-contract escrow pause.
 #![cfg(test)]
 
-use dispute_escalation::types::{DisputeError, DisputeOutcome, DisputeStatus, EscalationLevel};
-use dispute_escalation::{DisputeEscalationContract, DisputeEscalationContractClient};
+use dispute_escalation::{
+    types::{DisputeError, DisputeOutcome, DisputeStatus, EscalationLevel},
+    DisputeEscalationContract, DisputeEscalationContractClient,
+};
+use payroll_escrow::{PayrollEscrowContract, PayrollEscrowContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
+    token::StellarAssetClient,
     Address, Env,
 };
 
@@ -206,4 +210,171 @@ fn test_no_double_resolve_integration() {
 
     let res = client.try_resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
     assert_eq!(res, Err(Ok(DisputeError::AlreadyResolved)));
+}
+
+// ============================================================================
+// Cross-contract: dispute ↔ payroll_escrow pause integration
+// ============================================================================
+
+/// Helper to set up both dispute_escalation and payroll_escrow contracts
+/// with the dispute contract configured as the escrow manager.
+fn setup_escrow_integration() -> (
+    Env,
+    DisputeEscalationContractClient<'static>,
+    PayrollEscrowContractClient<'static>,
+    Address, // token
+    Address, // employer
+    Address, // employee
+    Address, // admin
+    Address, // user
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    // Deploy payroll_escrow
+    let escrow_id = env.register(PayrollEscrowContract, ());
+    let escrow_client = PayrollEscrowContractClient::new(&env, &escrow_id);
+
+    // Deploy dispute_escalation
+    let dispute_id = env.register(DisputeEscalationContract, ());
+    let dispute_client = DisputeEscalationContractClient::new(&env, &dispute_id);
+
+    let owner = Address::generate(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    // Create token and mint to employer
+    let token_admin = Address::generate(&env);
+    let token = env.register_stellar_asset_contract(token_admin.clone());
+    let sac = StellarAssetClient::new(&env, &token);
+    sac.mint(&employer, &10_000);
+
+    // Initialize payroll_escrow with dispute contract as manager
+    escrow_client.initialize(&admin, &token, &dispute_id);
+
+    // Initialize dispute_escalation
+    dispute_client.initialize(&owner, &admin);
+
+    // Register the escrow contract in dispute_escalation
+    dispute_client.set_payroll_escrow(&admin, &escrow_id);
+
+    (env, dispute_client, escrow_client, token, employer, employee, admin, user)
+}
+
+/// Dispute filing pauses the payroll escrow; resolution resumes it.
+#[test]
+fn test_dispute_pauses_escrow_resolve_resumes() {
+    let (_env, dispute_client, escrow_client, token, employer, employee, admin, user) =
+        setup_escrow_integration();
+    let agreement_id = 301u128;
+
+    // Fund the agreement
+    escrow_client.fund_agreement(&employer, &agreement_id, &employer, &1000);
+    assert_eq!(escrow_client.get_agreement_balance(&agreement_id), 1000);
+
+    // Release succeeds before dispute (manager = dispute contract)
+    dispute_client.file_dispute(&user, &agreement_id);
+    // Resolve immediately so the release below succeeds before we test pause
+    dispute_client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::UpholdPayment);
+
+    escrow_client.release(&dispute_client.address, &agreement_id, &employee, &200);
+    assert_eq!(escrow_client.get_agreement_balance(&agreement_id), 800);
+
+    // File a new dispute — this triggers pause_agreement on the escrow
+    dispute_client.file_dispute(&user, &agreement_id);
+
+    // Release is now blocked because the agreement is paused
+    let paused_release = escrow_client.try_release(
+        &dispute_client.address,
+        &agreement_id,
+        &employee,
+        &100,
+    );
+    assert!(
+        paused_release.is_err(),
+        "release must fail while agreement is paused"
+    );
+    assert_eq!(
+        escrow_client.get_agreement_balance(&agreement_id),
+        800,
+        "balance unchanged after failed release"
+    );
+
+    // Resolve the dispute — this triggers resume_agreement on the escrow
+    dispute_client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::UpholdPayment);
+
+    // Release succeeds again after resolution
+    escrow_client.release(&dispute_client.address, &agreement_id, &employee, &300);
+    assert_eq!(escrow_client.get_agreement_balance(&agreement_id), 500);
+}
+
+/// Dispute expiry resumes the escrow.
+#[test]
+fn test_dispute_expiry_resumes_escrow() {
+    let (env, dispute_client, escrow_client, token, employer, employee, admin, user) =
+        setup_escrow_integration();
+    let agreement_id = 302u128;
+
+    // Fund the agreement
+    escrow_client.fund_agreement(&employer, &agreement_id, &employer, &1000);
+
+    // File a dispute — pauses escrow
+    dispute_client.set_level_time_limit(&admin, &EscalationLevel::Level1, &60);
+    dispute_client.file_dispute(&user, &agreement_id);
+
+    // Release blocked
+    let paused_release = escrow_client.try_release(
+        &dispute_client.address,
+        &agreement_id,
+        &employee,
+        &100,
+    );
+    assert!(paused_release.is_err());
+
+    // Advance past the deadline and expire the dispute
+    env.ledger().with_mut(|li| li.timestamp += 61);
+    dispute_client.expire_dispute(&user, &agreement_id);
+
+    // Release succeeds after expiry
+    escrow_client.release(&dispute_client.address, &agreement_id, &employee, &100);
+    assert_eq!(escrow_client.get_agreement_balance(&agreement_id), 900);
+}
+
+/// Escrow is re-paused when a resolved ruling is appealed.
+#[test]
+fn test_dispute_appeal_repauses_escrow() {
+    let (env, dispute_client, escrow_client, _token, employer, employee, admin, user) =
+        setup_escrow_integration();
+    let agreement_id = 303u128;
+
+    escrow_client.fund_agreement(&employer, &agreement_id, &employer, &1000);
+
+    // File dispute → escrow paused
+    dispute_client.file_dispute(&user, &agreement_id);
+
+    // Resolve → escrow resumed
+    dispute_client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::PartialSettlement);
+
+    // Release works after resolution
+    escrow_client.release(&dispute_client.address, &agreement_id, &employee, &200);
+    assert_eq!(escrow_client.get_agreement_balance(&agreement_id), 800);
+
+    // Appeal the ruling → escrow is paused again
+    dispute_client.appeal_ruling(&user, &agreement_id);
+
+    // Release blocked during appeal
+    let paused_release = escrow_client.try_release(
+        &dispute_client.address,
+        &agreement_id,
+        &employee,
+        &100,
+    );
+    assert!(paused_release.is_err());
+    assert_eq!(
+        escrow_client.get_agreement_balance(&agreement_id),
+        800,
+        "balance unchanged during appeal pause"
+    );
 }
