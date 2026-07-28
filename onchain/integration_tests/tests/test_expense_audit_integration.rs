@@ -26,7 +26,8 @@ use expense_reimbursement::{
     ExpenseReimbursementContract, ExpenseReimbursementContractClient, ExpenseStatus,
 };
 use soroban_sdk::{
-    testutils::Address as _, token::StellarAssetClient, Address, Env, String, Symbol,
+    testutils::{Address as _, Ledger},
+    token::StellarAssetClient, Address, Env, String, Symbol,
 };
 
 // ============================================================================
@@ -248,4 +249,88 @@ fn test_double_approval_does_not_duplicate_audit_entry() {
     let after = expense_client.get_expense(&eid).unwrap();
     assert_eq!(after.audit_log_id, Some(first_log_id));
     assert_eq!(after.status, ExpenseStatus::Approved);
+}
+
+/// Submit → fund → approve, then assert the audit entry's timestamp is
+/// populated and consistent with the ledger time, alongside the actor and
+/// amount fields required for a complete audit trail.
+#[test]
+fn test_approval_audit_entry_has_correct_timestamp_actor_and_amount() {
+    let env = env();
+    let owner = addr(&env);
+    let submitter = addr(&env);
+    let approver = addr(&env);
+    let payer = addr(&env);
+    let tok = token(&env);
+
+    let (expense_client, audit_client, _audit_id) = deploy(&env, &owner, &approver);
+
+    let amount: i128 = 2_500;
+    let eid = submit_and_fund(
+        &env,
+        &expense_client,
+        &submitter,
+        &approver,
+        &tok,
+        &payer,
+        amount,
+    );
+
+    // Set a non-zero ledger timestamp so the audit entry's timestamp field
+    // can be meaningfully asserted.
+    let expected_ts: u64 = 1_700_000_000;
+    env.ledger().set_timestamp(expected_ts);
+
+    expense_client.approve_expense(&approver, &eid, &amount);
+
+    let expense = expense_client.get_expense(&eid).unwrap();
+    let audit_log_id = expense
+        .audit_log_id
+        .expect("approved expense must carry an audit_log_id");
+
+    let entry = audit_client
+        .get_log(&audit_log_id)
+        .expect("audit_log_id must resolve to an existing entry");
+
+    assert_eq!(entry.actor, approver);
+    assert_eq!(entry.amount, Some(amount));
+    assert_eq!(entry.timestamp, expected_ts, "audit entry must record the ledger timestamp at the time of approval");
+}
+
+/// Submitting and rejecting an expense must not write any "expense_approved"
+/// audit entry — the audit log count must remain unchanged and the expense
+/// must carry no audit_log_id.
+#[test]
+fn test_rejection_does_not_produce_false_audit_entry() {
+    let env = env();
+    let owner = addr(&env);
+    let submitter = addr(&env);
+    let approver = addr(&env);
+    let tok = token(&env);
+
+    let (expense_client, audit_client, _audit_id) = deploy(&env, &owner, &approver);
+
+    let eid = expense_client.submit_expense(
+        &submitter,
+        &approver,
+        &tok,
+        &1_000,
+        &String::from_str(&env, "receipt://expense/rej/invoice.pdf"),
+        &String::from_str(&env, "Rejection audit test"),
+    );
+
+    let count_before = audit_client.get_log_count();
+    expense_client.reject_expense(&approver, &eid);
+
+    let expense = expense_client.get_expense(&eid).unwrap();
+    assert_eq!(expense.status, ExpenseStatus::Rejected);
+    assert_eq!(
+        expense.audit_log_id, None,
+        "rejected expense must not carry an audit_log_id"
+    );
+    assert_eq!(
+        audit_client.get_log_count(),
+        count_before,
+        "rejection must not create any audit entry"
+    );
 }
