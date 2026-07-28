@@ -7,7 +7,8 @@
 #![cfg(test)]
 
 use nft_payroll_badge::{
-    MetadataUpdated, NftPayrollBadgeContract, NftPayrollBadgeContractClient, MAX_PAGE_SIZE,
+    BadgeBurned, MetadataUpdated, NftPayrollBadgeContract, NftPayrollBadgeContractClient,
+    MAX_PAGE_SIZE,
 };
 use soroban_sdk::{testutils::Address as _, testutils::Events, Address, Env, IntoVal, String};
 
@@ -340,4 +341,84 @@ fn test_start_beyond_count_returns_empty() {
     let page = client.badges_of_paged(&recipient, &10, &5);
     assert_eq!(page.items.len(), 0);
     assert_eq!(page.next_cursor, None);
+}
+
+// ============================================================================
+// Burn tests
+// ============================================================================
+
+#[test]
+fn test_mint_then_burn_removes_badge() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let recipient = Address::generate(&env);
+    let id = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Q1 2025 Payroll"),
+        &String::from_str(&env, "ipfs://q1-2025-payroll"),
+    );
+
+    // Badge exists pre-burn
+    assert!(client.get_badge(&id).is_some());
+    assert_eq!(client.badge_count(&recipient), 1);
+
+    client.burn(&owner, &id);
+
+    // Check the event immediately after burn, before any other calls
+    let events = env.events().all();
+    let event: BadgeBurned = events.last().unwrap().2.into_val(&env);
+    assert_eq!(event.token_id, id);
+    assert_eq!(event.owner, recipient);
+
+    // get_badge reflects the badge no longer exists
+    assert_eq!(client.get_badge(&id), None);
+    assert_eq!(client.badge_count(&recipient), 0);
+    assert_eq!(client.badges_of(&recipient).len(), 0);
+}
+
+#[test]
+fn test_burn_removes_correct_badge_among_several() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let recipient = Address::generate(&env);
+    mint_n(&env, &client, &owner, &recipient, 3);
+
+    let all_ids = client.badges_of(&recipient);
+    let middle_id = all_ids.get(1).unwrap();
+
+    client.burn(&owner, &middle_id);
+
+    assert_eq!(client.get_badge(&middle_id), None);
+    assert_eq!(client.badge_count(&recipient), 2);
+
+    let remaining = client.badges_of(&recipient);
+    assert_eq!(remaining.len(), 2);
+    assert!(!remaining.iter().any(|id| id == middle_id));
+}
+
+#[test]
+#[should_panic(expected = "Only owner can manage badges")]
+fn test_non_admin_cannot_burn_badge() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let attacker = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let id = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Payroll Badge"),
+        &String::from_str(&env, "ipfs://payroll-badge"),
+    );
+
+    client.burn(&attacker, &id);
+}
+
+#[test]
+#[should_panic(expected = "Badge not found")]
+fn test_burn_nonexistent_badge_panics() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+
+    client.burn(&owner, &999u64);
 }

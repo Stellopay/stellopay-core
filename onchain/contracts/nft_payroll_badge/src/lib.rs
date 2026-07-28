@@ -37,6 +37,16 @@ pub struct MetadataUpdated {
     pub new_uri: soroban_sdk::String,
 }
 
+/// Emitted when an admin burns (revokes) a badge.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BadgeBurned {
+    /// Badge that was revoked.
+    pub token_id: u64,
+    /// Address the badge was revoked from.
+    pub owner: Address,
+}
+
 /// Result returned by [`NftPayrollBadgeContract::badges_of_paged`].
 ///
 /// ## Cursor semantics
@@ -106,6 +116,48 @@ fn append_badge_to_owner(env: &Env, owner: &Address, badge_id: u64) {
         .set(&StorageKey::OwnerBadgeCount(owner.clone()), &(count + 1));
 }
 
+/// Removes `badge_id` from `owner`'s badge list using swap-remove, then
+/// decrements their badge count. Panics if the badge isn't found in the
+/// owner's list (should never happen if storage is consistent).
+fn remove_badge_from_owner(env: &Env, owner: &Address, badge_id: u64) {
+    let count = owner_badge_count(env, owner);
+    let mut found_index: Option<u32> = None;
+    for i in 0..count {
+        if let Some(id) = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&StorageKey::OwnerBadgeAt(owner.clone(), i))
+        {
+            if id == badge_id {
+                found_index = Some(i);
+                break;
+            }
+        }
+    }
+
+    let index = found_index.expect("Badge not found in owner's list");
+    let last_index = count - 1;
+
+    if index != last_index {
+        let last_badge_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::OwnerBadgeAt(owner.clone(), last_index))
+            .expect("Badge id missing at last index");
+        env.storage().persistent().set(
+            &StorageKey::OwnerBadgeAt(owner.clone(), index),
+            &last_badge_id,
+        );
+    }
+
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::OwnerBadgeAt(owner.clone(), last_index));
+    env.storage()
+        .persistent()
+        .set(&StorageKey::OwnerBadgeCount(owner.clone()), &last_index);
+}
+
 fn require_owner(env: &Env, caller: &Address) {
     caller.require_auth();
     let owner: Address = env
@@ -165,6 +217,38 @@ impl NftPayrollBadgeContract {
         append_badge_to_owner(&env, &recipient, badge_id);
 
         badge_id
+    }
+
+    /// Burns (revokes) a badge, removing it from storage and from its
+    /// owner's badge list. Use this to revoke a badge from a terminated
+    /// employee or one issued in error.
+    ///
+    /// Only the contract owner may burn badges.
+    ///
+    /// # Panics
+    /// Panics if `badge_id` does not exist.
+    pub fn burn(env: Env, caller: Address, badge_id: u64) {
+        require_initialized(&env);
+        require_owner(&env, &caller);
+
+        let badge: Badge = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Badge(badge_id))
+            .expect("Badge not found");
+
+        remove_badge_from_owner(&env, &badge.owner, badge_id);
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::Badge(badge_id));
+
+        env.events().publish(
+            (symbol_short!("badge_brn"), badge_id),
+            BadgeBurned {
+                token_id: badge_id,
+                owner: badge.owner,
+            },
+        );
     }
 
     /// Updates the metadata URI for an already-minted badge.

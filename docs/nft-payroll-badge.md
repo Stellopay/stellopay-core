@@ -23,6 +23,9 @@ stores a human-readable name plus an off-chain metadata URI.
   `MAX_PAGE_SIZE` to keep reads predictable for high-volume badge holders.
 - **Event-driven indexing** - Metadata URI changes emit `MetadataUpdated` with
   the token id, old URI, and new URI.
+  - **Revocable badges** - `burn` lets the owner permanently revoke a badge
+    from a terminated employee or one issued in error, removing it from
+    storage and from the owner's badge list.
 
 ### Data Model
 
@@ -41,6 +44,11 @@ stores a human-readable name plus an off-chain metadata URI.
 - `old_uri: String` - URI stored before the update.
 - `new_uri: String` - replacement URI.
 
+#### `BadgeBurned`
+
+- `token_id: u64` - badge that was revoked.
+- `owner: Address` - address the badge was revoked from.
+
 ### Public API
 
 Initialization:
@@ -56,6 +64,12 @@ Badge management:
   - Owner-only.
   - Updates the metadata URI for an existing badge.
   - Emits `MetadataUpdated`.
+  - `burn(caller, badge_id)`
+  - Owner-only.
+  - Revokes a badge: removes it from storage and from the owner's
+    `badges_of` / `badges_of_paged` results, and decrements `badge_count`.
+  - Emits `BadgeBurned`.
+  - Panics if `badge_id` does not exist.
 
 Read helpers:
 
@@ -73,3 +87,6 @@ Read helpers:
 - The owner address should be protected with an operational process such as
   multisig or governance when badge metadata carries compliance or payroll
   meaning.
+  - Burning is owner-only, uses the same authorization check as mint and
+    metadata updates, and uses swap-remove on the owner's badge list so cost
+    doesn't grow with how many badges the owner holds.
