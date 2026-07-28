@@ -190,9 +190,7 @@ fn bench_claim_payroll_in_token() {
 
     // ── Token setup ──────────────────────────────────────────────────────────
     let base_admin = Address::generate(&env);
-    let base_token = env
-        .register_stellar_asset_contract_v2(base_admin)
-        .address();
+    let base_token = env.register_stellar_asset_contract_v2(base_admin).address();
     let payout_admin = Address::generate(&env);
     let payout_token = env
         .register_stellar_asset_contract_v2(payout_admin)

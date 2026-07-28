@@ -145,6 +145,71 @@ These patterns can be wrapped in shell scripts, CI jobs, or higher‑level deplo
 
 ---
 
+### Dispute Escalation + Audit Logger Integration
+
+The `dispute_escalation` contract optionally records every state transition in
+the shared `audit_logger` contract for compliance and forensic audit trails.
+
+#### Wiring
+
+```rust
+use audit_logger::{AuditLoggerContract, AuditLoggerContractClient};
+use dispute_escalation::{
+    DisputeEscalationContract, DisputeEscalationContractClient,
+    types::{DisputeOutcome, DisputeStatus, EscalationLevel},
+};
+
+// Deploy both contracts
+let dispute_id = env.register(DisputeEscalationContract, ());
+let dispute_client = DisputeEscalationContractClient::new(&env, &dispute_id);
+
+let audit_id = env.register(AuditLoggerContract, ());
+let audit_client = AuditLoggerContractClient::new(&env, &audit_id);
+
+// Initialize
+dispute_client.initialize(&owner, &admin);
+audit_client.initialize(&owner, &100u32);
+
+// Wire dispute_escalation to audit_logger
+dispute_client.set_audit_logger(&admin, &audit_id);
+```
+
+#### Lifecycle
+
+After wiring, every transition emits an entry into the audit logger:
+
+| Transition | Action logged | Actor |
+|---|---|---|
+| `file_dispute` | `dispute_filed` | Caller |
+| `escalate_dispute` | `dispute_escalated` | Caller |
+| `keeper_advance_stage` | `dispute_sla_breached` | Keeper |
+| `resolve_dispute` (L1/L2) | `dispute_resolved` | Admin |
+| `resolve_dispute` (L3) | `dispute_finalised` | Admin |
+| `appeal_ruling` | `dispute_appealed` | Appellant |
+| `expire_dispute` | `dispute_expired` | Caller |
+
+Each entry stores the authenticated `actor`, a `subject` matching the caller,
+and a ledger `timestamp`. The entries are strictly ordered and non-duplicable
+— a failed transition attempt never creates an audit record.
+
+#### Verification
+
+```rust
+// After driving the dispute through its lifecycle, collect all entries
+let count = audit_client.get_log_count();
+let page = audit_client.get_logs(&0u32, &(count as u32)).unwrap();
+for entry in page.entries.iter() {
+    assert!(entry.id > 0);
+    assert!(entry.timestamp > 0);
+    // entry.action is one of the actions listed above
+}
+```
+
+When no audit logger is configured, the dispute contract operates normally
+and no external audit entries are recorded.
+
+---
+
 ### Payroll + Token Vesting Integration Assumptions
 
 The payroll and token vesting contracts are integrated by orchestration rather than by direct contract-to-contract calls. A hiring workflow should bind the same `employer`, `employee`, and `token` to:
@@ -314,3 +379,71 @@ The full lifecycle described above is exercised in:
 - **Auth is index-based in stello_pay_contract.** The employee address is fixed at `add_employee_to_agreement` time. Department membership of any address — including the employee or a stranger — has no influence on `require_auth` checks inside `claim_payroll`.
 - **Event-driven offboarding.** Off-chain systems listening to `emp_rmvd` events should trigger a payroll-cancellation workflow rather than assuming payroll access was revoked automatically.
 - **Grace period as a buffer.** The grace period in `stello_pay_contract` is intentionally sized to give employees time to claim outstanding periods after a cancellation. Factor this into offboarding timelines.
+
+---
+
+### Salary Adjustment + Payroll Claim Integration
+
+`salary_adjustment` and `stello_pay_contract` are linked at the contract level via `set_salary_adjustment_contract`. When configured, `claim_payroll` reads the employee's current salary from the salary adjustment contract and uses it as an override.
+
+#### Integration Contract Binding
+
+The payroll contract stores the salary adjustment contract address in its persistent storage under `SalaryAdjustmentContract`. The owner sets it once:
+
+```rust
+payroll_client.set_salary_adjustment_contract(&employer, &salary_adjustment_id);
+```
+
+#### How Claim Payroll Consumes the Adjustment
+
+Inside `claim_payroll_inner` (payroll.rs:2681-2690):
+
+```
+1. Read salary_per_period from payroll agreement storage.
+2. If SalaryAdjustmentContract is configured, call get_employee_salary(employee).
+3. If get_employee_salary returns Some(adjusted_salary), override salary_per_period.
+```
+
+The override only activates **after** `apply_adjustment` is called on the salary adjustment contract. A `Pending` or `Approved` (but not `Applied`) adjustment has no effect on payouts.
+
+#### Lifecycle
+
+```
+1. Employer calls salary_adjustment::create_adjustment        → Pending
+2. Approver calls salary_adjustment::approve_adjustment       → Approved
+3. Employer calls salary_adjustment::apply_adjustment         → Applied; EmployeeSalary updated
+4. Employee calls stello_pay_contract::claim_payroll          → Payout uses new salary
+```
+
+At step 3, `apply_adjustment` writes `EmployeeSalary(employee) = new_salary`. At step 4, the `SalaryAdjustmentClient::get_employee_salary` cross-contract call reads that stored value.
+
+#### Security Assumptions
+
+| Concern | Enforcement |
+|---------|-------------|
+| Only applied adjustments affect payroll | `get_employee_salary` reads `EmployeeSalary` storage, which is only written by `apply_adjustment` |
+| Employer controls adjustment lifecycle | `create_adjustment`, `apply_adjustment` require `employer.require_auth()` |
+| Approver cannot apply | Approve/Reject are the only actions available to the approver address |
+| Payroll contract cannot be tricked into stale salaries | The override is an additive read — if `get_employee_salary` returns `None`, the original payroll-stored salary is used unchanged |
+| Adjustment scope is per-employee | `EmployeeSalary` is keyed by `Address`; one employee's adjustment never leaks to another |
+
+#### Integration Tests
+
+See `onchain/integration_tests/tests/test_salary_adjustment_payroll_integration.rs` for the full test suite covering:
+
+| Test | Scenario |
+|------|----------|
+| `test_salary_adjustment_apply_updates_payroll_salary` | Full happy path: apply increase, claim reflects new rate |
+| `test_salary_decrease_affects_payroll_claim` | Salary decrease is correctly reflected in payout |
+| `test_applied_adjustment_reflected_in_next_claim` | Very next claim after `apply_adjustment` uses new salary, not stale figure |
+| `test_pending_adjustment_does_not_affect_claim_amount` | Approved-but-unapplied adjustment is invisible to `claim_payroll` |
+| `test_second_pending_adjustment_ignored_after_first_applied` | Sequential adjustments: applied one is active, pending one is ignored |
+| `test_no_adjustment_yet_returns_none` | `get_employee_salary` returns `None` before first `apply_adjustment` |
+
+#### Security Notes
+
+- **Only `Applied` status overrides payroll.** A `Pending` or `Approved` adjustment must never reach the payroll claim flow. The integration test `test_pending_adjustment_does_not_affect_claim_amount` locks in this invariant.
+- **Cross-contract reads are additive.** The payroll contract uses the adjustment contract's salary as an override, never as a replacement of its own stored salary. If the salary adjustment contract is removed or returns `None`, the payroll contract falls back to its own `EmployeeSalary` value.
+- **One adjustment contract per payroll contract.** The binding is a single address set by the owner. There is no multi-contract aggregation; a single source of truth avoids ambiguity.
+- **No retroactive payout recalculation.** The adjustment affects only future claims. Past claims at the old salary are not retroactively adjusted.
+- **Effective date gating.** `apply_adjustment` enforces `now >= effective_date`. The payroll contract does not re-check the effective date — it trusts the salary adjustment contract's state machine. This is safe because `apply_adjustment` is the only path that writes `EmployeeSalary`.
