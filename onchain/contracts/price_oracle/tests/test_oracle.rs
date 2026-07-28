@@ -775,6 +775,139 @@ fn test_non_owner_cannot_cancel_transfer() {
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 }
 
+/// Cancelling a pending transfer and then issuing a fresh proposal to a
+/// different address must allow the new candidate to accept successfully.
+///
+/// Security note: this test proves that `cancel_ownership_transfer` fully
+/// voids the old pending slot. A re-proposal populates a brand-new pending
+/// entry, so only the newly-proposed address can complete the handoff.
+#[test]
+fn test_cancel_voids_pending_then_re_propose_accept_succeeds() {
+    let env = create_env();
+    let (payroll_id, _, _) = setup_payroll(&env);
+    let (_, client, owner) = setup_oracle(&env, &payroll_id);
+    let first_candidate = Address::generate(&env);
+    let second_candidate = Address::generate(&env);
+
+    // Step 1 – propose to first_candidate, then cancel.
+    client.propose_ownership(&owner, &first_candidate);
+    client.cancel_ownership_transfer(&owner);
+
+    // Step 2 – first_candidate can no longer accept.
+    let res = client.try_accept_ownership(&first_candidate);
+    assert_eq!(
+        res,
+        Err(Ok(OracleError::NotAuthorized)),
+        "cancelled candidate should be unable to accept"
+    );
+
+    // Step 3 – owner is still the original owner.
+    assert_eq!(
+        client.get_owner().unwrap(),
+        owner,
+        "owner must not change after cancel"
+    );
+
+    // Step 4 – issue a fresh proposal to second_candidate.
+    client.propose_ownership(&owner, &second_candidate);
+
+    // Step 5 – second_candidate successfully accepts.
+    client.accept_ownership(&second_candidate);
+    assert_eq!(
+        client.get_owner().unwrap(),
+        second_candidate,
+        "ownership must transfer to the re-proposed candidate"
+    );
+
+    // Step 6 – the original first_candidate still cannot accept (slot was
+    //           overwritten by the second proposal and then consumed).
+    let res = client.try_accept_ownership(&first_candidate);
+    assert_eq!(
+        res,
+        Err(Ok(OracleError::NotAuthorized)),
+        "first_candidate must remain locked out after re-proposal to a different address"
+    );
+}
+
+/// Calling `cancel_ownership_transfer` when there is no pending proposal
+/// must succeed silently (no error) and must not alter the current owner.
+///
+/// Security note: idempotent cancellation prevents an adversary from
+/// exploiting the absence of a pending proposal to cause unexpected reverts
+/// in any governance automation that calls cancel defensively.
+#[test]
+fn test_cancel_without_pending_is_noop() {
+    let env = create_env();
+    let (payroll_id, _, _) = setup_payroll(&env);
+    let (_, client, owner) = setup_oracle(&env, &payroll_id);
+
+    // No prior proposal – cancel must be a silent no-op.
+    let res = client.try_cancel_ownership_transfer(&owner);
+    assert!(
+        res.is_ok(),
+        "cancel without a pending proposal must not return an error"
+    );
+
+    // Owner is unchanged.
+    assert_eq!(
+        client.get_owner().unwrap(),
+        owner,
+        "owner must not change when cancel is called without a pending proposal"
+    );
+}
+
+/// After a cancellation the previously-proposed address must not be able to
+/// acquire any administrative privilege through `accept_ownership`, even if
+/// it calls the function multiple times or with different auth contexts.
+///
+/// Security note: this is the core voidance invariant – once cancelled, the
+/// pending entry is fully removed from storage and the address has zero
+/// residual claim on ownership.
+#[test]
+fn test_cancelled_address_has_no_residual_claim_on_ownership() {
+    let env = create_env();
+    let (payroll_id, _, _) = setup_payroll(&env);
+    let (_, client, owner) = setup_oracle(&env, &payroll_id);
+    let cancelled_candidate = Address::generate(&env);
+
+    // Propose and immediately cancel.
+    client.propose_ownership(&owner, &cancelled_candidate);
+    client.cancel_ownership_transfer(&owner);
+
+    // First attempt – must be rejected.
+    let res1 = client.try_accept_ownership(&cancelled_candidate);
+    assert_eq!(
+        res1,
+        Err(Ok(OracleError::NotAuthorized)),
+        "first accept attempt after cancel must be rejected"
+    );
+
+    // Second attempt – still rejected; the storage entry must be absent, not
+    // transiently unavailable.
+    let res2 = client.try_accept_ownership(&cancelled_candidate);
+    assert_eq!(
+        res2,
+        Err(Ok(OracleError::NotAuthorized)),
+        "repeat accept attempt after cancel must also be rejected"
+    );
+
+    // Owner is still the original owner.
+    assert_eq!(
+        client.get_owner().unwrap(),
+        owner,
+        "owner must remain unchanged after all accept attempts post-cancel"
+    );
+
+    // Cancelled candidate cannot add a source either (it is not the owner).
+    let dummy_source = Address::generate(&env);
+    let res3 = client.try_add_source(&cancelled_candidate, &dummy_source);
+    assert_eq!(
+        res3,
+        Err(Ok(OracleError::NotAuthorized)),
+        "cancelled candidate must not be able to perform admin actions"
+    );
+}
+
 // ===========================================================================
 // 9. Uninitialized guards
 // ===========================================================================
