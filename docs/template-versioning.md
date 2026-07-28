@@ -8,6 +8,17 @@ The `template_versioning` contract (`onchain/contracts/template_versioning`) sto
 - **Version**: A monotonically increasing number per template. Each version stores a `schema_hash` (typically a SHA-256 of the canonical schema or ABI), optional migration notes, and a `deprecated` flag.
 - **Agreement**: A record that references a specific template version. Agreements are immutable with respect to the template version they were created with.
 
+## Version pinning guarantee
+
+Once an agreement is created with `create_agreement`, it is **permanently pinned** to the exact `(template_id, template_version)` pair specified at creation time. This is a critical security invariant:
+
+- Publishing a new template version via `publish_template_version` does **not** affect existing agreements
+- Existing agreements continue to resolve to their originally pinned version, even after newer versions become the latest
+- To use a new template version, a new agreement must be explicitly created with the new version number
+- This prevents silent schema migrations that could break agreement validation logic
+
+This guarantee is tested in `agreement_pinned_to_version_n_after_version_n_plus_one_published` and `new_agreement_uses_latest_version_after_publish`.
+
 ## API overview
 
 | Function | Purpose |

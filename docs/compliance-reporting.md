@@ -15,6 +15,14 @@ The compliance reporting contract provides on-chain, tamper-evident structures s
 | Emergency pause | Admin can halt all writes while reads remain available for indexers |
 | Amount validation | Zero and negative amounts are rejected at the contract level |
 
+## Cross-Publisher Sequencing Guarantee
+
+The contract-wide `global_seq` counter is atomically incremented on every successful `log_record` call, regardless of which authorized publisher (including the employer themselves) submits the entry. This guarantees:
+
+1. **Strict monotonicity**: `get_global_seq()` returns a value that is strictly greater than the previous call, even when multiple distinct publisher addresses interleave their `log_record` calls.
+2. **No collisions**: No two `ComplianceRecord` entries will ever share the same `global_seq` value. Each record is assigned a unique, sequential number at write time.
+3. **Indexer reconstruction**: Off-chain indexers can use `global_seq` to reconstruct a single, ordered timeline across all employers and publishers, without needing to resolve timestamp ties or rely on transaction ordering.
+
 ## Data Retention
 
 Records are stored in `persistent` storage. Callers are responsible for extending ledger TTLs if long-term on-chain retention is required. Off-chain indexers should consume events and snapshot data independently of on-chain storage.

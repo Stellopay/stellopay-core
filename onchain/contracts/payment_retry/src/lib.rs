@@ -137,6 +137,9 @@ enum StorageKey {
     Payment(BytesN<32>),
     PendingPayments,
     Processed(BytesN<32>),
+    /// Per-request escrow ledger: maps a payment id to the total amount its
+    /// payer has funded and can reclaim on cancellation.
+    Escrow(BytesN<32>),
 }
 
 // ---------------------------------------------------------------------------
@@ -188,6 +191,16 @@ pub struct PaymentFailedEvent {
     pub notifier: Address,
 }
 
+/// Emitted when a payer cancels a non-terminal request. `refunded_amount` is
+/// the escrow deposit returned to the payer (0 if the request was never funded).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentCancelledEvent {
+    pub payment_id: BytesN<32>,
+    pub payer: Address,
+    pub refunded_amount: i128,
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -231,6 +244,25 @@ fn write_payment(env: &Env, payment: &PaymentRequest) {
     env.storage()
         .persistent()
         .set(&StorageKey::Payment(payment.id.clone()), payment);
+}
+
+fn read_escrow(env: &Env, payment_id: BytesN<32>) -> i128 {
+    env.storage()
+        .persistent()
+        .get::<_, i128>(&StorageKey::Escrow(payment_id))
+        .unwrap_or(0)
+}
+
+fn write_escrow(env: &Env, payment_id: BytesN<32>, amount: i128) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Escrow(payment_id), &amount);
+}
+
+fn remove_escrow(env: &Env, payment_id: BytesN<32>) {
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::Escrow(payment_id));
 }
 
 fn already_processed(env: &Env, payment_id: BytesN<32>) -> bool {
@@ -366,13 +398,28 @@ fn process_payment_if_due(env: &Env, payment_id: BytesN<32>) -> bool {
     }
 
     let token_client = token::Client::new(env, &payment.token);
-    let balance = token_client.balance(&env.current_contract_address());
 
-    if balance >= payment.amount {
+    // Settlement is backed by THIS request's own escrow deposit, not the pooled
+    // contract balance. This preserves the invariant `contract token balance ==
+    // sum of all Escrow(id) entries`, so a request can only ever be paid from
+    // funds its own payer deposited — an unfunded/underfunded request can never
+    // draw on another request's escrow, and a cancellation can only refund a
+    // request's own remaining deposit.
+    let escrowed = read_escrow(env, payment_id.clone());
+
+    if escrowed >= payment.amount {
         mark_processed(env, payment_id.clone());
         payment.state = RetryState::Success;
         write_payment(env, &payment);
         untrack_pending_payment(env, payment_id.clone());
+
+        // Debit the request's escrow ledger by the amount paid out.
+        let remaining = escrowed - payment.amount;
+        if remaining > 0 {
+            write_escrow(env, payment_id.clone(), remaining);
+        } else {
+            remove_escrow(env, payment_id.clone());
+        }
 
         let recipient = match payment.alternate_payout.clone() {
             Some(alternate_payout) => alternate_payout,
@@ -588,7 +635,7 @@ impl PaymentRetryContract {
         payer.require_auth();
         assert!(amount > 0, "Amount must be positive");
 
-        let payment = read_payment(&env, payment_id);
+        let payment = read_payment(&env, payment_id.clone());
         assert!(payment.payer == payer, "Only payer can fund payment");
         assert!(
             payment.state != RetryState::Success && payment.state != RetryState::Failed,
@@ -597,6 +644,11 @@ impl PaymentRetryContract {
 
         let token_client = token::Client::new(&env, &payment.token);
         token_client.transfer(&payer, env.current_contract_address(), &amount);
+
+        // Track the payer's cumulative escrow deposit for this request so the
+        // exact amount can be refunded if the request is later cancelled.
+        let escrowed = read_escrow(&env, payment_id.clone()).saturating_add(amount);
+        write_escrow(&env, payment_id, escrowed);
     }
 
     /// Processes up to `max_payments` due payment requests in a single call.
@@ -650,12 +702,15 @@ impl PaymentRetryContract {
         processed
     }
 
-    /// Cancels a non-terminal payment request, preventing any future processing.
+    /// Cancels a non-terminal payment request, preventing any future processing
+    /// and atomically refunding the payer's escrow deposit.
     ///
-    /// The payer should separately reclaim escrow funds by withdrawing the
-    /// deposited tokens. (Fund withdrawal is out of scope for this contract;
-    /// the payer should not deposit more than one request's worth of tokens
-    /// per escrow account, or use a dedicated escrow contract.)
+    /// Both effects happen together in one call: the request transitions to the
+    /// terminal `Failed` state and is removed from the pending index, and the
+    /// exact amount the payer funded via `fund_payment` (tracked per request) is
+    /// transferred back to them. Cancelling an unfunded request refunds nothing.
+    /// A request can only be cancelled from a non-terminal state, so a deposit
+    /// that was already paid out on success can never also be refunded here.
     ///
     /// # Arguments
     ///
@@ -682,9 +737,28 @@ impl PaymentRetryContract {
             "Payment is already terminal"
         );
 
+        // CEI: write the terminal state and drop the request from the pending
+        // index before moving any tokens.
         payment.state = RetryState::Failed; // Treat cancellation as a terminal failure state
         write_payment(&env, &payment);
-        untrack_pending_payment(&env, payment_id);
+        untrack_pending_payment(&env, payment_id.clone());
+
+        // Refund the payer's escrow deposit for this request, if any.
+        let escrowed = read_escrow(&env, payment_id.clone());
+        if escrowed > 0 {
+            remove_escrow(&env, payment_id.clone());
+            let token_client = token::Client::new(&env, &payment.token);
+            token_client.transfer(&env.current_contract_address(), &payer, &escrowed);
+        }
+
+        env.events().publish(
+            ("payment_cancelled", payment_id.clone()),
+            PaymentCancelledEvent {
+                payment_id,
+                payer,
+                refunded_amount: escrowed,
+            },
+        );
     }
 
     /// Returns a payment request by ID, or `None` if it does not exist.

@@ -96,10 +96,35 @@ pub struct MilestoneAgreementView {
 /// be defensive and avoid panicking on unexpected state.
 #[contractclient(name = "MilestoneContractClient")]
 pub trait MilestoneContractInterface {
-    /// Returns a specific milestone, or None if the id is out of range.
+    /// Returns a specific milestone, or `None` if the milestone does not exist.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - The agreement to query.
+    /// * `milestone_id` - The 1-based milestone identifier within the agreement.
+    ///
+    /// # Returns
+    /// `Some(MilestoneView)` if the milestone exists; `None` if the
+    /// `agreement_id` is unrecognized or the `milestone_id` is out of range.
+    ///
+    /// # Errors / panics
+    /// Implementors **must not panic** on invalid input.  Return `None` for any
+    /// caller error (unknown agreement, out-of-range id, etc.) and let the
+    /// caller decide how to handle the missing value.
     fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<MilestoneView>;
 
     /// Returns the number of milestones in an agreement.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - The agreement to query.
+    ///
+    /// # Returns
+    /// The milestone count for the agreement, or `0` if the `agreement_id` is
+    /// unrecognized (unknown agreement has zero milestones).
+    ///
+    /// # Errors / panics
+    /// Implementors **must not panic** on any input.  Return `0` for an unknown
+    /// `agreement_id` and let callers distinguish "no agreement" from "an
+    /// agreement with zero milestones" via a separate existence check.
     fn get_milestone_count(env: Env, agreement_id: u128) -> u32;
 
     /// Hook called when a milestone expires without being claimed or rejected.

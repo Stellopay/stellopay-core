@@ -405,6 +405,10 @@ impl MultisigContract {
                     env.storage()
                         .persistent()
                         .set(&StorageKey::ThresholdOverride(op_type), &signer_count);
+                    env.storage().persistent().set(
+                        &StorageKey::ThresholdOverride(op_type),
+                        &signer_count,
+                    );
                 }
             }
         }

@@ -493,6 +493,83 @@ fn multiple_operations_independent() {
     assert_eq!(token.balance(&r2), 0i128);
 }
 
+// ==================== Replay Protection: Cancelled Operations Are Terminal ====================
+
+#[test]
+#[should_panic(expected = "Operation not pending")]
+fn cannot_approve_cancelled_operation() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+
+    // Cancel the pending operation
+    client.cancel_operation(&signers.get(0).unwrap(), &op_id);
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Cancelled);
+
+    // Attempt to approve the cancelled operation — must panic.
+    // A cancelled operation is terminal; it cannot be resurrected.
+    client.approve_operation(&signers.get(1).unwrap(), &op_id);
+}
+
+#[test]
+fn cannot_cancel_already_cancelled_operation() {
+    let env = create_env();
+    let (_id, client, owner, signers, _guardian) = setup_2of3(&env);
+
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+
+    // Cancel once — succeeds
+    client.cancel_operation(&signers.get(0).unwrap(), &op_id);
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Cancelled);
+
+    // Creator tries to cancel again — rejected
+    let res = client.try_cancel_operation(&signers.get(0).unwrap(), &op_id);
+    assert!(res.is_err());
+
+    // Owner tries to cancel the already-cancelled operation — also rejected
+    let res = client.try_cancel_operation(&owner, &op_id);
+    assert!(res.is_err());
+}
+
+#[test]
+fn cancelled_operation_id_is_not_reused() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    // Propose and cancel first operation
+    let op1_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+    client.cancel_operation(&signers.get(0).unwrap(), &op1_id);
+
+    // Propose a second operation — must get a strictly higher id
+    let op2_id = client.propose_operation(
+        &signers.get(1).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 2u128, 20, 0),
+    );
+    assert!(
+        op2_id > op1_id,
+        "Operation ids must be strictly increasing; cancelled id {} was reused as {}",
+        op1_id,
+        op2_id
+    );
+
+    // The second operation is a completely fresh independent operation
+    let op2 = client.get_operation(&op2_id).unwrap();
+    assert_eq!(op2.status, OperationStatus::Pending);
+    assert!(op2.id > op1_id);
+}
+
 // ==================== Large Payment Validation ====================
 
 #[test]
