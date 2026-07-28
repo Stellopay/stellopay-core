@@ -1090,7 +1090,133 @@ fn test_cannot_expire_resolved_dispute() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// §9  DUPLICATE / CONCURRENT DISPUTE TESTS
+// §9  SINGLE APPEAL INVARIANT TESTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_second_appeal_is_rejected() {
+    // Verifies that a dispute can only be appealed once per resolution cycle.
+    // After the first appeal_ruling, the status becomes Appealed, and a second
+    // appeal_ruling call should fail with InvalidTransition because the dispute
+    // is no longer in Resolved state.
+    let (_env, client, _owner, admin, user) = setup();
+    let id = 950u128;
+
+    // 1. File and resolve at Level1
+    client.file_dispute(&user, &id);
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Resolved
+    );
+
+    // 2. First appeal succeeds → Appealed @ Level2
+    client.appeal_ruling(&user, &id);
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Appealed);
+    assert_eq!(d.level, EscalationLevel::Level2);
+    assert_eq!(d.outcome, DisputeOutcome::Unset);
+
+    // 3. Second appeal should fail - dispute is in Appealed state, not Resolved
+    let res = client.try_appeal_ruling(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::InvalidTransition)));
+}
+
+#[test]
+fn test_second_appeal_after_level2_resolve_is_rejected() {
+    // Same invariant test but at Level2: after appealing from Level2 to Level3,
+    // a second appeal should be rejected.
+    let (_env, client, _owner, admin, user) = setup();
+    let id = 951u128;
+
+    // 1. File → escalate to Level2 → resolve
+    client.file_dispute(&user, &id);
+    client.escalate_dispute(&user, &id);
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Resolved
+    );
+
+    // 2. First appeal succeeds → Appealed @ Level3
+    client.appeal_ruling(&user, &id);
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Appealed);
+    assert_eq!(d.level, EscalationLevel::Level3);
+
+    // 3. Second appeal should fail
+    let res = client.try_appeal_ruling(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::InvalidTransition)));
+}
+
+#[test]
+fn test_final_state_reachable_after_single_appeal() {
+    // Verifies that after the single permitted appeal resolves (at Level3),
+    // the final state (Finalised) is reachable and stable.
+    let (_env, client, _owner, admin, user) = setup();
+    let id = 952u128;
+
+    // 1. File → resolve at Level1
+    client.file_dispute(&user, &id);
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+
+    // 2. Appeal to Level2
+    client.appeal_ruling(&user, &id);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Appealed
+    );
+
+    // 3. Resolve at Level2
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Resolved
+    );
+
+    // 4. Appeal to Level3 (the final permitted appeal)
+    client.appeal_ruling(&user, &id);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Appealed
+    );
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level3
+    );
+
+    // 5. Resolve at Level3 → Finalised (terminal state)
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::PartialSettlement);
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Finalised);
+    assert_eq!(d.outcome, DisputeOutcome::PartialSettlement);
+
+    // 6. Verify final state is stable - no further transitions allowed
+    let res = client.try_appeal_ruling(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::AlreadyFinalised)));
+
+    let res = client.try_resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
+    assert_eq!(res, Err(Ok(DisputeError::AlreadyFinalised)));
+}
+
+#[test]
+fn test_appeal_from_appealed_state_fails_directly() {
+    // Direct test: attempt appeal_ruling on a dispute already in Appealed state
+    // should fail with InvalidTransition (appeal_ruling requires Resolved status)
+    let (_env, client, _owner, admin, user) = setup();
+    let id = 953u128;
+
+    client.file_dispute(&user, &id);
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    client.appeal_ruling(&user, &id); // Now in Appealed state
+
+    // Direct attempt to appeal again should fail
+    let res = client.try_appeal_ruling(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::InvalidTransition)));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §10  DUPLICATE / CONCURRENT DISPUTE TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
