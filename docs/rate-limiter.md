@@ -42,7 +42,11 @@ exceed `burst + elapsed_whole_seconds * refill_rate`.
 ### Configuration
 - `set_global_limit(enabled, burst, refill_rate)`: Enables or disables the global rate limit.
 - `set_limit_for(addr, burst, refill_rate)`: Sets an override for a specific address.
-- `clear_limit_for(addr)`: Reverts an address to the default limit.
+- `clear_limit_for(addr)`: Removes the per-address override and causes subsequent
+  `check_and_consume` calls for that address to fall back to the default (global)
+  limit.  Safe to call even when the address has no override — the call is a
+  no-op in that case.  See [Limit Resolution Precedence](#limit-resolution-precedence)
+  for the full fallback chain.
 - `transfer_admin(new_admin)`: Changes the contract administrator.
 
 ### Consumption
@@ -51,12 +55,62 @@ exceed `burst + elapsed_whole_seconds * refill_rate`.
 ### Maintenance
 - `reset_usage(addr)`: Allows the admin to manually clear a user's rate limit state (e.g., after an appeal).
 
+## Limit Resolution Precedence
+
+Every call to `check_and_consume` must resolve a `LimitConfig` (burst capacity
+and refill rate) for the subject address.  The contract uses the following
+priority order, highest first:
+
+```
+1. Per-address override  — set via set_limit_for(addr, burst, refill_rate)
+2. Default (global) limit — set via initialize(…, default_burst, default_refill_rate, …)
+```
+
+There is no third tier: if no per-address override exists, the contract always
+falls back to the default values stored during `initialize`.
+
+### What `clear_limit_for` does
+
+`clear_limit_for(addr)` removes the `StorageKey::Limit(addr)` entry from
+persistent storage.  After the call:
+
+- `get_limit_for(addr)` returns the default `LimitConfig`.
+- `check_and_consume(addr)` draws from the address's *usage* bucket but now
+  sizes and caps that bucket against the **default** burst and refill rate, not
+  the old override.
+- If the address never had a per-address override, calling `clear_limit_for` is
+  a safe no-op: the Soroban storage layer silently ignores removal of a
+  non-existent key, and the default limit remains intact.
+
+### Interaction with usage state
+
+`clear_limit_for` removes the *config* entry only — it does **not** reset the
+address's *usage* (token count and last-update timestamp).  In most cases this
+is the right behavior: you are changing the cap, not forgiving past consumption.
+If you also want to give the address a fresh bucket at the new (default) cap,
+call `reset_usage(addr)` immediately after `clear_limit_for(addr)`.
+
+### Visualized lookup chain
+
+```
+check_and_consume(addr)
+        │
+        ▼
+StorageKey::Limit(addr)  ──exists?──► use override LimitConfig
+        │
+       no
+        │
+        ▼
+StorageKey::DefaultBurst + StorageKey::DefaultRefillRate  ──► use default LimitConfig
+```
+
 ## Security Assumptions
 
 1. **Admin Trust**: The admin is trusted to set reasonable limits and not maliciously throttle users.
 2. **Lockout Prevention**: The `admin_bypass` flag is critical. It should be set to `true` for contracts controlled by governance to ensure that even in high-load scenarios, administrative actions (like changing limits) can still proceed.
 3. **Clock Accuracy**: The contract relies on `env.ledger().timestamp()`. Minor clock skew between validators is handled by the Stellar protocol.
 4. **No Fractional Drift**: Because refill uses whole-second integer arithmetic and caps balances at burst capacity, repeated sub-second calls cannot accumulate fractional rounding credit beyond the theoretical token-bucket allowance.
+5. **Burst Capacity Capping**: After any idle gap (even extremely long ones), the bucket refills to exactly the configured `burst` capacity. The contract explicitly caps token accumulation at `burst` in the `consume_bucket` function, preventing attackers from "farming" tokens by waiting extended periods between calls. This is verified by the `test_long_idle_gap_refill_is_capped_at_burst_capacity` test.
 
 ## Integration
 

@@ -96,6 +96,8 @@ use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
 pub use storage::PaymentRecord;
 use storage::StorageKey;
 
+const ERR_INVALID_RANGE: &str = "InvalidRange: from_ts must be <= to_ts";
+
 /// Maximum number of records returned in a single paginated query.
 ///
 /// Capping page size prevents runaway ledger-entry reads that could exhaust
@@ -103,6 +105,11 @@ use storage::StorageKey;
 /// Callers requesting a larger `limit` receive at most this many records
 /// silently; no error is raised.
 pub const MAX_PAGE_SIZE: u32 = 100;
+
+/// Error message emitted when `from_ts > to_ts` is supplied to a date-range
+/// filtered query.  Both bounds are inclusive; swapping them is never done
+/// silently.
+pub const ERR_INVALID_RANGE: &str = "InvalidRange: from_ts must be <= to_ts";
 
 #[contract]
 pub struct PaymentHistoryContract;
@@ -588,7 +595,7 @@ impl PaymentHistoryContract {
         // Validate range before touching storage.
         if let (Some(from), Some(to)) = (from_ts, to_ts) {
             if from > to {
-                panic!("{}", ERR_INVALID_RANGE);
+                panic!("InvalidRange: from_ts must be <= to_ts");
             }
         }
 
@@ -628,7 +635,7 @@ impl PaymentHistoryContract {
     ) -> Vec<PaymentRecord> {
         if let (Some(from), Some(to)) = (from_ts, to_ts) {
             if from > to {
-                panic!("{}", ERR_INVALID_RANGE);
+                panic!("InvalidRange: from_ts must be <= to_ts");
             }
         }
 
@@ -668,7 +675,7 @@ impl PaymentHistoryContract {
     ) -> Vec<PaymentRecord> {
         if let (Some(from), Some(to)) = (from_ts, to_ts) {
             if from > to {
-                panic!("{}", ERR_INVALID_RANGE);
+                panic!("InvalidRange: from_ts must be <= to_ts");
             }
         }
 
