@@ -74,10 +74,7 @@ fn has_event(env: &Env, event_name: &str) -> bool {
 }
 
 /// Return the last event whose first topic symbol matches `event_name`.
-fn last_event(
-    env: &Env,
-    event_name: &str,
-) -> Option<(Address, Vec<Val>, Val)> {
+fn last_event(env: &Env, event_name: &str) -> Option<(Address, Vec<Val>, Val)> {
     env.events()
         .all()
         .iter()
