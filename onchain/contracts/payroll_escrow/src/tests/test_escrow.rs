@@ -1016,9 +1016,21 @@ fn test_agreement_balance_key_collision_adjacent_ids() {
 
     // Release from middle agreement should not affect others
     client.release(&manager, &id2, &Address::generate(&env), &50);
-    assert_eq!(client.get_agreement_balance(&id1), 100, "id1 balance unchanged");
-    assert_eq!(client.get_agreement_balance(&id2), 150, "id2 balance decreased");
-    assert_eq!(client.get_agreement_balance(&id3), 300, "id3 balance unchanged");
+    assert_eq!(
+        client.get_agreement_balance(&id1),
+        100,
+        "id1 balance unchanged"
+    );
+    assert_eq!(
+        client.get_agreement_balance(&id2),
+        150,
+        "id2 balance decreased"
+    );
+    assert_eq!(
+        client.get_agreement_balance(&id3),
+        300,
+        "id3 balance unchanged"
+    );
 }
 
 #[test]
@@ -1054,9 +1066,21 @@ fn test_agreement_balance_key_collision_edge_values() {
 
     // Release from zero ID should not affect others
     client.release(&manager, &id_zero, &Address::generate(&env), &50);
-    assert_eq!(client.get_agreement_balance(&id_zero), 50, "zero ID balance decreased");
-    assert_eq!(client.get_agreement_balance(&id_one), 200, "one ID balance unchanged");
-    assert_eq!(client.get_agreement_balance(&id_max), 300, "max ID balance unchanged");
+    assert_eq!(
+        client.get_agreement_balance(&id_zero),
+        50,
+        "zero ID balance decreased"
+    );
+    assert_eq!(
+        client.get_agreement_balance(&id_one),
+        200,
+        "one ID balance unchanged"
+    );
+    assert_eq!(
+        client.get_agreement_balance(&id_max),
+        300,
+        "max ID balance unchanged"
+    );
 }
 
 #[test]
@@ -1090,15 +1114,31 @@ fn test_agreement_balance_key_collision_release_isolation() {
     client.release(&manager, &id_b, &recipient, &1000);
 
     // Verify only B's balance changed
-    assert_eq!(client.get_agreement_balance(&id_a), 1000, "A balance unchanged");
+    assert_eq!(
+        client.get_agreement_balance(&id_a),
+        1000,
+        "A balance unchanged"
+    );
     assert_eq!(client.get_agreement_balance(&id_b), 0, "B balance zeroed");
-    assert_eq!(client.get_agreement_balance(&id_c), 1000, "C balance unchanged");
+    assert_eq!(
+        client.get_agreement_balance(&id_c),
+        1000,
+        "C balance unchanged"
+    );
 
     // Refund agreement A
     client.refund_remaining(&manager, &id_a);
 
     // Verify only A's balance changed
     assert_eq!(client.get_agreement_balance(&id_a), 0, "A balance zeroed");
-    assert_eq!(client.get_agreement_balance(&id_b), 0, "B balance still zero");
-    assert_eq!(client.get_agreement_balance(&id_c), 1000, "C balance unchanged");
+    assert_eq!(
+        client.get_agreement_balance(&id_b),
+        0,
+        "B balance still zero"
+    );
+    assert_eq!(
+        client.get_agreement_balance(&id_c),
+        1000,
+        "C balance unchanged"
+    );
 }

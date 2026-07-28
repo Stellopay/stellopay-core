@@ -111,9 +111,18 @@ fn batch_create_payroll_success() {
     let employer = addr(&env);
 
     let mut items = Vec::<PayrollCreateParams>::new(&env);
-    items.push_back(PayrollCreateParams { token: addr(&env), grace_period_seconds: 3_600 });
-    items.push_back(PayrollCreateParams { token: addr(&env), grace_period_seconds: 7_200 });
-    items.push_back(PayrollCreateParams { token: addr(&env), grace_period_seconds: 86_400 });
+    items.push_back(PayrollCreateParams {
+        token: addr(&env),
+        grace_period_seconds: 3_600,
+    });
+    items.push_back(PayrollCreateParams {
+        token: addr(&env),
+        grace_period_seconds: 7_200,
+    });
+    items.push_back(PayrollCreateParams {
+        token: addr(&env),
+        grace_period_seconds: 86_400,
+    });
 
     let res = client.batch_create_payroll_agreements(&employer, &items);
 
@@ -196,12 +205,15 @@ fn batch_create_payroll_invalid_middle_rejects_whole_batch() {
     let employer = addr(&env);
 
     let mut items = Vec::<PayrollCreateParams>::new(&env);
-    items.push_back(valid_payroll_params(&env));       // valid
-    items.push_back(valid_payroll_params(&env));       // valid
-    // ↓ invalid: grace_period_seconds == 0
-    items.push_back(PayrollCreateParams { token: addr(&env), grace_period_seconds: 0 });
-    items.push_back(valid_payroll_params(&env));       // valid
-    items.push_back(valid_payroll_params(&env));       // valid
+    items.push_back(valid_payroll_params(&env)); // valid
+    items.push_back(valid_payroll_params(&env)); // valid
+                                                 // ↓ invalid: grace_period_seconds == 0
+    items.push_back(PayrollCreateParams {
+        token: addr(&env),
+        grace_period_seconds: 0,
+    });
+    items.push_back(valid_payroll_params(&env)); // valid
+    items.push_back(valid_payroll_params(&env)); // valid
 
     let result = client.try_batch_create_payroll_agreements(&employer, &items);
 
@@ -229,7 +241,10 @@ fn batch_create_payroll_invalid_first_rejects_whole_batch() {
 
     let mut items = Vec::<PayrollCreateParams>::new(&env);
     // ↓ invalid: grace_period_seconds == 0
-    items.push_back(PayrollCreateParams { token: addr(&env), grace_period_seconds: 0 });
+    items.push_back(PayrollCreateParams {
+        token: addr(&env),
+        grace_period_seconds: 0,
+    });
     items.push_back(valid_payroll_params(&env));
     items.push_back(valid_payroll_params(&env));
 
@@ -249,7 +264,10 @@ fn batch_create_payroll_invalid_last_rejects_whole_batch() {
     items.push_back(valid_payroll_params(&env));
     items.push_back(valid_payroll_params(&env));
     // ↓ invalid: grace_period_seconds == 0
-    items.push_back(PayrollCreateParams { token: addr(&env), grace_period_seconds: 0 });
+    items.push_back(PayrollCreateParams {
+        token: addr(&env),
+        grace_period_seconds: 0,
+    });
 
     let result = client.try_batch_create_payroll_agreements(&employer, &items);
     assert_eq!(result, Err(Ok(PayrollError::InvalidData)));
@@ -410,18 +428,18 @@ fn batch_create_escrow_invalid_middle_rejects_whole_batch() {
     let employer = addr(&env);
 
     let mut items = Vec::<EscrowCreateParams>::new(&env);
-    items.push_back(valid_escrow_params(&env));   // valid — entry 0
-    items.push_back(valid_escrow_params(&env));   // valid — entry 1
-    // ↓ invalid middle entry: period_seconds == 0
+    items.push_back(valid_escrow_params(&env)); // valid — entry 0
+    items.push_back(valid_escrow_params(&env)); // valid — entry 1
+                                                // ↓ invalid middle entry: period_seconds == 0
     items.push_back(EscrowCreateParams {
         contributor: addr(&env),
         token: addr(&env),
         amount_per_period: 1_000,
-        period_seconds: 0,     // ← deliberately invalid
+        period_seconds: 0, // ← deliberately invalid
         num_periods: 4,
     });
-    items.push_back(valid_escrow_params(&env));   // valid — entry 3
-    items.push_back(valid_escrow_params(&env));   // valid — entry 4
+    items.push_back(valid_escrow_params(&env)); // valid — entry 3
+    items.push_back(valid_escrow_params(&env)); // valid — entry 4
 
     let result = client.try_batch_create_escrow_agreements(&employer, &items);
 
@@ -458,7 +476,7 @@ fn batch_create_escrow_invalid_first_rejects_whole_batch() {
     items.push_back(EscrowCreateParams {
         contributor: addr(&env),
         token: addr(&env),
-        amount_per_period: 0,   // ← deliberately invalid
+        amount_per_period: 0, // ← deliberately invalid
         period_seconds: 3_600,
         num_periods: 4,
     });
@@ -487,7 +505,7 @@ fn batch_create_escrow_invalid_last_rejects_whole_batch() {
         token: addr(&env),
         amount_per_period: 1_000,
         period_seconds: 3_600,
-        num_periods: 0,        // ← deliberately invalid
+        num_periods: 0, // ← deliberately invalid
     });
 
     let result = client.try_batch_create_escrow_agreements(&employer, &items);
@@ -508,7 +526,7 @@ fn batch_create_escrow_invalid_middle_zero_amount() {
     items.push_back(EscrowCreateParams {
         contributor: addr(&env),
         token: addr(&env),
-        amount_per_period: 0,   // ← deliberately invalid
+        amount_per_period: 0, // ← deliberately invalid
         period_seconds: 3_600,
         num_periods: 4,
     });
@@ -534,7 +552,7 @@ fn batch_create_escrow_invalid_middle_zero_num_periods() {
         token: addr(&env),
         amount_per_period: 1_000,
         period_seconds: 3_600,
-        num_periods: 0,        // ← deliberately invalid
+        num_periods: 0, // ← deliberately invalid
     });
     items.push_back(valid_escrow_params(&env));
 
