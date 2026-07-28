@@ -1,6 +1,5 @@
-use soroban_sdk::{Address, Env};
-
 use crate::types::{DisputeDetails, EscalationLevel, StorageKey};
+use soroban_sdk::{Address, Env};
 
 /// Set the time limit (in seconds) for a specific escalation level
 pub fn set_level_time_limit(env: &Env, level: EscalationLevel, limit_seconds: u64) {
@@ -45,17 +44,16 @@ pub fn set_dispute(env: &Env, agreement_id: u128, details: &DisputeDetails) {
     env.storage().persistent().set(&key, details);
 }
 
-/// Set the payroll escrow contract address that will be paused/resumed on
-/// dispute lifecycle events.
-pub fn set_payroll_escrow(env: &Env, addr: &Address) {
-    let key = StorageKey::PayrollEscrow;
-    env.storage().persistent().set(&key, addr);
+/// Set the audit logger contract address for compliance recording.
+pub fn set_audit_logger(env: &Env, addr: &Address) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::AuditLogger, addr);
 }
 
-/// Get the payroll escrow contract address, if configured.
-pub fn get_payroll_escrow(env: &Env) -> Option<Address> {
-    let key = StorageKey::PayrollEscrow;
-    env.storage().persistent().get(&key)
+/// Get the configured audit logger contract address, if any.
+pub fn get_audit_logger(env: &Env) -> Option<Address> {
+    env.storage().persistent().get(&StorageKey::AuditLogger)
 }
 
 /// Check if a given address is the contract administrator
