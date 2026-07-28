@@ -1,7 +1,6 @@
 #![cfg(test)]
 
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{testutils::Address as _, Address, Env};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 fn setup() -> (Env, PayrollContractClient<'static>, Address) {

@@ -48,6 +48,22 @@ pub fn get_retention_limit(env: Env) -> u32
   - Only the **owner** may update the limit.
   - New limit applies to subsequent appends. When the number of retained logs exceeds the limit, the logical window is advanced and the oldest entries fall outside the queryable range.
 
+#### Retention Limit Behavior
+
+**Prune-on-Lower Semantics** — Calling `set_retention_limit(n)` when the current retained log count exceeds `n` immediately removes the oldest entries until only the newest `n` remain. Pruning is deterministic by insertion order (sequential ID), not by timestamp, so ties cannot occur.
+
+**Destructive & Irreversible** — Raising the retention limit after a prune does **not** restore discarded entries. Once pruned, entries are permanently gone — not merely hidden — and cannot be recovered through this contract.
+
+**Example** — If 10 logs exist and the limit is lowered to 4:
+
+| State | Log Count | Retained IDs |
+|-------|-----------|--------------|
+| Before `set_retention_limit(4)` | 10 | 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 |
+| After `set_retention_limit(4)`  | 4  | 7, 8, 9, 10 |
+| After `set_retention_limit(10)` | 4  | 7, 8, 9, 10 (unchanged) |
+
+> **Security Note:** Since pruning is irreversible, callers that rely on audit history should treat retention-limit reductions as destructive operations. If historical logs are needed off-chain, back them up (e.g. by calling `get_logs()` or `get_latest_logs()`) before lowering the limit.
+
 ---
 
 ### Writing Logs
@@ -97,7 +113,27 @@ pub fn get_latest_logs(env: Env, limit: u32) -> Result<Vec<AuditLogEntry>, Audit
 ### Security Properties
 
 #### Append-Only Guarantee
-Logs cannot be modified after creation. There are no update or delete entrypoints. The `AuditLogEntry` struct is immutable once stored.
+Logs cannot be modified or deleted after creation. Every public entrypoint in `audit_logger` has been enumerated to confirm non-mutability of existing records:
+
+| Entrypoint | Type | Record ID Parameter | Accepts Mutating Parameters for Existing Records |
+|---|---|---|---|
+| `initialize` | Write (1-time) | None | No |
+| `set_retention_limit` | Write (Owner) | None | No |
+| `get_retention_limit` | Read-only | None | No |
+| `append_log` | Write | Monotonic (Returned) | No |
+| `get_log_count` | Read-only | None | No |
+| `get_log` | Read-only | Input (`id: u64`) | No |
+| `get_logs` | Read-only | Offset/Limit | No |
+| `get_latest_logs` | Read-only | Limit | No |
+
+None of the contract's public entrypoints accept a record index/ID alongside mutating parameters (such as `update_log(id, ...)` or `delete_log(id)`). The `AuditLogEntry` struct is stored directly under `StorageKey::LogEntry(id)` and cannot be mutated by any external call.
+
+> **Compliance Guarantee**: This append-only non-mutability invariant is explicitly relied upon by `compliance_reporting` (as well as `expense_reimbursement` and `salary_adjustment`). `compliance_reporting` relies on this guarantee to ensure that audit history, global sequence ordering, and recorded financial event logs cannot be retroactively tampered with, altered, or forged after commitment.
+
+This invariant is regression-tested by:
+- `test_audit_logger_append_only_invariant_regression_guard`: Appends a record, attempts all plausible mutation paths (interleaved appends, retention expansions/reductions/unlimited, query entrypoints, window filling), and asserts that original record content is unchanged when re-read.
+- `test_interleaved_append_and_get_latest_logs_maintains_order`: Verifies that `get_latest_logs` returns entries in strictly increasing order with no gaps when called interleaved with `append_log`
+- `test_interleaved_append_and_read_consistency`: Verifies that `get_log` and `get_latest_logs` return consistent results with no skipped or duplicated entries across interleaved operations
 
 #### Append-Order Invariant (Core Guarantee)
 The audit logger maintains a **strict append-order invariant** that is fundamental to its correctness:

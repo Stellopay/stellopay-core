@@ -1,4 +1,4 @@
-﻿#![cfg(test)]
+#![cfg(test)]
 #![allow(deprecated)]
 
 use price_oracle::{OracleError, PriceOracleContract, PriceOracleContractClient};
@@ -437,8 +437,127 @@ fn test_non_owner_cannot_disable_pair() {
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 }
 
+/// Disabling a pair clears the stored PairState, making get_pair_state
+/// return PairNotConfigured and push_price reject new submissions.
+#[test]
+fn test_disable_pair_clears_state_and_blocks_reads() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source, base, quote) = full_setup(&env);
+
+    // Push a fresh price.
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+    let state = oracle_client.get_pair_state(&base, &quote);
+    assert_eq!(state.rate, 2_000_000);
+
+    // Disable the pair.
+    oracle_client.disable_pair(&oracle_owner, &base, &quote);
+    let cfg = oracle_client.get_pair_config(&base, &quote).unwrap();
+    assert!(!cfg.enabled);
+
+    // get_pair_state must NOT return the old cached state — pair is disabled.
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
+
+    // push_price must also be rejected for a disabled pair.
+    assert_eq!(
+        oracle_client.try_push_price(&source, &base, &quote, &3_000_000i128, &1_000u64),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
+}
+
+/// A disabled pair that still holds a fresh (non-stale) cached price is
+/// clearly distinguishable from an enabled pair with a fresh price.
+/// get_pair_state returns PairNotConfigured for the disabled pair even
+/// though the cached rate has not yet aged past max_staleness_seconds.
+#[test]
+fn test_disabled_pair_get_pair_state_distinguishable_from_fresh() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source, base, quote) = full_setup(&env);
+
+    // Push a fresh price.
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // Configure and push a fresh price to a second (reference) pair.
+    let base2 = Address::generate(&env);
+    let quote2 = Address::generate(&env);
+    oracle_client.configure_pair(
+        &oracle_owner,
+        &base2,
+        &quote2,
+        &500_000i128,
+        &5_000_000i128,
+        &600u64,
+        &1u32,
+        &DEFAULT_TOLERANCE_BPS,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
+    );
+    let source2 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+    oracle_client.push_price(&source2, &base2, &quote2, &2_500_000i128, &1_000u64);
+
+    // Disable the first pair while both are still fresh.
+    oracle_client.disable_pair(&oracle_owner, &base, &quote);
+
+    // Enabled reference pair: succeeds, returns the fresh state.
+    let state = oracle_client.get_pair_state(&base2, &quote2);
+    assert_eq!(state.rate, 2_500_000);
+    assert_eq!(state.last_updated_ts, 1_000);
+
+    // Disabled pair: returns PairNotConfigured even though its cached
+    // price is equally fresh (age is the same).
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
+}
+
+/// Re-enabling a previously disabled pair does NOT resurrect the old
+/// pre-disable price.  A caller must push a new price before
+/// get_pair_state will succeed again.
+#[test]
+fn test_enable_pair_does_not_resurrect_stale_price() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source, base, quote) = full_setup(&env);
+
+    // Push a price, then disable the pair immediately.
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+    oracle_client.disable_pair(&oracle_owner, &base, &quote);
+
+    // Re-enable.
+    oracle_client.enable_pair(&oracle_owner, &base, &quote);
+    assert!(
+        oracle_client
+            .get_pair_config(&base, &quote)
+            .unwrap()
+            .enabled
+    );
+
+    // get_pair_state still returns an error — the old price was cleared
+    // on disable and no fresh push has happened since re-enable.
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
+
+    // Push a brand-new price after re-enable.
+    env.ledger().with_mut(|li| li.timestamp = 2_000);
+    oracle_client.push_price(&source, &base, &quote, &3_000_000i128, &2_000u64);
+
+    // Now get_pair_state succeeds with the NEW price.
+    let state = oracle_client.get_pair_state(&base, &quote);
+    assert_eq!(state.rate, 3_000_000);
+    assert_eq!(state.last_updated_ts, 2_000);
+    assert_eq!(state.last_source, source);
+}
+
 // ===========================================================================
-// 5. Push price â€“ happy path
+// 5. Push price – happy path
 // ===========================================================================
 
 #[test]
@@ -449,7 +568,7 @@ fn test_push_price_success_and_payroll_integration() {
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
-    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_000_000);
     assert_eq!(state.last_updated_ts, 1_000);
     assert_eq!(state.last_source, source);
@@ -469,7 +588,7 @@ fn test_push_price_at_min_boundary() {
     let res = oracle_client.try_push_price(&source, &base, &quote, &500_000i128, &1_000u64);
     assert!(res.is_ok());
 
-    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 500_000);
 }
 
@@ -483,7 +602,7 @@ fn test_push_price_at_max_boundary() {
     let res = oracle_client.try_push_price(&source, &base, &quote, &5_000_000i128, &1_000u64);
     assert!(res.is_ok());
 
-    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 5_000_000);
 }
 
@@ -500,7 +619,7 @@ fn test_push_price_at_max_staleness_boundary() {
 }
 
 // ===========================================================================
-// 6. Push price â€“ forbidden paths
+// 6. Push price – forbidden paths
 // ===========================================================================
 
 #[test]
@@ -611,7 +730,7 @@ fn test_monotonic_ignores_older_update() {
     env.ledger().with_mut(|li| li.timestamp = 2_100);
     oracle_client.push_price(&source, &base, &quote, &1_500_000i128, &1_900u64);
 
-    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_000_000);
     assert_eq!(state.last_updated_ts, 2_000);
 }
@@ -624,10 +743,10 @@ fn test_monotonic_ignores_equal_timestamp() {
     env.ledger().with_mut(|li| li.timestamp = 2_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &2_000u64);
 
-    // Same timestamp with different rate â€” ignored.
+    // Same timestamp with different rate — ignored.
     oracle_client.push_price(&source, &base, &quote, &3_000_000i128, &2_000u64);
 
-    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_000_000);
 }
 
@@ -650,7 +769,7 @@ fn test_multi_source_latest_wins() {
     // Older primary update ignored.
     let _ = oracle_client.push_price(&source, &base, &quote, &1_500_000i128, &1_900u64);
 
-    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 3_000_000);
     assert_eq!(state.last_source, backup);
 
@@ -940,14 +1059,17 @@ fn test_pair_isolation() {
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
     // Second pair has no state yet.
-    assert!(oracle_client.get_pair_state(&base2, &quote2).is_none());
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base2, &quote2),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 
     // Push to second pair.
     oracle_client.push_price(&source, &base2, &quote2, &4_000_000i128, &1_000u64);
 
     // Each pair has its own state.
-    let s1 = oracle_client.get_pair_state(&base, &quote).unwrap();
-    let s2 = oracle_client.get_pair_state(&base2, &quote2).unwrap();
+    let s1 = oracle_client.get_pair_state(&base, &quote);
+    let s2 = oracle_client.get_pair_state(&base2, &quote2);
     assert_eq!(s1.rate, 2_000_000);
     assert_eq!(s2.rate, 4_000_000);
 }
@@ -1029,13 +1151,16 @@ fn test_multi_source_quorum_success() {
     oracle_client.push_price(&source1, &base, &quote, &rate, &1_000u64);
 
     // State should NOT be updated yet (quorum = 2).
-    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 
     // Source 2 submits the SAME rate and timestamp.
     oracle_client.push_price(&source2, &base, &quote, &rate, &1_000u64);
 
     // Now quorum is met!
-    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, rate);
     assert_eq!(state.last_source, source2); // The one that completed the quorum
 
@@ -1074,7 +1199,10 @@ fn test_multi_source_quorum_different_rates_do_not_count() {
     oracle_client.push_price(&source2, &base, &quote, &2_100_000i128, &1_000u64);
 
     // Neither reached quorum of 2.
-    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 }
 
 #[test]
@@ -1101,7 +1229,7 @@ fn test_multi_source_quorum_tolerance_boundary_accepts() {
     oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
     oracle_client.push_price(&source2, &base, &quote, &2_010_000i128, &1_005u64);
 
-    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_010_000);
     assert_eq!(state.last_updated_ts, 1_005u64);
     assert_eq!(state.last_source, source2);
@@ -1132,13 +1260,13 @@ fn test_multi_source_quorum_duplicate_vote_rejected() {
 
     let res = oracle_client.try_push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
     assert_eq!(res, Err(Ok(OracleError::DuplicateVote)));
-    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 
     oracle_client.push_price(&source2, &base, &quote, &2_000_000i128, &1_000u64);
-    assert_eq!(
-        oracle_client.get_pair_state(&base, &quote).unwrap().rate,
-        2_000_000
-    );
+    assert_eq!(oracle_client.get_pair_state(&base, &quote).rate, 2_000_000);
 }
 
 #[test]
@@ -1166,10 +1294,13 @@ fn test_multi_source_quorum_dissenting_source_does_not_block_matching_cluster() 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
     oracle_client.push_price(&source2, &base, &quote, &2_100_000i128, &1_000u64);
-    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 
     oracle_client.push_price(&source3, &base, &quote, &2_000_000i128, &1_000u64);
-    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_000_000);
     assert_eq!(state.last_source, source3);
 }
@@ -1197,10 +1328,13 @@ fn test_multi_source_quorum_window_rollover_resets_pending_votes() {
     env.ledger().with_mut(|li| li.timestamp = 1_060);
     oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
     oracle_client.push_price(&source2, &base, &quote, &2_000_000i128, &1_060u64);
-    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 
     oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_060u64);
-    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_000_000);
     assert_eq!(state.last_updated_ts, 1_060u64);
 }
@@ -1230,7 +1364,10 @@ fn test_multi_source_quorum_older_bucket_vote_is_ignored_after_rollover() {
 
     let res = oracle_client.try_push_price(&source2, &base, &quote, &2_000_000i128, &1_000u64);
     assert!(res.is_ok());
-    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 }
 
 #[test]
@@ -1257,7 +1394,7 @@ fn test_multi_source_quorum_uses_max_supporting_timestamp() {
     oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_005u64);
     oracle_client.push_price(&source2, &base, &quote, &2_000_500i128, &1_000u64);
 
-    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_000_500i128);
     assert_eq!(state.last_updated_ts, 1_005u64);
 }
@@ -1287,7 +1424,10 @@ fn test_removed_source_pending_vote_no_longer_counts_toward_quorum() {
     oracle_client.remove_source(&oracle_owner, &source1);
 
     oracle_client.push_price(&source2, &base, &quote, &2_000_000i128, &1_000u64);
-    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 }
 
 #[test]
@@ -1372,7 +1512,7 @@ fn test_rate_limit_rejects_rapid_resubmission() {
     assert_eq!(res, Err(Ok(OracleError::SubmissionRateLimited)));
 
     // State unchanged.
-    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_000_000);
 }
 
@@ -1403,7 +1543,7 @@ fn test_rate_limit_allows_submission_after_interval() {
     let res = oracle_client.try_push_price(&source, &base, &quote, &2_100_000i128, &1_030u64);
     assert!(res.is_ok());
 
-    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_100_000);
 }
 
@@ -1440,7 +1580,7 @@ fn test_rate_limit_does_not_affect_other_sources() {
     let res = oracle_client.try_push_price(&source2, &base, &quote, &2_100_000i128, &1_010u64);
     assert!(res.is_ok());
 
-    let state = oracle_client.get_pair_state(&base, &quote).unwrap();
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_100_000);
     assert_eq!(state.last_source, source2);
 }
@@ -1477,11 +1617,14 @@ fn test_rate_limit_single_source_counts_once_in_quorum() {
     assert_eq!(res, Err(Ok(OracleError::SubmissionRateLimited)));
 
     // Quorum not met — only source1's single vote is in the bucket.
-    assert!(oracle_client.get_pair_state(&base, &quote).is_none());
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 
     // source2 completes quorum.
     oracle_client.push_price(&source2, &base, &quote, &2_000_000i128, &1_000u64);
-    assert!(oracle_client.get_pair_state(&base, &quote).is_some());
+    assert!(oracle_client.try_get_pair_state(&base, &quote).is_ok());
 }
 
 /// min_submit_interval_secs = 0 disables the rate limit entirely.
@@ -1501,115 +1644,57 @@ fn test_rate_limit_zero_interval_is_disabled() {
 }
 
 // ===========================================================================
-// 13. get_price_checked — freshness-guarded read path
+// 13. get_pair_state freshness checks
 // ===========================================================================
 
 /// Fresh price within max_age is returned successfully.
 #[test]
-fn test_get_price_checked_fresh_price_succeeds() {
+fn test_get_pair_state_fresh_price_succeeds() {
     let env = create_env();
     let (oracle_client, _, _, source, base, quote) = full_setup(&env);
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
-    // 60 seconds later — price is 60s old, max_age = 300s → fresh
+    // 60 seconds later — price is 60s old, max_age = 600s -> fresh (full_setup configures max_staleness=600)
     env.ledger().with_mut(|li| li.timestamp = 1_060);
-    let state = oracle_client.get_price_checked(&base, &quote, &300u64);
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_000_000);
     assert_eq!(state.last_updated_ts, 1_000);
 }
 
-/// Price age exactly equal to max_age is still accepted (boundary: age == max_age is not stale).
+/// Price age exactly equal to max_age is still accepted.
 #[test]
-fn test_get_price_checked_at_exact_max_age_succeeds() {
+fn test_get_pair_state_at_exact_max_age_succeeds() {
     let env = create_env();
     let (oracle_client, _, _, source, base, quote) = full_setup(&env);
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
-    // Advance to exactly max_age seconds later.
-    env.ledger().with_mut(|li| li.timestamp = 1_300); // age = 300
-    let state = oracle_client.get_price_checked(&base, &quote, &300u64);
+    env.ledger().with_mut(|li| li.timestamp = 1_600); // age = 600
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_000_000);
 }
 
 /// Price age one second beyond max_age is rejected with PriceTooOld.
 #[test]
-fn test_get_price_checked_one_second_past_max_age_rejected() {
+fn test_get_pair_state_one_second_past_max_age_rejected() {
     let env = create_env();
     let (oracle_client, _, _, source, base, quote) = full_setup(&env);
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
-    // age = 301 > max_age = 300 → stale
-    env.ledger().with_mut(|li| li.timestamp = 1_301);
-    let res = oracle_client.try_get_price_checked(&base, &quote, &300u64);
+    // age = 601 > max_age = 600 -> stale
+    env.ledger().with_mut(|li| li.timestamp = 1_601);
+    let res = oracle_client.try_get_pair_state(&base, &quote);
     assert_eq!(res, Err(Ok(OracleError::PriceTooOld)));
 }
 
-/// No price ever pushed → PairNotConfigured (no state entry exists).
+/// After a stale price is refreshed, it succeeds again.
 #[test]
-fn test_get_price_checked_no_price_yet_returns_not_configured() {
-    let env = create_env();
-    let (oracle_client, _, _, _, base, quote) = full_setup(&env);
-
-    // Pair is configured but no price has been pushed.
-    let res = oracle_client.try_get_price_checked(&base, &quote, &300u64);
-    assert_eq!(res, Err(Ok(OracleError::PairNotConfigured)));
-}
-
-/// Existing unchecked get_pair_state is unaffected and still returns the state
-/// without any freshness gate, even when the price is very old.
-#[test]
-fn test_get_pair_state_unchecked_unaffected_by_staleness() {
-    let env = create_env();
-    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
-
-    env.ledger().with_mut(|li| li.timestamp = 1_000);
-    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
-
-    // Advance far into the future — price is very old.
-    env.ledger().with_mut(|li| li.timestamp = 1_000_000);
-
-    // Checked read rejects it.
-    let res = oracle_client.try_get_price_checked(&base, &quote, &300u64);
-    assert_eq!(res, Err(Ok(OracleError::PriceTooOld)));
-
-    // Unchecked read returns it without error.
-    let state = oracle_client.get_pair_state(&base, &quote);
-    assert!(state.is_some());
-    assert_eq!(state.unwrap().rate, 2_000_000);
-}
-
-/// Simulate a source outage: after the source stops pushing, the checked read
-/// starts rejecting once the price ages past max_age, protecting consumers.
-#[test]
-fn test_get_price_checked_source_outage_detected() {
-    let env = create_env();
-    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
-
-    // Source pushes a fresh price.
-    env.ledger().with_mut(|li| li.timestamp = 5_000);
-    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &5_000u64);
-
-    // 100s later — still fresh with max_age = 600.
-    env.ledger().with_mut(|li| li.timestamp = 5_100);
-    let state = oracle_client.get_price_checked(&base, &quote, &600u64);
-    assert_eq!(state.rate, 2_000_000);
-
-    // Source goes offline — no further updates.
-    // 601s after last update — stale.
-    env.ledger().with_mut(|li| li.timestamp = 5_601);
-    let res = oracle_client.try_get_price_checked(&base, &quote, &600u64);
-    assert_eq!(res, Err(Ok(OracleError::PriceTooOld)));
-}
-
-/// After a stale price is refreshed by the source, checked reads succeed again.
-#[test]
-fn test_get_price_checked_recovers_after_fresh_update() {
+fn test_get_pair_state_recovers_after_fresh_update() {
     let env = create_env();
     let (oracle_client, _, _, source, base, quote) = full_setup(&env);
 
@@ -1617,15 +1702,15 @@ fn test_get_price_checked_recovers_after_fresh_update() {
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
     // Price goes stale.
-    env.ledger().with_mut(|li| li.timestamp = 2_000); // age = 1000 > max_age = 300
-    let res = oracle_client.try_get_price_checked(&base, &quote, &300u64);
+    env.ledger().with_mut(|li| li.timestamp = 2_000); // age = 1000 > max_age = 600
+    let res = oracle_client.try_get_pair_state(&base, &quote);
     assert_eq!(res, Err(Ok(OracleError::PriceTooOld)));
 
     // Source pushes a fresh price.
     oracle_client.push_price(&source, &base, &quote, &2_500_000i128, &2_000u64);
 
     // Checked read recovers.
-    let state = oracle_client.get_price_checked(&base, &quote, &300u64);
+    let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_500_000);
     assert_eq!(state.last_updated_ts, 2_000);
 }

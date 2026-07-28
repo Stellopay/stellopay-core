@@ -466,6 +466,196 @@ fn test_claim_payroll_below_threshold_bypasses_multisig() {
     assert_eq!(token_client.balance(&employee), salary);
 }
 
+// ── Additional threshold regression tests (issue #853) ──────────────────────
+
+/// Happy path: 3-of-3 signers approve a LargePayment op, then
+/// claim_payroll_multisig succeeds. Tests exact-threshold boundary
+/// for the maximum-restrictive configuration.
+#[test]
+fn test_claim_payroll_multisig_3of3_approval_succeeds() {
+    let env = setup_env();
+    let (payroll_id, payroll, owner) = setup_payroll(&env);
+
+    // Create a 3-of-3 multisig
+    let ms_id = env.register(MultisigContract, ());
+    let ms = MultisigContractClient::new(&env, &ms_id);
+    let ms_owner = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    for _ in 0..3 {
+        signers.push_back(Address::generate(&env));
+    }
+    ms.initialize(&ms_owner, &signers, &3u32, &None);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token_addr, token_client) = setup_token(&env, &token_admin);
+
+    let salary = 1000i128;
+    let period = 86400u64;
+
+    payroll.set_multisig_config(
+        &owner, &ms_id, &500i128, // large_payment_threshold = 500
+        &0i128,
+    );
+
+    let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
+    payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
+    payroll.activate_agreement(&agreement_id);
+    fund_payroll(
+        &env,
+        &payroll_id,
+        agreement_id,
+        &token_addr,
+        &employee,
+        salary,
+    );
+    StellarAssetClient::new(&env, &token_addr).mint(&ms_id, &salary);
+
+    env.ledger().with_mut(|l| l.timestamp += period + 1);
+
+    // Propose LargePayment
+    let op_id = ms.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::LargePayment(token_addr.clone(), employee.clone(), salary),
+    );
+
+    // 1/3 approvals → still Pending
+    assert_eq!(
+        ms.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending
+    );
+
+    // 2/3 → still Pending
+    ms.approve_operation(&signers.get(1).unwrap(), &op_id);
+    assert_eq!(
+        ms.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending
+    );
+
+    // 3/3 → threshold met → Executed
+    ms.approve_operation(&signers.get(2).unwrap(), &op_id);
+    assert_eq!(
+        ms.get_operation(&op_id).unwrap().status,
+        OperationStatus::Executed
+    );
+
+    payroll.claim_payroll_multisig(&employee, &agreement_id, &0u32, &op_id);
+    assert_eq!(token_client.balance(&employee), salary * 2);
+}
+
+/// Rejection: 2-of-3 approvals when threshold is 3 — claim_payroll_multisig
+/// must reject even though a majority has approved, because the effective
+/// threshold is 3.
+#[test]
+fn test_claim_payroll_multisig_2of3_below_threshold_of_3_rejected() {
+    let env = setup_env();
+    let (payroll_id, payroll, owner) = setup_payroll(&env);
+
+    // Create a 3-of-3 multisig
+    let ms_id = env.register(MultisigContract, ());
+    let ms = MultisigContractClient::new(&env, &ms_id);
+    let ms_owner = Address::generate(&env);
+    let mut signers = Vec::new(&env);
+    for _ in 0..3 {
+        signers.push_back(Address::generate(&env));
+    }
+    ms.initialize(&ms_owner, &signers, &3u32, &None);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token_addr, _) = setup_token(&env, &token_admin);
+
+    let salary = 1000i128;
+    let period = 86400u64;
+
+    payroll.set_multisig_config(&owner, &ms_id, &500i128, &0i128);
+
+    let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
+    payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
+    payroll.activate_agreement(&agreement_id);
+    fund_payroll(
+        &env,
+        &payroll_id,
+        agreement_id,
+        &token_addr,
+        &employee,
+        salary,
+    );
+    env.ledger().with_mut(|l| l.timestamp += period + 1);
+
+    // Propose → 1/3 auto-approved
+    let op_id = ms.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::LargePayment(token_addr.clone(), employee.clone(), salary),
+    );
+
+    // 2/3 approvals (still below threshold of 3)
+    ms.approve_operation(&signers.get(1).unwrap(), &op_id);
+    assert_eq!(
+        ms.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending
+    );
+
+    let result = payroll.try_claim_payroll_multisig(&employee, &agreement_id, &0u32, &op_id);
+    assert_eq!(result, Err(Ok(PayrollError::MultisigApprovalRequired)));
+}
+
+/// Rejection: claim_payroll_multisig with a LargePayment op whose `to` field
+/// does not match the calling employee — must fail even if threshold is met.
+#[test]
+fn test_claim_payroll_multisig_wrong_employee_rejected() {
+    let env = setup_env();
+    let (payroll_id, payroll, owner) = setup_payroll(&env);
+    let (multisig_id, ms, signers) = setup_multisig(&env);
+
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let other_employee = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let (token_addr, _) = setup_token(&env, &token_admin);
+
+    let salary = 1000i128;
+    let period = 86400u64;
+
+    payroll.set_multisig_config(&owner, &multisig_id, &500i128, &0i128);
+
+    let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
+    payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
+    payroll.activate_agreement(&agreement_id);
+    fund_payroll(
+        &env,
+        &payroll_id,
+        agreement_id,
+        &token_addr,
+        &employee,
+        salary,
+    );
+    env.ledger().with_mut(|l| l.timestamp += period + 1);
+
+    // Propose LargePayment with a different employee address
+    let op_id = ms.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::LargePayment(
+            token_addr.clone(),
+            other_employee.clone(), // wrong employee
+            salary,
+        ),
+    );
+    ms.approve_operation(&signers.get(1).unwrap(), &op_id);
+    assert_eq!(
+        ms.get_operation(&op_id).unwrap().status,
+        OperationStatus::Executed
+    );
+
+    // The real employee tries to claim with an op addressed to a different person
+    let result = payroll.try_claim_payroll_multisig(&employee, &agreement_id, &0u32, &op_id);
+    assert_eq!(result, Err(Ok(PayrollError::MultisigApprovalRequired)));
+}
+
+// ── Existing wrong-op-kind test ────────────────────────────────────────────
+
 /// Rejection: multisig op kind doesn't match (wrong operation type).
 #[test]
 fn test_dispute_multisig_wrong_op_kind_rejected() {

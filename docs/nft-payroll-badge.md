@@ -23,6 +23,9 @@ stores a human-readable name plus an off-chain metadata URI.
   `MAX_PAGE_SIZE` to keep reads predictable for high-volume badge holders.
 - **Event-driven indexing** - Metadata URI changes emit `MetadataUpdated` with
   the token id, old URI, and new URI.
+  - **Revocable badges** - `burn` lets the owner permanently revoke a badge
+    from a terminated employee or one issued in error, removing it from
+    storage and from the owner's badge list.
 
 ### Data Model
 
@@ -40,6 +43,11 @@ stores a human-readable name plus an off-chain metadata URI.
 - `token_id: u64` - badge whose metadata URI changed.
 - `old_uri: String` - URI stored before the update.
 - `new_uri: String` - replacement URI.
+
+#### `BadgeBurned`
+
+- `token_id: u64` - badge that was revoked.
+- `owner: Address` - address the badge was revoked from.
 
 ### Public API
 
@@ -60,6 +68,12 @@ Badge management:
   - Owner-only.
   - Updates the metadata URI for an existing badge.
   - Emits `MetadataUpdated`.
+  - `burn(caller, badge_id)`
+  - Owner-only.
+  - Revokes a badge: removes it from storage and from the owner's
+    `badges_of` / `badges_of_paged` results, and decrements `badge_count`.
+  - Emits `BadgeBurned`.
+  - Panics if `badge_id` does not exist.
 
 Read helpers:
 
@@ -68,6 +82,20 @@ Read helpers:
 - `badges_of_paged(owner, start, limit) -> PagedBadges`
 - `badge_count(owner) -> u32`
 - `get_owner() -> Option<Address>`
+
+### Read-Query Error Semantics
+
+`get_badge(badge_id)` returns `Option<Badge>`:
+
+- `Some(Badge)` — the badge was minted and all fields are exactly as stored at
+  mint time (or updated by `update_metadata_uri`).
+- `None` — no badge with that ID has ever been minted. Callers **must not**
+  treat a missing return as a zero-valued or default badge; the only valid
+  interpretation is that the ID does not exist.
+
+This means downstream consumers should always pattern-match or call `.expect()`
+/ `.unwrap()` with a descriptive message, and must never assume that a `None`
+response shares any fields with a real badge.
 
 ### Security Considerations
 
@@ -82,3 +110,6 @@ Read helpers:
 - The owner address should be protected with an operational process such as
   multisig or governance when badge metadata carries compliance or payroll
   meaning.
+- `badge_count` is read-only and requires no authorization, making it safe to
+  call from any context. It cannot be manipulated by any address other than the
+  contract owner (via `mint`).

@@ -111,7 +111,7 @@ Where:
 | Function                                                     | Access | Description                          |
 |--------------------------------------------------------------|--------|--------------------------------------|
 | `push_price(source, base, quote, rate, source_timestamp)`   | Source | Submit a new rate for a pair         |
-| `get_pair_state(base, quote)`                                | Any    | Read last accepted rate and metadata |
+| `get_pair_state(base, quote)`                                | Any    | Read last accepted state; rejects with `PairNotConfigured` if pair is disabled, and `PriceTooOld` if state is older than `max_staleness_seconds` |
 
 ### Admin
 
@@ -191,6 +191,8 @@ Integration steps:
 | 10   | InvalidPairConfig | Invalid configuration parameters               |
 | 11   | DuplicateVote     | Source already voted in the active quorum bucket |
 | 12   | SubmissionRateLimited | Source resubmitted before `min_submission_interval_seconds` elapsed |
+| 13   | TooManySources    | Quorum bucket is full                          |
+| 14   | PriceTooOld       | Read rejected because the price is older than `max_staleness_seconds` |
 
 ## Quorum model
 
@@ -225,7 +227,7 @@ This model keeps the implementation small and storage bounded while still reduci
 | Admin takeover                  | Only owner can add sources, configure pairs, transfer ownership                 |
 | Rate manipulation via wide bounds | Bounds are per-pair and admin-controlled; tighten as needed                   |
 | Quorum drift via wide tolerance | Admin should keep `tolerance_bps` tight; accepted rate is anchored to the completing vote |
-| Disabled pair bypass            | `push_price` checks `enabled` flag before accepting                             |
+| Disabled pair bypass            | `push_price` checks `enabled` flag before accepting; `disable_pair` clears stored `PairState` so `get_pair_state` returns `PairNotConfigured` instead of serving stale cached data |
 | Pair direction confusion        | `(A, B)` and `(B, A)` are independent pairs in storage                         |
 
 ## Trade-offs
@@ -250,12 +252,12 @@ This model keeps the implementation small and storage bounded while still reduci
 | `("oracle", "owner")`     | `new_owner`             | `accept_ownership`   |
 | `("oracle", "cancel")`    | `pending_owner`         | `cancel_ownership_transfer` |
 
-## Test coverage (57 tests)
+## Test coverage (60 tests)
 
 - **Initialization** (2): owner set, double-init blocked
 - **Source management** (4): add/remove, non-owner blocked, removed source can't push
 - **Pair configuration** (8): read config, same-token rejected, min>max rejected, zero min, negative rate, zero staleness, zero quorum window, non-owner blocked
-- **Disable/enable** (4): disable blocks updates, enable resumes, unconfigured pair error, non-owner blocked
+- **Disable/enable** (7): disable blocks updates and clears state, enabled pair distinguishable from disabled, enable requires fresh push, enable resumes, unconfigured pair error, non-owner blocked
 - **Push price happy path** (4): full integration, min boundary, max boundary, max staleness boundary
 - **Push price forbidden** (8): unregistered source, zero rate, negative rate, below min, above max, future timestamp, stale timestamp, unconfigured pair
 - **Monotonic/multi-source** (3): older ignored, equal ignored, latest-wins with backup source

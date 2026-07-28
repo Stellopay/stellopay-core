@@ -504,6 +504,191 @@ fn test_property_conservation_and_bound_many_recipients() {
 }
 
 #[test]
+fn test_dust_remainder_goes_to_highest_fractional_remainder() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+
+    // 33.3% / 66.7% split on amount=100
+    // A: 3333 bps → (3333*100)/10000 = 33.33 → floor=33, remainder=3300
+    // B: 6667 bps → (6667*100)/10000 = 66.67 → floor=66, remainder=6700
+    // B has larger remainder → gets the dust unit
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(RecipientShare {
+        recipient: a.clone(),
+        kind: ShareKind::Percent(3333),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b.clone(),
+        kind: ShareKind::Percent(6667),
+    });
+
+    let id = client.create_split(&creator, &recipients);
+    let out = client.compute_split(&id, &100);
+
+    // B should get the extra dust unit (larger fractional remainder)
+    let a_amount = if out.get(0).unwrap().0 == a {
+        out.get(0).unwrap().1
+    } else {
+        out.get(1).unwrap().1
+    };
+    let b_amount = if out.get(0).unwrap().0 == b {
+        out.get(0).unwrap().1
+    } else {
+        out.get(1).unwrap().1
+    };
+
+    assert_eq!(a_amount, 33);
+    assert_eq!(b_amount, 67);
+    assert_eq!(a_amount + b_amount, 100);
+}
+
+#[test]
+fn test_remainder_tie_goes_to_lexicographically_smaller_address() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+
+    // 50/50 split on amount=1 → both have remainder=5000 (tie)
+    // Dust=1, tie goes to smaller address
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+
+    let a_lt_b = compare_addresses(&env, &a, &b) < 0;
+
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(RecipientShare {
+        recipient: a.clone(),
+        kind: ShareKind::Percent(5000),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b.clone(),
+        kind: ShareKind::Percent(5000),
+    });
+
+    let id = client.create_split(&creator, &recipients);
+    let out = client.compute_split(&id, &1);
+
+    let a_amount = if out.get(0).unwrap().0 == a {
+        out.get(0).unwrap().1
+    } else {
+        out.get(1).unwrap().1
+    };
+    let b_amount = if out.get(0).unwrap().0 == b {
+        out.get(0).unwrap().1
+    } else {
+        out.get(1).unwrap().1
+    };
+
+    if a_lt_b {
+        assert_eq!(a_amount, 1);
+        assert_eq!(b_amount, 0);
+    } else {
+        assert_eq!(a_amount, 0);
+        assert_eq!(b_amount, 1);
+    }
+    assert_eq!(a_amount + b_amount, 1);
+}
+
+#[test]
+fn test_sum_preservation_property_diverse_splits_and_amounts() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+
+    // Test multiple split configurations across a range of amounts
+    let split_configs = [
+        vec![10000],                  // 1 recipient, 100%
+        vec![5000, 5000],             // 2 recipients, equal
+        vec![6000, 4000],             // 2 recipients, unequal
+        vec![3333, 3333, 3334],       // 3 recipients, unequal
+        vec![2500, 2500, 2500, 2500], // 4 recipients, equal
+        vec![1000, 2000, 3000, 4000], // 4 recipients, unequal
+        vec![200; 5],                 // 5 recipients, equal (5*200=1000 ≠ 10000)
+    ];
+
+    for (config_idx, bps_list) in split_configs.iter().enumerate() {
+        // Skip configs that don't sum to 10000
+        let sum: u32 = bps_list.iter().sum();
+        if sum != 10000 {
+            continue;
+        }
+
+        let mut recipients = Vec::new(&env);
+        for bps in bps_list.iter() {
+            recipients.push_back(RecipientShare {
+                recipient: Address::generate(&env),
+                kind: ShareKind::Percent(*bps),
+            });
+        }
+
+        let id = client.create_split(&creator, &recipients);
+
+        // Test every amount from 1 to 200, plus some larger edge values
+        for amount in 1..=200i128 {
+            let out = client.compute_split(&id, &amount);
+            let sum: i128 = out.iter().map(|entry| entry.1).sum();
+            assert_eq!(
+                sum, amount,
+                "Sum preservation failed for config {} amount {}",
+                config_idx, amount
+            );
+        }
+
+        // Edge values
+        let edge_amounts = [999, 1000, 5000, 10000, 100000, 999999, i128::MAX / 100];
+        for &amount in &edge_amounts {
+            let out = client.compute_split(&id, &amount);
+            let sum: i128 = out.iter().map(|entry| entry.1).sum();
+            assert_eq!(
+                sum, amount,
+                "Sum preservation failed for config {} amount {}",
+                config_idx, amount
+            );
+        }
+    }
+}
+
+#[test]
+fn test_no_dust_lost_or_created_fixed_splits() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+
+    // Fixed splits should pass through exactly (no rounding)
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(RecipientShare {
+        recipient: a.clone(),
+        kind: ShareKind::Fixed(123),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b.clone(),
+        kind: ShareKind::Fixed(456),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: c.clone(),
+        kind: ShareKind::Fixed(789),
+    });
+
+    let id = client.create_split(&creator, &recipients);
+    let total = 123 + 456 + 789;
+    let out = client.compute_split(&id, &total);
+
+    let sum: i128 = out.iter().map(|entry| entry.1).sum();
+    assert_eq!(sum, total);
+    assert_eq!(out.get(0).unwrap().1, 123);
+    assert_eq!(out.get(1).unwrap().1, 456);
+    assert_eq!(out.get(2).unwrap().1, 789);
+}
+
+#[test]
 #[should_panic(expected = "Already initialized")]
 fn test_reinitialize_fails() {
     let env = create_env();

@@ -85,6 +85,9 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Supported Stellar network identifiers accepted by `--network`.
+pub(crate) const SUPPORTED_NETWORKS: &[&str] = &["testnet", "mainnet"];
+
 pub struct DeployArgs {
     pub network: String,
     pub owner: String,
@@ -116,18 +119,26 @@ pub struct StreamArgs {
     pub format: String,
 }
 
-fn get_rpc_url_for_network(network: &str) -> String {
+pub(crate) fn get_rpc_url_for_network(network: &str) -> anyhow::Result<String> {
     match network {
-        "testnet" => "https://soroban-testnet.stellar.org:443".to_string(),
-        "mainnet" => "https://soroban-mainnet.stellar.org:443".to_string(),
-        _ => panic!("Unknown network: {}", network),
+        "testnet" => Ok("https://soroban-testnet.stellar.org:443".to_string()),
+        "mainnet" => Ok("https://soroban-mainnet.stellar.org:443".to_string()),
+        other => Err(anyhow!(
+            "unsupported network '{}'. Supported networks: {}",
+            other,
+            SUPPORTED_NETWORKS.join(", ")
+        )),
     }
 }
 
-fn get_network_passphrase(network: &str) -> String {
+pub(crate) fn get_network_passphrase(network: &str) -> anyhow::Result<String> {
     match network {
-        "testnet" => "Test SDF Network ; September 2015".to_string(),
-        "mainnet" => "Public Global Stellar Network ; September 2015".to_string(),
-        _ => panic!("Unknown network: {}", network),
+        "testnet" => Ok("Test SDF Network ; September 2015".to_string()),
+        "mainnet" => Ok("Public Global Stellar Network ; September 2015".to_string()),
+        other => Err(anyhow!(
+            "unsupported network '{}'. Supported networks: {}",
+            other,
+            SUPPORTED_NETWORKS.join(", ")
+        )),
     }
 }

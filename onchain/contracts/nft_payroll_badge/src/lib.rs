@@ -37,14 +37,24 @@ pub struct MetadataUpdated {
     pub new_uri: soroban_sdk::String,
 }
 
+/// Emitted when an admin burns (revokes) a badge.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BadgeBurned {
+    /// Badge that was revoked.
+    pub token_id: u64,
+    /// Address the badge was revoked from.
+    pub owner: Address,
+}
+
 /// Result returned by [`NftPayrollBadgeContract::badges_of_paged`].
 ///
 /// ## Cursor semantics
-/// - `next_cursor` is `Some(n)` when more badges exist after the current page.
-///   Pass that value as `start` in the next call to retrieve the subsequent page.
+/// - `next_cursor` is `Some(n)` when more badges exist after the current page. Pass that value as
+///   `start` in the next call to retrieve the subsequent page.
 /// - `next_cursor` is `None` when the returned page is the final (or only) page.
-/// - Badges are returned in ascending badge-ID order, which is stable and
-///   deterministic across calls as long as no badges are removed.
+/// - Badges are returned in ascending badge-ID order, which is stable and deterministic across
+///   calls as long as no badges are removed.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PagedBadges {
@@ -104,6 +114,48 @@ fn append_badge_to_owner(env: &Env, owner: &Address, badge_id: u64) {
     env.storage()
         .persistent()
         .set(&StorageKey::OwnerBadgeCount(owner.clone()), &(count + 1));
+}
+
+/// Removes `badge_id` from `owner`'s badge list using swap-remove, then
+/// decrements their badge count. Panics if the badge isn't found in the
+/// owner's list (should never happen if storage is consistent).
+fn remove_badge_from_owner(env: &Env, owner: &Address, badge_id: u64) {
+    let count = owner_badge_count(env, owner);
+    let mut found_index: Option<u32> = None;
+    for i in 0..count {
+        if let Some(id) = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&StorageKey::OwnerBadgeAt(owner.clone(), i))
+        {
+            if id == badge_id {
+                found_index = Some(i);
+                break;
+            }
+        }
+    }
+
+    let index = found_index.expect("Badge not found in owner's list");
+    let last_index = count - 1;
+
+    if index != last_index {
+        let last_badge_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::OwnerBadgeAt(owner.clone(), last_index))
+            .expect("Badge id missing at last index");
+        env.storage().persistent().set(
+            &StorageKey::OwnerBadgeAt(owner.clone(), index),
+            &last_badge_id,
+        );
+    }
+
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::OwnerBadgeAt(owner.clone(), last_index));
+    env.storage()
+        .persistent()
+        .set(&StorageKey::OwnerBadgeCount(owner.clone()), &last_index);
 }
 
 fn require_owner(env: &Env, caller: &Address) {
@@ -248,16 +300,16 @@ impl NftPayrollBadgeContract {
     ///
     /// ## Arguments
     /// - `owner`  – Address whose badges to query.
-    /// - `start`  – Zero-based index into the owner's badge list (cursor from a
-    ///              previous call, or `0` for the first page).
-    /// - `limit`  – Maximum number of items to return.  Values above
-    ///              [`MAX_PAGE_SIZE`] are silently clamped to `MAX_PAGE_SIZE`.
+    /// - `start`  – Zero-based index into the owner's badge list (cursor from a previous call, or
+    ///   `0` for the first page).
+    /// - `limit`  – Maximum number of items to return.  Values above [`MAX_PAGE_SIZE`] are silently
+    ///   clamped to `MAX_PAGE_SIZE`.
     ///
     /// ## Returns
     /// A [`PagedBadges`] struct containing:
     /// - `items` — badge IDs for positions `[start, start + effective_limit)`.
-    /// - `next_cursor` — `Some(start + effective_limit)` when more items follow;
-    ///   `None` when the page covers the end of the list.
+    /// - `next_cursor` — `Some(start + effective_limit)` when more items follow; `None` when the
+    ///   page covers the end of the list.
     ///
     /// ## Ordering
     /// Badges are returned in the order they were minted (ascending badge-ID),

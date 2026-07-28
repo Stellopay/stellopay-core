@@ -44,6 +44,18 @@ pub fn set_dispute(env: &Env, agreement_id: u128, details: &DisputeDetails) {
     env.storage().persistent().set(&key, details);
 }
 
+/// Set the audit logger contract address for compliance recording.
+pub fn set_audit_logger(env: &Env, addr: &Address) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::AuditLogger, addr);
+}
+
+/// Get the configured audit logger contract address, if any.
+pub fn get_audit_logger(env: &Env) -> Option<Address> {
+    env.storage().persistent().get(&StorageKey::AuditLogger)
+}
+
 /// Check if a given address is the contract administrator
 pub fn is_admin(env: &Env, caller: &Address) -> bool {
     if let Some(admin) = env

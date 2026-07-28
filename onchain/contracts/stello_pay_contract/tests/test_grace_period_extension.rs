@@ -4,8 +4,10 @@ use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     Address, Env, Symbol, TryFromVal,
 };
-use stello_pay_contract::storage::{DataKey, GracePeriodExtensionPolicy, PayrollError};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{DataKey, GracePeriodExtensionPolicy, PayrollError},
+    PayrollContract, PayrollContractClient,
+};
 
 fn setup(env: &Env) -> (Address, PayrollContractClient<'static>, Address) {
     let id = env.register(PayrollContract, ());
