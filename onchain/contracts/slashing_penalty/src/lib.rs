@@ -71,16 +71,61 @@ pub enum Offense {
 }
 
 /// Status of a slash record through its lifecycle.
+///
+/// # State machine
+///
+/// ```text
+/// slash_with_evidence() / attest_slash() × K
+///                  │
+///                  ▼
+///               Pending  ◄─── appeal window open (7 days)
+///               │     │
+///     appeal    │     │  no appeal / appeal window expired
+///     raised    │     │
+///               │     ▼
+///               │  execute_slash()          ← terminal: funds burned/redistributed
+///               │     │
+///               │     ▼
+///               │  [Executed]  ── second execute_slash() call ──► InvalidState (8)
+///               │
+///               ▼
+///          resolve_appeal()
+///          ┌────────┴──────────┐
+///      uphold               reject
+///         │                    │
+///         ▼                    ▼
+///     [Reversed]        [AppealRejected]
+///  (funds returned)   (funds burned)
+/// ```
+///
+/// Once a record reaches **Executed**, **Reversed**, or **AppealRejected** it is
+/// permanently terminal. Any further attempt to call `execute_slash`, `resolve_appeal`,
+/// or `raise_appeal` on such a record is rejected with `SlashError::InvalidState (8)`.
+///
+/// This terminal-state enforcement is the **double-execution guard**: the second call
+/// to `execute_slash` for the same `slash_record_id` (evidence hash) finds the record
+/// in `Executed` state rather than `Pending` and returns `InvalidState` immediately,
+/// preventing the penalty from being applied a second time against the offender's stake.
 #[contracttype]
 #[derive(Clone, PartialEq, Debug)]
 pub enum SlashStatus {
-    /// Slash initiated; appeal window is open.
+    /// Slash initiated; the 7-day appeal window is open.
+    /// This is the **only** state from which `execute_slash` may proceed.
     Pending,
-    /// Appeal window closed; slash executed (funds burned/redistributed).
+    /// **Terminal state.** Appeal window closed without a successful reversal;
+    /// `execute_slash` finalised the slash and burned/redistributed the escrowed funds.
+    ///
+    /// # Double-execution guard
+    /// Because the record transitions to `Executed` on the first successful call,
+    /// any subsequent `execute_slash` call for the same evidence hash returns
+    /// `SlashError::InvalidState (8)` at the status check (`status != Pending`).
+    /// The offender's stake is therefore debited **exactly once**.
     Executed,
-    /// Appeal upheld; slash reversed and funds returned.
+    /// **Terminal state.** Admin upheld the appeal; escrowed funds were returned
+    /// to the offender's stake balance.
     Reversed,
-    /// Appeal rejected; slash executed despite appeal.
+    /// **Terminal state.** Admin rejected the appeal; escrowed funds were burned
+    /// despite the appeal.
     AppealRejected,
 }
 
@@ -535,6 +580,33 @@ impl SlashingPenaltyContract {
 
     /// Execute a slash after the appeal window has closed without a successful appeal.
     /// Anyone may call this to finalise an expired pending slash.
+    ///
+    /// # Double-execution guard
+    ///
+    /// This function is idempotent in the rejection sense: the **first** successful call
+    /// atomically transitions the slash record from `Pending` to `Executed` and burns
+    /// the escrowed funds. Every subsequent call for the **same** `evidence_hash`
+    /// (i.e., the same `slash_record_id`) finds the record in `Executed` state and
+    /// returns `SlashError::InvalidState (8)` **before** touching the offender's stake.
+    ///
+    /// ```text
+    /// Call 1: status == Pending  → burns escrow, sets status = Executed  → Ok(())
+    /// Call 2: status == Executed → returns Err(InvalidState)             ← guard fires
+    /// Call N: status == Executed → returns Err(InvalidState)             ← guard fires
+    /// ```
+    ///
+    /// This ensures the penalty is applied **exactly once**, regardless of how many
+    /// times or by how many callers `execute_slash` is invoked for the same record.
+    ///
+    /// # Arguments
+    /// * `evidence_hash` - SHA-256 hash identifying the slash record (slash record id).
+    ///
+    /// # Errors
+    /// * `RecordNotFound`     — No slash record exists for the given hash.
+    /// * `InvalidState (8)`   — Record is not `Pending` (already `Executed`, `Reversed`,
+    ///                          or `AppealRejected`). **This is the double-execution guard.**
+    /// * `QuorumNotMet`       — Attestation-based slash does not yet have enough signatures.
+    /// * `AppealWindowOpen`   — Appeal deadline has not yet passed.
     pub fn execute_slash(env: Env, evidence_hash: BytesN<32>) -> Result<(), SlashError> {
         let mut records: Map<BytesN<32>, SlashRecord> =
             env.storage().instance().get(&SLASH_REC).unwrap();
