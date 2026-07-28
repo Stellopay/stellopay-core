@@ -567,3 +567,119 @@ fn read_option_i128(data: &[u8], pos: &mut usize) -> Result<Option<i128>, Backup
         Ok(Some(read_i128(data, pos)?))
     }
 }
+
+// ---------------------------------------------------------------------------
+// Dry-run / validation helpers  (Issue #786)
+// ---------------------------------------------------------------------------
+
+/// Result of a dry-run backup validation.
+///
+/// Returned by [`validate_backup`] and [`restore_dry_run`].  The caller can
+/// inspect which fields would change without any state being written.
+#[derive(Debug, PartialEq)]
+pub struct DryRunResult {
+    /// `true` if the envelope decrypts and deserialises correctly.
+    pub valid: bool,
+    /// The `agreement_id` encoded in the backup, if decryption succeeded.
+    pub agreement_id: Option<u128>,
+    /// Human-readable description of what the restore would do (or why it
+    /// failed).  Intentionally coarse — no decrypted field values are
+    /// included, only metadata that would also be visible to the real restore.
+    pub message: &'static str,
+}
+
+/// Validate an encrypted backup envelope without writing any state.
+///
+/// Performs the same decryption and deserialisation steps that the real
+/// restore path does, but skips the final `storage.set(...)` call.  The
+/// returned [`DryRunResult`] tells the caller whether the backup is intact
+/// and what agreement it encodes.
+///
+/// # Security
+/// Only the `agreement_id` — a non-sensitive u128 identifier — is surfaced
+/// in the result.  No decrypted payload fields are exposed beyond what the
+/// real restore path would already reveal to the same caller.
+///
+/// # Arguments
+/// * `env`        – Soroban environment (used for address parsing).
+/// * `envelope`   – Encrypted backup bytes (version | salt | nonce | ciphertext).
+/// * `passphrase` – Decryption passphrase; never stored on-chain.
+pub fn validate_backup(
+    env: &Env,
+    envelope: &[u8],
+    passphrase: &[u8],
+) -> DryRunResult {
+    match decrypt_backup(envelope, passphrase) {
+        Err(BackupError::BufferTooShort) => DryRunResult {
+            valid: false,
+            agreement_id: None,
+            message: "envelope too short to be a valid backup",
+        },
+        Err(BackupError::UnknownVersion) => DryRunResult {
+            valid: false,
+            agreement_id: None,
+            message: "unrecognised backup envelope version",
+        },
+        Err(BackupError::DecryptionFailed) => DryRunResult {
+            valid: false,
+            agreement_id: None,
+            message: "decryption failed: wrong passphrase or tampered envelope",
+        },
+        Err(_) => DryRunResult {
+            valid: false,
+            agreement_id: None,
+            message: "backup validation failed",
+        },
+        Ok(plaintext) => match deserialize_agreement(env, &plaintext) {
+            Err(_) => DryRunResult {
+                valid: false,
+                agreement_id: None,
+                message: "decryption succeeded but payload is malformed",
+            },
+            Ok(agreement) => DryRunResult {
+                valid: true,
+                agreement_id: Some(agreement.id),
+                message: "backup is valid; restore would overwrite existing agreement state",
+            },
+        },
+    }
+}
+
+/// On-chain dry-run entrypoint: validates an encrypted backup envelope and
+/// returns a structured result without mutating persistent storage.
+///
+/// This is a read-only companion to [`admin_restore_from_encrypted`].  Use it
+/// to verify a backup is intact before committing a real restore in production.
+///
+/// # Arguments
+/// * `env`        – Soroban environment.
+/// * `envelope`   – Encrypted backup bytes (version | salt | nonce | ciphertext).
+/// * `passphrase` – Decryption passphrase as `Bytes`; never stored on-chain.
+///
+/// # Returns
+/// * `Ok((valid, agreement_id_or_zero))` on success — `valid` is `true` when
+///   the backup decrypts and deserialises without error; the second element is
+///   the `agreement_id` from the payload (0 when validation failed).
+/// * `Err(PayrollError::InvalidData)` only when the envelope is structurally
+///   unreadable even before decryption (e.g. empty slice).
+///
+/// # Access Control
+/// No authentication required — this is a pure read.  However, a passphrase
+/// is still required to decrypt, so only callers with the correct key can
+/// obtain meaningful results.
+pub fn admin_restore_dry_run(
+    env: &Env,
+    envelope: Bytes,
+    passphrase: Bytes,
+) -> Result<(bool, u128), crate::storage::PayrollError> {
+    let env_bytes: StdVec<u8> = envelope.iter().collect();
+    let pass_bytes: StdVec<u8> = passphrase.iter().collect();
+
+    if env_bytes.is_empty() {
+        return Err(crate::storage::PayrollError::InvalidData);
+    }
+
+    let result = validate_backup(env, &env_bytes, &pass_bytes);
+    let agreement_id = result.agreement_id.unwrap_or(0);
+    Ok((result.valid, agreement_id))
+}
