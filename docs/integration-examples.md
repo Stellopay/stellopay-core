@@ -166,3 +166,50 @@ Security notes:
 - Revocation freezes vesting at `revoked_at`; later ledger movement must not increase `releasable_amount`.
 - Repeated same-ledger claims are rejected once no additional payroll period or vested amount is available.
 - Off-chain services should persist the payroll `agreement_id` to vesting `schedule_id` mapping and verify the employer, beneficiary, and token match before presenting combined lifecycle actions.
+
+---
+
+### Payroll + Template Versioning Integration Wiring
+
+The `template_versioning` contract stores **immutable** payroll template revisions, and `stello_pay_contract` creates live payroll agreements. Orchestrating the two produces a **pinned-template payroll**: an agreement whose terms are frozen at a specific template version, immune to later revisions.
+
+Integration tests in `onchain/integration_tests/tests/test_template_versioning_payroll_integration.rs` cover the lifecycle:
+
+- **Template setup**: register a template with a name, publish the first version (v1) with its `schema_hash` and optional migration notes.
+- **Agreement pinning**: create a `template_versioning` agreement pinned exactly to v1. The returned `AgreementBinding` stores the `(template_id, version)` pair immutably.
+- **Payroll creation**: create the corresponding `stello_pay_contract` payroll agreement — the caller (off-chain or orchestration layer) records the mapping between the two agreement IDs.
+- **Version evolution**: publish a second template version (v2) with different terms. The pinned agreement still references v1; the payroll agreement's creation timestamp falls between the v1 and v2 publication times.
+- **Deprecation safety**: deprecating v1 does **not** affect existing agreements pinned to v1; only new `create_agreement` calls against v1 are rejected.
+
+#### Rust integration test pattern
+
+```rust
+use soroban_sdk::{Address, BytesN, Env, String};
+use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use template_versioning::{TemplateVersioning, TemplateVersioningClient};
+
+fn setup_template_wired_to_payroll(env: &Env) -> (u64, u128, u64) {
+    let versioning = TemplateVersioningClient::new(env, &versioning_id);
+    let payroll = PayrollContractClient::new(env, &payroll_id);
+
+    // 1. Register template and publish v1
+    let template_id = versioning.register_template(&admin, &name).unwrap();
+    versioning.publish_template_version(&admin, &template_id, &hash, &notes, &false).unwrap();
+
+    // 2. Create template_versioning agreement pinned to v1
+    let tv_agreement_id = versioning.create_agreement(&employer, &template_id, &1, &label).unwrap();
+
+    // 3. Create payroll agreement
+    let payroll_agreement_id = payroll.create_payroll_agreement(&employer, &token, &grace);
+
+    // Return all three IDs so callers can verify the mapping
+    (template_id, payroll_agreement_id, tv_agreement_id)
+}
+```
+
+#### Key invariants
+
+- A `template_versioning` agreement's `template_version` field is set at creation time and **never changes** — not when newer versions are published, not when the pinned version is deprecated.
+- Off-chain services SHOULD persist the `(template_versioning_agreement_id, payroll_agreement_id)` mapping after creation, since neither contract stores a cross-reference to the other.
+- The payroll agreement's parameters (token, employer, grace period) SHOULD be validated against the `TemplateVersionRecord.schema_hash` off-chain before creation to ensure on-chain terms match the intended template version. The integration test confirms the temporal ordering: `v1.created_at <= payroll.created_at < v2.created_at`.
+- Deprecated versions reject new `create_agreement` calls with `VersioningError::VersionDeprecated`, preventing inadvertent use of outdated terms.
