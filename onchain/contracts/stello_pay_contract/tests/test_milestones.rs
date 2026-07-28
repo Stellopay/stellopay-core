@@ -710,9 +710,7 @@ fn assert_milestone_eq(direct: &Option<Milestone>, via_interface: &Option<Milest
         }
         (None, None) => {}
         (d, i) => {
-            panic!(
-                "milestone presence mismatch: direct={d:?} interface={i:?}"
-            );
+            panic!("milestone presence mismatch: direct={d:?} interface={i:?}");
         }
     }
 }
