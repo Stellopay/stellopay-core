@@ -27,6 +27,7 @@ payment_scheduler = { path = "../contracts/payment_scheduler" }
 rbac = { path = "../contracts/rbac" }
 template_versioning = { path = "../contracts/template_versioning" }
 withdrawal_timelock = { path = "../contracts/withdrawal_timelock" }
+department_manager = { path = "../contracts/department_manager" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }

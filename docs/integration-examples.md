@@ -233,3 +233,84 @@ See `onchain/integration_tests/tests/test_badge_activation_integration.rs` for t
 - Non-owner badge mint rejection
 - Badge persistence after agreement cancellation
 - Paginated badge queries across multiple agreements
+
+---
+
+### Department Management + Payroll Integration
+
+#### Design intent: explicit decoupling
+
+`department_manager` and `stello_pay_contract` are **independent contracts** that share no on-chain state. This is a deliberate design decision:
+
+- `department_manager` is an _organisational_ contract. It tracks which employees belong to which department inside an organisation. It has no knowledge of payroll agreements, escrow balances, or salary schedules.
+- `stello_pay_contract` is a _financial_ contract. It tracks payroll agreements, escrow, salary-per-period, and claimed-period counts. It has no knowledge of organisations or department membership.
+
+Neither contract calls the other. There is no hook, callback, or cross-contract read between them.
+
+#### What `remove_employee_from_department` does (and does not do)
+
+When an org owner calls `remove_employee_from_department`:
+
+| Contract | Side-effects |
+|---|---|
+| `department_manager` | Removes `EmployeeInDepartment` and `EmployeeDepartment` storage keys; updates `DepartmentEmployees` list; emits `emp_rmvd` event. |
+| `stello_pay_contract` | **Nothing.** The agreement, escrow balance, employee address at index, and claimed-period count are all unchanged. |
+
+#### Payroll eligibility after offboarding
+
+An employee removed from every department retains full `claim_payroll` eligibility as long as:
+
+1. The payroll agreement is `Active`, _or_ the agreement is `Cancelled` and the grace window has not yet expired.
+2. One or more unclaimed periods have elapsed since the last claim.
+3. The caller is the address stored at `employee_index` in the agreement (set at `add_employee_to_agreement` time — immutable after that).
+
+Revoking payroll access requires explicitly cancelling or pausing the agreement in `stello_pay_contract`. Department removal alone is insufficient.
+
+#### Recommended offboarding workflow
+
+```
+1. Call department_manager::remove_employee_from_department
+      → Removes organisational visibility; fires emp_rmvd event.
+
+2. Call stello_pay_contract::cancel_agreement   (employer only)
+      → Starts grace period; employee may claim outstanding periods.
+
+3. Wait for grace period to expire (or call finalize_grace_period).
+      → Remaining escrow is refunded to employer.
+      → All further claim_payroll calls are rejected.
+```
+
+If the employee should receive a final pay-out for accrued periods before the agreement is cancelled, let them claim first (step 2a):
+
+```
+2a. Employee calls stello_pay_contract::claim_payroll
+       → Claims all elapsed but unclaimed periods.
+
+2b. Employer calls stello_pay_contract::cancel_agreement.
+```
+
+#### Integration test coverage
+
+The full lifecycle described above is exercised in:
+
+`onchain/integration_tests/tests/test_department_payroll_integration.rs`
+
+| Test | Scenario |
+|---|---|
+| `claim_succeeds_before_any_department_assignment` | Payroll is independent of dept membership from the start |
+| `claim_succeeds_after_department_assignment` | Assigning to a dept does not gate or alter payroll |
+| `claim_still_succeeds_after_department_removal` | **Core**: removal does not revoke claim eligibility |
+| `sequential_claim_after_removal_accumulates_correctly` | Period accounting is cumulative across the removal boundary |
+| `multiple_employees_removal_of_one_does_not_affect_other` | Removal is scoped to one employee; co-workers unaffected |
+| `stranger_cannot_claim_regardless_of_dept_membership` | Dept membership ≠ payroll auth; wrong caller is always rejected |
+| `claim_during_grace_period_after_dept_removal` | Cancelled-agreement grace path is unaffected by dept state |
+| `employee_reassigned_to_new_dept_can_still_claim` | Dept re-assignment has no payroll side-effect |
+| `dept_removal_event_is_emitted_payroll_state_unchanged` | `emp_rmvd` fires; all payroll storage is byte-identical before and after |
+| `fully_removed_employee_loses_dept_membership_only` | `get_employee_department` → None; `claim_payroll` → Ok simultaneously |
+
+#### Security notes
+
+- **No implicit payroll gate.** Do not rely on `remove_employee_from_department` to stop salary payments. Always cancel the agreement explicitly.
+- **Auth is index-based in stello_pay_contract.** The employee address is fixed at `add_employee_to_agreement` time. Department membership of any address — including the employee or a stranger — has no influence on `require_auth` checks inside `claim_payroll`.
+- **Event-driven offboarding.** Off-chain systems listening to `emp_rmvd` events should trigger a payroll-cancellation workflow rather than assuming payroll access was revoked automatically.
+- **Grace period as a buffer.** The grace period in `stello_pay_contract` is intentionally sized to give employees time to claim outstanding periods after a cancellation. Factor this into offboarding timelines.
