@@ -776,6 +776,13 @@ impl TaxWithholdingContract {
     /// State is updated **before** the token transfer (state-before-interaction
     /// pattern) to prevent re-entrancy.
     ///
+    /// # Idempotency Guarantee
+    /// This function is idempotent: once an accrued balance is remitted to zero,
+    /// subsequent calls with the same jurisdiction will return `NothingToRemit`
+    /// rather than causing underflow or double-counting. The accrued balance is
+    /// set to zero atomically before the token transfer, ensuring no partial
+    /// state can leave the system vulnerable to double-remittance attacks.
+    ///
     /// # Arguments
     /// * `caller`       — Must be the contract owner. Tokens are transferred
     ///                    **from** this address, so the caller must hold the
