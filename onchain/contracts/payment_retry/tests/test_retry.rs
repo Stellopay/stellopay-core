@@ -423,3 +423,315 @@ fn test_cancelled_record_is_skipped_by_batch_processing() {
     assert_eq!(client.get_payment(&id).unwrap().state, RetryState::Failed);
     assert_eq!(client.process_due_payments(&10), 0);
 }
+
+#[test]
+fn test_cancel_payment_refunds_escrow_and_stops_processing() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    client.initialize(&owner);
+    asset_admin.mint(&payer, &100);
+
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 20,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+
+    client.fund_payment(&payer, &id, &100);
+    assert_eq!(token.balance(&payer), 0);
+    assert_eq!(token.balance(&contract_id), 100);
+
+    client.cancel_payment(&payer, &id);
+
+    // Effect 1: the escrow deposit is refunded to the payer atomically with the cancel.
+    assert_eq!(token.balance(&payer), 100);
+    assert_eq!(token.balance(&contract_id), 0);
+
+    // Effect 2: the request is terminal, is skipped by batch processing, and the
+    // recipient is never paid.
+    assert_eq!(client.get_payment(&id).unwrap().state, RetryState::Failed);
+    assert_eq!(client.process_due_payments(&10), 0);
+    assert_eq!(token.balance(&recipient), 0);
+}
+
+#[test]
+fn test_cancel_payment_unfunded_refunds_nothing() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+
+    client.initialize(&owner);
+
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 21,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+
+    // Never funded: cancelling moves no tokens and still terminates the request.
+    client.cancel_payment(&payer, &id);
+    assert_eq!(token.balance(&payer), 0);
+    assert_eq!(token.balance(&contract_id), 0);
+    assert_eq!(client.get_payment(&id).unwrap().state, RetryState::Failed);
+}
+
+#[test]
+fn test_cancel_payment_refunds_cumulative_deposits() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    client.initialize(&owner);
+    asset_admin.mint(&payer, &150);
+
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 22,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+
+    // Two deposits accumulate into a single escrow balance for the request.
+    client.fund_payment(&payer, &id, &100);
+    client.fund_payment(&payer, &id, &50);
+    assert_eq!(token.balance(&contract_id), 150);
+
+    // Cancellation refunds the full accumulated deposit.
+    client.cancel_payment(&payer, &id);
+    assert_eq!(token.balance(&payer), 150);
+    assert_eq!(token.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_cancel_payment_refund_isolated_to_its_own_request() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient_a = Address::generate(&env);
+    let recipient_b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    client.initialize(&owner);
+    asset_admin.mint(&payer, &200);
+
+    let id_a = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 23,
+            payer: &payer,
+            recipient: &recipient_a,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+    let id_b = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 24,
+            payer: &payer,
+            recipient: &recipient_b,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+
+    client.fund_payment(&payer, &id_a, &100);
+    client.fund_payment(&payer, &id_b, &100);
+    assert_eq!(token.balance(&contract_id), 200);
+
+    // Cancelling A refunds exactly A's deposit and leaves B's escrow untouched.
+    client.cancel_payment(&payer, &id_a);
+    assert_eq!(token.balance(&payer), 100);
+    assert_eq!(token.balance(&contract_id), 100);
+
+    // B still processes normally and pays its recipient from its own escrow.
+    assert_eq!(client.process_due_payments(&10), 1);
+    assert_eq!(client.get_payment(&id_b).unwrap().state, RetryState::Success);
+    assert_eq!(token.balance(&recipient_b), 100);
+    assert_eq!(token.balance(&recipient_a), 0);
+    assert_eq!(token.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_cancel_payment_twice_does_not_double_refund() {
+    let env = create_env();
+    let (_contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    client.initialize(&owner);
+    asset_admin.mint(&payer, &100);
+
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 25,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+    client.fund_payment(&payer, &id, &100);
+
+    client.cancel_payment(&payer, &id);
+    assert_eq!(token.balance(&payer), 100);
+
+    // A second cancel is rejected (already terminal); the refund is not repeated.
+    assert!(client.try_cancel_payment(&payer, &id).is_err());
+    assert_eq!(token.balance(&payer), 100);
+}
+
+#[test]
+fn test_cancel_payment_rejects_non_payer() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let intruder = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    client.initialize(&owner);
+    asset_admin.mint(&payer, &100);
+
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 26,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+    client.fund_payment(&payer, &id, &100);
+
+    // A non-payer cannot cancel and therefore cannot drain the escrow.
+    assert!(client.try_cancel_payment(&intruder, &id).is_err());
+    assert_eq!(token.balance(&contract_id), 100);
+    assert_ne!(client.get_payment(&id).unwrap().state, RetryState::Failed);
+}
+
+#[test]
+fn test_unfunded_request_cannot_be_paid_from_pooled_escrow() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let victim = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let victim_recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    client.initialize(&owner);
+    asset_admin.mint(&victim, &100);
+
+    // Victim schedules and funds their own request; the contract now holds 100.
+    let victim_id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 30,
+            payer: &victim,
+            recipient: &victim_recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+    client.fund_payment(&victim, &victim_id, &100);
+    assert_eq!(token.balance(&contract_id), 100);
+
+    // Attacker schedules an UNFUNDED request that pays themselves the same amount.
+    let attacker_id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 31,
+            payer: &attacker,
+            recipient: &attacker,
+            token: &token.address,
+            amount: 100,
+            max_retries: 0,
+            intervals: &[30],
+        },
+    );
+
+    // Settlement is escrow-backed, so the unfunded request cannot be paid out of
+    // the pooled balance holding the victim's deposit.
+    client.process_retry(&attacker_id);
+    assert_eq!(token.balance(&attacker), 0);
+    assert_ne!(
+        client.get_payment(&attacker_id).unwrap().state,
+        RetryState::Success
+    );
+
+    // The victim's escrow is fully intact and remains refundable.
+    assert_eq!(token.balance(&contract_id), 100);
+    client.cancel_payment(&victim, &victim_id);
+    assert_eq!(token.balance(&victim), 100);
+    assert_eq!(token.balance(&contract_id), 0);
+}
