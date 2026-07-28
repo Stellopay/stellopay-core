@@ -228,17 +228,19 @@ fn read_period_spent(env: &Env, employee: &Address, period: u64) -> i128 {
 /// Adds an amount to the employee's cumulative period spending.
 fn add_period_spent(env: &Env, employee: &Address, period: u64, amount: i128) {
     let current = read_period_spent(env, employee, period);
-    env.storage()
-        .persistent()
-        .set(&StorageKey::PeriodSpent(employee.clone(), period), &(current + amount));
+    env.storage().persistent().set(
+        &StorageKey::PeriodSpent(employee.clone(), period),
+        &(current + amount),
+    );
 }
 
 /// Subtracts an amount from the employee's cumulative period spending.
 fn sub_period_spent(env: &Env, employee: &Address, period: u64, amount: i128) {
     let current = read_period_spent(env, employee, period);
-    env.storage()
-        .persistent()
-        .set(&StorageKey::PeriodSpent(employee.clone(), period), &(current - amount));
+    env.storage().persistent().set(
+        &StorageKey::PeriodSpent(employee.clone(), period),
+        &(current - amount),
+    );
 }
 
 #[contractimpl]
@@ -276,21 +278,6 @@ impl ExpenseReimbursementContract {
         env.storage()
             .persistent()
             .set(&StorageKey::ApproverRole(approver), &true);
-    }
-
-    /// Remove an approver.
-    ///
-    /// # Authorization
-    /// Authorizes the live `caller`: it requires `caller`'s signature via
-    /// `require_auth` and asserts that `caller` is the contract owner. Any
-    /// non-owner caller is rejected, so only the owner can mutate the approver set.
-    pub fn remove_approver(env: Env, caller: Address, approver: Address) {
-        require_initialized(&env);
-        require_owner(&env, &caller);
-
-        env.storage()
-            .persistent()
-            .remove(&StorageKey::ApproverRole(approver));
     }
 
     /// Submit an expense for reimbursement
@@ -441,6 +428,11 @@ impl ExpenseReimbursementContract {
     }
 
     /// Approve an expense, with support for partial approval.
+    ///
+    /// NatSpec: The approver must both be the expense's designated approver and
+    /// currently hold the approver role. Once recorded, this approval is part of
+    /// the expense's immutable lifecycle state and is not invalidated if the
+    /// owner later removes the approver role.
     pub fn approve_expense(env: Env, approver: Address, expense_id: u128, approved_amount: i128) {
         require_initialized(&env);
         approver.require_auth();
@@ -451,6 +443,7 @@ impl ExpenseReimbursementContract {
             .get(&StorageKey::Expense(expense_id))
             .expect("Expense not found");
 
+        assert!(is_approver(&env, &approver), "Unauthorized approver");
         assert!(expense.approver == approver, "Unauthorized approver");
         assert!(expense.status == ExpenseStatus::Pending, "Invalid status");
         assert!(approved_amount > 0, "Approved amount must be positive");
@@ -484,7 +477,10 @@ impl ExpenseReimbursementContract {
         );
     }
 
-    /// Reject an expense, refunding escrowed funds to the employer safely
+    /// Reject an expense, refunding escrowed funds to the employer safely.
+    ///
+    /// NatSpec: The designated approver must still hold the active approver
+    /// role when rejecting, matching the authorization rule for approval.
     pub fn reject_expense(env: Env, approver: Address, expense_id: u128) {
         require_initialized(&env);
         approver.require_auth();
@@ -495,6 +491,7 @@ impl ExpenseReimbursementContract {
             .get(&StorageKey::Expense(expense_id))
             .expect("Expense not found");
 
+        assert!(is_approver(&env, &approver), "Unauthorized approver");
         assert!(expense.approver == approver, "Unauthorized approver");
         assert!(expense.status == ExpenseStatus::Pending, "Invalid status");
 
