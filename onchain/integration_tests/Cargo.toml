@@ -21,9 +21,11 @@ employee_roles = { path = "../contracts/employee_roles" }
 expense_reimbursement = { path = "../contracts/expense_reimbursement" }
 governance = { path = "../contracts/governance" }
 multisig = { path = "../contracts/multisig" }
+nft-payroll-badge = { path = "../contracts/nft_payroll_badge" }
 payment_retry = { path = "../contracts/payment_retry" }
 payment_scheduler = { path = "../contracts/payment_scheduler" }
 rbac = { path = "../contracts/rbac" }
+template_versioning = { path = "../contracts/template_versioning" }
 withdrawal_timelock = { path = "../contracts/withdrawal_timelock" }
 
 [dev-dependencies]

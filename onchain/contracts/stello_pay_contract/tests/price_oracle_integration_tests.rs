@@ -4,56 +4,52 @@
 //!
 //! These tests exercise the full oracle → payroll contract pipeline:
 //!
-//! 1. **Conversion accuracy** – `push_price` from the oracle propagates the
-//!    correct scaled rate into `DataKey::ExchangeRate`, and `claim_payroll_in_token`
-//!    converts base-currency salary amounts to payout-currency amounts exactly.
+//! 1. **Conversion accuracy** – `push_price` from the oracle propagates the correct scaled rate
+//!    into `DataKey::ExchangeRate`, and `claim_payroll_in_token` converts base-currency salary
+//!    amounts to payout-currency amounts exactly.
 //!
-//! 2. **Oracle unavailability** – when no rate has been pushed for a pair,
-//!    `claim_payroll_in_token` returns `ExchangeRateNotFound`.
+//! 2. **Oracle unavailability** – when no rate has been pushed for a pair, `claim_payroll_in_token`
+//!    returns `ExchangeRateNotFound`.
 //!
-//! 3. **Stale price rejection** – the oracle rejects source timestamps that
-//!    exceed `max_staleness_seconds`, so a stale feed cannot update the payroll
-//!    contract's FX rate.
+//! 3. **Stale price rejection** – the oracle rejects source timestamps that exceed
+//!    `max_staleness_seconds`, so a stale feed cannot update the payroll contract's FX rate.
 //!
-//! 4. **Rate bounds enforcement** – rates outside `[min_rate, max_rate]` are
-//!    rejected by the oracle before they can reach the payroll contract.
+//! 4. **Rate bounds enforcement** – rates outside `[min_rate, max_rate]` are rejected by the oracle
+//!    before they can reach the payroll contract.
 //!
-//! 5. **Quorum requirement** – with `quorum_n = 2`, a single source vote does
-//!    not update the payroll rate; only after a second agreeing source does the
-//!    rate propagate.
+//! 5. **Quorum requirement** – with `quorum_n = 2`, a single source vote does not update the
+//!    payroll rate; only after a second agreeing source does the rate propagate.
 //!
 //! 6. **Disabled pair** – a disabled oracle pair cannot push rates.
 //!
-//! 7. **Rate update propagation** – a newer oracle push overwrites the old rate
-//!    in the payroll contract, and subsequent claims use the updated rate.
+//! 7. **Rate update propagation** – a newer oracle push overwrites the old rate in the payroll
+//!    contract, and subsequent claims use the updated rate.
 //!
-//! 8. **Same-token shortcut** – `claim_payroll_in_token` with `payout_token ==
-//!    base_token` falls through to the native `claim_payroll` path without
-//!    requiring an FX rate.
+//! 8. **Same-token shortcut** – `claim_payroll_in_token` with `payout_token == base_token` falls
+//!    through to the native `claim_payroll` path without requiring an FX rate.
 //!
-//! 9. **Overflow protection** – extremely large salary × rate combinations
-//!    return `ExchangeRateOverflow` rather than panicking.
+//! 9. **Overflow protection** – extremely large salary × rate combinations return
+//!    `ExchangeRateOverflow` rather than panicking.
 //!
-//! 10. **Multi-period accumulation** – multiple elapsed periods are converted
-//!     correctly in a single claim.
+//! 10. **Multi-period accumulation** – multiple elapsed periods are converted correctly in a single
+//!     claim.
 //!
 //! # Security notes
 //!
-//! * The oracle contract must be registered as `ExchangeRateAdmin` on the
-//!   payroll contract before `push_price` can succeed.  Without this, every
-//!   `push_price` call returns `FxUpdateFailed`.
+//! * The oracle contract must be registered as `ExchangeRateAdmin` on the payroll contract before
+//!   `push_price` can succeed.  Without this, every `push_price` call returns `FxUpdateFailed`.
 //!
-//! * Only the payroll contract owner may call `set_exchange_rate_admin`.
-//!   An attacker cannot self-register as FX admin.
+//! * Only the payroll contract owner may call `set_exchange_rate_admin`. An attacker cannot
+//!   self-register as FX admin.
 //!
-//! * The oracle enforces `[min_rate, max_rate]` bounds per pair, limiting the
-//!   blast radius of a compromised oracle source to the configured range.
+//! * The oracle enforces `[min_rate, max_rate]` bounds per pair, limiting the blast radius of a
+//!   compromised oracle source to the configured range.
 //!
-//! * Stale-price rejection (`max_staleness_seconds`) prevents a replayed or
-//!   delayed price feed from silently using an outdated rate.
+//! * Stale-price rejection (`max_staleness_seconds`) prevents a replayed or delayed price feed from
+//!   silently using an outdated rate.
 //!
-//! * `FX_SCALE = 1_000_000` (6 decimal fixed-point).  All rates in these tests
-//!   are expressed as `quote_per_base * 1_000_000`.
+//! * `FX_SCALE = 1_000_000` (6 decimal fixed-point).  All rates in these tests are expressed as
+//!   `quote_per_base * 1_000_000`.
 
 #![cfg(test)]
 

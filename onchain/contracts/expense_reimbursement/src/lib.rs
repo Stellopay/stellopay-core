@@ -5,6 +5,9 @@ use soroban_sdk::{
     Env, IntoVal, String, Symbol, Val, Vec,
 };
 
+/// Default period duration in seconds (30 days).
+const DEFAULT_PERIOD_DURATION: u64 = 2_592_000;
+
 /// ExpenseReimbursementContract manages expense submissions with approval workflows
 /// and receipt verification with escrow capabilities for organizational expense management.
 ///
@@ -51,7 +54,8 @@ pub struct Expense {
     pub payer: Option<Address>,
     pub status: ExpenseStatus,
     /// NatSpec: `receipt_hash` is a deterministic commitment (e.g., SHA-256) of the
-    /// receipt document, allowing off-chain auditing of original receipts corresponding to on-chain payouts.
+    /// receipt document, allowing off-chain auditing of original receipts corresponding to
+    /// on-chain payouts.
     pub receipt_hash: BytesN<32>,
     pub audit_log_id: Option<u64>,
     pub description: String,
@@ -68,6 +72,15 @@ enum StorageKey {
     ReceiptHash(BytesN<32>),
     AuditLogger,
     ApproverRole(Address),
+    /// Per-employee per-period spending cap. Maps employee address to
+    /// maximum total reimbursable amount in a single period.
+    /// A value of 0 (or absent) means no cap is enforced.
+    EmployeeCap(Address),
+    /// Duration of a spending cap period in seconds.
+    PeriodDuration,
+    /// Cumulative amount spent per employee within a given period.
+    /// Key is (employee_address, period_identifier).
+    PeriodSpent(Address, u64),
 }
 
 #[contracttype]
@@ -184,6 +197,50 @@ fn append_approval_audit_log(
     })
 }
 
+// ─── Spending Cap Helpers ──────────────────────────────────────────────────
+
+/// Returns the current period identifier based on ledger timestamp.
+fn current_period(env: &Env) -> u64 {
+    let duration = env
+        .storage()
+        .persistent()
+        .get::<_, u64>(&StorageKey::PeriodDuration)
+        .unwrap_or(DEFAULT_PERIOD_DURATION);
+    env.ledger().timestamp() / duration
+}
+
+/// Reads the per-employee spending cap (0 means no cap).
+fn read_employee_cap(env: &Env, employee: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get::<_, i128>(&StorageKey::EmployeeCap(employee.clone()))
+        .unwrap_or(0)
+}
+
+/// Reads the cumulative amount an employee has spent in a given period.
+fn read_period_spent(env: &Env, employee: &Address, period: u64) -> i128 {
+    env.storage()
+        .persistent()
+        .get::<_, i128>(&StorageKey::PeriodSpent(employee.clone(), period))
+        .unwrap_or(0)
+}
+
+/// Adds an amount to the employee's cumulative period spending.
+fn add_period_spent(env: &Env, employee: &Address, period: u64, amount: i128) {
+    let current = read_period_spent(env, employee, period);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PeriodSpent(employee.clone(), period), &(current + amount));
+}
+
+/// Subtracts an amount from the employee's cumulative period spending.
+fn sub_period_spent(env: &Env, employee: &Address, period: u64, amount: i128) {
+    let current = read_period_spent(env, employee, period);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::PeriodSpent(employee.clone(), period), &(current - amount));
+}
+
 #[contractimpl]
 impl ExpenseReimbursementContract {
     /// Initialize the contract with an owner
@@ -261,6 +318,17 @@ impl ExpenseReimbursementContract {
             "Receipt already reimbursed"
         );
 
+        // Enforce per-period spending cap (if configured).
+        let cap = read_employee_cap(&env, &submitter);
+        if cap > 0 {
+            let period = current_period(&env);
+            let spent = read_period_spent(&env, &submitter, period);
+            assert!(
+                spent.checked_add(amount).expect("Spending overflow") <= cap,
+                "Expense would exceed per-period spending cap"
+            );
+        }
+
         let expense_id: u128 = env
             .storage()
             .persistent()
@@ -292,6 +360,14 @@ impl ExpenseReimbursementContract {
         env.storage()
             .persistent()
             .set(&StorageKey::NextExpenseId, &(expense_id + 1));
+
+        // Track the full submitted amount against the period cap.
+        // If the expense is later rejected, cancelled, or partially approved,
+        // the over-counted amount is decremented from period spent.
+        if cap > 0 {
+            let period = current_period(&env);
+            add_period_spent(&env, &submitter, period, amount);
+        }
 
         env.events().publish(
             (String::from_str(&env, "expense_submitted"), expense_id),
@@ -439,6 +515,13 @@ impl ExpenseReimbursementContract {
         // Must sync escrow reduction if we refund
         expense.escrow_amount = 0;
 
+        // Decrement period spending cap since this expense is no longer active.
+        let cap = read_employee_cap(&env, &expense.submitter);
+        if cap > 0 {
+            let period = current_period(&env);
+            sub_period_spent(&env, &expense.submitter, period, expense.amount);
+        }
+
         env.storage()
             .persistent()
             .set(&StorageKey::Expense(expense_id), &expense);
@@ -453,6 +536,19 @@ impl ExpenseReimbursementContract {
     }
 
     /// Pay an approved expense to the employee. Any surplus escrow goes back to the payer.
+    ///
+    /// # Double-Payment Guard
+    ///
+    /// This function implements a checks-effects-interactions pattern to prevent
+    /// double-payment of the same expense:
+    /// 1. **Checks**: Verifies the expense is in `Approved` status.
+    /// 2. **Effects**: Atomically transitions the expense to `Paid` and zeroes `escrow_amount`
+    ///    **before** any token transfer occurs.
+    /// 3. **Interactions**: Only after the terminal state is committed does the function perform
+    ///    token transfers (payout to submitter, surplus refund to payer).
+    ///
+    /// Once `Paid`, any subsequent call will fail the status check at step 1,
+    /// guaranteeing the expense cannot be paid more than once.
     pub fn pay_expense(env: Env, expense_id: u128) {
         require_initialized(&env);
 
@@ -491,6 +587,17 @@ impl ExpenseReimbursementContract {
         if surplus > 0 {
             if let Some(payer) = expense.payer.clone() {
                 token_client.transfer(&env.current_contract_address(), &payer, &surplus);
+            }
+        }
+
+        // Adjust period spending cap for partial approval: the difference
+        // between the original submitted amount and the paid amount is released.
+        let cap = read_employee_cap(&env, &expense.submitter);
+        if cap > 0 {
+            let over_counted = expense.amount - amount_to_pay;
+            if over_counted > 0 {
+                let period = current_period(&env);
+                sub_period_spent(&env, &expense.submitter, period, over_counted);
             }
         }
 
@@ -533,6 +640,13 @@ impl ExpenseReimbursementContract {
         }
         expense.escrow_amount = 0;
 
+        // Decrement period spending cap since this expense is no longer active.
+        let cap = read_employee_cap(&env, &expense.submitter);
+        if cap > 0 {
+            let period = current_period(&env);
+            sub_period_spent(&env, &expense.submitter, period, expense.amount);
+        }
+
         env.storage()
             .persistent()
             .set(&StorageKey::Expense(expense_id), &expense);
@@ -572,5 +686,50 @@ impl ExpenseReimbursementContract {
     pub fn get_audit_logger(env: Env) -> Option<Address> {
         require_initialized(&env);
         env.storage().persistent().get(&StorageKey::AuditLogger)
+    }
+
+    // ── Spending Cap Management ───────────────────────────────────────────────
+
+    /// Sets a per-employee per-period spending cap.
+    ///
+    /// When `cap` is 0 (or the key is absent), no cap is enforced for that
+    /// employee. Only the contract owner may call this function.
+    pub fn set_employee_cap(env: Env, caller: Address, employee: Address, cap: i128) {
+        require_initialized(&env);
+        require_owner(&env, &caller);
+        assert!(cap >= 0, "Cap cannot be negative");
+        if cap == 0 {
+            env.storage()
+                .persistent()
+                .remove(&StorageKey::EmployeeCap(employee));
+        } else {
+            env.storage()
+                .persistent()
+                .set(&StorageKey::EmployeeCap(employee), &cap);
+        }
+    }
+
+    /// Sets the period duration in seconds (e.g. 2_592_000 for 30 days).
+    /// Only the contract owner may call this function.
+    pub fn set_period_duration(env: Env, caller: Address, duration: u64) {
+        require_initialized(&env);
+        require_owner(&env, &caller);
+        assert!(duration > 0, "Period duration must be positive");
+        env.storage()
+            .persistent()
+            .set(&StorageKey::PeriodDuration, &duration);
+    }
+
+    /// Returns the per-employee spending cap (0 means no cap).
+    pub fn get_employee_cap(env: Env, employee: Address) -> i128 {
+        require_initialized(&env);
+        read_employee_cap(&env, &employee)
+    }
+
+    /// Returns the cumulative amount the employee has spent in the current period.
+    pub fn get_employee_period_spent(env: Env, employee: Address) -> i128 {
+        require_initialized(&env);
+        let period = current_period(&env);
+        read_period_spent(&env, &employee, period)
     }
 }

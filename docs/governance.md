@@ -51,6 +51,16 @@ Backward-compatible aliases are also present for earlier local names:
 ### Configuration Model
 
 - `quorum_votes` is an absolute participation threshold, not a percentage.
+- Governance uses a **proposal-creation snapshot** for quorum. Each proposal
+  stores the configured `quorum_votes` value when `create_proposal` succeeds,
+  and `finalize_proposal` evaluates participation against that stored value.
+- `update_config` affects only proposals created after the update. Raising or
+  lowering `quorum_votes` while a proposal is active cannot retroactively make
+  that proposal pass or fail.
+- The quorum threshold is not recomputed from the live RBAC voter set, staking,
+  or any other external voting-power source. Deployments that change the voter
+  population should update `quorum_votes`; the new value will apply to future
+  proposals.
 - `voting_period_seconds` controls how long proposals stay open. Both `initialize`
   and `update_config` enforce that it falls within
   `[MIN_VOTING_PERIOD_SECONDS, MAX_VOTING_PERIOD_SECONDS]`:
@@ -74,6 +84,9 @@ Governance eligibility is checked live against the linked `rbac` contract.
 
 Because checks are live, role changes take effect immediately for future
 proposal creation and future votes that have not yet been cast.
+They do not change the quorum snapshot of an existing proposal. A vote that was
+validly cast before a role is revoked remains included in that proposal's stored
+totals.
 
 ### Timelock Integration
 
@@ -108,6 +121,10 @@ state transition.
 - Cancelling a succeeded proposal also cancels its queued timelock operation.
 - Quorum is absolute, so deployments should set `quorum_votes` to reflect the
   expected number of active governance participants.
+- Snapshotting quorum prevents configuration or voter-population changes from
+  changing the rules of an active proposal. This avoids both last-minute quorum
+  inflation that blocks a proposal and last-minute quorum reduction that makes
+  an under-participated proposal pass.
 
 ### Test Coverage
 
@@ -122,6 +139,8 @@ The governance test suite covers:
 - proposal cancellation after success
 - parameter, arbiter, and upgrade execution paths
 - live RBAC role revocation impact on future voting
+- proposal-time quorum snapshots when configuration and voting power change
+  during an active vote
 
 Run locally with:
 

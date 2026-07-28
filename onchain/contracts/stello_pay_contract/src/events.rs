@@ -1,5 +1,6 @@
-use crate::storage::AgreementMode;
 use soroban_sdk::{contractevent, Address, Env};
+
+use crate::storage::AgreementMode;
 
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -291,5 +292,59 @@ pub struct MultisigConfigChangedEvent {
 }
 
 pub fn emit_multisig_config_changed(env: &Env, event: MultisigConfigChangedEvent) {
+    event.publish(env);
+}
+
+/// Event: A milestone was rejected by the employer.
+///
+/// Emitted when an employer explicitly rejects a submitted milestone via
+/// `reject_milestone`. The `rejected_by` field records the employer address
+/// at the time of rejection and `reason` is the mandatory human-readable
+/// justification supplied by the caller (must be non-empty). Off-chain
+/// indexers can use this event to update milestone status, notify
+/// contributors, and track rejection history.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MilestoneRejectedEvent {
+    /// The milestone agreement that contains the rejected milestone.
+    pub agreement_id: u128,
+    /// 1-based identifier of the rejected milestone within the agreement.
+    pub milestone_id: u32,
+    /// The employer address that performed the rejection.
+    pub rejected_by: Address,
+    /// Mandatory free-text justification provided by the employer (must be
+    /// non-empty and contain at least one non-whitespace character).
+    pub reason: soroban_sdk::String,
+}
+
+/// Emits a [`MilestoneRejectedEvent`] for the given rejection.
+pub fn emit_milestone_rejected(env: &Env, event: MilestoneRejectedEvent) {
+    event.publish(env);
+}
+
+/// Event: A milestone expired without being claimed or rejected.
+///
+/// Emitted by `expire_milestone` after the expiry flag is persisted and
+/// before the `on_milestone_expired` hook is invoked on the implementing
+/// contract (if configured).  Off-chain indexers can use this event to
+/// update milestone status, notify contributors, and trigger reconciliation
+/// workflows.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MilestoneExpiredEvent {
+    /// The milestone agreement that contains the expired milestone.
+    pub agreement_id: u128,
+    /// 1-based identifier of the expired milestone within the agreement.
+    pub milestone_id: u32,
+    /// The amount that was locked for this milestone and is now unreleased.
+    /// Callers may use this to decide whether to fund a replacement milestone
+    /// or cancel the agreement to recover unused escrow.
+    pub locked_amount: i128,
+    /// The address that triggered expiry (must be the agreement's employer).
+    pub expired_by: Address,
+}
+
+/// Emits a [`MilestoneExpiredEvent`] for the given expiry.
+pub fn emit_milestone_expired(env: &Env, event: MilestoneExpiredEvent) {
     event.publish(env);
 }

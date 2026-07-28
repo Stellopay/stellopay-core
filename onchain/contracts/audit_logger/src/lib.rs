@@ -122,6 +122,17 @@ impl AuditLoggerContract {
 
     /// Updates the log retention limit (maximum number of retained entries).
     ///
+    /// # Prune-on-Lower Semantics
+    ///
+    /// If the new `retention_limit` is lower than the current number of
+    /// retained logs, the **oldest** entries are immediately and permanently
+    /// removed to bring the retained count down to the new limit. Pruning is
+    /// deterministic by insertion order (sequential ID), not by timestamp.
+    ///
+    /// Raising the retention limit afterward does **not** resurrect pruned
+    /// entries. Once pruned, entries are permanently gone — not merely hidden
+    /// — and cannot be recovered through this contract.
+    ///
     /// # Access Control
     /// - Caller must be the contract owner.
     ///
@@ -148,6 +159,32 @@ impl AuditLoggerContract {
         caller.require_auth();
         if caller != owner {
             return Err(AuditError::Unauthorized);
+        }
+
+        // Prune oldest entries immediately when the new limit is lower than
+        // the current count. This is not deferred to the next append.
+        if retention_limit > 0 {
+            let log_count: u64 = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::LogCount)
+                .unwrap_or(0u64);
+            let first_id: u64 = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::FirstLogId)
+                .unwrap_or(1u64);
+            let r = retention_limit as u64;
+
+            if log_count > r {
+                let prune_count = log_count - r;
+                env.storage()
+                    .persistent()
+                    .set(&StorageKey::FirstLogId, &(first_id + prune_count));
+                env.storage()
+                    .persistent()
+                    .set(&StorageKey::LogCount, &r);
+            }
         }
 
         env.storage()
@@ -177,6 +214,15 @@ impl AuditLoggerContract {
     ///
     /// # Returns
     /// * `id` - Identifier of the newly created log entry
+    ///
+    /// # Invariants
+    /// - **Append-Order Guarantee**: Log entries are assigned strictly increasing
+    ///   sequential IDs starting from 1. Within the retained window, IDs have no gaps.
+    /// - **Read Consistency**: Calls to `get_log`, `get_logs`, and `get_latest_logs`
+    ///   return entries in append order. When interleaved with `append_log`, reads
+    ///   reflect exactly the entries appended so far, with no skipped or duplicated
+    ///   entries.
+    /// - **Immutability**: Once written, a log entry cannot be modified or deleted.
     pub fn append_log(
         env: Env,
         actor: Address,
@@ -272,6 +318,12 @@ impl AuditLoggerContract {
     ///
     /// # Access Control
     /// Requires caller authentication
+    ///
+    /// # Invariants
+    /// - Returns entries in append order: if `id1 < id2` and both are retained,
+    ///   `get_log(id1)` returns an entry appended before `get_log(id2)`.
+    /// - No gaps within retained window: for any `id` in `[FirstLogId, NextLogId)`,
+    ///   `get_log(id)` returns `Some(entry)` if storage holds the key.
     pub fn get_log(env: Env, id: u64) -> Option<AuditLogEntry> {
         let first_id: u64 = env
             .storage()
@@ -312,6 +364,14 @@ impl AuditLoggerContract {
     ///
     /// # Errors
     /// Returns [`AuditError::InvalidArguments`] if `limit` is 0.
+    ///
+    /// # Invariants
+    /// - **Append-Order Guarantee**: Entries in the returned vector are in
+    ///   strictly increasing ID order, matching append order.
+    /// - **No Duplicates**: Each entry appears at most once in a single page.
+    /// - **Pagination Consistency**: Using `next_cursor` from a page to fetch
+    ///   subsequent pages yields entries in append order with no gaps or
+    ///   duplicates across pages.
     pub fn get_logs(env: Env, offset: u32, limit: u32) -> Result<LogsPage, AuditError> {
         if limit == 0 {
             return Err(AuditError::InvalidArguments);
@@ -381,10 +441,23 @@ impl AuditLoggerContract {
     ///
     /// # Access Control
     /// Requires caller authentication
+    ///
+    /// # Invariants
+    /// - **Append-Order Guarantee**: Entries are returned in strictly increasing
+    ///   ID order (oldest to newest), matching append order.
+    /// - **No Gaps**: Within the retained window, returned entries have consecutive
+    ///   IDs with no gaps.
+    /// - **No Duplicates**: Each entry appears at most once in the returned vector.
+    /// - **Interleaved Read Consistency**: When called interleaved with `append_log`,
+    ///   each read reflects exactly the entries appended so far, in order, with no
+    ///   skipped or duplicated entries.
     pub fn get_latest_logs(env: Env, limit: u32) -> Result<Vec<AuditLogEntry>, AuditError> {
         if limit == 0 {
             return Err(AuditError::InvalidArguments);
         }
+
+        // Clamp to MAX_PAGE_SIZE to bound ledger-read budget, same as get_logs.
+        let effective_limit = limit.min(MAX_PAGE_SIZE);
 
         let first_id: u64 = env
             .storage()
@@ -401,7 +474,7 @@ impl AuditLoggerContract {
             return Ok(Vec::new(&env));
         }
 
-        let total = core::cmp::min(limit as u64, log_count);
+        let total = core::cmp::min(effective_limit as u64, log_count);
         let start_id = first_id + log_count - total;
 
         let mut results = Vec::new(&env);

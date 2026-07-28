@@ -5,6 +5,15 @@ use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, 
 #[contract]
 pub struct MultisigContract;
 
+/// Stable identifiers used to configure per-operation thresholds.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OperationType {
+    ContractUpgrade,
+    LargePayment,
+    DisputeResolution,
+}
+
 /// Operation kinds supported by the multisig.
 ///
 /// These are intentionally generic so that off-chain automation or
@@ -24,6 +33,11 @@ pub enum OperationKind {
     ///
     /// Tuple layout: (payroll_contract, agreement_id, pay_employee, refund_employer)
     DisputeResolution(Address, u128, i128, i128),
+    /// Sets or removes the signer threshold override for an operation type.
+    ///
+    /// Tuple layout: (operation_type, threshold). A `None` threshold removes
+    /// the override and restores the default threshold.
+    SetThresholdOverride(OperationType, Option<u32>),
 }
 
 #[contracttype]
@@ -56,6 +70,7 @@ enum StorageKey {
     OperationCounter,
     Operation(u128),
     Approvals(u128),
+    ThresholdOverride(OperationType),
 }
 
 #[contracttype]
@@ -107,6 +122,35 @@ fn read_threshold(env: &Env) -> u32 {
         .persistent()
         .get::<_, u32>(&StorageKey::Threshold)
         .expect("Threshold not set")
+}
+
+fn read_threshold_override(env: &Env, operation_type: &OperationType) -> Option<u32> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::ThresholdOverride(operation_type.clone()))
+}
+
+fn read_effective_threshold(env: &Env, operation_type: &OperationType) -> u32 {
+    read_threshold_override(env, operation_type).unwrap_or_else(|| read_threshold(env))
+}
+
+fn operation_type(kind: &OperationKind) -> OperationType {
+    match kind {
+        OperationKind::ContractUpgrade(_, _) => OperationType::ContractUpgrade,
+        OperationKind::LargePayment(_, _, _) => OperationType::LargePayment,
+        OperationKind::DisputeResolution(_, _, _, _) => OperationType::DisputeResolution,
+        OperationKind::SetThresholdOverride(operation_type, _) => operation_type.clone(),
+    }
+}
+
+fn validate_threshold_override(env: &Env, threshold: &Option<u32>) {
+    if let Some(threshold) = threshold {
+        let signer_count = read_signers(env).len();
+        assert!(
+            *threshold > 0 && *threshold <= signer_count,
+            "Invalid threshold override"
+        );
+    }
 }
 
 fn is_signer(env: &Env, addr: &Address) -> bool {
@@ -170,7 +214,14 @@ fn has_approved(env: &Env, operation_id: u128, signer: &Address) -> bool {
 
 fn approval_count(env: &Env, operation_id: u128) -> u32 {
     let approvals = read_approvals(env, operation_id);
-    approvals.len()
+    let mut count = 0;
+    for i in 0..approvals.len() {
+        let addr = approvals.get(i).unwrap();
+        if is_signer(env, &addr) {
+            count += 1;
+        }
+    }
+    count
 }
 
 fn is_emergency_guardian(env: &Env, addr: &Address) -> bool {
@@ -185,7 +236,8 @@ fn is_emergency_guardian(env: &Env, addr: &Address) -> bool {
 }
 
 fn execute_if_threshold_met(env: &Env, operation_id: u128) {
-    let threshold = read_threshold(env);
+    let op = read_operation(env, operation_id);
+    let threshold = read_effective_threshold(env, &operation_type(&op.kind));
     let approvals = approval_count(env, operation_id);
     if approvals >= threshold {
         // Execute without additional signer auth (they already authenticated
@@ -200,6 +252,17 @@ fn perform_execute(env: &Env, operation_id: u128) {
         return;
     }
 
+    // Configuration changes must never use the guardian bypass. Re-check the
+    // target type's active threshold here so every write is protected by the
+    // pre-change value, regardless of which execution path reached this code.
+    if let OperationKind::SetThresholdOverride(operation_type, _) = &op.kind {
+        let threshold = read_effective_threshold(env, operation_type);
+        assert!(
+            approval_count(env, operation_id) >= threshold,
+            "Threshold override requires current threshold"
+        );
+    }
+
     match &op.kind {
         OperationKind::LargePayment(token, to, amount) => {
             assert!(*amount > 0, "Amount must be positive");
@@ -212,6 +275,16 @@ fn perform_execute(env: &Env, operation_id: u128) {
         // orchestrators consume these events and perform the concrete action.
         OperationKind::ContractUpgrade(_, _) => {}
         OperationKind::DisputeResolution(_, _, _, _) => {}
+        OperationKind::SetThresholdOverride(operation_type, threshold) => match threshold {
+            Some(threshold) => env.storage().persistent().set(
+                &StorageKey::ThresholdOverride(operation_type.clone()),
+                threshold,
+            ),
+            None => env
+                .storage()
+                .persistent()
+                .remove(&StorageKey::ThresholdOverride(operation_type.clone())),
+        },
     }
 
     op.status = OperationStatus::Executed;
@@ -284,6 +357,59 @@ impl MultisigContract {
             .set(&StorageKey::Initialized, &true);
     }
 
+    /// @notice Updates the signer set and default threshold.
+    /// @dev Can only be called by the designated owner.
+    /// @param new_signers The new list of signers.
+    /// @param new_threshold The new default threshold.
+    pub fn update_signers(env: Env, new_signers: Vec<Address>, new_threshold: u32) {
+        require_initialized(&env);
+        let owner = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&StorageKey::Owner)
+            .expect("Owner not set");
+        owner.require_auth();
+
+        let signer_count = new_signers.len();
+        assert!(signer_count > 0, "At least one signer required");
+        assert!(
+            new_threshold > 0 && new_threshold <= signer_count,
+            "Invalid threshold"
+        );
+
+        // Ensure signer list has no duplicates.
+        for i in 0..signer_count {
+            let a = new_signers.get(i).unwrap();
+            for j in (i + 1)..signer_count {
+                let b = new_signers.get(j).unwrap();
+                assert!(a != b, "Duplicate signer");
+            }
+        }
+
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Signers, &new_signers);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Threshold, &new_threshold);
+
+        // Adjust/cap any active per-operation overrides to ensure they do not exceed the new signer
+        // count.
+        for op_type in [
+            OperationType::ContractUpgrade,
+            OperationType::LargePayment,
+            OperationType::DisputeResolution,
+        ] {
+            if let Some(override_val) = read_threshold_override(&env, &op_type) {
+                if override_val > signer_count as u32 {
+                    env.storage()
+                        .persistent()
+                        .set(&StorageKey::ThresholdOverride(op_type), signer_count);
+                }
+            }
+        }
+    }
+
     /// @notice Proposes a new multisig-protected operation.
     /// @dev The proposer must be one of the configured signers.
     /// @param proposer Signer creating the operation.
@@ -293,6 +419,9 @@ impl MultisigContract {
         require_initialized(&env);
         proposer.require_auth();
         assert!(is_signer(&env, &proposer), "Only signers can propose");
+        if let OperationKind::SetThresholdOverride(_, threshold) = &kind {
+            validate_threshold_override(&env, threshold);
+        }
 
         let id = next_operation_id(&env);
         let op = Operation {
@@ -346,7 +475,7 @@ impl MultisigContract {
         let mut approvals = read_approvals(&env, operation_id);
         approvals.push_back(signer.clone());
         let count = approvals.len();
-        let threshold = read_threshold(&env);
+        let threshold = read_effective_threshold(&env, &operation_type(&op.kind));
 
         write_approvals(&env, operation_id, &approvals);
 
@@ -398,7 +527,8 @@ impl MultisigContract {
     }
 
     /// @notice Executes a pending operation via the emergency guardian.
-    /// @dev Guardian can bypass threshold checks in break-glass scenarios.
+    /// @dev Guardian can bypass threshold checks for operational actions, but
+    ///      not for signer threshold override changes.
     /// @param guardian Configured guardian address.
     /// @param operation_id Operation identifier.
     pub fn emergency_execute(env: Env, guardian: Address, operation_id: u128) {
@@ -437,6 +567,20 @@ impl MultisigContract {
     /// @dev Requires caller authentication
     pub fn get_threshold(env: Env) -> u32 {
         read_threshold(&env)
+    }
+
+    /// @notice Returns the configured threshold override for an operation type.
+    /// @param operation_type Operation type to query.
+    /// @return The override, or `None` when the default threshold applies.
+    pub fn get_threshold_override(env: Env, operation_type: OperationType) -> Option<u32> {
+        read_threshold_override(&env, &operation_type)
+    }
+
+    /// @notice Returns the threshold currently active for an operation type.
+    /// @param operation_type Operation type to query.
+    /// @return The configured override or, when absent, the default threshold.
+    pub fn get_effective_threshold(env: Env, operation_type: OperationType) -> u32 {
+        read_effective_threshold(&env, &operation_type)
     }
 
     /// @notice Returns current approvals for an operation.

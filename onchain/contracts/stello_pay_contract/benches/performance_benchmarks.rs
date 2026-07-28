@@ -4,9 +4,10 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env, Vec,
 };
-
-use stello_pay_contract::storage::{AgreementStatus, DataKey};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{AgreementStatus, DataKey},
+    PayrollContract, PayrollContractClient,
+};
 
 /// Create a baseline environment + deployed payroll contract for benchmarks.
 fn setup_env() -> (

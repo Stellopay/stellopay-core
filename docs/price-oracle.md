@@ -111,7 +111,7 @@ Where:
 | Function                                                     | Access | Description                          |
 |--------------------------------------------------------------|--------|--------------------------------------|
 | `push_price(source, base, quote, rate, source_timestamp)`   | Source | Submit a new rate for a pair         |
-| `get_pair_state(base, quote)`                                | Any    | Read last accepted rate and metadata |
+| `get_pair_state(base, quote)`                                | Any    | Read last accepted state; rejects with `PriceTooOld` if state is older than `max_staleness_seconds` |
 
 ### Admin
 
@@ -191,6 +191,8 @@ Integration steps:
 | 10   | InvalidPairConfig | Invalid configuration parameters               |
 | 11   | DuplicateVote     | Source already voted in the active quorum bucket |
 | 12   | SubmissionRateLimited | Source resubmitted before `min_submission_interval_seconds` elapsed |
+| 13   | TooManySources    | Quorum bucket is full                          |
+| 14   | PriceTooOld       | Read rejected because the price is older than `max_staleness_seconds` |
 
 ## Quorum model
 
