@@ -44,6 +44,15 @@ create_organization(owner: Address, name: Symbol) -> u128
 ```
 Creates an org; `owner` must authenticate. Returns `org_id` (sequential from 1).
 
+**Uniqueness Invariant (Issue #917):** Each `name` is **globally unique** across the
+entire contract. `create_organization` rejects any call whose `name` already maps
+to an existing organization (via the `OrgByName` reverse index), regardless of who
+the caller is. A rejected attempt **rolls back all state mutations**, so the
+original organization's record and its full `get_org_departments` tree are left
+intact. Soroban `Symbol` is case-sensitive, so `"Acme"` and `"acme"` are distinct
+identifiers.
+
+
 ```rust
 get_organization(org_id: u128) -> Organization
 ```
@@ -158,6 +167,7 @@ All mutating operations publish events for indexer/integrator consumption:
 8. **No cycles**: `update_department` walks the ancestor chain of the proposed new parent and rejects the move if `dept_id` appears in that chain. Since `create_department` only appends to an existing tree (no reparenting), cycles can only arise through `update_department`, which is fully guarded.
 9. **Subtree moves are safe**: Moving a department only updates its own `parent_id` and the children lists of the old and new parents. Descendants are unaffected, so the subtree is moved atomically without touching descendant records.
 10. **No department deletion**: Departments cannot be deleted. This avoids dangling `parent_id` references in child departments. To retire a department, reassign its employees and stop using it.
+11. **Organization name uniqueness (Issue #917)**: Each `name` is globally unique across the entire contract. The `OrgByName(name) -> org_id` reverse index is checked inside `create_organization` **before** any state mutation (counter increment, organization record, empty `OrgDepartments` vec, or reverse-index write). On rejection, Soroban rolls back the entire call, so the original organization's record and its department tree are guaranteed to be unaffected. Because there is no `delete_organization`, a name, once claimed, is permanently reserved for the lifetime of the contract instance. If a future version introduces `delete_organization`, it MUST also clear the corresponding `OrgByName(name)` entry to prevent orphaned reverse-index entries from permanently blocking re-creation under that name.
 
 ---
 
@@ -176,6 +186,7 @@ All mutating operations publish events for indexer/integrator consumption:
 | `EmployeeInDepartment(dept_id, addr)` | `()` | Membership flag |
 | `EmployeeDepartment(addr, org_id)` | `u128` | Employee → current dept ID in org |
 | `DepartmentEmployees(dept_id)` | `Vec<Address>` | All employees in a dept |
+| `OrgByName(name)` | `u128` | Reverse index: organization name → org_id (enforces name uniqueness) |
 
 ---
 
@@ -201,6 +212,8 @@ Organization (org_id)
 
 | Condition | Error message |
 |-----------|--------------|
+| `create_organization` with a `name` already in use by any existing org | `"Organization name already in use"` |
+| `create_organization` before `initialize` | `"Contract not initialized"` |
 | `create_department` with non-existent org | `"Organization not found"` |
 | `create_department` by non-owner | `"Not organization owner"` |
 | `create_department` with non-existent parent | `"Parent department not found"` |
@@ -239,3 +252,10 @@ The test suite covers:
 - Employee assignment, reassignment, removal
 - Access control: all mutating ops reject non-owners
 - Cross-org isolation
+- Unique-organization-id guard (Issue #917):
+  - Duplicate name with same owner is rejected with `"Organization name already in use"`
+  - Duplicate name with different owner is rejected with `"Organization name already in use"`
+  - Rejected duplicate-name attempt leaves the original org record and its full department tree (`get_org_departments`) intact
+  - Symbol case-sensitivity documented (different case ⇒ different id)
+  - Failed attempt does not consume a `NextOrgId` slot (sequential ids remain gap-free after a rejected attempt)
+  - Many distinct names are accepted in sequence; verifies that legitimate creates still get strictly increasing, sequential ids (no gap, no skip)

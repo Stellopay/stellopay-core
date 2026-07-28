@@ -138,6 +138,208 @@ fn test_org_departments_initially_empty() {
 }
 
 // ---------------------------------------------------------------------------
+// Unique-organization-id guard tests (Issue #917)
+// ---------------------------------------------------------------------------
+//
+// Verifies the contract enforces that each organization `name` is globally
+// unique. Re-creating an organization with a name that is already claimed by
+// an existing organization must be rejected, and the rejected attempt must
+// leave the original organization's department tree untouched.
+//
+// NOTE on test style: this section uses BOTH `#[should_panic]` (for tests
+// that only need to assert the panic) and `std::panic::catch_unwind` (for
+// tests that must continue execution after the panic to verify post-rejection
+// state, like the tree-integrity guarantees). The existing suite uses only
+// `#[should_panic]`; that pattern cannot assert post-panic storage state, so
+// `catch_unwind(safe)` is necessary here.
+/// @notice Duplicate name with the **same owner** is rejected. The guard fires
+///         even when the same caller reuses a name they already own.
+#[test]
+#[should_panic(expected = "Organization name already in use")]
+fn test_create_organization_rejects_duplicate_name_same_owner() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    client.create_organization(&owner, &symbol_short!("Acme"));
+    // Second call with the same name + same owner must panic.
+    client.create_organization(&owner, &symbol_short!("Acme"));
+}
+
+/// @notice Duplicate name with a **different owner** is also rejected. Names
+///         are globally unique across the entire contract, not per-owner.
+#[test]
+#[should_panic(expected = "Organization name already in use")]
+fn test_create_organization_rejects_duplicate_name_different_owner() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+    client.create_organization(&owner1, &symbol_short!("Acme"));
+    // Different owner must still be rejected.
+    client.create_organization(&owner2, &symbol_short!("Acme"));
+}
+
+/// @notice A rejected duplicate-create attempt leaves the original
+///         organization's record and its full department tree untouched.
+///         This is the security-critical guarantee from issue #917: re-creating
+///         an organization could otherwise reset or overwrite its tree.
+///
+/// Tree built before the duplicate attempt:
+/// ```text
+///  Acme (root)
+///   ├── Eng (no children, no members)
+///   └── Sales (no children, no members)
+///        └── DirectSales (no children, no members)
+/// ```
+#[test]
+fn test_failed_duplicate_create_leaves_existing_tree_intact() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+
+    // 1. Create the original organization and build a department tree.
+    let acme_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let eng_id = client.create_department(&owner, &acme_id, &symbol_short!("Eng"), &None);
+    let sales_id =
+        client.create_department(&owner, &acme_id, &symbol_short!("Sales"), &None);
+    let direct_id = client.create_department(
+        &owner,
+        &acme_id,
+        &symbol_short!("Dir"),
+        &Some(sales_id),
+    );
+    let emp = Address::generate(&env);
+    client.assign_employee_to_department(&owner, &acme_id, &sales_id, &emp);
+
+    // Snapshot the original tree before the attempt.
+    let before_depts = client.get_org_departments(&acme_id);
+    assert_eq!(before_depts.len(), 3, "pre-condition: tree has 3 depts");
+    let before_emp_in_sales = client.get_department_employees(&sales_id);
+    assert_eq!(before_emp_in_sales.len(), 1, "pre-condition: one emp in Sales");
+
+    // 2. Attempt to re-create "Acme" with a different owner — must panic.
+    let stranger = Address::generate(&env);
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.create_organization(&stranger, &symbol_short!("Acme"));
+    }));
+    assert!(
+        panic_result.is_err(),
+        "duplicate organization create must panic"
+    );
+
+    // 3. The original organization's record is unchanged.
+    let acme_after = client.get_organization(&acme_id);
+    assert_eq!(acme_after.id, acme_id);
+    assert_eq!(acme_after.name, symbol_short!("Acme"));
+    assert_eq!(acme_after.owner, owner);
+
+    // 4. The full department tree (from get_org_departments) is unchanged.
+    let after_depts = client.get_org_departments(&acme_id);
+    assert_eq!(
+        after_depts.len(),
+        3,
+        "rejected duplicate must not alter the original org's departments"
+    );
+    assert_eq!(after_depts.get(0), Some(eng_id));
+    assert_eq!(after_depts.get(1), Some(sales_id));
+    assert_eq!(after_depts.get(2), Some(direct_id));
+
+    // 5. Each department record and its relations are still intact.
+    let eng = client.get_department(&eng_id);
+    assert_eq!(eng.parent_id, None);
+    let sales = client.get_department(&sales_id);
+    assert_eq!(sales.parent_id, None);
+    let direct = client.get_department(&direct_id);
+    assert_eq!(direct.parent_id, Some(sales_id));
+
+    // 6. Employee membership and computed report are still intact.
+    assert_eq!(client.get_employee_department(&emp, &acme_id), Some(sales_id));
+    assert_eq!(client.get_department_employees(&sales_id).len(), 1);
+    let (sales_count, sales_children, _) = client.get_department_report(&sales_id);
+    assert_eq!(sales_count, 1, "Sales still reports its assigned employee");
+    assert_eq!(sales_children.len(), 1);
+    assert_eq!(sales_children.get(0), Some(direct_id));
+}
+
+/// @notice Soroban `Symbol` is case-sensitive, so `"Acme"` and `"acme"` are
+///         distinct identifiers and BOTH may be claimed by different orgs.
+///         This documents the case-sensitivity contract.
+#[test]
+fn test_create_organization_names_are_case_sensitive() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let id_uc = client.create_organization(&owner, &symbol_short!("Acme"));
+    let id_lc = client.create_organization(&owner, &symbol_short!("acme"));
+    assert_ne!(id_uc, id_lc, "case-different names must yield distinct orgs");
+    let uc = client.get_organization(&id_uc);
+    let lc = client.get_organization(&id_lc);
+    assert_eq!(uc.name, symbol_short!("Acme"));
+    assert_eq!(lc.name, symbol_short!("acme"));
+}
+
+/// @notice After a rejected duplicate-name attempt, the next legitimate
+///         `create_organization` call still succeeds and returns the
+///         sequential id that would have been allocated.
+///
+/// This test FAILS if Soroban's host ever stops rolling back the storage
+/// writes made by a panicked contract function call. Under the standard
+/// Soroban semantics (atomic host-function execution: panic ⇒ revert ALL
+/// writes from that call), the rejected duplicate-name attempt must NOT
+/// consume a counter slot, so the next legitimate create gets id 2.
+#[test]
+fn test_failed_duplicate_does_not_increment_next_org_id() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let first = client.create_organization(&owner, &symbol_short!("Acme"));
+    assert_eq!(first, 1);
+
+    // Failed attempt must not consume an id.
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.create_organization(&stranger, &symbol_short!("Acme"));
+    }));
+    assert!(panic_result.is_err());
+
+    // Next legitimate create gets id = 2 (sequential, no gaps).
+    let second = client.create_organization(&owner, &symbol_short!("Beta"));
+    assert_eq!(
+        second, 2,
+        "rejected duplicate must not increment NextOrgId"
+    );
+}
+
+/// @notice Sanity check: many distinct names are accepted in sequence; the
+///         uniqueness guard never blocks legitimate distinct creations.
+///         This exercises the happy path alongside the rejection paths above.
+///         Because `create_organization` assigns sequential ids in insertion
+///         order, no sort is needed; we just verify the expected range and
+///         the strictly-increasing property directly.
+#[test]
+fn test_create_organization_many_distinct_names_ok() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    // `symbol_short!` is limited to 9 chars; use unique short names.
+    let ids = [
+        client.create_organization(&owner, &symbol_short!("Org01")),
+        client.create_organization(&owner, &symbol_short!("Org02")),
+        client.create_organization(&owner, &symbol_short!("Org03")),
+        client.create_organization(&owner, &symbol_short!("Org04")),
+        client.create_organization(&owner, &symbol_short!("Org05")),
+    ];
+    assert_eq!(ids[0], 1, "first org gets id 1");
+    assert_eq!(ids[4], 5, "fifth org gets id 5");
+    for i in 0..ids.len() - 1 {
+        assert!(
+            ids[i] < ids[i + 1],
+            "ids must be strictly increasing after a sequence of distinct creates"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Department creation tests
 // ---------------------------------------------------------------------------
 
