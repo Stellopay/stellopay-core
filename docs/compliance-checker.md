@@ -1,104 +1,204 @@
-# Compliance Checker Rules Engine
+# Compliance Checker Contract
 
-This document describes the payroll compliance rules engine implemented in `onchain/contracts/compliance_checker/src/lib.rs`.
+## Overview
 
-## Purpose
+The Compliance Checker contract implements a deterministic rules engine for validating payroll lifecycle actions. It enforces security policies and transition rules for payroll agreements, ensuring that all state transitions are authorized and compliant.
 
-The contract validates payroll lifecycle actions as deterministic allow/deny decisions with explicit reason codes, so invalid state transitions cannot silently pass.
+## Key Security Design
 
-## Contract Scope
+### Fail-Closed by Default
 
-- Validates payroll lifecycle transitions only.
-- Returns structured decisions (`Allow` or `Deny`) and deterministic `ReasonCode`.
-- Applies auxiliary-caller restrictions to prevent indirect bypass through non-allowlisted helper contracts.
+The contract implements a **fail-closed** security model for auxiliary contract authorization:
 
-## Core Types
+- **Auxiliary callers are denied by default**. An auxiliary contract that has never been explicitly added via `set_auxiliary_allowed` will be rejected by `check_action`.
+- **Explicit allowlisting is required**. To authorize an auxiliary contract, an admin must explicitly call `set_auxiliary_allowed(auxiliary, true)`.
+- **Removal restores the fail-closed state**. Setting an auxiliary to `false` immediately denies future calls.
 
-- `AgreementStatus`: `Created`, `Active`, `Paused`, `Cancelled`, `Completed`, `Disputed`.
-- `PayrollAction`:
-  - `AddEmployee`
-  - `ActivateAgreement`
-  - `PauseAgreement`
-  - `ResumeAgreement`
-  - `CancelAgreement`
-  - `FinalizeGracePeriod`
-  - `RaiseDispute`
-  - `ResolveDispute`
-  - `ClaimPayroll`
-  - `ClaimTimeBased`
-  - `ClaimMilestone`
-- `ComplianceDecision`:
-  - `decision`: `Allow` or `Deny`
-  - `reason`: `ReasonCode`
+This design follows the principle of least privilege and protects against unauthorized access by unvetted auxiliary contracts.
 
-## Rule Precedence (NatSpec-style)
+### Rule Precedence
 
-The `check_action` entrypoint uses the following precedence from highest to lowest:
+When evaluating a compliance check, rules are applied in the following precedence order (highest to lowest):
 
-1. `EmergencyPaused` deny.
-2. `AuxiliaryNotAllowed` deny when `executor != actor` and executor is not allowlisted.
-3. `TerminalState` deny when current status is `Completed`.
-4. `InvalidCurrentState` deny when action is not legal from current state.
-5. `InvalidTargetState` deny when requested target does not match the action's expected target.
-6. `GracePeriodRequired` deny for claim actions in `Cancelled` state when grace period is not active.
-7. `Allowed`.
+1. **Emergency Pause** - If paused, all actions are denied with `EmergencyPaused`
+2. **Auxiliary Allowlist** - If `executor != actor`, the executor must be explicitly allowlisted
+3. **Terminal State** - Agreements in `Completed` state cannot transition
+4. **Invalid Current State** - The action must be valid from the current state
+5. **Invalid Target State** - The target state must be the expected transition
+6. **Grace Period Required** - Claims from `Cancelled` require an active grace period
+7. **Allow** - If all checks pass, the action is allowed
 
-These steps are encoded in the contract comments using NatSpec-like `@notice` and `@dev` annotations for audit readability.
+## Security Assumptions
 
-## Transition Rules
+### Explicit Authorization Required
 
-- `AddEmployee`: `Created -> Created`
-- `ActivateAgreement`: `Created -> Active`
-- `PauseAgreement`: `Active -> Paused`
-- `ResumeAgreement`: `Paused -> Active`
-- `CancelAgreement`: `Created|Active -> Cancelled`
-- `FinalizeGracePeriod`: `Cancelled -> Cancelled` (finalization event, status remains cancelled)
-- `RaiseDispute`: `Created|Active|Cancelled -> Disputed`
-- `ResolveDispute`: `Disputed -> Completed`
-- `ClaimPayroll|ClaimTimeBased|ClaimMilestone`: `Active|Cancelled -> same state`
-  - For `Cancelled`, grace period must be active.
+The contract assumes that all auxiliary contracts must be explicitly allowlisted by the admin. This prevents:
 
-## Security Assumptions and Bypass Controls
+- **Unvetted code execution**: Unknown auxiliary contracts cannot participate in payroll operations.
+- **Privilege escalation**: Malicious contracts cannot bypass security checks by impersonating authorized actors.
+- **Accidental authorization**: Unintended auxiliary contracts don't gain implicit trust.
 
-- Both `actor` and `executor` must authenticate (`require_auth`).
-- If `executor != actor`, the call is treated as an auxiliary path.
-- Auxiliary path is denied by default and only enabled by admin allowlist (`set_auxiliary_allowed`).
-- Admin-only controls:
-  - `set_emergency_pause`
-  - `set_auxiliary_allowed`
+### Admin Controls
 
-### Operational Assumption
+The admin address has the authority to:
 
-Integrators must provide real execution context:
+- Set emergency pause state
+- Add or remove auxiliary contracts from the allowlist
+- The admin cannot bypass the fail-closed default; they must explicitly authorize each auxiliary
 
-- `actor`: the principal authorizing the payroll action.
-- `executor`: the immediate execution address (direct caller or helper contract identity).
+## Implementation Notes
 
-Under this model, non-allowlisted auxiliary contracts cannot bypass transition checks.
+### `check_action` Authorization Flow
 
-## Combined-Condition Rule Table
+Require initialization
 
-The following table documents the combined behavior of auxiliary-allowed and emergency-paused flags for `check_action`. Emergency pause has highest precedence and overrides all other conditions.
+Authenticate actor (and executor if different)
 
-| Emergency Paused | Auxiliary Allowed | Executor == Actor | Expected Decision | Expected Reason |
-|-----------------|-------------------|-------------------|-------------------|-----------------|
-| false           | N/A               | true              | Allow             | Allowed         |
-| false           | true              | false             | Allow             | Allowed         |
-| false           | false             | false             | Deny              | AuxiliaryNotAllowed |
-| true            | N/A               | true              | Deny              | EmergencyPaused |
-| true            | true              | false             | Deny              | EmergencyPaused |
-| true            | false             | false             | Deny              | EmergencyPaused |
+Check Emergency Pause → Deny if paused
 
-**Security Invariant**: Emergency pause always denies regardless of auxiliary allowlist status. This ensures admin can immediately halt all payroll operations even through allowlisted auxiliary contracts.
+Check Auxiliary Allowlist → Deny if uninitialized
 
-## Testing Strategy
+Check Terminal State → Deny if completed
 
-Negative coverage is concentrated in `onchain/contracts/compliance_checker/tests/test_compliance.rs` and `onchain/contracts/compliance_checker/tests/test_negative_matrix.rs` and includes:
+Check Current State Validity → Deny if invalid
 
-- non-allowlisted auxiliary deny paths;
-- emergency-pause precedence;
-- terminal-state denial across all actions;
-- invalid current-state matrix for each action;
-- invalid target-state denial;
-- grace-period denial for cancelled claims;
-- **adversarial auxiliary-allowed/emergency-paused matrix test** covering all combinations of these two independent flags across all payroll actions.
+Check Target State Validity → Deny if invalid
+
+Check Grace Period → Deny if required but not active
+
+Allow the action
+
+
+### `set_auxiliary_allowed` Interface
+
+```rust
+pub fn set_auxiliary_allowed(
+    env: Env,
+    caller: Address,    // Must be admin
+    auxiliary: Address, // Contract to allow/deny
+    allowed: bool       // true = allow, false = deny
+)
+
+Only the admin can modify the auxiliary allowlist
+
+Setting allowed to false immediately revokes authorization
+
+The contract stores the allowlist in persistent storage
+
+is_auxiliary_allowed Query
+
+pub fn is_auxiliary_allowed(env: Env, auxiliary: Address) -> bool
+
+Returns false for auxiliaries that have never been configured
+
+Returns the explicit state for configured auxiliaries
+
+Used internally by check_action to enforce the fail-closed policy
+
+Test Coverage
+The contract includes comprehensive tests covering:
+
+Fail-closed auxiliary checks: Uninitialized auxiliaries are properly denied
+
+Explicit allowlisting: Configured auxiliaries pass checks
+
+Allowlist removal: De-initialized auxiliaries revert to fail-closed
+
+Multiple auxiliaries: Each auxiliary's authorization is independently tracked
+
+Multiple action types: All payroll actions respect the authorization policy
+
+Trace verification: Denials include proper trace entries showing the rejection reason
+
+Example Test: Uninitialized Auxiliary
+
+#[test]
+fn test_uninitialized_auxiliary_fails_closed() {
+    // Setup
+    let env = create_env();
+    let (_cid, client, admin) = setup(&env);
+    let actor = Address::generate(&env);
+    let unknown_auxiliary = Address::generate(&env);
+    
+    // Test: unknown auxiliary should be denied
+    let decision = client.check_action(
+        &actor,
+        &unknown_auxiliary,
+        &PayrollAction::ActivateAgreement,
+        &AgreementStatus::Created,
+        &AgreementStatus::Active,
+        &false,
+    );
+    
+    assert_eq!(decision.decision, Decision::Deny);
+    assert_eq!(decision.reason, ReasonCode::AuxiliaryNotAllowed);
+    
+    // Configure the auxiliary
+    client.set_auxiliary_allowed(&admin, &unknown_auxiliary, &true);
+    
+    // Test: now it should be allowed
+    let allowed_decision = client.check_action(
+        &actor,
+        &unknown_auxiliary,
+        &PayrollAction::ActivateAgreement,
+        &AgreementStatus::Created,
+        &AgreementStatus::Active,
+        &false,
+    );
+    
+    assert_eq!(allowed_decision.decision, Decision::Allow);
+}
+
+Security Considerations
+Admin keys: Compromise of the admin key would allow an attacker to allowlist malicious auxiliary contracts. Admin should be a multisig or cold wallet.
+
+Auxiliary contract security: Allowlisted auxiliary contracts must be secured and follow the same security standards as the core contract.
+
+Storage persistence: The allowlist state persists across upgrades. When upgrading, verify the allowlist is correctly migrated.
+
+Fail-closed guarantee: The contract guarantees that any auxiliary not explicitly allowlisted will be denied. This is a hard security invariant.
+
+No implicit trust: There is no fallback to "allow" for uninitialized auxiliaries. This prevents accidental authorization through default-true logic.
+
+Migration and Upgrades
+When upgrading the contract:
+
+The storage schema for AuxiliaryAllowed must remain compatible
+
+The fail-closed behavior must be preserved
+
+Existing allowlist entries should be verified after upgrade
+
+Consider reinitializing the allowlist if storage layout changes
+
+Related Documentation
+State Machines - Detailed state transition rules
+
+Emergency Pause - Emergency pause behavior
+
+RBAC - Role-based access control
+
+Security Threat Model - Overall security analysis
+
+
+## Commands to Apply Changes
+
+1. Copy the test code into `onchain/contracts/compliance_checker/tests/test_compliance.rs` at the end of the file (before the final `}`).
+
+2. Replace the entire content of `docs/compliance-checker.md` with the new content.
+
+3. Run the tests:
+```bash
+cargo test -p compliance_checker
+
+
+## Commands to Apply Changes
+
+1. Copy the test code into `onchain/contracts/compliance_checker/tests/test_compliance.rs` at the end of the file (before the final `}`).
+
+2. Replace the entire content of `docs/compliance-checker.md` with the new content.
+
+3. Run the tests:
+```bash
+cargo test -p compliance_checker
+
