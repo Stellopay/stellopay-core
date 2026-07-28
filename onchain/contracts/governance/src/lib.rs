@@ -6,8 +6,8 @@ use multisig::MultisigContractClient;
 use rbac::{RbacContractClient, Role};
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
-    IntoVal, Symbol, Val, Vec,
+    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, IntoVal, Symbol,
+    Val, Vec, symbol_short,
 };
 use withdrawal_timelock::{
     OperationKind as TimelockOperationKind, OperationStatus as TimelockOperationStatus,
@@ -554,9 +554,9 @@ impl GovernanceContract {
         Ok(())
     }
 
-    /// @notice Finalizes a proposal after voting closes and queues timelocked execution if it
-    /// passed. @dev A proposal passes when total participation reaches quorum and `for_votes >
-    /// against_votes`. @param env Contract environment.
+    /// @notice Finalizes a proposal after voting closes and queues timelocked execution if it passed.
+    /// @dev A proposal passes when total participation reaches quorum and `for_votes > against_votes`.
+    /// @param env Contract environment.
     /// @param proposal_id Proposal identifier.
     pub fn finalize_proposal(env: Env, proposal_id: u128) -> Result<(), GovernanceError> {
         require_initialized(&env)?;
@@ -711,10 +711,8 @@ impl GovernanceContract {
         proposal.status = ProposalStatus::Cancelled;
         write_proposal(&env, &proposal);
 
-        env.events().publish(
-            (symbol_short!("prop_cncl"), proposal_id),
-            (),
-        );
+        env.events()
+            .publish((Symbol::new(&env, "proposal_cancelled"), proposal_id), ());
 
         Ok(())
     }
@@ -754,8 +752,7 @@ impl GovernanceContract {
     }
 
     /// @notice Returns the current governance configuration.
-    /// @return owner, rbac_contract, multisig_contract, timelock_contract, quorum_votes,
-    /// voting_period_seconds.
+    /// @return owner, rbac_contract, multisig_contract, timelock_contract, quorum_votes, voting_period_seconds.
     pub fn get_config(
         env: Env,
     ) -> Result<(Address, Address, Address, Address, u32, u64), GovernanceError> {
