@@ -1651,8 +1651,8 @@ fn create_escrow_agreement_internal(
 /// were created successfully.
 ///
 /// # Errors
-/// * First per-item `PayrollError` — `items` is empty **or** any item fails per-item validation.
-///   No agreements are created in either case.
+/// * First per-item `PayrollError` — `items` is empty **or** any item fails per-item validation. No
+///   agreements are created in either case.
 /// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` items.
 ///
 /// # Gas rationale
