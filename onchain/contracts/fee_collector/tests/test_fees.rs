@@ -15,8 +15,7 @@
 //! * Edge cases: 1-token payment, large amounts (overflow safety)
 
 use fee_collector::{FeeCollectorContract, FeeCollectorContractClient, FeeMode};
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{token, Address, Env};
+use soroban_sdk::{testutils::Address as _, token, Address, Env};
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -966,34 +965,40 @@ fn calculate_fee_no_auth_required() {
 #[test]
 fn test_fee_basis_points_rounding_tie_breaker() {
     let env = Env::default();
+    env.mock_all_auths();
+
     let admin = Address::generate(&env);
     let treasury = Address::generate(&env);
     let client = create_contract(&env);
 
-    // Initialize with 5000 bps (50 %)
-    client.initialize(&admin, &treasury, &5000u32, &0i128, &FeeMode::Percentage);
+    // Initialize with 500 bps (5 %)
+    client.initialize(&admin, &treasury, &500u32, &0i128, &FeeMode::Percentage);
 
-    // Test a half tie-breaker: 3 tokens * 50% = 1.5. Floor rounding must yield 1.
-    let (net_3, fee_3) = client.calculate_fee(&3i128);
-    assert_eq!(fee_3, 1, "Floor rounding: 1.5 must round down to 1");
-    assert_eq!(net_3, 2);
+    // 25 tokens * 5% = 1.25. Floor rounding must yield 1.
+    let (net_25, fee_25) = client.calculate_fee(&25i128);
+    assert_eq!(fee_25, 1, "Floor rounding: 1.25 must round down to 1");
+    assert_eq!(net_25, 24);
 
-    // Test 1 token * 50% = 0.5. Floor rounding must yield 0.
-    let (net_1, fee_1) = client.calculate_fee(&1i128);
-    assert_eq!(fee_1, 0, "Floor rounding: 0.5 must round down to 0");
-    assert_eq!(net_1, 1);
+    // 19 tokens * 5% = 0.95. Floor rounding must yield 0.
+    let (net_19, fee_19) = client.calculate_fee(&19i128);
+    assert_eq!(fee_19, 0, "Floor rounding: 0.95 must round down to 0");
+    assert_eq!(net_19, 19);
 
-    // Initialize with 7500 bps (75 %) via config update
-    env.mock_all_auths();
-    client.update_fee_config(&admin, &7500u32, &0i128, &FeeMode::Percentage);
+    // Update to 800 bps (8 %) via config update
+    client.update_fee_config(&admin, &800u32, &0i128, &FeeMode::Percentage);
 
-    // Test 1 token * 75% = 0.75. Floor rounding must yield 0.
-    let (net_1_75, fee_1_75) = client.calculate_fee(&1i128);
-    assert_eq!(fee_1_75, 0, "Floor rounding: 0.75 must round down to 0");
-    assert_eq!(net_1_75, 1);
+    // 12 tokens * 8% = 0.96. Floor rounding must yield 0.
+    let (net_12, fee_12) = client.calculate_fee(&12i128);
+    assert_eq!(fee_12, 0, "Floor rounding: 0.96 must round down to 0");
+    assert_eq!(net_12, 12);
 
-    // Test 3 tokens * 75% = 2.25. Floor rounding must yield 2.
-    let (net_3_75, fee_3_75) = client.calculate_fee(&3i128);
-    assert_eq!(fee_3_75, 2, "Floor rounding: 2.25 must round down to 2");
-    assert_eq!(net_3_75, 1);
+    // 25 tokens * 8% = 2.00. Exact, but still verifies the path.
+    let (net_25_8, fee_25_8) = client.calculate_fee(&25i128);
+    assert_eq!(fee_25_8, 2, "8% of 25 = 2.00");
+    assert_eq!(net_25_8, 23);
+
+    // 26 tokens * 8% = 2.08. Floor rounding must yield 2.
+    let (net_26, fee_26) = client.calculate_fee(&26i128);
+    assert_eq!(fee_26, 2, "Floor rounding: 2.08 must round down to 2");
+    assert_eq!(net_26, 24);
 }

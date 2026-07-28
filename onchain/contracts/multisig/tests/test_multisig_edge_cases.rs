@@ -1,13 +1,12 @@
 #![cfg(test)]
 
+use multisig::{
+    MultisigContract, MultisigContractClient, OperationKind, OperationStatus, OperationType,
+};
 use soroban_sdk::{
     testutils::Address as _,
     token::{Client as TokenClient, StellarAssetClient},
     Address, BytesN, Env, Vec,
-};
-
-use multisig::{
-    MultisigContract, MultisigContractClient, OperationKind, OperationStatus, OperationType,
 };
 
 fn create_env() -> Env {
@@ -615,7 +614,7 @@ fn get_nonexistent_operation_returns_none() {
 #[test]
 fn test_signer_removal_prior_confirmation_policy() {
     let env = create_env();
-    let (multisig_id, client, owner, signers, _guardian) = setup_3of3(&env);
+    let (multisig_id, client, _owner, signers, _guardian) = setup_3of3(&env);
 
     let admin = Address::generate(&env);
     let token = create_token_contract(&env, &admin);
@@ -629,25 +628,32 @@ fn test_signer_removal_prior_confirmation_policy() {
     );
 
     // Initial state: threshold is 3. S1 proposed (which auto-approves), so 1 approval.
-    assert_eq!(client.get_operation(&op_id).unwrap().status, OperationStatus::Pending);
+    assert_eq!(
+        client.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending
+    );
     assert_eq!(client.get_approvals(&op_id).len(), 1);
 
     // S2 approves. Now 2 approvals.
     client.approve_operation(&signers.get(1).unwrap(), &op_id);
-    assert_eq!(client.get_operation(&op_id).unwrap().status, OperationStatus::Pending);
+    assert_eq!(
+        client.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending
+    );
 
     // S2 is removed, and the new signer set is S1 and S3. Threshold is updated to 2-of-2.
     let mut new_signers = Vec::new(&env);
     new_signers.push_back(signers.get(0).unwrap());
     new_signers.push_back(signers.get(2).unwrap());
-    client.update_signers(&owner, &new_signers, &2u32);
+    client.update_signers(&new_signers, &2u32);
 
     // Policy Check: S2's prior approval should NOT count anymore since S2 is removed.
     // The active approvals count should drop back to 1 (only S1).
     let op = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Pending);
 
-    // If S3 approves, the valid count becomes 2 (S1, S3) which meets the threshold of 2, executing the operation.
+    // If S3 approves, the valid count becomes 2 (S1, S3) which meets the threshold of 2, executing
+    // the operation.
     client.approve_operation(&signers.get(2).unwrap(), &op_id);
     let op = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Executed);
@@ -657,7 +663,7 @@ fn test_signer_removal_prior_confirmation_policy() {
 #[test]
 fn test_removed_signer_cannot_newly_confirm() {
     let env = create_env();
-    let (_multisig_id, client, owner, signers, _guardian) = setup_3of3(&env);
+    let (_multisig_id, client, _owner, signers, _guardian) = setup_3of3(&env);
 
     let op_id = client.propose_operation(
         &signers.get(0).unwrap(),
@@ -668,7 +674,7 @@ fn test_removed_signer_cannot_newly_confirm() {
     let mut new_signers = Vec::new(&env);
     new_signers.push_back(signers.get(0).unwrap());
     new_signers.push_back(signers.get(2).unwrap());
-    client.update_signers(&owner, &new_signers, &2u32);
+    client.update_signers(&new_signers, &2u32);
 
     // S2 attempts to approve, which must fail
     let res = client.try_approve_operation(&signers.get(1).unwrap(), &op_id);
@@ -685,7 +691,7 @@ fn test_removed_signer_cannot_newly_confirm() {
 #[test]
 fn test_quorum_override_recalculation_after_signer_removal() {
     let env = create_env();
-    let (_multisig_id, client, owner, signers, _guardian) = setup_3of3(&env);
+    let (_multisig_id, client, _owner, signers, _guardian) = setup_3of3(&env);
 
     // S1 proposes a threshold override of 3 for ContractUpgrade.
     let override_op = client.propose_operation(
@@ -705,9 +711,10 @@ fn test_quorum_override_recalculation_after_signer_removal() {
     let mut new_signers = Vec::new(&env);
     new_signers.push_back(signers.get(0).unwrap());
     new_signers.push_back(signers.get(1).unwrap());
-    client.update_signers(&owner, &new_signers, &2u32);
+    client.update_signers(&new_signers, &2u32);
 
-    // The override of 3 should have been capped/recalculated to 2 (since the new signer count is 2).
+    // The override of 3 should have been capped/recalculated to 2 (since the new signer count is
+    // 2).
     assert_eq!(
         client.get_threshold_override(&OperationType::ContractUpgrade),
         Some(2)

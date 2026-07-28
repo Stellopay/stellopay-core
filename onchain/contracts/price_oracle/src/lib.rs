@@ -47,6 +47,8 @@ pub enum OracleError {
     SubmissionRateLimited = 12,
     /// Quorum bucket already has MAX_QUORUM_SUBMISSIONS pending votes; bucket full.
     TooManySources = 13,
+    /// Price is older than the requested max_age threshold.
+    PriceTooOld = 14,
 }
 
 // ============================================================================
@@ -483,11 +485,10 @@ impl PriceOracleContract {
     ///      4. Validates the rate against configured `[min_rate, max_rate]`.
     ///      5. Rejects future timestamps (`source_timestamp > ledger.timestamp`).
     ///      6. Rejects stale timestamps (age > `max_staleness_seconds`).
-    ///      7. Ignores updates older than or equal to the last accepted timestamp
-    ///         (monotonic ordering).
-    ///      8. In quorum mode, stores the vote in the active time bucket and
-    ///         only accepts once `quorum_n` distinct sources agree within
-    ///         `tolerance_bps`.
+    ///      7. Ignores updates older than or equal to the last accepted timestamp (monotonic
+    ///         ordering).
+    ///      8. In quorum mode, stores the vote in the active time bucket and only accepts once
+    ///         `quorum_n` distinct sources agree within `tolerance_bps`.
     ///      9. Persists the new `PairState`.
     ///      10. Calls `set_exchange_rate` on the downstream payroll contract.
     ///      Emits event `("oracle", "price")` with `(base, quote, rate)`.
@@ -687,6 +688,44 @@ impl PriceOracleContract {
     /// @param addr Address to check.
     pub fn is_source_address(env: Env, addr: Address) -> bool {
         is_source(&env, &addr)
+    }
+
+    /// @notice Returns the last accepted state for a pair, or an error if
+    ///         the price is older than `max_age_seconds`.
+    ///
+    /// The auto-generated client also exposes a panicking `get_price_checked`
+    /// variant for callers that prefer a hard failure on stale prices.
+    ///
+    /// # Arguments
+    /// * `base` - Base token address.
+    /// * `quote` - Quote token address.
+    /// * `max_age_seconds` - Maximum acceptable age of the price in seconds.
+    ///
+    /// # Returns
+    /// - `Ok(PairState)` when a non-stale price exists.
+    /// - `Err(PairNotConfigured)` if no price has ever been pushed.
+    /// - `Err(PriceTooOld)` if `now - last_updated_ts > max_age_seconds`.
+    pub fn get_price_checked(
+        env: Env,
+        base: Address,
+        quote: Address,
+        max_age_seconds: u64,
+    ) -> Result<PairState, OracleError> {
+        let state: PairState = env
+            .storage()
+            .instance()
+            .get(&DataKey::PairState(base.clone(), quote.clone()))
+            .ok_or(OracleError::PairNotConfigured)?;
+
+        let age = env
+            .ledger()
+            .timestamp()
+            .saturating_sub(state.last_updated_ts);
+        if age > max_age_seconds {
+            return Err(OracleError::PriceTooOld);
+        }
+
+        Ok(state)
     }
 
     // ------------------------------------------------------------------------

@@ -1,8 +1,7 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
-
 pub use rbac_interface::Role;
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
 
 // ---------------------------------------------------------------------------
 // Storage

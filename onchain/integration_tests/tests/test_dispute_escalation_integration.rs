@@ -2,8 +2,10 @@
 //! finality, expiry, and concurrent disputes.
 #![cfg(test)]
 
-use dispute_escalation::types::{DisputeError, DisputeOutcome, DisputeStatus, EscalationLevel};
-use dispute_escalation::{DisputeEscalationContract, DisputeEscalationContractClient};
+use dispute_escalation::{
+    types::{DisputeError, DisputeOutcome, DisputeStatus, EscalationLevel},
+    DisputeEscalationContract, DisputeEscalationContractClient,
+};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env,

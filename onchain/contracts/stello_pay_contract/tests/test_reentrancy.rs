@@ -6,10 +6,15 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
-use soroban_sdk::token::{Client as TokenClient, StellarAssetClient};
-use soroban_sdk::{testutils::Address as _, testutils::Ledger, Address, Env};
-use stello_pay_contract::storage::{DataKey, PayrollError, StorageKey};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    token::{Client as TokenClient, StellarAssetClient},
+    Address, Env,
+};
+use stello_pay_contract::{
+    storage::{DataKey, PayrollError, StorageKey},
+    PayrollContract, PayrollContractClient,
+};
 
 const ONE_DAY: u64 = 86400;
 

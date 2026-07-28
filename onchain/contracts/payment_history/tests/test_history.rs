@@ -3,54 +3,50 @@
 //! ## Coverage targets
 //!
 //! * Initialization — happy path, double-init guard
-//! * `record_payment` — happy path, monotonic IDs, payment_hash stored,
-//!   reverse-lookup index written, all three sequential indices updated,
-//!   event emission, full field round-trip, multiple payments
+//! * `record_payment` — happy path, monotonic IDs, payment_hash stored, reverse-lookup index
+//!   written, all three sequential indices updated, event emission, full field round-trip, multiple
+//!   payments
 //! * `record_payment` — unauthorized (no auth mocked)
 //! * `get_payment_by_hash` — existing hash, unknown hash returns None
 //! * `get_payment_by_id` — existing ID, non-existent ID, ID 0
 //! * `get_global_payment_count` — before/after recordings
 //! * `get_agreement_payment_count` — before/after, multiple agreements
-//! * `get_payments_by_agreement` — full page, partial page, multi-page,
-//!   start_index=0, start_index>count, empty, exact boundary, limit capped
+//! * `get_payments_by_agreement` — full page, partial page, multi-page, start_index=0,
+//!   start_index>count, empty, exact boundary, limit capped
 //! * `get_employer_payment_count` — before/after, multiple employers
 //! * `get_payments_by_employer` — pagination, all boundary conditions
 //! * `get_employee_payment_count` — before/after, multiple employees
 //! * `get_payments_by_employee` — pagination, all boundary conditions
-//! * Cross-index consistency — same payment visible via hash, ID, and all
-//!   three sequential indices; all return identical records
-//! * Security — record immutability, index counts only increase (no pruning),
-//!   hash index written atomically with the primary record
+//! * Cross-index consistency — same payment visible via hash, ID, and all three sequential indices;
+//!   all return identical records
+//! * Security — record immutability, index counts only increase (no pruning), hash index written
+//!   atomically with the primary record
 //! * Large history — 20 records, boundary reads at exact count edge
 //!
 //! ## Security notes
 //!
 //! The tests below validate the following security properties directly:
 //!
-//! 1. **Unauthorized injection** — `test_record_payment_unauthorized_no_auth`
-//!    confirms that `record_payment` panics with `Auth(InvalidAction)` when
-//!    called without mocked auth for the registered payroll contract.
+//! 1. **Unauthorized injection** — `test_record_payment_unauthorized_no_auth` confirms that
+//!    `record_payment` panics with `Auth(InvalidAction)` when called without mocked auth for the
+//!    registered payroll contract.
 //!
-//! 2. **History tampering** — `test_records_are_immutable_after_recording`
-//!    verifies that a payment returned by all query paths is bit-for-bit
-//!    identical after additional payments are recorded. There is no overwrite
-//!    path in the contract; the test confirms this property holds at runtime.
+//! 2. **History tampering** — `test_records_are_immutable_after_recording` verifies that a payment
+//!    returned by all query paths is bit-for-bit identical after additional payments are recorded.
+//!    There is no overwrite path in the contract; the test confirms this property holds at runtime.
 //!
-//! 3. **Unauthorized pruning** — `test_index_counts_only_increase` asserts
-//!    that every index count after N insertions equals exactly N. Because
-//!    counts can only increment and there is no decrement or delete path,
-//!    it is impossible for any caller to remove entries from the pagination
-//!    range without corrupting the counter, which would cause every subsequent
-//!    paginated read to skip entries.
+//! 3. **Unauthorized pruning** — `test_index_counts_only_increase` asserts that every index count
+//!    after N insertions equals exactly N. Because counts can only increment and there is no
+//!    decrement or delete path, it is impossible for any caller to remove entries from the
+//!    pagination range without corrupting the counter, which would cause every subsequent paginated
+//!    read to skip entries.
 //!
-//! 4. **Hash-record atomicity** — `test_hash_index_written_atomically` records
-//!    a payment and immediately queries by hash. The reverse-lookup succeeds,
-//!    confirming the hash index and the primary record are written in the same
-//!    invocation and are always in sync.
+//! 4. **Hash-record atomicity** — `test_hash_index_written_atomically` records a payment and
+//!    immediately queries by hash. The reverse-lookup succeeds, confirming the hash index and the
+//!    primary record are written in the same invocation and are always in sync.
 //!
-//! 5. **Double-init guard** — `test_initialize_double_init_rejected` uses the
-//!    `try_initialize` path to confirm the second call is rejected without
-//!    corrupting the already-initialized state.
+//! 5. **Double-init guard** — `test_initialize_double_init_rejected` uses the `try_initialize` path
+//!    to confirm the second call is rejected without corrupting the already-initialized state.
 
 #![cfg(test)]
 
@@ -774,9 +770,39 @@ fn test_employer_indices_are_independent() {
     let employer_b = Address::generate(&env);
     let employee = Address::generate(&env);
 
-    record(&client, &env, 1, 1u32, &token, 10, &employer_a, &employee, 0);
-    record(&client, &env, 1, 2u32, &token, 20, &employer_a, &employee, 1);
-    record(&client, &env, 1, 3u32, &token, 30, &employer_b, &employee, 2);
+    record(
+        &client,
+        &env,
+        1,
+        1u32,
+        &token,
+        10,
+        &employer_a,
+        &employee,
+        0,
+    );
+    record(
+        &client,
+        &env,
+        1,
+        2u32,
+        &token,
+        20,
+        &employer_a,
+        &employee,
+        1,
+    );
+    record(
+        &client,
+        &env,
+        1,
+        3u32,
+        &token,
+        30,
+        &employer_b,
+        &employee,
+        2,
+    );
 
     assert_eq!(client.get_employer_payment_count(&employer_a), 2u32);
     assert_eq!(client.get_employer_payment_count(&employer_b), 1u32);
@@ -895,9 +921,39 @@ fn test_employee_indices_are_independent() {
     let employee_a = Address::generate(&env);
     let employee_b = Address::generate(&env);
 
-    record(&client, &env, 1, 1u32, &token, 10, &employer, &employee_a, 0);
-    record(&client, &env, 1, 2u32, &token, 20, &employer, &employee_a, 1);
-    record(&client, &env, 1, 3u32, &token, 30, &employer, &employee_b, 2);
+    record(
+        &client,
+        &env,
+        1,
+        1u32,
+        &token,
+        10,
+        &employer,
+        &employee_a,
+        0,
+    );
+    record(
+        &client,
+        &env,
+        1,
+        2u32,
+        &token,
+        20,
+        &employer,
+        &employee_a,
+        1,
+    );
+    record(
+        &client,
+        &env,
+        1,
+        3u32,
+        &token,
+        30,
+        &employer,
+        &employee_b,
+        2,
+    );
 
     assert_eq!(client.get_employee_payment_count(&employee_a), 2u32);
     assert_eq!(client.get_employee_payment_count(&employee_b), 1u32);
@@ -1160,7 +1216,9 @@ fn test_multiple_agreements_large_history_independent() {
 
     // 10 payments under agreement 1, 5 under agreement 2.
     for i in 0..10u8 {
-        record(&client, &env, 1, i as u32, &token, i as i128, &from, &to, i as u64);
+        record(
+            &client, &env, 1, i as u32, &token, i as i128, &from, &to, i as u64,
+        );
     }
     for i in 10..15u8 {
         record(
@@ -1419,17 +1477,20 @@ fn benchmark_get_payments_by_employee_scaling() {
     // Validate that costs are reasonable and scaling is predictable
     // Cost should increase with history size, but not linearly due to pagination cap
     assert!(cost_10 > 0, "cost must be positive");
-    assert!(cost_100 > cost_10, "cost for 100 payments should exceed cost for 10");
-    assert!(cost_1000 > cost_100, "cost for 1000 payments should exceed cost for 100");
+    assert!(
+        cost_100 > cost_10,
+        "cost for 100 payments should exceed cost for 10"
+    );
+    assert!(
+        cost_1000 > cost_100,
+        "cost for 1000 payments should exceed cost for 100"
+    );
 
     // The cost difference between 100 and 1000 should be bounded because
     // MAX_PAGE_SIZE caps the actual number of records read (100 vs 100)
     // The difference comes from index traversal overhead, not record deserialization
     let cost_ratio = cost_1000 as f64 / cost_100 as f64;
-    println!(
-        "Cost ratio (1000/100 payments): {:.2}x",
-        cost_ratio
-    );
+    println!("Cost ratio (1000/100 payments): {:.2}x", cost_ratio);
     assert!(
         cost_ratio < 10.0,
         "Cost ratio should be < 10x due to pagination cap; got {:.2}x",

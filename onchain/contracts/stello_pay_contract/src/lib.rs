@@ -172,7 +172,8 @@ impl PayrollContract {
     /// # Arguments
     /// * `env` - The Soroban environment.
     /// * `new_wasm_hash` - The 32-byte SHA-256 hash of the uploaded new WASM code.
-    /// * `operator` - The address initiating the upgrade, which must possess administrative authority.
+    /// * `operator` - The address initiating the upgrade, which must possess administrative
+    ///   authority.
     ///
     /// # Access Control
     /// - If an RBAC contract is configured, the `operator` must possess the `Admin` role.
@@ -181,7 +182,8 @@ impl PayrollContract {
     ///
     /// # Security Assumptions
     /// - The `new_wasm_hash` must represent a valid, pre-uploaded WASM blob.
-    /// - The new bytecode must correctly preserve existing storage keys/layouts to prevent state corruption.
+    /// - The new bytecode must correctly preserve existing storage keys/layouts to prevent state
+    ///   corruption.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>, operator: Address) {
         Self::require_upgrade_admin(&env, &operator);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
@@ -515,8 +517,8 @@ impl PayrollContract {
     ///
     /// # Arguments
     /// * `agreement_id` - ID of the milestone agreement
-    /// * `milestone_ids` - 1-based milestone IDs to claim (must be non-empty)
-    ///   and no longer than `storage::MAX_BATCH_SIZE`.
+    /// * `milestone_ids` - 1-based milestone IDs to claim (must be non-empty) and no longer than
+    ///   `storage::MAX_BATCH_SIZE`.
     ///
     /// # Returns
     /// `BatchMilestoneResult` with per-milestone success/failure details.
@@ -581,10 +583,9 @@ impl PayrollContract {
     /// - Agreement must be in Created status
     /// - Agreement must be Payroll mode
     /// - Caller must be the employer
-    /// - The employee address must not already be present in the agreement;
-    ///   a duplicate add panics with `PayrollError::EmployeeAlreadyExists` to
-    ///   preserve the 1:1 employee-to-salary mapping. A previously removed
-    ///   employee may be re-added.
+    /// - The employee address must not already be present in the agreement; a duplicate add panics
+    ///   with `PayrollError::EmployeeAlreadyExists` to preserve the 1:1 employee-to-salary mapping.
+    ///   A previously removed employee may be re-added.
     pub fn add_employee_to_agreement(
         env: Env,
         agreement_id: u128,
@@ -785,7 +786,8 @@ impl PayrollContract {
     /// * `owner` - Contract owner (must authenticate)
     /// * `multisig_contract` - Address of the deployed multisig contract
     /// * `large_payment_threshold` - Min amount requiring multisig for LargePayment (0 = disabled)
-    /// * `dispute_resolution_threshold` - Min total payout requiring multisig for DisputeResolution (0 = disabled)
+    /// * `dispute_resolution_threshold` - Min total payout requiring multisig for DisputeResolution
+    ///   (0 = disabled)
     pub fn set_multisig_config(
         env: Env,
         owner: Address,
@@ -944,12 +946,11 @@ impl PayrollContract {
     /// - Requires `caller` to be the employee at `employee_index` (`Unauthorized` otherwise).
     /// - Rejects claims when the contract is emergency-paused or the agreement is paused.
     /// - Large payments above `LargePaymentThreshold` require `claim_payroll_multisig`.
-    /// - Enforces checks-effects-interactions: escrow balance, `claimed_periods`,
-    ///   and `paid_amount` are persisted BEFORE the external token transfer.
-    /// - Protected by a transient reentrancy guard (temporary storage, cleared per
-    ///   transaction). A reentrant call during transfer fails with
-    ///   `PayrollError::ReentrancyDetected`, preventing double-payment of a period
-    ///   via a hostile or hook-enabled token.
+    /// - Enforces checks-effects-interactions: escrow balance, `claimed_periods`, and `paid_amount`
+    ///   are persisted BEFORE the external token transfer.
+    /// - Protected by a transient reentrancy guard (temporary storage, cleared per transaction). A
+    ///   reentrant call during transfer fails with `PayrollError::ReentrancyDetected`, preventing
+    ///   double-payment of a period via a hostile or hook-enabled token.
     ///
     /// # Gas
     /// Benchmarked at 1, 10, and 50 elapsed payroll periods. See `docs/gas-benchmarks.md`.
@@ -1316,7 +1317,8 @@ impl PayrollContract {
     ///
     /// # Security
     /// - Requires contract owner authentication.
-    /// - Provides an immediate "kill switch" to stop all claims in case of a discovered vulnerability.
+    /// - Provides an immediate "kill switch" to stop all claims in case of a discovered
+    ///   vulnerability.
     /// - Should be used with caution as it stops all legitimate operations.
     ///
     /// # Access Control

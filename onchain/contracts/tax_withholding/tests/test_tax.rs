@@ -1,7 +1,6 @@
 #![cfg(test)]
 
 use soroban_sdk::{testutils::Address as _, token, Address, Env, Symbol, Vec};
-
 use tax_withholding::{
     TaxComputation, TaxError, TaxWithholdingContract, TaxWithholdingContractClient,
 };
@@ -571,4 +570,3 @@ fn test_jurisdiction_removal_historical_annual_accrual_intact() {
     assert_eq!(tok.balance(&state_treasury), 6_000);
     assert_eq!(client.get_accrued_balance(&j_state), 0);
 }
-

@@ -1,11 +1,10 @@
 #![cfg(test)]
 
+use audit_logger::{AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env, Symbol,
 };
-
-use audit_logger::{AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
 
 fn setup() -> (Env, Address, AuditLoggerContractClient<'static>) {
     let env = Env::default();

@@ -222,10 +222,10 @@ impl RateLimiter {
     /// No authentication is required.
     ///
     /// # Returns
-    /// - `Some(Usage)` — the current token count and last-update timestamp, with
-    ///   refill applied up to the current ledger time.
-    /// - `None` — if no usage has ever been recorded for this address (the bucket
-    ///   is effectively full at the configured burst capacity).
+    /// - `Some(Usage)` — the current token count and last-update timestamp, with refill applied up
+    ///   to the current ledger time.
+    /// - `None` — if no usage has ever been recorded for this address (the bucket is effectively
+    ///   full at the configured burst capacity).
     pub fn get_usage(env: Env, addr: Address) -> Option<Usage> {
         env.storage()
             .persistent()
