@@ -299,6 +299,25 @@ forward.
 
 ---
 
+### 6.10 SLA Violation and Keeper Stage Advancement Risk
+
+**Threat**: Inordinate delays by arbiters during Level1/Level2/Level3 dispute resolution could leave agreements locked indefinitely or lead to missed response deadlines. Alternatively, malicious keepers could attempt prematurely advancing stages or double-triggering breach transitions.
+
+**Impact**: Locked escrow funds, delayed payouts, or off-chain SLA monitoring confusion due to false positive breach signals.
+
+**Mitigations**:
+- **Deterministic Consensus Timestamps**: Every SLA check relies on `env.ledger().timestamp()`.
+- **Bounded Review Windows**: Expiration of per-tier SLAs (`get_level_time_limit`) enables permissionless `keeper_advance_stage` calls which move disputes into `PendingReview` with a bounded review window (`get_pending_review_time_limit`, default 3 days).
+- **Idempotency and Stage Ordering**: `keeper_advance_stage` enforces strict state-machine checks (`AlreadyPendingReview`, `AlreadyResolved`, `AlreadyFinalised`, `AlreadyTerminal`) to prevent duplicate transitions or stage skipping.
+- **Unambiguous SLA Event Emission**: `keeper_advance_stage` emits `sla_violation_advanced` (`SlaViolationAdvancedEvent`) exclusively when an SLA deadline is breached, allowing off-chain SLA monitors to distinguish actual SLA violations from normal user escalations (`dispute_escalated`).
+- **Comprehensive Documentation & Worked Examples**: Concrete SLA timer values, default limits, configurable ranges, and worked timeline examples are documented in [docs/dispute-escalation.md](file:///c:/Users/olani/OneDrive/Desktop/niffy/stellopay-core/docs/dispute-escalation.md#escalation-tiers--concrete-sla-timers).
+
+**Code references**:
+- [onchain/contracts/dispute_escalation/src/lib.rs](file:///c:/Users/olani/OneDrive/Desktop/niffy/stellopay-core/onchain/contracts/dispute_escalation/src/lib.rs#L428-L507): `keeper_advance_stage` logic, idempotency guards, and `SlaViolationAdvancedEvent` emission.
+- [onchain/contracts/dispute_escalation/src/storage.rs](file:///c:/Users/olani/OneDrive/Desktop/niffy/stellopay-core/onchain/contracts/dispute_escalation/src/storage.rs#L13-L34): `get_level_time_limit` and `get_pending_review_time_limit` storage methods.
+
+---
+
 ### 6.9 Misconfiguration / key compromise (off-chain)
 
 **Threat**: Leaked `secret_key` in CLI config; compromised admin wallet upgrades malicious code.
