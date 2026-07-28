@@ -1125,7 +1125,10 @@ fn test_milestone_view_fields_stable() {
     };
 
     assert_eq!(view.id, 7u32, "MilestoneView.id field mismatch");
-    assert_eq!(view.amount, 12_345i128, "MilestoneView.amount field mismatch");
+    assert_eq!(
+        view.amount, 12_345i128,
+        "MilestoneView.amount field mismatch"
+    );
     assert!(view.approved, "MilestoneView.approved field mismatch");
     assert!(!view.claimed, "MilestoneView.claimed field mismatch");
 
@@ -1142,8 +1145,14 @@ fn test_milestone_view_fields_stable() {
         approved: true,
         claimed: true, // differs
     };
-    assert_eq!(view, same, "identical MilestoneView structs must compare equal");
-    assert_ne!(view, different, "different MilestoneView structs must not compare equal");
+    assert_eq!(
+        view, same,
+        "identical MilestoneView structs must compare equal"
+    );
+    assert_ne!(
+        view, different,
+        "different MilestoneView structs must not compare equal"
+    );
 }
 
 // ── 4. Trait method surface — compile-time proof ──────────────────────────────
@@ -1334,20 +1343,25 @@ fn test_v1_method_parity_across_lifecycle() {
         .register_stellar_asset_contract_v2(Address::generate(&env))
         .address();
 
-    soroban_sdk::token::StellarAssetClient::new(&env, &token)
-        .mint(&employer, &50_000i128);
+    soroban_sdk::token::StellarAssetClient::new(&env, &token).mint(&employer, &50_000i128);
 
     let aid = direct.create_milestone_agreement(&employer, &contributor, &token);
     direct.fund_milestone_agreement(&aid, &employer, &50_000i128);
 
     // State: Created, 0 milestones.
-    assert_eq!(direct.get_milestone_count(&aid), via.get_milestone_count(&aid));
+    assert_eq!(
+        direct.get_milestone_count(&aid),
+        via.get_milestone_count(&aid)
+    );
     assert_eq!(direct.get_milestone(&aid, &1), via.get_milestone(&aid, &1));
 
     // Add two milestones.
     direct.add_milestone(&aid, &1_000i128);
     direct.add_milestone(&aid, &2_000i128);
-    assert_eq!(direct.get_milestone_count(&aid), via.get_milestone_count(&aid));
+    assert_eq!(
+        direct.get_milestone_count(&aid),
+        via.get_milestone_count(&aid)
+    );
     assert_eq!(direct.get_milestone(&aid, &1), via.get_milestone(&aid, &1));
     assert_eq!(direct.get_milestone(&aid, &2), via.get_milestone(&aid, &2));
 
@@ -1365,7 +1379,10 @@ fn test_v1_method_parity_across_lifecycle() {
     assert_eq!(direct.get_milestone(&aid, &2), via.get_milestone(&aid, &2));
 
     // Count unchanged after reject.
-    assert_eq!(direct.get_milestone_count(&aid), via.get_milestone_count(&aid));
+    assert_eq!(
+        direct.get_milestone_count(&aid),
+        via.get_milestone_count(&aid)
+    );
     assert_eq!(direct.get_milestone_count(&aid), 2u32);
 }
 
@@ -1395,16 +1412,16 @@ fn test_milestone_view_field_parity_with_internal_milestone() {
         .register_stellar_asset_contract_v2(Address::generate(&env))
         .address();
 
-    soroban_sdk::token::StellarAssetClient::new(&env, &token)
-        .mint(&employer, &10_000i128);
+    soroban_sdk::token::StellarAssetClient::new(&env, &token).mint(&employer, &10_000i128);
 
     let aid = direct.create_milestone_agreement(&employer, &contributor, &token);
     direct.fund_milestone_agreement(&aid, &employer, &10_000i128);
     direct.add_milestone(&aid, &1_000i128);
 
     // Helper closure: compare Milestone vs MilestoneView field-by-field.
-    let assert_parity = |direct_opt: Option<Milestone>, via_opt: Option<MilestoneView>| {
-        match (direct_opt, via_opt) {
+    let assert_parity =
+        |direct_opt: Option<Milestone>, via_opt: Option<MilestoneView>| match (direct_opt, via_opt)
+        {
             (Some(d), Some(v)) => {
                 assert_eq!(d.id, v.id, "id mismatch");
                 assert_eq!(d.amount, v.amount, "amount mismatch");
@@ -1413,26 +1430,16 @@ fn test_milestone_view_field_parity_with_internal_milestone() {
             }
             (None, None) => {}
             (d, v) => panic!("presence mismatch: direct={d:?} via={v:?}"),
-        }
-    };
+        };
 
     // After add — unapproved, unclaimed.
-    assert_parity(
-        direct.get_milestone(&aid, &1),
-        via.get_milestone(&aid, &1),
-    );
+    assert_parity(direct.get_milestone(&aid, &1), via.get_milestone(&aid, &1));
 
     // After approve.
     direct.approve_milestone(&aid, &1);
-    assert_parity(
-        direct.get_milestone(&aid, &1),
-        via.get_milestone(&aid, &1),
-    );
+    assert_parity(direct.get_milestone(&aid, &1), via.get_milestone(&aid, &1));
 
     // After claim.
     direct.claim_milestone(&aid, &1);
-    assert_parity(
-        direct.get_milestone(&aid, &1),
-        via.get_milestone(&aid, &1),
-    );
+    assert_parity(direct.get_milestone(&aid, &1), via.get_milestone(&aid, &1));
 }

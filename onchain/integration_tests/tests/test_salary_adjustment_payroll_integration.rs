@@ -422,10 +422,7 @@ fn test_pending_adjustment_does_not_affect_claim_amount() {
     payroll_client.claim_payroll(&employee, &agreement_id, &0);
 
     // Total = 1 * 1_000 + 1 * 1_000 = 2_000 (NOT 1_000 + 2_500)
-    assert_eq!(
-        balance(&env, &tok, &employee),
-        INITIAL_SALARY * 2
-    );
+    assert_eq!(balance(&env, &tok, &employee), INITIAL_SALARY * 2);
     assert_eq!(
         payroll_client.get_employee_claimed_periods(&agreement_id, &0),
         2
@@ -498,7 +495,10 @@ fn test_second_pending_adjustment_ignored_after_first_applied() {
     // --- Advance to a new period, then claim at 2_000 ---
     advance(&env, ONE_DAY * 1);
     payroll_client.claim_payroll(&employee, &agreement_id, &0);
-    assert_eq!(balance(&env, &tok, &employee), INITIAL_SALARY * 1 + 2_000 * 1);
+    assert_eq!(
+        balance(&env, &tok, &employee),
+        INITIAL_SALARY * 1 + 2_000 * 1
+    );
 
     // --- Adjustment B: create, approve but do NOT apply (2_000 → 3_000) ---
     // The effective_date must be AFTER adjustment A's to avoid the
@@ -516,7 +516,10 @@ fn test_second_pending_adjustment_ignored_after_first_applied() {
 
     // Confirm adjustment B is still Approved (not Applied)
     let adj_b_status = salary_client.get_adjustment(&adj_b).unwrap();
-    assert_eq!(adj_b_status.status, salary_adjustment::AdjustmentStatus::Approved);
+    assert_eq!(
+        adj_b_status.status,
+        salary_adjustment::AdjustmentStatus::Approved
+    );
 
     // Employee still sees 2_000 from the applied adjustment A
     assert_eq!(salary_client.get_employee_salary(&employee).unwrap(), 2_000);
