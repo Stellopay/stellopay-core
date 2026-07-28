@@ -22,7 +22,10 @@ Separation is enforced at the storage level: accrued balances (`AccruedWithholdi
 | `initialize(owner)` | Deploy-time setup; sets the contract owner |
 | `set_jurisdiction_rate(caller, jurisdiction, rate_bps)` | Set tax rate (0–10 000 bps) for a jurisdiction |
 | `set_jurisdiction_treasury(caller, jurisdiction, treasury)` | Bind a fixed treasury address to a jurisdiction |
-| `set_employee_jurisdictions(caller, employee, jurisdictions)` | Assign applicable jurisdictions to an employee |
+| `set_employee_jurisdictions(caller, employee, jurisdictions)` | Assign applicable jurisdictions to an employee (forward-only; historical accruals remain intact) |
+
+> [!NOTE]
+> **Forward-Only Jurisdiction Assignment:** Calling `set_employee_jurisdictions` updates the set of jurisdictions evaluated for future pay periods. It never retroactively alters or deletes existing `AccruedWithholding` records or event logs. Historical tax liabilities accrued under previously assigned jurisdictions remain intact, queryable for annual summaries and audit reporting, and eligible for remittance.
 
 ### Accrual Hook
 
@@ -85,6 +88,7 @@ Floor division means any sub-unit fractional remainder stays with the employee i
 | No re-entrancy on remittance | Accrued balance is reset to `0` before `token.transfer` is called |
 | Overflow-safe arithmetic | All multiplications and additions use `checked_*` and return `ArithmeticError` on overflow |
 | Total withholding ≤ gross | Validated after summation; returns `ArithmeticError` if combined rates exceed 100% |
+| Historical accrual preservation | `set_employee_jurisdictions` changes are forward-only; prior `AccruedWithholding` balances and event logs are never erased or retroactively modified |
 
 ## Usage Example
 
