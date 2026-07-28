@@ -1923,3 +1923,80 @@ fn test_multi_agreement_duplicate_hash_does_not_corrupt_counts() {
     assert_eq!(client.get_agreement_payment_count(&agg2), 1u32);
     assert_eq!(client.get_employer_payment_count(&employer), 3u32);
 }
+
+// ─── Duplicate-metadata collision safety ──────────────────────────────────────
+
+/// Two payments that share identical amount, timestamp, token, and parties but
+/// carry distinct payment hashes are recorded as two independent entries.
+/// Records are keyed by the caller-supplied `payment_hash` and a sequential
+/// global id, never by a hash derived from the metadata, so matching metadata
+/// can never cause one record to silently overwrite the other.
+#[test]
+fn test_record_payment_identical_metadata_distinct_hashes_stored_separately() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    let agreement_id: u128 = 1;
+    let amount: i128 = 100;
+    let timestamp: u64 = 1_700_000_000;
+
+    // Identical metadata, distinct payment hashes (two distinct on-chain transfers).
+    let id_a = record(&client, &env, agreement_id, 0xA1, &token, amount, &from, &to, timestamp);
+    let id_b = record(&client, &env, agreement_id, 0xB2, &token, amount, &from, &to, timestamp);
+
+    // Distinct, monotonically increasing ids: neither overwrote the other.
+    assert_eq!(id_a, 1u128);
+    assert_eq!(id_b, 2u128);
+
+    // Both retrievable by id, each preserving its own hash and the shared metadata.
+    let rec_a = client.get_payment_by_id(&id_a).unwrap();
+    let rec_b = client.get_payment_by_id(&id_b).unwrap();
+    assert_eq!(rec_a.payment_hash, make_hash(&env, 0xA1));
+    assert_eq!(rec_b.payment_hash, make_hash(&env, 0xB2));
+    assert_eq!(rec_a.amount, amount);
+    assert_eq!(rec_b.amount, amount);
+    assert_eq!(rec_a.timestamp, timestamp);
+    assert_eq!(rec_b.timestamp, timestamp);
+    assert_eq!(rec_a.from, from);
+    assert_eq!(rec_b.from, from);
+    assert_eq!(rec_a.to, to);
+    assert_eq!(rec_b.to, to);
+
+    // Both retrievable by their distinct hashes: the reverse index does not collide.
+    assert_eq!(client.get_payment_by_hash(&make_hash(&env, 0xA1)).unwrap().id, id_a);
+    assert_eq!(client.get_payment_by_hash(&make_hash(&env, 0xB2)).unwrap().id, id_b);
+
+    // Every counter reflects two independent records, not a collapsed single entry.
+    assert_eq!(client.get_global_payment_count(), 2u128);
+    assert_eq!(client.get_agreement_payment_count(&agreement_id), 2u32);
+    assert_eq!(client.get_employer_payment_count(&from), 2u32);
+    assert_eq!(client.get_employee_payment_count(&to), 2u32);
+}
+
+/// The only case that collapses to a single entry is an identical *hash* (a
+/// replay of the same transfer), never identical metadata. Re-recording the
+/// same hash returns the existing id and writes no new record or index entry.
+#[test]
+fn test_record_payment_identical_hash_is_idempotent_replay() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    let first = record(&client, &env, 1, 0xCD, &token, 100, &from, &to, 1_700_000_000);
+    let second = record(&client, &env, 1, 0xCD, &token, 100, &from, &to, 1_700_000_000);
+
+    // Same hash → same id, and nothing new recorded across any counter.
+    assert_eq!(first, second);
+    assert_eq!(client.get_global_payment_count(), 1u128);
+    assert_eq!(client.get_agreement_payment_count(&1u128), 1u32);
+    assert_eq!(client.get_employer_payment_count(&from), 1u32);
+    assert_eq!(client.get_employee_payment_count(&to), 1u32);
+}
