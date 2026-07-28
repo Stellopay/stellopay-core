@@ -424,7 +424,10 @@ fn test_clear_limit_falls_back_to_default_and_check_and_consume_works() {
     // Step 2: give the user a generous override so they differ clearly from the default
     client.set_limit_for(&user, &10u32, &0u32);
     let override_config = client.get_limit_for(&user);
-    assert_eq!(override_config.burst, 10, "override should be active before clear");
+    assert_eq!(
+        override_config.burst, 10,
+        "override should be active before clear"
+    );
 
     // Step 3: consume 3 tokens via override to build up usage state
     client.check_and_consume(&user);

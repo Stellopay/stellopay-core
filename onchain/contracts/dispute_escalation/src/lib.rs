@@ -80,9 +80,7 @@
 pub mod storage;
 pub mod types;
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, Address, Env, IntoVal, Symbol, Val, Vec,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, IntoVal, Symbol, Val, Vec};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 use types::{

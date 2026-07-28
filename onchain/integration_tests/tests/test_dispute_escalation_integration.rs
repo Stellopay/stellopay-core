@@ -228,8 +228,14 @@ fn test_no_double_resolve_integration() {
 
 /// Deploys dispute_escalation + audit_logger, wires them, and returns
 /// all clients and key addresses for audit-logger tests.
-fn setup_with_audit_logger(
-) -> (Env, DisputeEscalationContractClient<'static>, AuditLoggerContractClient<'static>, Address, Address, Address) {
+fn setup_with_audit_logger() -> (
+    Env,
+    DisputeEscalationContractClient<'static>,
+    AuditLoggerContractClient<'static>,
+    Address,
+    Address,
+    Address,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -253,7 +259,10 @@ fn setup_with_audit_logger(
 }
 
 /// Collects all log entries from the audit logger in order.
-fn collect_logs(env: &Env, audit_client: &AuditLoggerContractClient<'_>) -> Vec<audit_logger::AuditLogEntry> {
+fn collect_logs(
+    env: &Env,
+    audit_client: &AuditLoggerContractClient<'_>,
+) -> Vec<audit_logger::AuditLogEntry> {
     let count = audit_client.get_log_count();
     let mut entries = Vec::new();
     if count == 0 {

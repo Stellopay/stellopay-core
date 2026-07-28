@@ -2319,7 +2319,12 @@ fn test_hire_to_resolve_full_workflow() {
     // payroll_escrow: release the external escrow to the contributor to close
     // the full escrow lifecycle (fund → hold → release).
     let escrow_release_amount = 500i128;
-    escrow_client.release(&payroll_id, &agreement_id, &contributor, &escrow_release_amount);
+    escrow_client.release(
+        &payroll_id,
+        &agreement_id,
+        &contributor,
+        &escrow_release_amount,
+    );
     assert_eq!(
         escrow_client.get_agreement_balance(&agreement_id),
         external_escrow_amount - escrow_release_amount,
