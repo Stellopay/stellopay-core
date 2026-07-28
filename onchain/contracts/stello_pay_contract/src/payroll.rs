@@ -2091,6 +2091,13 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
         return Err(PayrollError::NotParty);
     }
 
+    // Guard: reject if the agreement is already in Disputed status (defense-in-depth).
+    // The dispute_status check below is the primary guard; this additional check
+    // catches any edge case where status and dispute_status are out of sync.
+    if agreement.status == AgreementStatus::Disputed {
+        return Err(PayrollError::DisputeAlreadyRaised);
+    }
+
     if agreement.dispute_status != DisputeStatus::None {
         return Err(PayrollError::DisputeAlreadyRaised);
     }

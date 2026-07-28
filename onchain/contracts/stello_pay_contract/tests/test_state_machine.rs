@@ -795,7 +795,7 @@ fn test_finalize_before_grace_expiry_panics() {
     client.finalize_grace_period(&id);
 }
 
-/// Raising a dispute when one is already active must return an error.
+/// Raising a dispute when one is already active must return a specific error.
 #[test]
 fn test_dispute_already_raised_returns_error() {
     let env = create_test_env();
@@ -808,10 +808,91 @@ fn test_dispute_already_raised_returns_error() {
     client.add_employee_to_agreement(&id, &employee, &SALARY);
     client.activate_agreement(&id);
 
+    // First raise succeeds.
     client.raise_dispute(&employer, &id);
+    let before = client.get_agreement(&id).unwrap();
+    assert_eq!(before.status, AgreementStatus::Disputed);
 
+    // Second raise must fail with DisputeAlreadyRaised.
     let result = client.try_raise_dispute(&employer, &id);
-    assert!(result.is_err());
+    assert_eq!(
+        result,
+        Err(Ok(PayrollError::DisputeAlreadyRaised)),
+        "second raise_dispute on already-Disputed agreement must return DisputeAlreadyRaised"
+    );
+
+    // State must be unchanged after the failed attempt.
+    let after = client.get_agreement(&id).unwrap();
+    assert_eq!(after.status, AgreementStatus::Disputed);
+    assert_eq!(after.dispute_status, DisputeStatus::Raised);
+    assert_eq!(after.dispute_raised_at, before.dispute_raised_at);
+}
+
+/// Verifies that a fresh dispute can be raised and resolved on a separate
+/// agreement after a prior dispute lifecycle completes on another agreement.
+/// This confirms the guard does not globally lock the dispute mechanism.
+#[test]
+fn test_fresh_dispute_on_separate_agreement_after_resolution() {
+    let env = create_test_env();
+    let (cid, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let token = create_token(&env);
+    let employee1 = create_address(&env);
+    let employee2 = create_address(&env);
+    let arbiter = create_address(&env);
+
+    client.set_arbiter(&employer, &arbiter);
+
+    // Create two independent agreements.
+    let id1 = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
+    client.add_employee_to_agreement(&id1, &employee1, &SALARY);
+    client.activate_agreement(&id1);
+
+    let id2 = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
+    client.add_employee_to_agreement(&id2, &employee2, &SALARY);
+    client.activate_agreement(&id2);
+
+    // Fund both agreements.
+    mint(&env, &token, &cid, SALARY * 2);
+    env.as_contract(&cid, || {
+        DataKey::set_agreement_escrow_balance(&env, id1, &token, SALARY);
+        DataKey::set_agreement_escrow_balance(&env, id2, &token, SALARY);
+    });
+
+    // Raise and resolve dispute on agreement 1.
+    client.raise_dispute(&employer, &id1);
+    assert_eq!(
+        client.get_agreement(&id1).unwrap().status,
+        AgreementStatus::Disputed
+    );
+
+    let half = SALARY / 2;
+    client.resolve_dispute(&arbiter, &id1, &half, &half);
+    assert_eq!(
+        client.get_agreement(&id1).unwrap().status,
+        AgreementStatus::Completed
+    );
+    assert_eq!(
+        client.get_agreement(&id1).unwrap().dispute_status,
+        DisputeStatus::Resolved
+    );
+
+    // Now raise and resolve a fresh dispute on agreement 2.
+    client.raise_dispute(&employer, &id2);
+    assert_eq!(
+        client.get_agreement(&id2).unwrap().status,
+        AgreementStatus::Disputed
+    );
+
+    client.resolve_dispute(&arbiter, &id2, &half, &half);
+    assert_eq!(
+        client.get_agreement(&id2).unwrap().status,
+        AgreementStatus::Completed
+    );
+    assert_eq!(
+        client.get_agreement(&id2).unwrap().dispute_status,
+        DisputeStatus::Resolved
+    );
 }
 
 /// Raising a dispute after the grace window from creation has elapsed

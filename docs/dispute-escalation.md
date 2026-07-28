@@ -363,6 +363,66 @@ The invariant is verified by tests in `test_escalation.rs`:
 - `test_final_state_reachable_after_single_appeal` — confirms final state is reachable after the permitted appeal
 - `test_appeal_from_appealed_state_fails_directly` — direct test of the `InvalidTransition` error
 
+## Payroll Contract: `raise_dispute` Re-Filing Guard
+
+The `stello_pay_contract`'s `raise_dispute` function (in `payroll.rs`) transitions an
+agreement to `Disputed` status. A re-filing guard prevents a second call on an agreement
+that is already in the `Disputed` state.
+
+### Guard mechanism
+
+Two layered checks reject a duplicate `raise_dispute`:
+
+```rust
+// 1. Status check (defense-in-depth)
+if agreement.status == AgreementStatus::Disputed {
+    return Err(PayrollError::DisputeAlreadyRaised);
+}
+
+// 2. Dispute-status check (primary guard)
+if agreement.dispute_status != DisputeStatus::None {
+    return Err(PayrollError::DisputeAlreadyRaised);
+}
+```
+
+The primary guard checks `dispute_status != None`; the secondary guard checks
+`status == Disputed` as defense-in-depth against any desynchronization between the
+two fields.
+
+### Why both checks?
+
+| Check | Catches |
+|---|---|
+| `dispute_status != None` | Duplicate `raise_dispute` calls |
+| `status == Disputed` | Edge cases where `status` and `dispute_status` are out of sync |
+
+Both return the same `PayrollError::DisputeAlreadyRaised` error, giving callers a
+single error code to handle.
+
+### State correctness after rejection
+
+When the guard rejects a second `raise_dispute`, the agreement's `status`,
+`dispute_status`, and `dispute_raised_at` fields remain unchanged. No events
+are emitted.
+
+### Test coverage
+
+| Test | File | What it verifies |
+|---|---|---|
+| `test_dispute_already_raised_returns_error` | `test_state_machine.rs` | Second `raise_dispute` on a `Disputed` agreement returns `DisputeAlreadyRaised`; state unchanged |
+| `test_fresh_dispute_on_separate_agreement_after_resolution` | `test_state_machine.rs` | After one dispute lifecycle completes, a fresh dispute on a different agreement works normally |
+
+### Security considerations
+
+- The guard is checked **before** the grace-window time check, so a duplicate call
+  is rejected eagerly without performing the timestamp arithmetic.
+- Because the guard is at the top of the function body (after authorization), a
+  duplicate call cannot reset `dispute_raised_at` or emit a second
+  `DisputeRaised` event.
+- The defense-in-depth status check uses the same error discriminant so off-chain
+  error handlers need only match `DisputeAlreadyRaised` regardless of which
+  layer fired.
+
 ## Events
 
 | Topic | Payload | When |
