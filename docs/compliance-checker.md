@@ -76,13 +76,29 @@ Integrators must provide real execution context:
 
 Under this model, non-allowlisted auxiliary contracts cannot bypass transition checks.
 
+## Combined-Condition Rule Table
+
+The following table documents the combined behavior of auxiliary-allowed and emergency-paused flags for `check_action`. Emergency pause has highest precedence and overrides all other conditions.
+
+| Emergency Paused | Auxiliary Allowed | Executor == Actor | Expected Decision | Expected Reason |
+|-----------------|-------------------|-------------------|-------------------|-----------------|
+| false           | N/A               | true              | Allow             | Allowed         |
+| false           | true              | false             | Allow             | Allowed         |
+| false           | false             | false             | Deny              | AuxiliaryNotAllowed |
+| true            | N/A               | true              | Deny              | EmergencyPaused |
+| true            | true              | false             | Deny              | EmergencyPaused |
+| true            | false             | false             | Deny              | EmergencyPaused |
+
+**Security Invariant**: Emergency pause always denies regardless of auxiliary allowlist status. This ensures admin can immediately halt all payroll operations even through allowlisted auxiliary contracts.
+
 ## Testing Strategy
 
-Negative coverage is concentrated in `onchain/contracts/compliance_checker/tests/test_compliance.rs` and includes:
+Negative coverage is concentrated in `onchain/contracts/compliance_checker/tests/test_compliance.rs` and `onchain/contracts/compliance_checker/tests/test_negative_matrix.rs` and includes:
 
 - non-allowlisted auxiliary deny paths;
 - emergency-pause precedence;
 - terminal-state denial across all actions;
 - invalid current-state matrix for each action;
 - invalid target-state denial;
-- grace-period denial for cancelled claims.
+- grace-period denial for cancelled claims;
+- **adversarial auxiliary-allowed/emergency-paused matrix test** covering all combinations of these two independent flags across all payroll actions.
