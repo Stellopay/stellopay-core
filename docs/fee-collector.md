@@ -38,8 +38,11 @@ The `FeeCollector` contract is a composable protocol fee layer for StelloPay. It
 | `250`     | 2.5 % |
 | `500`     | 5 %   |
 | `1 000`   | 10 %  ← maximum (`MAX_FEE_BPS`) |
+**Floor rounding** (truncation towards zero) is consistently used for all percentage fees and fee split routing calculations. This slightly favours payers and is the de-facto standard in on-chain fee arithmetic (integer truncation).
 
-**Floor rounding** is used for percentage fees. This slightly favours payers and is the de-facto standard in on-chain fee arithmetic (integer truncation).
+All basis point math in this contract is consolidated into a single helper function, `apply_basis_points(amount, bps)`, which ensures:
+- Standard floor rounding applies across all calculation endpoints (both during fee calculation/collection and fee split routing).
+- Tie-breaking roundings (such as exactly half `0.5` or `1.5` token fractions) are rounded down (e.g., `3` tokens at `50%` yields a `1` token fee).
 
 ---
 

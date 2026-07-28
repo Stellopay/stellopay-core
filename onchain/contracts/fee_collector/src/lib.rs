@@ -48,7 +48,7 @@ pub use storage::StorageKey;
 pub use types::{FeeConfig, FeeMode, FeeSplit, FeeTier};
 
 use helpers::{
-    bump_ttl, compute_fee_internal, require_admin, require_initialized, require_not_paused,
+    apply_basis_points, bump_ttl, compute_fee_internal, require_admin, require_initialized, require_not_paused,
 };
 use soroban_sdk::{contract, contractimpl, token, Address, Env};
 
@@ -261,12 +261,8 @@ impl FeeCollectorContract {
                 FeeSplit::Burn(addr) => {
                     token_client.transfer(&payer, &addr, &fee_amount);
                 }
-                FeeSplit::Split(treasury, burn, treasury_bps, burn_bps) => {
-                    let treasury_share = fee_amount
-                        .checked_mul(treasury_bps as i128)
-                        .expect("Overflow")
-                        .checked_div(BPS_DENOMINATOR as i128)
-                        .expect("Div zero");
+                FeeSplit::Split(treasury, burn, treasury_bps, _burn_bps) => {
+                    let treasury_share = apply_basis_points(fee_amount, treasury_bps);
                     let burn_share = fee_amount - treasury_share;
                     if treasury_share > 0 {
                         token_client.transfer(&payer, &treasury, &treasury_share);
