@@ -47,6 +47,8 @@ pub enum OracleError {
     SubmissionRateLimited = 12,
     /// Quorum bucket already has MAX_QUORUM_SUBMISSIONS pending votes; bucket full.
     TooManySources = 13,
+    /// Price is older than the configured max staleness for this pair.
+    PriceTooOld = 14,
 }
 
 // ============================================================================
@@ -669,13 +671,28 @@ impl PriceOracleContract {
             .get(&DataKey::PairConfig(base, quote))
     }
 
-    /// @notice Returns the last accepted state for a `(base, quote)` pair, if any.
+    /// @notice Returns the last accepted state for a `(base, quote)` pair, if configured and not stale.
+    /// @dev Rejects the state with `PriceTooOld` if `ledger.timestamp() - last_updated_ts > max_staleness_seconds`.
     /// @param base Base token address.
     /// @param quote Quote token address.
-    pub fn get_pair_state(env: Env, base: Address, quote: Address) -> Option<PairState> {
-        env.storage()
+    pub fn get_pair_state(env: Env, base: Address, quote: Address) -> Result<PairState, OracleError> {
+        let state = env.storage()
             .instance()
-            .get(&DataKey::PairState(base, quote))
+            .get::<_, PairState>(&DataKey::PairState(base.clone(), quote.clone()))
+            .ok_or(OracleError::PairNotConfigured)?;
+
+        let cfg = env.storage()
+            .instance()
+            .get::<_, PairConfig>(&DataKey::PairConfig(base, quote))
+            .ok_or(OracleError::PairNotConfigured)?;
+
+        let now = env.ledger().timestamp();
+        let age = now.saturating_sub(state.last_updated_ts);
+        if age > cfg.max_staleness_seconds {
+            return Err(OracleError::PriceTooOld);
+        }
+
+        Ok(state)
     }
 
     /// @notice Returns the configured owner.
