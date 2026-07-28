@@ -138,6 +138,26 @@ impl TemplateVersioning {
     }
 
     /// Publish a new immutable version for `template_id`.
+    ///
+    /// # Security invariant
+    /// This function only appends a new version record. It does **not** modify or affect
+    /// existing agreements that are pinned to earlier versions. Existing agreements
+    /// continue to resolve to their originally specified `(template_id, version)` pair.
+    ///
+    /// # Parameters
+    /// - `owner`: Must be the registered owner of `template_id`
+    /// - `template_id`: The template to publish a new version for
+    /// - `schema_hash`: Commitment to the off-chain schema (e.g., SHA-256 of JSON ABI)
+    /// - `migration_notes`: Human-readable notes about changes from previous version
+    /// - `deprecated`: If true, this version is immediately deprecated upon publication
+    ///
+    /// # Returns
+    /// The new version number (monotonically increasing, starting at 1)
+    ///
+    /// # Errors
+    /// - `Unauthorized` if caller is not the template owner
+    /// - `TemplateNotFound` if `template_id` does not exist
+    /// - `InvalidData` if version would overflow u32
     pub fn publish_template_version(
         env: Env,
         owner: Address,
@@ -240,6 +260,30 @@ impl TemplateVersioning {
     }
 
     /// Create an agreement bound to an exact template version (must not be deprecated).
+    ///
+    /// # Security invariant - Version pinning
+    /// The agreement is **permanently pinned** to the exact `(template_id, template_version)` pair
+    /// specified at creation time. This pinning is immutable:
+    /// - The `template_version` stored in `AgreementBinding` never changes
+    /// - Future calls to `publish_template_version` do not affect this agreement
+    /// - Future calls to `deprecate_version` on this version only prevent new agreements from using it
+    /// - Existing agreements remain valid and continue to resolve to their pinned version
+    ///
+    /// This prevents silent schema migrations that could break agreement validation logic.
+    ///
+    /// # Parameters
+    /// - `creator`: Address creating the agreement (must authenticate)
+    /// - `template_id`: The template to bind to
+    /// - `template_version`: The specific version to pin this agreement to
+    /// - `label`: Human-readable label for the agreement (must be non-empty)
+    ///
+    /// # Returns
+    /// The new `agreement_id`
+    ///
+    /// # Errors
+    /// - `InvalidData` if `label` is empty
+    /// - `VersionNotFound` if the specified version does not exist
+    /// - `VersionDeprecated` if the specified version is deprecated
     pub fn create_agreement(
         env: Env,
         creator: Address,
