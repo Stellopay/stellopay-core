@@ -439,9 +439,7 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), P
         .persistent()
         .get(&MilestoneKey::TotalAmount(agreement_id))
         .unwrap_or(0);
-    let new_total = total
-        .checked_add(amount)
-        .ok_or(PayrollError::InvalidData)?;
+    let new_total = total.checked_add(amount).ok_or(PayrollError::InvalidData)?;
     env.storage()
         .persistent()
         .set(&MilestoneKey::TotalAmount(agreement_id), &new_total);
