@@ -7,8 +7,6 @@ use soroban_sdk::{
 };
 use std::collections::HashSet;
 
-use audit_logger::{AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
-
 fn setup() -> (Env, Address, AuditLoggerContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
@@ -162,7 +160,7 @@ fn test_get_latest_logs_oversized_limit_clamped() {
     // Request far more than MAX_PAGE_SIZE.
     let latest = client.get_latest_logs(&u32::MAX);
     assert!(
-        latest.len() <= MAX_PAGE_SIZE as usize,
+        latest.len() as u32 <= MAX_PAGE_SIZE,
         "get_latest_logs must clamp to MAX_PAGE_SIZE"
     );
 }
@@ -467,4 +465,200 @@ fn test_interleaved_append_and_read_consistency() {
 
     // Verify get_log fails for non-existent ID.
     assert!(client.get_log(&999u64).is_none());
+}
+
+/// Verifies pagination when total record count is an exact multiple of page size.
+/// This tests the boundary condition where no partial final page should exist.
+#[test]
+fn test_pagination_exact_page_size_multiple() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, AuditLoggerContract);
+    let client = AuditLoggerContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    client.initialize(&owner, &0u32); // unlimited retention
+
+    let actor = Address::generate(&env);
+    let page_size = 10u32;
+    let num_pages = 3u32;
+    let total_entries = page_size * num_pages; // 30 entries
+
+    // Append exactly page_size * num_pages entries
+    for i in 0..total_entries {
+        let label = format!("boundary_exact_{}", i);
+        let action = Symbol::new(&env, label.as_str());
+        client.append_log(&actor, &action, &None, &Some(i as i128));
+        env.ledger().with_mut(|li| li.timestamp += 1);
+    }
+
+    // Paginate through all entries
+    let mut offset = 0u32;
+    let mut all_entries: soroban_sdk::Vec<u64> = soroban_sdk::Vec::new(&env);
+    let mut page_count = 0u32;
+
+    loop {
+        let page = client.get_logs(&offset, &page_size);
+        page_count += 1;
+
+        // All pages except possibly the last should be full
+        let expected_size = if page_count < num_pages {
+            page_size as usize
+        } else {
+            // Last page should also be full since total is exact multiple
+            page_size as usize
+        };
+
+        assert_eq!(
+            page.entries.len() as u32,
+            expected_size as u32,
+            "Page {} should have {} entries",
+            page_count,
+            expected_size
+        );
+
+        for entry in page.entries.iter() {
+            all_entries.push_back(entry.id);
+        }
+
+        match page.next_cursor {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+
+    // Should have exactly num_pages pages
+    assert_eq!(page_count, num_pages, "Should have exactly {} pages", num_pages);
+
+    // Should have retrieved all entries
+    assert_eq!(
+        all_entries.len() as u64,
+        total_entries as u64,
+        "Should retrieve all {} entries",
+        total_entries
+    );
+
+    // Verify IDs are sequential with no gaps
+    for i in 0..all_entries.len() {
+        assert_eq!(
+            all_entries.get(i).unwrap(),
+            (i + 1) as u64,
+            "ID at position {} should be {}",
+            i,
+            i + 1
+        );
+    }
+
+    // Verify no phantom empty trailing page - next_cursor should be None on last page
+    let final_page = client.get_logs(&((num_pages - 1) * page_size), &page_size);
+    assert_eq!(
+        final_page.next_cursor,
+        None,
+        "Final page should have next_cursor = None"
+    );
+}
+
+/// Verifies pagination when total record count is one more than a page size multiple.
+/// This tests the boundary condition where the final page should contain exactly one record.
+#[test]
+fn test_pagination_one_beyond_page_size_multiple() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, AuditLoggerContract);
+    let client = AuditLoggerContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    client.initialize(&owner, &0u32); // unlimited retention
+
+    let actor = Address::generate(&env);
+    let page_size = 10u32;
+    let num_full_pages = 2u32;
+    let total_entries = (page_size * num_full_pages) + 1; // 21 entries
+
+    // Append exactly page_size * num_full_pages + 1 entries
+    for i in 0..total_entries {
+        let label = format!("boundary_beyond_{}", i);
+        let action = Symbol::new(&env, label.as_str());
+        client.append_log(&actor, &action, &None, &Some(i as i128));
+        env.ledger().with_mut(|li| li.timestamp += 1);
+    }
+
+    // Paginate through all entries
+    let mut offset = 0u32;
+    let mut all_entries: soroban_sdk::Vec<u64> = soroban_sdk::Vec::new(&env);
+    let mut page_count = 0u32;
+
+    loop {
+        let page = client.get_logs(&offset, &page_size);
+        page_count += 1;
+
+        // First pages should be full, last page should have 1 entry
+        let expected_size = if page_count <= num_full_pages {
+            page_size as usize
+        } else {
+            1 // Final page has exactly one entry
+        };
+
+        assert_eq!(
+            page.entries.len() as u32,
+            expected_size as u32,
+            "Page {} should have {} entries",
+            page_count,
+            expected_size
+        );
+
+        for entry in page.entries.iter() {
+            all_entries.push_back(entry.id);
+        }
+
+        match page.next_cursor {
+            Some(next) => offset = next,
+            None => break,
+        }
+    }
+
+    // Should have num_full_pages + 1 pages
+    assert_eq!(
+        page_count,
+        num_full_pages + 1,
+        "Should have {} pages",
+        num_full_pages + 1
+    );
+
+    // Should have retrieved all entries
+    assert_eq!(
+        all_entries.len() as u64,
+        total_entries as u64,
+        "Should retrieve all {} entries",
+        total_entries
+    );
+
+    // Verify IDs are sequential with no gaps
+    for i in 0..all_entries.len() {
+        assert_eq!(
+            all_entries.get(i).unwrap(),
+            (i + 1) as u64,
+            "ID at position {} should be {}",
+            i,
+            i + 1
+        );
+    }
+
+    // Verify the final page contains exactly one record
+    let final_offset = page_size * num_full_pages;
+    let final_page = client.get_logs(&final_offset, &page_size);
+    assert_eq!(
+        final_page.entries.len(),
+        1,
+        "Final page should contain exactly 1 entry"
+    );
+    assert_eq!(
+        final_page.entries.get(0).unwrap().id,
+        total_entries as u64,
+        "Final entry should have ID {}",
+        total_entries
+    );
+    assert_eq!(
+        final_page.next_cursor,
+        None,
+        "Final page should have next_cursor = None"
+    );
 }
