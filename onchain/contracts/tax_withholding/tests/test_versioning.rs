@@ -5,8 +5,8 @@ use soroban_sdk::{
     Address, Env, IntoVal, Symbol, Vec,
 };
 use tax_withholding::{
-    EmployeeVersionMigratedEvent, RulesetMetadata, TaxComputation, TaxError,
-    TaxWithholdingContract, TaxWithholdingContractClient,
+    EmployeeVersionMigratedEvent, TaxComputation, TaxError, TaxWithholdingContract,
+    TaxWithholdingContractClient,
 };
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -141,7 +141,7 @@ fn test_get_jurisdiction_rate_nonexistent_version() {
 
 #[test]
 fn test_lock_ruleset_version() {
-    let (env, owner, client) = setup();
+    let (_env, owner, client) = setup();
 
     assert!(!client.is_ruleset_locked(&1));
 
@@ -164,6 +164,58 @@ fn test_cannot_modify_locked_version() {
     // Attempt to modify locked version should fail
     let res = client.try_set_jurisdiction_rate(&owner, &jurisdiction, &1500u32, &1);
     assert_eq!(res, Err(Ok(TaxError::VersionLocked)));
+}
+
+#[test]
+fn test_lock_ruleset_version_blocks_only_target_version() {
+    let (env, owner, client) = setup();
+    let jurisdiction = Symbol::new(&env, "US_FED");
+
+    // Set rate for version 1 before locking
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
+    assert!(!client.is_ruleset_locked(&1));
+
+    // Lock version 1
+    client.lock_ruleset_version(&owner, &1);
+    assert!(client.is_ruleset_locked(&1));
+
+    // Editing version 1 must return VersionLocked
+    let res = client.try_set_jurisdiction_rate(&owner, &jurisdiction, &1500u32, &1);
+    assert_eq!(res, Err(Ok(TaxError::VersionLocked)));
+
+    // Rate remains at original value
+    assert_eq!(client.get_jurisdiction_rate(&jurisdiction, &1), Some(1000));
+}
+
+#[test]
+fn test_newer_ruleset_remains_editable_after_previous_version_lock() {
+    let (env, owner, client) = setup();
+    let jurisdiction = Symbol::new(&env, "US_FED");
+
+    // Set rate for version 1 and lock version 1
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
+    client.lock_ruleset_version(&owner, &1);
+    assert!(client.is_ruleset_locked(&1));
+
+    // Publish version 2 after version 1 is locked
+    let v2 = client.publish_ruleset_version(&owner, &Symbol::new(&env, "v2_update"));
+    assert_eq!(v2, 2);
+
+    // Verify lock status is false for version 2
+    assert!(!client.is_ruleset_locked(&2));
+
+    // Version 2 should be editable via set_jurisdiction_rate
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1200u32, &2);
+    assert_eq!(client.get_jurisdiction_rate(&jurisdiction, &2), Some(1200));
+
+    // Version 2 can be updated again
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1500u32, &2);
+    assert_eq!(client.get_jurisdiction_rate(&jurisdiction, &2), Some(1500));
+
+    // Version 1 remains locked and unchanged
+    let res_v1 = client.try_set_jurisdiction_rate(&owner, &jurisdiction, &2000u32, &1);
+    assert_eq!(res_v1, Err(Ok(TaxError::VersionLocked)));
+    assert_eq!(client.get_jurisdiction_rate(&jurisdiction, &1), Some(1000));
 }
 
 #[test]
