@@ -1,7 +1,9 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, testutils::Events, Address, Env, IntoVal, Symbol, Vec};
-
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Address, Env, IntoVal, Symbol, Vec,
+};
 use tax_withholding::{
     EmployeeVersionMigratedEvent, TaxComputation, TaxError, TaxWithholdingContract,
     TaxWithholdingContractClient,

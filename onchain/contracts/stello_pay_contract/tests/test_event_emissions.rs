@@ -16,8 +16,7 @@ use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     Address, Env, Symbol, TryFromVal, TryIntoVal, Vec,
 };
-use stello_pay_contract::storage::AgreementMode;
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{storage::AgreementMode, PayrollContract, PayrollContractClient};
 
 // ============================================================================
 // TEST HELPERS

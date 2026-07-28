@@ -1,11 +1,10 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env};
-
 use employee_roles::{
     BuiltInRole, EmployeeRolesContract, EmployeeRolesContractClient, PayrollAction,
 };
 use rbac::{RbacContract, RbacContractClient, Role};
+use soroban_sdk::{testutils::Address as _, Address, Env};
 
 /// Creates a test environment with all auths mocked.
 fn env() -> Env {

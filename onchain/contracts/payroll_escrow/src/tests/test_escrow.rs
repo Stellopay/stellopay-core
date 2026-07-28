@@ -1,8 +1,9 @@
-use crate::{ManagerUpdatedEvent, PayrollEscrowContract, PayrollEscrowContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Events},
     vec, Address, Env, IntoVal,
 };
+
+use crate::{ManagerUpdatedEvent, PayrollEscrowContract, PayrollEscrowContractClient};
 
 fn create_token_contract<'a>(e: &Env, admin: &Address) -> soroban_sdk::token::Client<'a> {
     let token = e.register_stellar_asset_contract(admin.clone());
@@ -26,8 +27,8 @@ fn test_initialize_escrow() {
 
     let client = create_payroll_escrow_contract(&env);
 
-    // contract should not be initialized initially, but we can't check internal storage directly easily from client
-    // Initialize
+    // contract should not be initialized initially, but we can't check internal storage directly
+    // easily from client Initialize
     client.initialize(&admin, &token.address, &manager);
 
     // There isn't a direct getter for "initialized", but subsequent calls depending on it will pass
@@ -54,8 +55,8 @@ fn test_initialize_twice_fails() {
 fn test_admin_set_correctly() {
     // This is implicitly tested by initialize success and auth checks in other functions,
     // but since we don't have a get_admin function, we can verify it by checking that
-    // only admin can call functions that require admin auth (though initialize is the only one currently)
-    // The contract doesn't explicitly expose admin getter.
+    // only admin can call functions that require admin auth (though initialize is the only one
+    // currently) The contract doesn't explicitly expose admin getter.
     // However, we can assert that initialize sets the admin.
 
     let env = Env::default();

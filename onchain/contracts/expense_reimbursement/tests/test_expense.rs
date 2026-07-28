@@ -3,8 +3,10 @@
 use expense_reimbursement::{
     ExpenseReimbursementContract, ExpenseReimbursementContractClient, ExpenseStatus,
 };
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, String, Symbol};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, testutils::Address as _, token, Address, Env, String,
+    Symbol,
+};
 
 #[contracttype]
 #[derive(Clone)]

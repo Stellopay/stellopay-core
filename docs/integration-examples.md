@@ -169,47 +169,67 @@ Security notes:
 
 ---
 
-### Payroll + Template Versioning Integration Wiring
+### Payroll Badge Minting on Agreement Activation
 
-The `template_versioning` contract stores **immutable** payroll template revisions, and `stello_pay_contract` creates live payroll agreements. Orchestrating the two produces a **pinned-template payroll**: an agreement whose terms are frozen at a specific template version, immune to later revisions.
+The `stello_pay_contract` and `nft_payroll_badge` contracts are composed via **orchestration** (not direct on-chain cross-contract calls). An off-chain orchestrator activates a payroll agreement and, as a follow-up, mints a badge for the employee that references the agreement in its metadata.
 
-Integration tests in `onchain/integration_tests/tests/test_template_versioning_payroll_integration.rs` cover the lifecycle:
+#### Orchestrated Pattern (current)
 
-- **Template setup**: register a template with a name, publish the first version (v1) with its `schema_hash` and optional migration notes.
-- **Agreement pinning**: create a `template_versioning` agreement pinned exactly to v1. The returned `AgreementBinding` stores the `(template_id, version)` pair immutably.
-- **Payroll creation**: create the corresponding `stello_pay_contract` payroll agreement — the caller (off-chain or orchestration layer) records the mapping between the two agreement IDs.
-- **Version evolution**: publish a second template version (v2) with different terms. The pinned agreement still references v1; the payroll agreement's creation timestamp falls between the v1 and v2 publication times.
-- **Deprecation safety**: deprecating v1 does **not** affect existing agreements pinned to v1; only new `create_agreement` calls against v1 are rejected.
-
-#### Rust integration test pattern
+1. Employer calls `activate_agreement(agreement_id)` on the payroll contract.
+2. The orchestrator reads the resulting `agreement_id` and the employee list.
+3. The orchestrator (or badge contract owner) calls `mint(caller, recipient, name, metadata_uri)` on the badge contract, embedding the agreement reference in `metadata_uri` (e.g. `ipfs://stellopay/badge/{agreement_id}/employee/{index}`).
 
 ```rust
-use soroban_sdk::{Address, BytesN, Env, String};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
-use template_versioning::{TemplateVersioning, TemplateVersioningClient};
+// Pseudocode for an off-chain Rust orchestrator
+use nft_payroll_badge::NftPayrollBadgeContractClient;
+use stello_pay_contract::PayrollContractClient;
 
-fn setup_template_wired_to_payroll(env: &Env) -> (u64, u128, u64) {
-    let versioning = TemplateVersioningClient::new(env, &versioning_id);
-    let payroll = PayrollContractClient::new(env, &payroll_id);
+fn on_agreement_activated(
+    payroll: &PayrollContractClient,
+    badge: &NftPayrollBadgeContractClient,
+    badge_owner: &Address,
+    agreement_id: u128,
+) {
+    // Activate the agreement
+    payroll.activate_agreement(&agreement_id);
 
-    // 1. Register template and publish v1
-    let template_id = versioning.register_template(&admin, &name).unwrap();
-    versioning.publish_template_version(&admin, &template_id, &hash, &notes, &false).unwrap();
+    // Determine employee(s) from the agreement
+    let employees = payroll.get_agreement_employees(&agreement_id);
 
-    // 2. Create template_versioning agreement pinned to v1
-    let tv_agreement_id = versioning.create_agreement(&employer, &template_id, &1, &label).unwrap();
-
-    // 3. Create payroll agreement
-    let payroll_agreement_id = payroll.create_payroll_agreement(&employer, &token, &grace);
-
-    // Return all three IDs so callers can verify the mapping
-    (template_id, payroll_agreement_id, tv_agreement_id)
+    // Mint a badge for each employee, referencing the agreement
+    for (i, employee) in employees.iter().enumerate() {
+        let metadata_uri = format!("ipfs://stellopay/badge/{}/employee/{}", agreement_id, i);
+        badge.mint(
+            badge_owner,
+            &employee,
+            &"Active Payroll Badge".into(),
+            &metadata_uri.into(),
+        );
+    }
 }
 ```
 
-#### Key invariants
+#### Future Direct On-Chain Integration
 
-- A `template_versioning` agreement's `template_version` field is set at creation time and **never changes** — not when newer versions are published, not when the pinned version is deprecated.
-- Off-chain services SHOULD persist the `(template_versioning_agreement_id, payroll_agreement_id)` mapping after creation, since neither contract stores a cross-reference to the other.
-- The payroll agreement's parameters (token, employer, grace period) SHOULD be validated against the `TemplateVersionRecord.schema_hash` off-chain before creation to ensure on-chain terms match the intended template version. The integration test confirms the temporal ordering: `v1.created_at <= payroll.created_at < v2.created_at`.
-- Deprecated versions reject new `create_agreement` calls with `VersioningError::VersionDeprecated`, preventing inadvertent use of outdated terms.
+A future enhancement would have the payroll contract call the badge contract directly during `activate_agreement`, eliminating the need for an off-chain orchestrator. This requires:
+
+- The payroll contract to store the badge contract address (similar to `set_salary_adjustment_contract` / `set_rate_limiter_contract`).
+- A new `set_badge_contract` entrypoint on the payroll contract, owner-gated.
+- An inline mint call in `activate_agreement` when the badge contract is configured.
+
+#### Security Assumptions
+
+- **Ownership boundary**: Only the badge contract owner may mint badges. The orchestrator must either be the badge contract owner or sign a transaction for the badge owner.
+- **Metadata integrity**: The `metadata_uri` must faithfully reference the agreement. Off-chain indexers should verify the agreement exists and is active before accepting a badge as valid.
+- **Idempotency**: The orchestrator must guard against double-minting (e.g. track which agreements have already had badges minted). The badge contract itself does not enforce 1:1 agreement-to-badge uniqueness.
+- **Cancellation**: Badges minted against an active agreement are not invalidated if the agreement is later cancelled. The badge remains a historical record; off-chain consumers should check current agreement status.
+
+#### Integration Tests
+
+See `onchain/integration_tests/tests/test_badge_activation_integration.rs` for the full test suite covering:
+
+- End-to-end happy path: activate agreement → mint badge → verify metadata
+- Multiple employee badges after a single activation
+- Non-owner badge mint rejection
+- Badge persistence after agreement cancellation
+- Paginated badge queries across multiple agreements

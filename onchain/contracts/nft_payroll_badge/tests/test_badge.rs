@@ -9,7 +9,10 @@
 use nft_payroll_badge::{
     MetadataUpdated, NftPayrollBadgeContract, NftPayrollBadgeContractClient, MAX_PAGE_SIZE,
 };
-use soroban_sdk::{testutils::Address as _, testutils::Events, Address, Env, IntoVal, String};
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Address, Env, IntoVal, String,
+};
 
 // ============================================================================
 // Helpers

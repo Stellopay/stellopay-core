@@ -6,36 +6,34 @@
 //!
 //! ## Design
 //!
-//! * **Serialisation** – Agreement fields are encoded into a compact,
-//!   deterministic byte layout (little-endian fixed-width integers + length-
-//!   prefixed byte slices for `Address` values).
-//! * **Key derivation** – A 256-bit AES key is derived from a caller-supplied
-//!   passphrase using PBKDF2-HMAC-SHA256 with a 16-byte salt and 100 000
-//!   iterations.  The salt is stored in the backup envelope so that the same
-//!   passphrase can always reproduce the key.
-//! * **Encryption** – AES-256-GCM with a random 12-byte nonce.  The nonce is
-//!   prepended to the ciphertext in the envelope.
+//! * **Serialisation** – Agreement fields are encoded into a compact, deterministic byte layout
+//!   (little-endian fixed-width integers + length- prefixed byte slices for `Address` values).
+//! * **Key derivation** – A 256-bit AES key is derived from a caller-supplied passphrase using
+//!   PBKDF2-HMAC-SHA256 with a 16-byte salt and 100 000 iterations.  The salt is stored in the
+//!   backup envelope so that the same passphrase can always reproduce the key.
+//! * **Encryption** – AES-256-GCM with a random 12-byte nonce.  The nonce is prepended to the
+//!   ciphertext in the envelope.
 //! * **Envelope format** (all lengths in bytes):
 //!
 //!   ```text
 //!   [ version: 1 ][ salt: 16 ][ nonce: 12 ][ ciphertext: variable ]
 //!   ```
 //!
-//! * **Recovery** – The admin calls `restore_agreement_from_backup` with the
-//!   encrypted envelope and the passphrase.  The function decrypts, deserialises,
-//!   and re-writes the agreement into persistent storage.
+//! * **Recovery** – The admin calls `restore_agreement_from_backup` with the encrypted envelope and
+//!   the passphrase.  The function decrypts, deserialises, and re-writes the agreement into
+//!   persistent storage.
 //!
 //! ## Security assumptions
 //!
-//! * The passphrase / key material is **never** stored on-chain.  It must be
-//!   managed by the operator in a secure key-management system (HSM, KMS, etc.).
-//! * The 12-byte nonce is generated from `env.prng()` which is seeded by the
-//!   Stellar network's verifiable random function — it is not reused across
-//!   backups as long as the ledger sequence advances between calls.
-//! * AES-GCM authentication tags protect against ciphertext tampering; any
-//!   modification to the envelope will cause decryption to fail.
-//! * PBKDF2 with 100 000 iterations provides reasonable brute-force resistance
-//!   for passphrases of adequate entropy.
+//! * The passphrase / key material is **never** stored on-chain.  It must be managed by the
+//!   operator in a secure key-management system (HSM, KMS, etc.).
+//! * The 12-byte nonce is generated from `env.prng()` which is seeded by the Stellar network's
+//!   verifiable random function — it is not reused across backups as long as the ledger sequence
+//!   advances between calls.
+//! * AES-GCM authentication tags protect against ciphertext tampering; any modification to the
+//!   envelope will cause decryption to fail.
+//! * PBKDF2 with 100 000 iterations provides reasonable brute-force resistance for passphrases of
+//!   adequate entropy.
 
 #![allow(dead_code)]
 

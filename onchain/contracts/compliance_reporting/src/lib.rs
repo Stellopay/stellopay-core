@@ -10,13 +10,12 @@
 //!
 //! - Only the contract admin can authorize publishers.
 //! - Only authorized publishers (or the employer themselves) may log records.
-//! - Records are assigned a monotonically increasing, per-employer sequence
-//!   number and a ledger-derived timestamp, making replay and gap detection
-//!   straightforward for indexers.
-//! - A global sequence counter provides cross-employer ordering for indexers
-//!   that reconstruct a full timeline.
-//! - The admin address is set once at initialization and cannot be changed,
-//!   preventing privilege escalation.
+//! - Records are assigned a monotonically increasing, per-employer sequence number and a
+//!   ledger-derived timestamp, making replay and gap detection straightforward for indexers.
+//! - A global sequence counter provides cross-employer ordering for indexers that reconstruct a
+//!   full timeline.
+//! - The admin address is set once at initialization and cannot be changed, preventing privilege
+//!   escalation.
 //! - Emergency pause blocks all new record writes while preserving reads.
 //!
 //! ## Data Retention
@@ -94,10 +93,9 @@ pub enum ReportType {
 ///
 /// ## Tamper-Evidence
 /// - `id` is a per-employer monotonic counter; gaps indicate missing records.
-/// - `global_seq` is a contract-wide monotonic counter; indexers can detect
-///   cross-employer ordering and replay attempts.
-/// - `timestamp` is the ledger timestamp at write time; it cannot be
-///   back-dated by callers.
+/// - `global_seq` is a contract-wide monotonic counter; indexers can detect cross-employer ordering
+///   and replay attempts.
+/// - `timestamp` is the ledger timestamp at write time; it cannot be back-dated by callers.
 /// - `publisher` records who wrote the entry, enabling publisher accountability.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -349,8 +347,8 @@ pub enum DataKey {
 ///
 /// This error is returned when:
 /// - A dependency address is not configured (returned `None` from persistent storage)
-/// - A cross-contract call to PaymentHistory or AuditLogger fails (e.g., contract not
-///   deployed, incompatible interface, or invocation error)
+/// - A cross-contract call to PaymentHistory or AuditLogger fails (e.g., contract not deployed,
+///   incompatible interface, or invocation error)
 /// - Either dependency is unable to process the requested operation
 ///
 /// ### Fail-Closed Guarantee
@@ -370,8 +368,8 @@ pub enum DataKey {
 /// 1. Ensure both PaymentHistory and AuditLogger contracts are deployed on the network
 /// 2. Ensure the compliance reporting contract has been initialized with `initialize(admin)`
 /// 3. Call `set_contract_addresses()` with the correct contract addresses
-/// 4. Be prepared to handle `DependencyUnavailable` errors; they indicate misconfiguration
-///    or a temporary outage, not a bug in the compliance reporting contract
+/// 4. Be prepared to handle `DependencyUnavailable` errors; they indicate misconfiguration or a
+///    temporary outage, not a bug in the compliance reporting contract
 #[contract]
 pub struct ComplianceReportingContract;
 
@@ -808,8 +806,8 @@ impl ComplianceReportingContract {
             .get(&DataKey::PaymentHistory)
             .ok_or(ComplianceError::DependencyUnavailable)?;
 
-        // 2. Aggregate withholding records from this contract's own storage,
-        //    scoped strictly to `employer`. Iterate newest-first for early exit.
+        // 2. Aggregate withholding records from this contract's own storage, scoped strictly to
+        //    `employer`. Iterate newest-first for early exit.
         let total_on_chain: u32 = env
             .storage()
             .persistent()
@@ -842,8 +840,8 @@ impl ComplianceReportingContract {
 
         let record_count = matching_records.len() as u32;
 
-        // 3. Fetch PaymentHistory records for the employee, failing closed with a
-        //    typed DependencyUnavailable error if the dependency call fails.
+        // 3. Fetch PaymentHistory records for the employee, failing closed with a typed
+        //    DependencyUnavailable error if the dependency call fails.
         let ph_client = PaymentHistoryContractClient::new(&env, &payment_history_addr);
         let payments = ph_client
             .try_get_payments_by_employee(&employee, &1, &MAX_QUERY_LIMIT)

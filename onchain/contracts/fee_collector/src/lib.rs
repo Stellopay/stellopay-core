@@ -13,8 +13,8 @@
 //!
 //! ## Security Model
 //!
-//! * Only the **admin** can change fee config, fee recipient, pause state, or
-//!   transfer admin rights.
+//! * Only the **admin** can change fee config, fee recipient, pause state, or transfer admin
+//!   rights.
 //! * The admin must call `require_auth()` on every privileged operation.
 //! * The percentage fee is hard-capped at [`MAX_FEE_BPS`] (1 000 bps = 10 %).
 //! * State counters are updated **before** token transfers (state-before-interaction).
@@ -45,13 +45,13 @@ pub use events::{
     FeeConfigUpdatedEvent, PauseStateChangedEvent, RecipientUpdatedEvent,
     TieredScheduleUpdatedEvent,
 };
-pub use storage::StorageKey;
-pub use types::{FeeConfig, FeeMode, FeeSplit, FeeTier};
-
 use helpers::{
-    apply_basis_points, bump_ttl, compute_fee_internal, require_admin, require_initialized, require_not_paused,
+    apply_basis_points, bump_ttl, compute_fee_internal, require_admin, require_initialized,
+    require_not_paused,
 };
 use soroban_sdk::{contract, contractimpl, token, Address, Env};
+pub use storage::StorageKey;
+pub use types::{FeeConfig, FeeMode, FeeSplit, FeeTier};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -86,8 +86,8 @@ pub const TTL_MAX_LEDGERS: u32 = 6_307_200;
 /// # Lifecycle
 ///
 /// 1. Deploy and call `initialize` once to configure admin, fee recipient, and rate.
-/// 2. External contracts call `collect_fee` per payment — the fee is transferred
-///    to the treasury and the net amount to the intended recipient.
+/// 2. External contracts call `collect_fee` per payment — the fee is transferred to the treasury
+///    and the net amount to the intended recipient.
 /// 3. Admin may update config or recipient at any time via privileged methods.
 /// 4. Admin may pause `collect_fee` in emergencies via `set_paused`.
 #[contract]
@@ -107,13 +107,13 @@ impl FeeCollectorContract {
     /// # Arguments
     ///
     /// * `env`           — Soroban environment.
-    /// * `admin`         — Admin address; must authenticate. Receives full control over
-    ///                     fee configuration and emergency pause.
+    /// * `admin`         — Admin address; must authenticate. Receives full control over fee
+    ///   configuration and emergency pause.
     /// * `fee_recipient` — Treasury address that will receive all collected fees.
-    /// * `fee_bps`       — Initial percentage fee in basis points (0 – [`MAX_FEE_BPS`]).
-    ///                     Pass `0` for fee-free operation. Only used when `mode = Percentage`.
-    /// * `flat_fee`      — Initial flat fee amount in token units (≥ 0).
-    ///                     Only used when `mode = Flat`.
+    /// * `fee_bps`       — Initial percentage fee in basis points (0 – [`MAX_FEE_BPS`]). Pass `0`
+    ///   for fee-free operation. Only used when `mode = Percentage`.
+    /// * `flat_fee`      — Initial flat fee amount in token units (≥ 0). Only used when `mode =
+    ///   Flat`.
     /// * `mode`          — Initial [`FeeMode`].
     ///
     /// # Panics
@@ -190,8 +190,8 @@ impl FeeCollectorContract {
     /// # Arguments
     ///
     /// * `env`               — Soroban environment.
-    /// * `payer`             — Payment originator (must authenticate). Their allowance
-    ///                         is spent for both the fee and the net payment.
+    /// * `payer`             — Payment originator (must authenticate). Their allowance is spent for
+    ///   both the fee and the net payment.
     /// * `payment_recipient` — Address that receives the net payment after fee deduction.
     /// * `token`             — Token contract address for the payment.
     /// * `gross_amount`      — Total payment amount before fee deduction. Must be `> 0`.

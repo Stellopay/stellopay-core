@@ -149,13 +149,13 @@ fn write_schedule(env: &Env, schedule: &VestingSchedule) {
 ///
 /// # Vesting kinds
 ///
-/// - **Linear**: proportional interpolation between `start_time` and `end_time`,
-///   gated by an optional `cliff_time` (nothing vests until the cliff is reached).
-///   cliff+linear interaction: before the cliff the result is 0 even after start;
-///   at and after the cliff, linear interpolation applies from `start_time`.
+/// - **Linear**: proportional interpolation between `start_time` and `end_time`, gated by an
+///   optional `cliff_time` (nothing vests until the cliff is reached). cliff+linear interaction:
+///   before the cliff the result is 0 even after start; at and after the cliff, linear
+///   interpolation applies from `start_time`.
 /// - **Cliff**: 0 before `cliff_time`, 100% of `total_amount` at or after `cliff_time`.
-/// - **Custom**: step function — returns the `cumulative_amount` of the last
-///   checkpoint whose `time <= now`, capped at `total_amount`.
+/// - **Custom**: step function — returns the `cumulative_amount` of the last checkpoint whose `time
+///   <= now`, capped at `total_amount`.
 ///
 /// # Arguments
 ///
@@ -196,9 +196,10 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
                 } else {
                     // Overflow-safe linear interpolation: total * elapsed / duration
                     // Uses divide-before-multiply to prevent intermediate overflow.
-                    // Computes: (total / duration) * elapsed + (total % duration) * elapsed / duration
-                    // Rounding: truncates toward zero (same as original behavior).
-                    // The result is guaranteed to be <= total_amount since elapsed <= duration.
+                    // Computes: (total / duration) * elapsed + (total % duration) * elapsed /
+                    // duration Rounding: truncates toward zero (same as
+                    // original behavior). The result is guaranteed to be <=
+                    // total_amount since elapsed <= duration.
                     let elapsed_i128 = i128::from(elapsed as i64);
                     let duration_i128 = i128::from(duration as i64);
 

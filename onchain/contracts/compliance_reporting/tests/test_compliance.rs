@@ -4,10 +4,10 @@
 //! - Initialization (happy path, double-init guard, pre-init rejection)
 //! - Publisher management (grant, revoke, admin-only enforcement)
 //! - Emergency pause (write blocked, reads unaffected, unpause restores writes)
-//! - Record logging (happy path, auth enforcement, amount validation,
-//!   monotonic IDs, global sequence, publisher tracking, metadata)
-//! - Report generation (date filtering, type filtering, limit enforcement,
-//!   empty results, early-exit, newest-first ordering)
+//! - Record logging (happy path, auth enforcement, amount validation, monotonic IDs, global
+//!   sequence, publisher tracking, metadata)
+//! - Report generation (date filtering, type filtering, limit enforcement, empty results,
+//!   early-exit, newest-first ordering)
 //! - Edge cases (zero records, single record, limit boundary, equal dates)
 //! - Tamper-evidence (contiguous IDs, global seq, immutable reads)
 //! - Multi-employer isolation

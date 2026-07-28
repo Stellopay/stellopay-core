@@ -159,10 +159,10 @@ pub struct EmployeeVersionMigratedEvent {
 ///
 /// # Security Model
 ///
-/// * Only the **owner** can configure rates, treasury addresses, employee
-///   jurisdictions, and trigger remittances.
-/// * Treasury addresses are owner-controlled; no other caller can redirect
-///   withheld funds to an arbitrary address.
+/// * Only the **owner** can configure rates, treasury addresses, employee jurisdictions, and
+///   trigger remittances.
+/// * Treasury addresses are owner-controlled; no other caller can redirect withheld funds to an
+///   arbitrary address.
 /// * Accrued state is updated **before** token transfers (state-before-interaction).
 /// * All arithmetic uses `checked_*` operations to prevent overflow/underflow.
 ///
@@ -709,8 +709,7 @@ impl TaxWithholdingContract {
     ///
     /// # Errors
     /// * `ArithmeticError` — `gross_amount <= 0` or overflow.
-    /// * `NotConfigured`   — employee has no jurisdictions, or a jurisdiction
-    ///                        has no rate set.
+    /// * `NotConfigured`   — employee has no jurisdictions, or a jurisdiction has no rate set.
     pub fn calculate_withholding(
         env: Env,
         employee: Address,
@@ -799,9 +798,8 @@ impl TaxWithholdingContract {
     /// state can leave the system vulnerable to double-remittance attacks.
     ///
     /// # Arguments
-    /// * `caller`       — Must be the contract owner. Tokens are transferred
-    ///                    **from** this address, so the caller must hold the
-    ///                    accrued amount in `token`.
+    /// * `caller`       — Must be the contract owner. Tokens are transferred **from** this address,
+    ///   so the caller must hold the accrued amount in `token`.
     /// * `jurisdiction` — Jurisdiction whose balance is being remitted.
     /// * `token`        — Token contract address for the transfer.
     ///
