@@ -180,6 +180,90 @@ direct storage access during a migration).
 
 ---
 
+## Key Rotation Procedure
+
+### Overview
+
+Key rotation is the process of replacing the backup passphrase with a new one. This is recommended:
+
+- On a scheduled cadence (e.g., annually or quarterly)
+- After any suspected passphrase compromise
+- When personnel with passphrase access leaves the organization
+- After a security audit recommends rotation
+
+### Blast Radius
+
+**Critical:** Key rotation has a specific blast radius on existing backups:
+
+- **Old backups remain decryptable only with the old passphrase** - Backups created before rotation cannot be decrypted with the new passphrase
+- **New backups require the new passphrase** - Backups created after rotation cannot be decrypted with the old passphrase
+- **Both passphrases must be retained** - To recover historical data, you must keep the old passphrase accessible until all old backups are no longer needed
+
+This isolation is intentional and provides cryptographic security: rotating the key immediately invalidates the ability to decrypt old backups with the new key, preventing forward/backward key compromise.
+
+### Rotation Steps
+
+1. **Generate a new passphrase**
+   - Use a cryptographically secure random generator
+   - Ensure high entropy (at least 256 bits of randomness)
+   - Store the new passphrase in your secure key-management system
+
+2. **Create fresh backups with the new passphrase**
+   - For all active agreements, create new backups using the new passphrase
+   - Tag these backups with the rotation timestamp and new passphrase version
+   - Store them alongside (not replacing) the old backups
+
+3. **Verify new backups**
+   - Decrypt and verify a sample of new backups to ensure they work correctly
+   - Run the regression test suite to confirm key isolation:
+     ```bash
+     cargo test -p stello_pay_contract test_key_rotation
+     ```
+
+4. **Retain the old passphrase**
+   - Do not delete the old passphrase immediately
+   - Keep it accessible for as long as old backups may need to be restored
+   - Document which passphrase version corresponds to which backup batch
+
+5. **Archive old backups (optional)**
+   - Once you are confident new backups are sufficient, archive old backups to cold storage
+   - This reduces the operational burden of managing multiple passphrase versions
+
+### Regression Test Coverage
+
+The test suite includes key-rotation regression tests in `tests/backup_recovery_tests.rs`:
+
+- `test_key_rotation_old_backup_fails_with_new_key` - Verifies that a backup encrypted with the old key fails to decrypt with the new key
+- `test_key_rotation_correct_keys_decrypt_matching_backups` - Verifies that:
+  - Old key decrypts old backups
+  - New key decrypts new backups
+  - Cross-decryption fails (old key cannot decrypt new backups, new key cannot decrypt old backups)
+
+Run these tests before and after key rotation to ensure the system behaves as expected:
+
+```bash
+cargo test -p stello_pay_contract test_key_rotation
+```
+
+### Example Rotation Timeline
+
+| Date | Action | Passphrase Version |
+|---|---|---|
+| 2024-01-01 | Initial backups created | v1 |
+| 2024-07-01 | Key rotation initiated | v1 → v2 |
+| 2024-07-01 | New backups created with v2 | v2 |
+| 2024-07-01 | Old backups (v1) retained for recovery | v1, v2 |
+| 2025-01-01 | Old backups (v1) archived to cold storage | v2 active, v1 archived |
+
+### Security Notes
+
+- **Never delete the old passphrase before archiving old backups** - If you lose the old passphrase, you lose the ability to recover old backups
+- **Document passphrase versions** - Maintain a mapping of passphrase versions to time periods to know which key to use for which backup
+- **Test recovery periodically** - Periodically test restoring old backups with the old passphrase to ensure the process still works
+- **Consider a key versioning scheme** - Include a version identifier in your backup metadata to track which passphrase was used
+
+---
+
 ## API Reference
 
 ### `backup.rs` (off-chain / test use)
