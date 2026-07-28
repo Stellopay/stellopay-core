@@ -327,3 +327,57 @@ use milestone_interface::{MilestoneContractClient, MilestoneView};
 
 Future milestone-capable contracts should add a similar conformance test to confirm they satisfy the trait contract.
 
+
+---
+
+## Admin-Only Agreement Storage Setters (#849)
+
+### Overview
+
+Five low-level storage-setter entrypoints are exposed under the `admin_set_agreement_*` prefix. These allow a privileged operator (contract owner or RBAC `Admin`) to perform emergency maintenance writes directly on agreement storage fields, bypassing the normal agreement state machine.
+
+**Every setter is gated behind `require_upgrade_admin`**, which calls `operator.require_auth()` and then checks either:
+- The `operator` matches the stored owner address, or
+- An RBAC contract is configured and the `operator` holds the `Admin` role.
+
+A non-admin caller always gets an `"Unauthorized"` panic — the write never reaches persistent storage.
+
+### Setter Surface
+
+| Entrypoint | Field Modified | Additional Validation |
+|---|---|---|
+| `admin_set_agreement_paid_amount` | `AgreementPaidAmount(id)` | `amount >= 0` |
+| `admin_set_agreement_escrow_balance` | `AgreementEscrowBalance(id, token)` | `amount >= 0` |
+| `admin_set_agreement_token` | `AgreementToken(id)` | none |
+| `admin_set_agreement_activation_time` | `AgreementActivationTime(id)` | none |
+| `admin_set_agreement_period_duration` | `AgreementPeriodDuration(id)` | `duration > 0` |
+
+### Security Assumptions
+
+1. **The admin is trusted.** These functions bypass the state-machine invariants. An admin that calls them incorrectly (e.g., setting a zero escrow balance while claims are still outstanding) can corrupt state.
+2. **Only for verified maintenance.** These entrypoints must only be used after an off-chain audit has confirmed the exact correction needed (e.g. a known bug caused an accounting discrepancy).
+3. **Input guards prevent obviously-invalid writes.** Negative paid amounts, negative escrow balances, and zero-duration periods are rejected even for the admin to prevent typos that would break downstream arithmetic.
+4. **Not part of the normal workflow.** The standard way to manage agreement state is through the lifecycle entrypoints (`activate_agreement`, `fund_milestone_agreement`, `claim_payroll`, etc.). The admin setters are emergency tools only.
+
+### Access Control Flow
+
+```
+caller → admin_set_agreement_* → require_upgrade_admin(env, operator)
+                                      │
+                          ┌──── RBAC configured? ────┐
+                          │ Yes                       │ No
+                          ▼                           ▼
+              operator.require_auth()     operator.require_auth()
+              rbac.has_role(Admin)?       operator == stored_owner?
+              Yes → proceed              Yes → proceed
+              No  → panic "Missing role" No  → panic "Unauthorized"
+```
+
+### Regression Tests
+
+All five setters are covered in `tests/test_boundary_conditions.rs` under the `ADMIN-ONLY AGREEMENT SETTER TESTS (#849)` section:
+
+- **Negative tests**: Each setter panics when called by a non-admin address.
+- **Positive tests**: Each setter succeeds when called by the contract owner.
+- **Validation tests**: `admin_set_agreement_paid_amount(-1)` and `admin_set_agreement_period_duration(0)` panic even for the admin.
+- **Try-variant tests**: Using `try_admin_set_*` confirms non-admin callers receive errors rather than silently succeeding.
