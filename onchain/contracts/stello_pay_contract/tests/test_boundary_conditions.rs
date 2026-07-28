@@ -10,8 +10,10 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{testutils::Address as _, Address, Env};
-use stello_pay_contract::storage::{AgreementMode, AgreementStatus, DisputeStatus};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{AgreementMode, AgreementStatus, DisputeStatus, PayrollError},
+    PayrollContract, PayrollContractClient,
+};
 
 // ============================================================================
 // HELPERS
@@ -435,7 +437,6 @@ fn test_add_employee_i128_max_salary_overflow_risk() {
 /// The contract asserts `amount > 0`. A zero-value milestone has no
 /// economic purpose.
 #[test]
-#[should_panic(expected = "Amount must be positive")]
 fn test_add_milestone_zero_amount_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -444,14 +445,14 @@ fn test_add_milestone_zero_amount_panics() {
     let token = create_test_address(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &0i128);
+    let result = client.try_add_milestone(&agreement_id, &0i128);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAmountInvalid)));
 }
 
 /// Verifies that adding a milestone with negative amount panics.
 ///
 /// Negative milestone amounts could corrupt `total_amount` tracking.
 #[test]
-#[should_panic(expected = "Amount must be positive")]
 fn test_add_milestone_negative_amount_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -460,7 +461,8 @@ fn test_add_milestone_negative_amount_panics() {
     let token = create_test_address(&env);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &(-500i128));
+    let result = client.try_add_milestone(&agreement_id, &(-500i128));
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAmountInvalid)));
 }
 
 /// Verifies that adding a milestone with the minimum valid amount (1) succeeds.
@@ -754,7 +756,6 @@ fn test_payroll_max_u64_grace_period_succeeds() {
 /// Milestone IDs are 1-based. ID 0 is always invalid and the contract
 /// explicitly checks `milestone_id > 0`.
 #[test]
-#[should_panic(expected = "Invalid milestone ID")]
 fn test_approve_milestone_id_zero_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -766,7 +767,8 @@ fn test_approve_milestone_id_zero_panics() {
     client.add_milestone(&agreement_id, &1000i128);
 
     // Milestone IDs are 1-based; 0 is always invalid
-    client.approve_milestone(&agreement_id, &0u32);
+    let result = client.try_approve_milestone(&agreement_id, &0u32);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneNotFound)));
 }
 
 /// Verifies that approving a milestone ID beyond the count panics.
@@ -774,7 +776,6 @@ fn test_approve_milestone_id_zero_panics() {
 /// If only 2 milestones exist, approving milestone ID 3 must fail
 /// with "Invalid milestone ID".
 #[test]
-#[should_panic(expected = "Invalid milestone ID")]
 fn test_approve_milestone_id_beyond_count_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -787,27 +788,34 @@ fn test_approve_milestone_id_beyond_count_panics() {
     client.add_milestone(&agreement_id, &500i128);
 
     // Only 2 milestones exist; ID 3 is out of range
-    client.approve_milestone(&agreement_id, &3u32);
+    let result = client.try_approve_milestone(&agreement_id, &3u32);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneNotFound)));
 }
 
 /// Verifies that claiming milestone ID 0 panics with "Invalid milestone ID".
 ///
 /// Same 1-based ID invariant applies to claiming. ID 0 is never valid.
 #[test]
-#[should_panic(expected = "Invalid milestone ID")]
 fn test_claim_milestone_id_zero_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let contributor = create_test_address(&env);
-    let token = create_test_address(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
     client.add_milestone(&agreement_id, &1000i128);
+
+    // Fund the accounted escrow so the approval invariant is satisfied.
+    token_client.mint(&employer, &1000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1000i128);
     client.approve_milestone(&agreement_id, &1u32);
 
     // Attempt to claim milestone ID 0 — always invalid
-    client.claim_milestone(&agreement_id, &0u32);
+    let result = client.try_claim_milestone(&agreement_id, &0u32);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneNotFound)));
 }
 
 /// Verifies that `get_milestone` with ID 0 returns None.
@@ -842,4 +850,272 @@ fn test_get_milestone_count_nonexistent_agreement_returns_zero() {
     let (_contract_id, client) = setup_contract(&env);
 
     assert_eq!(client.get_milestone_count(&999_999u128), 0);
+}
+
+// ============================================================================
+// SECTION: ADMIN-ONLY AGREEMENT SETTER TESTS (#849)
+//
+// These tests verify that:
+//   1. A non-admin caller is rejected by every admin-only setter.
+//   2. The legitimate admin can perform maintenance writes successfully.
+//   3. Validation guards (negative amounts, zero duration) are enforced
+//      even for the admin, ensuring the admin cannot corrupt invariants
+//      with obviously invalid data.
+// ============================================================================
+
+/// Helper: deploys a stello_pay_contract and returns (client, owner).
+fn setup_admin_contract(env: &Env) -> (PayrollContractClient<'static>, soroban_sdk::Address) {
+    let contract_id = env.register(PayrollContract, ());
+    let client = PayrollContractClient::new(env, &contract_id);
+    let owner = create_test_address(env);
+    client.initialize(&owner);
+    (client, owner)
+}
+
+// ---------------------------------------------------------------------------
+// admin_set_agreement_paid_amount
+// ---------------------------------------------------------------------------
+
+/// @notice Non-admin caller must be rejected by `admin_set_agreement_paid_amount`.
+///
+/// A random address that is not the contract owner must not be able to
+/// overwrite the paid amount for any agreement. Any such attempt must panic
+/// (the `require_upgrade_admin` assertion aborts the transaction).
+#[test]
+#[should_panic]
+fn test_admin_set_agreement_paid_amount_rejects_non_admin() {
+    let env = create_test_env();
+    let (client, _owner) = setup_admin_contract(&env);
+    let attacker = create_test_address(&env);
+    client.admin_set_agreement_paid_amount(&attacker, &1u128, &9999i128);
+}
+
+/// @notice Admin can overwrite paid amount with a valid non-negative value.
+///
+/// Confirms the happy path: after an authorized call the value is accepted
+/// and no panic occurs. (Storage correctness for the specific key is
+/// exercised by the payroll claim tests; here we simply verify auth passes.)
+#[test]
+fn test_admin_set_agreement_paid_amount_admin_succeeds() {
+    let env = create_test_env();
+    let (client, owner) = setup_admin_contract(&env);
+    // Amount 0 is valid (reset to baseline)
+    client.admin_set_agreement_paid_amount(&owner, &1u128, &0i128);
+    // Positive amount is valid
+    client.admin_set_agreement_paid_amount(&owner, &1u128, &5000i128);
+}
+
+/// @notice Admin calling `admin_set_agreement_paid_amount` with a negative amount must panic.
+///
+/// Even a trusted admin must not be permitted to write a negative paid amount,
+/// which would corrupt downstream period-calculation invariants.
+#[test]
+#[should_panic(expected = "InvalidAmount")]
+fn test_admin_set_agreement_paid_amount_negative_panics() {
+    let env = create_test_env();
+    let (client, owner) = setup_admin_contract(&env);
+    client.admin_set_agreement_paid_amount(&owner, &1u128, &-1i128);
+}
+
+// ---------------------------------------------------------------------------
+// admin_set_agreement_escrow_balance
+// ---------------------------------------------------------------------------
+
+/// @notice Non-admin caller must be rejected by `admin_set_agreement_escrow_balance`.
+///
+/// Only the contract owner (or RBAC Admin) may correct the accounted escrow
+/// balance. A random address attempting this must be rejected.
+#[test]
+#[should_panic]
+fn test_admin_set_agreement_escrow_balance_rejects_non_admin() {
+    let env = create_test_env();
+    let (client, _owner) = setup_admin_contract(&env);
+    let token = create_test_address(&env);
+    let attacker = create_test_address(&env);
+    client.admin_set_agreement_escrow_balance(&attacker, &1u128, &token, &9999i128);
+}
+
+/// @notice Admin can set the accounted escrow balance to a valid non-negative value.
+///
+/// Verifies the authorized write path: zero and positive balances are accepted
+/// without error when the caller is the contract owner.
+#[test]
+fn test_admin_set_agreement_escrow_balance_admin_succeeds() {
+    let env = create_test_env();
+    let (client, owner) = setup_admin_contract(&env);
+    let token = create_test_address(&env);
+    client.admin_set_agreement_escrow_balance(&owner, &1u128, &token, &0i128);
+    client.admin_set_agreement_escrow_balance(&owner, &1u128, &token, &10_000i128);
+}
+
+/// @notice A negative escrow balance must be rejected even for admin.
+///
+/// Negative escrow balances are nonsensical and would allow claims that
+/// exceed the actual on-chain token holdings of the contract.
+#[test]
+#[should_panic(expected = "InvalidAmount")]
+fn test_admin_set_agreement_escrow_balance_negative_panics() {
+    let env = create_test_env();
+    let (client, owner) = setup_admin_contract(&env);
+    let token = create_test_address(&env);
+    client.admin_set_agreement_escrow_balance(&owner, &1u128, &token, &-500i128);
+}
+
+// ---------------------------------------------------------------------------
+// admin_set_agreement_token
+// ---------------------------------------------------------------------------
+
+/// @notice Non-admin caller must be rejected by `admin_set_agreement_token`.
+///
+/// Changing the payment token for an agreement is a highly privileged action.
+/// Any caller that is not the owner must be denied.
+#[test]
+#[should_panic]
+fn test_admin_set_agreement_token_rejects_non_admin() {
+    let env = create_test_env();
+    let (client, _owner) = setup_admin_contract(&env);
+    let token = create_test_address(&env);
+    let attacker = create_test_address(&env);
+    client.admin_set_agreement_token(&attacker, &1u128, &token);
+}
+
+/// @notice Admin can update the token address for an agreement.
+///
+/// Confirms the authorized code path executes without panic.
+#[test]
+fn test_admin_set_agreement_token_admin_succeeds() {
+    let env = create_test_env();
+    let (client, owner) = setup_admin_contract(&env);
+    let employer = create_test_address(&env);
+    let token = create_test_address(&env);
+    let token2 = create_test_address(&env);
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &86400u64);
+    // Admin replaces the token
+    client.admin_set_agreement_token(&owner, &agreement_id, &token2);
+}
+
+// ---------------------------------------------------------------------------
+// admin_set_agreement_activation_time
+// ---------------------------------------------------------------------------
+
+/// @notice Non-admin caller must be rejected by `admin_set_agreement_activation_time`.
+///
+/// Altering the activation timestamp can shift all period boundaries and must
+/// not be accessible to unauthorized callers.
+#[test]
+#[should_panic]
+fn test_admin_set_agreement_activation_time_rejects_non_admin() {
+    let env = create_test_env();
+    let (client, _owner) = setup_admin_contract(&env);
+    let attacker = create_test_address(&env);
+    client.admin_set_agreement_activation_time(&attacker, &1u128, &0u64);
+}
+
+/// @notice Admin can overwrite the activation timestamp with any u64 value.
+///
+/// Zero is a valid sentinel meaning "not yet activated" on some off-chain
+/// tooling; large values represent far-future timestamps. Both must be
+/// accepted by the admin path.
+#[test]
+fn test_admin_set_agreement_activation_time_admin_succeeds() {
+    let env = create_test_env();
+    let (client, owner) = setup_admin_contract(&env);
+    client.admin_set_agreement_activation_time(&owner, &1u128, &0u64);
+    client.admin_set_agreement_activation_time(&owner, &1u128, &1_700_000_000u64);
+}
+
+// ---------------------------------------------------------------------------
+// admin_set_agreement_period_duration
+// ---------------------------------------------------------------------------
+
+/// @notice Non-admin caller must be rejected by `admin_set_agreement_period_duration`.
+///
+/// The period duration controls how fast periods elapse and therefore how
+/// quickly escrow is consumed. Unauthorized writes must be denied.
+#[test]
+#[should_panic]
+fn test_admin_set_agreement_period_duration_rejects_non_admin() {
+    let env = create_test_env();
+    let (client, _owner) = setup_admin_contract(&env);
+    let attacker = create_test_address(&env);
+    client.admin_set_agreement_period_duration(&attacker, &1u128, &86400u64);
+}
+
+/// @notice Admin can update the period duration to any positive value.
+///
+/// Both small (1 second) and large (~1 year) durations are valid; the admin
+/// callable must accept them without error.
+#[test]
+fn test_admin_set_agreement_period_duration_admin_succeeds() {
+    let env = create_test_env();
+    let (client, owner) = setup_admin_contract(&env);
+    client.admin_set_agreement_period_duration(&owner, &1u128, &1u64);
+    client.admin_set_agreement_period_duration(&owner, &1u128, &31_536_000u64);
+}
+
+/// @notice Admin calling `admin_set_agreement_period_duration` with zero must panic.
+///
+/// A period duration of zero would cause division-by-zero in elapsed-period
+/// arithmetic and must be rejected at the entrypoint boundary.
+#[test]
+#[should_panic(expected = "InvalidDuration")]
+fn test_admin_set_agreement_period_duration_zero_panics() {
+    let env = create_test_env();
+    let (client, owner) = setup_admin_contract(&env);
+    client.admin_set_agreement_period_duration(&owner, &1u128, &0u64);
+}
+
+/// @notice Non-admin caller is rejected by `admin_set_agreement_escrow_balance` (try_ variant).
+///
+/// Confirms the error path using the `try_` SDK variant which returns a
+/// `Result` instead of panicking, letting us assert the rejection cleanly.
+#[test]
+fn test_admin_set_agreement_escrow_balance_non_admin_returns_error() {
+    let env = create_test_env();
+    let (client, _owner) = setup_admin_contract(&env);
+    let token = create_test_address(&env);
+    let attacker = create_test_address(&env);
+    let result = client.try_admin_set_agreement_escrow_balance(&attacker, &1u128, &token, &100i128);
+    assert!(result.is_err(), "non-admin must be rejected");
+}
+
+/// @notice Non-admin caller is rejected by `admin_set_agreement_token` (try_ variant).
+#[test]
+fn test_admin_set_agreement_token_non_admin_returns_error() {
+    let env = create_test_env();
+    let (client, _owner) = setup_admin_contract(&env);
+    let token = create_test_address(&env);
+    let attacker = create_test_address(&env);
+    let result = client.try_admin_set_agreement_token(&attacker, &1u128, &token);
+    assert!(result.is_err(), "non-admin must be rejected");
+}
+
+/// @notice Non-admin caller is rejected by `admin_set_agreement_activation_time` (try_ variant).
+#[test]
+fn test_admin_set_agreement_activation_time_non_admin_returns_error() {
+    let env = create_test_env();
+    let (client, _owner) = setup_admin_contract(&env);
+    let attacker = create_test_address(&env);
+    let result = client.try_admin_set_agreement_activation_time(&attacker, &1u128, &0u64);
+    assert!(result.is_err(), "non-admin must be rejected");
+}
+
+/// @notice Non-admin caller is rejected by `admin_set_agreement_period_duration` (try_ variant).
+#[test]
+fn test_admin_set_agreement_period_duration_non_admin_returns_error() {
+    let env = create_test_env();
+    let (client, _owner) = setup_admin_contract(&env);
+    let attacker = create_test_address(&env);
+    let result = client.try_admin_set_agreement_period_duration(&attacker, &1u128, &86400u64);
+    assert!(result.is_err(), "non-admin must be rejected");
+}
+
+/// @notice Non-admin caller is rejected by `admin_set_agreement_paid_amount` (try_ variant).
+#[test]
+fn test_admin_set_agreement_paid_amount_non_admin_returns_error() {
+    let env = create_test_env();
+    let (client, _owner) = setup_admin_contract(&env);
+    let attacker = create_test_address(&env);
+    let result = client.try_admin_set_agreement_paid_amount(&attacker, &1u128, &100i128);
+    assert!(result.is_err(), "non-admin must be rejected");
 }

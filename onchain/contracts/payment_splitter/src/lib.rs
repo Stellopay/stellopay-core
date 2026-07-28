@@ -10,7 +10,11 @@
 //! - Arithmetic safety (checked operations)
 //! - Validation helpers (duplicate recipient checks, zero-weight prevention)
 
-use soroban_sdk::{contract, contractimpl, contracttype, xdr::ToXdr, Address, Bytes, Env, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, symbol_short, xdr::ToXdr, Address, Bytes, Env, Vec,
+};
+
+const MAX_RECIPIENTS: u32 = 50;
 
 #[contract]
 pub struct PaymentSplitterContract;
@@ -89,6 +93,10 @@ impl PaymentSplitterContract {
         creator.require_auth();
         Self::require_initialized(&env);
         assert!(!recipients.is_empty(), "At least one recipient required");
+        assert!(
+            recipients.len() <= MAX_RECIPIENTS,
+            "Recipient count exceeds maximum"
+        );
 
         let mut has_percent = false;
         let mut has_fixed = false;
@@ -97,10 +105,13 @@ impl PaymentSplitterContract {
 
         for i in 0..recipients.len() {
             let r = recipients.get_unchecked(i);
-            
+
             // 1. Uniqueness check
             for seen in 0..seen_addresses.len() {
-                assert!(seen_addresses.get_unchecked(seen) != r.recipient, "Duplicate recipient address");
+                assert!(
+                    seen_addresses.get_unchecked(seen) != r.recipient,
+                    "Duplicate recipient address"
+                );
             }
             seen_addresses.push_back(r.recipient.clone());
 
@@ -118,11 +129,17 @@ impl PaymentSplitterContract {
         }
 
         // 2. Mutual exclusivity check (Percent vs Fixed)
-        assert!(has_percent != has_fixed, "Split must be either all Percentage or all Fixed");
+        assert!(
+            has_percent != has_fixed,
+            "Split must be either all Percentage or all Fixed"
+        );
 
         // 3. Percentage sum validation
         if has_percent {
-            assert!(total_bps == 10000, "Percentage shares must sum to 10000 (100%)");
+            assert!(
+                total_bps == 10000,
+                "Percentage shares must sum to 10000 (100%)"
+            );
         }
 
         let next_id: u128 = env
@@ -143,6 +160,12 @@ impl PaymentSplitterContract {
         env.storage()
             .persistent()
             .set(&StorageKey::Split(next_id), &def);
+
+        env.events().publish(
+            (symbol_short!("split"), creator),
+            (next_id, def.recipients.len(), def.is_percent),
+        );
+
         next_id
     }
 
@@ -177,9 +200,19 @@ impl PaymentSplitterContract {
     ///
     /// Percent splits use largest-remainder apportionment:
     /// 1. Floor each exact percentage slice.
-    /// 2. Distribute the remaining dust one unit at a time to the recipients
-    ///    with the largest fractional remainder.
+    /// 2. Distribute the remaining dust one unit at a time to the recipients with the largest
+    ///    fractional remainder.
     /// 3. Break exact remainder ties using canonical recipient address order.
+    ///
+    /// # Remainder convention
+    /// When the total amount does not divide evenly among the recipients (i.e., there is
+    /// rounding dust), the sum of all floored amounts is less than `total_amount`. The
+    /// difference (dust) is distributed one unit at a time to recipients sorted by
+    /// (descending remainder, ascending canonical address). This means the first `dust`
+    /// recipients in that sorted order each receive 1 extra unit.
+    ///
+    /// This ensures the invariant `sum(splits) == total_amount` always holds — no value is
+    /// ever lost or created by rounding.
     ///
     /// # Returns
     /// `Vec<(Address, i128)>` where each tuple is a recipient and their share.
@@ -233,9 +266,55 @@ impl PaymentSplitterContract {
                 .expect("Dust underflow");
             assert!(dust >= 0, "Negative dust detected");
 
-            for _ in 0..dust {
-                let best = Self::select_next_dust_recipient(&env, &def.recipients, &remainders, &awarded_dust);
-                awarded_dust.push_back(best);
+            // Mathematical bound: dust = sum(remainders) / 10000.
+            // Since each remainder < 10000, sum(remainders) < 10000 * recipient_count.
+            // Therefore, dust < recipient_count.
+            assert!(
+                dust < (recipient_count as i128),
+                "Dust exceeds recipient count bound"
+            );
+
+            // Build a sorted order (by remainder desc, then address asc) once — O(n log n).
+            // Assign dust to the first `dust` entries. Avoids the previous O(n²) inner scan.
+            let mut order: Vec<u32> = Vec::new(&env);
+            for i in 0..recipient_count {
+                order.push_back(i);
+            }
+            // Bubble-sort by (remainder desc, address asc) — acceptable for small n (≤
+            // MAX_RECIPIENTS).
+            for i in 0..recipient_count {
+                for j in (i + 1)..recipient_count {
+                    let ri = remainders.get_unchecked(order.get_unchecked(i));
+                    let rj = remainders.get_unchecked(order.get_unchecked(j));
+                    let should_swap = if rj > ri {
+                        true
+                    } else if rj == ri {
+                        let ai = def
+                            .recipients
+                            .get_unchecked(order.get_unchecked(i) as u32)
+                            .recipient
+                            .clone();
+                        let aj = def
+                            .recipients
+                            .get_unchecked(order.get_unchecked(j) as u32)
+                            .recipient
+                            .clone();
+                        Self::compare_addresses(&env, &aj, &ai) < 0
+                    } else {
+                        false
+                    };
+                    if should_swap {
+                        let tmp = order.get_unchecked(i);
+                        order.set(i, order.get_unchecked(j));
+                        order.set(j, tmp);
+                    }
+                }
+            }
+            for i in 0..recipient_count {
+                if (i as i128) >= dust {
+                    break;
+                }
+                awarded_dust.push_back(order.get_unchecked(i));
             }
 
             for i in 0..recipient_count {
@@ -298,7 +377,11 @@ impl PaymentSplitterContract {
             }
 
             if remainder == best_remainder
-                && Self::compare_addresses(env, &recipients.get_unchecked(i).recipient, &recipients.get_unchecked(best_index).recipient) < 0
+                && Self::compare_addresses(
+                    env,
+                    &recipients.get_unchecked(i).recipient,
+                    &recipients.get_unchecked(best_index).recipient,
+                ) < 0
             {
                 best_index = i;
             }

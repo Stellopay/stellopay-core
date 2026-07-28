@@ -24,10 +24,15 @@ pub enum StorageKey {
     TieredSchedule,
     /// Cumulative fees collected since initialization (saturates at `i128::MAX`).
     TotalFeesCollected,
+    /// Latest fee quote for a gross amount computed via `calculate_fee`.
+    LatestFeeQuote,
     /// Emergency pause flag — when `true`, `collect_fee` panics.
     Paused,
     /// Initialization guard — prevents re-initialization.
     Initialized,
-    /// Fee split routing policy (optional).
+    /// Fee split routing policy. Defaults to `FeeSplit::None` when unset.
     FeeSplit,
+    /// Pending admin address awaiting acceptance via `accept_admin`.
+    /// Present only while a two-step admin handoff is in progress.
+    PendingAdmin,
 }

@@ -238,6 +238,7 @@ This fingerprint is stored under `StorageKey::ScheduleId(schedule_id)`, mapping 
 |---|---|---|
 | `("job_created", job_id)` | `JobCreatedEvent { job_id, schedule_id, employer, recipient }` | On `create_job` success |
 | `("job_executed", job_id)` | `JobExecutedEvent { job_id, execution_index, amount }` | On successful transfer |
+| `("job_funded", job_id)` | `JobFundedEvent { job_id, from, amount }` | On successful deposit |
 | `("job_failed", job_id)` | `JobFailedEvent { job_id, retry_count, max_retries }` | On insufficient-funds attempt |
 | `("job_cancelled", job_id)` | `JobCancelledEvent { job_id, employer }` | On `cancel_job` success |
 | `("payment_failed", payment_id)` | `BytesN<32>` | On insufficient-funds; offloaded to retry contract |

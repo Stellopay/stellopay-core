@@ -1,0 +1,50 @@
+# cargo-deny configuration for stellopay-core/onchain
+# Run: cargo deny check
+# CI: added to .github/workflows/contracts.yml
+
+[advisories]
+# Deny crates with known security advisories (CVE or RUSTSEC).
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+# Treat any unpatched vulnerability as a build error.
+vulnerability = "deny"
+unmaintained = "warn"
+unsound = "deny"
+notice = "warn"
+ignore = []
+
+[licenses]
+# Allowed SPDX license expressions.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "Unlicense",
+]
+# Deny any license not in the allow list above.
+unlicensed = "deny"
+allow-osi-fsf-free = "neither"
+copyleft = "deny"
+default = "deny"
+
+[bans]
+# Deny duplicate versions of the same crate (exact same name, different semver).
+multiple-versions = "warn"
+# Deny wildcards in dependency requirements.
+wildcards = "deny"
+# Deny crates with known-bad or unexpected crates.
+deny = []
+# Skip specific crates from duplicate-version check (e.g. transitive mismatches).
+skip = []
+
+[sources]
+# Only allow crates from crates.io by default.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

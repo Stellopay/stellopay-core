@@ -146,11 +146,59 @@ fn write_schedule(env: &Env, schedule: &VestingSchedule) {
 /// Computes the cumulative vested amount for `schedule` at timestamp `now`.
 ///
 /// For revoked schedules the clock is frozen at `revoked_at`.
-/// - **Linear**: proportional between `start_time` and `end_time`, gated by
-///   an optional `cliff_time` (nothing vests until the cliff is reached).
-/// - **Cliff**: 0 before `cliff_time`, 100% at or after `cliff_time`.
-/// - **Custom**: step function — returns the `cumulative_amount` of the last
-///   checkpoint whose `time <= now`, capped at `total_amount`.
+///
+/// # Vesting kinds
+///
+/// - **Linear**: proportional interpolation between `start_time` and `end_time`, gated by an
+///   optional `cliff_time` (nothing vests until the cliff is reached). cliff+linear interaction:
+///   before the cliff the result is 0 even after start; at and after the cliff, linear
+///   interpolation applies from `start_time`.
+/// - **Cliff**: 0 before `cliff_time`, 100% of `total_amount` at or after `cliff_time`.
+/// - **Custom**: step function — returns the `cumulative_amount` of the last checkpoint whose `time
+///   <= now`, capped at `total_amount`.
+///
+/// # Arguments
+///
+/// * `now` - Current ledger timestamp (or `revoked_at` for revoked schedules).
+/// * `schedule` - The vesting schedule to evaluate.
+///
+/// # Returns
+///
+/// The cumulative amount vested at `now`, as an `i128`. Never exceeds
+/// `schedule.total_amount`.
+///
+/// # Monotonicity invariant
+///
+/// **This function is guaranteed to be monotonically non-decreasing in `now`.**
+///
+/// For any two timestamps `t1 <= t2`:
+/// ```text
+/// compute_vested_amount(t1, schedule) <= compute_vested_amount(t2, schedule)
+/// ```
+///
+/// This invariant holds for all three schedule kinds:
+///
+/// - **Linear** (with or without cliff): the result grows proportionally with
+///   time after `start_time` (and after `cliff_time` when set), reaching
+///   `total_amount` at `end_time` and remaining capped there forever.
+/// - **Cliff**: the result is 0 until `cliff_time` and `total_amount` at or
+///   after `cliff_time`. The step is upward only.
+/// - **Custom**: checkpoints are validated at creation to be sorted by `time`
+///   with non-decreasing `cumulative_amount`, so the step function can only
+///   stay flat or increase as time advances.
+///
+/// For revoked schedules the effective timestamp is frozen at `revoked_at`,
+/// so the vested amount is constant for all `now >= revoked_at` and the
+/// invariant continues to hold.
+///
+/// Security note: monotonicity is a prerequisite for the anti-double-claim
+/// invariant enforced by `claim`. If vested amounts could decrease, a
+/// beneficiary might be able to re-claim tokens after a prior withdrawal
+/// reduced `released_amount` below the (incorrectly lower) vested amount.
+///
+/// # Panics
+///
+/// Never. Pure computation — does not access storage or require auth.
 fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
     if schedule.total_amount <= 0 {
         return 0;
@@ -175,9 +223,33 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
                 if duration == 0 {
                     schedule.total_amount
                 } else {
-                    // Linear interpolation: total * elapsed / duration
-                    (schedule.total_amount * i128::from(elapsed as i64))
-                        / i128::from(duration as i64)
+                    // Overflow-safe linear interpolation: total * elapsed / duration
+                    // Uses divide-before-multiply to prevent intermediate overflow.
+                    // Computes: (total / duration) * elapsed + (total % duration) * elapsed /
+                    // duration Rounding: truncates toward zero (same as
+                    // original behavior). The result is guaranteed to be <=
+                    // total_amount since elapsed <= duration.
+                    let elapsed_i128 = i128::from(elapsed as i64);
+                    let duration_i128 = i128::from(duration as i64);
+
+                    // Main term: (total / duration) * elapsed
+                    let quotient = schedule.total_amount / duration_i128;
+                    let main_term = quotient
+                        .checked_mul(elapsed_i128)
+                        .unwrap_or(schedule.total_amount);
+
+                    // Remainder term: (total % duration) * elapsed / duration
+                    let remainder = schedule.total_amount % duration_i128;
+                    let remainder_term = remainder
+                        .checked_mul(elapsed_i128)
+                        .and_then(|p| p.checked_div(duration_i128))
+                        .unwrap_or(0);
+
+                    // Sum and cap at total_amount (should not exceed, but safe guard)
+                    main_term
+                        .checked_add(remainder_term)
+                        .unwrap_or(schedule.total_amount)
+                        .min(schedule.total_amount)
                 }
             }
         }
@@ -186,7 +258,7 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
             _ => 0,
         },
         VestingKind::Custom => {
-            if schedule.checkpoints.len() == 0 {
+            if schedule.checkpoints.is_empty() {
                 return 0;
             }
             let mut last_amount: i128 = 0;
@@ -278,7 +350,7 @@ impl TokenVestingContract {
 
         // Escrow tokens in the vesting contract.
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&employer, &env.current_contract_address(), &total_amount);
+        token_client.transfer(&employer, env.current_contract_address(), &total_amount);
 
         let id = next_schedule_id(&env);
         let schedule = VestingSchedule {
@@ -339,7 +411,7 @@ impl TokenVestingContract {
         assert!(total_amount > 0, "Total amount must be positive");
 
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&employer, &env.current_contract_address(), &total_amount);
+        token_client.transfer(&employer, env.current_contract_address(), &total_amount);
 
         let id = next_schedule_id(&env);
         let schedule = VestingSchedule {
@@ -400,7 +472,7 @@ impl TokenVestingContract {
         employer.require_auth();
 
         assert!(total_amount > 0, "Total amount must be positive");
-        assert!(checkpoints.len() > 0, "At least one checkpoint required");
+        assert!(!checkpoints.is_empty(), "At least one checkpoint required");
 
         let mut last_time: u64 = 0;
         let mut last_amount: i128 = 0;
@@ -420,7 +492,7 @@ impl TokenVestingContract {
         );
 
         let token_client = token::Client::new(&env, &token);
-        token_client.transfer(&employer, &env.current_contract_address(), &total_amount);
+        token_client.transfer(&employer, env.current_contract_address(), &total_amount);
 
         let id = next_schedule_id(&env);
         let schedule = VestingSchedule {
@@ -632,6 +704,15 @@ impl TokenVestingContract {
     /// @notice Returns the cumulative amount vested so far for a schedule.
     /// @param schedule_id Unique identifier of the schedule.
     /// @dev Read-only; no authentication required.
+    ///
+    /// @invariant Monotonicity — for any two calls where the ledger timestamp
+    ///   advances (t1 <= t2), the returned value is non-decreasing:
+    ///
+    ///     get_vested_amount(id) @ t1  <=  get_vested_amount(id) @ t2
+    ///
+    ///   This holds for Linear, Cliff, and Custom schedules as well as for
+    ///   revoked schedules (where the vested amount is frozen at revoked_at).
+    ///   See `compute_vested_amount` for the formal invariant proof.
     pub fn get_vested_amount(env: Env, schedule_id: u128) -> i128 {
         let schedule = read_schedule(&env, schedule_id);
         let now = env.ledger().timestamp();

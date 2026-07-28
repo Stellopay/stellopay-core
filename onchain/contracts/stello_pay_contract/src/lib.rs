@@ -1,19 +1,29 @@
 #![no_std]
+pub mod audit;
+pub mod backup;
 pub mod events;
+pub mod mock_contract;
 mod payroll;
 pub mod storage;
 
-use soroban_sdk::{contract, contractimpl, Address, Env, Vec};
-use stellar_contract_utils::upgradeable::UpgradeableInternal;
-use stellar_macros::Upgradeable;
+use events::{emit_contract_migrated, ContractMigratedEvent};
+use rbac_interface::{RbacContractClient, Role};
+use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
 use storage::{
     Agreement, BatchEscrowCreateResult, BatchMilestoneResult, BatchPayrollCreateResult,
     BatchPayrollResult, DisputeStatus, EscrowCreateParams, GracePeriodExtensionPolicy, Milestone,
     PayrollCreateParams, PayrollError, StorageKey,
 };
 
+use crate::audit::LifecycleAuditEntry;
+
 /// Payroll Contract for managing payroll agreements with employee claiming functionality.
 ///
+/// # Security Assumptions
+/// - The contract owner is trusted and responsible for upgrades and emergency pauses.
+/// - Token contracts are assumed to follow the Soroban token interface correctly.
+/// - Exchange rate admins are trusted to provide accurate price data.
+/// - Employers are responsible for the accuracy of agreement parameters.
 ///
 /// This contract supports:
 /// - Multiple employees per agreement with individual salary tracking
@@ -21,22 +31,31 @@ use storage::{
 /// - Employee-initiated payroll claiming based on elapsed time periods
 /// - Secure escrow fund release
 /// - Grace period support for claims
-#[derive(Upgradeable)]
 #[contract]
 pub struct PayrollContract;
 
-/// UpgradeableInternal implementation for PayrollContract
-///
-///
-impl UpgradeableInternal for PayrollContract {
-    fn _require_auth(e: &Env, _operator: &Address) {
-        let owner: Address = e.storage().persistent().get(&StorageKey::Owner).unwrap();
-        owner.require_auth();
-    }
-}
-
 #[contractimpl]
 impl PayrollContract {
+    fn require_upgrade_admin(env: &Env, operator: &Address) {
+        if let Some(rbac_addr) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&StorageKey::RbacContract)
+        {
+            operator.require_auth();
+            let rbac = RbacContractClient::new(env, &rbac_addr);
+            assert!(
+                rbac.has_role(operator, &Role::Admin),
+                "Missing required role"
+            );
+            return;
+        }
+
+        let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        operator.require_auth();
+        assert!(*operator == owner, "Unauthorized");
+    }
+
     ///
     /// # Arguments
     ///
@@ -44,10 +63,180 @@ impl PayrollContract {
     /// * `owner` - The contract owner address
     ///
     /// # Access Control
-    /// Requires caller authentication
+    /// Requires caller authentication. Only callable once (implicitly via storage check if needed,
+    /// though usually handled by deployment scripts).
+    ///
+    /// # Security
+    /// Sets the initial administrative authority for the contract.
     pub fn initialize(env: Env, owner: Address) {
         owner.require_auth();
+        if env.storage().persistent().has(&StorageKey::Owner) {
+            panic!("Already initialized");
+        }
         env.storage().persistent().set(&StorageKey::Owner, &owner);
+    }
+
+    /// Sets the linked RBAC contract address used for admin-gated operations (e.g. upgrades).
+    ///
+    /// # Arguments
+    /// * `owner` - owner parameter
+    /// * `rbac_contract` - rbac_contract parameter
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn set_rbac_contract(env: Env, owner: Address, rbac_contract: Address) {
+        let stored_owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        owner.require_auth();
+        assert!(owner == stored_owner, "Unauthorized");
+        env.storage()
+            .persistent()
+            .set(&StorageKey::RbacContract, &rbac_contract);
+    }
+
+    /// Sets the linked Rate Limiter contract address used to throttle claims.
+    ///
+    /// # Arguments
+    /// * `owner` - Owner of the contract
+    /// * `rate_limiter` - Rate limiter contract address
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn set_rate_limiter_contract(env: Env, owner: Address, rate_limiter: Address) {
+        let stored_owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        owner.require_auth();
+        assert!(owner == stored_owner, "Unauthorized");
+        env.storage()
+            .persistent()
+            .set(&StorageKey::RateLimiterContract, &rate_limiter);
+    }
+
+    /// Gets the linked Rate Limiter contract address, if any.
+    pub fn get_rate_limiter_contract(env: Env) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::RateLimiterContract)
+    }
+
+    /// Sets the linked Salary Adjustment contract address used for dynamic salary overrides.
+    ///
+    /// # Arguments
+    /// * `owner` - Owner of the contract
+    /// * `salary_adjustment` - Salary adjustment contract address
+    ///
+    /// # Access Control
+    /// Requires owner authentication
+    pub fn set_salary_adjustment_contract(env: Env, owner: Address, salary_adjustment: Address) {
+        let stored_owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        owner.require_auth();
+        assert!(owner == stored_owner, "Unauthorized");
+        env.storage()
+            .persistent()
+            .set(&StorageKey::SalaryAdjustmentContract, &salary_adjustment);
+    }
+
+    /// Gets the linked Salary Adjustment contract address, if any.
+    pub fn get_salary_adjustment_contract(env: Env) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::SalaryAdjustmentContract)
+    }
+
+    /// Sets the hook contract address that receives the `on_milestone_expired`
+    /// callback when `expire_milestone` is called.
+    ///
+    /// The hook contract must implement `MilestoneContractInterface`.  If no
+    /// address is set, the hook is silently skipped.  Pass any address to update
+    /// or remove via `clear_milestone_hook_contract`.
+    ///
+    /// # Access Control
+    /// Requires owner authentication.
+    pub fn set_milestone_hook_contract(env: Env, owner: Address, hook_contract: Address) {
+        let stored_owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        owner.require_auth();
+        assert!(owner == stored_owner, "Unauthorized");
+        env.storage()
+            .persistent()
+            .set(&StorageKey::MilestoneHookContract, &hook_contract);
+    }
+
+    /// Gets the configured `on_milestone_expired` hook contract address, if any.
+    pub fn get_milestone_hook_contract(env: Env) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::MilestoneHookContract)
+    }
+
+    /// @notice Upgrades the contract's WASM code to a new version.
+    /// @dev Highly critical administrative function to alter contract bytecode.
+    /// Gated strictly by require_upgrade_admin logic.
+    ///
+    /// # Arguments
+    /// * `env` - The Soroban environment.
+    /// * `new_wasm_hash` - The 32-byte SHA-256 hash of the uploaded new WASM code.
+    /// * `operator` - The address initiating the upgrade, which must possess administrative
+    ///   authority.
+    ///
+    /// # Access Control
+    /// - If an RBAC contract is configured, the `operator` must possess the `Admin` role.
+    /// - Otherwise, the `operator` must be the stored contract owner.
+    /// - `operator.require_auth()` is called to verify authorization signature.
+    ///
+    /// # Security Assumptions
+    /// - The `new_wasm_hash` must represent a valid, pre-uploaded WASM blob.
+    /// - The new bytecode must correctly preserve existing storage keys/layouts to prevent state
+    ///   corruption.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>, operator: Address) {
+        Self::require_upgrade_admin(&env, &operator);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
+    /// Migrates persistent storage state from a previous schema version.
+    ///
+    /// # Arguments
+    /// * `operator` - operator parameter
+    /// * `from_version` - from_version parameter
+    ///
+    /// # Access Control
+    /// Requires admin authorization via RBAC when configured (or owner auth when RBAC is unset).
+    pub fn migrate_state(env: Env, operator: Address, from_version: u32) {
+        Self::require_upgrade_admin(&env, &operator);
+
+        let current: u32 = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::ContractVersion)
+            .unwrap_or(0u32);
+        assert!(from_version == current, "Invalid migration version");
+
+        // v0 -> v1: first explicit version marker. No schema changes yet.
+        if from_version == 0 {
+            let next_id: u128 = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::NextAgreementId)
+                .unwrap_or(0u128);
+            let cap: u128 = if next_id > 10 { 10 } else { next_id };
+            let mut i: u128 = 0;
+            while i < cap {
+                let _maybe: Option<Agreement> =
+                    env.storage().persistent().get(&StorageKey::Agreement(i));
+                i += 1;
+            }
+
+            env.storage()
+                .persistent()
+                .set(&StorageKey::ContractVersion, &1u32);
+            emit_contract_migrated(
+                &env,
+                ContractMigratedEvent {
+                    from_version,
+                    to_version: 1,
+                },
+            );
+            return;
+        }
+
+        panic!("Unsupported migration version");
     }
 
     /// Creates a payroll agreement for multiple employees.
@@ -60,8 +249,9 @@ impl PayrollContract {
     /// # Returns
     /// New agreement ID
     ///
-    /// # State Transition
-    /// None -> Created
+    /// # Security
+    /// - Requires `employer` to authenticate.
+    /// - `grace_period_seconds` should be set to a reasonable value to protect employees.
     ///
     /// # Access Control
     /// Requires caller authentication
@@ -181,6 +371,33 @@ impl PayrollContract {
         payroll::create_milestone_agreement(env, employer, contributor, token)
     }
 
+    /// Deposits tokens from `from` into the contract to fund a milestone agreement.
+    ///
+    /// This is the only supported way to bring tokens into scope for a milestone
+    /// agreement. The function records an **accounted escrow balance** separate
+    /// from the raw on-chain `token.balance()` of the contract address, so that
+    /// `approve_milestone` and `claim_milestone` invariant checks cannot be
+    /// satisfied by unrelated deposits.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the milestone agreement to fund.
+    /// * `from`         - Address transferring the tokens; must be the stored employer.
+    /// * `amount`       - Strictly-positive token amount to deposit.
+    ///
+    /// # State Transition
+    /// No status change. `MilestoneKey::MilestoneEscrowBalance` is incremented by `amount`.
+    ///
+    /// # Access Control
+    /// - `from` must equal the employer stored for `agreement_id`.
+    /// - `from.require_auth()` is enforced.
+    ///
+    /// # Errors
+    /// Panics with descriptive messages for: unknown agreement, wrong caller,
+    /// non-positive amount, `Cancelled` or `Completed` status, arithmetic overflow.
+    pub fn fund_milestone_agreement(env: Env, agreement_id: u128, from: Address, amount: i128) {
+        payroll::fund_milestone_agreement(&env, agreement_id, from, amount);
+    }
+
     /// Adds a milestone to a milestone-based agreement.
     ///
     /// # Arguments
@@ -191,11 +408,14 @@ impl PayrollContract {
     /// - Agreement must be in Created status
     /// - Amount must be positive
     /// - Caller must be the employer
-    pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
-        payroll::add_milestone(env, agreement_id, amount);
+    pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), PayrollError> {
+        payroll::add_milestone(env, agreement_id, amount)
     }
 
     /// Approves a milestone for payment.
+    ///
+    /// # Invariants
+    /// - `escrow balance >= sum of all unclaimed milestone amounts`
     ///
     /// # Arguments
     /// * `agreement_id` - ID of the agreement
@@ -205,11 +425,73 @@ impl PayrollContract {
     /// - Milestone must exist
     /// - Milestone must not be already approved
     /// - Caller must be the employer
-    pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
-        payroll::approve_milestone(env, agreement_id, milestone_id);
+    pub fn approve_milestone(
+        env: Env,
+        agreement_id: u128,
+        milestone_id: u32,
+    ) -> Result<(), PayrollError> {
+        payroll::approve_milestone(env, agreement_id, milestone_id)
+    }
+
+    /// Rejects a milestone, preventing it from being approved or claimed.
+    ///
+    /// Only the employer may reject a milestone. The milestone cannot be
+    /// re-rejected, approved, or claimed after this call. The stored escrow
+    /// balance is not adjusted — the employer should fund a replacement
+    /// milestone or cancel the agreement to recover unused escrow.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the milestone agreement.
+    /// * `milestone_id` - 1-based ID of the milestone to reject.
+    /// * `reason`       - Human-readable justification (must be non-empty and
+    ///                    contain at least one non-whitespace character).
+    ///
+    /// # Requirements
+    /// - Caller must be the employer.
+    /// - Agreement must be in `Created` or `Active` status.
+    /// - Milestone must not already be rejected, approved, or claimed.
+    /// - `reason` must be non-empty and not whitespace-only.
+    pub fn reject_milestone(
+        env: Env,
+        agreement_id: u128,
+        milestone_id: u32,
+        reason: soroban_sdk::String,
+    ) -> Result<(), PayrollError> {
+        payroll::reject_milestone(env, agreement_id, milestone_id, reason)
+    }
+
+    /// Marks a milestone as expired, recording that it was never approved,
+    /// claimed, or rejected before the employer declared it ineligible.
+    ///
+    /// This is an employer-only operation.  The function does **not** release
+    /// escrowed funds; the employer should fund a replacement milestone or cancel
+    /// the agreement to recover unused escrow.
+    ///
+    /// After persisting the expiry flag and emitting `MilestoneExpiredEvent`,
+    /// this function calls `on_milestone_expired` on the address stored under
+    /// `StorageKey::MilestoneHookContract` (if configured).  The hook has a
+    /// no-op default, so contracts without an override are unaffected.
+    ///
+    /// # Arguments
+    /// * `agreement_id` - ID of the milestone agreement.
+    /// * `milestone_id` - 1-based ID of the milestone to expire.
+    ///
+    /// # Requirements
+    /// - Caller must be the employer.
+    /// - Agreement must be in `Created` or `Active` status.
+    /// - Milestone must not already be expired, approved, claimed, or rejected.
+    pub fn expire_milestone(
+        env: Env,
+        agreement_id: u128,
+        milestone_id: u32,
+    ) -> Result<(), PayrollError> {
+        payroll::expire_milestone(env, agreement_id, milestone_id)
     }
 
     /// Claims payment for an approved milestone.
+    ///
+    /// # Invariants
+    /// - `escrow balance >= sum of all unclaimed milestone amounts`
     ///
     /// # Arguments
     /// * `agreement_id` - ID of the agreement
@@ -220,29 +502,47 @@ impl PayrollContract {
     /// - Milestone must not be already claimed
     /// - Caller must be the contributor
     /// - Agreement auto-completes when all milestones are claimed
-    pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
-        payroll::claim_milestone(env, agreement_id, milestone_id);
+    pub fn claim_milestone(
+        env: Env,
+        agreement_id: u128,
+        milestone_id: u32,
+    ) -> Result<(), PayrollError> {
+        payroll::claim_milestone(env, agreement_id, milestone_id)
     }
 
-    /// Batch Claim Milestones
+    /// Claims payment for multiple approved milestones in a single transaction.
+    ///
+    /// This is a high-frequency disbursement path. Instruction cost scales
+    /// linearly with the number of milestones in `milestone_ids` (one token
+    /// transfer and storage write per successful claim). Baselines are tracked
+    /// in `benchmarks/stello_pay_contract_gas.json` and enforced in CI via
+    /// `tests/gas_benchmarks.rs`.
     ///
     /// # Arguments
-    /// * `agreement_id` - agreement_id parameter
-    /// * `milestone_ids` - milestone_ids parameter
+    /// * `agreement_id` - ID of the milestone agreement
+    /// * `milestone_ids` - 1-based milestone IDs to claim (must be non-empty) and no longer than
+    ///   `storage::MAX_BATCH_SIZE`.
     ///
     /// # Returns
-    /// BatchMilestoneResult
+    /// `BatchMilestoneResult` with per-milestone success/failure details.
+    /// Partial success is supported: invalid or duplicate IDs are recorded as
+    /// failures without aborting the batch.
     ///
-    /// # Errors
-    /// Returns an error if validation fails
+    /// # Security
+    /// - Requires the milestone **contributor** to authenticate (`require_auth`).
+    /// - Marks each milestone claimed **before** the token transfer (CEI pattern).
+    /// - Rejects claims when the agreement is paused.
+    /// - Empty `milestone_ids` panics at the contract boundary.
+    /// - Oversized batches fail up front with `PayrollError::BatchTooLarge`.
     ///
-    /// # Access Control
-    /// Requires caller authentication
+    /// # Gas
+    /// Benchmarked at N = 1, 5, 20 milestones in `tests/gas_benchmarks.rs`.
+    /// N = 20 is the documented ceiling for all batch entrypoints.
     pub fn batch_claim_milestones(
         env: Env,
         agreement_id: u128,
         milestone_ids: Vec<u32>,
-    ) -> BatchMilestoneResult {
+    ) -> Result<BatchMilestoneResult, PayrollError> {
         payroll::batch_claim_milestones(&env, agreement_id, milestone_ids)
     }
 
@@ -286,6 +586,9 @@ impl PayrollContract {
     /// - Agreement must be in Created status
     /// - Agreement must be Payroll mode
     /// - Caller must be the employer
+    /// - The employee address must not already be present in the agreement; a duplicate add panics
+    ///   with `PayrollError::EmployeeAlreadyExists` to preserve the 1:1 employee-to-salary mapping.
+    ///   A previously removed employee may be re-added.
     pub fn add_employee_to_agreement(
         env: Env,
         agreement_id: u128,
@@ -365,6 +668,45 @@ impl PayrollContract {
         payroll::get_arbiter(&env)
     }
 
+    /// @notice Configures the shared audit logger used for lifecycle audit entries.
+    /// @dev Only the initialized contract owner can set this address. Once configured,
+    /// successful lifecycle mutations append to the local audit stream and call the
+    /// external audit logger's append-only entrypoint.
+    pub fn set_audit_logger(env: Env, owner: Address, audit_logger: Address) {
+        audit::set_audit_logger(&env, owner, audit_logger);
+    }
+
+    /// @notice Returns the configured shared audit logger address, if one is set.
+    pub fn get_audit_logger(env: Env) -> Option<Address> {
+        audit::get_audit_logger(&env)
+    }
+
+    /// @notice Returns the number of lifecycle audit entries appended locally.
+    pub fn get_audit_entry_count(env: Env) -> u64 {
+        audit::get_audit_entry_count(&env)
+    }
+
+    /// @notice Returns a lifecycle audit entry by append-only id.
+    pub fn get_audit_entry(env: Env, audit_id: u64) -> Option<LifecycleAuditEntry> {
+        audit::get_audit_entry(&env, audit_id)
+    }
+
+    /// @notice Returns lifecycle audit entries scoped to a specific employer's agreements.
+    /// @dev Read-only query, no new write authorization surface. Filters the same local
+    /// audit log used by `get_audit_entry`, keeping only entries whose agreement belongs
+    /// to `employer`. Contract-level entries not tied to an agreement (sentinel
+    /// `agreement_id` of `0`) are excluded, since they have no employer to scope by.
+    /// Paginated via `start_id` (use `1` for the first page) and `limit`; the returned
+    /// `next_start_id` is passed as `start_id` on the next call, `None` once exhausted.
+    pub fn get_audit_entries_by_employer(
+        env: Env,
+        employer: Address,
+        start_id: u64,
+        limit: u32,
+    ) -> audit::EmployerAuditPage {
+        audit::get_audit_entries_by_employer(&env, employer, start_id, limit)
+    }
+
     /// Raise Dispute
     ///
     /// # Arguments
@@ -413,6 +755,61 @@ impl PayrollContract {
         refund_employer: i128,
     ) -> Result<(), PayrollError> {
         payroll::resolve_dispute(env, caller, agreement_id, pay_employee, refund_employer)
+    }
+
+    /// Resolves a dispute that has been pre-approved by the multisig contract.
+    ///
+    /// # Arguments
+    /// * `caller` - Arbiter address (must authenticate)
+    /// * `agreement_id` - Agreement under dispute
+    /// * `pay_employee` - Amount to distribute to employees
+    /// * `refund_employer` - Amount to refund the employer
+    /// * `multisig_operation_id` - ID of the Executed DisputeResolution operation in the multisig
+    pub fn resolve_dispute_multisig(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        pay_employee: i128,
+        refund_employer: i128,
+        multisig_operation_id: u128,
+    ) -> Result<(), PayrollError> {
+        payroll::resolve_dispute_multisig(
+            env,
+            caller,
+            agreement_id,
+            pay_employee,
+            refund_employer,
+            multisig_operation_id,
+        )
+    }
+
+    /// Configures the multisig integration thresholds.
+    ///
+    /// # Arguments
+    /// * `owner` - Contract owner (must authenticate)
+    /// * `multisig_contract` - Address of the deployed multisig contract
+    /// * `large_payment_threshold` - Min amount requiring multisig for LargePayment (0 = disabled)
+    /// * `dispute_resolution_threshold` - Min total payout requiring multisig for DisputeResolution
+    ///   (0 = disabled)
+    pub fn set_multisig_config(
+        env: Env,
+        owner: Address,
+        multisig_contract: Address,
+        large_payment_threshold: i128,
+        dispute_resolution_threshold: i128,
+    ) -> Result<(), PayrollError> {
+        payroll::set_multisig_config(
+            &env,
+            owner,
+            multisig_contract,
+            large_payment_threshold,
+            dispute_resolution_threshold,
+        )
+    }
+
+    /// Returns the configured multisig contract address, if any.
+    pub fn get_multisig_contract(env: Env) -> Option<Address> {
+        payroll::get_multisig_contract(&env)
     }
 
     /// Retrieves current dispute status for an agreement by ID
@@ -480,6 +877,30 @@ impl PayrollContract {
         payroll::set_exchange_rate(&env, caller, base, quote, rate)
     }
 
+    /// Sets an absolute upper-bound sanity limit for exchange rates.
+    /// Any `set_exchange_rate` call with a rate above this value will be rejected.
+    /// Caller must be the contract owner.
+    pub fn set_fx_rate_sanity_bound(
+        env: Env,
+        caller: Address,
+        max_rate: i128,
+    ) -> Result<(), PayrollError> {
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Owner)
+            .ok_or(PayrollError::Unauthorized)?;
+        caller.require_auth();
+        if caller != owner {
+            return Err(PayrollError::Unauthorized);
+        }
+        if max_rate <= 0 {
+            return Err(PayrollError::ExchangeRateInvalid);
+        }
+        storage::DataKey::set_exchange_rate_max_rate_sanity_bound(&env, max_rate);
+        Ok(())
+    }
+
     /// Converts an `amount` from one token into another using the configured
     /// FX rate, without performing any on-chain transfer. This is useful for
     /// off-chain estimation and validation of multi-currency payouts.
@@ -506,22 +927,39 @@ impl PayrollContract {
         payroll::convert_currency(&env, from_token, to_token, amount)
     }
 
-    /// Claim payroll for an employee
+    /// Claims accrued payroll for a single employee in a payroll agreement.
+    ///
+    /// This is the highest-frequency on-chain operation. The employee receives
+    /// salary for all unclaimed elapsed periods in one transfer. Instruction
+    /// cost is **O(1)** in the number of backlog periods because period
+    /// arithmetic is constant-time and only one token transfer is executed.
+    /// Baselines are tracked in `benchmarks/stello_pay_contract_gas.json`
+    /// and enforced in CI via `tests/gas_benchmarks.rs`.
+    ///
+    /// # Invariants
+    /// - `claimed_periods <= num_periods` when `num_periods` is set on the agreement.
+    /// - Escrow balance must cover `salary_per_period * periods_to_pay`.
     ///
     /// # Arguments
-    /// * `env` - Contract environment
-    /// * `caller` - Address of the caller
-    /// * `agreement_id` - ID of the agreement
-    /// * `employee_index` - Index of the employee in the agreement
+    /// * `caller` - Employee address (must match `employee_index`)
+    /// * `agreement_id` - Payroll agreement ID
+    /// * `employee_index` - 0-based index of the employee within the agreement
     ///
-    /// # Access Control
-    /// Requires caller to be the employee
+    /// # Security
+    /// - Requires `caller` to be the employee at `employee_index` (`Unauthorized` otherwise).
+    /// - Rejects claims when the contract is emergency-paused or the agreement is paused.
+    /// - Large payments above `LargePaymentThreshold` require `claim_payroll_multisig`.
+    /// - Enforces checks-effects-interactions: escrow balance, `claimed_periods`, and `paid_amount`
+    ///   are persisted BEFORE the external token transfer.
+    /// - Protected by a transient reentrancy guard (temporary storage, cleared per transaction). A
+    ///   reentrant call during transfer fails with `PayrollError::ReentrancyDetected`, preventing
+    ///   double-payment of a period via a hostile or hook-enabled token.
+    ///
+    /// # Gas
+    /// Benchmarked at 1, 10, and 50 elapsed payroll periods. See `docs/gas-benchmarks.md`.
     ///
     /// # Returns
-    /// Result<(), PayrollError>
-    ///
-    /// # Errors
-    /// Returns an error if validation fails
+    /// `Ok(())` on success, or `PayrollError` on validation or transfer failure.
     pub fn claim_payroll(
         env: Env,
         caller: Address,
@@ -529,6 +967,29 @@ impl PayrollContract {
         employee_index: u32,
     ) -> Result<(), PayrollError> {
         payroll::claim_payroll(&env, &caller, agreement_id, employee_index)
+    }
+
+    /// Claims payroll for a large payment pre-approved by the multisig contract.
+    ///
+    /// # Arguments
+    /// * `caller` - Employee address (must authenticate)
+    /// * `agreement_id` - Payroll agreement ID
+    /// * `employee_index` - Employee index within the agreement
+    /// * `multisig_operation_id` - ID of the Executed LargePayment operation in the multisig
+    pub fn claim_payroll_multisig(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        employee_index: u32,
+        multisig_operation_id: u128,
+    ) -> Result<(), PayrollError> {
+        payroll::claim_payroll_multisig(
+            &env,
+            &caller,
+            agreement_id,
+            employee_index,
+            multisig_operation_id,
+        )
     }
 
     /// Claims payroll for an employee, but settles the transfer in a
@@ -616,15 +1077,15 @@ impl PayrollContract {
     /// - Paused agreements cannot have claims processed
     /// - Agreement state is preserved
     /// - Can be resumed later or cancelled
-    pub fn pause_agreement(env: Env, agreement_id: u128) {
+    pub fn pause_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
         // Try new-style agreement first (payroll/escrow)
         if payroll::get_agreement(&env, agreement_id).is_some() {
             payroll::pause_agreement(&env, agreement_id);
-            return;
+            return Ok(());
         }
 
         // Fall back to milestone-based agreement
-        payroll::pause_milestone_agreement(env, agreement_id);
+        payroll::pause_milestone_agreement(env, agreement_id)
     }
 
     /// Resumes a paused agreement, allowing claims again.
@@ -643,15 +1104,15 @@ impl PayrollContract {
     /// - Agreement returns to Active status
     /// - Claims can be processed again
     /// - All agreement data is preserved
-    pub fn resume_agreement(env: Env, agreement_id: u128) {
+    pub fn resume_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
         // Try new-style agreement first (payroll/escrow)
         if payroll::get_agreement(&env, agreement_id).is_some() {
             payroll::resume_agreement(&env, agreement_id);
-            return;
+            return Ok(());
         }
 
         // Fall back to milestone-based agreement
-        payroll::resume_milestone_agreement(env, agreement_id);
+        payroll::resume_milestone_agreement(env, agreement_id)
     }
 
     /// Claims time-based payments for an escrow agreement based on elapsed periods.
@@ -857,14 +1318,17 @@ impl PayrollContract {
 
     /// Immediately activates emergency pause (owner only)
     ///
+    /// # Security
+    /// - Requires contract owner authentication.
+    /// - Provides an immediate "kill switch" to stop all claims in case of a discovered
+    ///   vulnerability.
+    /// - Should be used with caution as it stops all legitimate operations.
+    ///
     /// # Access Control
     /// Requires owner authentication
     ///
     /// # Returns
     /// Result<(), storage::PayrollError>
-    ///
-    /// # Errors
-    /// Returns an error if validation fails
     pub fn emergency_pause(env: Env) -> Result<(), storage::PayrollError> {
         payroll::emergency_pause(&env)
     }
@@ -903,5 +1367,257 @@ impl PayrollContract {
     /// Requires caller authentication
     pub fn get_emergency_pause_state(env: Env) -> Option<storage::EmergencyPause> {
         payroll::get_emergency_pause_state(&env)
+    }
+
+    // ============================================================================
+    // Encrypted Backup & Recovery
+    // ============================================================================
+
+    // ============================================================================
+    // Admin-Only Agreement Storage Setters (#849)
+    // ============================================================================
+    //
+    // These entrypoints allow a privileged admin to perform emergency maintenance
+    // writes directly on agreement storage fields. Every setter is gated behind
+    // `require_upgrade_admin` (owner or RBAC Admin role) and calls
+    // `operator.require_auth()` internally, so no unauthenticated caller can
+    // ever reach the underlying `DataKey::set_*` storage helpers.
+    //
+    // # Security Assumption
+    // The admin is trusted. These functions bypass the normal agreement state
+    // machine and must only be used for off-chain-verified maintenance (e.g.
+    // recovering from a known accounting bug). Misuse can corrupt escrow state.
+
+    /// @notice Admin-only: overwrite the cumulative paid amount for an agreement.
+    ///
+    /// Use this to correct accounting after a verified discrepancy. The caller
+    /// must be the contract owner or hold the RBAC `Admin` role.
+    ///
+    /// # Arguments
+    /// * `operator`     — admin address (must authenticate and hold Admin role).
+    /// * `agreement_id` — target agreement.
+    /// * `amount`       — new paid amount in token base units; must be >= 0.
+    ///
+    /// # Access Control
+    /// Requires owner or RBAC Admin authentication.
+    ///
+    /// # Errors
+    /// Panics with "Unauthorized" when the caller lacks admin privileges.
+    /// Panics with "InvalidAmount" when `amount` is negative.
+    pub fn admin_set_agreement_paid_amount(
+        env: Env,
+        operator: Address,
+        agreement_id: u128,
+        amount: i128,
+    ) {
+        Self::require_upgrade_admin(&env, &operator);
+        if amount < 0 {
+            panic!("InvalidAmount: paid amount must be non-negative");
+        }
+        storage::DataKey::set_agreement_paid_amount(&env, agreement_id, amount);
+    }
+
+    /// @notice Admin-only: overwrite the accounted escrow balance for an agreement/token pair.
+    ///
+    /// Corrects on-chain bookkeeping when an off-chain audit reveals a mismatch
+    /// between the real token balance held by the contract and the persisted
+    /// accounting value.
+    ///
+    /// # Arguments
+    /// * `operator`     — admin address (must authenticate and hold Admin role).
+    /// * `agreement_id` — target agreement.
+    /// * `token`        — token address whose escrow balance is corrected.
+    /// * `amount`       — new balance in token base units; must be >= 0.
+    ///
+    /// # Access Control
+    /// Requires owner or RBAC Admin authentication.
+    ///
+    /// # Errors
+    /// Panics with "Unauthorized" when the caller lacks admin privileges.
+    /// Panics with "InvalidAmount" when `amount` is negative.
+    pub fn admin_set_agreement_escrow_balance(
+        env: Env,
+        operator: Address,
+        agreement_id: u128,
+        token: Address,
+        amount: i128,
+    ) {
+        Self::require_upgrade_admin(&env, &operator);
+        if amount < 0 {
+            panic!("InvalidAmount: escrow balance must be non-negative");
+        }
+        storage::DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, amount);
+    }
+
+    /// @notice Admin-only: overwrite the payment token for an agreement.
+    ///
+    /// Allows correcting a misconfigured token address before activation,
+    /// or migrating an agreement to a replacement token after an emergency.
+    ///
+    /// # Arguments
+    /// * `operator`     — admin address (must authenticate and hold Admin role).
+    /// * `agreement_id` — target agreement.
+    /// * `token`        — new token address.
+    ///
+    /// # Access Control
+    /// Requires owner or RBAC Admin authentication.
+    pub fn admin_set_agreement_token(
+        env: Env,
+        operator: Address,
+        agreement_id: u128,
+        token: Address,
+    ) {
+        Self::require_upgrade_admin(&env, &operator);
+        storage::DataKey::set_agreement_token(&env, agreement_id, &token);
+    }
+
+    /// @notice Admin-only: overwrite the activation timestamp for an agreement.
+    ///
+    /// Adjusts the reference point for period calculations. Only safe to call
+    /// before the first claim; calling after claims have been processed will
+    /// desynchronise period accounting.
+    ///
+    /// # Arguments
+    /// * `operator`     — admin address (must authenticate and hold Admin role).
+    /// * `agreement_id` — target agreement.
+    /// * `timestamp`    — new activation timestamp (Unix seconds, ledger time).
+    ///
+    /// # Access Control
+    /// Requires owner or RBAC Admin authentication.
+    pub fn admin_set_agreement_activation_time(
+        env: Env,
+        operator: Address,
+        agreement_id: u128,
+        timestamp: u64,
+    ) {
+        Self::require_upgrade_admin(&env, &operator);
+        storage::DataKey::set_agreement_activation_time(&env, agreement_id, timestamp);
+    }
+
+    /// @notice Admin-only: overwrite the period duration for an agreement.
+    ///
+    /// Updates the cadence at which employees accrue salary periods. Only safe
+    /// to call before the first claim; adjusting after claims have been processed
+    /// will distort the elapsed-period count and may cause over- or under-payment.
+    ///
+    /// # Arguments
+    /// * `operator`     — admin address (must authenticate and hold Admin role).
+    /// * `agreement_id` — target agreement.
+    /// * `duration`     — new period duration in seconds; must be > 0.
+    ///
+    /// # Access Control
+    /// Requires owner or RBAC Admin authentication.
+    ///
+    /// # Errors
+    /// Panics with "InvalidDuration" when `duration` is 0.
+    pub fn admin_set_agreement_period_duration(
+        env: Env,
+        operator: Address,
+        agreement_id: u128,
+        duration: u64,
+    ) {
+        Self::require_upgrade_admin(&env, &operator);
+        if duration == 0 {
+            panic!("InvalidDuration: period duration must be greater than zero");
+        }
+        storage::DataKey::set_agreement_period_duration(&env, agreement_id, duration);
+    }
+
+    /// Admin-only: restore an `Agreement` from a pre-decrypted struct.
+    ///
+    /// Use this when the operator has already decrypted and verified the backup
+    /// off-chain and simply needs to re-write the state into persistent storage.
+    ///
+    /// # Arguments
+    /// * `caller`    – must be the contract owner.
+    /// * `agreement` – the `Agreement` to write back.
+    ///
+    /// # Access Control
+    /// Requires owner authentication.
+    pub fn admin_restore_agreement(
+        env: Env,
+        caller: Address,
+        agreement: storage::Agreement,
+    ) -> Result<(), storage::PayrollError> {
+        caller.require_auth();
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&storage::StorageKey::Owner)
+            .ok_or(storage::PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(storage::PayrollError::Unauthorized);
+        }
+        backup::admin_restore_agreement(&env, agreement);
+        Ok(())
+    }
+
+    /// Admin-only: decrypt an encrypted backup envelope and restore the
+    /// contained `Agreement` into persistent storage in a single call.
+    ///
+    /// # Arguments
+    /// * `caller`     – must be the contract owner.
+    /// * `envelope`   – encrypted backup bytes (version | salt | nonce | ciphertext).
+    /// * `passphrase` – decryption passphrase; never stored on-chain.
+    ///
+    /// # Returns
+    /// The restored `agreement_id` on success.
+    ///
+    /// # Errors
+    /// Returns `PayrollError::InvalidData` if decryption or deserialisation fails.
+    /// Returns `PayrollError::Unauthorized` if caller is not the owner.
+    ///
+    /// # Access Control
+    /// Requires owner authentication.
+    pub fn admin_restore_from_encrypted(
+        env: Env,
+        caller: Address,
+        envelope: soroban_sdk::Bytes,
+        passphrase: soroban_sdk::Bytes,
+    ) -> Result<u128, storage::PayrollError> {
+        caller.require_auth();
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&storage::StorageKey::Owner)
+            .ok_or(storage::PayrollError::Unauthorized)?;
+        if caller != owner {
+            return Err(storage::PayrollError::Unauthorized);
+        }
+        backup::admin_restore_from_encrypted(&env, envelope, passphrase)
+    }
+
+    /// Read-only dry-run: validates an encrypted backup envelope and reports
+    /// what a real restore would do, without writing any state.
+    ///
+    /// Use this to confirm a backup is intact and targets the expected
+    /// `agreement_id` before committing `admin_restore_from_encrypted` in
+    /// production.
+    ///
+    /// # Arguments
+    /// * `envelope`   – encrypted backup bytes (version | salt | nonce | ciphertext).
+    /// * `passphrase` – decryption passphrase; never stored on-chain.
+    ///
+    /// # Returns
+    /// `(valid, agreement_id)` — `valid` is `true` when the backup decrypts
+    /// and deserialises without error; `agreement_id` is the id encoded in the
+    /// payload (0 when validation failed).
+    ///
+    /// # Errors
+    /// * `PayrollError::InvalidData` — envelope bytes are empty.
+    ///
+    /// # Access Control
+    /// No authentication required. A correct passphrase is still necessary to
+    /// obtain a meaningful result.
+    ///
+    /// # Security
+    /// Does not leak decrypted payload contents beyond `agreement_id`.
+    /// No state is written under any circumstance.
+    pub fn admin_restore_dry_run(
+        env: Env,
+        envelope: soroban_sdk::Bytes,
+        passphrase: soroban_sdk::Bytes,
+    ) -> Result<(bool, u128), storage::PayrollError> {
+        backup::admin_restore_dry_run(&env, envelope, passphrase)
     }
 }

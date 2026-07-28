@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Stellopay/stellopay-core/blob/main/SECURITY.md
+    about: Report security issues privately. Do not use the public bug template for vulnerabilities.
+  - name: Documentation
+    url: https://github.com/Stellopay/stellopay-core/tree/main/docs
+    about: Read the docs index before opening a feature or bug report.

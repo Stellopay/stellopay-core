@@ -12,6 +12,11 @@
       "type": "integer",
       "enum": [0, 1, 2],
       "description": "0: Escrow, 1: Payroll, 2: Milestone"
+    },
+    "EscalationLevel": {
+      "type": "string",
+      "enum": ["Level1", "Level2", "Level3"],
+      "description": "Dispute escalation tier at which an event occurred"
     }
   },
   "oneOf": [
@@ -135,6 +140,17 @@
       }
     },
     {
+      "title": "SlaViolationAdvanced",
+      "description": "Emitted only when dispute_escalation::keeper_advance_stage advances a dispute because its SLA deadline elapsed. Normal in-window escalation emits dispute_escalated instead, allowing off-chain SLA monitors to distinguish timeout-driven advancement.",
+      "properties": {
+        "event": { "const": "sla_violation_advanced" },
+        "agreement_id": { "type": "string" },
+        "level": { "$ref": "#/definitions/EscalationLevel" },
+        "breached_at": { "type": "integer", "minimum": 0 },
+        "review_deadline": { "type": "integer", "minimum": 0 }
+      }
+    },
+    {
       "title": "AgreementCancelled",
       "properties": {
         "event": { "const": "AgreementCancelled" },
@@ -166,6 +182,19 @@
         "total_claimed": { "type": "string" },
         "successful_claims": { "type": "integer" },
         "failed_claims": { "type": "integer" }
+      }
+    },
+    {
+      "title": "MultisigConfigChanged",
+      "description": "Emitted by set_multisig_config on every successful update so off-chain monitors can detect changes to the approval-requirement thresholds. Exposes only public configuration (no signer secrets).",
+      "properties": {
+        "event": { "const": "MultisigConfigChanged" },
+        "caller": { "$ref": "#/definitions/Address" },
+        "multisig_contract": { "$ref": "#/definitions/Address" },
+        "old_large_threshold": { "type": "string" },
+        "new_large_threshold": { "type": "string" },
+        "old_dispute_threshold": { "type": "string" },
+        "new_dispute_threshold": { "type": "string" }
       }
     }
   ]

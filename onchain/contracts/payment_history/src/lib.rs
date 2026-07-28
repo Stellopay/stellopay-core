@@ -33,20 +33,45 @@
 //! page 3: start_index=41, limit=20
 //! ```
 //!
+//! ## Date-Range Filtering
+//!
+//! Three `*_in_range` variants of the paginated queries accept optional
+//! Unix-timestamp bounds (`from_ts` / `to_ts`, both `Option<u64>`):
+//!
+//! * Neither provided → identical behaviour to the base paginated function.
+//! * Only `from_ts`   → records with `timestamp >= from_ts`.
+//! * Only `to_ts`     → records with `timestamp <= to_ts`.
+//! * Both provided    → records whose `timestamp` falls in `[from_ts, to_ts]`.
+//!
+//! Filtering is applied **before** pagination so `limit` and `start_index`
+//! operate on the filtered result set. Deterministic oldest-first ordering
+//! (by insertion sequence, i.e. by global payment ID) is preserved.
+//!
+//! Passing `from_ts > to_ts` when both are `Some` returns an error string
+//! via a `panic!` — consistent with the validation conventions used elsewhere
+//! in this contract — without silently swapping the values.
+//!
+//! ### Backward compatibility
+//!
+//! The original `get_payments_by_agreement`, `get_payments_by_employer`, and
+//! `get_payments_by_employee` functions are **unchanged**. Callers that do not
+//! need date-range filtering continue to call those functions and receive
+//! exactly the same results as before.
+//!
 //! ## Security Model
 //!
-//! * Only the **payroll contract** registered at initialization may call
-//!   `record_payment`. Any other caller receives an `Auth(InvalidAction)` error.
-//! * The contract may only be initialized **once**; subsequent calls panic with
-//!   "Already initialized".
-//! * Records are **immutable**: there is no update or delete path. Index
-//!   entries are written once and never modified, preventing history tampering.
-//! * Index counts can only increase, ensuring no entry can be silently replaced
-//!   and no historical record can be pruned by an unauthorized party.
-//! * `limit` is hard-capped at [`MAX_PAGE_SIZE`] (100) to bound ledger reads
-//!   per invocation and prevent resource exhaustion by adversarial callers.
-//! * `payment_hash` is stored verbatim from the payroll contract. Its integrity
-//!   is the payroll contract's responsibility; this contract does not verify it.
+//! * Only the **payroll contract** registered at initialization may call `record_payment`. Any
+//!   other caller receives an `Auth(InvalidAction)` error.
+//! * The contract may only be initialized **once**; subsequent calls panic with "Already
+//!   initialized".
+//! * Records are **immutable**: there is no update or delete path. Index entries are written once
+//!   and never modified, preventing history tampering.
+//! * Index counts can only increase, ensuring no entry can be silently replaced and no historical
+//!   record can be pruned by an unauthorized party.
+//! * `limit` is hard-capped at [`MAX_PAGE_SIZE`] (100) to bound ledger reads per invocation and
+//!   prevent resource exhaustion by adversarial callers.
+//! * `payment_hash` is stored verbatim from the payroll contract. Its integrity is the payroll
+//!   contract's responsibility; this contract does not verify it.
 //!
 //! ## Integration with Indexers
 //!
@@ -54,6 +79,10 @@
 //! sync. Each event carries both `payment_id` (sequential position key) and
 //! `payment_hash` (transaction-level reference key). Because records are
 //! immutable, indexers never need to handle update or delete messages.
+//!
+//! See [`docs/payment-history.md`](../../../../docs/payment-history.md) for the
+//! full integration guide, pagination examples, storage key reference, and
+//! canonical reconciliation patterns.
 
 #![no_std]
 
@@ -62,11 +91,10 @@ mod storage;
 
 use events::PaymentRecorded;
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
-use storage::StorageKey;
-
 /// Re-export `PaymentRecord` so consumers and tests can import it directly
 /// from the crate root.
 pub use storage::PaymentRecord;
+use storage::StorageKey;
 
 /// Maximum number of records returned in a single paginated query.
 ///
@@ -289,11 +317,7 @@ impl PaymentHistoryContract {
             .storage()
             .persistent()
             .get(&StorageKey::PaymentByHash(payment_hash));
-        global_id.and_then(|id| {
-            env.storage()
-                .persistent()
-                .get(&StorageKey::Payment(id))
-        })
+        global_id.and_then(|id| env.storage().persistent().get(&StorageKey::Payment(id)))
     }
 
     /// Fetch a single payment record by its global ID.
@@ -362,7 +386,9 @@ impl PaymentHistoryContract {
         }
 
         let effective_limit = limit.min(MAX_PAGE_SIZE);
-        let end = start_index.saturating_add(effective_limit).min(count.saturating_add(1));
+        let end = start_index
+            .saturating_add(effective_limit)
+            .min(count.saturating_add(1));
 
         for i in start_index..end {
             let global_id: u128 = env
@@ -418,7 +444,9 @@ impl PaymentHistoryContract {
         }
 
         let effective_limit = limit.min(MAX_PAGE_SIZE);
-        let end = start_index.saturating_add(effective_limit).min(count.saturating_add(1));
+        let end = start_index
+            .saturating_add(effective_limit)
+            .min(count.saturating_add(1));
 
         for i in start_index..end {
             let global_id: u128 = env
@@ -474,7 +502,9 @@ impl PaymentHistoryContract {
         }
 
         let effective_limit = limit.min(MAX_PAGE_SIZE);
-        let end = start_index.saturating_add(effective_limit).min(count.saturating_add(1));
+        let end = start_index
+            .saturating_add(effective_limit)
+            .min(count.saturating_add(1));
 
         for i in start_index..end {
             let global_id: u128 = env
@@ -488,6 +518,237 @@ impl PaymentHistoryContract {
                 .get(&StorageKey::Payment(global_id))
                 .unwrap();
             result.push_back(record);
+        }
+        result
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // Date-range filtered query variants
+    //
+    // Each `*_in_range` function wraps its base paginated function with an
+    // additional timestamp filter applied *before* the page window.  The
+    // original functions remain unchanged so all existing callers continue
+    // to work without modification.
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// Return a paginated, timestamp-filtered slice of payment records for a
+    /// specific agreement.
+    ///
+    /// @notice `start_index` is 1-based and inclusive among the **filtered**
+    /// result set — i.e. pagination is applied after timestamp filtering.
+    /// A value of `0` or greater than the filtered count returns an empty
+    /// vector.
+    ///
+    /// @dev Timestamp filtering scans the raw index from position 1 to the
+    /// agreement's total count, collecting records that satisfy the range
+    /// condition, then slices the collected vector according to `start_index`
+    /// and `limit`.  Ordering is preserved (oldest-insertion-first).
+    ///
+    /// @param agreement_id  The agreement to query.
+    /// @param start_index   1-based start position within the **filtered** set
+    ///                      (inclusive).
+    /// @param limit         Maximum records to return from the filtered set;
+    ///                      capped at [`MAX_PAGE_SIZE`] (100).
+    /// @param from_ts       Optional lower bound (inclusive). Only records with
+    ///                      `timestamp >= from_ts` are included.
+    /// @param to_ts         Optional upper bound (inclusive). Only records with
+    ///                      `timestamp <= to_ts` are included.
+    /// @return              Ordered slice of `PaymentRecord`s, oldest-first,
+    ///                      whose timestamps fall within the specified range.
+    ///
+    /// @panics "InvalidRange: from_ts must be <= to_ts" when both bounds are
+    ///         supplied and `from_ts > to_ts`.
+    ///
+    /// ## Backward compatibility
+    ///
+    /// Passing `None` for both `from_ts` and `to_ts` returns the same records
+    /// as `get_payments_by_agreement` called with identical pagination
+    /// parameters.
+    ///
+    /// ## Examples
+    ///
+    /// ```text
+    /// // Range only (all pages)
+    /// get_agreement_payments_in_range(env, id, 1, 100, Some(1_000), Some(2_000))
+    ///
+    /// // Pagination only (no date filter)
+    /// get_agreement_payments_in_range(env, id, 21, 20, None, None)
+    ///
+    /// // Range + pagination (page 2 of a filtered window)
+    /// get_agreement_payments_in_range(env, id, 11, 10, Some(500), Some(9_999))
+    /// ```
+    pub fn get_agreement_payments_in_range(
+        env: Env,
+        agreement_id: u128,
+        start_index: u32,
+        limit: u32,
+        from_ts: Option<u64>,
+        to_ts: Option<u64>,
+    ) -> Vec<PaymentRecord> {
+        // Validate range before touching storage.
+        if let (Some(from), Some(to)) = (from_ts, to_ts) {
+            if from > to {
+                panic!("{}", ERR_INVALID_RANGE);
+            }
+        }
+
+        let total_count = Self::get_agreement_payment_count(env.clone(), agreement_id);
+        let filtered = Self::collect_filtered(&env, total_count, from_ts, to_ts, |pos| {
+            env.storage()
+                .persistent()
+                .get(&StorageKey::AgreementPayment(agreement_id, pos))
+                .unwrap()
+        });
+        Self::paginate_filtered(&env, &filtered, start_index, limit)
+    }
+
+    /// Return a paginated, timestamp-filtered slice of payment records for a
+    /// specific employer.
+    ///
+    /// @notice `start_index` is 1-based within the **filtered** result set.
+    ///
+    /// @dev See [`get_agreement_payments_in_range`] for the filtering and
+    /// pagination model.
+    ///
+    /// @param employer      The employer address to query.
+    /// @param start_index   1-based start position within the filtered set.
+    /// @param limit         Maximum records to return; capped at 100.
+    /// @param from_ts       Optional lower bound (inclusive).
+    /// @param to_ts         Optional upper bound (inclusive).
+    /// @return              Ordered slice of `PaymentRecord`s within the range.
+    ///
+    /// @panics "InvalidRange: from_ts must be <= to_ts" if `from_ts > to_ts`.
+    pub fn get_employer_payments_in_range(
+        env: Env,
+        employer: Address,
+        start_index: u32,
+        limit: u32,
+        from_ts: Option<u64>,
+        to_ts: Option<u64>,
+    ) -> Vec<PaymentRecord> {
+        if let (Some(from), Some(to)) = (from_ts, to_ts) {
+            if from > to {
+                panic!("{}", ERR_INVALID_RANGE);
+            }
+        }
+
+        let total_count = Self::get_employer_payment_count(env.clone(), employer.clone());
+        let filtered = Self::collect_filtered(&env, total_count, from_ts, to_ts, |pos| {
+            env.storage()
+                .persistent()
+                .get(&StorageKey::EmployerPayment(employer.clone(), pos))
+                .unwrap()
+        });
+        Self::paginate_filtered(&env, &filtered, start_index, limit)
+    }
+
+    /// Return a paginated, timestamp-filtered slice of payment records for a
+    /// specific employee.
+    ///
+    /// @notice `start_index` is 1-based within the **filtered** result set.
+    ///
+    /// @dev See [`get_agreement_payments_in_range`] for the filtering and
+    /// pagination model.
+    ///
+    /// @param employee      The employee address to query.
+    /// @param start_index   1-based start position within the filtered set.
+    /// @param limit         Maximum records to return; capped at 100.
+    /// @param from_ts       Optional lower bound (inclusive).
+    /// @param to_ts         Optional upper bound (inclusive).
+    /// @return              Ordered slice of `PaymentRecord`s within the range.
+    ///
+    /// @panics "InvalidRange: from_ts must be <= to_ts" if `from_ts > to_ts`.
+    pub fn get_employee_payments_in_range(
+        env: Env,
+        employee: Address,
+        start_index: u32,
+        limit: u32,
+        from_ts: Option<u64>,
+        to_ts: Option<u64>,
+    ) -> Vec<PaymentRecord> {
+        if let (Some(from), Some(to)) = (from_ts, to_ts) {
+            if from > to {
+                panic!("{}", ERR_INVALID_RANGE);
+            }
+        }
+
+        let total_count = Self::get_employee_payment_count(env.clone(), employee.clone());
+        let filtered = Self::collect_filtered(&env, total_count, from_ts, to_ts, |pos| {
+            env.storage()
+                .persistent()
+                .get(&StorageKey::EmployeePayment(employee.clone(), pos))
+                .unwrap()
+        });
+        Self::paginate_filtered(&env, &filtered, start_index, limit)
+    }
+
+    // ── Private helpers ───────────────────────────────────────────────────────
+
+    /// Iterate over the full raw index for an entity (agreement / employer /
+    /// employee), apply an optional timestamp filter, and return the matching
+    /// `PaymentRecord`s in insertion order.
+    ///
+    /// @param env         Soroban environment.
+    /// @param total_count Total index entries for this entity (from the `*Count`
+    ///                    storage key).
+    /// @param from_ts     Optional inclusive lower bound.
+    /// @param to_ts       Optional inclusive upper bound.
+    /// @param get_global_id  Closure that maps a 1-based position to a global
+    ///                    payment ID for the entity being scanned.
+    fn collect_filtered(
+        env: &Env,
+        total_count: u32,
+        from_ts: Option<u64>,
+        to_ts: Option<u64>,
+        get_global_id: impl Fn(u32) -> u128,
+    ) -> Vec<PaymentRecord> {
+        let mut result = Vec::new(env);
+        for pos in 1..=total_count {
+            let global_id = get_global_id(pos);
+            let record: PaymentRecord = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::Payment(global_id))
+                .unwrap();
+
+            let ts = record.timestamp;
+            if let Some(from) = from_ts {
+                if ts < from {
+                    continue;
+                }
+            }
+            if let Some(to) = to_ts {
+                if ts > to {
+                    continue;
+                }
+            }
+            result.push_back(record);
+        }
+        result
+    }
+
+    /// Slice a pre-filtered `Vec<PaymentRecord>` by 1-based `start_index` and
+    /// `limit`, capping `limit` at [`MAX_PAGE_SIZE`].
+    fn paginate_filtered(
+        env: &Env,
+        filtered: &Vec<PaymentRecord>,
+        start_index: u32,
+        limit: u32,
+    ) -> Vec<PaymentRecord> {
+        let count = filtered.len();
+        let mut result = Vec::new(env);
+
+        if start_index == 0 || start_index > count {
+            return result;
+        }
+
+        let effective_limit = limit.min(MAX_PAGE_SIZE);
+        // Convert 1-based start_index to 0-based vector index.
+        let start_0 = (start_index - 1) as usize;
+        let end_0 = (start_0 + effective_limit as usize).min(count as usize);
+
+        for i in start_0..end_0 {
+            result.push_back(filtered.get(i as u32).unwrap());
         }
         result
     }

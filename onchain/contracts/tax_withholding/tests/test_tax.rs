@@ -1,7 +1,6 @@
 #![cfg(test)]
 
 use soroban_sdk::{testutils::Address as _, token, Address, Env, Symbol, Vec};
-
 use tax_withholding::{
     TaxComputation, TaxError, TaxWithholdingContract, TaxWithholdingContractClient,
 };
@@ -419,6 +418,44 @@ fn test_remit_partial_then_accrue_and_remit_again() {
     assert_eq!(client.get_accrued_balance(&jurisdiction), 0);
 }
 
+#[test]
+fn test_remit_withholding_idempotent_after_full_remittance() {
+    // Verifies that attempting to remit the same accrued balance twice
+    // is safely rejected rather than under/overflowing or double-counting.
+    let (env, owner, client) = setup();
+
+    let employee = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let jurisdiction = Symbol::new(&env, "US_FED");
+
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
+    client.set_jurisdiction_treasury(&owner, &jurisdiction, &treasury);
+    let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
+    client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
+
+    let token_admin = Address::generate(&env);
+    let tok = create_token(&env, &token_admin);
+    token::StellarAssetClient::new(&env, &tok.address).mint(&owner, &1_000i128);
+
+    // Accrue and remit once
+    client.accrue_withholding(&owner, &employee, &10_000i128);
+    assert_eq!(client.get_accrued_balance(&jurisdiction), 1_000);
+
+    let remitted = client.remit_withholding(&owner, &jurisdiction, &tok.address);
+    assert_eq!(remitted, 1_000);
+    assert_eq!(client.get_accrued_balance(&jurisdiction), 0);
+    assert_eq!(tok.balance(&treasury), 1_000);
+
+    // Attempt to remit the same (now-zero) balance again
+    // This should be rejected with NothingToRemit, not cause underflow or double-counting
+    let res = client.try_remit_withholding(&owner, &jurisdiction, &tok.address);
+    assert_eq!(res, Err(Ok(TaxError::NothingToRemit)));
+
+    // Verify state remains unchanged: balance still zero, treasury still has 1_000
+    assert_eq!(client.get_accrued_balance(&jurisdiction), 0);
+    assert_eq!(tok.balance(&treasury), 1_000);
+}
+
 // ─── Security invariant tests ─────────────────────────────────────────────────
 
 #[test]
@@ -473,4 +510,101 @@ fn test_withholding_destination_is_owner_controlled() {
     client.remit_withholding(&owner, &jurisdiction, &tok.address);
     assert_eq!(tok.balance(&legitimate_treasury), 1_000);
     assert_eq!(tok.balance(&attacker_treasury), 0);
+}
+
+// ─── Jurisdiction removal historical preservation tests ────────────────────────
+
+#[test]
+fn test_jurisdiction_removal_preserves_accrued_balance() {
+    let (env, owner, client) = setup();
+
+    let employee = Address::generate(&env);
+    let j_fed = Symbol::new(&env, "US_FED");
+    let j_state = Symbol::new(&env, "US_STATE");
+
+    client.set_jurisdiction_rate(&owner, &j_fed, &1000u32, &1); // 10%
+    client.set_jurisdiction_rate(&owner, &j_state, &500u32, &1); // 5%
+
+    // Step 1: Assign US_FED and US_STATE to employee
+    let initial_jurisdictions = Vec::from_array(&env, [j_fed.clone(), j_state.clone()]);
+    client.set_employee_jurisdictions(&owner, &employee, &initial_jurisdictions);
+
+    // Step 2: Accrue withholding for a pay period (10,000 gross pay)
+    let comp1 = client.accrue_withholding(&owner, &employee, &10_000i128);
+    assert_eq!(comp1.total_tax, 1_500);
+    assert_eq!(client.get_accrued_balance(&j_fed), 1_000);
+    assert_eq!(client.get_accrued_balance(&j_state), 500);
+
+    // Step 3: Remove US_STATE from employee's assigned jurisdictions
+    let updated_jurisdictions = Vec::from_array(&env, [j_fed.clone()]);
+    client.set_employee_jurisdictions(&owner, &employee, &updated_jurisdictions);
+
+    let current_jurisdictions = client.get_employee_jurisdictions(&employee);
+    assert_eq!(current_jurisdictions.len(), 1);
+    assert_eq!(current_jurisdictions.get(0).unwrap(), j_fed);
+
+    // Step 4: Assert prior accrual record for US_STATE is still present and intact
+    assert_eq!(client.get_accrued_balance(&j_state), 500);
+    assert_eq!(client.get_accrued_balance(&j_fed), 1_000);
+
+    // Step 5: Accrue withholding for next pay period — only US_FED should accrue
+    let comp2 = client.accrue_withholding(&owner, &employee, &10_000i128);
+    assert_eq!(comp2.total_tax, 1_000);
+    assert_eq!(comp2.shares.len(), 1);
+    assert_eq!(comp2.shares.get(0).unwrap().jurisdiction, j_fed);
+
+    // US_FED increases to 2_000, US_STATE remains unchanged at 500
+    assert_eq!(client.get_accrued_balance(&j_fed), 2_000);
+    assert_eq!(client.get_accrued_balance(&j_state), 500);
+}
+
+#[test]
+fn test_jurisdiction_removal_historical_annual_accrual_intact() {
+    let (env, owner, client) = setup();
+
+    let employee = Address::generate(&env);
+    let j_fed = Symbol::new(&env, "US_FED");
+    let j_state = Symbol::new(&env, "US_STATE");
+    let state_treasury = Address::generate(&env);
+
+    client.set_jurisdiction_rate(&owner, &j_fed, &1000u32, &1); // 10%
+    client.set_jurisdiction_rate(&owner, &j_state, &500u32, &1); // 5%
+    client.set_jurisdiction_treasury(&owner, &j_state, &state_treasury);
+
+    let initial_jurisdictions = Vec::from_array(&env, [j_fed.clone(), j_state.clone()]);
+    client.set_employee_jurisdictions(&owner, &employee, &initial_jurisdictions);
+
+    // Simulate 12 pay periods (10,000 gross per period)
+    for _ in 0..12 {
+        client.accrue_withholding(&owner, &employee, &10_000i128);
+    }
+
+    // Historical annual accruals before removal
+    let pre_removal_fed = client.get_accrued_balance(&j_fed);
+    let pre_removal_state = client.get_accrued_balance(&j_state);
+    assert_eq!(pre_removal_fed, 12_000);
+    assert_eq!(pre_removal_state, 6_000);
+    let annual_total_before = pre_removal_fed + pre_removal_state;
+    assert_eq!(annual_total_before, 18_000);
+
+    // Employee moves or removes US_STATE assignment post year-end
+    let updated_jurisdictions = Vec::from_array(&env, [j_fed.clone()]);
+    client.set_employee_jurisdictions(&owner, &employee, &updated_jurisdictions);
+
+    // Assert annual summary query still reflects historical accruals accurately
+    let post_removal_fed = client.get_accrued_balance(&j_fed);
+    let post_removal_state = client.get_accrued_balance(&j_state);
+    assert_eq!(post_removal_fed, 12_000);
+    assert_eq!(post_removal_state, 6_000);
+    assert_eq!(post_removal_fed + post_removal_state, annual_total_before);
+
+    // Assert that remittance for the removed jurisdiction succeeds with exact historical amount
+    let token_admin = Address::generate(&env);
+    let tok = create_token(&env, &token_admin);
+    token::StellarAssetClient::new(&env, &tok.address).mint(&owner, &6_000i128);
+
+    let remitted = client.remit_withholding(&owner, &j_state, &tok.address);
+    assert_eq!(remitted, 6_000);
+    assert_eq!(tok.balance(&state_treasury), 6_000);
+    assert_eq!(client.get_accrued_balance(&j_state), 0);
 }

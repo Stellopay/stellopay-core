@@ -28,13 +28,13 @@ From the repository root:
 cd onchain/contracts/stello_pay_contract
 
 # Build Rust target
-cargo build --target wasm32v1-none --release
+cargo build --target wasm32-unknown-unknown --release
 
 # Or use the CLI helper (mirrors CI)
 stellar contract build --verbose
 ```
 
-The compiled WASM artifact will be placed under `target/wasm32v1-none/release/`.
+The compiled WASM artifact will be placed under `target/wasm32-unknown-unknown/release/`.
 
 ---
 
@@ -64,7 +64,7 @@ For Testnet/Mainnet, use the appropriate RPC endpoints and fund accounts via a f
 Deploy the compiled WASM to the selected network:
 
 ```bash
-CONTRACT_WASM=./target/wasm32v1-none/release/stello_pay_contract.wasm
+CONTRACT_WASM=./target/wasm32-unknown-unknown/release/stello_pay_contract.wasm
 
 stellar contract deploy \
   --wasm $CONTRACT_WASM \

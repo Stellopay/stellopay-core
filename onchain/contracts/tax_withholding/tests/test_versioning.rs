@@ -1,9 +1,12 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env, Symbol, Vec};
-
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Address, Env, IntoVal, Symbol, Vec,
+};
 use tax_withholding::{
-    RulesetMetadata, TaxComputation, TaxError, TaxWithholdingContract, TaxWithholdingContractClient,
+    EmployeeVersionMigratedEvent, TaxComputation, TaxError, TaxWithholdingContract,
+    TaxWithholdingContractClient,
 };
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -138,7 +141,7 @@ fn test_get_jurisdiction_rate_nonexistent_version() {
 
 #[test]
 fn test_lock_ruleset_version() {
-    let (env, owner, client) = setup();
+    let (_env, owner, client) = setup();
 
     assert!(!client.is_ruleset_locked(&1));
 
@@ -161,6 +164,58 @@ fn test_cannot_modify_locked_version() {
     // Attempt to modify locked version should fail
     let res = client.try_set_jurisdiction_rate(&owner, &jurisdiction, &1500u32, &1);
     assert_eq!(res, Err(Ok(TaxError::VersionLocked)));
+}
+
+#[test]
+fn test_lock_ruleset_version_blocks_only_target_version() {
+    let (env, owner, client) = setup();
+    let jurisdiction = Symbol::new(&env, "US_FED");
+
+    // Set rate for version 1 before locking
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
+    assert!(!client.is_ruleset_locked(&1));
+
+    // Lock version 1
+    client.lock_ruleset_version(&owner, &1);
+    assert!(client.is_ruleset_locked(&1));
+
+    // Editing version 1 must return VersionLocked
+    let res = client.try_set_jurisdiction_rate(&owner, &jurisdiction, &1500u32, &1);
+    assert_eq!(res, Err(Ok(TaxError::VersionLocked)));
+
+    // Rate remains at original value
+    assert_eq!(client.get_jurisdiction_rate(&jurisdiction, &1), Some(1000));
+}
+
+#[test]
+fn test_newer_ruleset_remains_editable_after_previous_version_lock() {
+    let (env, owner, client) = setup();
+    let jurisdiction = Symbol::new(&env, "US_FED");
+
+    // Set rate for version 1 and lock version 1
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
+    client.lock_ruleset_version(&owner, &1);
+    assert!(client.is_ruleset_locked(&1));
+
+    // Publish version 2 after version 1 is locked
+    let v2 = client.publish_ruleset_version(&owner, &Symbol::new(&env, "v2_update"));
+    assert_eq!(v2, 2);
+
+    // Verify lock status is false for version 2
+    assert!(!client.is_ruleset_locked(&2));
+
+    // Version 2 should be editable via set_jurisdiction_rate
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1200u32, &2);
+    assert_eq!(client.get_jurisdiction_rate(&jurisdiction, &2), Some(1200));
+
+    // Version 2 can be updated again
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1500u32, &2);
+    assert_eq!(client.get_jurisdiction_rate(&jurisdiction, &2), Some(1500));
+
+    // Version 1 remains locked and unchanged
+    let res_v1 = client.try_set_jurisdiction_rate(&owner, &jurisdiction, &2000u32, &1);
+    assert_eq!(res_v1, Err(Ok(TaxError::VersionLocked)));
+    assert_eq!(client.get_jurisdiction_rate(&jurisdiction, &1), Some(1000));
 }
 
 #[test]
@@ -223,14 +278,69 @@ fn test_migrate_employee_to_new_version() {
     assert_eq!(result1.ruleset_version, 1);
     assert_eq!(result1.total_tax, 1_000);
 
-    // Migrate employee to version 2
+    // Migrate employee to version 2.
+    //
+    // Read events immediately after the mutating call: `env.events().all()`
+    // only retains events from the most recent top-level invocation, so any
+    // further contract call (even a read-only getter) would clear this event
+    // before it could be inspected.
     client.migrate_employee_to_version(&owner, &employee, &2);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    assert_eq!(last_event.0, client.address);
+    let event: EmployeeVersionMigratedEvent = last_event.2.into_val(&env);
+    assert_eq!(event.employee, employee);
+    assert_eq!(event.from_version, 1);
+    assert_eq!(event.to_version, 2);
+    assert_eq!(event.caller, owner);
+
     assert_eq!(client.get_employee_ruleset_version(&employee), 2);
 
     // Now employee uses version 2 rates
     let result2: TaxComputation = client.calculate_withholding(&employee, &10_000i128);
     assert_eq!(result2.ruleset_version, 2);
     assert_eq!(result2.total_tax, 1_500);
+}
+
+#[test]
+fn test_migrate_employee_to_active_version_allowed() {
+    let (env, owner, client) = setup();
+
+    let employee = Address::generate(&env);
+
+    client.publish_ruleset_version(&owner, &Symbol::new(&env, "v2"));
+    client.migrate_employee_to_version(&owner, &employee, &1);
+    client.set_active_ruleset_version(&owner, &2);
+
+    // Read events immediately after the mutating call: `env.events().all()`
+    // only retains events from the most recent top-level invocation.
+    client.migrate_employee_to_version(&owner, &employee, &2);
+
+    let events = env.events().all();
+    let event: EmployeeVersionMigratedEvent = events.last().unwrap().2.into_val(&env);
+    assert_eq!(event.employee, employee);
+    assert_eq!(event.from_version, 1);
+    assert_eq!(event.to_version, 2);
+    assert_eq!(event.caller, owner);
+
+    assert_eq!(client.get_employee_ruleset_version(&employee), 2);
+}
+
+#[test]
+fn test_migrate_employee_to_deprecated_version_rejected() {
+    let (env, owner, client) = setup();
+
+    let employee = Address::generate(&env);
+    client.publish_ruleset_version(&owner, &Symbol::new(&env, "v2"));
+    client.deprecate_ruleset_version(&owner, &2);
+
+    let metadata = client.get_ruleset_metadata(&2).unwrap();
+    assert!(metadata.deprecated);
+
+    let res = client.try_migrate_employee_to_version(&owner, &employee, &2);
+    assert_eq!(res, Err(Ok(TaxError::DeprecatedVersion)));
+    assert_eq!(client.get_employee_ruleset_version(&employee), 1);
 }
 
 #[test]

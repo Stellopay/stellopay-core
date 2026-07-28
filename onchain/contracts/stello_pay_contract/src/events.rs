@@ -1,5 +1,6 @@
-use crate::storage::AgreementMode;
 use soroban_sdk::{contractevent, Address, Env};
+
+use crate::storage::AgreementMode;
 
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -92,6 +93,18 @@ pub struct PaymentReceivedEvent {
     pub to: Address,
     pub amount: i128,
     pub token: Address,
+}
+
+/// Event: Contract storage migration applied
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ContractMigratedEvent {
+    pub from_version: u32,
+    pub to_version: u32,
+}
+
+pub fn emit_contract_migrated(env: &Env, event: ContractMigratedEvent) {
+    event.publish(env);
 }
 
 pub fn emit_agreement_created(env: &Env, event: AgreementCreatedEvent) {
@@ -224,5 +237,114 @@ pub struct BatchMilestoneClaimedEvent {
 }
 
 pub fn emit_batch_milestone_claimed(env: &Env, event: BatchMilestoneClaimedEvent) {
+    event.publish(env);
+}
+
+/// Event: Milestone agreement funded by employer.
+///
+/// Emitted when an employer deposits tokens into the contract for a specific
+/// milestone agreement via `fund_milestone_agreement`. The `total_escrow_balance`
+/// field reflects the new accounted balance after this deposit.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MilestoneFundedEvent {
+    pub agreement_id: u128,
+    pub from: Address,
+    pub amount: i128,
+    pub total_escrow_balance: i128,
+}
+
+pub fn emit_milestone_funded(env: &Env, event: MilestoneFundedEvent) {
+    event.publish(env);
+}
+
+/// Event: Exchange rate set via `set_exchange_rate` or `set_exchange_rate_admin`.
+/// Emitted whenever a rate is updated so off-chain indexers can track FX history.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ExchangeRateChangedEvent {
+    pub base: Address,
+    pub quote: Address,
+    pub new_rate: i128,
+    /// Previous rate, or 0 if this is the first time the pair is set.
+    pub prev_rate: i128,
+    /// Ledger timestamp when this event was emitted.
+    pub updated_at: u64,
+}
+
+pub fn emit_exchange_rate_changed(env: &Env, event: ExchangeRateChangedEvent) {
+    event.publish(env);
+}
+
+/// Event: multisig approval configuration changed via `set_multisig_config`.
+/// Emitted whenever the linked multisig contract or its approval thresholds
+/// are updated, so off-chain monitors can track approval-requirement changes
+/// mid-lifecycle.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MultisigConfigChangedEvent {
+    pub caller: Address,
+    pub multisig_contract: Address,
+    pub old_large_threshold: i128,
+    pub new_large_threshold: i128,
+    pub old_dispute_threshold: i128,
+    pub new_dispute_threshold: i128,
+}
+
+pub fn emit_multisig_config_changed(env: &Env, event: MultisigConfigChangedEvent) {
+    event.publish(env);
+}
+
+/// Event: A milestone was rejected by the employer.
+///
+/// Emitted when an employer explicitly rejects a submitted milestone via
+/// `reject_milestone`. The `rejected_by` field records the employer address
+/// at the time of rejection and `reason` is the mandatory human-readable
+/// justification supplied by the caller (must be non-empty). Off-chain
+/// indexers can use this event to update milestone status, notify
+/// contributors, and track rejection history.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MilestoneRejectedEvent {
+    /// The milestone agreement that contains the rejected milestone.
+    pub agreement_id: u128,
+    /// 1-based identifier of the rejected milestone within the agreement.
+    pub milestone_id: u32,
+    /// The employer address that performed the rejection.
+    pub rejected_by: Address,
+    /// Mandatory free-text justification provided by the employer (must be
+    /// non-empty and contain at least one non-whitespace character).
+    pub reason: soroban_sdk::String,
+}
+
+/// Emits a [`MilestoneRejectedEvent`] for the given rejection.
+pub fn emit_milestone_rejected(env: &Env, event: MilestoneRejectedEvent) {
+    event.publish(env);
+}
+
+/// Event: A milestone expired without being claimed or rejected.
+///
+/// Emitted by `expire_milestone` after the expiry flag is persisted and
+/// before the `on_milestone_expired` hook is invoked on the implementing
+/// contract (if configured).  Off-chain indexers can use this event to
+/// update milestone status, notify contributors, and trigger reconciliation
+/// workflows.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MilestoneExpiredEvent {
+    /// The milestone agreement that contains the expired milestone.
+    pub agreement_id: u128,
+    /// 1-based identifier of the expired milestone within the agreement.
+    pub milestone_id: u32,
+    /// The amount that was locked for this milestone and is now unreleased.
+    /// Callers may use this to decide whether to fund a replacement milestone
+    /// or cancel the agreement to recover unused escrow.
+    pub locked_amount: i128,
+    /// The address that triggered expiry (must be the agreement's employer).
+    pub expired_by: Address,
+}
+
+/// Emits a [`MilestoneExpiredEvent`] for the given expiry.
+pub fn emit_milestone_expired(env: &Env, event: MilestoneExpiredEvent) {
     event.publish(env);
 }

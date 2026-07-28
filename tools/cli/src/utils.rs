@@ -1,9 +1,13 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
+use serde_json::Value;
+use std::collections::HashMap;
+use std::future::Future;
+use std::time::Duration;
+use tokio::time::sleep;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Employee {
@@ -61,7 +65,10 @@ pub fn format_amount(amount: i128, decimals: u32) -> String {
             fractional,
             width = decimals as usize
         );
-        formatted.trim_end_matches('0').trim_end_matches('.').to_string()
+        formatted
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
     }
 }
 
@@ -316,45 +323,333 @@ mod tests {
         assert_eq!(truncate_address("SHORT", 4), "SHORT");
     }
 }
-pub struct SorobanHttpClient{
-    base_url:String,
-    client:reqwest::Client,
+/// Retry policy for read-only RPC (`query`) calls made by the CLI.
+///
+/// This is intentionally distinct from the per-webhook [`RetryConfig`] the
+/// contract returns: it governs client-side retries of transient network
+/// errors on *idempotent reads only*. State-changing `invoke` calls must
+/// never be retried (see `commands.rs`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct RetryPolicy {
+    /// Maximum number of attempts (including the first). `0` disables retries.
+    #[serde(default)]
+    pub max_attempts: u32,
+    /// Base backoff between attempts, in milliseconds. Doubled each attempt
+    /// (exponential) up to `max_delay_ms`.
+    #[serde(default)]
+    pub base_delay_ms: u64,
+    /// Upper bound on a single backoff interval, in milliseconds.
+    #[serde(default)]
+    pub max_delay_ms: u64,
 }
-impl SorobanHttpClient{
-    pub fn new(base_url: &str)->Self{
-        Self{
-            base_url:base_url.to_string(),
-            client:reqwest::Client::new(),
+
+impl Default for RetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            base_delay_ms: 200,
+            max_delay_ms: 5_000,
         }
     }
-    pub async fn get_ledger_info(&self)->Result<String>{
-        let url=format!("{}/ledger",self.base_url);
-        let res=self.client.get(&url).send().await?;
-        let body =res.text().await?;
+}
+
+/// Run an async operation with exponential backoff.
+///
+/// `op` is a factory that produces a *new* future on every attempt
+/// (`FnMut`), so a future is never polled twice. On error the attempt is
+/// retried until `policy.max_attempts` is reached; the wait between attempts
+/// doubles (`base_delay_ms * 2^(attempt-1)`), capped at `max_delay_ms`.
+///
+/// Only use this for idempotent, read-only operations. Retrying a
+/// state-changing call without idempotency protection could double-submit a
+/// transaction.
+pub async fn with_retry<F, Fut, T, E>(policy: RetryPolicy, mut op: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, E>>,
+    E: std::fmt::Display,
+{
+    if policy.max_attempts == 0 {
+        return op()
+            .await
+            .map_err(|e| anyhow::anyhow!("RPC call failed: {}", e));
+    }
+
+    let mut attempt: u32 = 0;
+    let mut last_msg: String = String::new();
+    loop {
+        attempt += 1;
+        match op().await {
+            Ok(value) => return Ok(value),
+            Err(e) => {
+                last_msg = e.to_string();
+                if attempt >= policy.max_attempts {
+                    return Err(anyhow::anyhow!(
+                        "RPC query failed after {} attempt(s): {}",
+                        attempt,
+                        last_msg
+                    ));
+                }
+                let backoff = (policy.base_delay_ms as u64)
+                    .saturating_mul(1u64 << (attempt.saturating_sub(1)))
+                    .min(policy.max_delay_ms);
+                sleep(Duration::from_millis(backoff)).await;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[tokio::test]
+    async fn transient_failure_then_success() {
+        let calls = Cell::new(0u32);
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay_ms: 0,
+            max_delay_ms: 0,
+        };
+        let result = with_retry(policy, || {
+            let n = calls.get();
+            calls.set(n + 1);
+            async move {
+                if n < 2 {
+                    Err::<u32, _>(anyhow::anyhow!("transient error {}", n))
+                } else {
+                    Ok(42u32)
+                }
+            }
+        })
+        .await;
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(calls.get(), 3, "should retry until success");
+    }
+
+    #[tokio::test]
+    async fn exhausted_retries_surfaces_error() {
+        let calls = Cell::new(0u32);
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay_ms: 0,
+            max_delay_ms: 0,
+        };
+        let err = with_retry(policy, || {
+            let n = calls.get();
+            calls.set(n + 1);
+            async move { Err::<(), _>(anyhow::anyhow!("always fails")) }
+        })
+        .await;
+        assert!(err.is_err());
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("after 3 attempt"),
+            "error should cite attempt count: {msg}"
+        );
+        assert_eq!(calls.get(), 3, "should attempt exactly max_attempts times");
+    }
+
+    #[tokio::test]
+    async fn first_attempt_success_does_not_retry() {
+        let calls = Cell::new(0u32);
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            base_delay_ms: 0,
+            max_delay_ms: 0,
+        };
+        let value = with_retry(policy, || {
+            let n = calls.get();
+            calls.set(n + 1);
+            async move { Ok::<u32, anyhow::Error>(7) }
+        })
+        .await
+        .unwrap();
+        assert_eq!(value, 7);
+        assert_eq!(calls.get(), 1, "success on first try must not retry");
+    }
+
+    #[tokio::test]
+    async fn zero_max_attempts_disables_retry() {
+        let calls = Cell::new(0u32);
+        let policy = RetryPolicy {
+            max_attempts: 0,
+            base_delay_ms: 100,
+            max_delay_ms: 1000,
+        };
+        let err = with_retry(policy, || {
+            let n = calls.get();
+            calls.set(n + 1);
+            async move { Err::<(), _>(anyhow::anyhow!("boom")) }
+        })
+        .await;
+        assert!(err.is_err());
+        assert_eq!(calls.get(), 1, "max_attempts=0 must still run once");
+    }
+}
+
+/// Retry policy attached to a webhook, as returned by `register_webhook` / `get_webhook`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RetryConfig {
+    pub max_retries: u32,
+    pub retry_delay: u64,
+    pub exponential_backoff: bool,
+    pub max_delay: u64,
+}
+
+/// Delivery security policy attached to a webhook.
+///
+/// This deliberately excludes the webhook secret: read responses must never
+/// echo back signing material.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SecurityConfig {
+    pub signature_method: String,
+    pub rate_limit_per_minute: u32,
+    pub require_tls: bool,
+}
+
+/// Typed view of a single webhook, as returned by the contract's `get_webhook` query.
+///
+/// All fields are optional so that this type tolerates contract responses
+/// that omit fields not yet populated (e.g. a webhook with no retry policy
+/// configured), without failing deserialization.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebhookInfo {
+    pub id: Option<u64>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub url: Option<String>,
+    pub events: Option<Vec<String>>,
+    pub is_active: Option<bool>,
+    pub retry_config: Option<RetryConfig>,
+    pub security_config: Option<SecurityConfig>,
+}
+
+/// Typed view of aggregate webhook statistics, as returned by `get_webhook_stats`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WebhookStats {
+    pub total_webhooks: Option<u64>,
+    pub active_webhooks: Option<u64>,
+    pub total_deliveries: Option<u64>,
+    pub failed_deliveries: Option<u64>,
+}
+
+pub struct SorobanHttpClient {
+    base_url: String,
+    client: reqwest::Client,
+    retry_policy: RetryPolicy,
+}
+impl SorobanHttpClient {
+    pub fn new(base_url: &str) -> Self {
+        Self {
+            base_url: base_url.to_string(),
+            client: reqwest::Client::new(),
+            retry_policy: RetryPolicy::default(),
+        }
+    }
+
+    /// Override the retry policy used by read-only `query`/`query_as` calls.
+    ///
+    /// State-changing `invoke` calls intentionally ignore this policy.
+    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
+        self.retry_policy = policy;
+        self
+    }
+    pub async fn get_ledger_info(&self) -> Result<String> {
+        let url = format!("{}/ledger", self.base_url);
+        let res = self.client.get(&url).send().await?;
+        let body = res.text().await?;
         Ok(body)
     }
     pub async fn invoke(
         &self,
-        contract_id:&str,
-        method:&str,
-        args:Vec<(&str,&str)>,
-        signer:&str,
+        contract_id: &str,
+        method: &str,
+        args: Vec<(&str, &str)>,
+        signer: &str,
     ) -> Result<String> {
-        let url=format!("{}/invoke",self.base_url.trim_end_matches('/'));
-        println!("Invoking Soroban at: {}",url);
-        let payload=json!({
+        let url = format!("{}/invoke", self.base_url.trim_end_matches('/'));
+        println!("Invoking Soroban at: {}", url);
+        let payload = json!({
             "contract_id":contract_id,
             "method":method,
             "args":args.iter().map(|(k,v)| json!({(*k):v})).collect::<Vec<_>>(),
             "signer":signer,
         });
-        let response=self
-            .client
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await?;
-        let body=response.text().await?;
+        let response = self.client.post(&url).json(&payload).send().await?;
+        let body = response.text().await?;
         Ok(body)
+    }
+
+    /// Read-only contract call with retry/backoff on transient failure.
+    ///
+    /// Simulates a contract call without signing or submitting a transaction:
+    /// it sends only the contract id, method, and arguments to the RPC query
+    /// endpoint and never accepts a signer or secret key. The HTTP call is
+    /// wrapped in [`with_retry`] using the client's [`RetryPolicy`]. Because
+    /// `query` is idempotent it is always safe to retry; the state-changing
+    /// [`SorobanHttpClient::invoke`] is intentionally *not* retried.
+    pub async fn query(
+        &self,
+        contract_id: &str,
+        method: &str,
+        args: Vec<(&str, &str)>,
+    ) -> Result<Value> {
+        let policy = self.retry_policy;
+        with_retry(policy, || {
+            let a = args.clone();
+            async move {
+                let url = format!("{}/query", self.base_url);
+                let payload = self.query_payload(contract_id, method, a);
+                let response = self.client.post(&url).json(&payload).send().await?;
+                let status = response.status();
+                let body = response.text().await?;
+
+                if !status.is_success() {
+                    return Err(anyhow::anyhow!(
+                        "Soroban query failed with status {}: {}",
+                        status,
+                        body
+                    ));
+                }
+
+                let value: Value = serde_json::from_str(&body)
+                    .map_err(|e| anyhow::anyhow!("Malformed Soroban query response: {}", e))?;
+
+                if let Some(error) = value.get("error") {
+                    return Err(anyhow::anyhow!("Soroban query RPC error: {}", error));
+                }
+
+                Ok(value.get("result").cloned().unwrap_or(value))
+            }
+        })
+        .await
+    }
+
+    /// Same read-only query as [`SorobanHttpClient::query`], but deserialized
+    /// into a typed result `T` instead of a raw [`Value`].
+    ///
+    /// Prefer this over `query` when the shape of the contract method's
+    /// return value is known (e.g. [`WebhookInfo`], [`WebhookStats`]), so
+    /// callers get compile-time field access instead of indexing into JSON.
+    pub async fn query_as<T: serde::de::DeserializeOwned>(
+        &self,
+        contract_id: &str,
+        method: &str,
+        args: Vec<(&str, &str)>,
+    ) -> Result<T> {
+        let value = self.query(contract_id, method, args).await?;
+        serde_json::from_value(value)
+            .map_err(|e| anyhow::anyhow!("Soroban query result did not match expected shape: {}", e))
+    }
+
+    fn query_payload(&self, contract_id: &str, method: &str, args: Vec<(&str, &str)>) -> Value {
+        json!({
+            "contract_id": contract_id,
+            "method": method,
+            "args": args.iter().map(|(k, v)| json!({ (*k): v })).collect::<Vec<_>>(),
+            "read_only": true,
+        })
     }
 }

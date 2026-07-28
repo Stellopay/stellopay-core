@@ -58,6 +58,18 @@
 //! * resurrect a terminal dispute,
 //! * be called twice on the same dispute (`AlreadyPendingReview` / `AlreadyTerminal`).
 //!
+//! ## SLA Violation Event
+//!
+//! `keeper_advance_stage` emits **two** events when it fires due to an SLA
+//! timeout:
+//!
+//! 1. `dispute_sla_breached` (`DisputeSlaBreachedEvent`) — backward-compatible
+//!    event for existing off-chain systems.
+//! 2. `sla_violation_advanced` (`SlaViolationAdvancedEvent`) — a distinct
+//!    event emitted **only** on SLA timeout, not on normal-flow escalation.
+//!    Off-chain SLA-compliance monitors should filter on this topic to
+//!    unambiguously identify every SLA-violation trigger.
+//!
 //! ## Security Model
 //!
 //! | Invariant | Enforcement |
@@ -80,7 +92,7 @@
 pub mod storage;
 pub mod types;
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Env, IntoVal, Symbol, Vec};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 use types::{
@@ -147,23 +159,63 @@ pub struct DisputeExpiredEvent {
     pub agreement_id: u128,
 }
 
-/// Emitted when a keeper calls `keeper_advance_stage` after an SLA deadline
-/// has elapsed.  The dispute moves from `Open`/`Escalated`/`Appealed` into
-/// `PendingReview`, opening a bounded admin-review window.
+/// Emitted only when `keeper_advance_stage` advances a dispute because an SLA
+/// deadline has elapsed. The dispute moves from `Open`/`Escalated`/`Appealed`
+/// into `PendingReview`, opening a bounded admin-review window.
+///
+/// Off-chain SLA monitors should treat this event as the canonical signal for
+/// an SLA violation. Normal in-window escalation continues to emit only
+/// `dispute_escalated`, so indexers can distinguish timeout-driven advancement
+/// from normal-flow advancement without inspecting contract state.
 ///
 /// # Fields
 /// * `agreement_id`   — identifies the dispute.
 /// * `level`          — escalation level at which the SLA was breached.
 /// * `breached_at`    — ledger timestamp at which the advance was triggered.
-/// * `review_deadline`— timestamp by which the admin must act before the
-///   dispute can be expired via `expire_dispute`.
+/// * `review_deadline`— timestamp by which the admin must act before the dispute can be expired via
+///   `expire_dispute`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DisputeSlaBreachedEvent {
+pub struct DisputeSlaViolationAdvancedEvent {
     pub agreement_id: u128,
     pub level: EscalationLevel,
     pub breached_at: u64,
     pub review_deadline: u64,
+}
+
+/// Emitted **only** when `keeper_advance_stage` fires due to an SLA timeout.
+///
+/// This event is the primary signal for off-chain SLA-compliance monitoring
+/// systems.  It is deliberately separate from:
+///
+/// * `DisputeEscalatedEvent` — emitted by `escalate_dispute` during normal
+///   (within-deadline) flow, and
+/// * `DisputeSlaBreachedEvent` — a companion event emitted by the same
+///   `keeper_advance_stage` call for backward-compatible observability.
+///
+/// By listening **solely** for `sla_violation_advanced`, an off-chain indexer
+/// can unambiguously identify every SLA-violation trigger without false
+/// positives from normal-flow escalations.
+///
+/// # Fields
+/// * `agreement_id`       — identifies the dispute whose SLA was violated.
+/// * `level`              — escalation level at which the SLA was breached.
+/// * `breached_at`        — ledger timestamp when the violation was observed
+///   and the stage was advanced.
+/// * `review_deadline`    — timestamp by which the admin must act before the
+///   dispute can be expired via `expire_dispute`.
+/// * `previous_status`    — the dispute status **before** the keeper advanced
+///   the stage (one of `Open`, `Escalated`, or `Appealed`).  This lets
+///   monitoring systems distinguish which source state the violation
+///   originated from.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SlaViolationAdvancedEvent {
+    pub agreement_id: u128,
+    pub level: EscalationLevel,
+    pub breached_at: u64,
+    pub review_deadline: u64,
+    pub previous_status: DisputeStatus,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -234,6 +286,19 @@ impl DisputeEscalationContract {
 
         storage::set_dispute(&env, agreement_id, &dispute);
 
+        // Notify the payroll escrow so it pauses releases for this agreement.
+        if let Some(escrow_addr) = storage::get_payroll_escrow(&env) {
+            env.invoke_contract::<()>(
+                &escrow_addr,
+                &Symbol::new(&env, "pause_agreement"),
+                vec![
+                    &env,
+                    env.current_contract_address().into_val(&env),
+                    agreement_id.into_val(&env),
+                ],
+            );
+        }
+
         env.events().publish(
             ("dispute_filed",),
             DisputeFiledEvent {
@@ -247,11 +312,21 @@ impl DisputeEscalationContract {
         Ok(())
     }
 
-    /// Escalates an open or previously escalated dispute to the next tier.
+    /// Escalates an open or previously escalated dispute to the **next** tier.
     ///
     /// This is a **permissionless** call — any caller may trigger it, provided
     /// the SLA window has not yet elapsed.  The new phase SLA starts from the
     /// current ledger timestamp.
+    ///
+    /// # Invariant: single-tier step
+    /// `escalate_dispute` accepts **only** `agreement_id`; there is no
+    /// caller-supplied target tier.  The destination level is computed purely
+    /// from the current level via the closed `next_level` mapping
+    /// (`Level1 → Level2`, `Level2 → Level3`, `Level3 → MaxEscalationReached`).
+    /// As a consequence, this function **cannot** jump two tiers in a single
+    /// call — Level1 → Level3 in one transaction is structurally impossible.
+    /// The corresponding regression tests live in
+    /// `tests/test_escalation.rs` (see §13 and the new tests added for #890).
     ///
     /// # State transitions
     /// `Open @ LevelN`      (now ≤ deadline) → `Escalated @ Level(N+1)`
@@ -262,9 +337,10 @@ impl DisputeEscalationContract {
     /// * `AlreadyResolved`       — dispute is already in `Resolved` state.
     /// * `AlreadyFinalised`      — dispute is in terminal `Finalised` state.
     /// * `AlreadyTerminal`       — dispute is in terminal `Expired` state.
-    /// * `InvalidTransition`     — dispute is in `PendingReview` (SLA already breached; escalation window has passed).
+    /// * `InvalidTransition`     — dispute is in `PendingReview` (SLA already breached; escalation
+    ///   window has passed).
     /// * `TimeLimitExpired`      — escalation window has passed.
-    /// * `MaxEscalationReached`  — already at Level3.
+    /// * `MaxEscalationReached`  — already at Level3 (no higher tier exists).
     pub fn escalate_dispute(
         env: Env,
         caller: Address,
@@ -328,6 +404,13 @@ impl DisputeEscalationContract {
     /// This function **cannot skip stages** — it only ever transitions to
     /// `PendingReview`, never directly to `Resolved` or `Finalised`.
     ///
+    /// # Events emitted
+    /// * `dispute_sla_breached`       — backward-compatible SLA breach signal.
+    /// * `sla_violation_advanced`     — distinct event emitted **only** on SLA
+    ///   timeout, not on normal-flow escalation.  Off-chain SLA-compliance
+    ///   monitors should filter on this topic to unambiguously identify every
+    ///   SLA-violation trigger.
+    ///
     /// # State transitions
     /// `Open @ LevelN`      (now > deadline) → `PendingReview @ LevelN`
     /// `Escalated @ LevelN` (now > deadline) → `PendingReview @ LevelN`
@@ -337,8 +420,10 @@ impl DisputeEscalationContract {
     /// * `DisputeNotFound`       — no dispute for this agreement.
     /// * `AlreadyFinalised`      — dispute is in terminal `Finalised` state.
     /// * `AlreadyTerminal`       — dispute is in terminal `Expired` state.
-    /// * `AlreadyResolved`       — dispute is in `Resolved` state (appeal window manages its own deadline).
-    /// * `AlreadyPendingReview`  — `keeper_advance_stage` was already called; idempotent call rejected.
+    /// * `AlreadyResolved`       — dispute is in `Resolved` state (appeal window manages its own
+    ///   deadline).
+    /// * `AlreadyPendingReview`  — `keeper_advance_stage` was already called; idempotent call
+    ///   rejected.
     /// * `DeadlineNotPassed`     — SLA deadline has not yet elapsed; too early to advance.
     pub fn keeper_advance_stage(
         env: Env,
@@ -370,24 +455,51 @@ impl DisputeEscalationContract {
             return Err(DisputeError::DeadlineNotPassed);
         }
 
+        // Capture the status *before* the transition so we can include it in
+        // the SLA-violation event.  Valid source states at this point are
+        // Open, Escalated, or Appealed (all non-terminal, non-Resolved,
+        // non-PendingReview checks have already passed above).
+        let previous_status = dispute.status.clone();
+
         // Open a bounded admin-review window.
         let review_limit = storage::get_pending_review_time_limit(&env);
-        let review_deadline = now + review_limit;
+        let review_deadline = now
+            .checked_add(review_limit)
+            .ok_or(DisputeError::SlaDeadlineOverflow)?;
 
         // `phase_started_at` records exactly when the SLA breach was observed.
         dispute.status = DisputeStatus::PendingReview;
         dispute.phase_started_at = now;
         dispute.phase_deadline = review_deadline;
 
+        let level = dispute.level.clone();
         storage::set_dispute(&env, agreement_id, &dispute);
 
+        // Backward-compatible event — existing off-chain systems that listen
+        // for `dispute_sla_breached` continue to work unchanged.
         env.events().publish(
-            ("dispute_sla_breached",),
-            DisputeSlaBreachedEvent {
+            ("sla_violation_advanced",),
+            DisputeSlaViolationAdvancedEvent {
                 agreement_id,
-                level: dispute.level,
+                level: level.clone(),
                 breached_at: now,
                 review_deadline,
+            },
+        );
+
+        // ── New: SLA-violation-specific event ──────────────────────────────
+        // Emitted *only* from `keeper_advance_stage` when the SLA deadline
+        // has genuinely elapsed.  Off-chain SLA-compliance monitors should
+        // listen for this topic to unambiguously identify SLA violations
+        // without false positives from normal-flow `dispute_escalated` events.
+        env.events().publish(
+            ("sla_violation_advanced",),
+            SlaViolationAdvancedEvent {
+                agreement_id,
+                level,
+                breached_at: now,
+                review_deadline,
+                previous_status,
             },
         );
 
@@ -407,8 +519,8 @@ impl DisputeEscalationContract {
     /// `* @ L3` → `Finalised @ L3` (terminal — no further appeal)
     ///
     /// # Security
-    /// * Cannot double-resolve: `AlreadyResolved` / `AlreadyFinalised` returned
-    ///   if the dispute is already in a terminal or resolved state.
+    /// * Cannot double-resolve: `AlreadyResolved` / `AlreadyFinalised` returned if the dispute is
+    ///   already in a terminal or resolved state.
     /// * `Unset` is not a valid outcome — returns `InvalidTransition`.
     ///
     /// # Access Control
@@ -457,6 +569,19 @@ impl DisputeEscalationContract {
 
             storage::set_dispute(&env, agreement_id, &dispute);
 
+            // Resume escrow releases as the dispute has reached a final outcome.
+            if let Some(escrow_addr) = storage::get_payroll_escrow(&env) {
+                env.invoke_contract::<()>(
+                    &escrow_addr,
+                    &Symbol::new(&env, "resume_agreement"),
+                    vec![
+                        &env,
+                        env.current_contract_address().into_val(&env),
+                        agreement_id.into_val(&env),
+                    ],
+                );
+            }
+
             env.events().publish(
                 ("dispute_finalised",),
                 DisputeFinalisedEvent {
@@ -471,6 +596,21 @@ impl DisputeEscalationContract {
             dispute.phase_deadline = appeal_deadline;
 
             storage::set_dispute(&env, agreement_id, &dispute);
+
+            // Resume escrow releases — the admin has issued a ruling.
+            // If the ruling is later appealed, a new dispute phase begins
+            // and the escrow should be paused again by `appeal_ruling`.
+            if let Some(escrow_addr) = storage::get_payroll_escrow(&env) {
+                env.invoke_contract::<()>(
+                    &escrow_addr,
+                    &Symbol::new(&env, "resume_agreement"),
+                    vec![
+                        &env,
+                        env.current_contract_address().into_val(&env),
+                        agreement_id.into_val(&env),
+                    ],
+                );
+            }
 
             env.events().publish(
                 ("dispute_resolved",),
@@ -539,6 +679,19 @@ impl DisputeEscalationContract {
 
         storage::set_dispute(&env, agreement_id, &dispute);
 
+        // Pause escrow again — the dispute is under active re-review.
+        if let Some(escrow_addr) = storage::get_payroll_escrow(&env) {
+            env.invoke_contract::<()>(
+                &escrow_addr,
+                &Symbol::new(&env, "pause_agreement"),
+                vec![
+                    &env,
+                    env.current_contract_address().into_val(&env),
+                    agreement_id.into_val(&env),
+                ],
+            );
+        }
+
         env.events().publish(
             ("dispute_appealed",),
             DisputeAppealedEvent {
@@ -572,8 +725,8 @@ impl DisputeEscalationContract {
     /// * `DisputeNotFound`    — no dispute for this agreement.
     /// * `AlreadyFinalised`   — cannot expire a finalised dispute.
     /// * `AlreadyTerminal`    — already `Expired`.
-    /// * `AlreadyResolved`    — `Resolved` disputes have an appeal window; use
-    ///                          `appeal_ruling` or let it become de-facto binding.
+    /// * `AlreadyResolved`    — `Resolved` disputes have an appeal window; use `appeal_ruling` or
+    ///   let it become de-facto binding.
     /// * `DeadlineNotPassed`  — deadline has not yet passed.
     pub fn expire_dispute(
         env: Env,
@@ -598,6 +751,19 @@ impl DisputeEscalationContract {
 
         dispute.status = DisputeStatus::Expired;
         storage::set_dispute(&env, agreement_id, &dispute);
+
+        // Resume escrow releases — the dispute has timed out.
+        if let Some(escrow_addr) = storage::get_payroll_escrow(&env) {
+            env.invoke_contract::<()>(
+                &escrow_addr,
+                &Symbol::new(&env, "resume_agreement"),
+                vec![
+                    &env,
+                    env.current_contract_address().into_val(&env),
+                    agreement_id.into_val(&env),
+                ],
+            );
+        }
 
         env.events()
             .publish(("dispute_expired",), DisputeExpiredEvent { agreement_id });
@@ -658,6 +824,30 @@ impl DisputeEscalationContract {
         Ok(())
     }
 
+    /// Configures the `payroll_escrow` contract address that will be
+    /// paused on `file_dispute` and resumed on `resolve_dispute` / `expire_dispute`.
+    ///
+    /// If not configured, dispute lifecycle events proceed without interacting
+    /// with any escrow contract (backward-compatible behaviour).
+    ///
+    /// # Access Control
+    /// Caller must be the admin.
+    ///
+    /// # Errors
+    /// * `Unauthorized` — caller is not the admin.
+    pub fn set_payroll_escrow(
+        env: Env,
+        caller: Address,
+        escrow_contract: Address,
+    ) -> Result<(), DisputeError> {
+        caller.require_auth();
+        if !storage::is_admin(&env, &caller) {
+            return Err(DisputeError::Unauthorized);
+        }
+        storage::set_payroll_escrow(&env, &escrow_contract);
+        Ok(())
+    }
+
     // ─── Queries ──────────────────────────────────────────────────────────
 
     /// Returns the details of a dispute, or `None` if it does not exist.
@@ -669,6 +859,11 @@ impl DisputeEscalationContract {
     /// Defaults to 259 200 s (3 days) if never explicitly set.
     pub fn get_pending_review_time_limit(env: Env) -> u64 {
         storage::get_pending_review_time_limit(&env)
+    }
+
+    /// Returns the configured `payroll_escrow` contract address, or `None`.
+    pub fn get_payroll_escrow(env: Env) -> Option<Address> {
+        storage::get_payroll_escrow(&env)
     }
 
     // ─── Private helpers ──────────────────────────────────────────────────
@@ -685,6 +880,17 @@ impl DisputeEscalationContract {
 
     /// Returns the next escalation level, or `Err(MaxEscalationReached)` if
     /// already at `Level3`.
+    ///
+    /// # Invariant: closed one-step mapping
+    /// This helper is the **sole** authority on what the next escalation tier
+    /// is.  The mapping is deliberately closed: there is exactly one
+    /// successor to `Level1` and to `Level2`, and `Level3` has no successor.
+    /// The explicit `match` below has **no** `_ =>` wildcard arm — *do not
+    /// add one*.  A wildcard arm would silently absorb any future variant of
+    /// `EscalationLevel` and quietly break the closed-mapping invariant.
+    /// When a new level variant is introduced, extend this `match`
+    /// arm-by-arm explicitly and decide each transition on its own merits;
+    /// never relax the no-wildcard rule.
     fn next_level(level: &EscalationLevel) -> Result<EscalationLevel, DisputeError> {
         match level {
             EscalationLevel::Level1 => Ok(EscalationLevel::Level2),

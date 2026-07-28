@@ -404,13 +404,13 @@ The test suite includes:
 cargo build --target wasm32-unknown-unknown --release
 
 # Deploy to testnet
-soroban contract deploy \
+stellar contract deploy \
     --wasm target/wasm32-unknown-unknown/release/stello_pay_contract.wasm \
     --source alice \
     --network testnet
 
 # Initialize the contract
-soroban contract invoke \
+stellar contract invoke \
     --id CONTRACT_ID \
     --source alice \
     --network testnet \

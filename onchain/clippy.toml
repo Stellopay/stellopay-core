@@ -1,0 +1,10 @@
+# clippy configuration for stellopay-core/onchain workspace.
+# Applied via: cargo clippy --workspace --all-targets -- -D warnings
+# CI enforces this via the Clippy lint gate step.
+
+# Restrict maximum function complexity (cyclomatic). Soroban contract
+# functions tend to have many storage reads; raise slightly above the default.
+cognitive-complexity-threshold = 30
+
+# Set the MSRV so version-gated lints are accurate.
+msrv = "1.77.0"
