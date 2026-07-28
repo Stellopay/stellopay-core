@@ -655,6 +655,13 @@ impl TaxWithholdingContract {
 
     /// Assigns the set of applicable jurisdictions for a given employee.
     ///
+    /// # Historical Accrual Preservation
+    /// Jurisdiction assignment changes are forward-only and never rewrite or
+    /// delete historical withholding records (`AccruedWithholding`) or audit history.
+    /// Updating or removing an employee's jurisdiction assignment affects only future
+    /// calculations; prior accrued withholding balances remain intact, queryable,
+    /// and remittable.
+    ///
     /// # Access Control
     /// Caller must be the contract owner.
     ///
