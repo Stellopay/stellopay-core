@@ -831,7 +831,7 @@ impl GovernanceContract {
 
         env.events().publish(
             (symbol_short!("prop_cancelled", proposal_id), proposal_id),
-            (),
+            ()
         );
 
         Ok(())
