@@ -518,3 +518,77 @@ fn test_clear_limit_for_address_with_no_override_is_safe_noop() {
         "check_and_consume must fail when default bucket is empty after no-op clear"
     );
 }
+
+/// # Long idle gap refill is capped at burst capacity
+///
+/// This test verifies that after an idle gap far longer than the configured
+/// refill window, the bucket refills up to its configured cap exactly, without
+/// over-crediting extra tokens proportional to the excess elapsed time beyond
+/// the cap.
+///
+/// This is a critical security property: an attacker should not be able to
+/// "farm" tokens by waiting a very long time between calls. The token bucket
+/// must always cap at `burst`, regardless of how much time has elapsed.
+///
+/// Scenario:
+/// 1. Initialize with `burst = 10, refill_rate = 2` (refill window = 5 seconds to full).
+/// 2. Consume 9 tokens, leaving 1 token remaining.
+/// 3. Advance ledger timestamp by 100 seconds (20x the refill window).
+/// 4. Assert bucket refills to exactly burst = 10 (not 1 + 100*2 = 201).
+/// 5. Consume 1 token → 9 remaining.
+/// 6. Consume 1 token → 8 remaining.
+/// 7. Assert the bucket behavior is consistent with a capped refill.
+#[test]
+fn test_long_idle_gap_refill_is_capped_at_burst_capacity() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    const BURST: u32 = 10;
+    const REFILL_RATE: u32 = 2;
+    const START_TIMESTAMP: u64 = 1000;
+
+    // Step 1: initialize with burst=10, refill_rate=2
+    env.ledger().with_mut(|li| li.timestamp = START_TIMESTAMP);
+    client.initialize(&admin, &BURST, &REFILL_RATE, &false);
+
+    // Step 2: consume 9 tokens, leaving 1 token remaining
+    for _ in 0..9 {
+        client.check_and_consume(&user);
+    }
+    assert_eq!(client.check_and_consume(&user), 0);
+
+    // Step 3: advance ledger by 100 seconds (20x the 5-second refill window)
+    // Without capping, this would give 1 + 100*2 = 201 tokens
+    // With capping, this should give exactly burst = 10 tokens
+    env.ledger().with_mut(|li| li.timestamp = START_TIMESTAMP + 100);
+
+    // Step 4: assert bucket refilled to exactly burst capacity
+    // First call after long idle should succeed and leave burst-1 tokens
+    let remaining = client.check_and_consume(&user);
+    assert_eq!(
+        remaining,
+        BURST - 1,
+        "after long idle, bucket should be at full burst capacity, not over-credited"
+    );
+
+    // Step 5: consume another token → burst-2 remaining
+    let remaining = client.check_and_consume(&user);
+    assert_eq!(
+        remaining,
+        BURST - 2,
+        "second consumption should debit from capped balance"
+    );
+
+    // Step 6: verify we can consume exactly burst-2 more tokens to empty the bucket
+    for _ in 0..(BURST - 2) {
+        client.check_and_consume(&user);
+    }
+
+    // Step 7: bucket should now be empty
+    assert!(
+        client.try_check_and_consume(&user).is_err(),
+        "bucket should be empty after consuming burst tokens from capped refill"
+    );
+}
