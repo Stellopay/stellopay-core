@@ -1,3 +1,8 @@
+use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
+    IntoVal, Symbol, Val, Vec,
+};
+
 use crate::{
     audit::{record_entry, AuditEvent},
     events::{
