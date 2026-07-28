@@ -674,7 +674,7 @@ impl DepartmentManagerContract {
             .get(&StorageKey::DepartmentEmployees(source))
             .unwrap_or_else(|| Vec::new(&env));
         for emp in source_employees.iter() {
-            Self::remove_employee_from_dept_internal(&env, source, &emp);
+            Self::remove_employee_from_dept_internal(&env, source, emp);
             env.storage()
                 .persistent()
                 .set(&StorageKey::EmployeeInDepartment(target, emp.clone()), &());

@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use audit_logger::{AuditError, AuditLoggerContract, AuditLoggerContractClient};
+use audit_logger::{AuditError, AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env, Symbol,
@@ -353,4 +353,77 @@ fn multiple_actors_can_append() {
 
     assert_eq!(log1.actor, actor1);
     assert_eq!(log2.actor, actor2);
+}
+
+// ==================== get_latest_logs MAX_PAGE_SIZE enforcement ====================
+
+#[test]
+fn get_latest_logs_oversized_limit_clamped() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, AuditLoggerContract);
+    let client = AuditLoggerContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    client.initialize(&owner, &0u32);
+
+    let actor = Address::generate(&env);
+    let total = MAX_PAGE_SIZE + 30;
+    for i in 0..total {
+        let label = format!("e{}", i);
+        let action = Symbol::new(&env, label.as_str());
+        client.append_log(&actor, &action, &None, &None);
+        env.ledger().with_mut(|li| li.timestamp += 1);
+    }
+
+    let result = client.try_get_latest_logs(&u32::MAX).unwrap().unwrap();
+    assert!(
+        result.len() as u32 <= MAX_PAGE_SIZE,
+        "get_latest_logs must clamp oversized limit to MAX_PAGE_SIZE"
+    );
+}
+
+#[test]
+fn get_latest_logs_exact_max_page_size() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, AuditLoggerContract);
+    let client = AuditLoggerContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    client.initialize(&owner, &0u32);
+
+    let actor = Address::generate(&env);
+    // Append exactly MAX_PAGE_SIZE entries.
+    for i in 0..MAX_PAGE_SIZE {
+        let label = format!("e{}", i);
+        let action = Symbol::new(&env, label.as_str());
+        client.append_log(&actor, &action, &None, &None);
+        env.ledger().with_mut(|li| li.timestamp += 1);
+    }
+
+    let result = client.try_get_latest_logs(&MAX_PAGE_SIZE).unwrap().unwrap();
+    assert_eq!(result.len() as u32, MAX_PAGE_SIZE);
+}
+
+#[test]
+fn get_latest_logs_under_max_returns_all() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, AuditLoggerContract);
+    let client = AuditLoggerContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    client.initialize(&owner, &0u32);
+
+    let actor = Address::generate(&env);
+    for i in 0..5u64 {
+        let label = format!("e{}", i);
+        let action = Symbol::new(&env, label.as_str());
+        client.append_log(&actor, &action, &None, &None);
+        env.ledger().with_mut(|li| li.timestamp += 1);
+    }
+
+    // limit=5 is under MAX_PAGE_SIZE, so all 5 are returned.
+    let result = client.try_get_latest_logs(&5u32).unwrap().unwrap();
+    assert_eq!(result.len(), 5);
+    assert_eq!(result.get(0).unwrap().id, 1);
+    assert_eq!(result.get(4).unwrap().id, 5);
 }
