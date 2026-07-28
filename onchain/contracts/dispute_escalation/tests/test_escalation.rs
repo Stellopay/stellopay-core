@@ -1700,11 +1700,17 @@ fn test_sla_violation_advanced_event_emitted_from_open() {
 
     // Verify the new event exists
     let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
-    assert!(found.is_some(), "sla_violation_advanced event must be emitted");
+    assert!(
+        found.is_some(),
+        "sla_violation_advanced event must be emitted"
+    );
 
     // Verify backward-compatible event still emitted
     let old_event = find_event_by_topic(&env, &contract_id, "dispute_sla_breached");
-    assert!(old_event.is_some(), "dispute_sla_breached must still be emitted for backward compatibility");
+    assert!(
+        old_event.is_some(),
+        "dispute_sla_breached must still be emitted for backward compatibility"
+    );
 
     // Verify the dispute state transition
     let d = client.get_dispute(&id).unwrap();
@@ -1737,7 +1743,10 @@ fn test_sla_violation_advanced_event_emitted_from_escalated() {
 
     // Verify event emitted
     let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
-    assert!(found.is_some(), "sla_violation_advanced event must be emitted from Escalated state");
+    assert!(
+        found.is_some(),
+        "sla_violation_advanced event must be emitted from Escalated state"
+    );
 
     let d = client.get_dispute(&id).unwrap();
     assert_eq!(d.status, DisputeStatus::PendingReview);
@@ -1770,7 +1779,10 @@ fn test_sla_violation_advanced_event_emitted_from_appealed() {
 
     // Verify event emitted
     let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
-    assert!(found.is_some(), "sla_violation_advanced event must be emitted from Appealed state");
+    assert!(
+        found.is_some(),
+        "sla_violation_advanced event must be emitted from Appealed state"
+    );
 
     let d = client.get_dispute(&id).unwrap();
     assert_eq!(d.status, DisputeStatus::PendingReview);
@@ -1827,17 +1839,25 @@ fn test_keeper_advance_stage_emits_both_sla_events() {
 
     // Both events must be present
     let old_event = find_event_by_topic(&env, &contract_id, "dispute_sla_breached");
-    assert!(old_event.is_some(), "dispute_sla_breached must be emitted (backward compat)");
+    assert!(
+        old_event.is_some(),
+        "dispute_sla_breached must be emitted (backward compat)"
+    );
 
     let new_event = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
-    assert!(new_event.is_some(), "sla_violation_advanced must be emitted (new SLA violation signal)");
+    assert!(
+        new_event.is_some(),
+        "sla_violation_advanced must be emitted (new SLA violation signal)"
+    );
 
     // Verify they are distinct events (different topic)
     let old_evt = old_event.unwrap();
     let new_evt = new_event.unwrap();
     // The topics vectors differ: "dispute_sla_breached" vs "sla_violation_advanced"
-    assert_ne!(old_evt.1, new_evt.1,
-        "the two events must have distinct topic symbols");
+    assert_ne!(
+        old_evt.1, new_evt.1,
+        "the two events must have distinct topic symbols"
+    );
 
     // Verify dispute state
     let d = client.get_dispute(&id).unwrap();
@@ -1919,7 +1939,10 @@ fn test_sla_violation_advanced_from_level3_appealed() {
 
     // Event must be present
     let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
-    assert!(found.is_some(), "sla_violation_advanced must be emitted at Level3");
+    assert!(
+        found.is_some(),
+        "sla_violation_advanced must be emitted at Level3"
+    );
 
     // The dispute must be at PendingReview @ Level3
     let d = client.get_dispute(&id).unwrap();
@@ -1947,7 +1970,10 @@ fn test_sla_violation_advanced_not_emitted_on_idempotent_rejected_call() {
     // Verify the first call emitted the event
     let contract_id = client.address.clone();
     let found = find_event_by_topic(&env, &contract_id, "sla_violation_advanced");
-    assert!(found.is_some(), "first keeper call must emit sla_violation_advanced");
+    assert!(
+        found.is_some(),
+        "first keeper call must emit sla_violation_advanced"
+    );
 
     // Verify dispute state
     let d = client.get_dispute(&id).unwrap();
@@ -1983,5 +2009,8 @@ fn test_expire_dispute_does_not_emit_sla_violation_advanced() {
 
     // But `dispute_expired` must be emitted
     let expired_event = find_event_by_topic(&env, &contract_id, "dispute_expired");
-    assert!(expired_event.is_some(), "dispute_expired must be emitted on expiry");
+    assert!(
+        expired_event.is_some(),
+        "dispute_expired must be emitted on expiry"
+    );
 }
