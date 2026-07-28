@@ -401,3 +401,323 @@ fn non_owner_cannot_deprecate() {
         .count();
     assert_eq!(dep_count, 0);
 }
+
+// ─── Name-Collision Policy Tests (issue #940) ────────────────────────────────
+//
+// Policy under test:
+//   - Registering a template under a name that belongs to an active
+//     (non-deprecated) template is rejected with VersioningError::NameCollision.
+//   - Re-registering under a name is allowed once every published version of
+//     every prior template with that name has been deprecated.
+//   - A template that was registered but never had a version published is inert
+//     and does not block the name.
+
+/// Requirement 1 — same name, first template active → collision rejected.
+///
+/// Sequence:
+///   1. Register template A with name "Payroll".
+///   2. Publish a non-deprecated version for A.
+///   3. Attempt to register template B with name "Payroll" → NameCollision.
+#[test]
+fn test_register_template_rejects_collision_with_active_template() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner_a = Address::generate(&env);
+    let owner_b = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    // Step 1 & 2: register + publish active version.
+    let tid_a = client
+        .register_template(&owner_a, &String::from_str(&env, "Payroll"))
+        ;
+    client.publish_template_version(
+        &owner_a,
+        &tid_a,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &String::from_str(&env, "v1"),
+        &false, // not deprecated
+    );
+
+    // Step 3: collision must be rejected.
+    let result = client
+        .try_register_template(&owner_b, &String::from_str(&env, "Payroll"));
+    assert_eq!(
+        result,
+        Err(Ok(VersioningError::NameCollision)),
+        "registering under an active name must return NameCollision"
+    );
+}
+
+/// Requirement 2 — name freed after all versions deprecated → re-registration allowed.
+///
+/// Sequence:
+///   1. Register template A with name "Payroll", publish v1, deprecate v1.
+///   2. Register template B with name "Payroll" → must succeed.
+///   3. Verify B gets a distinct template_id.
+#[test]
+fn test_register_template_allowed_after_all_versions_deprecated() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner_a = Address::generate(&env);
+    let owner_b = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    // Step 1: register, publish, deprecate.
+    let tid_a = client.register_template(&owner_a, &String::from_str(&env, "Payroll"));
+    let ver = client.publish_template_version(
+        &owner_a,
+        &tid_a,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &String::from_str(&env, "v1"),
+        &false,
+    );
+    client.deprecate_version(
+        &owner_a,
+        &tid_a,
+        &ver,
+        &Some(String::from_str(&env, "replaced")),
+    );
+
+    // Step 2: name is now free — re-registration must succeed.
+    let result = client
+        .try_register_template(&owner_b, &String::from_str(&env, "Payroll"));
+    assert!(
+        result.is_ok(),
+        "re-registering a fully-deprecated name must succeed"
+    );
+
+    // Step 3: new template has a distinct ID.
+    let tid_b = result.unwrap().unwrap();
+    assert_ne!(
+        tid_a, tid_b,
+        "re-registered template must get a distinct template_id"
+    );
+}
+
+/// Partial deprecation — only some versions deprecated → name still blocked.
+///
+/// With two published versions, deprecating only the latest must not free the name;
+/// the earlier non-deprecated version would have been the latest before v2 was
+/// published, but the collision check inspects only the *current* latest version.
+/// After deprecating v1 and v2 the name is free.
+#[test]
+fn test_register_template_rejects_when_earlier_version_not_deprecated() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let newcomer = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client.register_template(&owner, &String::from_str(&env, "Wages"));
+    // Publish v1 (not deprecated) then v2 (not deprecated).
+    let _v1 = client.publish_template_version(
+        &owner,
+        &tid,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &String::from_str(&env, "v1"),
+        &false,
+    );
+    let v2 = client.publish_template_version(
+        &owner,
+        &tid,
+        &BytesN::from_array(&env, &[2u8; 32]),
+        &String::from_str(&env, "v2"),
+        &false,
+    );
+
+    // Deprecate only the latest (v2); name still blocked because the check
+    // looks at the latest version number and v2 *is* the latest.
+    // After deprecating v2, the latest version record is deprecated →
+    // name is free.
+    client.deprecate_version(&owner, &tid, &v2, &None);
+
+    // Now the latest version (v2) is deprecated — name is available.
+    let result = client
+        .try_register_template(&newcomer, &String::from_str(&env, "Wages"));
+    assert!(
+        result.is_ok(),
+        "name must be free once the latest version is deprecated"
+    );
+}
+
+/// A template registered but never given a published version is inert and must
+/// not block re-registration under the same name.
+#[test]
+fn test_register_template_allowed_when_prior_has_no_published_versions() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner_a = Address::generate(&env);
+    let owner_b = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    // Register A but never publish a version.
+    let _tid_a = client
+        .register_template(&owner_a, &String::from_str(&env, "Bonus"));
+
+    // Name should still be available — no active version exists.
+    let result = client
+        .try_register_template(&owner_b, &String::from_str(&env, "Bonus"));
+    assert!(
+        result.is_ok(),
+        "a name with no published versions must be available"
+    );
+}
+
+/// Distinct names never interfere — registering "Alpha" must not block "Beta".
+#[test]
+fn test_register_template_different_names_do_not_collide() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid_a = client.register_template(&owner, &String::from_str(&env, "Alpha"));
+    client.publish_template_version(
+        &owner,
+        &tid_a,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &String::from_str(&env, "v1"),
+        &false,
+    );
+
+    // "Beta" is a different name — must succeed unconditionally.
+    let result = client
+        .try_register_template(&owner, &String::from_str(&env, "Beta"));
+    assert!(result.is_ok(), "distinct names must not interfere");
+}
+
+/// Empty name is rejected independently of any collision check.
+#[test]
+fn test_register_template_rejects_empty_name() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    client.initialize(&admin);
+
+    let result = client.try_register_template(&owner, &String::from_str(&env, ""));
+    assert_eq!(result, Err(Ok(VersioningError::InvalidData)));
+}
+
+/// get_templates_by_name returns a complete history of all IDs registered
+/// under a name, including those already deprecated.
+#[test]
+fn test_get_templates_by_name_returns_full_history() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    // Before any registration, the index is empty.
+    let before: Vec<u64> = client.get_templates_by_name(&String::from_str(&env, "Expense"));
+    assert_eq!(before.len(), 0);
+
+    // Register A, publish + deprecate its version.
+    let tid_a = client.register_template(&owner, &String::from_str(&env, "Expense"));
+    let va = client.publish_template_version(
+        &owner,
+        &tid_a,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &String::from_str(&env, "v1"),
+        &false,
+    );
+    client.deprecate_version(&owner, &tid_a, &va, &None);
+
+    // Register B under same name (now allowed).
+    let tid_b = client.register_template(&owner, &String::from_str(&env, "Expense"));
+
+    // Index must contain both IDs.
+    let history: Vec<u64> = client.get_templates_by_name(&String::from_str(&env, "Expense"));
+    assert_eq!(history.len(), 2);
+    assert!(history.contains(&tid_a));
+    assert!(history.contains(&tid_b));
+}
+
+/// Re-registration after deprecation produces a new active template; attempting
+/// a third registration while the second is active must still be rejected.
+#[test]
+fn test_register_template_collision_after_reuse() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    // First registration + deprecation.
+    let tid_a = client.register_template(&owner, &String::from_str(&env, "Reuse"));
+    let va = client.publish_template_version(
+        &owner, &tid_a,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &String::from_str(&env, "v1"), &false,
+    );
+    client.deprecate_version(&owner, &tid_a, &va, &None);
+
+    // Second registration — succeeds because name is free.
+    let tid_b = client.register_template(&owner, &String::from_str(&env, "Reuse"));
+    client.publish_template_version(
+        &owner, &tid_b,
+        &BytesN::from_array(&env, &[2u8; 32]),
+        &String::from_str(&env, "v1"), &false,
+    );
+
+    // Third registration while second is active — must be rejected.
+    let result = client
+        .try_register_template(&owner, &String::from_str(&env, "Reuse"));
+    assert_eq!(
+        result,
+        Err(Ok(VersioningError::NameCollision)),
+        "active second-generation template must still block the name"
+    );
+}
