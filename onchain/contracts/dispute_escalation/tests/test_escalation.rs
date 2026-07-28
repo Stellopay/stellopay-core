@@ -1478,6 +1478,115 @@ fn test_duplicate_level3_ruling_rejected() {
     assert_eq!(d.outcome, DisputeOutcome::GrantClaim);
 }
 
+/// Calling `escalate_dispute` **once** on a freshly-filed Level1 dispute must
+/// land the dispute at **Level2**, never directly at Level3.
+///
+/// **This test is observational, not error-based.** The public API has no
+/// `target_level` parameter that would let a caller *express* a direct
+/// Level3 jump, so a "rejection" can only be observed by where the dispute
+/// ends up (Level2, never Level3).
+///
+/// This locks in the guard provided by `next_level`: the public escalation
+/// surface moves exactly one tier per call, and no caller can traverse two
+/// tiers in a single transaction.  See also the prior test
+/// `test_escalation_cannot_skip_level` (further up in §13 of this file) for
+/// the minimal shape of the same guarantee.
+///
+/// This test strengthens that prior art by asserting additional per-field
+/// invariants — the dispute must be in the `Escalated` status, the
+/// `phase_started_at` must be the current ledger timestamp, the
+/// `phase_deadline` must follow the **Level2** SLA not the Level3 SLA, and
+/// the `outcome` must remain `Unset`.  These extra checks ensure that an
+/// attempted skip could not silently mutate unrelated fields (e.g. the
+/// PhaseSLA timer) as a side effect.
+#[test]
+fn test_escalate_from_level1_rejects_skip_to_level3() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1450u128;
+
+    // Tighten the Level2 SLA so the deadline arithmetic check is precise.
+    // Use a literal that matches the value passed to set_level_time_limit.
+    const L2_LIMIT: u64 = 42;
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &L2_LIMIT);
+
+    // Reach Level1 cleanly.
+    client.file_dispute(&user, &id);
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Open);
+    assert_eq!(d.level, EscalationLevel::Level1);
+    assert_eq!(d.outcome, DisputeOutcome::Unset);
+
+    // Record the timestamp BEFORE the escalate call so we can later prove
+    // `phase_started_at` was updated to the call timestamp.
+    let pre_escalate_ts = now(&env);
+    advance(&env, 5);
+
+    // ONE call to escalate_dispute — at most Level1 → Level2, never Level3.
+    client.escalate_dispute(&user, &id);
+
+    let d = client.get_dispute(&id).unwrap();
+    // The headline assertion: a single escalate call cannot reach Level3.
+    assert_eq!(
+        d.level,
+        EscalationLevel::Level2,
+        "a single escalate_dispute call must land at Level2, never Level3"
+    );
+
+    // Secondary assertions: the contract did not silently mutate unrelated
+    // storage as part of a hypothetical skip attempt.
+    assert_eq!(d.status, DisputeStatus::Escalated);
+    assert_eq!(d.outcome, DisputeOutcome::Unset); // no ruling yet
+    assert_eq!(d.phase_started_at, pre_escalate_ts + 5); // exactly escalate-call time
+    assert_eq!(
+        d.phase_deadline,
+        pre_escalate_ts + 5 + L2_LIMIT,
+        "phase_deadline must follow the Level2 SLA, not an unwritten Level3 SLA"
+    );
+}
+
+/// The correct sequential escalation path Level1 → Level2 → Level3 must fully
+/// succeed. After reaching Level3 via three consecutive calls (one `file_dispute`
+/// + two `escalate_dispute`), a fourth escalation attempt must be rejected with
+/// `MaxEscalationReached` because `next_level(Level3) == Err(MaxEscalationReached)`.
+///
+/// This is the positive complement to
+/// `test_escalate_from_level1_rejects_skip_to_level3`: it proves that the
+/// sequential walk finishes at Level3 and is **not** encountered by accident
+/// in the rejection test.
+#[test]
+fn test_sequential_level1_level2_level3_escalation_path_succeeds() {
+    let (_env, client, _owner, _admin, user) = setup();
+    let id = 1451u128;
+
+    // Step 1: file → Open @ Level1.
+    client.file_dispute(&user, &id);
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Open);
+    assert_eq!(d.level, EscalationLevel::Level1);
+
+    // Step 2: escalate → Escalated @ Level2.
+    client.escalate_dispute(&user, &id);
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Escalated);
+    assert_eq!(d.level, EscalationLevel::Level2);
+
+    // Step 3: escalate → Escalated @ Level3 (the terminal escalation tier).
+    client.escalate_dispute(&user, &id);
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Escalated);
+    assert_eq!(d.level, EscalationLevel::Level3);
+    assert_eq!(d.outcome, DisputeOutcome::Unset);
+
+    // Step 4: any further escalation attempt is rejected at Level3.
+    let res = client.try_escalate_dispute(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::MaxEscalationReached)));
+
+    // The dispute must not have moved past Level3 as a side effect of the failed call.
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.level, EscalationLevel::Level3);
+    assert_eq!(d.status, DisputeStatus::Escalated);
+}
+
 /// Late Level3 ruling via PendingReview path — keeper advances a Level3
 /// dispute to PendingReview, then a second resolve attempt after the first
 /// finalisation must be rejected.
