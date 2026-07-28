@@ -113,6 +113,29 @@ This means a passed and matured proposal still cannot be executed by an
 arbitrary account. Only configured multisig signers can trigger the final
 state transition.
 
+### Voting Semantics
+
+Each eligible address may cast at most **one vote per proposal**. The contract
+enforces this at the storage level by recording `Vote(proposal_id, voter) → choice`
+when `cast_vote` succeeds, and checking for an existing entry before counting a
+new vote.
+
+**Re-voting is rejected.** A second `cast_vote` call from the same address on the
+same `proposal_id` — regardless of whether the choice is the same or different —
+returns `GovernanceError::AlreadyVoted`. The proposal's `for_votes`, `against_votes`,
+and `abstain_votes` counters are **not** modified by the rejected call, and
+`get_vote` continues to return the original choice.
+
+This design has three security properties:
+
+1. **No double-counting** — a voter cannot inflate participation toward quorum by
+   calling `cast_vote` multiple times.
+2. **No vote changing** — a voter cannot retroactively alter their recorded
+   preference after seeing early results. Voters should confirm their choice
+   before submitting.
+3. **Deterministic records** — `get_vote` always returns exactly one choice per
+   (proposal_id, voter) pair, with no ambiguity between first and last vote.
+
 ### Security Notes
 
 - Voting eligibility is role-based, so RBAC integrity is critical.
@@ -220,7 +243,11 @@ The governance test suite covers:
 
 - initialization and dependency wiring
 - RBAC-gated proposal creation and voting
-- double-vote prevention
+- double-vote prevention (rejection with `AlreadyVoted`)
+- get_vote preserves original choice after rejected double-vote
+- double-vote does not double-count vote tallies
+- get_vote returns `None` for uncast voters
+- same-choice double-vote also rejected and tallies unchanged
 - quorum failure and rejection paths
 - timelock queueing and early-execution rejection
 - multisig signer enforcement

@@ -921,7 +921,130 @@ fn non_proposer_cannot_cancel_proposal() {
     let res = setup
         .governance
         .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
-    assert_eq!(res, Err(Ok(GovernanceError::NotOwner)));
+    assert_eq!(res, Err(Ok(GovernanceError::ProposalNotActive)));
+}
+
+// ---------------------------------------------------------------------------
+// Double-vote rejection and get_vote accuracy tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn double_vote_rejected_get_vote_preserves_original_choice() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    // Confirm original vote is recorded before second attempt
+    assert_eq!(
+        setup.governance.get_vote(&proposal_id, &setup.employer_a),
+        Some(VoteChoice::For)
+    );
+
+    // Attempt a second vote with a different choice
+    let err = setup
+        .governance
+        .try_cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Against);
+    assert_eq!(err, Err(Ok(GovernanceError::AlreadyVoted)));
+
+    // get_vote must still reflect the original choice, not the rejected one
+    assert_eq!(
+        setup.governance.get_vote(&proposal_id, &setup.employer_a),
+        Some(VoteChoice::For)
+    );
+}
+
+#[test]
+fn double_vote_rejected_does_not_double_count_tallies() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // Cast a single For vote
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    // Attempt a second vote from the same address (different choice)
+    let err = setup
+        .governance
+        .try_cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Against);
+    assert_eq!(err, Err(Ok(GovernanceError::AlreadyVoted)));
+
+    // Vote counts must not have been incremented by the rejected call
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.for_votes, 1);
+    assert_eq!(proposal.against_votes, 0);
+    assert_eq!(proposal.abstain_votes, 0);
+
+    // A different voter can still vote independently
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::Against);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.for_votes, 1);
+    assert_eq!(proposal.against_votes, 1);
+}
+
+#[test]
+fn get_vote_returns_none_for_uncast_voter() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // No vote cast yet
+    assert_eq!(
+        setup
+            .governance
+            .get_vote(&proposal_id, &setup.employer_a),
+        None
+    );
+
+    // After voting, returns the choice
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Abstain);
+    assert_eq!(
+        setup.governance.get_vote(&proposal_id, &setup.employer_a),
+        Some(VoteChoice::Abstain)
+    );
+}
+
+#[test]
+fn double_vote_same_choice_also_rejected() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    // Even casting the same choice again must be rejected
+    let err = setup
+        .governance
+        .try_cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+    assert_eq!(err, Err(Ok(GovernanceError::AlreadyVoted)));
+
+    // for_votes must not have been incremented a second time
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.for_votes, 1);
 }
 
 #[test]
