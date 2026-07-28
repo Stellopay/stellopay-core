@@ -1,11 +1,10 @@
 #![cfg(test)]
 
+use rate_limiter::{RateLimiter, RateLimiterClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env,
 };
-
-use rate_limiter::{RateLimiter, RateLimiterClient};
 
 fn create_env() -> Env {
     let env = Env::default();
@@ -287,4 +286,107 @@ fn test_get_usage_caps_at_burst() {
     let usage = client.get_usage(&user).unwrap();
     assert_eq!(usage.tokens, 5);
     assert_eq!(usage.last_update, 110);
+}
+
+#[test]
+fn test_many_same_second_calls_do_not_receive_fractional_refill_credit() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    const START: u64 = 1_000;
+    const BURST: u32 = 100;
+    const REFILL_RATE: u32 = 7;
+    const WHOLE_SECOND_WINDOWS: u64 = 25;
+    const CALLS_PER_WINDOW: u32 = 10;
+
+    env.ledger().with_mut(|li| li.timestamp = START);
+    client.initialize(&admin, &BURST, &REFILL_RATE, &false);
+
+    let mut allowed = 0u32;
+    let mut rejected = 0u32;
+
+    // Drain the starting bucket first. Afterwards, every group of calls below
+    // represents many tiny attempts inside one whole-second refill window.
+    for _ in 0..BURST {
+        client.check_and_consume(&user);
+        allowed += 1;
+    }
+    assert!(client.try_check_and_consume(&user).is_err());
+    rejected += 1;
+
+    for elapsed in 1..=WHOLE_SECOND_WINDOWS {
+        env.ledger()
+            .with_mut(|li| li.timestamp = START.saturating_add(elapsed));
+
+        for _ in 0..CALLS_PER_WINDOW {
+            if client.try_check_and_consume(&user).is_ok() {
+                allowed += 1;
+            } else {
+                rejected += 1;
+            }
+        }
+    }
+
+    let expected_allowed = BURST + (WHOLE_SECOND_WINDOWS as u32 * REFILL_RATE);
+    let expected_rejected = 1 + (CALLS_PER_WINDOW - REFILL_RATE) * WHOLE_SECOND_WINDOWS as u32;
+
+    assert_eq!(allowed, expected_allowed);
+    assert_eq!(rejected, expected_rejected);
+
+    let usage = client.get_usage(&user).unwrap();
+    assert_eq!(usage.tokens, 0);
+    assert_eq!(usage.last_update, START + WHOLE_SECOND_WINDOWS);
+}
+
+#[test]
+fn test_long_window_rounding_drift_never_exceeds_theoretical_capacity() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    const START: u64 = 10_000;
+    const BURST: u32 = 13;
+    const REFILL_RATE: u32 = 3;
+    const SECONDS: u64 = 500;
+    const CALLS_PER_SECOND: u32 = 5;
+
+    env.ledger().with_mut(|li| li.timestamp = START);
+    client.initialize(&admin, &BURST, &REFILL_RATE, &false);
+
+    let mut allowed = 0u32;
+
+    for call_index in 0..CALLS_PER_SECOND * 4 {
+        if client.try_check_and_consume(&user).is_ok() {
+            allowed += 1;
+        }
+
+        let theoretical_allowed = BURST;
+        assert!(
+            allowed <= theoretical_allowed,
+            "same-second call {call_index} exceeded initial burst capacity"
+        );
+    }
+
+    for elapsed in 1..=SECONDS {
+        env.ledger()
+            .with_mut(|li| li.timestamp = START.saturating_add(elapsed));
+
+        for _ in 0..CALLS_PER_SECOND {
+            if client.try_check_and_consume(&user).is_ok() {
+                allowed += 1;
+            }
+        }
+
+        let theoretical_allowed = BURST + (elapsed as u32 * REFILL_RATE);
+        assert!(
+            allowed <= theoretical_allowed,
+            "elapsed second {elapsed} exceeded theoretical bucket capacity"
+        );
+    }
+
+    let expected_allowed = BURST + (SECONDS as u32 * REFILL_RATE);
+    assert_eq!(allowed, expected_allowed);
 }

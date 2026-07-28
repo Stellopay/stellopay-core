@@ -48,6 +48,22 @@ pub fn get_retention_limit(env: Env) -> u32
   - Only the **owner** may update the limit.
   - New limit applies to subsequent appends. When the number of retained logs exceeds the limit, the logical window is advanced and the oldest entries fall outside the queryable range.
 
+#### Retention Limit Behavior
+
+**Prune-on-Lower Semantics** — Calling `set_retention_limit(n)` when the current retained log count exceeds `n` immediately removes the oldest entries until only the newest `n` remain. Pruning is deterministic by insertion order (sequential ID), not by timestamp, so ties cannot occur.
+
+**Destructive & Irreversible** — Raising the retention limit after a prune does **not** restore discarded entries. Once pruned, entries are permanently gone — not merely hidden — and cannot be recovered through this contract.
+
+**Example** — If 10 logs exist and the limit is lowered to 4:
+
+| State | Log Count | Retained IDs |
+|-------|-----------|--------------|
+| Before `set_retention_limit(4)` | 10 | 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 |
+| After `set_retention_limit(4)`  | 4  | 7, 8, 9, 10 |
+| After `set_retention_limit(10)` | 4  | 7, 8, 9, 10 (unchanged) |
+
+> **Security Note:** Since pruning is irreversible, callers that rely on audit history should treat retention-limit reductions as destructive operations. If historical logs are needed off-chain, back them up (e.g. by calling `get_logs()` or `get_latest_logs()`) before lowering the limit.
+
 ---
 
 ### Writing Logs

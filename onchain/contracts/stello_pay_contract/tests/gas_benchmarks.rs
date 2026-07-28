@@ -27,8 +27,10 @@ use soroban_sdk::{
     token::StellarAssetClient,
     vec, Address, Env, Vec as SdkVec,
 };
-use stello_pay_contract::storage::{DataKey, PayrollCreateParams, MAX_BATCH_SIZE};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{DataKey, PayrollCreateParams, MAX_BATCH_SIZE},
+    PayrollContract, PayrollContractClient,
+};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -363,8 +365,8 @@ fn gas_benchmark_claim_payroll() {
     }
 }
 
-/// @notice Measures CPU instruction cost of `batch_claim_milestones` at 1, 5, and MAX_BATCH_SIZE milestones.
-/// @dev Cost scales linearly with N (one transfer + storage write per milestone).
+/// @notice Measures CPU instruction cost of `batch_claim_milestones` at 1, 5, and MAX_BATCH_SIZE
+/// milestones. @dev Cost scales linearly with N (one transfer + storage write per milestone).
 /// MAX_BATCH_SIZE is the enforced public ceiling and must stay under
 /// MAX_BATCH_CLAIM_MILESTONE_INSTRUCTIONS.
 #[test]

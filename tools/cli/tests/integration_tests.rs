@@ -640,3 +640,21 @@ fn unknown_flag_exits_with_usage_code() {
     cmd.arg("--no-such-flag");
     cmd.assert().failure().code(2);
 }
+
+
+#[test]
+fn test_deploy_with_invalid_network_produces_clear_error() {
+    let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
+    cmd.arg("deploy")
+        .arg("--network")
+        .arg("garbagetown")
+        .arg("--owner")
+        .arg("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
+
+    cmd.assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("unsupported network")
+                .and(predicate::str::contains("testnet, mainnet")),
+        );
+}

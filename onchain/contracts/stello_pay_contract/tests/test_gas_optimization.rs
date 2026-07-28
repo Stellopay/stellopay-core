@@ -29,8 +29,7 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env, Vec,
 };
-use stello_pay_contract::storage::PayrollCreateParams;
-use stello_pay_contract::PayrollContractClient;
+use stello_pay_contract::{storage::PayrollCreateParams, PayrollContractClient};
 
 // ---------------------------------------------------------------------------
 // WASM binary — must be up to date with the current source
