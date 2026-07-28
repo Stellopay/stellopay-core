@@ -216,7 +216,11 @@ impl ExpenseReimbursementContract {
             .set(&StorageKey::ApproverRole(approver), &true);
     }
 
-    /// Remove an approver
+    /// Remove an approver from the active approver set.
+    ///
+    /// NatSpec: Removal prevents this address from approving or rejecting any
+    /// pending expense going forward. It does not alter approval decisions
+    /// already recorded on expenses; those decisions remain valid and payable.
     pub fn remove_approver(env: Env, approver: Address) {
         require_initialized(&env);
         let owner: Address = env
@@ -344,6 +348,11 @@ impl ExpenseReimbursementContract {
     }
 
     /// Approve an expense, with support for partial approval.
+    ///
+    /// NatSpec: The approver must both be the expense's designated approver and
+    /// currently hold the approver role. Once recorded, this approval is part of
+    /// the expense's immutable lifecycle state and is not invalidated if the
+    /// owner later removes the approver role.
     pub fn approve_expense(env: Env, approver: Address, expense_id: u128, approved_amount: i128) {
         require_initialized(&env);
         approver.require_auth();
@@ -354,6 +363,7 @@ impl ExpenseReimbursementContract {
             .get(&StorageKey::Expense(expense_id))
             .expect("Expense not found");
 
+        assert!(is_approver(&env, &approver), "Unauthorized approver");
         assert!(expense.approver == approver, "Unauthorized approver");
         assert!(expense.status == ExpenseStatus::Pending, "Invalid status");
         assert!(approved_amount > 0, "Approved amount must be positive");
@@ -385,7 +395,10 @@ impl ExpenseReimbursementContract {
         );
     }
 
-    /// Reject an expense, refunding escrowed funds to the employer safely
+    /// Reject an expense, refunding escrowed funds to the employer safely.
+    ///
+    /// NatSpec: The designated approver must still hold the active approver
+    /// role when rejecting, matching the authorization rule for approval.
     pub fn reject_expense(env: Env, approver: Address, expense_id: u128) {
         require_initialized(&env);
         approver.require_auth();
@@ -396,6 +409,7 @@ impl ExpenseReimbursementContract {
             .get(&StorageKey::Expense(expense_id))
             .expect("Expense not found");
 
+        assert!(is_approver(&env, &approver), "Unauthorized approver");
         assert!(expense.approver == approver, "Unauthorized approver");
         assert!(expense.status == ExpenseStatus::Pending, "Invalid status");
 
