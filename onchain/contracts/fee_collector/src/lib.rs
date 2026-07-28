@@ -45,7 +45,7 @@ pub use events::{
     RecipientUpdatedEvent, TieredScheduleUpdatedEvent,
 };
 pub use storage::StorageKey;
-pub use types::{FeeConfig, FeeMode, FeeSplit, FeeTier};
+pub use types::{FeeConfig, FeeMode, FeeQuote, FeeSplit, FeeTier};
 
 use helpers::{
     apply_basis_points, bump_ttl, compute_fee_internal, require_admin, require_initialized, require_not_paused,
@@ -176,7 +176,8 @@ impl FeeCollectorContract {
     /// # Flow
     ///
     /// 1. Validates contract state and payer authentication.
-    /// 2. Computes `fee_amount` and `net_amount` from `gross_amount`.
+    /// 2. Reuses the most recently cached quote for `gross_amount` when present;
+    ///    otherwise it computes `fee_amount` and `net_amount` from the live config.
     /// 3. Updates the cumulative `TotalFeesCollected` counter **before** any transfer
     ///    (state-before-interaction pattern).
     /// 4. Transfers `fee_amount` from `payer` to the treasury (if `> 0`).
@@ -226,10 +227,22 @@ impl FeeCollectorContract {
             .get(&StorageKey::FeeRecipient)
             .expect("Fee recipient not set");
 
-        let fee_amount = compute_fee_internal(&env, gross_amount);
-        let net_amount = gross_amount
-            .checked_sub(fee_amount)
-            .expect("Net amount underflow");
+        let quote: Option<FeeQuote> = env
+            .storage()
+            .instance()
+            .get(&StorageKey::LatestFeeQuote);
+        let (fee_amount, net_amount) = match quote {
+            Some(stored_quote) if stored_quote.gross_amount == gross_amount => {
+                (stored_quote.fee_amount, stored_quote.net_amount)
+            }
+            _ => {
+                let fee_amount = compute_fee_internal(&env, gross_amount);
+                let net_amount = gross_amount
+                    .checked_sub(fee_amount)
+                    .expect("Net amount underflow");
+                (fee_amount, net_amount)
+            }
+        };
 
         // Update cumulative counter BEFORE any external calls (state-before-interaction).
         if fee_amount > 0 {
@@ -299,6 +312,11 @@ impl FeeCollectorContract {
     /// Computes the fee and net amounts for a given gross amount **without** executing
     /// any token transfer or modifying contract state.
     ///
+    /// The computed quote is cached for the provided gross amount so a later
+    /// `collect_fee` call can settle against the same quote even if the active
+    /// config changes in between. A fresh `calculate_fee` call overwrites the
+    /// cached quote for that gross amount.
+    ///
     /// Use this for UI previews, pre-flight checks, or unit-testing fee arithmetic.
     ///
     /// # Arguments
@@ -321,12 +339,24 @@ impl FeeCollectorContract {
         bump_ttl(&env);
         assert!(gross_amount >= 0, "Gross amount must be non-negative");
         if gross_amount == 0 {
+            let quote = FeeQuote {
+                gross_amount: 0,
+                fee_amount: 0,
+                net_amount: 0,
+            };
+            env.storage().instance().set(&StorageKey::LatestFeeQuote, &quote);
             return (0, 0);
         }
         let fee_amount = compute_fee_internal(&env, gross_amount);
         let net_amount = gross_amount
             .checked_sub(fee_amount)
             .expect("Net amount underflow");
+        let quote = FeeQuote {
+            gross_amount,
+            fee_amount,
+            net_amount,
+        };
+        env.storage().instance().set(&StorageKey::LatestFeeQuote, &quote);
         (net_amount, fee_amount)
     }
 

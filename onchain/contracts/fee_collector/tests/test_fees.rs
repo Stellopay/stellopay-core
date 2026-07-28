@@ -517,6 +517,54 @@ fn test_update_fee_config_changes_rate() {
 }
 
 #[test]
+fn test_collect_fee_uses_prior_calculate_fee_quote_after_config_change() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let tok = create_token(&env, &token_admin);
+    token::StellarAssetClient::new(&env, &tok.address).mint(&payer, &1_000);
+
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    let (quoted_net, quoted_fee) = client.calculate_fee(&1_000);
+    assert_eq!(quoted_fee, 10);
+    assert_eq!(quoted_net, 990);
+
+    client.update_fee_config(&admin, &500u32, &0i128, &FeeMode::Percentage);
+
+    let (settled_net, settled_fee) = client.collect_fee(&payer, &recipient, &tok.address, &1_000);
+    assert_eq!(settled_fee, quoted_fee);
+    assert_eq!(settled_net, quoted_net);
+    assert_eq!(tok.balance(&treasury), quoted_fee);
+    assert_eq!(tok.balance(&recipient), quoted_net);
+}
+
+#[test]
+fn test_calculate_fee_after_config_change_uses_new_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    let (initial_net, initial_fee) = client.calculate_fee(&1_000);
+    assert_eq!(initial_fee, 10);
+    assert_eq!(initial_net, 990);
+
+    client.update_fee_config(&admin, &500u32, &0i128, &FeeMode::Percentage);
+
+    let (updated_net, updated_fee) = client.calculate_fee(&1_000);
+    assert_eq!(updated_fee, 50);
+    assert_eq!(updated_net, 950);
+}
+
+#[test]
 fn test_update_fee_config_switches_to_flat_mode() {
     let env = Env::default();
     env.mock_all_auths();
