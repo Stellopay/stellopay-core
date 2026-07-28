@@ -2246,8 +2246,14 @@ fn test_get_level_time_limit_and_pending_review_queries() {
 
     // Verify configured values
     assert_eq!(client.get_level_time_limit(&EscalationLevel::Level1), 86400);
-    assert_eq!(client.get_level_time_limit(&EscalationLevel::Level2), 172800);
-    assert_eq!(client.get_level_time_limit(&EscalationLevel::Level3), 259200);
+    assert_eq!(
+        client.get_level_time_limit(&EscalationLevel::Level2),
+        172800
+    );
+    assert_eq!(
+        client.get_level_time_limit(&EscalationLevel::Level3),
+        259200
+    );
     assert_eq!(client.get_pending_review_time_limit(), 43200);
 }
 

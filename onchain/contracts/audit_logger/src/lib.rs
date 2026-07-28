@@ -181,9 +181,7 @@ impl AuditLoggerContract {
                 env.storage()
                     .persistent()
                     .set(&StorageKey::FirstLogId, &(first_id + prune_count));
-                env.storage()
-                    .persistent()
-                    .set(&StorageKey::LogCount, &r);
+                env.storage().persistent().set(&StorageKey::LogCount, &r);
             }
         }
 

@@ -260,7 +260,16 @@ fn setup_escrow_integration() -> (
     // Register the escrow contract in dispute_escalation
     dispute_client.set_payroll_escrow(&admin, &escrow_id);
 
-    (env, dispute_client, escrow_client, token, employer, employee, admin, user)
+    (
+        env,
+        dispute_client,
+        escrow_client,
+        token,
+        employer,
+        employee,
+        admin,
+        user,
+    )
 }
 
 /// Dispute filing pauses the payroll escrow; resolution resumes it.
@@ -286,12 +295,8 @@ fn test_dispute_pauses_escrow_resolve_resumes() {
     dispute_client.file_dispute(&user, &agreement_id, &DisputeReason::PaymentDispute);
 
     // Release is now blocked because the agreement is paused
-    let paused_release = escrow_client.try_release(
-        &dispute_client.address,
-        &agreement_id,
-        &employee,
-        &100,
-    );
+    let paused_release =
+        escrow_client.try_release(&dispute_client.address, &agreement_id, &employee, &100);
     assert!(
         paused_release.is_err(),
         "release must fail while agreement is paused"
@@ -325,12 +330,8 @@ fn test_dispute_expiry_resumes_escrow() {
     dispute_client.file_dispute(&user, &agreement_id, &DisputeReason::PaymentDispute);
 
     // Release blocked
-    let paused_release = escrow_client.try_release(
-        &dispute_client.address,
-        &agreement_id,
-        &employee,
-        &100,
-    );
+    let paused_release =
+        escrow_client.try_release(&dispute_client.address, &agreement_id, &employee, &100);
     assert!(paused_release.is_err());
 
     // Advance past the deadline and expire the dispute
@@ -365,12 +366,8 @@ fn test_dispute_appeal_repauses_escrow() {
     dispute_client.appeal_ruling(&user, &agreement_id);
 
     // Release blocked during appeal
-    let paused_release = escrow_client.try_release(
-        &dispute_client.address,
-        &agreement_id,
-        &employee,
-        &100,
-    );
+    let paused_release =
+        escrow_client.try_release(&dispute_client.address, &agreement_id, &employee, &100);
     assert!(paused_release.is_err());
     assert_eq!(
         escrow_client.get_agreement_balance(&agreement_id),

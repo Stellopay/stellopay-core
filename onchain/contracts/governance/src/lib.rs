@@ -727,10 +727,8 @@ impl GovernanceContract {
         proposal.status = ProposalStatus::Cancelled;
         write_proposal(&env, &proposal);
 
-        env.events().publish(
-            (symbol_short!("prop_cncl"), proposal_id),
-            (),
-        );
+        env.events()
+            .publish((symbol_short!("prop_cncl"), proposal_id), ());
 
         Ok(())
     }

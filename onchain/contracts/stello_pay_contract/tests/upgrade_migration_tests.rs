@@ -282,7 +282,10 @@ fn test_migrate_state_forward_preserves_existing_agreements() {
 
     // Verify agreement is intact.
     let post = client.get_agreement(&agreement_id).unwrap();
-    assert_eq!(pre.id, post.id, "agreement id must be preserved after migration");
+    assert_eq!(
+        pre.id, post.id,
+        "agreement id must be preserved after migration"
+    );
     assert_eq!(
         pre.employer, post.employer,
         "employer must be preserved after migration"

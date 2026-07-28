@@ -1001,11 +1001,11 @@ fn test_conflict_detection_prevents_duplicates() {
 fn setup_with_real_retry(
     env: &Env,
 ) -> (
-    Address,                              // scheduler_id
+    Address, // scheduler_id
     PaymentSchedulerContractClient<'static>,
     PaymentRetryContractClient<'static>,
-    Address,                              // token address
-    Address,                              // employer
+    Address, // token address
+    Address, // employer
 ) {
     let employer = Address::generate(env);
     let owner = Address::generate(env);
@@ -1020,7 +1020,13 @@ fn setup_with_real_retry(
     let (scheduler_id, sched_client) = register_contract(env);
     sched_client.initialize(&owner, &retry_id);
 
-    (scheduler_id, sched_client, retry_client, token.address, employer)
+    (
+        scheduler_id,
+        sched_client,
+        retry_client,
+        token.address,
+        employer,
+    )
 }
 
 #[test]
@@ -1050,8 +1056,8 @@ fn test_overlapping_schedules_same_payer_partial_funds() {
         &recipient_a,
         &token_addr,
         &100i128,
-        &0u64,      // one-time
-        &1000u64,   // due at t=1000
+        &0u64,    // one-time
+        &1000u64, // due at t=1000
         &Some(1u32),
         &2u32,
     );
@@ -1060,8 +1066,8 @@ fn test_overlapping_schedules_same_payer_partial_funds() {
         &recipient_b,
         &token_addr,
         &100i128,
-        &0u64,      // one-time
-        &1000u64,   // same due time as job_a
+        &0u64,    // one-time
+        &1000u64, // same due time as job_a
         &Some(1u32),
         &2u32,
     );
@@ -1077,10 +1083,7 @@ fn test_overlapping_schedules_same_payer_partial_funds() {
 
     // Job A was processed first → should have been paid.
     let job_a_state = sched_client.get_job(&job_a).unwrap();
-    assert_eq!(
-        job_a_state.executions, 1,
-        "Job A should have been executed"
-    );
+    assert_eq!(job_a_state.executions, 1, "Job A should have been executed");
     assert_eq!(
         job_a_state.status,
         JobStatus::Completed,
