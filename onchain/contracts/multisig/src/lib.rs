@@ -374,7 +374,7 @@ impl MultisigContract {
         assert!(signer_count > 0, "At least one signer required");
         assert!(
             new_threshold > 0 && new_threshold <= signer_count,
-            "Invalid threshold"
+            "New threshold must be between 1 and the number of signers"
         );
 
         // Ensure signer list has no duplicates.
