@@ -49,6 +49,29 @@ Property-based fuzz tests in `onchain/contracts/payroll_escrow/tests/fuzz/test_f
 - **Token Transfers**: The contract uses the standard Soroban Token interface. If a transfer fails (e.g., due to a frozen balance or insufficient contract funds), the entire transaction reverts.
 - **Storage**: Most data is stored in `persistent` storage to ensure it remains available throughout the agreement's lifecycle.
 
+## Storage Key Layout
+
+### AgreementBalance
+
+The contract uses `StorageKey::AgreementBalance(u128)` to store per-agreement escrowed balances in persistent storage.
+
+**Key Derivation:**
+- `AgreementBalance(0)` → unique storage slot for agreement ID 0
+- `AgreementBalance(1)` → unique storage slot for agreement ID 1
+- `AgreementBalance(u128::MAX)` → unique storage slot for maximum agreement ID
+
+**Security Invariant:**
+Two distinct agreement IDs must never resolve to the same storage slot. The Soroban SDK's `#[contracttype]` derive macro ensures that distinct `u128` values always resolve to distinct storage keys, preventing cross-agreement balance collisions.
+
+**Regression Tests:**
+The test suite includes regression tests that verify this invariant for:
+- Adjacent agreement IDs (e.g., 1000, 1001, 1002)
+- Edge values (0, 1, u128::MAX)
+- Structurally similar IDs (e.g., 12345, 12346, 12347)
+- Release and refund operations to ensure one agreement's operations never mutate another's balance
+
+A key-derivation bug here would let one agreement's funding silently overwrite another's, enabling fund theft or loss.
+
 ---
 
 ## Milestone Agreement Funding (`fund_milestone_agreement`)
