@@ -155,6 +155,7 @@ impl ComplianceCheckerContract {
     }
 
     /// @notice Returns whether an auxiliary contract is explicitly allowlisted.
+    /// @dev Returns false by default if the auxiliary has not been explicitly allowed.
     pub fn is_auxiliary_allowed(env: Env, auxiliary: Address) -> bool {
         env.storage()
             .persistent()
@@ -414,6 +415,7 @@ impl ComplianceCheckerContract {
         assert!(*caller == admin, "Not admin");
     }
 
+    #[allow(dead_code)]
     fn allow(env: &Env) -> ComplianceDecision {
         ComplianceDecision {
             decision: Decision::Allow,
@@ -422,6 +424,7 @@ impl ComplianceCheckerContract {
         }
     }
 
+    #[allow(dead_code)]
     fn deny(reason: ReasonCode, traces: soroban_sdk::Vec<TraceEntry>) -> ComplianceDecision {
         ComplianceDecision {
             decision: Decision::Deny,
