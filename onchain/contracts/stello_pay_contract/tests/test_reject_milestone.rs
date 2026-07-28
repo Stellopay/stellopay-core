@@ -27,8 +27,7 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, String,
 };
-use stello_pay_contract::storage::PayrollError;
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{storage::PayrollError, PayrollContract, PayrollContractClient};
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 

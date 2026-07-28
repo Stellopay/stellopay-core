@@ -35,18 +35,18 @@
 //!
 //! ## Security Model
 //!
-//! * Only the **payroll contract** registered at initialization may call
-//!   `record_payment`. Any other caller receives an `Auth(InvalidAction)` error.
-//! * The contract may only be initialized **once**; subsequent calls panic with
-//!   "Already initialized".
-//! * Records are **immutable**: there is no update or delete path. Index
-//!   entries are written once and never modified, preventing history tampering.
-//! * Index counts can only increase, ensuring no entry can be silently replaced
-//!   and no historical record can be pruned by an unauthorized party.
-//! * `limit` is hard-capped at [`MAX_PAGE_SIZE`] (100) to bound ledger reads
-//!   per invocation and prevent resource exhaustion by adversarial callers.
-//! * `payment_hash` is stored verbatim from the payroll contract. Its integrity
-//!   is the payroll contract's responsibility; this contract does not verify it.
+//! * Only the **payroll contract** registered at initialization may call `record_payment`. Any
+//!   other caller receives an `Auth(InvalidAction)` error.
+//! * The contract may only be initialized **once**; subsequent calls panic with "Already
+//!   initialized".
+//! * Records are **immutable**: there is no update or delete path. Index entries are written once
+//!   and never modified, preventing history tampering.
+//! * Index counts can only increase, ensuring no entry can be silently replaced and no historical
+//!   record can be pruned by an unauthorized party.
+//! * `limit` is hard-capped at [`MAX_PAGE_SIZE`] (100) to bound ledger reads per invocation and
+//!   prevent resource exhaustion by adversarial callers.
+//! * `payment_hash` is stored verbatim from the payroll contract. Its integrity is the payroll
+//!   contract's responsibility; this contract does not verify it.
 //!
 //! ## Integration with Indexers
 //!
@@ -66,11 +66,10 @@ mod storage;
 
 use events::PaymentRecorded;
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
-use storage::StorageKey;
-
 /// Re-export `PaymentRecord` so consumers and tests can import it directly
 /// from the crate root.
 pub use storage::PaymentRecord;
+use storage::StorageKey;
 
 /// Maximum number of records returned in a single paginated query.
 ///

@@ -1,12 +1,11 @@
 #![cfg(test)]
+use slashing_penalty::{
+    Offense, SlashError, SlashStatus, SlashingPenaltyContract, SlashingPenaltyContractClient,
+};
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
     token::StellarAssetClient,
     Address, BytesN, Env,
-};
-
-use slashing_penalty::{
-    Offense, SlashError, SlashStatus, SlashingPenaltyContract, SlashingPenaltyContractClient,
 };
 
 // ─── Test Helpers ─────────────────────────────────────────────────────────────
@@ -126,7 +125,8 @@ fn test_initialize_quorum_one_accepted() {
     let admin = Address::generate(&env);
     let token = Address::generate(&env);
 
-    // quorum = 1 is the minimum valid value and must be stored as-is (not raised to DEFAULT_QUORUM).
+    // quorum = 1 is the minimum valid value and must be stored as-is (not raised to
+    // DEFAULT_QUORUM).
     client.initialize(
         &admin, &token, &1u32, &5_000u32, &6_000i128, &9_000i128, &86_400u64,
     );
@@ -898,4 +898,96 @@ fn test_replay_rejection_independent_of_prior_slash_count() {
         &t.evidence_hash(130),
         &0u64,
     );
+}
+
+// ─── Slash-Appeal Race ─────────────────────────────────────────────────────────
+
+/// Verifies that when an appeal is raised while a slash is pending, a second slash
+/// against the same offender (different evidence hash) does not corrupt the stake
+/// ledger or double-count escrowed amounts. Each slash record remains independently
+/// resolvable.
+#[test]
+fn test_slash_and_appeal_race_does_not_corrupt_ledger() {
+    let t = TestEnv::setup();
+
+    let hash1 = t.evidence_hash(70);
+    let hash2 = t.evidence_hash(71);
+
+    let stake_before = t.client.get_stake_balance(&t.offender);
+
+    // --- First slash: 10% of 10_000 stake = 1_000 --------------------------------
+    t.client.slash_with_evidence(
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash1,
+        &0u64,
+    );
+    assert_eq!(
+        t.client.get_stake_balance(&t.offender),
+        stake_before - 1_000
+    );
+
+    // --- Immediately raise appeal on hash1 before any round transition -----------
+    t.client.raise_appeal(&t.offender, &hash1);
+
+    // --- While appeal is unresolved, submit a second slash (different hash) ------
+    // stake is 9_000; 10% = 900
+    t.client.slash_with_evidence(
+        &t.slasher2,
+        &t.offender,
+        &Offense::MissedDuty,
+        &1_000u32,
+        &hash2,
+        &1u64,
+    );
+
+    // Stake: 10_000 - 1_000 - 900 = 8_100
+    assert_eq!(
+        t.client.get_stake_balance(&t.offender),
+        stake_before - 1_000 - 900
+    );
+
+    // Both records are independently tracked as Pending
+    let rec1 = t.client.get_slash_record(&hash1).unwrap();
+    assert_eq!(rec1.status, SlashStatus::Pending);
+    assert_eq!(rec1.escrowed_amount, 1_000);
+
+    let rec2 = t.client.get_slash_record(&hash2).unwrap();
+    assert_eq!(rec2.status, SlashStatus::Pending);
+    assert_eq!(rec2.escrowed_amount, 900);
+
+    // Total escrow must match the sum of the two independent escrowed amounts
+    // (no double-counting); stake + escrow(1) + escrow(2) == initial
+    assert_eq!(
+        t.client.get_stake_balance(&t.offender) + rec1.escrowed_amount + rec2.escrowed_amount,
+        stake_before
+    );
+
+    // --- Appeal for first slash can be resolved independently --------------------
+    t.client.resolve_appeal(&hash1, &true);
+    assert_eq!(
+        t.client.get_slash_record(&hash1).unwrap().status,
+        SlashStatus::Reversed
+    );
+    // hash2 is unaffected
+    assert_eq!(
+        t.client.get_slash_record(&hash2).unwrap().status,
+        SlashStatus::Pending
+    );
+
+    // Funds returned: 8_100 + 1_000 = 9_100
+    assert_eq!(t.client.get_stake_balance(&t.offender), stake_before - 900);
+
+    // --- Execute second slash after appeal window closes -------------------------
+    t.advance_time(APPEAL_WINDOW + 1);
+    t.client.execute_slash(&hash2);
+    assert_eq!(
+        t.client.get_slash_record(&hash2).unwrap().status,
+        SlashStatus::Executed
+    );
+
+    // Executed slash burns escrow (removed from escrow map) but stake is unchanged
+    assert_eq!(t.client.get_stake_balance(&t.offender), stake_before - 900);
 }

@@ -2,19 +2,18 @@
 //!
 //! Coverage targets:
 //! * Initialization — happy path, double-init guard
-//! * `create_job` — happy path, zero amount, zero interval (recurring), one-time
-//!   zero interval, duplicate schedule rejection, multiple jobs get unique IDs
-//! * `create_job` idempotency — same parameters rejected, different employer allowed,
-//!   different token allowed (same other params)
-//! * `cancel_job` — active/paused cancellable, already cancelled, terminal (completed/failed)
-//!   not cancellable, wrong employer rejected
+//! * `create_job` — happy path, zero amount, zero interval (recurring), one-time zero interval,
+//!   duplicate schedule rejection, multiple jobs get unique IDs
+//! * `create_job` idempotency — same parameters rejected, different employer allowed, different
+//!   token allowed (same other params)
+//! * `cancel_job` — active/paused cancellable, already cancelled, terminal (completed/failed) not
+//!   cancellable, wrong employer rejected
 //! * `pause_job` / `resume_job` — happy path, wrong employer, wrong status
 //! * `fund_job` — increases scheduler balance, job not found, wrong amount
-//! * `process_due_payments` — empty scheduler, max_jobs=0, max_jobs bound,
-//!   recurring execution cycles & completion, one-time payment, pause prevents
-//!   execution, resume after pause, cancelled job skipped, retry on insufficient
-//!   funds, retry exhaustion → Failed, state-before-interaction (job persisted
-//!   before transfer)
+//! * `process_due_payments` — empty scheduler, max_jobs=0, max_jobs bound, recurring execution
+//!   cycles & completion, one-time payment, pause prevents execution, resume after pause, cancelled
+//!   job skipped, retry on insufficient funds, retry exhaustion → Failed, state-before-interaction
+//!   (job persisted before transfer)
 //! * `get_job_id_by_schedule` — lookup by deterministic ID
 //! * `get_owner` / `get_job` view helpers
 
@@ -22,15 +21,14 @@
 
 use std::ops::Add;
 
+use payment_scheduler::{
+    JobFundedEvent, JobStatus, PaymentJob, PaymentSchedulerContract,
+    PaymentSchedulerContractClient, SchedulerError,
+};
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, IntoVal, Val, Vec,
-};
-
-use payment_scheduler::{
-    JobFundedEvent, JobStatus, PaymentJob, PaymentSchedulerContract,
-    PaymentSchedulerContractClient, SchedulerError,
 };
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────

@@ -30,18 +30,17 @@
 //! ## Security Model
 //!
 //! * Only the original **payer** can fund or cancel their own payment request.
-//! * `process_due_payments` is permissionless but bounded by `max_payments`
-//!   to prevent runaway gas consumption.
-//! * `retry_count` is only incremented *after* a failed escrow-balance check,
-//!   never on a successful transfer. This prevents a caller from inflating the
-//!   counter to prematurely exhaust retries (state-before-interaction pattern).
-//! * `max_retry_attempts` is hard-capped at [`MAX_RETRY_ATTEMPTS`] (100) at the
-//!   contract level, preventing infinite-retry scenarios that could lock escrow
-//!   funds indefinitely or facilitate draining via repeated small transfers.
-//! * An optional `alternate_payout` address can be specified at creation time.
-//!   When set, successful transfers are routed there instead of `recipient`,
-//!   providing a fallback destination (e.g. a cold wallet) without requiring
-//!   cancellation and re-creation.
+//! * `process_due_payments` is permissionless but bounded by `max_payments` to prevent runaway gas
+//!   consumption.
+//! * `retry_count` is only incremented *after* a failed escrow-balance check, never on a successful
+//!   transfer. This prevents a caller from inflating the counter to prematurely exhaust retries
+//!   (state-before-interaction pattern).
+//! * `max_retry_attempts` is hard-capped at [`MAX_RETRY_ATTEMPTS`] (100) at the contract level,
+//!   preventing infinite-retry scenarios that could lock escrow funds indefinitely or facilitate
+//!   draining via repeated small transfers.
+//! * An optional `alternate_payout` address can be specified at creation time. When set, successful
+//!   transfers are routed there instead of `recipient`, providing a fallback destination (e.g. a
+//!   cold wallet) without requiring cancellation and re-creation.
 //!
 //! ## Idempotency
 //!
@@ -59,8 +58,8 @@
 //! Off-chain payroll systems should subscribe to the events emitted by this
 //! contract:
 //! * `payment_success`   — mark the corresponding payroll period as paid.
-//! * `payment_failed`    — flag the agreement for manual review; the funds
-//!   remain in escrow until a human operator cancels or re-funds.
+//! * `payment_failed`    — flag the agreement for manual review; the funds remain in escrow until a
+//!   human operator cancels or re-funds.
 //!
 //! The `failure_notifier` address stored in each record is included in the
 //! `PaymentFailedEvent` so indexers can route the alert to the correct employer.
@@ -438,9 +437,9 @@ impl PaymentRetryContract {
     /// # Arguments
     ///
     /// * `env`   — Soroban environment.
-    /// * `owner` — Administrative owner address (must authenticate). The owner
-    ///             address is stored for informational purposes; no privileged
-    ///             operations are currently gated on it beyond initialization.
+    /// * `owner` — Administrative owner address (must authenticate). The owner address is stored
+    ///   for informational purposes; no privileged operations are currently gated on it beyond
+    ///   initialization.
     ///
     /// # Panics
     ///
@@ -475,20 +474,19 @@ impl PaymentRetryContract {
     /// # Arguments
     ///
     /// * `env`                — Soroban environment.
-    /// * `payer`              — Address that funds escrow and owns this request
-    ///                          (must authenticate).
+    /// * `payer`              — Address that funds escrow and owns this request (must
+    ///   authenticate).
     /// * `recipient`          — Primary destination address.
     /// * `token`              — Token contract for the transfer.
     /// * `amount`             — Positive token amount to transfer.
-    /// * `max_retry_attempts` — Max failed attempts before terminal `Failed`
-    ///                          state. Capped at [`MAX_RETRY_ATTEMPTS`].
-    /// * `retry_intervals`    — Ordered list of per-attempt delays (seconds).
-    ///                          Required when `max_retry_attempts > 0`.
-    /// * `failure_notifier`   — Address included in `PaymentFailedEvent` for
-    ///                          off-chain alert routing.
-    /// * `alternate_payout`   — Optional fallback destination. When `Some`,
-    ///                          successful transfers go here instead of
-    ///                          `recipient`.
+    /// * `max_retry_attempts` — Max failed attempts before terminal `Failed` state. Capped at
+    ///   [`MAX_RETRY_ATTEMPTS`].
+    /// * `retry_intervals`    — Ordered list of per-attempt delays (seconds). Required when
+    ///   `max_retry_attempts > 0`.
+    /// * `failure_notifier`   — Address included in `PaymentFailedEvent` for off-chain alert
+    ///   routing.
+    /// * `alternate_payout`   — Optional fallback destination. When `Some`, successful transfers go
+    ///   here instead of `recipient`.
     ///
     /// # Returns
     ///
@@ -498,8 +496,8 @@ impl PaymentRetryContract {
     ///
     /// * `"Amount must be positive"` — if `amount ≤ 0`.
     /// * `"Too many retry attempts"` — if `max_retry_attempts > MAX_RETRY_ATTEMPTS`.
-    /// * `"Retry intervals required when retries are enabled"` — if
-    ///   `max_retry_attempts > 0` and `retry_intervals` is empty.
+    /// * `"Retry intervals required when retries are enabled"` — if `max_retry_attempts > 0` and
+    ///   `retry_intervals` is empty.
     /// * `"Retry interval must be positive"` / `"Retry interval too large"`.
     ///
     /// # Events
@@ -604,12 +602,11 @@ impl PaymentRetryContract {
     /// Processes up to `max_payments` due payment requests in a single call.
     ///
     /// For each tracked non-terminal record whose `next_retry_at ≤ now`:
-    /// * If the escrow balance covers `amount`: transfer succeeds →
-    ///   `state = Success`, emit `payment_success`.
+    /// * If the escrow balance covers `amount`: transfer succeeds → `state = Success`, emit
+    ///   `payment_success`.
     /// * If the escrow balance is insufficient:
     ///   - Increment `retry_count`.
-    ///   - If `retry_count > max_retry_attempts`: `state = Failed`,
-    ///     emit `payment_failed`.
+    ///   - If `retry_count > max_retry_attempts`: `state = Failed`, emit `payment_failed`.
     ///   - Otherwise: compute `next_retry_at` and emit `retry_scheduled`.
     ///
     /// Transfers route to `alternate_payout` when set, otherwise `recipient`.
@@ -624,8 +621,8 @@ impl PaymentRetryContract {
     /// # Arguments
     ///
     /// * `env`          — Soroban environment.
-    /// * `max_payments` — Upper bound on records processed. Pass a small value
-    ///                    (e.g. 20–50) to stay within ledger resource limits.
+    /// * `max_payments` — Upper bound on records processed. Pass a small value (e.g. 20–50) to stay
+    ///   within ledger resource limits.
     ///
     /// # Returns
     ///

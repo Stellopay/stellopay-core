@@ -6,7 +6,8 @@
 //! ## Evidence Format
 //! Evidence must include:
 //! - `offender`   : Address of the party being slashed
-//! - `offense`    : Enum variant describing the misbehaviour (DoubleSigning | MissedDuty | FraudProof)
+//! - `offense`    : Enum variant describing the misbehaviour (DoubleSigning | MissedDuty |
+//!   FraudProof)
 //! - `penalty_bps`: Penalty in basis points (max 10_000 = 100%)
 //! - `evidence_hash`: SHA-256 hash of the raw proof payload (bytes32 equivalent)
 //! - `timestamp`  : Ledger timestamp when misbehaviour occurred
@@ -19,9 +20,9 @@
 //! ## Security Assumptions
 //! - Only addresses granted the `slasher` role may initiate or countersign a slash.
 //! - Penalty is strictly proportional — capped at `MAX_PENALTY_BPS` (5 000 bps = 50%).
-//! - Each unique `evidence_hash` can only be acted upon once (replay protection).
-//!   Replay detection uses O(1) keyed storage: each hash is stored as a key in `USED_EV`
-//!   (a `Map<BytesN<32>, bool>`), so lookup time is constant regardless of slash history.
+//! - Each unique `evidence_hash` can only be acted upon once (replay protection). Replay detection
+//!   uses O(1) keyed storage: each hash is stored as a key in `USED_EV` (a `Map<BytesN<32>,
+//!   bool>`), so lookup time is constant regardless of slash history.
 //! - Slashed funds are held in escrow during the appeal window before burning/redistribution.
 //! - Admin cannot slash; roles are separated (admin ≠ slasher).
 
@@ -191,10 +192,10 @@ impl SlashingPenaltyContract {
     /// # Arguments
     /// * `admin`   - Address that can grant/revoke slasher roles and reverse appeals.
     /// * `token`   - Contract address of the XLM-wrapped or custom token used for stake.
-    /// * `quorum`  - Minimum number of slasher signatures for attestation slashes.
-    ///              Must be greater than zero; `DEFAULT_QUORUM` (2) is the recommended
-    ///              minimum. Passing 0 returns `SlashError::ZeroQuorum` — it is never
-    ///              silently raised to the default, as that would hide misconfiguration.
+    /// * `quorum`  - Minimum number of slasher signatures for attestation slashes. Must be greater
+    ///   than zero; `DEFAULT_QUORUM` (2) is the recommended minimum. Passing 0 returns
+    ///   `SlashError::ZeroQuorum` — it is never silently raised to the default, as that would hide
+    ///   misconfiguration.
     pub fn initialize(
         env: Env,
         admin: Address,

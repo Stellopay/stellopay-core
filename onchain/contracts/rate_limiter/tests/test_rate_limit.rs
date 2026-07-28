@@ -1,11 +1,10 @@
 #![cfg(test)]
 
+use rate_limiter::{RateLimiter, RateLimiterClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env,
 };
-
-use rate_limiter::{RateLimiter, RateLimiterClient};
 
 fn create_env() -> Env {
     let env = Env::default();

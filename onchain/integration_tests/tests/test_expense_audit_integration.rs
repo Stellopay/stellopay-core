@@ -4,8 +4,8 @@
 //! These tests complement `test_expense_audit_logger_integration.rs` by focusing
 //! on the audit-linkage *invariants* and the negative paths:
 //!
-//! * the `audit_log_id` stored on the approved expense resolves to a real,
-//!   field-consistent entry in the audit logger (linkage is consistent);
+//! * the `audit_log_id` stored on the approved expense resolves to a real, field-consistent entry
+//!   in the audit logger (linkage is consistent);
 //! * an unauthorized approval neither succeeds nor produces an audit entry;
 //! * a second (double) approval cannot create a second audit entry.
 //!
@@ -14,20 +14,19 @@
 //! 1. `ExpenseReimbursementContract` and `AuditLoggerContract` are deployed.
 //! 2. The expense contract is pointed at the audit logger via `set_audit_logger`.
 //! 3. An expense is submitted, funded, then approved by its designated approver.
-//! 4. On approval, the expense contract records an entry in the audit logger and
-//!    stores the returned id in `Expense::audit_log_id`, giving an on-chain link
-//!    between the expense and its audit trail.
+//! 4. On approval, the expense contract records an entry in the audit logger and stores the
+//!    returned id in `Expense::audit_log_id`, giving an on-chain link between the expense and its
+//!    audit trail.
 //!
 //! Scope: test only — no runtime logic, storage schema, or APIs are changed.
 #![cfg(test)]
 
-use soroban_sdk::{
-    testutils::Address as _, token::StellarAssetClient, Address, Env, String, Symbol,
-};
-
 use audit_logger::{AuditLoggerContract, AuditLoggerContractClient};
 use expense_reimbursement::{
     ExpenseReimbursementContract, ExpenseReimbursementContractClient, ExpenseStatus,
+};
+use soroban_sdk::{
+    testutils::Address as _, token::StellarAssetClient, Address, Env, String, Symbol,
 };
 
 // ============================================================================

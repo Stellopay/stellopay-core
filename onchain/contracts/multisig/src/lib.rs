@@ -393,7 +393,8 @@ impl MultisigContract {
             .persistent()
             .set(&StorageKey::Threshold, &new_threshold);
 
-        // Adjust/cap any active per-operation overrides to ensure they do not exceed the new signer count.
+        // Adjust/cap any active per-operation overrides to ensure they do not exceed the new signer
+        // count.
         for op_type in [
             OperationType::ContractUpgrade,
             OperationType::LargePayment,
@@ -401,10 +402,9 @@ impl MultisigContract {
         ] {
             if let Some(override_val) = read_threshold_override(&env, &op_type) {
                 if override_val > signer_count as u32 {
-                    env.storage().persistent().set(
-                        &StorageKey::ThresholdOverride(op_type),
-                        signer_count,
-                    );
+                    env.storage()
+                        .persistent()
+                        .set(&StorageKey::ThresholdOverride(op_type), signer_count);
                 }
             }
         }

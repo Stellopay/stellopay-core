@@ -3,54 +3,50 @@
 //! ## Coverage targets
 //!
 //! * Initialization — happy path, double-init guard
-//! * `record_payment` — happy path, monotonic IDs, payment_hash stored,
-//!   reverse-lookup index written, all three sequential indices updated,
-//!   event emission, full field round-trip, multiple payments
+//! * `record_payment` — happy path, monotonic IDs, payment_hash stored, reverse-lookup index
+//!   written, all three sequential indices updated, event emission, full field round-trip, multiple
+//!   payments
 //! * `record_payment` — unauthorized (no auth mocked)
 //! * `get_payment_by_hash` — existing hash, unknown hash returns None
 //! * `get_payment_by_id` — existing ID, non-existent ID, ID 0
 //! * `get_global_payment_count` — before/after recordings
 //! * `get_agreement_payment_count` — before/after, multiple agreements
-//! * `get_payments_by_agreement` — full page, partial page, multi-page,
-//!   start_index=0, start_index>count, empty, exact boundary, limit capped
+//! * `get_payments_by_agreement` — full page, partial page, multi-page, start_index=0,
+//!   start_index>count, empty, exact boundary, limit capped
 //! * `get_employer_payment_count` — before/after, multiple employers
 //! * `get_payments_by_employer` — pagination, all boundary conditions
 //! * `get_employee_payment_count` — before/after, multiple employees
 //! * `get_payments_by_employee` — pagination, all boundary conditions
-//! * Cross-index consistency — same payment visible via hash, ID, and all
-//!   three sequential indices; all return identical records
-//! * Security — record immutability, index counts only increase (no pruning),
-//!   hash index written atomically with the primary record
+//! * Cross-index consistency — same payment visible via hash, ID, and all three sequential indices;
+//!   all return identical records
+//! * Security — record immutability, index counts only increase (no pruning), hash index written
+//!   atomically with the primary record
 //! * Large history — 20 records, boundary reads at exact count edge
 //!
 //! ## Security notes
 //!
 //! The tests below validate the following security properties directly:
 //!
-//! 1. **Unauthorized injection** — `test_record_payment_unauthorized_no_auth`
-//!    confirms that `record_payment` panics with `Auth(InvalidAction)` when
-//!    called without mocked auth for the registered payroll contract.
+//! 1. **Unauthorized injection** — `test_record_payment_unauthorized_no_auth` confirms that
+//!    `record_payment` panics with `Auth(InvalidAction)` when called without mocked auth for the
+//!    registered payroll contract.
 //!
-//! 2. **History tampering** — `test_records_are_immutable_after_recording`
-//!    verifies that a payment returned by all query paths is bit-for-bit
-//!    identical after additional payments are recorded. There is no overwrite
-//!    path in the contract; the test confirms this property holds at runtime.
+//! 2. **History tampering** — `test_records_are_immutable_after_recording` verifies that a payment
+//!    returned by all query paths is bit-for-bit identical after additional payments are recorded.
+//!    There is no overwrite path in the contract; the test confirms this property holds at runtime.
 //!
-//! 3. **Unauthorized pruning** — `test_index_counts_only_increase` asserts
-//!    that every index count after N insertions equals exactly N. Because
-//!    counts can only increment and there is no decrement or delete path,
-//!    it is impossible for any caller to remove entries from the pagination
-//!    range without corrupting the counter, which would cause every subsequent
-//!    paginated read to skip entries.
+//! 3. **Unauthorized pruning** — `test_index_counts_only_increase` asserts that every index count
+//!    after N insertions equals exactly N. Because counts can only increment and there is no
+//!    decrement or delete path, it is impossible for any caller to remove entries from the
+//!    pagination range without corrupting the counter, which would cause every subsequent paginated
+//!    read to skip entries.
 //!
-//! 4. **Hash-record atomicity** — `test_hash_index_written_atomically` records
-//!    a payment and immediately queries by hash. The reverse-lookup succeeds,
-//!    confirming the hash index and the primary record are written in the same
-//!    invocation and are always in sync.
+//! 4. **Hash-record atomicity** — `test_hash_index_written_atomically` records a payment and
+//!    immediately queries by hash. The reverse-lookup succeeds, confirming the hash index and the
+//!    primary record are written in the same invocation and are always in sync.
 //!
-//! 5. **Double-init guard** — `test_initialize_double_init_rejected` uses the
-//!    `try_initialize` path to confirm the second call is rejected without
-//!    corrupting the already-initialized state.
+//! 5. **Double-init guard** — `test_initialize_double_init_rejected` uses the `try_initialize` path
+//!    to confirm the second call is rejected without corrupting the already-initialized state.
 
 #![cfg(test)]
 
@@ -1325,4 +1321,58 @@ fn test_reconciliation_out_of_order_events_are_stable() {
     assert_eq!(page.len(), 2u32);
     assert_eq!(page.get(0).unwrap().id, id1);
     assert_eq!(page.get(1).unwrap().id, id2);
+}
+
+#[test]
+fn test_pagination_cost_ratio_within_limit() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let agreement_id = 1u128;
+    let total = 100u32;
+
+    for i in 0..total as u8 {
+        record(
+            &client,
+            &env,
+            agreement_id,
+            i,
+            &token,
+            i as i128,
+            &employer,
+            &employee,
+            i as u64,
+        );
+    }
+
+    env.budget().reset_default();
+
+    let ledger_entries_before = env.budget().track_ledger_entry_reads(true);
+    let (cpu_before, mem_before) = (env.budget().cpu_insns(), env.budget().mem_bytes());
+
+    let _ = client.get_payments_by_agreement(&agreement_id, &1u32, &total);
+
+    let cpu_after = env.budget().cpu_insns();
+    let mem_after = env.budget().mem_bytes();
+    let _ = env.budget().track_ledger_entry_reads(false);
+
+    let cpu_cost = (cpu_after - cpu_before) as f64;
+    let mem_cost = (mem_after - mem_before) as f64;
+    let cost_ratio = (cpu_cost + mem_cost) / 100_000.0f64;
+
+    let ratio_limit: f64 = std::env::var("TEST_PAGINATION_COST_RATIO_LIMIT")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .unwrap_or(10.0f64);
+
+    assert!(
+        cost_ratio < ratio_limit,
+        "Cost ratio should be < {:.2}x due to pagination cap; got {:.2}x",
+        ratio_limit,
+        cost_ratio
+    );
 }
