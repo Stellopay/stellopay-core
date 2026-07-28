@@ -10,7 +10,9 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true, features = ["alloc"] }
+rbac = { path = "../rbac" }
+multisig = { path = "../multisig" }
+withdrawal_timelock = { path = "../withdrawal_timelock" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }
-

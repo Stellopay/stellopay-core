@@ -1,6 +1,8 @@
 use bonus_system::{ApprovalStatus, BonusSystemContract, BonusSystemContractClient, IncentiveKind};
-use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{token, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    token, Address, Env,
+};
 
 fn create_token<'a>(env: &Env, admin: &Address) -> token::Client<'a> {
     let token_address = env.register_stellar_asset_contract(admin.clone());

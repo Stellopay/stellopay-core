@@ -5,8 +5,10 @@ use salary_adjustment::{
     AdjustmentKind, AdjustmentStatus, SalaryAdjustmentContract, SalaryAdjustmentContractClient,
     DEFAULT_MAX_SALARY,
 };
-use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, BytesN, Env, Symbol,
+};
 
 // ============================================================================
 // TEST HELPERS
@@ -27,6 +29,12 @@ fn set_time(env: &Env, timestamp: u64) {
     env.ledger().with_mut(|ledger| {
         ledger.timestamp = timestamp;
     });
+}
+
+fn reason_hash(env: &Env, marker: u8) -> BytesN<32> {
+    let mut bytes = [0u8; 32];
+    bytes[0] = marker;
+    BytesN::from_array(env, &bytes)
 }
 
 // ============================================================================
@@ -234,6 +242,161 @@ fn test_effective_date_equals_current_time_allowed() {
     assert!(client.get_adjustment(&id).is_some());
 }
 
+#[test]
+fn test_retroactive_adjustment_blocked_by_default() {
+    let env = create_env();
+    set_time(&env, 1_000);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let result =
+        client.try_create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &999);
+    assert!(result.is_err());
+    assert_eq!(client.get_audit_log_count(), 0);
+}
+
+#[test]
+fn test_authorized_retroactive_adjustment_works_and_is_logged() {
+    let env = create_env();
+    set_time(&env, 1_000);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let raw_reason_hash = reason_hash(&env, 7);
+
+    client.initialize(&owner);
+
+    let id = client.create_retroactive_adjustment(
+        &owner,
+        &employer,
+        &employee,
+        &approver,
+        &5_000,
+        &6_000,
+        &500,
+        &raw_reason_hash,
+    );
+
+    let stored = client.get_adjustment(&id).unwrap();
+    assert!(stored.retroactive);
+    assert_eq!(stored.retroactive_approved_by, Some(owner.clone()));
+    assert!(stored.reason_hash.is_some());
+    assert_ne!(stored.reason_hash.clone().unwrap(), raw_reason_hash);
+    assert_eq!(stored.created_at, 1_000);
+    assert_eq!(stored.effective_date, 500);
+
+    assert_eq!(client.get_audit_log_count(), 1);
+    let audit = client.get_audit_log(&1).unwrap();
+    assert_eq!(audit.adjustment_id, Some(id));
+    assert_eq!(audit.actor, employer.clone());
+    assert_eq!(audit.action, Symbol::new(&env, "adjustment_created"));
+    assert_eq!(audit.employee, Some(employee.clone()));
+    assert_eq!(audit.amount, Some(6_000));
+    assert_eq!(audit.reason_hash, stored.reason_hash.clone());
+
+    client.approve_adjustment(&approver, &id);
+    client.apply_adjustment(&employer, &id);
+
+    let applied = client.get_adjustment(&id).unwrap();
+    assert_eq!(applied.status, AdjustmentStatus::Applied);
+    assert_eq!(applied.reason_hash, stored.reason_hash);
+    assert_eq!(client.get_employee_salary(&employee), Some(6_000));
+    assert_eq!(client.get_audit_log_count(), 3);
+}
+
+#[test]
+fn test_non_owner_cannot_authorize_retroactive_adjustment() {
+    let env = create_env();
+    set_time(&env, 1_000);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let result = client.try_create_retroactive_adjustment(
+        &attacker,
+        &employer,
+        &employee,
+        &approver,
+        &5_000,
+        &6_000,
+        &500,
+        &reason_hash(&env, 8),
+    );
+    assert!(result.is_err());
+    assert_eq!(client.get_audit_log_count(), 0);
+}
+
+#[test]
+fn test_zero_retroactive_reason_hash_rejected() {
+    let env = create_env();
+    set_time(&env, 1_000);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let zero_hash = BytesN::from_array(&env, &[0; 32]);
+
+    client.initialize(&owner);
+
+    let result = client.try_create_retroactive_adjustment(
+        &owner, &employer, &employee, &approver, &5_000, &6_000, &500, &zero_hash,
+    );
+    assert!(result.is_err());
+    assert_eq!(client.get_audit_log_count(), 0);
+}
+
+#[test]
+fn test_conflicting_same_employee_effective_date_rejected() {
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let first = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    assert_eq!(first, 1);
+
+    let result =
+        client.try_create_adjustment(&employer, &employee, &approver, &6_000, &7_000, &200);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_same_employee_distinct_effective_dates_allowed() {
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let first = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    let second = client.create_adjustment(&employer, &employee, &approver, &6_000, &7_000, &201);
+
+    assert_eq!(second, first + 1);
+    assert_eq!(client.get_audit_log_count(), 2);
+}
+
 // ============================================================================
 // SALARY CAP TESTS
 // ============================================================================
@@ -352,7 +515,8 @@ fn test_updated_cap_is_respected() {
     client.set_salary_cap(&owner, &12_000);
 
     // 15_000 now exceeds new cap — must fail
-    let result = client.try_create_adjustment(&employer, &employee, &approver, &5_000, &15_000, &200);
+    let result =
+        client.try_create_adjustment(&employer, &employee, &approver, &5_000, &15_000, &200);
     assert!(result.is_err());
 }
 
@@ -771,4 +935,137 @@ fn test_get_owner() {
     client.initialize(&owner);
 
     assert_eq!(client.get_owner(), Some(owner));
+}
+
+// ============================================================================
+// RETROACTIVE ADJUSTMENT AFTER CLAIMED PERIODS
+//
+// These tests verify that a retroactive adjustment:
+//   1. Updates the salary going forward when applied.
+//   2. Does NOT retroactively alter already-processed payroll periods.
+//      The salary_adjustment contract has no claw-back or top-up mechanism
+//      for past claims. The effective_date is a constraint on when the
+//      adjustment can be applied, not a trigger for retroactive recalculation.
+// ============================================================================
+
+#[test]
+fn test_retroactive_adjustment_updates_salary_going_forward() {
+    let env = create_env();
+    set_time(&env, 1000);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Step 1: Create and apply a normal forward adjustment at T=1000.
+    //         This simulates the initial salary being updated to 8_000.
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &8_000, &1000);
+    client.approve_adjustment(&approver, &id1);
+    client.apply_adjustment(&employer, &id1);
+    assert_eq!(client.get_employee_salary(&employee), Some(8_000));
+
+    // Step 2: Time passes. In a real system, payroll periods are claimed at
+    //         salary 8_000 during this interval. The salary_adjustment contract
+    //         does not track individual claims — it only stores the latest
+    //         applied salary for future visibility.
+    set_time(&env, 2000);
+
+    // Step 3: Create a retroactive adjustment with effective_date=500,
+    //         which is before the first adjustment was applied. The owner
+    //         must authorize retroactive adjustments explicitly.
+    let id2 = client.create_retroactive_adjustment(
+        &owner,
+        &employer,
+        &employee,
+        &approver,
+        &8_000,
+        &10_000,
+        &500,
+        &reason_hash(&env, 42),
+    );
+    let adj = client.get_adjustment(&id2).unwrap();
+    assert!(adj.retroactive, "adjustment must be marked retroactive");
+
+    client.approve_adjustment(&approver, &id2);
+    client.apply_adjustment(&employer, &id2);
+
+    // Step 4: The salary is updated going forward. The new salary takes
+    //         effect from the time `apply_adjustment` was called (T=2000).
+    assert_eq!(
+        client.get_employee_salary(&employee),
+        Some(10_000),
+        "salary must reflect the new value after apply"
+    );
+
+    // Step 5: Verify the retroactive adjustment is correctly recorded.
+    let applied = client.get_adjustment(&id2).unwrap();
+    assert_eq!(applied.status, AdjustmentStatus::Applied);
+    assert_eq!(applied.effective_date, 500);
+    assert_eq!(applied.current_salary, 8_000);
+    assert_eq!(applied.new_salary, 10_000);
+    assert_eq!(
+        applied.retroactive_approved_by,
+        Some(owner.clone()),
+        "retroactive approval must be recorded"
+    );
+
+    // Step 6: The earlier salary (8_000) is no longer directly accessible
+    //         via get_employee_salary — only the latest applied salary is
+    //         stored. This is the expected forward-only behavior. If a
+    //         period was already claimed at 8_000, it is NOT retroactively
+    //         topped up to 10_000 by this contract.
+    assert_eq!(
+        client.get_employee_salary(&employee),
+        Some(10_000),
+        "only the latest salary is visible; no retroactive recalculation"
+    );
+}
+
+#[test]
+fn test_retroactive_adjustment_does_not_affect_prior_normal_adjustment() {
+    // Verifies that a retroactive adjustment with effective_date before an
+    // earlier normal adjustment does not retroactively change the salary
+    // that was in effect when the earlier adjustment was applied.
+    let env = create_env();
+    set_time(&env, 1000);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Apply normal adjustment at T=1000: 5_000 -> 8_000
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &8_000, &1000);
+    client.approve_adjustment(&approver, &id1);
+    client.apply_adjustment(&employer, &id1);
+    assert_eq!(client.get_employee_salary(&employee), Some(8_000));
+
+    // Time passes, then create a retroactive adjustment to 10_000
+    // with effective_date=200 (way before the first adjustment).
+    set_time(&env, 3000);
+    let id2 = client.create_retroactive_adjustment(
+        &owner,
+        &employer,
+        &employee,
+        &approver,
+        &8_000,
+        &10_000,
+        &200,
+        &reason_hash(&env, 99),
+    );
+    client.approve_adjustment(&approver, &id2);
+    client.apply_adjustment(&employer, &id2);
+
+    // The retroactive adjustment's new salary is visible going forward.
+    assert_eq!(client.get_employee_salary(&employee), Some(10_000));
+
+    // The audit trail records the retroactive nature of the adjustment.
+    let audit_count = client.get_audit_log_count();
+    let audit = client.get_audit_log(&audit_count).unwrap();
+    assert_eq!(audit.action, Symbol::new(&env, "adjustment_applied"));
 }

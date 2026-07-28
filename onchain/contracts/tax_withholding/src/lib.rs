@@ -132,6 +132,25 @@ pub struct WithholdingRemittedEvent {
     pub treasury: Address,
 }
 
+/// Emitted when an employee is pinned to a different ruleset version.
+///
+/// This audit trail lets compliance systems prove which owner-authorized
+/// caller moved an employee between ruleset versions. Deprecated versions are
+/// never valid migration targets; they may remain only for historical,
+/// already-pinned calculations.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmployeeVersionMigratedEvent {
+    /// Employee whose ruleset pin changed.
+    pub employee: Address,
+    /// Ruleset version used before the migration.
+    pub from_version: u32,
+    /// Ruleset version selected by the migration.
+    pub to_version: u32,
+    /// Authenticated owner address that performed the migration.
+    pub caller: Address,
+}
+
 /// Tax Withholding Contract
 ///
 /// Provides configurable per-jurisdiction tax rates, accrual tracking, and
@@ -140,10 +159,10 @@ pub struct WithholdingRemittedEvent {
 ///
 /// # Security Model
 ///
-/// * Only the **owner** can configure rates, treasury addresses, employee
-///   jurisdictions, and trigger remittances.
-/// * Treasury addresses are owner-controlled; no other caller can redirect
-///   withheld funds to an arbitrary address.
+/// * Only the **owner** can configure rates, treasury addresses, employee jurisdictions, and
+///   trigger remittances.
+/// * Treasury addresses are owner-controlled; no other caller can redirect withheld funds to an
+///   arbitrary address.
 /// * Accrued state is updated **before** token transfers (state-before-interaction).
 /// * All arithmetic uses `checked_*` operations to prevent overflow/underflow.
 ///
@@ -364,12 +383,15 @@ impl TaxWithholdingContract {
         caller.require_auth();
         Self::require_owner(&env, &caller)?;
 
-        // Verify version exists
-        let _metadata: RulesetMetadata = env
+        // Verify version exists and is eligible for activation.
+        let metadata: RulesetMetadata = env
             .storage()
             .persistent()
             .get(&StorageKey::RulesetMetadata(version))
             .ok_or(TaxError::InvalidVersion)?;
+        if metadata.deprecated {
+            return Err(TaxError::DeprecatedVersion);
+        }
 
         env.storage()
             .persistent()
@@ -400,11 +422,15 @@ impl TaxWithholdingContract {
             .get(&StorageKey::RulesetMetadata(version))
     }
 
-    /// Locks a ruleset version to prevent further modifications.
+    /// Locks a specific ruleset version to prevent further rate modifications.
+    ///
+    /// The lock is scoped strictly to the specified `version` (e.g. version N).
+    /// Freezing version N prevents `set_jurisdiction_rate` edits for version N
+    /// while leaving other versions (e.g. N+1 or newly published versions) editable.
     ///
     /// # Arguments
     /// * `caller` - Must be the contract owner.
-    /// * `version` - Version number to lock.
+    /// * `version` - Specific ruleset version number to lock.
     ///
     /// # Access Control
     /// Caller must be the contract owner.
@@ -429,7 +455,56 @@ impl TaxWithholdingContract {
         Ok(())
     }
 
-    /// Checks if a ruleset version is locked.
+    /// Deprecates a ruleset version so it cannot be activated or selected by migration.
+    ///
+    /// Deprecated versions are retained for deterministic historical calculations
+    /// for employees that were already pinned before deprecation. There is no
+    /// override path in this contract for migrating an employee to a deprecated
+    /// version because that would silently allow obsolete withholding rules.
+    ///
+    /// # Arguments
+    /// * `caller` - Must be the contract owner.
+    /// * `version` - Version number to deprecate.
+    ///
+    /// # Access Control
+    /// Caller must be the contract owner.
+    ///
+    /// # Errors
+    /// * `Unauthorized` — caller is not the owner.
+    /// * `InvalidVersion` — version does not exist or is the active default.
+    pub fn deprecate_ruleset_version(
+        env: Env,
+        caller: Address,
+        version: u32,
+    ) -> Result<(), TaxError> {
+        caller.require_auth();
+        Self::require_owner(&env, &caller)?;
+
+        let active_version: u32 = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::ActiveRulesetVersion)
+            .unwrap_or(1);
+        if version == active_version {
+            return Err(TaxError::InvalidVersion);
+        }
+
+        let key = StorageKey::RulesetMetadata(version);
+        let mut metadata: RulesetMetadata = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(TaxError::InvalidVersion)?;
+        metadata.deprecated = true;
+        env.storage().persistent().set(&key, &metadata);
+        Ok(())
+    }
+
+    /// Checks if a specific ruleset version is locked.
+    ///
+    /// Returns `true` if the targeted `version` has been locked via
+    /// `lock_ruleset_version`, and `false` otherwise. Lock status is scoped
+    /// per version and does not affect lock queries on other versions.
     pub fn is_ruleset_locked(env: Env, version: u32) -> bool {
         env.storage()
             .persistent()
@@ -437,7 +512,12 @@ impl TaxWithholdingContract {
             .unwrap_or(false)
     }
 
-    /// Migrates an employee to a specific ruleset version.
+    /// Migrates an employee to a specific non-deprecated ruleset version.
+    ///
+    /// Deprecated versions are never valid migration targets. They are kept
+    /// only so already-pinned historical calculations remain deterministic;
+    /// this contract intentionally has no override that can silently move an
+    /// employee back onto obsolete withholding rules.
     ///
     /// # Arguments
     /// * `caller` - Must be the contract owner.
@@ -450,6 +530,12 @@ impl TaxWithholdingContract {
     /// # Errors
     /// * `Unauthorized` — caller is not the owner.
     /// * `InvalidVersion` — version does not exist.
+    /// * `DeprecatedVersion` — version is deprecated.
+    ///
+    /// # Events
+    /// Emits `("employee_version_migrated",)` with an
+    /// [`EmployeeVersionMigratedEvent`] containing the previous version, target
+    /// version, employee, and caller.
     pub fn migrate_employee_to_version(
         env: Env,
         caller: Address,
@@ -459,16 +545,29 @@ impl TaxWithholdingContract {
         caller.require_auth();
         Self::require_owner(&env, &caller)?;
 
-        // Verify version exists
-        let _metadata: RulesetMetadata = env
+        let metadata: RulesetMetadata = env
             .storage()
             .persistent()
             .get(&StorageKey::RulesetMetadata(version))
             .ok_or(TaxError::InvalidVersion)?;
+        if metadata.deprecated {
+            return Err(TaxError::DeprecatedVersion);
+        }
 
-        env.storage()
-            .persistent()
-            .set(&StorageKey::EmployeeRulesetVersion(employee), &version);
+        let from_version = Self::get_employee_ruleset_version_internal(&env, &employee);
+        env.storage().persistent().set(
+            &StorageKey::EmployeeRulesetVersion(employee.clone()),
+            &version,
+        );
+        env.events().publish(
+            ("employee_version_migrated",),
+            EmployeeVersionMigratedEvent {
+                employee,
+                from_version,
+                to_version: version,
+                caller,
+            },
+        );
         Ok(())
     }
 
@@ -564,6 +663,13 @@ impl TaxWithholdingContract {
 
     /// Assigns the set of applicable jurisdictions for a given employee.
     ///
+    /// # Historical Accrual Preservation
+    /// Jurisdiction assignment changes are forward-only and never rewrite or
+    /// delete historical withholding records (`AccruedWithholding`) or audit history.
+    /// Updating or removing an employee's jurisdiction assignment affects only future
+    /// calculations; prior accrued withholding balances remain intact, queryable,
+    /// and remittable.
+    ///
     /// # Access Control
     /// Caller must be the contract owner.
     ///
@@ -603,8 +709,7 @@ impl TaxWithholdingContract {
     ///
     /// # Errors
     /// * `ArithmeticError` — `gross_amount <= 0` or overflow.
-    /// * `NotConfigured`   — employee has no jurisdictions, or a jurisdiction
-    ///                        has no rate set.
+    /// * `NotConfigured`   — employee has no jurisdictions, or a jurisdiction has no rate set.
     pub fn calculate_withholding(
         env: Env,
         employee: Address,
@@ -684,6 +789,13 @@ impl TaxWithholdingContract {
     ///
     /// State is updated **before** the token transfer (state-before-interaction
     /// pattern) to prevent re-entrancy.
+    ///
+    /// # Idempotency Guarantee
+    /// This function is idempotent: once an accrued balance is remitted to zero,
+    /// subsequent calls with the same jurisdiction will return `NothingToRemit`
+    /// rather than causing underflow or double-counting. The accrued balance is
+    /// set to zero atomically before the token transfer, ensuring no partial
+    /// state can leave the system vulnerable to double-remittance attacks.
     ///
     /// # Arguments
     /// * `caller`       — Must be the contract owner. Tokens are transferred

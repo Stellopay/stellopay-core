@@ -56,7 +56,7 @@ fn test_create_split_percent_success() {
     let creator = Address::generate(&env);
     let a = Address::generate(&env);
     let b = Address::generate(&env);
-    
+
     let mut recipients = Vec::new(&env);
     recipients.push_back(RecipientShare {
         recipient: a.clone(),
@@ -66,7 +66,7 @@ fn test_create_split_percent_success() {
         recipient: b.clone(),
         kind: ShareKind::Percent(4000),
     });
-    
+
     let id = client.create_split(&creator, &recipients);
     let def = client.get_split(&id);
     assert_eq!(def.recipients.len(), 2);
@@ -80,7 +80,7 @@ fn test_create_split_duplicate_recipient() {
     let (_, client) = setup(&env);
     let creator = Address::generate(&env);
     let a = Address::generate(&env);
-    
+
     let mut recipients = Vec::new(&env);
     recipients.push_back(RecipientShare {
         recipient: a.clone(),
@@ -101,7 +101,7 @@ fn test_create_split_zero_percent() {
     let creator = Address::generate(&env);
     let a = Address::generate(&env);
     let b = Address::generate(&env);
-    
+
     let mut recipients = Vec::new(&env);
     recipients.push_back(RecipientShare {
         recipient: a,
@@ -122,7 +122,7 @@ fn test_create_split_mixed_modes() {
     let creator = Address::generate(&env);
     let a = Address::generate(&env);
     let b = Address::generate(&env);
-    
+
     let mut recipients = Vec::new(&env);
     recipients.push_back(RecipientShare {
         recipient: a,
@@ -140,29 +140,38 @@ fn test_compute_split_rounding_dust() {
     let env = create_env();
     let (_, client) = setup(&env);
     let creator = Address::generate(&env);
-    
+
     let a = Address::generate(&env);
     let b = Address::generate(&env);
     let c = Address::generate(&env);
-    
+
     let mut recipients = Vec::new(&env);
     // 3333 + 3333 + 3334 = 10000
-    recipients.push_back(RecipientShare { recipient: a.clone(), kind: ShareKind::Percent(3333) });
-    recipients.push_back(RecipientShare { recipient: b.clone(), kind: ShareKind::Percent(3333) });
-    recipients.push_back(RecipientShare { recipient: c.clone(), kind: ShareKind::Percent(3334) });
-    
+    recipients.push_back(RecipientShare {
+        recipient: a.clone(),
+        kind: ShareKind::Percent(3333),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b.clone(),
+        kind: ShareKind::Percent(3333),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: c.clone(),
+        kind: ShareKind::Percent(3334),
+    });
+
     let id = client.create_split(&creator, &recipients);
-    
+
     // Total = 100
     // A: (3333 * 100) / 10000 = 33
     // B: (3333 * 100) / 10000 = 33
     // C: 100 - (33 + 33) = 34
     let out = client.compute_split(&id, &100);
-    
+
     assert_eq!(out.get(0).unwrap().1, 33);
     assert_eq!(out.get(1).unwrap().1, 33);
     assert_eq!(out.get(2).unwrap().1, 34);
-    
+
     let total_comp: i128 = out.iter().map(|x| x.1).sum();
     assert_eq!(total_comp, 100);
 }
@@ -172,16 +181,22 @@ fn test_compute_split_prime_number() {
     let env = create_env();
     let (_, client) = setup(&env);
     let creator = Address::generate(&env);
-    
+
     let a = Address::generate(&env);
     let b = Address::generate(&env);
-    
+
     let mut recipients = Vec::new(&env);
-    recipients.push_back(RecipientShare { recipient: a, kind: ShareKind::Percent(6000) });
-    recipients.push_back(RecipientShare { recipient: b, kind: ShareKind::Percent(4000) });
-    
+    recipients.push_back(RecipientShare {
+        recipient: a,
+        kind: ShareKind::Percent(6000),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b,
+        kind: ShareKind::Percent(4000),
+    });
+
     let id = client.create_split(&creator, &recipients);
-    
+
     // Total = 107 (prime)
     // A: (6000 * 107) / 10000 = 64.2 -> 64
     // B: 107 - 64 = 43
@@ -196,14 +211,20 @@ fn test_compute_split_one_stroop() {
     let env = create_env();
     let (_, client) = setup(&env);
     let creator = Address::generate(&env);
-    
+
     let a = Address::generate(&env);
     let b = Address::generate(&env);
-    
+
     let mut recipients = Vec::new(&env);
-    recipients.push_back(RecipientShare { recipient: a, kind: ShareKind::Percent(5000) });
-    recipients.push_back(RecipientShare { recipient: b, kind: ShareKind::Percent(5000) });
-    
+    recipients.push_back(RecipientShare {
+        recipient: a,
+        kind: ShareKind::Percent(5000),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b,
+        kind: ShareKind::Percent(5000),
+    });
+
     let id = client.create_split(&creator, &recipients);
     let out = client.compute_split(&id, &1);
 
@@ -228,16 +249,22 @@ fn test_fixed_split_validation() {
     let creator = Address::generate(&env);
     let a = Address::generate(&env);
     let b = Address::generate(&env);
-    
+
     let mut recipients = Vec::new(&env);
-    recipients.push_back(RecipientShare { recipient: a, kind: ShareKind::Fixed(300) });
-    recipients.push_back(RecipientShare { recipient: b, kind: ShareKind::Fixed(700) });
-    
+    recipients.push_back(RecipientShare {
+        recipient: a,
+        kind: ShareKind::Fixed(300),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b,
+        kind: ShareKind::Fixed(700),
+    });
+
     let id = client.create_split(&creator, &recipients);
-    
+
     assert!(client.validate_split_for_amount(&id, &1000));
     assert!(!client.validate_split_for_amount(&id, &999));
-    
+
     let out = client.compute_split(&id, &1000);
     assert_eq!(out.get(0).unwrap().1, 300);
     assert_eq!(out.get(1).unwrap().1, 700);
@@ -253,8 +280,14 @@ fn test_compute_split_zero_amount_rejected() {
     let b = Address::generate(&env);
 
     let mut recipients = Vec::new(&env);
-    recipients.push_back(RecipientShare { recipient: a, kind: ShareKind::Percent(5000) });
-    recipients.push_back(RecipientShare { recipient: b, kind: ShareKind::Percent(5000) });
+    recipients.push_back(RecipientShare {
+        recipient: a,
+        kind: ShareKind::Percent(5000),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b,
+        kind: ShareKind::Percent(5000),
+    });
 
     let id = client.create_split(&creator, &recipients);
     client.compute_split(&id, &0);
@@ -270,8 +303,14 @@ fn test_compute_split_negative_amount_rejected() {
     let b = Address::generate(&env);
 
     let mut recipients = Vec::new(&env);
-    recipients.push_back(RecipientShare { recipient: a, kind: ShareKind::Percent(5000) });
-    recipients.push_back(RecipientShare { recipient: b, kind: ShareKind::Percent(5000) });
+    recipients.push_back(RecipientShare {
+        recipient: a,
+        kind: ShareKind::Percent(5000),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b,
+        kind: ShareKind::Percent(5000),
+    });
 
     let id = client.create_split(&creator, &recipients);
     client.compute_split(&id, &-1);
@@ -287,8 +326,14 @@ fn test_fixed_split_mismatched_total_rejected() {
     let b = Address::generate(&env);
 
     let mut recipients = Vec::new(&env);
-    recipients.push_back(RecipientShare { recipient: a, kind: ShareKind::Fixed(300) });
-    recipients.push_back(RecipientShare { recipient: b, kind: ShareKind::Fixed(700) });
+    recipients.push_back(RecipientShare {
+        recipient: a,
+        kind: ShareKind::Fixed(300),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b,
+        kind: ShareKind::Fixed(700),
+    });
 
     let id = client.create_split(&creator, &recipients);
     client.compute_split(&id, &999);
@@ -303,12 +348,24 @@ fn test_dust_tie_breaker_ignores_input_order() {
     let b = Address::generate(&env);
 
     let mut first_order = Vec::new(&env);
-    first_order.push_back(RecipientShare { recipient: a.clone(), kind: ShareKind::Percent(5000) });
-    first_order.push_back(RecipientShare { recipient: b.clone(), kind: ShareKind::Percent(5000) });
+    first_order.push_back(RecipientShare {
+        recipient: a.clone(),
+        kind: ShareKind::Percent(5000),
+    });
+    first_order.push_back(RecipientShare {
+        recipient: b.clone(),
+        kind: ShareKind::Percent(5000),
+    });
 
     let mut reversed_order = Vec::new(&env);
-    reversed_order.push_back(RecipientShare { recipient: b.clone(), kind: ShareKind::Percent(5000) });
-    reversed_order.push_back(RecipientShare { recipient: a.clone(), kind: ShareKind::Percent(5000) });
+    reversed_order.push_back(RecipientShare {
+        recipient: b.clone(),
+        kind: ShareKind::Percent(5000),
+    });
+    reversed_order.push_back(RecipientShare {
+        recipient: a.clone(),
+        kind: ShareKind::Percent(5000),
+    });
 
     let first_id = client.create_split(&creator, &first_order);
     let second_id = client.create_split(&creator, &reversed_order);
@@ -329,7 +386,10 @@ fn test_dust_tie_breaker_ignores_input_order() {
 
     assert_eq!(first_a, second_a);
     assert_eq!(first_out.get(0).unwrap().1 + first_out.get(1).unwrap().1, 1);
-    assert_eq!(second_out.get(0).unwrap().1 + second_out.get(1).unwrap().1, 1);
+    assert_eq!(
+        second_out.get(0).unwrap().1 + second_out.get(1).unwrap().1,
+        1
+    );
 }
 
 #[test]
@@ -342,9 +402,18 @@ fn test_repeated_percent_splits_do_not_lose_or_create_value() {
     let c = Address::generate(&env);
 
     let mut recipients = Vec::new(&env);
-    recipients.push_back(RecipientShare { recipient: a, kind: ShareKind::Percent(3333) });
-    recipients.push_back(RecipientShare { recipient: b, kind: ShareKind::Percent(3333) });
-    recipients.push_back(RecipientShare { recipient: c, kind: ShareKind::Percent(3334) });
+    recipients.push_back(RecipientShare {
+        recipient: a,
+        kind: ShareKind::Percent(3333),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b,
+        kind: ShareKind::Percent(3333),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: c,
+        kind: ShareKind::Percent(3334),
+    });
 
     let id = client.create_split(&creator, &recipients);
 
@@ -367,11 +436,17 @@ fn test_compute_split_extreme_recipient_count() {
     let (_, client) = setup(&env);
     let creator = Address::generate(&env);
 
+    // Use the contract's actual maximum (`MAX_RECIPIENTS = 50`); the count
+    // previously used here (100) always panics with "Recipient count
+    // exceeds maximum" and this test never verified anything beyond that
+    // panic (there was no `#[should_panic]`), so it had never actually run
+    // successfully. Each share is 200 bps (2%) so 50 of them sum to exactly
+    // 10_000 bps (100%), same as the original 100 recipients at 100 bps each.
     let mut recipients = Vec::new(&env);
-    for _ in 0..100u32 {
+    for _ in 0..50u32 {
         recipients.push_back(RecipientShare {
             recipient: Address::generate(&env),
-            kind: ShareKind::Percent(100),
+            kind: ShareKind::Percent(200),
         });
     }
 
@@ -381,16 +456,236 @@ fn test_compute_split_extreme_recipient_count() {
     let mut recipients_with_extra_unit = 0u32;
     let mut total = 0i128;
     for entry in out.iter() {
-        assert!(entry.1 == 123 || entry.1 == 124);
-        if entry.1 == 124 {
+        assert!(entry.1 == 246 || entry.1 == 247);
+        if entry.1 == 247 {
             recipients_with_extra_unit += 1;
         }
         total += entry.1;
     }
 
-    assert_eq!(out.len(), 100);
+    assert_eq!(out.len(), 50);
     assert_eq!(recipients_with_extra_unit, 45);
     assert_eq!(total, 12_345);
+}
+
+#[test]
+fn test_property_conservation_and_bound_many_recipients() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+
+    let mut recipients = Vec::new(&env);
+    let mut total_bps = 0;
+
+    for _ in 1..=49u32 {
+        recipients.push_back(RecipientShare {
+            recipient: Address::generate(&env),
+            kind: ShareKind::Percent(100),
+        });
+        total_bps += 100;
+    }
+    // Remaining bps to ensure it sums to 10000
+    recipients.push_back(RecipientShare {
+        recipient: Address::generate(&env),
+        kind: ShareKind::Percent(10000 - total_bps),
+    });
+
+    let id = client.create_split(&creator, &recipients);
+
+    // Property: for various amounts, sum(parts) == total
+    // and dust bound is never violated (the contract won't panic).
+    let test_amounts = [1, 10, 199, 200, 201, 1000, 9999, 10000, 10001, 123456789];
+
+    for amount in test_amounts.iter() {
+        let out = client.compute_split(&id, amount);
+        let sum: i128 = out.iter().map(|entry| entry.1).sum();
+        assert_eq!(sum, *amount, "Conservation failed for amount: {}", amount);
+    }
+}
+
+#[test]
+fn test_dust_remainder_goes_to_highest_fractional_remainder() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+
+    // 33.3% / 66.7% split on amount=100
+    // A: 3333 bps → (3333*100)/10000 = 33.33 → floor=33, remainder=3300
+    // B: 6667 bps → (6667*100)/10000 = 66.67 → floor=66, remainder=6700
+    // B has larger remainder → gets the dust unit
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(RecipientShare {
+        recipient: a.clone(),
+        kind: ShareKind::Percent(3333),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b.clone(),
+        kind: ShareKind::Percent(6667),
+    });
+
+    let id = client.create_split(&creator, &recipients);
+    let out = client.compute_split(&id, &100);
+
+    // B should get the extra dust unit (larger fractional remainder)
+    let a_amount = if out.get(0).unwrap().0 == a {
+        out.get(0).unwrap().1
+    } else {
+        out.get(1).unwrap().1
+    };
+    let b_amount = if out.get(0).unwrap().0 == b {
+        out.get(0).unwrap().1
+    } else {
+        out.get(1).unwrap().1
+    };
+
+    assert_eq!(a_amount, 33);
+    assert_eq!(b_amount, 67);
+    assert_eq!(a_amount + b_amount, 100);
+}
+
+#[test]
+fn test_remainder_tie_goes_to_lexicographically_smaller_address() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+
+    // 50/50 split on amount=1 → both have remainder=5000 (tie)
+    // Dust=1, tie goes to smaller address
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+
+    let a_lt_b = compare_addresses(&env, &a, &b) < 0;
+
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(RecipientShare {
+        recipient: a.clone(),
+        kind: ShareKind::Percent(5000),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b.clone(),
+        kind: ShareKind::Percent(5000),
+    });
+
+    let id = client.create_split(&creator, &recipients);
+    let out = client.compute_split(&id, &1);
+
+    let a_amount = if out.get(0).unwrap().0 == a {
+        out.get(0).unwrap().1
+    } else {
+        out.get(1).unwrap().1
+    };
+    let b_amount = if out.get(0).unwrap().0 == b {
+        out.get(0).unwrap().1
+    } else {
+        out.get(1).unwrap().1
+    };
+
+    if a_lt_b {
+        assert_eq!(a_amount, 1);
+        assert_eq!(b_amount, 0);
+    } else {
+        assert_eq!(a_amount, 0);
+        assert_eq!(b_amount, 1);
+    }
+    assert_eq!(a_amount + b_amount, 1);
+}
+
+#[test]
+fn test_sum_preservation_property_diverse_splits_and_amounts() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+
+    // Test multiple split configurations across a range of amounts
+    let split_configs = [
+        vec![10000],                   // 1 recipient, 100%
+        vec![5000, 5000],              // 2 recipients, equal
+        vec![6000, 4000],              // 2 recipients, unequal
+        vec[]{3333, 3333, 3334},       // 3 recipients, unequal
+        vec![2500, 2500, 2500, 2500],  // 4 recipients, equal
+        vec![1000, 2000, 3000, 4000],  // 4 recipients, unequal
+        vec![200; 5],                  // 5 recipients, equal (5*200=1000 ≠ 10000)
+    ];
+
+    for (config_idx, bps_list) in split_configs.iter().enumerate() {
+        // Skip configs that don't sum to 10000
+        let sum: u32 = bps_list.iter().sum();
+        if sum != 10000 {
+            continue;
+        }
+
+        let mut recipients = Vec::new(&env);
+        for bps in bps_list.iter() {
+            recipients.push_back(RecipientShare {
+                recipient: Address::generate(&env),
+                kind: ShareKind::Percent(*bps),
+            });
+        }
+
+        let id = client.create_split(&creator, &recipients);
+
+        // Test every amount from 1 to 200, plus some larger edge values
+        for amount in 1..=200i128 {
+            let out = client.compute_split(&id, &amount);
+            let sum: i128 = out.iter().map(|entry| entry.1).sum();
+            assert_eq!(
+                sum, amount,
+                "Sum preservation failed for config {} amount {}",
+                config_idx, amount
+            );
+        }
+
+        // Edge values
+        let edge_amounts = [999, 1000, 5000, 10000, 100000, 999999, i128::MAX / 100];
+        for &amount in &edge_amounts {
+            let out = client.compute_split(&id, &amount);
+            let sum: i128 = out.iter().map(|entry| entry.1).sum();
+            assert_eq!(
+                sum, amount,
+                "Sum preservation failed for config {} amount {}",
+                config_idx, amount
+            );
+        }
+    }
+}
+
+#[test]
+fn test_no_dust_lost_or_created_fixed_splits() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+
+    // Fixed splits should pass through exactly (no rounding)
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(RecipientShare {
+        recipient: a.clone(),
+        kind: ShareKind::Fixed(123),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b.clone(),
+        kind: ShareKind::Fixed(456),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: c.clone(),
+        kind: ShareKind::Fixed(789),
+    });
+
+    let id = client.create_split(&creator, &recipients);
+    let total = 123 + 456 + 789;
+    let out = client.compute_split(&id, &total);
+
+    let sum: i128 = out.iter().map(|entry| entry.1).sum();
+    assert_eq!(sum, total);
+    assert_eq!(out.get(0).unwrap().1, 123);
+    assert_eq!(out.get(1).unwrap().1, 456);
+    assert_eq!(out.get(2).unwrap().1, 789);
 }
 
 #[test]

@@ -1,0 +1,6 @@
+# Default reviewers for high-risk paths. Update when maintainer ownership changes.
+# See CONTRIBUTING.md and SECURITY.md for contribution and disclosure policies.
+
+/onchain/contracts/          @Jagadeeshftw
+/onchain/integration_tests/  @Jagadeeshftw
+/tools/                      @Jagadeeshftw

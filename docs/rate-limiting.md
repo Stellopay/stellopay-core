@@ -53,6 +53,6 @@ Comprehensive tests live in `onchain/contracts/rate_limiter/tests/test_rate_limi
 ## Usage Notes
 
 - Set sensible defaults and overrides for high-traffic addresses.
-- Consider composing this contract in other contracts by calling `check_and_consume` at entry points that need throttling.
+- The `stello_pay_contract` optionally integrates this rate limiter to protect its `claim_payroll`, `claim_payroll_in_token`, and `batch_claim_payroll` entrypoints from spam. When configured via `set_rate_limiter_contract`, these endpoints call `check_and_consume` and return `RateLimited` if the caller's quota is exhausted.
 - For auditability, emit events if you need operational telemetry. (Current minimal version omits events.) 
 

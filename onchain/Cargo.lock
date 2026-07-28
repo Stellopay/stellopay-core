@@ -13,12 +13,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "aes"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
+dependencies = [
+ "cfg-if",
+ "cipher",
+ "cpufeatures",
+]
+
+[[package]]
 name = "aes-gcm"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "831010a0f742e1209b3bcea8fab6a8e149051ba6099432c8cb2cc117dec3ead1"
 dependencies = [
  "aead",
+ "aes",
  "cipher",
  "ctr",
  "ghash",
@@ -427,6 +439,8 @@ dependencies = [
 name = "compliance_reporting"
 version = "0.0.0"
 dependencies = [
+ "audit_logger",
+ "payment_history",
  "soroban-sdk",
 ]
 
@@ -872,9 +886,9 @@ checksum = "2bfcf67fea2815c2fc3b90873fae90957be12ff417335dfadc7f52927feb03b2"
 
 [[package]]
 name = "ethnum"
-version = "1.5.2"
+version = "1.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca81e6b4777c89fd810c25a4be2b1bd93ea034fbe58e6a75216a34c6b82c539b"
+checksum = "40404c3f5f511ec4da6fe866ddf6a717c309fdbb69fbbad7b0f3edab8f2e835f"
 
 [[package]]
 name = "expense_reimbursement"
@@ -993,7 +1007,10 @@ dependencies = [
 name = "governance"
 version = "0.0.0"
 dependencies = [
+ "multisig",
+ "rbac",
  "soroban-sdk",
+ "withdrawal_timelock",
 ]
 
 [[package]]
@@ -1175,15 +1192,20 @@ dependencies = [
 name = "integration_tests"
 version = "0.0.0"
 dependencies = [
+ "audit_logger",
  "bonus_system",
+ "department_manager",
  "dispute_escalation",
  "employee_roles",
  "governance",
  "payment_history",
  "payroll_escrow",
  "rbac",
+ "salary_adjustment",
  "soroban-sdk",
  "stello_pay_contract",
+ "template_versioning",
+ "token_vesting",
  "withdrawal_timelock",
 ]
 
@@ -1290,6 +1312,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 
 [[package]]
+name = "milestone-interface"
+version = "0.0.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "multisig"
 version = "0.0.0"
 dependencies = [
@@ -1297,7 +1326,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "nft_payroll_badge"
+name = "nft-payroll-badge"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
@@ -1414,6 +1443,7 @@ dependencies = [
 name = "payment_scheduler"
 version = "0.0.0"
 dependencies = [
+ "payment_retry",
  "soroban-sdk",
 ]
 
@@ -1430,6 +1460,16 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "soroban-sdk",
+]
+
+[[package]]
+name = "pbkdf2"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
+dependencies = [
+ "digest",
+ "hmac",
 ]
 
 [[package]]
@@ -1676,6 +1716,14 @@ dependencies = [
 
 [[package]]
 name = "rbac"
+version = "0.0.0"
+dependencies = [
+ "rbac-interface",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "rbac-interface"
 version = "0.0.0"
 dependencies = [
  "soroban-sdk",
@@ -2301,7 +2349,14 @@ dependencies = [
  "base64 0.21.7",
  "criterion",
  "hmac",
+ "milestone-interface",
+ "multisig",
+ "pbkdf2",
+ "price_oracle",
  "proptest",
+ "rate_limiter",
+ "rbac",
+ "rbac-interface",
  "sha1",
  "sha2",
  "soroban-sdk",

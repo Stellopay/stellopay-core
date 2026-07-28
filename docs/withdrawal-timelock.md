@@ -36,6 +36,12 @@ or higher-level treasury/escrow contracts.
   this recorded intent.
 - **Queue monitoring** – The contract maintains a `QueuedCount` counter (O(1)
   read) for off-chain monitors to check queue depth without iterating all ops.
+- **Terminal state of cancellation** – Once an operation is cancelled, its status
+  is permanently set to `Cancelled`. It is removed from active consideration
+  (e.g., no longer returned in `Queued` operation queries) and any subsequent
+  attempt to `execute` it will be firmly rejected, even if the operation's
+  original `eta` has already passed. This ensures that stale or revoked queued
+  data cannot be accidentally or maliciously executed later.
 
 ### Data Model
 
@@ -103,8 +109,12 @@ Read helpers:
 - `get_config() -> Result<(Address, u64), TimelockError>`
   - Returns `(admin, min_delay_seconds)`.
 - `get_operation(op_id) -> Option<TimelockedOperation>`
-- `get_operations_for(owner) -> Vec<u128>`
-  - Returns all op ids (including executed and cancelled) created by `owner`.
+- `get_operations_for(owner, status, start, limit) -> OperationPage`
+  - Returns a paginated and optionally filtered list of operations created by `owner`.
+  - `status` is an optional `OperationStatus` filter.
+  - `start` is a 1-based start position (inclusive).
+  - `limit` is capped at `MAX_PAGE_SIZE` (100).
+  - Returns `OperationPage { operations: Vec<TimelockedOperation>, next_cursor: Option<u32> }`.
 - `get_queued_count() -> u32`
   - O(1) count of currently active (`Queued`) operations.
 

@@ -9,6 +9,7 @@ crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [dependencies]
+rbac-interface = { path = "../rbac-interface" }
 soroban-sdk = { workspace = true, features = ["alloc"] }
 
 [dev-dependencies]

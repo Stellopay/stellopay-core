@@ -55,6 +55,11 @@ This guarantees:
 - No value is lost to truncation.
 - Caller-supplied recipient ordering cannot bias dust allocation.
 
+### Dust Bounding and Loop Safety
+Because each floored percentage leaves a remainder strictly less than `10000`, the maximum possible sum of remainders is strictly less than `10000 * recipient_count`. Since `dust = sum(remainders) / 10000`, it follows mathematically that **`dust` is always strictly less than the number of recipients**.
+
+The contract enforces this limit with a defensive `assert!(dust < recipient_count)` check and refactors the distribution loop to explicitly bound its maximum iterations by the `recipient_count`, preventing DoS attacks or unbounded gas consumption in edge cases.
+
 ### Example: Prime Number Split
 If splitting **107 units** between 2 recipients with a **60%/40%** ratio:
 1. Recipient A (60%): exact `64.2`, floor `64`, remainder `0.2`

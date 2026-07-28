@@ -1,5 +1,50 @@
 use soroban_sdk::{contracterror, contracttype, Address, Env, Vec};
 
+/// Maximum caller-supplied batch size accepted by batch entrypoints.
+///
+/// The ceiling is intentionally set to 20 because `tests/gas_benchmarks.rs`
+/// measures `batch_claim_milestones` at N = 20 and keeps that path under the
+/// committed regression threshold. Keeping all batch creation and claim
+/// entrypoints at the same cap gives callers one documented limit and prevents
+/// late Soroban resource exhaustion after partial state changes.
+pub const MAX_BATCH_SIZE: u32 = 20;
+
+/// Number of ledgers below which a long-lived persistent entry is bumped.
+///
+/// Under Soroban's state-archival model, persistent entries that are not bumped
+/// can be archived once their time-to-live (TTL) lapses, which would make active
+/// payroll agreements, escrow balances, and employee records inaccessible
+/// mid-lifecycle. When a long-lived key's remaining TTL drops below this
+/// threshold, [`extend_persistent_ttl`] extends it back up to
+/// [`PERSISTENT_BUMP_AMOUNT`].
+///
+/// ~30 days at 5s/ledger (≈ 17,280 ledgers/day).
+pub const PERSISTENT_TTL_THRESHOLD: u32 = 30 * 17_280;
+
+/// Target TTL (in ledgers) that long-lived persistent keys are extended to.
+///
+/// ~90 days at 5s/ledger. Kept comfortably above [`PERSISTENT_TTL_THRESHOLD`] so
+/// that a single access well before expiry restores a long runway without
+/// bumping on every read.
+pub const PERSISTENT_BUMP_AMOUNT: u32 = 90 * 17_280;
+
+/// Bumps the TTL of a single long-lived persistent entry if it exists.
+///
+/// This is a no-op when the entry is absent. Centralizing the thresholds here
+/// keeps the archival strategy consistent across agreements, escrow balances,
+/// and employee records. TTL bumps cannot be used to keep adversarial entries
+/// alive cheaply: they only ever extend keys the contract itself already owns
+/// and writes, and the caller pays the rent for the extension.
+pub fn extend_persistent_ttl<K>(env: &Env, key: &K)
+where
+    K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    let storage = env.storage().persistent();
+    if storage.has(key) {
+        storage.extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    }
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Milestone {
@@ -58,6 +103,23 @@ pub enum MilestoneKey {
     MilestoneApproved(u128, u32),
     /// Milestone claim status: (agreement_id, milestone_id) -> bool
     MilestoneClaimed(u128, u32),
+    /// Milestone rejection status: (agreement_id, milestone_id) -> bool
+    ///
+    /// Set to `true` by `reject_milestone`. A rejected milestone cannot be
+    /// approved or claimed and cannot be rejected again.
+    MilestoneRejected(u128, u32),
+    /// Milestone expiry status: (agreement_id, milestone_id) -> bool
+    ///
+    /// Set to `true` by `expire_milestone`. An expired milestone was neither
+    /// approved nor claimed before expiry was recorded. It cannot subsequently
+    /// be approved, claimed, or rejected, and cannot be expired again.
+    MilestoneExpired(u128, u32),
+    /// Accounted escrow balance for a milestone agreement: agreement_id -> i128
+    ///
+    /// Tracks only tokens explicitly deposited via `fund_milestone_agreement`.
+    /// Invariant checks use this value so that unrelated token transfers into
+    /// the contract address cannot inflate claimable funds.
+    MilestoneEscrowBalance(u128),
 }
 
 impl Milestone {
@@ -142,6 +204,10 @@ pub struct EmployeeInfo {
 pub enum StorageKey {
     /// Contract owner
     Owner,
+    /// Linked RBAC contract address (source of truth for Admin authorization).
+    RbacContract,
+    /// Storage schema version for upgrade/migration coordination.
+    ContractVersion,
     /// Agreement by ID
     Agreement(u128),
     /// List of employees for an agreement
@@ -164,11 +230,44 @@ pub enum StorageKey {
     PauseApprovals,
     /// Global admin allowed to update FX rates (e.g. an oracle contract)
     ExchangeRateAdmin,
+    /// Optional max age (seconds) for using an FX rate. If set, any rate older
+    /// than this value (based on stored `updated_at`) will be considered stale.
+    ExchangeRateMaxAgeSeconds,
+    /// Optional max single-update deviation expressed in basis points (10000 = 100%).
+    /// If set, a new update that changes the rate by more than this fraction
+    /// relative to the previous stored rate will be rejected.
+    ExchangeRateMaxDeviationBps,
+    /// Optional absolute upper-bound on any FX rate (inclusive). If set, any
+    /// `set_exchange_rate` call with a rate above this value is rejected as
+    /// a sanity guard against oracle bugs or mis-configured rates.
+    ExchangeRateMaxRateSanityBound,
     /// Cumulative grace extension (seconds) applied on top of `Agreement::grace_period_seconds`
     /// for cancelled agreements (`agreement_id` -> u64).
     GracePeriodExtensionSeconds(u128),
     /// Owner-configurable caps for `extend_grace_period` (singleton).
     GracePeriodExtensionPolicy,
+    /// Address of the deployed multisig contract used for threshold checks.
+    MultisigContract,
+    /// Minimum payout amount (inclusive) that requires multisig approval for LargePayment.
+    LargePaymentThreshold,
+    /// Minimum total payout amount (inclusive) that requires multisig approval for
+    /// DisputeResolution.
+    DisputeResolutionThreshold,
+    /// Optional rate limiter contract address for throttling claims.
+    RateLimiterContract,
+    /// Optional salary adjustment contract address for dynamic salary overrides.
+    SalaryAdjustmentContract,
+    /// Optional hook contract address that implements MilestoneContractInterface.
+    ///
+    /// When set, `expire_milestone` calls `on_milestone_expired` on this address
+    /// after persisting the expiry flag and emitting `MilestoneExpiredEvent`.
+    /// The default no-op on the interface means contracts without an override
+    /// are unaffected.  Clear this key to disable hook invocation entirely.
+    MilestoneHookContract,
+    /// Transient reentrancy guard for the claim paths. Stored in temporary
+    /// storage so it is automatically cleared at the end of each transaction;
+    /// a panic mid-transfer therefore cannot strand the guard.
+    ReentrancyGuard,
 }
 
 #[contracttype]
@@ -246,6 +345,13 @@ pub struct PayrollCreateResult {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExchangeRateInfo {
+    pub rate: i128,
+    pub updated_at: u64,
+}
+
+#[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct EscrowCreateResult {
     pub agreement_id: Option<u128>,
@@ -272,7 +378,20 @@ pub struct BatchEscrowCreateResult {
     pub results: Vec<EscrowCreateResult>,
 }
 
-/// Error types for payroll operations
+/// Error types for payroll operations.
+///
+/// # Discriminant stability (append-only convention)
+///
+/// Every variant is assigned an **explicit `u32` discriminant** that must
+/// **never be changed or re-used**.  New variants **must always be appended**
+/// with the next available integer — never inserted between or before existing
+/// variants — because off-chain indexers, clients, and on-chain error-code
+/// fields match on these numeric values across contract upgrades.
+///
+/// A silently renumbered or repurposed discriminant would cause a downstream
+/// system to misinterpret one failure type as another.  The companion test
+/// [`test_payroll_error_discriminants_stable`] (in the `tests` module below)
+/// locks every current variant's value and will fail if any is altered.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -304,16 +423,62 @@ pub enum PayrollError {
     NotGuardian = 25,
     TimelockActive = 26,
     InvalidTimelock = 27,
+    MultisigApprovalRequired = 28,
     /// Missing or unconfigured FX rate for a currency pair
-    ExchangeRateNotFound = 28,
+    ExchangeRateNotFound = 29,
     /// Arithmetic overflow/underflow during FX conversion
-    ExchangeRateOverflow = 29,
+    ExchangeRateOverflow = 30,
     /// Invalid FX rate (e.g. non-positive)
-    ExchangeRateInvalid = 30,
+    ExchangeRateInvalid = 31,
     /// Grace extension arguments invalid (zero, overflow, wrong status, unauthorized)
-    GraceExtensionInvalid = 31,
+    GraceExtensionInvalid = 32,
     /// Extension would exceed owner-configured cumulative cap
-    GraceExtensionCapExceeded = 32,
+    GraceExtensionCapExceeded = 33,
+    /// Rate limiter rejected the call (too many requests for the caller).
+    RateLimited = 34,
+    /// Caller supplied more than `MAX_BATCH_SIZE` batch items.
+    BatchTooLarge = 35,
+    /// Milestone amount must be strictly positive.
+    MilestoneAmountInvalid = 36,
+    /// Milestone agreement is not in a valid status for the requested operation.
+    MilestoneAgreementInvalidStatus = 37,
+    /// Referenced milestone (or its agreement record) was not found.
+    MilestoneNotFound = 38,
+    /// Milestone has already been approved.
+    MilestoneAlreadyApproved = 39,
+    /// Milestone has not been approved yet.
+    MilestoneNotApproved = 40,
+    /// Milestone has already been claimed.
+    MilestoneAlreadyClaimed = 41,
+    /// An employee with the same address is already present in the agreement's
+    /// employee list. Adding it again would create two salary entries and break
+    /// the 1:1 employee-to-index mapping, so the duplicate add is rejected.
+    EmployeeAlreadyExists = 42,
+    /// A reentrant call into a guarded claim path was detected. The transient
+    /// reentrancy guard was already set, indicating an in-progress claim
+    /// re-entered (e.g. via a hostile or hook-enabled token during transfer).
+    ReentrancyDetected = 43,
+    /// `set_arbiter` rejected the assignment: the caller attempted to
+    /// self-appoint (caller == arbiter), or the supplied arbiter is identical
+    /// to the currently-set arbiter (no-op duplicate assignment).
+    InvalidArbiter = 44,
+    /// The milestone has already been rejected by the employer.
+    /// Re-rejecting is idempotent-safe via an error so callers know the
+    /// milestone was not transitioned again.
+    MilestoneAlreadyRejected = 45,
+    /// Cannot reject a milestone that has already been approved.
+    MilestoneAlreadyApprovedCannotReject = 46,
+    /// Cannot reject a milestone that has already been claimed.
+    MilestoneAlreadyClaimedCannotReject = 47,
+    /// The milestone has already been expired via `expire_milestone`.
+    /// Re-expiring is idempotent-safe via an error so callers know the
+    /// milestone was not transitioned again.
+    MilestoneAlreadyExpired = 48,
+    /// The rejection reason must be non-empty and contain at least one
+    /// non-whitespace character.  Callers must provide a meaningful
+    /// justification so that off-chain indexers and dispute reviewers
+    /// can reconstruct the audit trail.
+    MilestoneRejectionReasonEmpty = 49,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.
@@ -396,7 +561,7 @@ pub enum DataKey {
     /// multi-currency conversion helpers.
     ///
     /// Key: ExchangeRate(Address, Address)
-    /// Value: i128 (scaled rate)
+    /// Value: ExchangeRateInfo { rate: i128, updated_at: u64 }
     ExchangeRate(Address, Address),
 }
 
@@ -431,10 +596,11 @@ impl DataKey {
         env.storage().persistent().get(&key)
     }
 
-    /// Set salary per period for an employee at a specific index
+    /// Set salary per period for an employee at a specific index, bumping its TTL.
     pub fn set_employee_salary(env: &Env, agreement_id: u128, employee_index: u32, salary: i128) {
         let key: DataKey = DataKey::EmployeeSalary(agreement_id, employee_index);
         env.storage().persistent().set(&key, &salary);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get number of claimed periods for an employee at a specific index
@@ -452,6 +618,7 @@ impl DataKey {
     ) {
         let key: DataKey = DataKey::EmployeeClaimedPeriods(agreement_id, employee_index);
         env.storage().persistent().set(&key, &periods);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get activation timestamp for an agreement
@@ -502,13 +669,18 @@ impl DataKey {
         env.storage().persistent().set(&key, &amount);
     }
 
-    /// Get escrow balance for an agreement and token
+    /// Get escrow balance for an agreement and token.
+    ///
+    /// Bumps the entry's TTL on read so an escrow balance that is referenced but
+    /// not rewritten for a long time does not get archived.
     pub fn get_agreement_escrow_balance(env: &Env, agreement_id: u128, token: &Address) -> i128 {
         let key: DataKey = DataKey::AgreementEscrowBalance(agreement_id, token.clone());
-        env.storage().persistent().get(&key).unwrap_or(0i128)
+        let balance = env.storage().persistent().get(&key).unwrap_or(0i128);
+        extend_persistent_ttl(env, &key);
+        balance
     }
 
-    /// Set escrow balance for an agreement and token
+    /// Set escrow balance for an agreement and token, bumping its TTL.
     pub fn set_agreement_escrow_balance(
         env: &Env,
         agreement_id: u128,
@@ -517,12 +689,18 @@ impl DataKey {
     ) {
         let key: DataKey = DataKey::AgreementEscrowBalance(agreement_id, token.clone());
         env.storage().persistent().set(&key, &amount);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get the configured FX rate for a `(base, quote)` currency pair, if any.
     ///
-    /// The returned value is the fixed-point rate `quote_per_base * FX_SCALE`.
-    pub fn get_exchange_rate(env: &Env, base: &Address, quote: &Address) -> Option<i128> {
+    /// The returned value is an `ExchangeRateInfo` containing the fixed-point
+    /// rate `quote_per_base * FX_SCALE` and the `updated_at` ledger timestamp.
+    pub fn get_exchange_rate(
+        env: &Env,
+        base: &Address,
+        quote: &Address,
+    ) -> Option<ExchangeRateInfo> {
         let key: DataKey = DataKey::ExchangeRate(base.clone(), quote.clone());
         env.storage().persistent().get(&key)
     }
@@ -530,9 +708,128 @@ impl DataKey {
     /// Set the FX rate for a `(base, quote)` currency pair.
     ///
     /// Callers are responsible for enforcing any necessary access control;
-    /// this helper only performs the storage write.
+    /// this helper writes the rate together with the current ledger timestamp.
     pub fn set_exchange_rate(env: &Env, base: &Address, quote: &Address, rate: i128) {
         let key: DataKey = DataKey::ExchangeRate(base.clone(), quote.clone());
-        env.storage().persistent().set(&key, &rate);
+        let info = ExchangeRateInfo {
+            rate,
+            updated_at: env.ledger().timestamp(),
+        };
+        env.storage().persistent().set(&key, &info);
+    }
+
+    /// Get optional configured max-age (seconds) for FX rates.
+    pub fn get_exchange_rate_max_age_seconds(env: &Env) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ExchangeRateMaxAgeSeconds)
+    }
+
+    /// Set optional configured max-age (seconds) for FX rates.
+    pub fn set_exchange_rate_max_age_seconds(env: &Env, seconds: u64) {
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ExchangeRateMaxAgeSeconds, &seconds);
+    }
+
+    /// Get optional configured max single-update deviation in basis points.
+    pub fn get_exchange_rate_max_deviation_bps(env: &Env) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ExchangeRateMaxDeviationBps)
+    }
+
+    /// Set optional configured max single-update deviation in basis points.
+    pub fn set_exchange_rate_max_deviation_bps(env: &Env, bps: u32) {
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ExchangeRateMaxDeviationBps, &bps);
+    }
+
+    /// Get optional absolute upper-bound sanity limit for FX rates.
+    pub fn get_exchange_rate_max_rate_sanity_bound(env: &Env) -> Option<i128> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ExchangeRateMaxRateSanityBound)
+    }
+
+    /// Set optional absolute upper-bound sanity limit for FX rates.
+    pub fn set_exchange_rate_max_rate_sanity_bound(env: &Env, max_rate: i128) {
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ExchangeRateMaxRateSanityBound, &max_rate);
+    }
+}
+
+// ============================================================================
+// PayrollError discriminant stability test
+// ============================================================================
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Asserts that every [`PayrollError`] variant retains its expected `u32`
+    /// discriminant.  If this test fails after a code change it means a variant
+    /// was renumbered, inserted between existing variants, or a previously
+    /// assigned value was re-used — all of which break the append-only
+    /// convention for off-chain error-code consumers.
+    ///
+    /// When adding a new error variant, add a corresponding assertion here
+    /// with the next integer discriminant.
+    #[test]
+    fn test_payroll_error_discriminants_stable() {
+        assert_eq!(PayrollError::DisputeAlreadyRaised as u32, 1);
+        assert_eq!(PayrollError::NotInGracePeriod as u32, 2);
+        assert_eq!(PayrollError::NotParty as u32, 3);
+        assert_eq!(PayrollError::NotArbiter as u32, 4);
+        assert_eq!(PayrollError::InvalidPayout as u32, 5);
+        assert_eq!(PayrollError::ActiveDispute as u32, 6);
+        assert_eq!(PayrollError::AgreementNotFound as u32, 7);
+        assert_eq!(PayrollError::NoDispute as u32, 8);
+        assert_eq!(PayrollError::NoEmployee as u32, 9);
+        assert_eq!(PayrollError::NotActivated as u32, 10);
+        assert_eq!(PayrollError::Unauthorized as u32, 11);
+        assert_eq!(PayrollError::InvalidEmployeeIndex as u32, 12);
+        assert_eq!(PayrollError::InvalidData as u32, 13);
+        assert_eq!(PayrollError::TransferFailed as u32, 14);
+        assert_eq!(PayrollError::InsufficientEscrowBalance as u32, 15);
+        assert_eq!(PayrollError::NoPeriodsToClaim as u32, 16);
+        assert_eq!(PayrollError::AgreementNotActivated as u32, 17);
+        assert_eq!(PayrollError::InvalidAgreementMode as u32, 18);
+        assert_eq!(PayrollError::AgreementPaused as u32, 19);
+        assert_eq!(PayrollError::AllPeriodsClaimed as u32, 20);
+        assert_eq!(PayrollError::ZeroAmountPerPeriod as u32, 21);
+        assert_eq!(PayrollError::ZeroPeriodDuration as u32, 22);
+        assert_eq!(PayrollError::ZeroNumPeriods as u32, 23);
+        assert_eq!(PayrollError::EmergencyPaused as u32, 24);
+        assert_eq!(PayrollError::NotGuardian as u32, 25);
+        assert_eq!(PayrollError::TimelockActive as u32, 26);
+        assert_eq!(PayrollError::InvalidTimelock as u32, 27);
+        assert_eq!(PayrollError::MultisigApprovalRequired as u32, 28);
+        assert_eq!(PayrollError::ExchangeRateNotFound as u32, 29);
+        assert_eq!(PayrollError::ExchangeRateOverflow as u32, 30);
+        assert_eq!(PayrollError::ExchangeRateInvalid as u32, 31);
+        assert_eq!(PayrollError::GraceExtensionInvalid as u32, 32);
+        assert_eq!(PayrollError::GraceExtensionCapExceeded as u32, 33);
+        assert_eq!(PayrollError::RateLimited as u32, 34);
+        assert_eq!(PayrollError::BatchTooLarge as u32, 35);
+        assert_eq!(PayrollError::MilestoneAmountInvalid as u32, 36);
+        assert_eq!(PayrollError::MilestoneAgreementInvalidStatus as u32, 37);
+        assert_eq!(PayrollError::MilestoneNotFound as u32, 38);
+        assert_eq!(PayrollError::MilestoneAlreadyApproved as u32, 39);
+        assert_eq!(PayrollError::MilestoneNotApproved as u32, 40);
+        assert_eq!(PayrollError::MilestoneAlreadyClaimed as u32, 41);
+        assert_eq!(PayrollError::EmployeeAlreadyExists as u32, 42);
+        assert_eq!(PayrollError::ReentrancyDetected as u32, 43);
+        assert_eq!(PayrollError::InvalidArbiter as u32, 44);
+        assert_eq!(PayrollError::MilestoneAlreadyRejected as u32, 45);
+        assert_eq!(
+            PayrollError::MilestoneAlreadyApprovedCannotReject as u32,
+            46
+        );
+        assert_eq!(PayrollError::MilestoneAlreadyClaimedCannotReject as u32, 47);
+        assert_eq!(PayrollError::MilestoneAlreadyExpired as u32, 48);
+        assert_eq!(PayrollError::MilestoneRejectionReasonEmpty as u32, 49);
     }
 }

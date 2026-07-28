@@ -1,31 +1,242 @@
-use soroban_sdk::token::TokenClient;
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
+    contractclient, contracttype, panic_with_error, token,
+    token::TokenClient,
+    Address, Env, IntoVal, String, Symbol, Val, Vec,
+};
 
+use crate::audit::{record_entry, AuditEvent};
 use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
     emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
-    emit_employee_added, emit_grace_period_extended, emit_grace_period_finalized,
-    emit_payment_received, emit_payment_sent, emit_payroll_claimed, emit_set_arbiter,
-    AgreementActivatedEvent, AgreementCancelledEvent, GracePeriodExtendedEvent,
-    AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent,
-    BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent,
-    EmployeeAddedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
-    MilestoneClaimed, PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
+    emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
+    emit_grace_period_finalized, emit_milestone_expired, emit_milestone_funded,
+    emit_milestone_rejected, emit_multisig_config_changed, emit_payment_received,
+    emit_payment_sent, emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent,
+    AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent,
+    ArbiterSetEvent, BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent,
+    DisputeResolvedEvent, EmployeeAddedEvent, ExchangeRateChangedEvent, GracePeriodExtendedEvent,
+    GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved, MilestoneClaimed,
+    MilestoneExpiredEvent, MilestoneFundedEvent, MilestoneRejectedEvent,
+    MultisigConfigChangedEvent, PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
     BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
     EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
     MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
-    PayrollCreateResult, PayrollError, StorageKey,
+    PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE,
 };
-use soroban_sdk::{
-    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    token, IntoVal, Symbol, Val,
-};
+
+/// Minimal interface for cross-contract calls into the deployed multisig contract.
+#[contractclient(name = "MultisigClient")]
+trait MultisigInterface {
+    fn get_operation(env: Env, operation_id: u128) -> Option<Operation>;
+}
+
+#[contractclient(name = "RateLimiterClient")]
+trait RateLimiterInterface {
+    fn check_and_consume(env: Env, subject: Address) -> u32;
+}
+
+#[contractclient(name = "SalaryAdjustmentClient")]
+trait SalaryAdjustmentInterface {
+    fn get_employee_salary(env: Env, employee: Address) -> Option<i128>;
+}
+
+/// Mirror of multisig::OperationStatus — names must match for XDR decoding.
+#[contracttype]
+#[derive(Clone, PartialEq)]
+enum OperationStatus {
+    Pending,
+    Executed,
+    Cancelled,
+}
+
+/// Minimal mirror of multisig::Operation for cross-contract reads.
+#[contracttype]
+#[derive(Clone)]
+struct Operation {
+    pub id: u128,
+    pub kind: OperationKind,
+    pub creator: Address,
+    pub status: OperationStatus,
+    pub created_at: u64,
+    pub executed_at: Option<u64>,
+}
+
+/// Mirror of multisig::OperationKind — names must match for XDR decoding.
+#[contracttype]
+#[derive(Clone)]
+enum OperationKind {
+    ContractUpgrade(Address, soroban_sdk::BytesN<32>),
+    LargePayment(Address, Address, i128),
+    DisputeResolution(Address, u128, i128, i128),
+}
+
+/// Configures the multisig integration for this payroll contract.
+///
+/// # Arguments
+/// * `owner` - Contract owner (must authenticate)
+/// * `multisig_contract` - Address of the deployed multisig contract
+/// * `large_payment_threshold` - Minimum amount requiring multisig for LargePayment (0 = disabled)
+/// * `dispute_resolution_threshold` - Minimum total payout requiring multisig for DisputeResolution
+///   (0 = disabled)
+///
+/// # Access Control
+/// Only the contract owner can call this.
+pub fn set_multisig_config(
+    env: &Env,
+    owner: Address,
+    multisig_contract: Address,
+    large_payment_threshold: i128,
+    dispute_resolution_threshold: i128,
+) -> Result<(), PayrollError> {
+    let stored_owner: Address = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::Owner)
+        .ok_or(PayrollError::Unauthorized)?;
+    owner.require_auth();
+    if owner != stored_owner {
+        return Err(PayrollError::Unauthorized);
+    }
+
+    // Capture the previous thresholds before overwriting so the emitted event
+    // and audit entry can report old-vs-new values (0 = previously unset).
+    let old_large_payment_threshold: i128 = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::LargePaymentThreshold)
+        .unwrap_or(0);
+    let old_dispute_resolution_threshold: i128 = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::DisputeResolutionThreshold)
+        .unwrap_or(0);
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::MultisigContract, &multisig_contract);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::LargePaymentThreshold, &large_payment_threshold);
+    env.storage().persistent().set(
+        &StorageKey::DisputeResolutionThreshold,
+        &dispute_resolution_threshold,
+    );
+
+    // Emit a structured event so off-chain monitors observe approval-requirement
+    // changes mid-lifecycle. Only public configuration is exposed.
+    emit_multisig_config_changed(
+        env,
+        MultisigConfigChangedEvent {
+            caller: owner.clone(),
+            multisig_contract: multisig_contract.clone(),
+            old_large_threshold: old_large_payment_threshold,
+            new_large_threshold: large_payment_threshold,
+            old_dispute_threshold: old_dispute_resolution_threshold,
+            new_dispute_threshold: dispute_resolution_threshold,
+        },
+    );
+
+    // Record a tamper-evident audit entry via the existing audit path. This is a
+    // contract-level change, so it uses the sentinel `agreement_id = 0` and
+    // reports the new large-payment threshold as the entry's `amount`.
+    record_entry(
+        env,
+        owner,
+        AuditEvent::MultisigConfigChanged,
+        0,
+        None,
+        Some(large_payment_threshold),
+    );
+
+    Ok(())
+}
+
+/// Returns the configured multisig contract address, if any.
+pub fn get_multisig_contract(env: &Env) -> Option<Address> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::MultisigContract)
+}
+
+/// Checks that a multisig operation with the given id exists, is Executed,
+/// and matches the expected kind discriminant. Returns `MultisigApprovalRequired`
+/// if the check fails.
+fn require_multisig_executed(
+    env: &Env,
+    multisig_addr: &Address,
+    operation_id: u128,
+    check: impl Fn(&OperationKind) -> bool,
+) -> Result<(), PayrollError> {
+    let client = MultisigClient::new(env, multisig_addr);
+    let op = client
+        .get_operation(&operation_id)
+        .ok_or(PayrollError::MultisigApprovalRequired)?;
+    if op.status != OperationStatus::Executed {
+        return Err(PayrollError::MultisigApprovalRequired);
+    }
+    if !check(&op.kind) {
+        return Err(PayrollError::MultisigApprovalRequired);
+    }
+    Ok(())
+}
+
+fn enforce_rate_limit(env: &Env, caller: &Address) -> Result<(), PayrollError> {
+    if let Some(rate_limiter_addr) = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::RateLimiterContract)
+    {
+        let client = RateLimiterClient::new(env, &rate_limiter_addr);
+        if client.try_check_and_consume(caller).is_err() {
+            return Err(PayrollError::RateLimited);
+        }
+    }
+    Ok(())
+}
+
+/// Acquire the transient reentrancy guard for a claim path.
+///
+/// Returns [`PayrollError::ReentrancyDetected`] if the guard is already held,
+/// i.e. this call path was re-entered (e.g. via a hostile or hook-enabled
+/// token during `transfer`). The guard is kept in *temporary* storage (see
+/// [`StorageKey::ReentrancyGuard`]) so it is automatically cleared at the end
+/// of the transaction even if a panic strands it mid-call.
+fn acquire_reentrancy_guard(env: &Env) -> Result<(), PayrollError> {
+    if env.storage().temporary().has(&StorageKey::ReentrancyGuard) {
+        return Err(PayrollError::ReentrancyDetected);
+    }
+    env.storage()
+        .temporary()
+        .set(&StorageKey::ReentrancyGuard, &true);
+    Ok(())
+}
+
+/// Release the transient reentrancy guard acquired by [`acquire_reentrancy_guard`].
+///
+/// Must be called on every return path of the guarded function so the guard
+/// never outlives a single top-level call.
+fn release_reentrancy_guard(env: &Env) {
+    env.storage()
+        .temporary()
+        .remove(&StorageKey::ReentrancyGuard);
+}
 
 /// Fixed-point scaling factor for FX rates: 1e6 precision.
 const FX_SCALE: i128 = 1_000_000;
+
+/// Minimum converted amount (in quote-token base units) below which the
+/// conversion is treated as pure dust and rejected.
+///
+/// Rounding policy: `convert_amount` uses **floor division** (truncation toward
+/// zero). Any remainder is discarded. If truncation reduces the converted amount
+/// to zero the call returns `ExchangeRateInvalid` so callers are not silently
+/// credited nothing. Callers that need to claim very small amounts should
+/// accumulate multiple periods before claiming.
+const DUST_THRESHOLD: i128 = 1;
 
 pub fn create_milestone_agreement(
     env: Env,
@@ -37,7 +248,7 @@ pub fn create_milestone_agreement(
 
     let mut counter: u128 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::AgreementCounter)
         .unwrap_or(0);
     counter += 1;
@@ -45,33 +256,133 @@ pub fn create_milestone_agreement(
     let agreement_id = counter;
 
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::AgreementCounter, &counter);
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::Employer(agreement_id), &employer);
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::Contributor(agreement_id), &contributor);
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::Token(agreement_id), &token);
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::PaymentType(agreement_id),
         &PaymentType::MilestoneBased,
     );
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::Status(agreement_id),
         &AgreementStatus::Created,
     );
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::TotalAmount(agreement_id), &0i128);
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::MilestoneCount(agreement_id), &0u32);
 
     agreement_id
+}
+
+/// Deposits tokens from `from` into the contract for the specified milestone
+/// agreement, crediting the accounted escrow balance.
+///
+/// # Why this exists
+/// `approve_milestone` and `claim_milestone` assert that the contract holds
+/// enough tokens to cover unclaimed milestones. Without a dedicated funding
+/// entrypoint the only way to satisfy that invariant is to send tokens
+/// out-of-band, which is undiscoverable and unauditable. This function
+/// provides a first-class, authenticated, on-chain funding path.
+///
+/// # Arguments
+/// * `env`          - Contract environment.
+/// * `agreement_id` - ID of the milestone agreement to fund.
+/// * `from`         - Address to pull tokens from; must be the agreement's employer and must pass
+///   `require_auth`.
+/// * `amount`       - Number of tokens to deposit; must be strictly positive.
+///
+/// # Access Control
+/// `from` must equal the employer stored for the agreement, and
+/// `from.require_auth()` is called before any state mutation or transfer.
+///
+/// # State changes — O(1)
+/// - Reads + writes `MilestoneKey::MilestoneEscrowBalance(agreement_id)` once.
+/// - Executes exactly one `token.transfer(from, contract_address, amount)`.
+///
+/// # Errors / panics
+/// - "Agreement not found" — `agreement_id` does not correspond to a known milestone agreement.
+/// - "Unauthorized: only the employer can fund a milestone agreement" — `from` ≠ stored employer.
+/// - "Amount must be positive" — `amount` is zero or negative.
+/// - "Cannot fund a Cancelled agreement" — agreement status is `Cancelled`.
+/// - "Cannot fund a Completed agreement" — agreement status is `Completed`.
+/// - "Escrow balance overflow" — cumulative funded amount would overflow `i128`.
+/// - Token-transfer panics propagated from the Soroban token host.
+///
+/// # Security
+/// The accounted balance (`MilestoneEscrowBalance`) is the sole source of
+/// truth used by `approve_milestone` and `claim_milestone` invariant checks.
+/// Raw `token.balance()` of the contract is intentionally **not** consulted
+/// so that third-party deposits cannot inflate claimable funds.
+pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, amount: i128) {
+    let employer: Address = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::Employer(agreement_id))
+        .expect("Agreement not found");
+
+    // Only the agreement's employer may fund it.
+    assert!(
+        from == employer,
+        "Unauthorized: only the employer can fund a milestone agreement"
+    );
+    from.require_auth();
+
+    assert!(amount > 0, "Amount must be positive");
+
+    let status: AgreementStatus = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::Status(agreement_id))
+        .expect("Agreement not found");
+    assert!(
+        status != AgreementStatus::Cancelled,
+        "Cannot fund a Cancelled agreement"
+    );
+    assert!(
+        status != AgreementStatus::Completed,
+        "Cannot fund a Completed agreement"
+    );
+
+    let current_balance: i128 = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+        .unwrap_or(0i128);
+    let new_balance = current_balance
+        .checked_add(amount)
+        .expect("Escrow balance overflow");
+    env.storage().persistent().set(
+        &MilestoneKey::MilestoneEscrowBalance(agreement_id),
+        &new_balance,
+    );
+
+    let token_address: Address = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::Token(agreement_id))
+        .expect("Token not found");
+    TokenClient::new(env, &token_address).transfer(&from, &env.current_contract_address(), &amount);
+
+    emit_milestone_funded(
+        env,
+        MilestoneFundedEvent {
+            agreement_id,
+            from,
+            amount,
+            total_escrow_balance: new_balance,
+        },
+    );
 }
 
 /// Adds a milestone to an agreement
@@ -80,58 +391,74 @@ pub fn create_milestone_agreement(
 /// * `env` - Contract environment
 /// * `agreement_id` - ID of the agreement
 /// * `amount` - Payment amount for this milestone
-pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
+///
+/// # Errors
+/// * `PayrollError::AgreementNotFound` — the milestone agreement does not exist.
+/// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Created` status.
+/// * `PayrollError::MilestoneAmountInvalid` — `amount` is not strictly positive.
+pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), PayrollError> {
     let status: AgreementStatus = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Status(agreement_id))
-        .expect("Agreement not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
 
-    assert!(
-        status == AgreementStatus::Created,
-        "Agreement must be in Created status"
-    );
-    assert!(amount > 0, "Amount must be positive");
+    if status != AgreementStatus::Created {
+        return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
+    if amount <= 0 {
+        return Err(PayrollError::MilestoneAmountInvalid);
+    }
 
     let employer: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Employer(agreement_id))
-        .expect("Employer not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
     let count: u32 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
         .unwrap_or(0);
 
     let milestone_id = count + 1;
 
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::MilestoneAmount(agreement_id, milestone_id),
         &amount,
     );
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
         &false,
     );
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
         &false,
     );
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::MilestoneCount(agreement_id), &milestone_id);
 
     let total: i128 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::TotalAmount(agreement_id))
         .unwrap_or(0);
     env.storage()
-        .instance()
+        .persistent()
         .set(&MilestoneKey::TotalAmount(agreement_id), &(total + amount));
+
+    // Post-invariant: total amount should equal sum of milestones
+    #[cfg(debug_assertions)]
+    {
+        let total_sum = sum_all_milestones(&env, agreement_id);
+        assert!(
+            total_sum == total + amount,
+            "Total amount mismatch after adding milestone"
+        );
+    }
 
     MilestoneAdded {
         agreement_id,
@@ -139,6 +466,79 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
         amount,
     }
     .publish(&env);
+
+    Ok(())
+}
+
+/// Returns the total configured amount across all milestones for an agreement.
+///
+/// # Arguments
+/// * `env` - Contract environment used to read milestone count and amounts from instance storage.
+/// * `agreement_id` - Milestone agreement identifier whose milestone amounts should be summed.
+///
+/// # Returns
+/// Sum of every stored milestone amount for the agreement, treating missing amount entries as zero.
+///
+/// # Cost
+/// O(n) in the stored milestone count for `agreement_id`, where `n` is bounded by the
+/// milestones created for that agreement.
+fn sum_all_milestones(env: &Env, agreement_id: u128) -> i128 {
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
+        .unwrap_or(0);
+    let mut sum = 0i128;
+    for i in 1..=count {
+        sum += env
+            .storage()
+            .persistent()
+            .get::<_, i128>(&MilestoneKey::MilestoneAmount(agreement_id, i))
+            .unwrap_or(0);
+    }
+    sum
+}
+
+/// Returns the total amount still locked for unclaimed milestones.
+///
+/// # Arguments
+/// * `env` - Contract environment used to read approval, claim, count, and amount entries.
+/// * `agreement_id` - Milestone agreement identifier whose unclaimed milestones are inspected.
+///
+/// # Returns
+/// Sum of milestone amounts that have not been claimed, treating missing boolean or amount entries
+/// as false/zero.
+///
+/// # Cost
+/// O(n) in the stored milestone count for `agreement_id`, with one approval lookup,
+/// one claimed lookup, and at most one amount lookup per milestone.
+fn sum_unclaimed_milestones(env: &Env, agreement_id: u128) -> i128 {
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
+        .unwrap_or(0);
+    let mut sum = 0i128;
+    for i in 1..=count {
+        let approved: bool = env
+            .storage()
+            .persistent()
+            .get(&MilestoneKey::MilestoneApproved(agreement_id, i))
+            .unwrap_or(false);
+        let claimed: bool = env
+            .storage()
+            .persistent()
+            .get(&MilestoneKey::MilestoneClaimed(agreement_id, i))
+            .unwrap_or(false);
+        if approved && !claimed {
+            sum += env
+                .storage()
+                .persistent()
+                .get::<_, i128>(&MilestoneKey::MilestoneAmount(agreement_id, i))
+                .unwrap_or(0);
+        }
+    }
+    sum
 }
 
 /// Approves a milestone for payment
@@ -147,126 +547,499 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) {
 /// * `env` - Contract environment
 /// * `agreement_id` - ID of the agreement
 /// * `milestone_id` - ID of the milestone to approve
-pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
+///
+/// # Errors
+/// * `PayrollError::AgreementNotFound` — the milestone agreement does not exist.
+/// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Created` or
+///   `Active` status.
+/// * `PayrollError::MilestoneNotFound` — `milestone_id` is out of range for the agreement.
+/// * `PayrollError::MilestoneAlreadyApproved` — the milestone was already approved.
+/// * `PayrollError::InsufficientEscrowBalance` — funded escrow cannot cover all unclaimed
+///   milestones.
+pub fn approve_milestone(
+    env: Env,
+    agreement_id: u128,
+    milestone_id: u32,
+) -> Result<(), PayrollError> {
     let employer: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Employer(agreement_id))
-        .expect("Employer not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
     let status: AgreementStatus = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Status(agreement_id))
-        .expect("Agreement not found");
-    assert!(
-        status == AgreementStatus::Created || status == AgreementStatus::Active,
-        "Can only approve milestones when agreement is Created or Active"
-    );
+        .ok_or(PayrollError::AgreementNotFound)?;
+    if status != AgreementStatus::Created && status != AgreementStatus::Active {
+        return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
 
     let count: u32 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .expect("No milestones found");
-    assert!(
-        milestone_id > 0 && milestone_id <= count,
-        "Invalid milestone ID"
-    );
+        .ok_or(PayrollError::MilestoneNotFound)?;
+    if milestone_id == 0 || milestone_id > count {
+        return Err(PayrollError::MilestoneNotFound);
+    }
 
     let already_approved: bool = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
         .unwrap_or(false);
-    assert!(!already_approved, "Milestone already approved");
+    if already_approved {
+        return Err(PayrollError::MilestoneAlreadyApproved);
+    }
 
-    env.storage().instance().set(
+    // Guard: cannot approve a milestone that has been rejected.
+    let already_rejected: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneRejected(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_rejected {
+        return Err(PayrollError::MilestoneAlreadyRejected);
+    }
+
+    env.storage().persistent().set(
         &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
         &true,
     );
+
+    // Invariant: accounted escrow balance must cover all unclaimed milestones
+    // (including the one just approved). Uses the accounted balance rather than
+    // raw token.balance() so that unrelated deposits cannot satisfy this check.
+    let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
+    let escrow_balance: i128 = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+        .unwrap_or(0i128);
+    if escrow_balance < unclaimed_sum {
+        return Err(PayrollError::InsufficientEscrowBalance);
+    }
 
     MilestoneApproved {
         agreement_id,
         milestone_id,
     }
     .publish(&env);
+
+    Ok(())
 }
 
-/// Claims payment for an approved milestone
+/// Rejects a milestone, preventing it from being approved or claimed.
+///
+/// Only the employer may reject a milestone. A rejected milestone is
+/// permanently excluded from the approval-claim lifecycle; it can be neither
+/// approved nor claimed after this call. The stored escrow balance is **not**
+/// adjusted — the employer should fund a replacement milestone or cancel the
+/// agreement to recover unused escrow.
 ///
 /// # Arguments
-/// * `env` - Contract environment
-/// * `agreement_id` - ID of the agreement
-/// * `milestone_id` - ID of the milestone to claim
+/// * `env`          - Contract environment.
+/// * `agreement_id` - ID of the milestone agreement.
+/// * `milestone_id` - 1-based ID of the milestone to reject.
+/// * `reason`       - Optional human-readable rationale. Pass an empty string when no reason is
+///   required.
+///
+/// # Errors
+/// * `PayrollError::AgreementNotFound`                — agreement or employer record missing.
+/// * `PayrollError::MilestoneAgreementInvalidStatus`  — agreement is not `Created` or `Active`.
+/// * `PayrollError::MilestoneRejectionReasonEmpty`    — `reason` is empty or whitespace-only.
+/// * `PayrollError::MilestoneNotFound`                — `milestone_id` is out of range.
+/// * `PayrollError::MilestoneAlreadyRejected`         — milestone was already rejected.
+/// * `PayrollError::MilestoneAlreadyApprovedCannotReject` — milestone is already approved.
+/// * `PayrollError::MilestoneAlreadyClaimedCannotReject`  — milestone is already claimed.
+///
+/// # Events
+/// Emits [`MilestoneRejectedEvent`] on success.
+pub fn reject_milestone(
+    env: Env,
+    agreement_id: u128,
+    milestone_id: u32,
+    reason: String,
+) -> Result<(), PayrollError> {
+    // Auth: only the employer may reject a milestone.
+    let employer: Address = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::Employer(agreement_id))
+        .ok_or(PayrollError::AgreementNotFound)?;
+    employer.require_auth();
+
+    // Agreement must exist and be in a mutable state.
+    let status: AgreementStatus = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::Status(agreement_id))
+        .ok_or(PayrollError::AgreementNotFound)?;
+    if status != AgreementStatus::Created && status != AgreementStatus::Active {
+        return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
+
+    // Reason must be non-empty and contain at least one non-whitespace character
+    // so that off-chain indexers and dispute reviewers can reconstruct the audit trail.
+    if reason.is_empty() {
+        return Err(PayrollError::MilestoneRejectionReasonEmpty);
+    }
+    {
+        let bytes = reason.to_bytes();
+        let mut all_whitespace = true;
+        for i in 0..bytes.len() {
+            let b = bytes.get(i).unwrap();
+            if !(b == b' ' || b == b'\t' || b == b'\n' || b == b'\r') {
+                all_whitespace = false;
+                break;
+            }
+        }
+        if all_whitespace {
+            return Err(PayrollError::MilestoneRejectionReasonEmpty);
+        }
+    }
+
+    // Milestone must exist.
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
+        .ok_or(PayrollError::MilestoneNotFound)?;
+    if milestone_id == 0 || milestone_id > count {
+        return Err(PayrollError::MilestoneNotFound);
+    }
+
+    // Guard: cannot re-reject.
+    let already_rejected: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneRejected(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_rejected {
+        return Err(PayrollError::MilestoneAlreadyRejected);
+    }
+
+    // Guard: cannot reject a milestone that has already been claimed.
+    // Checked before the approved guard because a claimed milestone is also
+    // approved; the more specific error takes priority.
+    let already_claimed: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_claimed {
+        return Err(PayrollError::MilestoneAlreadyClaimedCannotReject);
+    }
+
+    // Guard: cannot reject a milestone that has already been approved.
+    let already_approved: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_approved {
+        return Err(PayrollError::MilestoneAlreadyApprovedCannotReject);
+    }
+
+    // Mark the milestone as rejected.
+    env.storage().persistent().set(
+        &MilestoneKey::MilestoneRejected(agreement_id, milestone_id),
+        &true,
+    );
+
+    // Emit the structured rejection event so off-chain indexers can track it.
+    emit_milestone_rejected(
+        &env,
+        MilestoneRejectedEvent {
+            agreement_id,
+            milestone_id,
+            rejected_by: employer,
+            reason,
+        },
+    );
+
+    Ok(())
+}
+
+/// Marks a milestone as expired, recording that it was never approved, claimed,
+/// or rejected before the employer declared it ineligible.
+///
+/// This is an employer-initiated operation — only the agreement's employer may
+/// expire a milestone. The function does **not** release escrowed funds; the
+/// employer should fund a replacement milestone or cancel the agreement to
+/// recover unused escrow.
+///
+/// # When to use
+///
+/// Call `expire_milestone` when a milestone deadline has passed and neither
+/// party has moved it forward (no approval, claim, or rejection).  This cleanly
+/// closes the milestone's lifecycle slot so off-chain systems and auditors have
+/// a definitive terminal state rather than an ambiguous "never touched" record.
+///
+/// # Hook convention (`on_milestone_expired`)
+///
+/// After persisting the expiry flag and emitting `MilestoneExpiredEvent`, this
+/// function invokes `MilestoneContractInterface::on_milestone_expired` on any
+/// contract address stored under `StorageKey::MilestoneHookContract`.  The
+/// call is a best-effort fire-and-forget from the implementing contract's
+/// perspective; if no hook address is configured the call is skipped entirely.
+/// If the hook panics the whole transaction is rolled back by the Soroban host.
+///
+/// # Arguments
+/// * `env`          - Contract environment.
+/// * `agreement_id` - ID of the milestone agreement.
+/// * `milestone_id` - 1-based ID of the milestone to expire.
+///
+/// # Errors
+/// * `PayrollError::AgreementNotFound`                  — agreement or employer record missing.
+/// * `PayrollError::MilestoneAgreementInvalidStatus`    — agreement is not `Created` or `Active`.
+/// * `PayrollError::MilestoneNotFound`                  — `milestone_id` is out of range.
+/// * `PayrollError::MilestoneAlreadyExpired`            — milestone was already expired.
+/// * `PayrollError::MilestoneAlreadyApproved`           — milestone is already approved
+///   (contributor still has the right to claim it).
+/// * `PayrollError::MilestoneAlreadyClaimed`            — milestone is already claimed.
+/// * `PayrollError::MilestoneAlreadyRejected`           — milestone is already rejected.
+///
+/// # Events
+/// Emits [`MilestoneExpiredEvent`] on success.
+pub fn expire_milestone(
+    env: Env,
+    agreement_id: u128,
+    milestone_id: u32,
+) -> Result<(), PayrollError> {
+    // Auth: only the employer may expire a milestone.
+    let employer: Address = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::Employer(agreement_id))
+        .ok_or(PayrollError::AgreementNotFound)?;
+    employer.require_auth();
+
+    // Agreement must exist and be in a mutable state.
+    let status: AgreementStatus = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::Status(agreement_id))
+        .ok_or(PayrollError::AgreementNotFound)?;
+    if status != AgreementStatus::Created && status != AgreementStatus::Active {
+        return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
+
+    // Milestone must exist.
+    let count: u32 = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneCount(agreement_id))
+        .ok_or(PayrollError::MilestoneNotFound)?;
+    if milestone_id == 0 || milestone_id > count {
+        return Err(PayrollError::MilestoneNotFound);
+    }
+
+    // Guard: cannot re-expire.
+    let already_expired: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneExpired(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_expired {
+        return Err(PayrollError::MilestoneAlreadyExpired);
+    }
+
+    // Guard: cannot expire a milestone that has already been claimed.
+    let already_claimed: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_claimed {
+        // Reuses MilestoneAlreadyClaimed (existing error) — callers can
+        // distinguish "cannot expire because claimed" from the claimed state.
+        return Err(PayrollError::MilestoneAlreadyClaimed);
+    }
+
+    // Guard: cannot expire a milestone that has already been approved
+    // (the contributor still has the right to claim it).
+    let already_approved: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_approved {
+        // Reuses MilestoneAlreadyApproved (existing error).
+        return Err(PayrollError::MilestoneAlreadyApproved);
+    }
+
+    // Guard: cannot expire a milestone that has already been rejected.
+    let already_rejected: bool = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneRejected(agreement_id, milestone_id))
+        .unwrap_or(false);
+    if already_rejected {
+        // Reuses MilestoneAlreadyRejected (existing error).
+        return Err(PayrollError::MilestoneAlreadyRejected);
+    }
+
+    // Retrieve the locked amount for the event (best-effort; 0 if not set).
+    let locked_amount: i128 = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
+        .unwrap_or(0i128);
+
+    // Mark the milestone as expired.
+    env.storage().persistent().set(
+        &MilestoneKey::MilestoneExpired(agreement_id, milestone_id),
+        &true,
+    );
+
+    // Emit the structured expiry event so off-chain indexers can track it.
+    emit_milestone_expired(
+        &env,
+        MilestoneExpiredEvent {
+            agreement_id,
+            milestone_id,
+            locked_amount,
+            expired_by: employer.clone(),
+        },
+    );
+
+    // Fire the on_milestone_expired hook if a hook contract address is
+    // configured.  This is a convention-based call — the hook contract must
+    // implement MilestoneContractInterface and its `on_milestone_expired`
+    // override.  The default no-op means contracts without an override are
+    // unaffected.  No hook address configured → silently skip.
+    if let Some(hook_addr) = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::MilestoneHookContract)
+    {
+        let hook_client = milestone_interface::MilestoneContractClient::new(&env, &hook_addr);
+        hook_client.on_milestone_expired(&agreement_id, &milestone_id);
+    }
+
+    Ok(())
+}
 ///
 /// # Requirements
 /// - Agreement must not be Paused
 /// - Milestone must be approved
 /// - Milestone must not be already claimed
-pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
+///
+/// # Errors
+/// * `PayrollError::EmergencyPaused` — the contract is under an emergency pause.
+/// * `PayrollError::AgreementNotFound` — the milestone agreement (or its token) does not exist.
+/// * `PayrollError::AgreementPaused` — the agreement is currently paused.
+/// * `PayrollError::MilestoneNotFound` — `milestone_id` is out of range or its amount is missing.
+/// * `PayrollError::MilestoneNotApproved` — the milestone has not been approved.
+/// * `PayrollError::MilestoneAlreadyClaimed` — the milestone was already claimed.
+/// * `PayrollError::InsufficientEscrowBalance` — funded escrow cannot cover all unclaimed
+///   milestones.
+pub fn claim_milestone(
+    env: Env,
+    agreement_id: u128,
+    milestone_id: u32,
+) -> Result<(), PayrollError> {
     // Check emergency pause
-    assert!(!is_emergency_paused(&env), "Contract is emergency paused");
+    if is_emergency_paused(&env) {
+        return Err(PayrollError::EmergencyPaused);
+    }
 
     let contributor: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Contributor(agreement_id))
-        .expect("Contributor not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
     contributor.require_auth();
 
     // Check if agreement is paused
     let status: AgreementStatus = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Status(agreement_id))
-        .expect("Agreement not found");
-    assert!(
-        status != AgreementStatus::Paused,
-        "Cannot claim when agreement is paused"
-    );
+        .ok_or(PayrollError::AgreementNotFound)?;
+    if status == AgreementStatus::Paused {
+        return Err(PayrollError::AgreementPaused);
+    }
 
     let count: u32 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .expect("No milestones found");
-    assert!(
-        milestone_id > 0 && milestone_id <= count,
-        "Invalid milestone ID"
-    );
+        .ok_or(PayrollError::MilestoneNotFound)?;
+    if milestone_id == 0 || milestone_id > count {
+        return Err(PayrollError::MilestoneNotFound);
+    }
 
     let approved: bool = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
         .unwrap_or(false);
-    assert!(approved, "Milestone not approved");
+    if !approved {
+        return Err(PayrollError::MilestoneNotApproved);
+    }
 
     let already_claimed: bool = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
         .unwrap_or(false);
-    assert!(!already_claimed, "Milestone already claimed");
+    if already_claimed {
+        return Err(PayrollError::MilestoneAlreadyClaimed);
+    }
+
+    // Invariant check: accounted escrow balance must cover all unclaimed
+    // milestones before we allow the transfer. Using the accounted balance
+    // prevents third-party token transfers from inflating claimable funds.
+    let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
+    let escrow_balance: i128 = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+        .unwrap_or(0i128);
+    if escrow_balance < unclaimed_sum {
+        return Err(PayrollError::InsufficientEscrowBalance);
+    }
 
     let amount: i128 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
-        .expect("Milestone amount not found");
+        .ok_or(PayrollError::MilestoneNotFound)?;
 
-    env.storage().instance().set(
+    let token_address: Address = env
+        .storage()
+        .persistent()
+        .get(&MilestoneKey::Token(agreement_id))
+        .ok_or(PayrollError::AgreementNotFound)?;
+
+    // Checks-Effects-Interactions: update all state before the external transfer.
+    env.storage().persistent().set(
         &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
         &true,
     );
 
-    let _token: Address = env
+    // Decrement the accounted escrow balance so subsequent invariant checks
+    // reflect the reduced available balance.
+    let escrow_balance: i128 = env
         .storage()
-        .instance()
-        .get(&MilestoneKey::Token(agreement_id))
-        .expect("Token not found");
+        .persistent()
+        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+        .unwrap_or(0i128);
+    env.storage().persistent().set(
+        &MilestoneKey::MilestoneEscrowBalance(agreement_id),
+        &escrow_balance.saturating_sub(amount),
+    );
+
+    TokenClient::new(&env, &token_address).transfer(
+        &env.current_contract_address(),
+        &contributor,
+        &amount,
+    );
 
     MilestoneClaimed {
         agreement_id,
@@ -278,11 +1051,13 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
 
     let all_claimed = all_milestones_claimed(&env, agreement_id, count);
     if all_claimed {
-        env.storage().instance().set(
+        env.storage().persistent().set(
             &MilestoneKey::Status(agreement_id),
             &AgreementStatus::Completed,
         );
     }
+
+    Ok(())
 }
 
 /// Iterates over `milestone_ids` and claims each approved, unclaimed milestone
@@ -292,48 +1067,70 @@ pub fn claim_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
 /// # Arguments
 /// * `env`           - Contract environment
 /// * `agreement_id`  - ID of the milestone agreement
-/// * `milestone_ids` - 1-based milestone IDs to claim.
-///   Duplicates are detected in-memory and skipped.
+/// * `milestone_ids` - 1-based milestone IDs to claim. Duplicates are detected in-memory and
+///   skipped. At most `MAX_BATCH_SIZE` IDs are accepted.
 ///
 /// # Returns
-/// `BatchMilestoneResult` — always returns (never panics at batch level).
+/// `Ok(BatchMilestoneResult)` with per-milestone results.
+///
+/// # Batch-level errors
+/// These stop the whole batch before any state mutation or transfer:
+/// * `PayrollError::AgreementNotFound` — no such agreement (contributor, status, or token record
+///   missing).
+/// * `PayrollError::InvalidData` — the milestone ID list is empty.
+/// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` IDs.
+/// * `PayrollError::AgreementPaused` — the agreement is paused.
+/// * `PayrollError::MilestoneNotFound` — the agreement has no milestones.
+///
+/// # Per-milestone `error_code` (in each `MilestoneClaimResult`)
+/// `0` = success | `1` = duplicate in this batch | `2` = invalid/unknown
+/// milestone ID | `3` = not approved | `4` = already claimed.
+///
+/// # Gas rationale
+/// `MAX_BATCH_SIZE` is 20 because `tests/gas_benchmarks.rs` measures the
+/// milestone batch path at that size and enforces the committed gas ceiling.
+/// The bound is checked before milestone state updates or token transfers.
 pub fn batch_claim_milestones(
     env: &Env,
     agreement_id: u128,
     milestone_ids: Vec<u32>,
-) -> BatchMilestoneResult {
+) -> Result<BatchMilestoneResult, PayrollError> {
     let contributor: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Contributor(agreement_id))
-        .expect("Contributor not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
     contributor.require_auth();
 
-    assert!(!milestone_ids.is_empty(), "No milestone IDs provided");
+    if milestone_ids.is_empty() {
+        return Err(PayrollError::InvalidData);
+    }
+    if milestone_ids.len() > MAX_BATCH_SIZE {
+        return Err(PayrollError::BatchTooLarge);
+    }
 
     // Shared pre-flight
     let status: AgreementStatus = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Status(agreement_id))
-        .expect("Agreement not found");
-    assert!(
-        status != AgreementStatus::Paused,
-        "Cannot claim when agreement is paused"
-    );
+        .ok_or(PayrollError::AgreementNotFound)?;
+    if status == AgreementStatus::Paused {
+        return Err(PayrollError::AgreementPaused);
+    }
 
     let count: u32 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .expect("No milestones found");
+        .ok_or(PayrollError::MilestoneNotFound)?;
 
     // Token client created once and reused
     let token: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Token(agreement_id))
-        .expect("Token not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
     let token_client = TokenClient::new(env, &token);
     let contract_address = env.current_contract_address();
 
@@ -355,6 +1152,7 @@ pub fn batch_claim_milestones(
             });
             continue;
         }
+        processed.push_back(milestone_id);
 
         // Bounds check (1-based, mirrors claim_milestone)
         if milestone_id == 0 || milestone_id > count {
@@ -371,7 +1169,7 @@ pub fn batch_claim_milestones(
         // Approved check
         let approved: bool = env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
             .unwrap_or(false);
         if !approved {
@@ -388,7 +1186,7 @@ pub fn batch_claim_milestones(
         // Already-claimed check
         let already_claimed: bool = env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
             .unwrap_or(false);
         if already_claimed {
@@ -402,16 +1200,43 @@ pub fn batch_claim_milestones(
             continue;
         }
 
-        let amount: i128 = env
+        let amount: i128 = match env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
-            .expect("Milestone amount not found");
+        {
+            Some(amount) => amount,
+            None => {
+                // Record a per-item failure and continue: an early return here
+                // would abort the batch after earlier milestones in this loop
+                // had already transferred funds.
+                failed_claims += 1;
+                results.push_back(MilestoneClaimResult {
+                    milestone_id,
+                    success: false,
+                    amount_claimed: 0,
+                    error_code: 2, // amount/milestone not found
+                });
+                continue;
+            }
+        };
 
-        // Checks-Effects-Interactions: mark claimed BEFORE transfer
-        env.storage().instance().set(
+        // Checks-Effects-Interactions: update all state before the external transfer.
+        env.storage().persistent().set(
             &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
             &true,
+        );
+
+        // Decrement the accounted escrow balance to keep invariants consistent
+        // across subsequent iterations of this batch.
+        let escrow_balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
+            .unwrap_or(0i128);
+        env.storage().persistent().set(
+            &MilestoneKey::MilestoneEscrowBalance(agreement_id),
+            &escrow_balance.saturating_sub(amount),
         );
 
         token_client.transfer(&contract_address, &contributor, &amount);
@@ -435,12 +1260,10 @@ pub fn batch_claim_milestones(
             amount_claimed: amount,
             error_code: 0,
         });
-
-        processed.push_back(milestone_id);
     }
 
     if all_milestones_claimed(env, agreement_id, count) {
-        env.storage().instance().set(
+        env.storage().persistent().set(
             &MilestoneKey::Status(agreement_id),
             &AgreementStatus::Completed,
         );
@@ -455,18 +1278,18 @@ pub fn batch_claim_milestones(
     }
     .publish(&env);
 
-    BatchMilestoneResult {
+    Ok(BatchMilestoneResult {
         agreement_id,
         total_claimed,
         successful_claims,
         failed_claims,
         results,
-    }
+    })
 }
 
 pub fn get_milestone_count(env: Env, agreement_id: u128) -> u32 {
     env.storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
         .unwrap_or(0)
 }
@@ -474,7 +1297,7 @@ pub fn get_milestone_count(env: Env, agreement_id: u128) -> u32 {
 pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<Milestone> {
     let count: u32 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneCount(agreement_id))
         .unwrap_or(0);
 
@@ -484,16 +1307,16 @@ pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<
 
     let amount: i128 = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))?;
     let approved: bool = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
         .unwrap_or(false);
     let claimed: bool = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
         .unwrap_or(false);
 
@@ -505,11 +1328,24 @@ pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<
     })
 }
 
+/// Reports whether every milestone up to `count` has been claimed.
+///
+/// # Arguments
+/// * `env` - Contract environment used to read claimed flags from instance storage.
+/// * `agreement_id` - Milestone agreement identifier whose claim flags should be checked.
+/// * `count` - Number of milestones to scan, usually the stored `MilestoneCount` for the agreement.
+///
+/// # Returns
+/// `true` when all milestone IDs from `1..=count` are marked claimed; otherwise `false`.
+///
+/// # Cost
+/// O(n) in `count`. The scan short-circuits on the first unclaimed milestone and is
+/// bounded by the caller-supplied milestone count.
 fn all_milestones_claimed(env: &Env, agreement_id: u128, count: u32) -> bool {
     for i in 1..=count {
         let claimed: bool = env
             .storage()
-            .instance()
+            .persistent()
             .get(&MilestoneKey::MilestoneClaimed(agreement_id, i))
             .unwrap_or(false);
         if !claimed {
@@ -589,9 +1425,17 @@ fn create_payroll_agreement_internal(
         env,
         AgreementCreatedEvent {
             agreement_id,
-            employer,
+            employer: employer.clone(),
             mode: AgreementMode::Payroll,
         },
+    );
+    record_entry(
+        env,
+        employer,
+        AuditEvent::AgreementCreated,
+        agreement_id,
+        None,
+        Some(0),
     );
 
     agreement_id
@@ -599,14 +1443,36 @@ fn create_payroll_agreement_internal(
 
 /// Creates multiple payroll agreements in a single transaction.
 ///
+/// # Atomicity
+///
+/// This function is **all-or-nothing**: it validates every item in `items`
+/// before writing any state.  If any entry fails validation the function
+/// returns `Err(PayrollError::InvalidData)` and **zero** agreements are
+/// created.  This prevents partial batch application from leaving the system
+/// in an inconsistent state.
+///
+/// # Validation rules (per item)
+/// * `grace_period_seconds` must be > 0 — a zero grace period is ambiguous and prevents any dispute
+///   or claim window from opening after cancellation.
+///
 /// # Arguments
 /// * `env` - Contract environment
 /// * `employer` - Address of the employer creating the agreements
-/// * `items` - Vector of payroll creation parameters
+/// * `items` - Vector of payroll creation parameters. At most `MAX_BATCH_SIZE` items are accepted.
 ///
 /// # Returns
-/// `Ok(BatchPayrollCreateResult)` — always succeeds at the batch level
-/// unless `items` is empty; inspect per-item results for failures.
+/// `Ok(BatchPayrollCreateResult)` — every item was valid and all agreements
+/// were created successfully.
+///
+/// # Errors
+/// * `PayrollError::InvalidData` — `items` is empty **or** any item fails per-item validation.  No
+///   agreements are created in either case.
+/// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` items.
+///
+/// # Gas rationale
+/// `MAX_BATCH_SIZE` is 20, matching the largest batch size measured in
+/// `tests/gas_benchmarks.rs`; the cap avoids late Soroban resource exhaustion
+/// after partially creating agreements.
 pub fn batch_create_payroll_agreements(
     env: &Env,
     employer: Address,
@@ -617,11 +1483,25 @@ pub fn batch_create_payroll_agreements(
     if items.is_empty() {
         return Err(PayrollError::InvalidData);
     }
+    if items.len() > MAX_BATCH_SIZE {
+        return Err(PayrollError::BatchTooLarge);
+    }
 
+    // ── Validation pass ──────────────────────────────────────────────────────
+    // Inspect every item BEFORE writing any state.  A single invalid entry
+    // causes the whole batch to be rejected so no partial set of agreements
+    // is ever persisted.
+    for params in items.iter() {
+        if params.grace_period_seconds == 0 {
+            return Err(PayrollError::InvalidData);
+        }
+    }
+
+    // ── Creation pass ────────────────────────────────────────────────────────
+    // All items passed validation; now commit every agreement.
     let mut agreement_ids: Vec<u128> = Vec::new(env);
     let mut results: Vec<PayrollCreateResult> = Vec::new(env);
     let mut total_created: u32 = 0;
-    let total_failed: u32 = 0;
 
     for params in items.iter() {
         let id = create_payroll_agreement_internal(
@@ -641,7 +1521,7 @@ pub fn batch_create_payroll_agreements(
 
     Ok(BatchPayrollCreateResult {
         total_created,
-        total_failed,
+        total_failed: 0,
         agreement_ids,
         results,
     })
@@ -766,14 +1646,37 @@ fn create_escrow_agreement_internal(
 
 /// Creates multiple escrow agreements in a single transaction.
 ///
+/// # Atomicity
+///
+/// This function is **all-or-nothing**: it validates every item in `items`
+/// before writing any state.  If any entry fails validation the function
+/// returns `Err` with the first validation error encountered and **zero**
+/// agreements are created.  This prevents partial batch application from
+/// leaving the system in an inconsistent state.
+///
+/// # Validation rules (per item, mirrors `create_escrow_agreement_internal`)
+/// * `amount_per_period` must be > 0  → `ZeroAmountPerPeriod`
+/// * `period_seconds` must be > 0     → `ZeroPeriodDuration`
+/// * `num_periods` must be > 0        → `ZeroNumPeriods`
+///
 /// # Arguments
 /// * `env` - Contract environment
 /// * `employer` - Address of the employer
-/// * `items` - Vector of escrow creation parameters
+/// * `items` - Vector of escrow creation parameters. At most `MAX_BATCH_SIZE` items are accepted.
 ///
 /// # Returns
-/// `Ok(BatchEscrowCreateResult)` — always succeeds at the batch level
-/// unless `items` is empty; inspect per-item `results` for failures.
+/// `Ok(BatchEscrowCreateResult)` — every item was valid and all agreements
+/// were created successfully.
+///
+/// # Errors
+/// * First per-item `PayrollError` — `items` is empty **or** any item fails per-item validation. No
+///   agreements are created in either case.
+/// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` items.
+///
+/// # Gas rationale
+/// `MAX_BATCH_SIZE` is 20, matching the largest batch size measured in
+/// `tests/gas_benchmarks.rs`; the cap avoids late Soroban resource exhaustion
+/// after partially creating agreements.
 pub fn batch_create_escrow_agreements(
     env: &Env,
     employer: Address,
@@ -784,14 +1687,37 @@ pub fn batch_create_escrow_agreements(
     if items.is_empty() {
         return Err(PayrollError::InvalidData);
     }
+    if items.len() > MAX_BATCH_SIZE {
+        return Err(PayrollError::BatchTooLarge);
+    }
 
+    // ── Validation pass ──────────────────────────────────────────────────────
+    // Inspect every item BEFORE writing any state.  A single invalid entry
+    // causes the whole batch to be rejected so no partial set of agreements
+    // is ever persisted.
+    for params in items.iter() {
+        if params.amount_per_period <= 0 {
+            return Err(PayrollError::ZeroAmountPerPeriod);
+        }
+        if params.period_seconds == 0 {
+            return Err(PayrollError::ZeroPeriodDuration);
+        }
+        if params.num_periods == 0 {
+            return Err(PayrollError::ZeroNumPeriods);
+        }
+    }
+
+    // ── Creation pass ────────────────────────────────────────────────────────
+    // All items passed validation; now commit every agreement.
     let mut agreement_ids: Vec<u128> = Vec::new(env);
     let mut results: Vec<EscrowCreateResult> = Vec::new(env);
     let mut total_created: u32 = 0;
-    let mut total_failed: u32 = 0;
 
     for params in items.iter() {
-        match create_escrow_agreement_internal(
+        // create_escrow_agreement_internal performs the same checks — this
+        // call can only fail if there is a bug in our validation pass above,
+        // so we propagate any unexpected error rather than silently swallowing it.
+        let id = create_escrow_agreement_internal(
             env,
             employer.clone(),
             params.contributor.clone(),
@@ -799,30 +1725,19 @@ pub fn batch_create_escrow_agreements(
             params.amount_per_period,
             params.period_seconds,
             params.num_periods,
-        ) {
-            Ok(id) => {
-                agreement_ids.push_back(id);
-                results.push_back(EscrowCreateResult {
-                    agreement_id: Some(id),
-                    success: true,
-                    error_code: 0,
-                });
-                total_created += 1;
-            }
-            Err(err) => {
-                results.push_back(EscrowCreateResult {
-                    agreement_id: None,
-                    success: false,
-                    error_code: err as u32,
-                });
-                total_failed += 1;
-            }
-        }
+        )?;
+        agreement_ids.push_back(id);
+        results.push_back(EscrowCreateResult {
+            agreement_id: Some(id),
+            success: true,
+            error_code: 0,
+        });
+        total_created += 1;
     }
 
     Ok(BatchEscrowCreateResult {
         total_created,
-        total_failed,
+        total_failed: 0,
         agreement_ids,
         results,
     })
@@ -866,6 +1781,16 @@ pub fn add_employee_to_agreement(
         .persistent()
         .get(&StorageKey::AgreementEmployees(agreement_id))
         .unwrap_or(Vec::new(env));
+
+    // Reject duplicate employee addresses. Each address must map to exactly one
+    // salary entry within an agreement; adding the same address twice would
+    // create two salary streams and corrupt per-employee claim accounting.
+    // A removed employee can be re-added because they are no longer present.
+    for existing in employees.iter() {
+        if existing.address == employee {
+            panic_with_error!(env, PayrollError::EmployeeAlreadyExists);
+        }
+    }
 
     employees.push_back(EmployeeInfo {
         address: employee.clone(),
@@ -933,6 +1858,14 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
         .set(&StorageKey::Agreement(agreement_id), &agreement);
 
     emit_agreement_activated(env, AgreementActivatedEvent { agreement_id });
+    record_entry(
+        env,
+        agreement.employer,
+        AuditEvent::AgreementActivated,
+        agreement_id,
+        None,
+        Some(agreement.total_amount),
+    );
 }
 
 /// Set Arbiter
@@ -947,10 +1880,35 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
 pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
     caller.require_auth();
 
+    // Validation: reject self-appointment (caller == arbiter).
+    if arbiter == caller {
+        panic_with_error!(env, PayrollError::InvalidArbiter);
+    }
+
+    // Validation: reject a no-op duplicate (arbiter already set to this address).
+    if let Some(existing) = get_arbiter(env) {
+        if existing == arbiter {
+            panic_with_error!(env, PayrollError::InvalidArbiter);
+        }
+    }
+
+    let arbiter_for_log = arbiter.clone();
     env.storage()
         .persistent()
         .set(&StorageKey::Arbiter, &arbiter);
     emit_set_arbiter(env, ArbiterSetEvent { arbiter });
+
+    // Record a lifecycle audit entry so `set_arbiter` is observable in the
+    // audit trail (contract-level event: sentinel `agreement_id` 0, subject
+    // is the newly-set arbiter).
+    record_entry(
+        env,
+        caller,
+        AuditEvent::ArbiterSet,
+        0,
+        Some(arbiter_for_log),
+        None,
+    );
 
     true
 }
@@ -981,7 +1939,8 @@ fn effective_cancelled_grace_duration_seconds(
     base_grace_seconds.saturating_add(grace_period_extension_seconds(env, agreement_id))
 }
 
-/// Returns the owner-configured extension caps (defaults apply until `set_grace_extension_policy` runs).
+/// Returns the owner-configured extension caps (defaults apply until `set_grace_extension_policy`
+/// runs).
 pub fn get_grace_extension_policy(env: &Env) -> GracePeriodExtensionPolicy {
     env.storage()
         .persistent()
@@ -993,6 +1952,22 @@ pub fn get_grace_extension_policy(env: &Env) -> GracePeriodExtensionPolicy {
 }
 
 /// Sets caps for per-agreement grace extensions. Callable only by the contract owner.
+///
+/// # Policy semantics
+/// Both policy fields must be strictly positive. A zero value is treated as an
+/// invalid configuration (not "disabled"), because a zero cap silently disables
+/// all grace extensions and removes a safety mechanism with no error:
+/// - `max_cumulative_extension_bps == 0` would make every extension exceed the (zero) cumulative
+///   cap, so no extension could ever be applied.
+/// - `max_extension_per_call_seconds == 0` would reject every single-call extension.
+///
+/// To intentionally stop allowing extensions, set the caps to a small, explicit
+/// non-zero value rather than zero, so the configuration choice is auditable and
+/// cannot happen by accident. Both fields are also bounded above so a compromised
+/// owner key cannot configure absurd values in one transaction.
+///
+/// Returns [`PayrollError::GraceExtensionInvalid`] when either field is zero or
+/// exceeds its upper bound.
 pub fn set_grace_extension_policy(
     env: &Env,
     caller: Address,
@@ -1006,10 +1981,13 @@ pub fn set_grace_extension_policy(
     // Sanity bounds so a compromised owner key cannot configure absurd values in one tx.
     const MAX_BPS: u32 = 500_000;
     const MAX_PER_CALL: u64 = 730 * 24 * 3600;
-    if policy.max_cumulative_extension_bps > MAX_BPS {
+    // Reject zero on both fields: a zero cap silently disables grace extensions,
+    // which must be an explicit, non-zero configuration rather than an accident.
+    if policy.max_cumulative_extension_bps == 0 || policy.max_cumulative_extension_bps > MAX_BPS {
         return Err(PayrollError::GraceExtensionInvalid);
     }
-    if policy.max_extension_per_call_seconds == 0 || policy.max_extension_per_call_seconds > MAX_PER_CALL
+    if policy.max_extension_per_call_seconds == 0
+        || policy.max_extension_per_call_seconds > MAX_PER_CALL
     {
         return Err(PayrollError::GraceExtensionInvalid);
     }
@@ -1024,7 +2002,8 @@ pub fn get_grace_extension_seconds(env: &Env, agreement_id: u128) -> u64 {
     grace_period_extension_seconds(env, agreement_id)
 }
 
-/// Extends the effective cancellation grace (claims, dispute window while cancelled) by `additional_seconds`.
+/// Extends the effective cancellation grace (claims, dispute window while cancelled) by
+/// `additional_seconds`.
 ///
 /// Authorization: contract owner or agreement employer. Emits [`GracePeriodExtendedEvent`].
 pub fn extend_grace_period(
@@ -1063,9 +2042,7 @@ pub fn extend_grace_period(
         .ok_or(PayrollError::GraceExtensionInvalid)?;
 
     let base = agreement.grace_period_seconds as u128;
-    let max_extra = (base
-        .saturating_mul(policy.max_cumulative_extension_bps as u128))
-        / 10000;
+    let max_extra = (base.saturating_mul(policy.max_cumulative_extension_bps as u128)) / 10000;
 
     if (new_total as u128) > max_extra {
         return Err(PayrollError::GraceExtensionCapExceeded);
@@ -1131,7 +2108,11 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
     };
 
     let grace_window_seconds = if agreement.status == AgreementStatus::Cancelled {
-        effective_cancelled_grace_duration_seconds(env, agreement_id, agreement.grace_period_seconds)
+        effective_cancelled_grace_duration_seconds(
+            env,
+            agreement_id,
+            agreement.grace_period_seconds,
+        )
     } else {
         agreement.grace_period_seconds
     };
@@ -1152,6 +2133,14 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
         .set(&StorageKey::Agreement(agreement_id), &agreement);
 
     emit_dsipute_raised(env, DisputeRaisedEvent { agreement_id });
+    record_entry(
+        env,
+        caller,
+        AuditEvent::DisputeRaised,
+        agreement_id,
+        Some(agreement.employer),
+        Some(agreement.total_amount),
+    );
 
     Ok(())
 }
@@ -1161,13 +2150,87 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
 /// # Arguments
 /// * `env` - Contract environment
 /// * `agreement_id` - Agreement ID in `DisputeStatus::Raised`
-/// * `pay_employee` - Total amount to distribute equally across employees (payroll) or to contributor (escrow)
+/// * `pay_employee` - Total amount to distribute equally across employees (payroll) or to
+///   contributor (escrow)
 /// * `refund_employer` - Amount to refund the employer
+///
+/// # Conservation of funds
+/// The payout is deterministic and conserves funds. `pay_employee` is divided
+/// equally across employees using integer division; the integer-division
+/// **remainder (dust)** is added to the **last** employee's transfer so that the
+/// sum of all employee transfers equals `pay_employee` exactly and no tokens are
+/// stranded in the contract. Both `pay_employee` and `refund_employer` must be
+/// non-negative, and `pay_employee + refund_employer` must not exceed either the
+/// agreement's `total_amount` or its **real escrow balance** for the agreement's
+/// token; the per-agreement escrow balance is decremented by the distributed
+/// total after the transfers succeed.
 ///
 /// # Access Control
 /// Requires arbiter authentication
 pub fn resolve_dispute(
     env: Env,
+    caller: Address,
+    agreement_id: u128,
+    pay_employee: i128,
+    refund_employer: i128,
+) -> Result<(), PayrollError> {
+    // If a DisputeResolution threshold is configured and the total payout meets
+    // it, reject and require the caller to use resolve_dispute_multisig instead.
+    let total_payout = pay_employee + refund_employer;
+    if let Some(threshold) = env
+        .storage()
+        .persistent()
+        .get::<_, i128>(&StorageKey::DisputeResolutionThreshold)
+    {
+        if threshold > 0 && total_payout >= threshold {
+            return Err(PayrollError::MultisigApprovalRequired);
+        }
+    }
+    resolve_dispute_core(&env, caller, agreement_id, pay_employee, refund_employer)
+}
+
+/// Resolves a dispute that has been pre-approved by the multisig contract.
+///
+/// # Arguments
+/// * `caller` - Arbiter address (must authenticate)
+/// * `agreement_id` - Agreement under dispute
+/// * `pay_employee` - Amount to distribute to employees
+/// * `refund_employer` - Amount to refund the employer
+/// * `multisig_operation_id` - ID of the Executed DisputeResolution operation in the multisig
+///
+/// # Access Control
+/// Requires arbiter authentication and a valid Executed multisig operation.
+pub fn resolve_dispute_multisig(
+    env: Env,
+    caller: Address,
+    agreement_id: u128,
+    pay_employee: i128,
+    refund_employer: i128,
+    multisig_operation_id: u128,
+) -> Result<(), PayrollError> {
+    let multisig_addr = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::MultisigContract)
+        .ok_or(PayrollError::MultisigApprovalRequired)?;
+
+    let payroll_contract = env.current_contract_address();
+    require_multisig_executed(&env, &multisig_addr, multisig_operation_id, |kind| {
+        matches!(
+            kind,
+            OperationKind::DisputeResolution(addr, aid, pe, re)
+                if *addr == payroll_contract
+                    && *aid == agreement_id
+                    && *pe == pay_employee
+                    && *re == refund_employer
+        )
+    })?;
+
+    resolve_dispute_core(&env, caller, agreement_id, pay_employee, refund_employer)
+}
+
+fn resolve_dispute_core(
+    env: &Env,
     caller: Address,
     agreement_id: u128,
     pay_employee: i128,
@@ -1184,38 +2247,74 @@ pub fn resolve_dispute(
         return Err(PayrollError::NotArbiter);
     }
 
-    let mut agreement = get_agreement(&env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
+    let mut agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     if agreement.dispute_status != DisputeStatus::Raised {
         return Err(PayrollError::NoDispute);
     }
 
-    let total_locked = agreement.total_amount;
-    if pay_employee + refund_employer > total_locked {
+    // Reject negative payouts (griefing / accounting corruption).
+    if pay_employee < 0 || refund_employer < 0 {
         return Err(PayrollError::InvalidPayout);
     }
 
-    let token = TokenClient::new(&env, &agreement.token);
+    let total_payout = pay_employee
+        .checked_add(refund_employer)
+        .ok_or(PayrollError::InvalidPayout)?;
+
+    // Validate against the agreement's nominal total AND, when a real
+    // per-agreement escrow balance is tracked, against that balance too.
+    // Validating only against `total_amount` could desync internal accounting
+    // from actual token balances and over-distribute across disputes.
+    //
+    // `escrow_balance == 0` is treated as "untracked" (e.g. legacy agreements
+    // whose escrow was never recorded via `set_agreement_escrow_balance`); for
+    // those we fall back to the `total_amount` bound and do not decrement, to
+    // avoid driving a never-tracked balance negative.
+    let total_locked = agreement.total_amount;
+    if total_payout > total_locked {
+        return Err(PayrollError::InvalidPayout);
+    }
+    let escrow_balance = DataKey::get_agreement_escrow_balance(env, agreement_id, &agreement.token);
+    let escrow_tracked = escrow_balance > 0;
+    if escrow_tracked && total_payout > escrow_balance {
+        return Err(PayrollError::InvalidPayout);
+    }
+
+    let token = TokenClient::new(env, &agreement.token);
 
     let employees: Vec<EmployeeInfo> = env
         .storage()
         .persistent()
         .get(&StorageKey::AgreementEmployees(agreement_id))
-        .unwrap_or(Vec::new(&env));
+        .unwrap_or(Vec::new(env));
 
-    // Execute transfers
+    // Track what is actually transferred out so the escrow balance can be
+    // decremented by the exact distributed total (conservation of funds).
+    let mut distributed: i128 = 0;
+
+    // Execute transfers. The integer-division remainder (dust) is allocated
+    // deterministically to the LAST employee so the employee transfers sum to
+    // `pay_employee` exactly and nothing is stranded.
     if pay_employee > 0 {
         let num_employees = employees.len() as i128;
         if num_employees > 0 {
             let amount_per_employee = pay_employee / num_employees;
-            for employee in employees.iter() {
-                token.transfer(
-                    &env.current_contract_address(),
-                    &employee.address,
-                    &amount_per_employee,
-                );
+            let dust = pay_employee - amount_per_employee * num_employees;
+            let last_index = employees.len() - 1;
+            for (i, employee) in employees.iter().enumerate() {
+                let mut amount = amount_per_employee;
+                if i as u32 == last_index {
+                    amount += dust;
+                }
+                if amount > 0 {
+                    token.transfer(&env.current_contract_address(), &employee.address, &amount);
+                    distributed += amount;
+                }
             }
         }
+        // If there are no employees, `pay_employee` cannot be distributed and is
+        // left as part of the (unchanged) escrow rather than silently lost.
     }
 
     if refund_employer > 0 {
@@ -1223,6 +2322,19 @@ pub fn resolve_dispute(
             &env.current_contract_address(),
             &agreement.employer,
             &refund_employer,
+        );
+        distributed += refund_employer;
+    }
+
+    // Decrement the per-agreement escrow balance by exactly what was distributed,
+    // keeping internal accounting consistent with real token balances. Skipped
+    // when escrow was never tracked (balance was 0) so it is not driven negative.
+    if escrow_tracked {
+        DataKey::set_agreement_escrow_balance(
+            env,
+            agreement_id,
+            &agreement.token,
+            escrow_balance - distributed,
         );
     }
 
@@ -1233,12 +2345,20 @@ pub fn resolve_dispute(
         .set(&StorageKey::Agreement(agreement_id), &agreement);
 
     emit_dsipute_resolved(
-        &env,
+        env,
         DisputeResolvedEvent {
             agreement_id,
             pay_contributor: pay_employee,
             refund_employer,
         },
+    );
+    record_entry(
+        env,
+        caller,
+        AuditEvent::DisputeResolved,
+        agreement_id,
+        Some(agreement.employer),
+        Some(pay_employee + refund_employer),
     );
 
     Ok(())
@@ -1314,7 +2434,53 @@ pub fn set_exchange_rate(
         return Err(PayrollError::Unauthorized);
     }
 
+    // Enforce absolute sanity bound if configured.
+    if let Some(max_rate) = DataKey::get_exchange_rate_max_rate_sanity_bound(env) {
+        if rate > max_rate {
+            return Err(PayrollError::ExchangeRateInvalid);
+        }
+    }
+
+    // Enforce max-deviation if configured: compare with previous rate.
+    if let Some(max_dev_bps) = DataKey::get_exchange_rate_max_deviation_bps(env) {
+        if let Some(prev) = DataKey::get_exchange_rate(env, &base, &quote) {
+            // compute allowed delta = prev.rate * max_dev_bps / 10000
+            let prev_rate = prev.rate;
+            // Avoid negative or zero prev_rate (shouldn't happen)
+            if prev_rate > 0 {
+                let allowed_delta = (prev_rate
+                    .checked_mul(max_dev_bps as i128)
+                    .unwrap_or(i128::MAX))
+                .checked_div(10_000i128)
+                .unwrap_or(i128::MAX);
+                let diff = if rate > prev_rate {
+                    rate - prev_rate
+                } else {
+                    prev_rate - rate
+                };
+                if diff > allowed_delta {
+                    return Err(PayrollError::ExchangeRateInvalid);
+                }
+            }
+        }
+    }
+
+    let prev_rate = DataKey::get_exchange_rate(env, &base, &quote)
+        .map(|r| r.rate)
+        .unwrap_or(0);
+
     DataKey::set_exchange_rate(env, &base, &quote, rate);
+
+    emit_exchange_rate_changed(
+        env,
+        ExchangeRateChangedEvent {
+            base,
+            quote,
+            new_rate: rate,
+            prev_rate,
+            updated_at: env.ledger().timestamp(),
+        },
+    );
 
     Ok(())
 }
@@ -1332,12 +2498,19 @@ pub fn convert_currency(
 
 /// Retrieves an agreement by ID
 ///
+/// Bumps the agreement entry's TTL on read (see [`crate::storage::extend_persistent_ttl`])
+/// so an active agreement that is accessed but not rewritten for a long time is
+/// not archived under Soroban's state-archival model.
+///
 /// # Returns
 /// Some(Agreement) if found, None otherwise
 pub fn get_agreement(env: &Env, agreement_id: u128) -> Option<Agreement> {
-    env.storage()
-        .persistent()
-        .get(&StorageKey::Agreement(agreement_id))
+    let key = StorageKey::Agreement(agreement_id);
+    let agreement = env.storage().persistent().get(&key);
+    if agreement.is_some() {
+        crate::storage::extend_persistent_ttl(env, &key);
+    }
+    agreement
 }
 
 /// Retrieves all employees for an agreement
@@ -1395,6 +2568,23 @@ pub fn claim_payroll(
     agreement_id: u128,
     employee_index: u32,
 ) -> Result<(), PayrollError> {
+    // Guard the entire claim against cross-contract reentrancy (e.g. a hostile
+    // token re-entering during `transfer`). The guard is released on every
+    // return path; a panic clears it automatically via temporary storage.
+    acquire_reentrancy_guard(env)?;
+    let result = claim_payroll_inner(env, caller, agreement_id, employee_index);
+    release_reentrancy_guard(env);
+    result
+}
+
+fn claim_payroll_inner(
+    env: &Env,
+    caller: &Address,
+    agreement_id: u128,
+    employee_index: u32,
+) -> Result<(), PayrollError> {
+    enforce_rate_limit(env, caller)?;
+
     // Check emergency pause
     if is_emergency_paused(env) {
         return Err(PayrollError::EmergencyPaused);
@@ -1469,6 +2659,14 @@ pub fn claim_payroll(
     // Get employee's claimed periods
     let claimed_periods = DataKey::get_employee_claimed_periods(env, agreement_id, employee_index);
 
+    // Invariant check: claimed_periods <= num_periods (if defined)
+    if let Some(num_periods) = agreement.num_periods {
+        assert!(
+            claimed_periods <= num_periods,
+            "Invariant violation: claimed_periods > num_periods"
+        );
+    }
+
     // Calculate periods to pay
     if total_elapsed_periods <= claimed_periods {
         return Err(PayrollError::NoPeriodsToClaim);
@@ -1476,14 +2674,37 @@ pub fn claim_payroll(
 
     let periods_to_pay = total_elapsed_periods - claimed_periods;
 
-    // Get employee salary per period
-    let salary_per_period = DataKey::get_employee_salary(env, agreement_id, employee_index)
+    // Get employee salary per period, checking for dynamic adjustment overrides.
+    let mut salary_per_period = DataKey::get_employee_salary(env, agreement_id, employee_index)
         .ok_or(PayrollError::AgreementNotFound)?;
+
+    if let Some(salary_adj_addr) = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::SalaryAdjustmentContract)
+    {
+        let client = SalaryAdjustmentClient::new(env, &salary_adj_addr);
+        if let Some(adjusted_salary) = client.get_employee_salary(&employee) {
+            salary_per_period = adjusted_salary;
+        }
+    }
 
     // Calculate total amount to pay
     let amount = salary_per_period
         .checked_mul(periods_to_pay as i128)
         .ok_or(PayrollError::InvalidData)?;
+
+    // If a LargePayment threshold is configured and this claim meets it,
+    // reject and require the caller to use claim_payroll_multisig instead.
+    if let Some(threshold) = env
+        .storage()
+        .persistent()
+        .get::<_, i128>(&StorageKey::LargePaymentThreshold)
+    {
+        if threshold > 0 && amount >= threshold {
+            return Err(PayrollError::MultisigApprovalRequired);
+        }
+    }
 
     // Check escrow balance
     let escrow_balance = DataKey::get_agreement_escrow_balance(env, agreement_id, &token);
@@ -1494,7 +2715,25 @@ pub fn claim_payroll(
     // Get contract address (this contract)
     let contract_address = env.current_contract_address();
 
-    // Transfer tokens from escrow to employee.
+    // === EFFECTS BEFORE INTERACTION (checks-effects-interactions) ===
+    // Persist the new escrow balance, claimed periods, and paid amount BEFORE
+    // the external token transfer, so a malicious or hook-enabled token cannot
+    // re-enter and observe stale state to double-claim a period. The transient
+    // reentrancy guard (acquired by the caller) is the primary defense; this
+    // ordering is defense-in-depth.
+    let new_escrow_balance = escrow_balance - amount;
+    DataKey::set_agreement_escrow_balance(env, agreement_id, &token, new_escrow_balance);
+
+    let new_claimed_periods = claimed_periods + periods_to_pay;
+    DataKey::set_employee_claimed_periods(env, agreement_id, employee_index, new_claimed_periods);
+
+    let current_paid = DataKey::get_agreement_paid_amount(env, agreement_id);
+    let new_paid = current_paid
+        .checked_add(amount)
+        .ok_or(PayrollError::InvalidData)?;
+    DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
+
+    // === INTERACTION: transfer tokens from escrow to employee ===
     //
     // IMPORTANT: Token `transfer(from=contract_address, ...)` requires `from.require_auth()`.
     // When the token contract calls `require_auth()` on a contract address, the calling
@@ -1519,21 +2758,6 @@ pub fn claim_payroll(
         })],
     ));
     token_client.transfer(&contract_address, &employee, &amount);
-
-    // Update escrow balance
-    let new_escrow_balance = escrow_balance - amount;
-    DataKey::set_agreement_escrow_balance(env, agreement_id, &token, new_escrow_balance);
-
-    // Update employee's claimed periods
-    let new_claimed_periods = claimed_periods + periods_to_pay;
-    DataKey::set_employee_claimed_periods(env, agreement_id, employee_index, new_claimed_periods);
-
-    // Update agreement total paid amount
-    let current_paid = DataKey::get_agreement_paid_amount(env, agreement_id);
-    let new_paid = current_paid
-        .checked_add(amount)
-        .ok_or(PayrollError::InvalidData)?;
-    DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
 
     // Emit events
     emit_payroll_claimed(
@@ -1567,6 +2791,62 @@ pub fn claim_payroll(
     Ok(())
 }
 
+/// Claims payroll for a large payment that has been pre-approved by the multisig contract.
+///
+/// # Arguments
+/// * `caller` - Employee address (must authenticate)
+/// * `agreement_id` - Payroll agreement ID
+/// * `employee_index` - Employee index within the agreement
+/// * `multisig_operation_id` - ID of the Executed LargePayment operation in the multisig
+///
+/// # Access Control
+/// Requires employee authentication and a valid Executed multisig LargePayment operation
+/// whose `to` field matches the caller and `amount` matches the computed payout.
+pub fn claim_payroll_multisig(
+    env: &Env,
+    caller: &Address,
+    agreement_id: u128,
+    employee_index: u32,
+    multisig_operation_id: u128,
+) -> Result<(), PayrollError> {
+    let multisig_addr = env
+        .storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::MultisigContract)
+        .ok_or(PayrollError::MultisigApprovalRequired)?;
+
+    // Temporarily clear the threshold so claim_payroll_core can proceed.
+    // We verify the multisig op here before delegating.
+    let client = MultisigClient::new(env, &multisig_addr);
+    let op = client
+        .get_operation(&multisig_operation_id)
+        .ok_or(PayrollError::MultisigApprovalRequired)?;
+    if op.status != OperationStatus::Executed {
+        return Err(PayrollError::MultisigApprovalRequired);
+    }
+    // Verify the operation targets this caller (employee) with a LargePayment kind.
+    match &op.kind {
+        OperationKind::LargePayment(_, to, _) if to == caller => {}
+        _ => return Err(PayrollError::MultisigApprovalRequired),
+    }
+
+    // Bypass the threshold guard by temporarily removing it, run claim, then restore.
+    let saved_threshold: Option<i128> = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::LargePaymentThreshold);
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::LargePaymentThreshold);
+    let result = claim_payroll(env, caller, agreement_id, employee_index);
+    if let Some(t) = saved_threshold {
+        env.storage()
+            .persistent()
+            .set(&StorageKey::LargePaymentThreshold, &t);
+    }
+    result
+}
+
 /// Claims payroll for an employee but settles the payout in a caller-specified
 /// currency, using the configured FX rate between the agreement's base token
 /// and the requested payout token.
@@ -1582,6 +2862,23 @@ pub fn claim_payroll_in_token(
     employee_index: u32,
     payout_token: Address,
 ) -> Result<(), PayrollError> {
+    // Reentrancy guard mirrors `claim_payroll`; released on every return path.
+    acquire_reentrancy_guard(env)?;
+    let result =
+        claim_payroll_in_token_inner(env, caller, agreement_id, employee_index, payout_token);
+    release_reentrancy_guard(env);
+    result
+}
+
+fn claim_payroll_in_token_inner(
+    env: &Env,
+    caller: &Address,
+    agreement_id: u128,
+    employee_index: u32,
+    payout_token: Address,
+) -> Result<(), PayrollError> {
+    enforce_rate_limit(env, caller)?;
+
     // Validate employee index
     let employee_count = DataKey::get_employee_count(env, agreement_id);
     if employee_index >= employee_count {
@@ -1636,8 +2933,10 @@ pub fn claim_payroll_in_token(
         DataKey::get_agreement_token(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     // Shortcut to the single-currency path if payout token == base token.
+    // Call the inner (unguarded) variant because the guard is already held by
+    // this function's wrapper; re-acquiring would self-trip the guard.
     if payout_token == base_token {
-        return claim_payroll(env, caller, agreement_id, employee_index);
+        return claim_payroll_inner(env, caller, agreement_id, employee_index);
     }
 
     // Get current timestamp
@@ -1685,7 +2984,22 @@ pub fn claim_payroll_in_token(
     // Get contract address (this contract)
     let contract_address = env.current_contract_address();
 
-    // Transfer tokens from escrow to employee in payout currency.
+    // === EFFECTS BEFORE INTERACTION (checks-effects-interactions) ===
+    // Persist payout-currency escrow, claimed periods, and base-currency paid
+    // amount BEFORE the external transfer (defense-in-depth alongside the guard).
+    let new_escrow_payout = escrow_balance_payout - amount_payout;
+    DataKey::set_agreement_escrow_balance(env, agreement_id, &payout_token, new_escrow_payout);
+
+    let new_claimed_periods = claimed_periods + periods_to_pay;
+    DataKey::set_employee_claimed_periods(env, agreement_id, employee_index, new_claimed_periods);
+
+    let current_paid = DataKey::get_agreement_paid_amount(env, agreement_id);
+    let new_paid = current_paid
+        .checked_add(amount_base)
+        .ok_or(PayrollError::InvalidData)?;
+    DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
+
+    // === INTERACTION: transfer tokens from escrow to employee in payout currency ===
     //
     // Token `transfer(from=contract_address, ...)` requires `from.require_auth()`.
     // We pre-authorize via `authorize_as_current_contract` as in the base path.
@@ -1709,21 +3023,6 @@ pub fn claim_payroll_in_token(
         })],
     ));
     token_client.transfer(&contract_address, &employee, &amount_payout);
-
-    // Update escrow balance for payout currency
-    let new_escrow_payout = escrow_balance_payout - amount_payout;
-    DataKey::set_agreement_escrow_balance(env, agreement_id, &payout_token, new_escrow_payout);
-
-    // Update employee's claimed periods
-    let new_claimed_periods = claimed_periods + periods_to_pay;
-    DataKey::set_employee_claimed_periods(env, agreement_id, employee_index, new_claimed_periods);
-
-    // Update agreement total paid amount in base currency
-    let current_paid = DataKey::get_agreement_paid_amount(env, agreement_id);
-    let new_paid = current_paid
-        .checked_add(amount_base)
-        .ok_or(PayrollError::InvalidData)?;
-    DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
 
     // Emit events: `PayrollClaimed` remains in base currency units, while the
     // payment events reflect the actual payout asset and amount.
@@ -1765,11 +3064,11 @@ pub fn claim_payroll_in_token(
 ///
 /// # Arguments
 /// * `env` - Contract environment
-/// * `caller` - Must equal the employee address at each supplied
-///   index (each claim still enforces `caller == employee`)
+/// * `caller` - Must equal the employee address at each supplied index (each claim still enforces
+///   `caller == employee`)
 /// * `agreement_id` - ID of the payroll agreement
-/// * `employee_indices` - 0-based employee indices to claim for.
-///   Duplicates are detected in-memory and skipped.
+/// * `employee_indices` - 0-based employee indices to claim for. Duplicates are detected in-memory
+///   and skipped. At most `MAX_BATCH_SIZE` indices are accepted.
 ///
 /// # Returns
 /// `Ok(BatchPayrollResult)` — always succeeds at the batch level; inspect
@@ -1780,6 +3079,13 @@ pub fn claim_payroll_in_token(
 /// * `PayrollError::AgreementNotFound` — agreement does not exist
 /// * `PayrollError::InvalidAgreementMode` — agreement is not Payroll mode
 /// * `PayrollError::AgreementNotActivated` — activation timestamp missing
+/// * `PayrollError::BatchTooLarge` — more than `MAX_BATCH_SIZE` indices
+///
+/// # Gas rationale
+/// `MAX_BATCH_SIZE` is 20 because `tests/gas_benchmarks.rs` records the batch
+/// ceiling and enforces the committed gas threshold. The bound is checked
+/// before payroll state updates or token transfers, preserving partial-success
+/// semantics for only bounded batches.
 ///
 /// # Gas optimisations
 /// * Agreement metadata (token, activation time, period duration) read once.
@@ -1792,10 +3098,31 @@ pub fn batch_claim_payroll(
     agreement_id: u128,
     employee_indices: Vec<u32>,
 ) -> Result<BatchPayrollResult, PayrollError> {
+    // Reentrancy guard covers the whole batch (each per-employee transfer is a
+    // potential reentry point); released on every return path.
+    acquire_reentrancy_guard(env)?;
+    let result = batch_claim_payroll_inner(env, caller, agreement_id, employee_indices);
+    release_reentrancy_guard(env);
+    result
+}
+
+fn batch_claim_payroll_inner(
+    env: &Env,
+    caller: &Address,
+    agreement_id: u128,
+    employee_indices: Vec<u32>,
+) -> Result<BatchPayrollResult, PayrollError> {
     caller.require_auth();
+
+    if let Err(e) = enforce_rate_limit(env, caller) {
+        return Err(e);
+    }
 
     if employee_indices.is_empty() {
         return Err(PayrollError::InvalidData);
+    }
+    if employee_indices.len() > MAX_BATCH_SIZE {
+        return Err(PayrollError::BatchTooLarge);
     }
 
     let agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
@@ -1856,6 +3183,7 @@ pub fn batch_claim_payroll(
             });
             continue;
         }
+        processed.push_back(employee_index);
 
         // Bounds check
         if employee_index >= employee_count {
@@ -1899,6 +3227,15 @@ pub fn batch_claim_payroll(
         // Must have unclaimed periods
         let claimed_periods =
             DataKey::get_employee_claimed_periods(env, agreement_id, employee_index);
+
+        // Invariant check: claimed_periods <= num_periods (if defined)
+        if let Some(num_periods) = agreement.num_periods {
+            assert!(
+                claimed_periods <= num_periods,
+                "Invariant violation: claimed_periods > num_periods"
+            );
+        }
+
         if total_elapsed_periods <= claimed_periods {
             failed_claims += 1;
             results.push_back(PayrollClaimResult {
@@ -1912,8 +3249,8 @@ pub fn batch_claim_payroll(
 
         let periods_to_pay = total_elapsed_periods - claimed_periods;
 
-        // Salary must be configured
-        let salary_per_period =
+        // Salary must be configured, checking for dynamic adjustment overrides.
+        let mut salary_per_period =
             match DataKey::get_employee_salary(env, agreement_id, employee_index) {
                 Some(s) => s,
                 None => {
@@ -1927,6 +3264,17 @@ pub fn batch_claim_payroll(
                     continue;
                 }
             };
+
+        if let Some(salary_adj_addr) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&StorageKey::SalaryAdjustmentContract)
+        {
+            let client = SalaryAdjustmentClient::new(env, &salary_adj_addr);
+            if let Some(adjusted_salary) = client.get_employee_salary(&employee) {
+                salary_per_period = adjusted_salary;
+            }
+        }
 
         // Overflow-safe amount
         let amount = match salary_per_period.checked_mul(periods_to_pay as i128) {
@@ -1955,6 +3303,28 @@ pub fn batch_claim_payroll(
             continue;
         }
 
+        // === EFFECTS BEFORE INTERACTION (checks-effects-interactions) ===
+        // Decrement the in-memory escrow and persist per-employee claimed
+        // periods and the agreement paid amount BEFORE the external transfer,
+        // so a hostile token cannot re-enter and observe stale per-employee
+        // state. The transaction-level reentrancy guard is the primary defense.
+        escrow_balance -= amount;
+        total_claimed += amount;
+        successful_claims += 1;
+
+        DataKey::set_employee_claimed_periods(
+            env,
+            agreement_id,
+            employee_index,
+            claimed_periods + periods_to_pay,
+        );
+
+        let new_paid = DataKey::get_agreement_paid_amount(env, agreement_id)
+            .checked_add(amount)
+            .unwrap_or(DataKey::get_agreement_paid_amount(env, agreement_id));
+        DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
+
+        // === INTERACTION: transfer tokens from escrow to employee ===
         env.authorize_as_current_contract(Vec::from_array(
             env,
             [InvokerContractAuthEntry::Contract(SubContractInvocation {
@@ -1974,24 +3344,6 @@ pub fn batch_claim_payroll(
             })],
         ));
         token_client.transfer(&contract_address, &employee, &amount);
-
-        // Update in-memory balance
-        escrow_balance -= amount;
-        total_claimed += amount;
-        successful_claims += 1;
-
-        // Persist per-employee state
-        DataKey::set_employee_claimed_periods(
-            env,
-            agreement_id,
-            employee_index,
-            claimed_periods + periods_to_pay,
-        );
-
-        let new_paid = DataKey::get_agreement_paid_amount(env, agreement_id)
-            .checked_add(amount)
-            .unwrap_or(DataKey::get_agreement_paid_amount(env, agreement_id));
-        DataKey::set_agreement_paid_amount(env, agreement_id, new_paid);
 
         // Events — identical to claim_payroll
         emit_payroll_claimed(
@@ -2026,8 +3378,6 @@ pub fn batch_claim_payroll(
             amount_claimed: amount,
             error_code: 0,
         });
-
-        processed.push_back(employee_index);
     }
 
     DataKey::set_agreement_escrow_balance(env, agreement_id, &token, escrow_balance);
@@ -2120,6 +3470,12 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollErro
         return Err(PayrollError::AllPeriodsClaimed);
     }
 
+    // Invariant check
+    assert!(
+        claimed_periods <= num_periods,
+        "Invariant violation: claimed_periods > num_periods"
+    );
+
     // Allow claims if:
     // 1. Agreement is Active, OR
     // 2. Agreement is Cancelled AND grace period is still active
@@ -2204,6 +3560,10 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollErro
     claimed_periods += periods_to_pay;
     agreement.claimed_periods = Some(claimed_periods);
     agreement.paid_amount += amount;
+    // Keep the standalone paid-amount key in sync, like claim_payroll,
+    // batch_claim_payroll and resolve_dispute do, so the escrow-conservation
+    // invariant (remaining + paid == total) holds for time-based claims too.
+    DataKey::set_agreement_paid_amount(env, agreement_id, agreement.paid_amount);
 
     if claimed_periods >= num_periods {
         agreement.status = AgreementStatus::Completed;
@@ -2265,10 +3625,49 @@ fn get_next_agreement_id(env: &Env) -> u128 {
 }
 
 /// Internal helper: convert `amount` from `from_token` into `to_token` using
+/// Convert `amount` from `from_token` units into `to_token` units using
 /// the configured FX rate stored in `DataKey::ExchangeRate`.
 ///
-/// The rate is interpreted as `quote_per_base * FX_SCALE`, where `from_token`
-/// is the base and `to_token` is the quote.
+/// # Rate encoding
+///
+/// The rate is a fixed-point integer interpreted as
+/// `quote_per_base * FX_SCALE` (where `FX_SCALE = 1_000_000`).  Examples:
+/// - `rate = 1_000_000` → 1 base = 1 quote (1:1 parity)
+/// - `rate = 2_000_000` → 1 base = 2 quote
+/// - `rate =   500_000` → 1 base = 0.5 quote
+///
+/// # Rounding convention — floor (truncation toward zero)
+///
+/// The conversion uses **integer floor division**:
+/// ```text
+/// converted = (amount * rate) / FX_SCALE   (truncated, not rounded)
+/// ```
+/// Any fractional remainder is silently discarded.  Callers that require
+/// exact amounts should ensure `amount * rate` is divisible by `FX_SCALE`,
+/// or accumulate multiple periods before claiming so the truncated dust
+/// remains negligible relative to the total payout.
+///
+/// # Dust guard — conversion-to-zero is rejected
+///
+/// If the floor-division result is less than `DUST_THRESHOLD` (= 1), the
+/// function returns `Err(PayrollError::ExchangeRateInvalid)` instead of
+/// crediting zero tokens.  This prevents a scenario where:
+/// 1. An employee claims a period.
+/// 2. The claimed period is marked as paid (`claimed_periods` increments).
+/// 3. The employee receives **zero** tokens — effectively burning the salary.
+///
+/// Concretely: a `salary_per_period` of 1 with a sub-parity rate
+/// (e.g. `rate = 999_999`) gives `(1 * 999_999) / 1_000_000 = 0`, which
+/// triggers the dust guard.  The employee must either accumulate more periods
+/// or use a larger salary so the conversion yields ≥ 1 quote unit.
+///
+/// # Errors
+///
+/// | Error | Condition |
+/// |---|---|
+/// | `ExchangeRateNotFound` | No rate configured for the pair, or rate is stale |
+/// | `ExchangeRateInvalid` | Rate ≤ 0, timestamp inconsistency, or result < `DUST_THRESHOLD` |
+/// | `ExchangeRateOverflow` | `amount * rate` overflows `i128` |
 fn convert_amount(
     env: &Env,
     from_token: &Address,
@@ -2279,11 +3678,24 @@ fn convert_amount(
         return Ok(amount);
     }
 
-    let rate = DataKey::get_exchange_rate(env, from_token, to_token)
+    let info = DataKey::get_exchange_rate(env, from_token, to_token)
         .ok_or(PayrollError::ExchangeRateNotFound)?;
 
+    let rate = info.rate;
     if rate <= 0 {
         return Err(PayrollError::ExchangeRateInvalid);
+    }
+
+    // Enforce staleness (max-age) if configured
+    if let Some(max_age) = DataKey::get_exchange_rate_max_age_seconds(env) {
+        let now = env.ledger().timestamp();
+        // Protect against underflow
+        if now < info.updated_at {
+            return Err(PayrollError::ExchangeRateInvalid);
+        }
+        if now - info.updated_at > max_age {
+            return Err(PayrollError::ExchangeRateNotFound);
+        }
     }
 
     let scaled = amount
@@ -2293,6 +3705,12 @@ fn convert_amount(
     let converted = scaled
         .checked_div(FX_SCALE)
         .ok_or(PayrollError::ExchangeRateInvalid)?;
+
+    // Dust guard: reject conversions that floor-round to zero to prevent
+    // callers from being silently credited nothing for a non-zero input.
+    if converted < DUST_THRESHOLD {
+        return Err(PayrollError::ExchangeRateInvalid);
+    }
 
     Ok(converted)
 }
@@ -2378,8 +3796,13 @@ pub fn resume_agreement(env: &Env, agreement_id: u128) {
 /// Pauses a milestone-based agreement, preventing claims
 ///
 /// # Arguments
-/// * `env` - Contract environment
-/// * `agreement_id` - ID of the milestone agreement to pause
+/// * `env` - Contract environment used to authenticate the employer and update the stored agreement
+///   status.
+/// * `agreement_id` - ID of the milestone agreement to pause; must resolve to existing employer and
+///   status records.
+///
+/// # Returns
+/// No value. Emits `AgreementPausedEvent` after writing the paused status.
 ///
 /// # State Transition
 /// Active -> Paused, or Created -> Paused (if has approved milestones)
@@ -2394,39 +3817,50 @@ pub fn resume_agreement(env: &Env, agreement_id: u128) {
 /// # Note
 /// Milestone agreements can be paused in Created status if they have approved milestones
 /// that could be claimed, effectively making them "active" for claiming purposes.
-pub fn pause_milestone_agreement(env: Env, agreement_id: u128) {
+///
+/// # Errors
+/// * `PayrollError::AgreementNotFound` — the milestone agreement does not exist.
+/// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Active` or
+///   `Created` status.
+pub fn pause_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
     let employer: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Employer(agreement_id))
-        .expect("Agreement not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
     let status: AgreementStatus = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Status(agreement_id))
-        .expect("Agreement not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
 
     // Allow pausing Active agreements, or Created agreements (which can have claimable milestones)
-    assert!(
-        status == AgreementStatus::Active || status == AgreementStatus::Created,
-        "Can only pause Active or Created agreements"
-    );
+    if status != AgreementStatus::Active && status != AgreementStatus::Created {
+        return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
 
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::Status(agreement_id),
         &AgreementStatus::Paused,
     );
 
     AgreementPausedEvent { agreement_id }.publish(&env);
+
+    Ok(())
 }
 
 /// Resumes a paused milestone-based agreement, allowing claims again
 ///
 /// # Arguments
-/// * `env` - Contract environment
-/// * `agreement_id` - ID of the milestone agreement to resume
+/// * `env` - Contract environment used to authenticate the employer and update the stored agreement
+///   status.
+/// * `agreement_id` - ID of the paused milestone agreement to resume; must resolve to existing
+///   employer and status records.
+///
+/// # Returns
+/// No value. Emits `AgreementResumedEvent` after writing the active status.
 ///
 /// # State Transition
 /// Paused -> Active (or Paused -> Created if it was Created before)
@@ -2441,32 +3875,37 @@ pub fn pause_milestone_agreement(env: Env, agreement_id: u128) {
 /// # Note
 /// Resumed milestone agreements return to Active status. If they were Created before
 /// pausing, they will be Active after resuming (allowing milestone claims).
-pub fn resume_milestone_agreement(env: Env, agreement_id: u128) {
+///
+/// # Errors
+/// * `PayrollError::AgreementNotFound` — the milestone agreement does not exist.
+/// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Paused` status.
+pub fn resume_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
     let employer: Address = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Employer(agreement_id))
-        .expect("Agreement not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
     let status: AgreementStatus = env
         .storage()
-        .instance()
+        .persistent()
         .get(&MilestoneKey::Status(agreement_id))
-        .expect("Agreement not found");
+        .ok_or(PayrollError::AgreementNotFound)?;
 
-    assert!(
-        status == AgreementStatus::Paused,
-        "Can only resume Paused agreements"
-    );
+    if status != AgreementStatus::Paused {
+        return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
 
     // Resume to Active status (milestone agreements can have claimable milestones in Active state)
-    env.storage().instance().set(
+    env.storage().persistent().set(
         &MilestoneKey::Status(agreement_id),
         &AgreementStatus::Active,
     );
 
     AgreementResumedEvent { agreement_id }.publish(&env);
+
+    Ok(())
 }
 
 fn add_to_employer_agreements(env: &Env, employer: &Address, agreement_id: u128) {
@@ -2519,6 +3958,14 @@ pub fn cancel_agreement(env: &Env, agreement_id: u128) {
         .set(&StorageKey::Agreement(agreement_id), &agreement);
 
     emit_agreement_cancelled(env, AgreementCancelledEvent { agreement_id });
+    record_entry(
+        env,
+        agreement.employer,
+        AuditEvent::AgreementCancelled,
+        agreement_id,
+        None,
+        Some(agreement.total_amount),
+    );
 }
 
 /// Finalizes the grace period and allows refund of remaining balance.

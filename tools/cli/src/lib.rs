@@ -1,9 +1,17 @@
+pub mod commands;
+pub mod config;
+pub mod utils;
+
+pub use config::{
+    create_config_file, get_secret_key, load_config, load_project_config,
+    resolve_config, resolve_config_with_project_file, FileConfig, PROJECT_CONFIG_FILE,
+};
+
+use crate::utils::RetryPolicy;
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-//use soroban_sdk::Env;
-//use thiserror::Error;
 
 #[derive(Parser)]
 #[command(name = "stellopay-cli")]
@@ -20,6 +28,9 @@ pub struct Cli {
     /// Verbose output
     #[arg(short, long)]
     pub verbose: bool,
+
+    #[arg(long, short = 'y', global = true)]
+    pub yes: bool,
 }
 
 #[derive(Subcommand)]
@@ -48,15 +59,15 @@ pub enum Commands {
     /// Show CLI status
     Status,
     /// Emergency Command
-    EmergencyWithdraw{
+    EmergencyWithdraw {
         #[arg(long)]
-        contract_id:Option<String>,
+        contract_id: Option<String>,
         #[arg(long)]
-        token:String,
+        token: String,
         #[arg(long)]
-        recipient:String,
+        recipient: String,
         #[arg(long)]
-        amount:i128,
+        amount: i128,
     },
     /// Webhook management commands
     Webhook {
@@ -165,6 +176,11 @@ pub struct Config {
     pub contract: ContractConfig,
     pub auth: AuthConfig,
     pub defaults: DefaultsConfig,
+    /// Retry policy for read-only (`query`) RPC calls. Defaults are applied
+    /// automatically when the key is absent from a TOML config, so existing
+    /// config files keep loading.
+    #[serde(default)]
+    pub retry: RetryPolicy,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -251,10 +267,14 @@ pub struct GasMetrics {
     pub total: u64,
 }
 //error enum
-#[derive(Debug,thiserror::Error)]
-pub enum Error{
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
     #[error("Zero amount is not allowed")]
     ZeroAmount,
+    #[error("Maximum Amount Surpassed")]
+    MaximumAmount,
+    #[error("Invalid Address")]
+    InvalidAddress,
     #[error("Missing secret key")]
     MissingSecretKey,
     #[error(transparent)]
@@ -298,27 +318,127 @@ impl Default for Config {
                 token: None,
                 frequency: "monthly".to_string(),
             },
+            retry: RetryPolicy::default(),
         }
     }
 }
 //admin and pause checks
-pub fn require_admin(_context:&str)->Result<(),Error>{
+pub fn require_admin(_context: &str) -> Result<(), Error> {
     //dummy implementation
     Ok(())
 }
-pub fn require_not_paused(_context:&str)->Result<(),Error>{
+pub fn require_not_paused(_context: &str) -> Result<(), Error> {
     //dummy implementation
     Ok(())
 }
 //token client
 pub struct TokenClient;
-impl TokenClient{
-    pub fn new(_rpc_url:&str,_token_address:&str)->Self{
+impl TokenClient {
+    pub fn new(_rpc_url: &str, _token_address: &str) -> Self {
         TokenClient
     }
-    pub fn transfer(&self,_to:&str,_amount:i128)->Result<(),Error>{
+    pub fn transfer(&self, _to: &str, _amount: i128) -> Result<(), Error> {
         //dummy implementation
         Ok(())
     }
+}
 
+// ---------------------------------------------------------------------------
+// CLI exit codes
+// ---------------------------------------------------------------------------
+
+/// Process exit codes emitted by the CLI, grouped by failure category.
+///
+/// Scripts and CI wrappers can branch on these to tell a usage mistake apart
+/// from a transient network failure. See `tools/cli/EXIT_CODES.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExitCode {
+    /// Successful execution.
+    Success = 0,
+    /// Unspecified / generic failure (default catch-all).
+    Generic = 1,
+    /// Command-line usage error (bad flags, unknown subcommand).
+    Usage = 2,
+    /// Configuration error (missing / unreadable / invalid config).
+    Config = 3,
+    /// Network / RPC failure talking to a Soroban endpoint.
+    Network = 4,
+    /// Verification failure (e.g. deployed WASM hash mismatch).
+    Verification = 5,
+}
+
+impl ExitCode {
+    /// Numeric value to hand to [`std::process::exit`].
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+/// Map an error to a stable [`ExitCode`] category.
+///
+/// CLI errors are surfaced as `anyhow::Error`; we classify heuristically by
+/// walking the cause chain and matching known keywords so callers/scripts can
+/// react differently per failure kind. Clap itself emits `Usage` (2) for
+/// argument-parse errors before this handler is ever reached.
+pub fn classify_error(e: &anyhow::Error) -> ExitCode {
+    let mut msg = e.to_string();
+    for cause in e.chain().skip(1) {
+        msg.push(' ');
+        msg.push_str(&cause.to_string());
+    }
+    let m = msg.to_lowercase();
+    if m.contains("verif") || m.contains("hash mismatch") || m.contains("drift") {
+        ExitCode::Verification
+    } else if m.contains("config") || m.contains("toml") || m.contains("config file") {
+        ExitCode::Config
+    } else if m.contains("network")
+        || m.contains("rpc")
+        || m.contains("soroban")
+        || m.contains("connection")
+        || m.contains("timeout")
+        || m.contains("http")
+    {
+        ExitCode::Network
+    } else {
+        ExitCode::Generic
+    }
+}
+
+#[cfg(test)]
+mod exit_code_tests {
+    use super::*;
+
+    #[test]
+    fn exit_code_values_are_stable() {
+        assert_eq!(ExitCode::Success.as_u8(), 0);
+        assert_eq!(ExitCode::Generic.as_u8(), 1);
+        assert_eq!(ExitCode::Usage.as_u8(), 2);
+        assert_eq!(ExitCode::Config.as_u8(), 3);
+        assert_eq!(ExitCode::Network.as_u8(), 4);
+        assert_eq!(ExitCode::Verification.as_u8(), 5);
+    }
+
+    #[test]
+    fn classifies_config_errors() {
+        let e = anyhow::anyhow!("could not read config file: invalid toml");
+        assert_eq!(classify_error(&e), ExitCode::Config);
+    }
+
+    #[test]
+    fn classifies_network_errors() {
+        let e = anyhow::anyhow!("Soroban RPC error: connection refused");
+        assert_eq!(classify_error(&e), ExitCode::Network);
+    }
+
+    #[test]
+    fn classifies_verification_errors() {
+        let e = anyhow::anyhow!("deployed WASM hash mismatch (drift detected)");
+        assert_eq!(classify_error(&e), ExitCode::Verification);
+    }
+
+    #[test]
+    fn falls_back_to_generic() {
+        let e = anyhow::anyhow!("something unexpected happened");
+        assert_eq!(classify_error(&e), ExitCode::Generic);
+    }
 }

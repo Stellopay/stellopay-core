@@ -10,6 +10,8 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true, features = ["alloc"] }
+audit_logger = { path = "../audit_logger" }
+payment_history = { path = "../payment_history" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["alloc", "testutils"] }

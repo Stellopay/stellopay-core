@@ -202,10 +202,12 @@ fn test_paused_blocks_milestone_claims() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token.address);
     client.add_milestone(&agreement_id, &1000);
-    client.approve_milestone(&agreement_id, &1);
 
-    // Mint tokens
-    token.mint(&client.address, &10000);
+    // Fund the accounted escrow so the approve_milestone invariant passes.
+    token.mint(&employer, &10000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &10000);
+
+    client.approve_milestone(&agreement_id, &1);
 
     // Emergency pause
     let _ = client.emergency_pause();
@@ -230,9 +232,12 @@ fn test_unpause_restores_functionality() {
 
     let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token.address);
     client.add_milestone(&agreement_id, &1000);
-    client.approve_milestone(&agreement_id, &1);
 
-    token.mint(&client.address, &10000);
+    // Fund the accounted escrow so the approve_milestone invariant passes.
+    token.mint(&employer, &10000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &10000);
+
+    client.approve_milestone(&agreement_id, &1);
 
     // Pause
     let _ = client.emergency_pause();
@@ -322,5 +327,162 @@ fn test_emergency_recovery_workflow() {
 
     // After incident resolved, owner unpauses
     let _ = client.emergency_unpause();
+    assert!(!client.is_emergency_paused());
+}
+
+/// Test that a single guardian approval does not pause the contract when threshold > 1.
+/// This verifies the core safety property that quorum is required.
+#[test]
+fn test_single_guardian_approval_does_not_pause() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+
+    // Set 3 guardians (threshold = 2)
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    guardians.push_back(guardian3.clone());
+    client.set_emergency_guardians(&guardians);
+
+    // Guardian1 proposes pause
+    let _ = client.propose_emergency_pause(&guardian1, &0);
+
+    // Verify not paused (proposer counts as 1 approval, threshold is 2)
+    assert!(!client.is_emergency_paused());
+
+    // Guardian2 approves (now at threshold)
+    let _ = client.approve_emergency_pause(&guardian2);
+
+    // Should now be paused
+    assert!(client.is_emergency_paused());
+}
+
+/// Test that duplicate approvals from the same guardian do not count toward quorum.
+/// This prevents a single guardian from bypassing the multi-sig requirement.
+#[test]
+fn test_duplicate_approvals_do_not_count_toward_quorum() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+
+    // Set 3 guardians (threshold = 2)
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    guardians.push_back(guardian3.clone());
+    client.set_emergency_guardians(&guardians);
+
+    // Guardian1 proposes pause
+    let _ = client.propose_emergency_pause(&guardian1, &0);
+
+    // Guardian1 tries to approve again (duplicate, should be ignored)
+    let _ = client.approve_emergency_pause(&guardian1);
+
+    // Still not paused (only 1 unique approval, threshold is 2)
+    assert!(!client.is_emergency_paused());
+
+    // Guardian2 approves (now 2 unique approvals, meets threshold)
+    let _ = client.approve_emergency_pause(&guardian2);
+
+    // Should now be paused
+    assert!(client.is_emergency_paused());
+}
+
+/// Test that the contract pauses exactly when quorum of distinct guardians is reached.
+/// This verifies the precise quorum calculation: (guardians.len() / 2) + 1.
+#[test]
+fn test_contract_pauses_exactly_at_quorum() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+
+    // Set 3 guardians (threshold = 2)
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    guardians.push_back(guardian3.clone());
+    client.set_emergency_guardians(&guardians);
+
+    // Guardian1 proposes pause (1 approval)
+    let _ = client.propose_emergency_pause(&guardian1, &0);
+    assert!(!client.is_emergency_paused());
+
+    // Guardian2 approves (2 approvals = quorum reached)
+    let _ = client.approve_emergency_pause(&guardian2);
+    assert!(client.is_emergency_paused());
+}
+
+/// Test quorum behavior with 5 guardians (threshold = 3).
+#[test]
+fn test_quorum_with_five_guardians() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3, guardian4, guardian5) = {
+        let contract_id = env.register(PayrollContract, ());
+        let client = PayrollContractClient::new(&env, &contract_id);
+
+        let owner = Address::generate(&env);
+        let g1 = Address::generate(&env);
+        let g2 = Address::generate(&env);
+        let g3 = Address::generate(&env);
+        let g4 = Address::generate(&env);
+        let g5 = Address::generate(&env);
+
+        client.initialize(&owner);
+
+        (client, owner, g1, g2, g3, g4, g5)
+    };
+
+    // Set 5 guardians (threshold = 3)
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    guardians.push_back(guardian3.clone());
+    guardians.push_back(guardian4.clone());
+    guardians.push_back(guardian5.clone());
+    client.set_emergency_guardians(&guardians);
+
+    // Guardian1 proposes (1 approval)
+    let _ = client.propose_emergency_pause(&guardian1, &0);
+    assert!(!client.is_emergency_paused());
+
+    // Guardian2 approves (2 approvals, below threshold of 3)
+    let _ = client.approve_emergency_pause(&guardian2);
+    assert!(!client.is_emergency_paused());
+
+    // Guardian3 approves (3 approvals = quorum reached)
+    let _ = client.approve_emergency_pause(&guardian3);
+    assert!(client.is_emergency_paused());
+}
+
+/// Test that non-guardian cannot approve emergency pause.
+#[test]
+fn test_non_guardian_cannot_approve() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, _) = setup_contract(&env);
+
+    let non_guardian = Address::generate(&env);
+
+    // Set 2 guardians
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    client.set_emergency_guardians(&guardians);
+
+    // Guardian1 proposes
+    let _ = client.propose_emergency_pause(&guardian1, &0);
+
+    // Non-guardian tries to approve (should fail)
+    let result = client.try_approve_emergency_pause(&non_guardian);
+    assert!(result.is_err());
+
+    // Still not paused
     assert!(!client.is_emergency_paused());
 }

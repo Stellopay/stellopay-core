@@ -7,6 +7,10 @@ use stello_pay_contract::PayrollContractClient;
 
 const BPS_DENOMINATOR: i128 = 10_000;
 
+/// Maximum number of pending submissions in a single quorum bucket.
+/// Caps storage and CPU usage from adversarial sources flooding a bucket.
+const MAX_QUORUM_SUBMISSIONS: u32 = 100;
+
 // ============================================================================
 // Errors
 // ============================================================================
@@ -39,6 +43,12 @@ pub enum OracleError {
     InvalidPairConfig = 10,
     /// The same source attempted to vote twice in the same active quorum bucket.
     DuplicateVote = 11,
+    /// Source submitted too frequently; must wait at least `min_submit_interval_secs`.
+    SubmissionRateLimited = 12,
+    /// Quorum bucket already has MAX_QUORUM_SUBMISSIONS pending votes; bucket full.
+    TooManySources = 13,
+    /// Price is older than the requested max_age threshold.
+    PriceTooOld = 14,
 }
 
 // ============================================================================
@@ -67,6 +77,17 @@ pub struct PairConfig {
     pub tolerance_bps: u32,
     /// Time window used to group submissions into a single quorum bucket.
     pub quorum_window_seconds: u64,
+    /// Minimum number of seconds a source must wait between consecutive submissions
+    /// for this pair. Enforced per `(source, base, quote)` tuple.
+    /// Set to `0` to disable the interval check (not recommended for quorum pairs).
+    ///
+    /// ## Anti-manipulation assumption
+    /// A single source cannot submit multiple near-duplicate prices within one window
+    /// to skew quorum clustering, because each submission from the same source is
+    /// rejected until `min_submit_interval_secs` have elapsed since its last
+    /// accepted submission timestamp. Combined with `DuplicateVote` enforcement in
+    /// quorum mode, each source contributes at most one effective vote per bucket.
+    pub min_submit_interval_secs: u64,
 }
 
 /// Last accepted rate for a `(base, quote)` pair.
@@ -108,6 +129,7 @@ pub struct PendingBucketState {
 enum DataKey {
     Initialized,
     Owner,
+    PendingOwner,
     /// Address of the core payroll contract to which FX rates are pushed.
     PayrollContract,
     /// Authorized oracle sources (address -> bool).
@@ -118,6 +140,9 @@ enum DataKey {
     PairState(Address, Address),
     /// Active pending quorum bucket for a `(base, quote)` pair.
     PendingBucket(Address, Address),
+    /// Last submission timestamp for a `(source, base, quote)` triple.
+    /// Used to enforce `min_submit_interval_secs`.
+    LastSubmission(Address, Address, Address),
 }
 
 #[contract]
@@ -327,6 +352,8 @@ impl PriceOracleContract {
     /// @param quorum_n             Minimum number of distinct sources required.
     /// @param tolerance_bps        Maximum spread between quorum-supporting votes.
     /// @param quorum_window_seconds Time window used to bucket pending votes.
+    /// @param min_submit_interval_secs Minimum seconds between consecutive
+    ///        submissions from the same source for this pair. `0` disables the check.
     pub fn configure_pair(
         env: Env,
         caller: Address,
@@ -338,6 +365,7 @@ impl PriceOracleContract {
         quorum_n: u32,
         tolerance_bps: u32,
         quorum_window_seconds: u64,
+        min_submit_interval_secs: u64,
     ) -> Result<(), OracleError> {
         require_admin(&env, &caller)?;
 
@@ -345,6 +373,9 @@ impl PriceOracleContract {
             return Err(OracleError::InvalidPairConfig);
         }
         if max_staleness_seconds == 0 || quorum_n == 0 || quorum_window_seconds == 0 {
+            return Err(OracleError::InvalidPairConfig);
+        }
+        if tolerance_bps > 10_000 {
             return Err(OracleError::InvalidPairConfig);
         }
 
@@ -356,6 +387,7 @@ impl PriceOracleContract {
             quorum_n,
             tolerance_bps,
             quorum_window_seconds,
+            min_submit_interval_secs,
         };
 
         env.storage()
@@ -400,6 +432,9 @@ impl PriceOracleContract {
         env.storage()
             .temporary()
             .remove(&DataKey::PendingBucket(base.clone(), quote.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey::PairState(base.clone(), quote.clone()));
 
         env.events().publish(
             (symbol_short!("oracle"), symbol_short!("disable")),
@@ -453,11 +488,10 @@ impl PriceOracleContract {
     ///      4. Validates the rate against configured `[min_rate, max_rate]`.
     ///      5. Rejects future timestamps (`source_timestamp > ledger.timestamp`).
     ///      6. Rejects stale timestamps (age > `max_staleness_seconds`).
-    ///      7. Ignores updates older than or equal to the last accepted timestamp
-    ///         (monotonic ordering).
-    ///      8. In quorum mode, stores the vote in the active time bucket and
-    ///         only accepts once `quorum_n` distinct sources agree within
-    ///         `tolerance_bps`.
+    ///      7. Ignores updates older than or equal to the last accepted timestamp (monotonic
+    ///         ordering).
+    ///      8. In quorum mode, stores the vote in the active time bucket and only accepts once
+    ///         `quorum_n` distinct sources agree within `tolerance_bps`.
     ///      9. Persists the new `PairState`.
     ///      10. Calls `set_exchange_rate` on the downstream payroll contract.
     ///      Emits event `("oracle", "price")` with `(base, quote, rate)`.
@@ -525,6 +559,18 @@ impl PriceOracleContract {
             }
         }
 
+        // Per-source submission rate limit.
+        if cfg.min_submit_interval_secs > 0 {
+            let last_key = DataKey::LastSubmission(source.clone(), base.clone(), quote.clone());
+            if let Some(last_ts) = env.storage().temporary().get::<_, u64>(&last_key) {
+                let elapsed = source_timestamp.saturating_sub(last_ts);
+                if elapsed < cfg.min_submit_interval_secs {
+                    return Err(OracleError::SubmissionRateLimited);
+                }
+            }
+            env.storage().temporary().set(&last_key, &source_timestamp);
+        }
+
         let accepted_timestamp = if cfg.quorum_n > 1 {
             let bucket = bucket_for_timestamp(source_timestamp, cfg.quorum_window_seconds);
             let pending_key = DataKey::PendingBucket(base.clone(), quote.clone());
@@ -552,6 +598,9 @@ impl PriceOracleContract {
                 }
             }
 
+            if pending.submissions.len() >= MAX_QUORUM_SUBMISSIONS {
+                return Err(OracleError::TooManySources);
+            }
             pending.submissions.push_back(PendingSubmission {
                 source: source.clone(),
                 rate,
@@ -624,13 +673,38 @@ impl PriceOracleContract {
             .get(&DataKey::PairConfig(base, quote))
     }
 
-    /// @notice Returns the last accepted state for a `(base, quote)` pair, if any.
+    /// @notice Returns the last accepted state for a `(base, quote)` pair, if configured and not stale.
+    /// @dev Rejects the state with `PriceTooOld` if `ledger.timestamp() - last_updated_ts > max_staleness_seconds`.
     /// @param base Base token address.
     /// @param quote Quote token address.
-    pub fn get_pair_state(env: Env, base: Address, quote: Address) -> Option<PairState> {
-        env.storage()
+    pub fn get_pair_state(
+        env: Env,
+        base: Address,
+        quote: Address,
+    ) -> Result<PairState, OracleError> {
+        let state = env
+            .storage()
             .instance()
-            .get(&DataKey::PairState(base, quote))
+            .get::<_, PairState>(&DataKey::PairState(base.clone(), quote.clone()))
+            .ok_or(OracleError::PairNotConfigured)?;
+
+        let cfg = env
+            .storage()
+            .instance()
+            .get::<_, PairConfig>(&DataKey::PairConfig(base, quote))
+            .ok_or(OracleError::PairNotConfigured)?;
+
+        if !cfg.enabled {
+            return Err(OracleError::PairNotConfigured);
+        }
+
+        let now = env.ledger().timestamp();
+        let age = now.saturating_sub(state.last_updated_ts);
+        if age > cfg.max_staleness_seconds {
+            return Err(OracleError::PriceTooOld);
+        }
+
+        Ok(state)
     }
 
     /// @notice Returns the configured owner.
@@ -644,29 +718,115 @@ impl PriceOracleContract {
         is_source(&env, &addr)
     }
 
+    /// @notice Returns the last accepted state for a pair, or an error if
+    ///         the price is older than `max_age_seconds`.
+    ///
+    /// The auto-generated client also exposes a panicking `get_price_checked`
+    /// variant for callers that prefer a hard failure on stale prices.
+    ///
+    /// # Arguments
+    /// * `base` - Base token address.
+    /// * `quote` - Quote token address.
+    /// * `max_age_seconds` - Maximum acceptable age of the price in seconds.
+    ///
+    /// # Returns
+    /// - `Ok(PairState)` when a non-stale price exists.
+    /// - `Err(PairNotConfigured)` if no price has ever been pushed.
+    /// - `Err(PriceTooOld)` if `now - last_updated_ts > max_age_seconds`.
+    pub fn get_price_checked(
+        env: Env,
+        base: Address,
+        quote: Address,
+        max_age_seconds: u64,
+    ) -> Result<PairState, OracleError> {
+        let state: PairState = env
+            .storage()
+            .instance()
+            .get(&DataKey::PairState(base.clone(), quote.clone()))
+            .ok_or(OracleError::PairNotConfigured)?;
+
+        let age = env
+            .ledger()
+            .timestamp()
+            .saturating_sub(state.last_updated_ts);
+        if age > max_age_seconds {
+            return Err(OracleError::PriceTooOld);
+        }
+
+        Ok(state)
+    }
+
     // ------------------------------------------------------------------------
-    // Admin transfer
+    // Admin transfer (two-step)
     // ------------------------------------------------------------------------
 
-    /// @notice Transfers contract ownership to a new address.
-    /// @dev Only the current owner may call this. The new owner immediately
-    ///      takes effect (single-step for simplicity; the price oracle is
-    ///      a lighter-weight contract than the RBAC core).
-    ///      Emits event `("oracle", "owner")` with the new owner address.
+    /// @notice Proposes a new owner. Must be accepted via `accept_ownership`.
+    /// @dev Only the current owner may call this. The pending owner is stored
+    ///      but has no privileges until they accept.
+    ///      Emits event `("oracle", "propose")` with the new_owner address.
     /// @param caller    Current owner; must authenticate.
-    /// @param new_owner New owner address.
-    pub fn transfer_ownership(
+    /// @param new_owner Proposed new owner address.
+    pub fn propose_ownership(
         env: Env,
         caller: Address,
         new_owner: Address,
     ) -> Result<(), OracleError> {
         require_admin(&env, &caller)?;
-        env.storage().instance().set(&DataKey::Owner, &new_owner);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingOwner, &new_owner);
 
         env.events().publish(
-            (symbol_short!("oracle"), symbol_short!("owner")),
+            (symbol_short!("oracle"), symbol_short!("propose")),
             &new_owner,
         );
+
+        Ok(())
+    }
+
+    /// @notice Accepts a pending ownership transfer.
+    /// @dev The caller must be the pending owner.
+    ///      Emits event `("oracle", "owner")` with the new owner address.
+    /// @param caller Must be the pending owner; must authenticate.
+    pub fn accept_ownership(env: Env, caller: Address) -> Result<(), OracleError> {
+        require_initialized(&env)?;
+        caller.require_auth();
+
+        let pending: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingOwner)
+            .ok_or(OracleError::NotAuthorized)?;
+
+        if caller != pending {
+            return Err(OracleError::NotAuthorized);
+        }
+
+        env.storage().instance().set(&DataKey::Owner, &caller);
+        env.storage().instance().remove(&DataKey::PendingOwner);
+
+        env.events()
+            .publish((symbol_short!("oracle"), symbol_short!("owner")), &caller);
+
+        Ok(())
+    }
+
+    /// @notice Cancels a pending ownership transfer.
+    /// @dev Only the current owner may call this.
+    ///      Emits event `("oracle", "cancel")` with the pending owner address.
+    /// @param caller Current owner; must authenticate.
+    pub fn cancel_ownership_transfer(env: Env, caller: Address) -> Result<(), OracleError> {
+        require_admin(&env, &caller)?;
+
+        if let Some(pending) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::PendingOwner)
+        {
+            env.storage().instance().remove(&DataKey::PendingOwner);
+            env.events()
+                .publish((symbol_short!("oracle"), symbol_short!("cancel")), &pending);
+        }
 
         Ok(())
     }

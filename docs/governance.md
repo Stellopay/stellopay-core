@@ -1,78 +1,150 @@
-# Governance Module
+## Governance Contract
 
-The Governance contract provides on-chain decision-making primitives for the Stellopay ecosystem. it enables stakeholders to propose, vote on, and execute changes such as parameter adjustments, contract upgrades, and arbiter changes.
+The `governance` contract implements an on-chain proposal lifecycle for
+Stellopay. It is designed to work with three existing contracts:
 
-## Proposal Lifecycle
+- `rbac` decides who is allowed to propose and vote.
+- `withdrawal_timelock` delays execution after a proposal passes.
+- `multisig` decides who is allowed to trigger final execution.
 
-1.  **Propose**: Any address with non-zero voting power can create a proposal. The voting power of all participants is snapshotted at the moment of proposal creation to prevent vote inflation via power transfers during the process.
-2.  **Vote**: Holders of voting power cast votes (`For`, `Against`, or `Abstain`). Each address can vote only once per proposal.
-3.  **Queue**: Once the voting period ends, any user can trigger the `queue` function. The contract calculates if the quorum was met and if the proposal was approved (`For > Against`). If successful, the proposal enters a **Timelock** state.
-4.  **Execute**: After the timelock expires, the proposal can be executed. Execution must occur within the **Execution Window**. If this window passes, the proposal is marked as `Expired` and cannot be executed.
-5.  **Cancel**: The owner can cancel a proposal at any time before it is executed, providing an emergency guardrail.
+### Contract Location
 
-## Configuration
+- Contract: `onchain/contracts/governance/src/lib.rs`
+- Tests: `onchain/contracts/governance/tests/governance_tests.rs`
 
-| Parameter | Description |
-| :--- | :--- |
-| `Quorum Bps` | Minimum percentage of total voting power required for a proposal to be valid (in basis points, e.g., 5000 = 50%). |
-| `Voting Period` | Duration (in seconds) that a proposal is open for voting. |
-| `Timelock` | Forced delay (in seconds) between proposal success and execution. |
-| `Execution Window` | Duration (in seconds) after the timelock during which a proposal must be executed. |
+### Core Flow
 
-## Timelock Integration Pattern
+1. An address with the RBAC `Admin` or `Employer` role calls
+   `create_proposal`.
+2. Eligible voters cast `For`, `Against`, or `Abstain` votes with
+   `cast_vote`.
+3. After the voting window closes, anyone can call `finalize_proposal`.
+4. If quorum is met and `for_votes > against_votes`, governance queues an
+   `AdminChange` operation in `withdrawal_timelock`.
+5. After the timelock `eta` is reached, a configured multisig signer calls
+   `execute_proposal` within the 14-day execution window (`PROPOSAL_EXECUTION_WINDOW_SECONDS`).
+6. If the execution window lapses, the proposal status becomes `Expired` and it can no longer be executed.
+6. Governance executes the timelock operation and then applies the proposal’s
+   state change.
 
-The Governance contract integrates with the `withdrawal_timelock` contract to provide a two-stage safety net for sensitive operations like admin changes:
+### Proposal Types
 
-### Integration Flow
+- `ParameterChange(Symbol, i128)`
+  Stores a generic governance parameter under a symbol key.
+- `UpgradeContract(Address, BytesN<32>)`
+  Records an approved WASM hash for a target contract.
+- `ArbiterChange(Address)`
+  Records an approved arbiter address for downstream integrations.
 
-1. **Governance Proposal**: Create a proposal for an admin change or other sensitive operation
-2. **Vote & Queue**: Standard governance voting and queuing process
-3. **Timelock Queue**: After proposal success, queue the operation in the withdrawal_timelock contract
-4. **Second Timelock**: The withdrawal_timelock enforces an additional delay
-5. **Execution**: After both timelocks expire, execute the operation
+### Public Entrypoints
 
-### Payload Hash Derivation
+- `initialize(owner, rbac_contract, multisig_contract, timelock_contract, quorum_votes, voting_period_seconds)`
+- `update_config(caller, quorum_votes, voting_period_seconds)`
+- `create_proposal(proposer, kind)`
+- `cast_vote(voter, proposal_id, choice)`
+- `finalize_proposal(proposal_id)`
+- `execute_proposal(executor, proposal_id)`
+- `cancel_proposal(caller, proposal_id)`
 
-For admin change operations, the payload hash is computed deterministically:
+Backward-compatible aliases are also present for earlier local names:
+`propose`, `vote`, `queue`, `execute`, and `cancel`.
 
-```rust
-fn create_admin_change_payload_hash(
-    env: &Env,
-    target_contract: &Address,
-    new_admin: &Address,
-    nonce: u64,
-) -> BytesN<32> {
-    let mut payload = Vec::new(env);
-    
-    // Domain separation prefix
-    payload.push_back(Symbol::new(env, "ADMIN_CHANGE").to_val());
-    
-    // Target contract address
-    payload.push_back(target_contract.to_val());
-    
-    // New admin address  
-    payload.push_back(new_admin.to_val());
-    
-    // Nonce for uniqueness
-    payload.push_back(nonce.to_val());
-    
-    // Compute SHA-256 hash
-    env.crypto().sha256(&payload)
-}
+### Configuration Model
+
+- `quorum_votes` is an absolute participation threshold, not a percentage.
+- Governance uses a **proposal-creation snapshot** for quorum. Each proposal
+  stores the configured `quorum_votes` value when `create_proposal` succeeds,
+  and `finalize_proposal` evaluates participation against that stored value.
+- `update_config` affects only proposals created after the update. Raising or
+  lowering `quorum_votes` while a proposal is active cannot retroactively make
+  that proposal pass or fail.
+- The quorum threshold is not recomputed from the live RBAC voter set, staking,
+  or any other external voting-power source. Deployments that change the voter
+  population should update `quorum_votes`; the new value will apply to future
+  proposals.
+- `voting_period_seconds` controls how long proposals stay open. Both `initialize`
+  and `update_config` enforce that it falls within
+  `[MIN_VOTING_PERIOD_SECONDS, MAX_VOTING_PERIOD_SECONDS]`:
+  - `MIN_VOTING_PERIOD_SECONDS = 3600` (1 hour) ensures voters have a realistic
+    window to participate.
+  - `MAX_VOTING_PERIOD_SECONDS = 2_592_000` (30 days) prevents a misconfigured
+    admin from setting a value near `u64::MAX`, which would trap proposals in
+    effectively perpetual voting and freeze governance.
+  - Values outside this range (including zero) are rejected with
+    `GovernanceError::VotingPeriodOutOfBounds`.
+- The timelock delay is owned by the linked `withdrawal_timelock` contract.
+- The governance contract has a bounded 14-day execution window (`PROPOSAL_EXECUTION_WINDOW_SECONDS`) after the timelock matures, during which a proposal must be executed. Proposals executed outside this window are rejected and marked as `Expired`.
+
+### RBAC Integration
+
+Governance eligibility is checked live against the linked `rbac` contract.
+
+- `Admin` can propose and vote.
+- `Employer` can propose and vote.
+- Any other role, or no role, is rejected.
+
+Because checks are live, role changes take effect immediately for future
+proposal creation and future votes that have not yet been cast.
+They do not change the quorum snapshot of an existing proposal. A vote that was
+validly cast before a role is revoked remains included in that proposal's stored
+totals.
+
+### Timelock Integration
+
+When a proposal succeeds, governance queues a timelock operation and stores:
+
+- `timelock_operation_id`
+- `eta`
+
+`execute_proposal` refuses to proceed before the timelock is ready.
+
+Important deployment requirement:
+
+- The `withdrawal_timelock` contract must be initialized with the governance
+  contract address as its `admin`, otherwise governance will not be able to
+  queue, execute, or cancel timelock operations.
+
+### Multisig Integration
+
+Proposal execution is restricted to addresses returned by
+`multisig.get_signers()`.
+
+This means a passed and matured proposal still cannot be executed by an
+arbitrary account. Only configured multisig signers can trigger the final
+state transition.
+
+### Security Notes
+
+- Voting eligibility is role-based, so RBAC integrity is critical.
+- Execution is intentionally split into two gates:
+  RBAC for governance participation, and multisig signers for execution.
+- The timelock creates a review window between approval and execution.
+- Cancelling a succeeded proposal also cancels its queued timelock operation.
+- Quorum is absolute, so deployments should set `quorum_votes` to reflect the
+  expected number of active governance participants.
+- Snapshotting quorum prevents configuration or voter-population changes from
+  changing the rules of an active proposal. This avoids both last-minute quorum
+  inflation that blocks a proposal and last-minute quorum reduction that makes
+  an under-participated proposal pass.
+
+### Test Coverage
+
+The governance test suite covers:
+
+- initialization and dependency wiring
+- RBAC-gated proposal creation and voting
+- double-vote prevention
+- quorum failure and rejection paths
+- timelock queueing and early-execution rejection
+- multisig signer enforcement
+- proposal cancellation after success
+- parameter, arbiter, and upgrade execution paths
+- live RBAC role revocation impact on future voting
+- proposal-time quorum snapshots when configuration and voting power change
+  during an active vote
+
+Run locally with:
+
+```bash
+cargo test -p governance
 ```
-
-### Security Benefits
-
-- **Double Timelock**: Governance timelock + withdrawal_timelock delay
-- **Domain Separation**: Payload hashes include operation type to prevent collisions
-- **Deterministic Verification**: Off-chain tooling can verify payload hashes
-- **Access Control**: Only authorized governance execution can queue timelock ops
-
-## Security Assumptions
-
--   **Double Execution**: Prevented by state transitions; once a proposal is `Executed`, it cannot be triggered again.
--   **Vote Inflation**: Prevented by using the snapshot of voting power taken at proposal creation.
--   **Late Votes**: Disallowed by strict timestamp checks against `end_time`.
--   **Execution Guards**: Timelocks ensure stakeholders have time to react to approved changes, and execution windows prevent stale proposals from being executed unexpectedly.
--   **Timelock Integration**: Admin changes require both governance approval and withdrawal_timelock queuing, providing defense-in-depth.
--   **Payload Hash Security**: Domain separation prevents hash collision attacks across different operation types.

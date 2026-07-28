@@ -3,8 +3,10 @@
 #![cfg(test)]
 
 use soroban_sdk::{testutils::Address as _, token, Address, Env};
-use stello_pay_contract::storage::{AgreementStatus, DisputeStatus};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{AgreementStatus, DisputeStatus},
+    PayrollContract, PayrollContractClient,
+};
 
 fn env_client() -> (Env, Address, PayrollContractClient<'static>) {
     let env = Env::default();
@@ -19,7 +21,11 @@ fn stellar_token<'a>(
     admin: &Address,
 ) -> (Address, token::Client<'a>, token::StellarAssetClient<'a>) {
     let t = e.register_stellar_asset_contract_v2(admin.clone());
-    (t.address(), token::Client::new(e, &t.address()), token::StellarAssetClient::new(e, &t.address()))
+    (
+        t.address(),
+        token::Client::new(e, &t.address()),
+        token::StellarAssetClient::new(e, &t.address()),
+    )
 }
 
 /// Payroll mode: arbiter split distributes pay_employee equally among employees.

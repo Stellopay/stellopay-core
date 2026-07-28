@@ -6,7 +6,8 @@
 //! ## Evidence Format
 //! Evidence must include:
 //! - `offender`   : Address of the party being slashed
-//! - `offense`    : Enum variant describing the misbehaviour (DoubleSigning | MissedDuty | FraudProof)
+//! - `offense`    : Enum variant describing the misbehaviour (DoubleSigning | MissedDuty |
+//!   FraudProof)
 //! - `penalty_bps`: Penalty in basis points (max 10_000 = 100%)
 //! - `evidence_hash`: SHA-256 hash of the raw proof payload (bytes32 equivalent)
 //! - `timestamp`  : Ledger timestamp when misbehaviour occurred
@@ -19,16 +20,17 @@
 //! ## Security Assumptions
 //! - Only addresses granted the `slasher` role may initiate or countersign a slash.
 //! - Penalty is strictly proportional — capped at `MAX_PENALTY_BPS` (5 000 bps = 50%).
-//! - Each unique `evidence_hash` can only be acted upon once (replay protection).
+//! - Each unique `evidence_hash` can only be acted upon once (replay protection). Replay detection
+//!   uses O(1) keyed storage: each hash is stored as a key in `USED_EV` (a `Map<BytesN<32>,
+//!   bool>`), so lookup time is constant regardless of slash history.
 //! - Slashed funds are held in escrow during the appeal window before burning/redistribution.
 //! - Admin cannot slash; roles are separated (admin ≠ slasher).
 
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror,
-    Address, BytesN, Env, Map, Vec, Symbol, symbol_short,
-    token,
+    contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
+    Map, Symbol, Vec,
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -44,16 +46,16 @@ const DEFAULT_QUORUM: u32 = 2;
 
 // ─── Storage Keys ─────────────────────────────────────────────────────────────
 
-const ADMIN: Symbol        = symbol_short!("ADMIN");
-const QUORUM: Symbol       = symbol_short!("QUORUM");
-const SLASHERS: Symbol     = symbol_short!("SLASHERS");
-const STAKES: Symbol       = symbol_short!("STAKES");
-const SLASH_REC: Symbol    = symbol_short!("SLASHREC");
-const USED_EV: Symbol      = symbol_short!("USEDEV");
-const ESCROW: Symbol       = symbol_short!("ESCROW");
-const TOKEN: Symbol        = symbol_short!("TOKEN");
-const CAPS: Symbol         = symbol_short!("CAPS");
-const SLASH_ACC: Symbol    = symbol_short!("SLASHACC");
+const ADMIN: Symbol = symbol_short!("ADMIN");
+const QUORUM: Symbol = symbol_short!("QUORUM");
+const SLASHERS: Symbol = symbol_short!("SLASHERS");
+const STAKES: Symbol = symbol_short!("STAKES");
+const SLASH_REC: Symbol = symbol_short!("SLASHREC");
+const USED_EV: Symbol = symbol_short!("USEDEV");
+const ESCROW: Symbol = symbol_short!("ESCROW");
+const TOKEN: Symbol = symbol_short!("TOKEN");
+const CAPS: Symbol = symbol_short!("CAPS");
+const SLASH_ACC: Symbol = symbol_short!("SLASHACC");
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -70,16 +72,61 @@ pub enum Offense {
 }
 
 /// Status of a slash record through its lifecycle.
+///
+/// # State machine
+///
+/// ```text
+/// slash_with_evidence() / attest_slash() × K
+///                  │
+///                  ▼
+///               Pending  ◄─── appeal window open (7 days)
+///               │     │
+///     appeal    │     │  no appeal / appeal window expired
+///     raised    │     │
+///               │     ▼
+///               │  execute_slash()          ← terminal: funds burned/redistributed
+///               │     │
+///               │     ▼
+///               │  [Executed]  ── second execute_slash() call ──► InvalidState (8)
+///               │
+///               ▼
+///          resolve_appeal()
+///          ┌────────┴──────────┐
+///      uphold               reject
+///         │                    │
+///         ▼                    ▼
+///     [Reversed]        [AppealRejected]
+///  (funds returned)   (funds burned)
+/// ```
+///
+/// Once a record reaches **Executed**, **Reversed**, or **AppealRejected** it is
+/// permanently terminal. Any further attempt to call `execute_slash`, `resolve_appeal`,
+/// or `raise_appeal` on such a record is rejected with `SlashError::InvalidState (8)`.
+///
+/// This terminal-state enforcement is the **double-execution guard**: the second call
+/// to `execute_slash` for the same `slash_record_id` (evidence hash) finds the record
+/// in `Executed` state rather than `Pending` and returns `InvalidState` immediately,
+/// preventing the penalty from being applied a second time against the offender's stake.
 #[contracttype]
 #[derive(Clone, PartialEq, Debug)]
 pub enum SlashStatus {
-    /// Slash initiated; appeal window is open.
+    /// Slash initiated; the 7-day appeal window is open.
+    /// This is the **only** state from which `execute_slash` may proceed.
     Pending,
-    /// Appeal window closed; slash executed (funds burned/redistributed).
+    /// **Terminal state.** Appeal window closed without a successful reversal;
+    /// `execute_slash` finalised the slash and burned/redistributed the escrowed funds.
+    ///
+    /// # Double-execution guard
+    /// Because the record transitions to `Executed` on the first successful call,
+    /// any subsequent `execute_slash` call for the same evidence hash returns
+    /// `SlashError::InvalidState (8)` at the status check (`status != Pending`).
+    /// The offender's stake is therefore debited **exactly once**.
     Executed,
-    /// Appeal upheld; slash reversed and funds returned.
+    /// **Terminal state.** Admin upheld the appeal; escrowed funds were returned
+    /// to the offender's stake balance.
     Reversed,
-    /// Appeal rejected; slash executed despite appeal.
+    /// **Terminal state.** Admin rejected the appeal; escrowed funds were burned
+    /// despite the appeal.
     AppealRejected,
 }
 
@@ -141,37 +188,39 @@ pub struct PenaltyAccumulator {
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum SlashError {
     /// Caller does not hold the slasher role.
-    Unauthorized        = 1,
+    Unauthorized = 1,
     /// Evidence hash has already been used.
-    DuplicateEvidence   = 2,
+    DuplicateEvidence = 2,
     /// Penalty exceeds the allowed maximum.
-    PenaltyTooHigh      = 3,
+    PenaltyTooHigh = 3,
     /// Offender has insufficient staked balance.
-    InsufficientStake   = 4,
+    InsufficientStake = 4,
     /// Appeal window has not yet closed.
-    AppealWindowOpen    = 5,
+    AppealWindowOpen = 5,
     /// Appeal window has already closed.
-    AppealWindowClosed  = 6,
+    AppealWindowClosed = 6,
     /// Slash record not found.
-    RecordNotFound      = 7,
+    RecordNotFound = 7,
     /// Slash is not in a state that allows this operation.
-    InvalidState        = 8,
+    InvalidState = 8,
     /// Quorum of attestors not yet reached.
-    QuorumNotMet        = 9,
+    QuorumNotMet = 9,
     /// Slasher already attested to this slash.
-    AlreadyAttested     = 10,
+    AlreadyAttested = 10,
     /// Penalty basis points cannot be zero.
-    ZeroPenalty         = 11,
+    ZeroPenalty = 11,
     /// Admin address already initialised.
-    AlreadyInitialized  = 12,
+    AlreadyInitialized = 12,
     /// Penalty cap configuration is invalid.
-    InvalidConfig       = 13,
+    InvalidConfig = 13,
     /// Period cap would be exceeded.
-    PeriodCapExceeded   = 14,
+    PeriodCapExceeded = 14,
     /// Lifetime cap would be exceeded.
     LifetimeCapExceeded = 15,
     /// Arithmetic overflow/underflow protection.
-    ArithmeticOverflow  = 16,
+    ArithmeticOverflow = 16,
+    /// Quorum must be greater than zero; passing 0 is a misconfiguration.
+    ZeroQuorum = 17,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -181,7 +230,6 @@ pub struct SlashingPenaltyContract;
 
 #[contractimpl]
 impl SlashingPenaltyContract {
-
     // ── Initialisation ────────────────────────────────────────────────────────
 
     /// Initialise the contract. Can only be called once.
@@ -189,7 +237,10 @@ impl SlashingPenaltyContract {
     /// # Arguments
     /// * `admin`   - Address that can grant/revoke slasher roles and reverse appeals.
     /// * `token`   - Contract address of the XLM-wrapped or custom token used for stake.
-    /// * `quorum`  - Minimum number of slasher signatures for attestation slashes.
+    /// * `quorum`  - Minimum number of slasher signatures for attestation slashes. Must be greater
+    ///   than zero; `DEFAULT_QUORUM` (2) is the recommended minimum. Passing 0 returns
+    ///   `SlashError::ZeroQuorum` — it is never silently raised to the default, as that would hide
+    ///   misconfiguration.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -203,6 +254,9 @@ impl SlashingPenaltyContract {
         if env.storage().instance().has(&ADMIN) {
             return Err(SlashError::AlreadyInitialized);
         }
+        if quorum == 0 {
+            return Err(SlashError::ZeroQuorum);
+        }
         Self::validate_caps(
             per_event_bps_cap,
             per_period_amount_cap,
@@ -212,19 +266,34 @@ impl SlashingPenaltyContract {
         admin.require_auth();
         env.storage().instance().set(&ADMIN, &admin);
         env.storage().instance().set(&TOKEN, &token);
-        env.storage().instance().set(&QUORUM, &quorum.max(DEFAULT_QUORUM));
-        env.storage().instance().set(&SLASHERS, &Vec::<Address>::new(&env));
-        env.storage().instance().set(&STAKES, &Map::<Address, i128>::new(&env));
-        env.storage().instance().set(&SLASH_REC, &Map::<BytesN<32>, SlashRecord>::new(&env));
-        env.storage().instance().set(&USED_EV, &Vec::<BytesN<32>>::new(&env));
-        env.storage().instance().set(&ESCROW, &Map::<BytesN<32>, i128>::new(&env));
-        env.storage().instance().set(&SLASH_ACC, &Map::<Address, PenaltyAccumulator>::new(&env));
-        env.storage().instance().set(&CAPS, &PenaltyCaps {
-            per_event_bps_cap,
-            per_period_amount_cap,
-            lifetime_amount_cap,
-            period_secs,
-        });
+        env.storage().instance().set(&QUORUM, &quorum);
+        env.storage()
+            .instance()
+            .set(&SLASHERS, &Vec::<Address>::new(&env));
+        env.storage()
+            .instance()
+            .set(&STAKES, &Map::<Address, i128>::new(&env));
+        env.storage()
+            .instance()
+            .set(&SLASH_REC, &Map::<BytesN<32>, SlashRecord>::new(&env));
+        env.storage()
+            .instance()
+            .set(&USED_EV, &Map::<BytesN<32>, bool>::new(&env));
+        env.storage()
+            .instance()
+            .set(&ESCROW, &Map::<BytesN<32>, i128>::new(&env));
+        env.storage()
+            .instance()
+            .set(&SLASH_ACC, &Map::<Address, PenaltyAccumulator>::new(&env));
+        env.storage().instance().set(
+            &CAPS,
+            &PenaltyCaps {
+                per_event_bps_cap,
+                per_period_amount_cap,
+                lifetime_amount_cap,
+                period_secs,
+            },
+        );
         Ok(())
     }
 
@@ -243,12 +312,15 @@ impl SlashingPenaltyContract {
             lifetime_amount_cap,
             period_secs,
         )?;
-        env.storage().instance().set(&CAPS, &PenaltyCaps {
-            per_event_bps_cap,
-            per_period_amount_cap,
-            lifetime_amount_cap,
-            period_secs,
-        });
+        env.storage().instance().set(
+            &CAPS,
+            &PenaltyCaps {
+                per_event_bps_cap,
+                per_period_amount_cap,
+                lifetime_amount_cap,
+                period_secs,
+            },
+        );
         Ok(())
     }
 
@@ -433,10 +505,8 @@ impl SlashingPenaltyContract {
 
         env.storage().instance().set(&SLASH_REC, &records);
 
-        env.events().publish(
-            (symbol_short!("ATTESTED"), attestor),
-            evidence_hash.clone(),
-        );
+        env.events()
+            .publish((symbol_short!("ATTESTED"), attestor), evidence_hash.clone());
 
         Ok(())
     }
@@ -445,11 +515,17 @@ impl SlashingPenaltyContract {
 
     /// The offender raises an appeal during the appeal window.
     /// This does not automatically reverse the slash — admin must review.
-    pub fn raise_appeal(env: Env, offender: Address, evidence_hash: BytesN<32>) -> Result<(), SlashError> {
+    pub fn raise_appeal(
+        env: Env,
+        offender: Address,
+        evidence_hash: BytesN<32>,
+    ) -> Result<(), SlashError> {
         offender.require_auth();
         let records: Map<BytesN<32>, SlashRecord> =
             env.storage().instance().get(&SLASH_REC).unwrap();
-        let record = records.get(evidence_hash.clone()).ok_or(SlashError::RecordNotFound)?;
+        let record = records
+            .get(evidence_hash.clone())
+            .ok_or(SlashError::RecordNotFound)?;
 
         if record.status != SlashStatus::Pending {
             return Err(SlashError::InvalidState);
@@ -459,10 +535,8 @@ impl SlashingPenaltyContract {
             return Err(SlashError::AppealWindowClosed);
         }
 
-        env.events().publish(
-            (symbol_short!("APPEALED"), offender),
-            evidence_hash,
-        );
+        env.events()
+            .publish((symbol_short!("APPEALED"), offender), evidence_hash);
 
         Ok(())
     }
@@ -477,7 +551,9 @@ impl SlashingPenaltyContract {
 
         let mut records: Map<BytesN<32>, SlashRecord> =
             env.storage().instance().get(&SLASH_REC).unwrap();
-        let mut record = records.get(evidence_hash.clone()).ok_or(SlashError::RecordNotFound)?;
+        let mut record = records
+            .get(evidence_hash.clone())
+            .ok_or(SlashError::RecordNotFound)?;
 
         if record.status != SlashStatus::Pending {
             return Err(SlashError::InvalidState);
@@ -497,20 +573,47 @@ impl SlashingPenaltyContract {
         records.set(evidence_hash.clone(), record);
         env.storage().instance().set(&SLASH_REC, &records);
 
-        env.events().publish(
-            (symbol_short!("RESOLVED"), uphold),
-            evidence_hash,
-        );
+        env.events()
+            .publish((symbol_short!("RESOLVED"), uphold), evidence_hash);
 
         Ok(())
     }
 
     /// Execute a slash after the appeal window has closed without a successful appeal.
     /// Anyone may call this to finalise an expired pending slash.
+    ///
+    /// # Double-execution guard
+    ///
+    /// This function is idempotent in the rejection sense: the **first** successful call
+    /// atomically transitions the slash record from `Pending` to `Executed` and burns
+    /// the escrowed funds. Every subsequent call for the **same** `evidence_hash`
+    /// (i.e., the same `slash_record_id`) finds the record in `Executed` state and
+    /// returns `SlashError::InvalidState (8)` **before** touching the offender's stake.
+    ///
+    /// ```text
+    /// Call 1: status == Pending  → burns escrow, sets status = Executed  → Ok(())
+    /// Call 2: status == Executed → returns Err(InvalidState)             ← guard fires
+    /// Call N: status == Executed → returns Err(InvalidState)             ← guard fires
+    /// ```
+    ///
+    /// This ensures the penalty is applied **exactly once**, regardless of how many
+    /// times or by how many callers `execute_slash` is invoked for the same record.
+    ///
+    /// # Arguments
+    /// * `evidence_hash` - SHA-256 hash identifying the slash record (slash record id).
+    ///
+    /// # Errors
+    /// * `RecordNotFound`     — No slash record exists for the given hash.
+    /// * `InvalidState (8)`   — Record is not `Pending` (already `Executed`, `Reversed`,
+    ///                          or `AppealRejected`). **This is the double-execution guard.**
+    /// * `QuorumNotMet`       — Attestation-based slash does not yet have enough signatures.
+    /// * `AppealWindowOpen`   — Appeal deadline has not yet passed.
     pub fn execute_slash(env: Env, evidence_hash: BytesN<32>) -> Result<(), SlashError> {
         let mut records: Map<BytesN<32>, SlashRecord> =
             env.storage().instance().get(&SLASH_REC).unwrap();
-        let mut record = records.get(evidence_hash.clone()).ok_or(SlashError::RecordNotFound)?;
+        let mut record = records
+            .get(evidence_hash.clone())
+            .ok_or(SlashError::RecordNotFound)?;
 
         if record.status != SlashStatus::Pending {
             return Err(SlashError::InvalidState);
@@ -616,18 +719,30 @@ impl SlashingPenaltyContract {
         Ok(())
     }
 
+    /// Check that an evidence hash has not been used before.
+    ///
+    /// Uses a keyed `Map<BytesN<32>, bool>` for O(1) lookup, ensuring replay detection
+    /// remains constant-cost regardless of how many prior slashes have been recorded.
+    ///
+    /// # Replay-protection invariant
+    /// Every evidence hash is stored as a key at mark time. `has()` on the map is a
+    /// single ledger entry lookup — it never degrades to a linear scan.
     fn check_evidence_unused(env: &Env, hash: &BytesN<32>) -> Result<(), SlashError> {
-        let used: Vec<BytesN<32>> = env.storage().instance().get(&USED_EV).unwrap();
-        if used.contains(hash) {
+        let used: Map<BytesN<32>, bool> = env.storage().instance().get(&USED_EV).unwrap();
+        if used.contains_key(hash.clone()) {
             Err(SlashError::DuplicateEvidence)
         } else {
             Ok(())
         }
     }
 
+    /// Mark an evidence hash as used by inserting it into the keyed map.
+    ///
+    /// The map key is the hash itself; the value `true` is a sentinel. Future calls to
+    /// `check_evidence_unused` will find the key in O(1) via `contains_key`.
     fn mark_evidence_used(env: &Env, hash: BytesN<32>) {
-        let mut used: Vec<BytesN<32>> = env.storage().instance().get(&USED_EV).unwrap();
-        used.push_back(hash);
+        let mut used: Map<BytesN<32>, bool> = env.storage().instance().get(&USED_EV).unwrap();
+        used.set(hash, true);
         env.storage().instance().set(&USED_EV, &used);
     }
 
@@ -652,10 +767,15 @@ impl SlashingPenaltyContract {
         Ok(slash_amount)
     }
 
-    fn enforce_and_record_caps(env: &Env, offender: &Address, slash_amount: i128) -> Result<(), SlashError> {
+    fn enforce_and_record_caps(
+        env: &Env,
+        offender: &Address,
+        slash_amount: i128,
+    ) -> Result<(), SlashError> {
         let caps: PenaltyCaps = env.storage().instance().get(&CAPS).unwrap();
         let now = env.ledger().timestamp();
-        let mut accs: Map<Address, PenaltyAccumulator> = env.storage().instance().get(&SLASH_ACC).unwrap();
+        let mut accs: Map<Address, PenaltyAccumulator> =
+            env.storage().instance().get(&SLASH_ACC).unwrap();
 
         let mut acc = accs.get(offender.clone()).unwrap_or(PenaltyAccumulator {
             period_start_ts: now,
@@ -692,7 +812,8 @@ impl SlashingPenaltyContract {
     }
 
     fn decrease_accumulator(env: &Env, offender: &Address, amount: i128) -> Result<(), SlashError> {
-        let mut accs: Map<Address, PenaltyAccumulator> = env.storage().instance().get(&SLASH_ACC).unwrap();
+        let mut accs: Map<Address, PenaltyAccumulator> =
+            env.storage().instance().get(&SLASH_ACC).unwrap();
         let Some(mut acc) = accs.get(offender.clone()) else {
             return Ok(());
         };

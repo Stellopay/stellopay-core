@@ -15,8 +15,7 @@
 //! * Edge cases: 1-token payment, large amounts (overflow safety)
 
 use fee_collector::{FeeCollectorContract, FeeCollectorContractClient, FeeMode};
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{token, Address, Env};
+use soroban_sdk::{testutils::Address as _, token, Address, Env};
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -517,6 +516,54 @@ fn test_update_fee_config_changes_rate() {
 }
 
 #[test]
+fn test_collect_fee_uses_prior_calculate_fee_quote_after_config_change() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let tok = create_token(&env, &token_admin);
+    token::StellarAssetClient::new(&env, &tok.address).mint(&payer, &1_000);
+
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    let (quoted_net, quoted_fee) = client.calculate_fee(&1_000);
+    assert_eq!(quoted_fee, 10);
+    assert_eq!(quoted_net, 990);
+
+    client.update_fee_config(&admin, &500u32, &0i128, &FeeMode::Percentage);
+
+    let (settled_net, settled_fee) = client.collect_fee(&payer, &recipient, &tok.address, &1_000);
+    assert_eq!(settled_fee, quoted_fee);
+    assert_eq!(settled_net, quoted_net);
+    assert_eq!(tok.balance(&treasury), quoted_fee);
+    assert_eq!(tok.balance(&recipient), quoted_net);
+}
+
+#[test]
+fn test_calculate_fee_after_config_change_uses_new_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    let (initial_net, initial_fee) = client.calculate_fee(&1_000);
+    assert_eq!(initial_fee, 10);
+    assert_eq!(initial_net, 990);
+
+    client.update_fee_config(&admin, &500u32, &0i128, &FeeMode::Percentage);
+
+    let (updated_net, updated_fee) = client.calculate_fee(&1_000);
+    assert_eq!(updated_fee, 50);
+    assert_eq!(updated_net, 950);
+}
+
+#[test]
 fn test_update_fee_config_switches_to_flat_mode() {
     let env = Env::default();
     env.mock_all_auths();
@@ -710,10 +757,11 @@ fn test_set_paused_unauthorized_panics() {
     client.set_paused(&attacker, &true);
 }
 
-// ─── Admin transfer ───────────────────────────────────────────────────────────
+// ─── Two-step admin transfer ──────────────────────────────────────────────────
 
 #[test]
-fn test_transfer_admin_new_admin_can_update_config() {
+fn test_propose_admin_stores_pending_admin() {
+    // After propose_admin, the pending admin is recorded but has no effect yet.
     let env = Env::default();
     env.mock_all_auths();
 
@@ -722,17 +770,40 @@ fn test_transfer_admin_new_admin_can_update_config() {
     let treasury = Address::generate(&env);
     let client = setup_percentage(&env, &admin, &treasury, 100);
 
-    client.transfer_admin(&admin, &new_admin);
+    client.propose_admin(&admin, &new_admin);
 
-    // New admin can update config.
-    client.update_fee_config(&new_admin, &200u32, &0i128, &FeeMode::Percentage);
-    assert_eq!(client.get_config().fee_bps, 200);
-    assert_eq!(client.get_admin(), new_admin);
+    // Pending admin is visible via get_pending_admin.
+    assert_eq!(client.get_pending_admin(), Some(new_admin));
+    // Current admin is unchanged.
+    assert_eq!(client.get_admin(), admin);
+}
+
+#[test]
+fn test_proposed_admin_has_no_effect_until_accepted() {
+    // The proposed address cannot perform admin actions before calling accept_admin.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    client.propose_admin(&admin, &new_admin);
+
+    // Current admin is still the original address.
+    assert_eq!(client.get_admin(), admin);
+
+    // new_admin is NOT yet the admin; update_fee_config called with new_admin
+    // but require_admin checks the stored Admin key which is still `admin`,
+    // so this must panic.
+    //
+    // We do this in a separate should_panic sub-test below.
 }
 
 #[test]
 #[should_panic(expected = "Unauthorized: caller is not admin")]
-fn test_old_admin_cannot_act_after_transfer() {
+fn test_proposed_admin_cannot_act_before_acceptance() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -741,24 +812,222 @@ fn test_old_admin_cannot_act_after_transfer() {
     let treasury = Address::generate(&env);
     let client = setup_percentage(&env, &admin, &treasury, 100);
 
-    client.transfer_admin(&admin, &new_admin);
+    client.propose_admin(&admin, &new_admin);
 
-    // Old admin must now be rejected.
+    // new_admin not yet accepted → must be rejected as not-admin.
+    client.update_fee_config(&new_admin, &200u32, &0i128, &FeeMode::Percentage);
+}
+
+#[test]
+fn test_accept_admin_completes_handoff() {
+    // After accept_admin, the proposed address becomes the active admin.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    client.propose_admin(&admin, &new_admin);
+    client.accept_admin(&new_admin);
+
+    // Admin slot now holds new_admin.
+    assert_eq!(client.get_admin(), new_admin);
+    // Pending slot cleared.
+    assert_eq!(client.get_pending_admin(), None);
+}
+
+#[test]
+fn test_new_admin_can_act_after_acceptance() {
+    // Verify the new admin can perform privileged actions post-acceptance.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    client.propose_admin(&admin, &new_admin);
+    client.accept_admin(&new_admin);
+
+    client.update_fee_config(&new_admin, &300u32, &0i128, &FeeMode::Percentage);
+    assert_eq!(client.get_config().fee_bps, 300);
+}
+
+#[test]
+#[should_panic(expected = "Unauthorized: caller is not admin")]
+fn test_old_admin_cannot_act_after_acceptance() {
+    // The original admin loses all privileges once the new admin has accepted.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    client.propose_admin(&admin, &new_admin);
+    client.accept_admin(&new_admin);
+
+    // Old admin is now rejected.
     client.update_fee_config(&admin, &50u32, &0i128, &FeeMode::Percentage);
 }
 
 #[test]
+#[should_panic(expected = "Caller is not the proposed admin")]
+fn test_only_proposed_address_can_accept() {
+    // A third party (attacker) cannot accept a proposal intended for someone else.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    client.propose_admin(&admin, &new_admin);
+
+    // Attacker tries to hijack the acceptance — must panic.
+    client.accept_admin(&attacker);
+}
+
+#[test]
+#[should_panic(expected = "No pending admin transfer")]
+fn test_accept_admin_without_proposal_panics() {
+    // accept_admin with no outstanding proposal must panic.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    client.accept_admin(&admin);
+}
+
+#[test]
+fn test_cancel_admin_transfer_clears_pending() {
+    // cancel_admin_transfer removes the pending proposal; the admin stays unchanged.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    client.propose_admin(&admin, &new_admin);
+    assert_eq!(client.get_pending_admin(), Some(new_admin.clone()));
+
+    client.cancel_admin_transfer(&admin);
+
+    // Pending admin is gone.
+    assert_eq!(client.get_pending_admin(), None);
+    // Admin is still the original.
+    assert_eq!(client.get_admin(), admin);
+}
+
+#[test]
+#[should_panic(expected = "No pending admin transfer")]
+fn test_cancel_without_pending_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    // No proposal exists — must panic.
+    client.cancel_admin_transfer(&admin);
+}
+
+#[test]
+#[should_panic(expected = "No pending admin transfer")]
+fn test_cancelled_proposal_cannot_be_accepted() {
+    // After cancellation the previously-proposed address must no longer be able to accept.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    client.propose_admin(&admin, &new_admin);
+    client.cancel_admin_transfer(&admin);
+
+    // Pending is cleared → accept_admin panics with "No pending admin transfer".
+    client.accept_admin(&new_admin);
+}
+
+#[test]
 #[should_panic(expected = "Unauthorized: caller is not admin")]
-fn test_transfer_admin_unauthorized_panics() {
+fn test_propose_admin_unauthorized_panics() {
     let env = Env::default();
     env.mock_all_auths();
 
     let admin = Address::generate(&env);
     let attacker = Address::generate(&env);
+    let new_admin = Address::generate(&env);
     let treasury = Address::generate(&env);
     let client = setup_percentage(&env, &admin, &treasury, 100);
 
-    client.transfer_admin(&attacker, &attacker);
+    client.propose_admin(&attacker, &new_admin);
+}
+
+#[test]
+#[should_panic(expected = "Unauthorized: caller is not admin")]
+fn test_cancel_admin_transfer_unauthorized_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    client.propose_admin(&admin, &new_admin);
+    client.cancel_admin_transfer(&attacker);
+}
+
+#[test]
+fn test_get_pending_admin_returns_none_when_no_proposal() {
+    // Before any proposal, get_pending_admin returns None.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    assert_eq!(client.get_pending_admin(), None);
+}
+
+#[test]
+fn test_propose_admin_overwrites_previous_proposal() {
+    // A second propose_admin replaces the first, so only the latest address can accept.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let first_candidate = Address::generate(&env);
+    let second_candidate = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    client.propose_admin(&admin, &first_candidate);
+    client.propose_admin(&admin, &second_candidate);
+
+    // Only second_candidate is pending now.
+    assert_eq!(client.get_pending_admin(), Some(second_candidate.clone()));
+
+    // second_candidate accepts successfully.
+    client.accept_admin(&second_candidate);
+    assert_eq!(client.get_admin(), second_candidate);
 }
 
 // ─── Cumulative total fees ─────────────────────────────────────────────────────
@@ -873,6 +1142,64 @@ fn test_collect_fee_while_paused_panics() {
     client.collect_fee(&payer, &recipient, &tok.address, &500);
 }
 
+// ─── calculate_fee zero-amount edge cases (issue #767) ────────────────────
+
+#[test]
+fn test_calculate_fee_zero_gross_returns_zero() {
+    // Issue #767: verify that calculate_fee(0) returns (0, 0)
+    // without panicking and that the result is a valid FeeQuote.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    let (net, fee) = client.calculate_fee(&0i128);
+    assert_eq!(net, 0);
+    assert_eq!(fee, 0);
+}
+
+#[test]
+fn test_calculate_fee_small_amount_percentage_rounds_to_zero() {
+    // Issue #767: when the gross amount is so small that the
+    // percentage-based fee rounds down to 0, verify calculate_fee
+    // returns fee=0 and net=gross rather than silently assuming
+    // a non-zero fee.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    // 1 bps = 0.01%. 1 token * 0.01% = 0.0001 -> floor = 0.
+    let client = setup_percentage(&env, &admin, &treasury, 1);
+    let (net, fee) = client.calculate_fee(&1i128);
+    assert_eq!(fee, 0, "1 bps on 1 token must round to 0 fee");
+    assert_eq!(net, 1);
+}
+
+#[test]
+fn test_calculate_fee_exactly_one_percent_threshold() {
+    // Issue #767: verify the edge where gross is just below and
+    // exactly at the threshold where a non-zero fee first appears.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    // At 100 bps (1%), 99 tokens rounds down to 0; 100 -> fee = 1.
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+    let (net_99, fee_99) = client.calculate_fee(&99i128);
+    assert_eq!(fee_99, 0, "1% of 99 rounds down to 0");
+    assert_eq!(net_99, 99);
+
+    let (net_100, fee_100) = client.calculate_fee(&100i128);
+    assert_eq!(fee_100, 1, "1% of 100 yields exactly 1");
+    assert_eq!(net_100, 99);
+}
+
 // ─── calculate_fee error cases ────────────────────────────────────────────────
 
 #[test]
@@ -935,4 +1262,71 @@ fn test_payer_is_payment_recipient_still_pays_fee() {
     assert_eq!(net, 990);
     assert_eq!(tok.balance(&treasury), 10);
     assert_eq!(tok.balance(&user), 990); // net returned to same address
+}
+
+// ─── calculate_fee no-auth verification ─────────────────────────────────
+
+#[test]
+fn calculate_fee_no_auth_required() {
+    // Verify that calculate_fee is a read-only function that any address
+    // can call without authentication.
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    // Use mock auth only for admin setup (update_fee_config requires admin).
+    env.mock_all_auths();
+    let client = create_contract(&env);
+    client.initialize(&admin, &treasury, &100u32, &0i128, &FeeMode::Percentage);
+
+    // Soroban mock_all_auths() is a one-way toggle; it cannot be disabled
+    // after enabling. However, calculate_fee does not call require_auth()
+    // in its contract implementation, so any address can invoke it.
+    // We verify the pure computation succeeds and returns correct values.
+    let (net, fee) = client.calculate_fee(&1_000i128);
+    assert_eq!(net, 990);
+    assert_eq!(fee, 10);
+}
+
+// ─── Rounding tie-breaker tests ──────────────────────────────────────────
+
+#[test]
+fn test_fee_basis_points_rounding_tie_breaker() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = create_contract(&env);
+
+    // Initialize with 500 bps (5 %)
+    client.initialize(&admin, &treasury, &500u32, &0i128, &FeeMode::Percentage);
+
+    // 25 tokens * 5% = 1.25. Floor rounding must yield 1.
+    let (net_25, fee_25) = client.calculate_fee(&25i128);
+    assert_eq!(fee_25, 1, "Floor rounding: 1.25 must round down to 1");
+    assert_eq!(net_25, 24);
+
+    // 19 tokens * 5% = 0.95. Floor rounding must yield 0.
+    let (net_19, fee_19) = client.calculate_fee(&19i128);
+    assert_eq!(fee_19, 0, "Floor rounding: 0.95 must round down to 0");
+    assert_eq!(net_19, 19);
+
+    // Update to 800 bps (8 %) via config update
+    client.update_fee_config(&admin, &800u32, &0i128, &FeeMode::Percentage);
+
+    // 12 tokens * 8% = 0.96. Floor rounding must yield 0.
+    let (net_12, fee_12) = client.calculate_fee(&12i128);
+    assert_eq!(fee_12, 0, "Floor rounding: 0.96 must round down to 0");
+    assert_eq!(net_12, 12);
+
+    // 25 tokens * 8% = 2.00. Exact, but still verifies the path.
+    let (net_25_8, fee_25_8) = client.calculate_fee(&25i128);
+    assert_eq!(fee_25_8, 2, "8% of 25 = 2.00");
+    assert_eq!(net_25_8, 23);
+
+    // 26 tokens * 8% = 2.08. Floor rounding must yield 2.
+    let (net_26, fee_26) = client.calculate_fee(&26i128);
+    assert_eq!(fee_26, 2, "Floor rounding: 2.08 must round down to 2");
+    assert_eq!(net_26, 24);
 }

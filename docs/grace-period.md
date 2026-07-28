@@ -45,6 +45,14 @@ Defaults (if owner never sets policy):
 
 Owner updates are constrained by hard sanity limits inside `set_grace_extension_policy` (e.g. bps ≤ 500_000, per-call ≤ 730 days).
 
+**Non-zero requirement.** Both `max_cumulative_extension_bps` and
+`max_extension_per_call_seconds` must be strictly greater than zero. A zero value
+on either field silently disables all grace extensions (no extension can ever be
+applied), so it is treated as an invalid configuration and rejected with
+`GraceExtensionInvalid` rather than interpreted as "disabled". To intentionally
+stop allowing extensions, set the caps to a small explicit non-zero value so the
+choice is auditable and cannot happen by accident.
+
 ## Errors
 
 | `PayrollError` | When |
