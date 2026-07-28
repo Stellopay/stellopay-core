@@ -24,6 +24,7 @@ multisig = { path = "../contracts/multisig" }
 payment_retry = { path = "../contracts/payment_retry" }
 payment_scheduler = { path = "../contracts/payment_scheduler" }
 rbac = { path = "../contracts/rbac" }
+template_versioning = { path = "../contracts/template_versioning" }
 withdrawal_timelock = { path = "../contracts/withdrawal_timelock" }
 
 [dev-dependencies]
