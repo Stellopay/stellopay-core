@@ -703,19 +703,19 @@ impl DepartmentManagerContract {
             let mut child: Department = env
                 .storage()
                 .persistent()
-                .get(&StorageKey::Department(*child_id))
+                .get(&StorageKey::Department(child_id))
                 .expect("Department not found");
             child.parent_id = Some(target);
             env.storage()
                 .persistent()
-                .set(&StorageKey::Department(*child_id), &child);
+                .set(&StorageKey::Department(child_id), &child);
 
             let mut target_children: Vec<u128> = env
                 .storage()
                 .persistent()
                 .get(&StorageKey::DepartmentChildren(target))
                 .unwrap_or_else(|| Vec::new(&env));
-            target_children.push_back(*child_id);
+            target_children.push_back(child_id);
             env.storage()
                 .persistent()
                 .set(&StorageKey::DepartmentChildren(target), &target_children);
@@ -730,7 +730,7 @@ impl DepartmentManagerContract {
                 .unwrap_or_else(|| Vec::new(&env));
             let mut i = 0u32;
             while i < parent_children.len() {
-                if parent_children.get(i) == Some(&source) {
+                if parent_children.get(i) == Some(source) {
                     parent_children.remove(i);
                     break;
                 }
@@ -749,7 +749,7 @@ impl DepartmentManagerContract {
             .unwrap_or_else(|| Vec::new(&env));
         let mut i = 0u32;
         while i < org_depts.len() {
-            if org_depts.get(i) == Some(&source) {
+            if org_depts.get(i) == Some(source) {
                 org_depts.remove(i);
                 break;
             }
@@ -771,7 +771,7 @@ impl DepartmentManagerContract {
             .remove(&StorageKey::DepartmentEmployees(source));
 
         env.events()
-            .publish((symbol_short!("dept_merged", source), source), target);
+            .publish((symbol_short!("dept_mrg"), source), target);
     }
 
     // -------------------------------------------------------------------------
