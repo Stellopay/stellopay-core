@@ -33,6 +33,10 @@ jobs:
         working-directory: onchain
         run: cargo build --workspace --verbose
 
+      - name: Benchmark regression guard
+        working-directory: onchain
+        run: cargo test -p stello_pay_contract gas_benchmark -- --nocapture
+
       - name: Test workspace
         working-directory: onchain
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace --verbose -- --skip gas_benchmark
