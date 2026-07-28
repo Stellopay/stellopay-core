@@ -712,7 +712,7 @@ impl GovernanceContract {
         write_proposal(&env, &proposal);
 
         env.events().publish(
-            (symbol_short!("prop_cncl"), proposal_id),
+            (symbol_short!("cancelled"), proposal_id),
             (),
         );
 
