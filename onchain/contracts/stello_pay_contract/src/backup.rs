@@ -602,11 +602,7 @@ pub struct DryRunResult {
 /// * `env`        – Soroban environment (used for address parsing).
 /// * `envelope`   – Encrypted backup bytes (version | salt | nonce | ciphertext).
 /// * `passphrase` – Decryption passphrase; never stored on-chain.
-pub fn validate_backup(
-    env: &Env,
-    envelope: &[u8],
-    passphrase: &[u8],
-) -> DryRunResult {
+pub fn validate_backup(env: &Env, envelope: &[u8], passphrase: &[u8]) -> DryRunResult {
     match decrypt_backup(envelope, passphrase) {
         Err(BackupError::BufferTooShort) => DryRunResult {
             valid: false,

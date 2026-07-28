@@ -1017,7 +1017,15 @@ fn test_no_two_records_share_global_seq() {
     let mut all_global_seqs: Vec<u64> = Vec::new();
 
     // 1. employer_a logs as themselves.
-    let _ = log_as_employer(&client, &env, &employer_a, &employee_a, &token, 100, &ReportType::Payroll);
+    let _ = log_as_employer(
+        &client,
+        &env,
+        &employer_a,
+        &employee_a,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
     all_global_seqs.push(client.get_record(&employer_a, &1).unwrap().global_seq);
 
     // 2. publisher_a logs for employer_a.
@@ -1045,7 +1053,15 @@ fn test_no_two_records_share_global_seq() {
     all_global_seqs.push(client.get_record(&employer_b, &1).unwrap().global_seq);
 
     // 4. employer_b logs as themselves.
-    let _ = log_as_employer(&client, &env, &employer_b, &employee_b, &token, 400, &ReportType::Payroll);
+    let _ = log_as_employer(
+        &client,
+        &env,
+        &employer_b,
+        &employee_b,
+        &token,
+        400,
+        &ReportType::Payroll,
+    );
     all_global_seqs.push(client.get_record(&employer_b, &2).unwrap().global_seq);
 
     // 5. publisher_a logs for employer_b.
@@ -1077,7 +1093,8 @@ fn test_no_two_records_share_global_seq() {
     sorted_seqs.sort_unstable();
     for i in 1..sorted_seqs.len() {
         assert_ne!(
-            sorted_seqs[i], sorted_seqs[i - 1],
+            sorted_seqs[i],
+            sorted_seqs[i - 1],
             "Two records share the same global_seq: {}",
             sorted_seqs[i]
         );
@@ -1691,7 +1708,15 @@ fn test_flat_report_single_record_all_fields_match() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1_000);
-    let id = log_as_employer(&client, &env, &employer, &employee, &token, 500, &ReportType::Payroll);
+    let id = log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        500,
+        &ReportType::Payroll,
+    );
 
     let report = client.get_withholding_records(&employer, &employee, &0, &9999, &None, &10);
     let rows = flatten_records(&env, &report);
@@ -1735,9 +1760,33 @@ fn test_flat_report_report_type_u32_mapping() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1_000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
-    log_as_employer(&client, &env, &employer, &employee, &token, 200, &ReportType::Tax);
-    log_as_employer(&client, &env, &employer, &employee, &token, 300, &ReportType::Regulatory);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        200,
+        &ReportType::Tax,
+    );
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        300,
+        &ReportType::Regulatory,
+    );
 
     let report = client.get_withholding_records(&employer, &employee, &0, &9999, &None, &50);
     let rows = flatten_records(&env, &report);
@@ -1765,7 +1814,15 @@ fn test_flat_report_row_index_is_1_based_sequential() {
 
     env.ledger().set_timestamp(1_000);
     for _ in 0..5u8 {
-        log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+        log_as_employer(
+            &client,
+            &env,
+            &employer,
+            &employee,
+            &token,
+            100,
+            &ReportType::Payroll,
+        );
     }
 
     let report = client.get_withholding_records(&employer, &employee, &0, &9999, &None, &50);
@@ -1785,8 +1842,24 @@ fn test_flat_report_header_fields_identical_in_every_row() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1_000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
-    log_as_employer(&client, &env, &employer, &employee, &token, 200, &ReportType::Tax);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        200,
+        &ReportType::Tax,
+    );
 
     let report = client.get_withholding_records(&employer, &employee, &0, &9999, &None, &50);
     let rows = flatten_records(&env, &report);
@@ -1794,12 +1867,24 @@ fn test_flat_report_header_fields_identical_in_every_row() {
     let first = rows.get(0).unwrap();
     for i in 1..rows.len() {
         let row = rows.get(i).unwrap();
-        assert_eq!(row.employer, first.employer, "employer must be same in all rows");
-        assert_eq!(row.employee, first.employee, "employee must be same in all rows");
+        assert_eq!(
+            row.employer, first.employer,
+            "employer must be same in all rows"
+        );
+        assert_eq!(
+            row.employee, first.employee,
+            "employee must be same in all rows"
+        );
         assert_eq!(row.start_date, first.start_date);
         assert_eq!(row.end_date, first.end_date);
-        assert_eq!(row.total_amount, first.total_amount, "total_amount must be identical in all rows");
-        assert_eq!(row.record_count, first.record_count, "record_count must be identical in all rows");
+        assert_eq!(
+            row.total_amount, first.total_amount,
+            "total_amount must be identical in all rows"
+        );
+        assert_eq!(
+            row.record_count, first.record_count,
+            "record_count must be identical in all rows"
+        );
         assert_eq!(row.schema_version, first.schema_version);
     }
 }
@@ -1814,7 +1899,15 @@ fn test_flat_report_record_count_matches_structured_report() {
     env.ledger().set_timestamp(1_000);
     let n = 7u8;
     for _ in 0..n {
-        log_as_employer(&client, &env, &employer, &employee, &token, 10, &ReportType::Payroll);
+        log_as_employer(
+            &client,
+            &env,
+            &employer,
+            &employee,
+            &token,
+            10,
+            &ReportType::Payroll,
+        );
     }
 
     let report = client.get_withholding_records(&employer, &employee, &0, &9999, &None, &50);
@@ -1839,8 +1932,13 @@ fn test_flat_report_metadata_len_correct() {
 
     env.ledger().set_timestamp(1_000);
     client.log_record(
-        &employer, &employer, &employee, &token,
-        &999i128, &ReportType::Payroll, &meta,
+        &employer,
+        &employer,
+        &employee,
+        &token,
+        &999i128,
+        &ReportType::Payroll,
+        &meta,
     );
 
     let report = client.get_withholding_records(&employer, &employee, &0, &9999, &None, &10);
@@ -1856,7 +1954,15 @@ fn test_flat_report_amount_row_matches_record_amount() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1_000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 12_345, &ReportType::Tax);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        12_345,
+        &ReportType::Tax,
+    );
 
     let report = client.get_withholding_records(&employer, &employee, &0, &9999, &None, &10);
     let rows = flatten_records(&env, &report);
@@ -1871,7 +1977,15 @@ fn test_flat_report_timestamp_row_matches_record_timestamp() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(42_000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
 
     let report = client.get_withholding_records(&employer, &employee, &0, &99999, &None, &10);
     let rows = flatten_records(&env, &report);
@@ -1917,9 +2031,25 @@ fn test_flat_report_existing_structured_report_unchanged() {
     let token = Address::generate(&env);
 
     env.ledger().set_timestamp(1000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
     env.ledger().set_timestamp(2000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 200, &ReportType::Tax);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        200,
+        &ReportType::Tax,
+    );
 
     let report = client.get_withholding_records(&employer, &employee, &0, &9999, &None, &50);
     assert_eq!(report.record_count, 2u32);
@@ -1928,7 +2058,6 @@ fn test_flat_report_existing_structured_report_unchanged() {
     assert_eq!(report.employee, employee);
     assert_eq!(report.schema_version, 1u32);
 }
-
 
 // ---------------------------------------------------------------------------
 // Schema version regression
@@ -1963,21 +2092,58 @@ fn test_old_schema_records_remain_readable_after_further_writes() {
 
     // Phase 1: write records under the current schema version.
     env.ledger().set_timestamp(1_000);
-    let id1 =
-        log_as_employer(&client, &env, &employer, &employee, &token, 100, &ReportType::Payroll);
+    let id1 = log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        100,
+        &ReportType::Payroll,
+    );
     env.ledger().set_timestamp(2_000);
-    let id2 =
-        log_as_employer(&client, &env, &employer, &employee, &token, 200, &ReportType::Tax);
+    let id2 = log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        200,
+        &ReportType::Tax,
+    );
     env.ledger().set_timestamp(3_000);
-    let id3 =
-        log_as_employer(&client, &env, &employer, &employee, &token, 300, &ReportType::Regulatory);
+    let id3 = log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        300,
+        &ReportType::Regulatory,
+    );
 
     // Phase 2: simulate schema advancement by writing additional records.
     // In a real upgrade the new binary bumps get_report_schema_version(); here
     // we verify the storage layout is stable across additional writes.
     env.ledger().set_timestamp(10_000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 999, &ReportType::Payroll);
-    log_as_employer(&client, &env, &employer, &employee, &token, 888, &ReportType::Tax);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        999,
+        &ReportType::Payroll,
+    );
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        888,
+        &ReportType::Tax,
+    );
 
     // Phase 3: re-read the original records and assert every field is intact.
     let r1 = client
@@ -2041,13 +2207,20 @@ fn test_get_report_schema_version_matches_report_field() {
     let active_version = client.get_report_schema_version();
 
     // Empty report must embed the same version.
-    let empty_report =
-        client.get_withholding_records(&employer, &employee, &0, &9999, &None, &10);
+    let empty_report = client.get_withholding_records(&employer, &employee, &0, &9999, &None, &10);
     assert_eq!(empty_report.schema_version, active_version);
 
     // Report with records must also embed the same version.
     env.ledger().set_timestamp(1_000);
-    log_as_employer(&client, &env, &employer, &employee, &token, 500, &ReportType::Tax);
+    log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        500,
+        &ReportType::Tax,
+    );
 
     let report = client.get_withholding_records(&employer, &employee, &0, &9999, &None, &10);
     assert_eq!(report.schema_version, active_version);

@@ -940,7 +940,10 @@ fn test_pair_isolation() {
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
     // Second pair has no state yet.
-    assert_eq!(oracle_client.try_get_pair_state(&base2, &quote2), Err(Ok(OracleError::PairNotConfigured)));
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base2, &quote2),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 
     // Push to second pair.
     oracle_client.push_price(&source, &base2, &quote2, &4_000_000i128, &1_000u64);
@@ -1029,7 +1032,10 @@ fn test_multi_source_quorum_success() {
     oracle_client.push_price(&source1, &base, &quote, &rate, &1_000u64);
 
     // State should NOT be updated yet (quorum = 2).
-    assert_eq!(oracle_client.try_get_pair_state(&base, &quote), Err(Ok(OracleError::PairNotConfigured)));
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 
     // Source 2 submits the SAME rate and timestamp.
     oracle_client.push_price(&source2, &base, &quote, &rate, &1_000u64);
@@ -1074,7 +1080,10 @@ fn test_multi_source_quorum_different_rates_do_not_count() {
     oracle_client.push_price(&source2, &base, &quote, &2_100_000i128, &1_000u64);
 
     // Neither reached quorum of 2.
-    assert_eq!(oracle_client.try_get_pair_state(&base, &quote), Err(Ok(OracleError::PairNotConfigured)));
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 }
 
 #[test]
@@ -1132,13 +1141,13 @@ fn test_multi_source_quorum_duplicate_vote_rejected() {
 
     let res = oracle_client.try_push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
     assert_eq!(res, Err(Ok(OracleError::DuplicateVote)));
-    assert_eq!(oracle_client.try_get_pair_state(&base, &quote), Err(Ok(OracleError::PairNotConfigured)));
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 
     oracle_client.push_price(&source2, &base, &quote, &2_000_000i128, &1_000u64);
-    assert_eq!(
-        oracle_client.get_pair_state(&base, &quote).rate,
-        2_000_000
-    );
+    assert_eq!(oracle_client.get_pair_state(&base, &quote).rate, 2_000_000);
 }
 
 #[test]
@@ -1166,7 +1175,10 @@ fn test_multi_source_quorum_dissenting_source_does_not_block_matching_cluster() 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
     oracle_client.push_price(&source2, &base, &quote, &2_100_000i128, &1_000u64);
-    assert_eq!(oracle_client.try_get_pair_state(&base, &quote), Err(Ok(OracleError::PairNotConfigured)));
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 
     oracle_client.push_price(&source3, &base, &quote, &2_000_000i128, &1_000u64);
     let state = oracle_client.get_pair_state(&base, &quote);
@@ -1197,7 +1209,10 @@ fn test_multi_source_quorum_window_rollover_resets_pending_votes() {
     env.ledger().with_mut(|li| li.timestamp = 1_060);
     oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_000u64);
     oracle_client.push_price(&source2, &base, &quote, &2_000_000i128, &1_060u64);
-    assert_eq!(oracle_client.try_get_pair_state(&base, &quote), Err(Ok(OracleError::PairNotConfigured)));
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 
     oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &1_060u64);
     let state = oracle_client.get_pair_state(&base, &quote);
@@ -1230,7 +1245,10 @@ fn test_multi_source_quorum_older_bucket_vote_is_ignored_after_rollover() {
 
     let res = oracle_client.try_push_price(&source2, &base, &quote, &2_000_000i128, &1_000u64);
     assert!(res.is_ok());
-    assert_eq!(oracle_client.try_get_pair_state(&base, &quote), Err(Ok(OracleError::PairNotConfigured)));
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 }
 
 #[test]
@@ -1287,7 +1305,10 @@ fn test_removed_source_pending_vote_no_longer_counts_toward_quorum() {
     oracle_client.remove_source(&oracle_owner, &source1);
 
     oracle_client.push_price(&source2, &base, &quote, &2_000_000i128, &1_000u64);
-    assert_eq!(oracle_client.try_get_pair_state(&base, &quote), Err(Ok(OracleError::PairNotConfigured)));
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 }
 
 #[test]
@@ -1477,7 +1498,10 @@ fn test_rate_limit_single_source_counts_once_in_quorum() {
     assert_eq!(res, Err(Ok(OracleError::SubmissionRateLimited)));
 
     // Quorum not met — only source1's single vote is in the bucket.
-    assert_eq!(oracle_client.try_get_pair_state(&base, &quote), Err(Ok(OracleError::PairNotConfigured)));
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
 
     // source2 completes quorum.
     oracle_client.push_price(&source2, &base, &quote, &2_000_000i128, &1_000u64);

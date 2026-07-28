@@ -674,13 +674,19 @@ impl PriceOracleContract {
     /// @dev Rejects the state with `PriceTooOld` if `ledger.timestamp() - last_updated_ts > max_staleness_seconds`.
     /// @param base Base token address.
     /// @param quote Quote token address.
-    pub fn get_pair_state(env: Env, base: Address, quote: Address) -> Result<PairState, OracleError> {
-        let state = env.storage()
+    pub fn get_pair_state(
+        env: Env,
+        base: Address,
+        quote: Address,
+    ) -> Result<PairState, OracleError> {
+        let state = env
+            .storage()
             .instance()
             .get::<_, PairState>(&DataKey::PairState(base.clone(), quote.clone()))
             .ok_or(OracleError::PairNotConfigured)?;
 
-        let cfg = env.storage()
+        let cfg = env
+            .storage()
             .instance()
             .get::<_, PairConfig>(&DataKey::PairConfig(base, quote))
             .ok_or(OracleError::PairNotConfigured)?;
