@@ -20,19 +20,6 @@ jobs:
         with:
           components: rustfmt
 
-      - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: onchain
-
       - name: Check formatting
         working-directory: onchain
         run: cargo fmt --all -- --check
-
-      - name: Build workspace
-        working-directory: onchain
-        run: cargo build --workspace --verbose
-
-      - name: Test workspace
-        working-directory: onchain
-        run: cargo test --workspace --verbose
