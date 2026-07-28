@@ -313,10 +313,10 @@ impl WithdrawalTimelock {
     ///      - `Withdrawal(_, _, amount)`: `amount` must be `> 0`.
     ///
     ///      **Opaque fields** (not validated by this contract):
-    ///      - `Withdrawal(token, to, _)`: token and recipient addresses are
-    ///        forwarded verbatim to the external orchestrator.
-    ///      - `AdminChange(target_contract, payload_hash)`: entirely opaque;
-    ///        off-chain tooling is responsible for verifying the hash.
+    ///      - `Withdrawal(token, to, _)`: token and recipient addresses are forwarded verbatim to
+    ///        the external orchestrator.
+    ///      - `AdminChange(target_contract, payload_hash)`: entirely opaque; off-chain tooling is
+    ///        responsible for verifying the hash.
     ///
     /// @param caller Admin address queuing the operation; must authenticate.
     /// @param kind   `Withdrawal(token, to, amount)` or

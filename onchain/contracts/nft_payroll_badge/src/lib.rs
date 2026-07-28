@@ -40,11 +40,11 @@ pub struct MetadataUpdated {
 /// Result returned by [`NftPayrollBadgeContract::badges_of_paged`].
 ///
 /// ## Cursor semantics
-/// - `next_cursor` is `Some(n)` when more badges exist after the current page.
-///   Pass that value as `start` in the next call to retrieve the subsequent page.
+/// - `next_cursor` is `Some(n)` when more badges exist after the current page. Pass that value as
+///   `start` in the next call to retrieve the subsequent page.
 /// - `next_cursor` is `None` when the returned page is the final (or only) page.
-/// - Badges are returned in ascending badge-ID order, which is stable and
-///   deterministic across calls as long as no badges are removed.
+/// - Badges are returned in ascending badge-ID order, which is stable and deterministic across
+///   calls as long as no badges are removed.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PagedBadges {
@@ -227,16 +227,16 @@ impl NftPayrollBadgeContract {
     ///
     /// ## Arguments
     /// - `owner`  – Address whose badges to query.
-    /// - `start`  – Zero-based index into the owner's badge list (cursor from a
-    ///              previous call, or `0` for the first page).
-    /// - `limit`  – Maximum number of items to return.  Values above
-    ///              [`MAX_PAGE_SIZE`] are silently clamped to `MAX_PAGE_SIZE`.
+    /// - `start`  – Zero-based index into the owner's badge list (cursor from a previous call, or
+    ///   `0` for the first page).
+    /// - `limit`  – Maximum number of items to return.  Values above [`MAX_PAGE_SIZE`] are silently
+    ///   clamped to `MAX_PAGE_SIZE`.
     ///
     /// ## Returns
     /// A [`PagedBadges`] struct containing:
     /// - `items` — badge IDs for positions `[start, start + effective_limit)`.
-    /// - `next_cursor` — `Some(start + effective_limit)` when more items follow;
-    ///   `None` when the page covers the end of the list.
+    /// - `next_cursor` — `Some(start + effective_limit)` when more items follow; `None` when the
+    ///   page covers the end of the list.
     ///
     /// ## Ordering
     /// Badges are returned in the order they were minted (ascending badge-ID),

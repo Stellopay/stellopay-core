@@ -1,5 +1,6 @@
-use crate::storage::AgreementMode;
 use soroban_sdk::{contractevent, Address, Env};
+
+use crate::storage::AgreementMode;
 
 #[contractevent]
 #[derive(Clone, Debug)]

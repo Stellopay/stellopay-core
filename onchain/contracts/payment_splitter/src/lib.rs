@@ -200,8 +200,8 @@ impl PaymentSplitterContract {
     ///
     /// Percent splits use largest-remainder apportionment:
     /// 1. Floor each exact percentage slice.
-    /// 2. Distribute the remaining dust one unit at a time to the recipients
-    ///    with the largest fractional remainder.
+    /// 2. Distribute the remaining dust one unit at a time to the recipients with the largest
+    ///    fractional remainder.
     /// 3. Break exact remainder ties using canonical recipient address order.
     ///
     /// # Returns
@@ -270,7 +270,8 @@ impl PaymentSplitterContract {
             for i in 0..recipient_count {
                 order.push_back(i);
             }
-            // Bubble-sort by (remainder desc, address asc) — acceptable for small n (≤ MAX_RECIPIENTS).
+            // Bubble-sort by (remainder desc, address asc) — acceptable for small n (≤
+            // MAX_RECIPIENTS).
             for i in 0..recipient_count {
                 for j in (i + 1)..recipient_count {
                     let ri = remainders.get_unchecked(order.get_unchecked(i));
