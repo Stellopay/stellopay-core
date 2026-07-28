@@ -85,11 +85,17 @@ fn initialize_contract<'a>(
     (owner, payroll)
 }
 
-/// Build a deterministic 32-byte hash from a single seed byte.
+/// Build a deterministic 32-byte hash from a seed value.
 /// Each distinct `seed` value produces a unique hash, making it easy to
 /// assign distinct hashes to distinct payments in tests.
-fn make_hash(env: &Env, seed: u8) -> BytesN<32> {
-    BytesN::from_array(env, &[seed; 32])
+fn make_hash(env: &Env, seed: u32) -> BytesN<32> {
+    let mut hash = [0u8; 32];
+    // Use the seed to create a unique hash pattern
+    let seed_bytes = seed.to_le_bytes();
+    for i in 0..32 {
+        hash[i] = seed_bytes[i % 4];
+    }
+    BytesN::from_array(env, &hash)
 }
 
 /// Record a payment with a deterministic hash derived from `hash_seed`.
@@ -98,7 +104,7 @@ fn record(
     client: &PaymentHistoryContractClient<'_>,
     env: &Env,
     agreement_id: u128,
-    hash_seed: u8,
+    hash_seed: u32,
     token: &Address,
     amount: i128,
     from: &Address,
@@ -133,7 +139,7 @@ struct ReconciliationFixture {
     source: ReconciliationSource,
     source_event_id: u128,
     agreement_id: u128,
-    hash_seed: u8,
+    hash_seed: u32,
     token: Address,
     amount: i128,
     from: Address,
@@ -191,13 +197,13 @@ fn test_record_payment_returns_sequential_ids() {
     let employee = Address::generate(&env);
 
     let id1 = record(
-        &client, &env, 1, 1, &token, 100, &employer, &employee, 1_000,
+        &client, &env, 1, 1u32, &token, 100, &employer, &employee, 1_000,
     );
     let id2 = record(
-        &client, &env, 1, 2, &token, 200, &employer, &employee, 2_000,
+        &client, &env, 1, 2u32, &token, 200, &employer, &employee, 2_000,
     );
     let id3 = record(
-        &client, &env, 2, 3, &token, 300, &employer, &employee, 3_000,
+        &client, &env, 2, 3u32, &token, 300, &employer, &employee, 3_000,
     );
 
     assert_eq!(id1, 1u128);
@@ -217,7 +223,7 @@ fn test_record_payment_persists_all_fields() {
     let agreement_id = 42u128;
     let amount = 9_999i128;
     let timestamp = 1_700_000_000u64;
-    let hash = make_hash(&env, 0xAB);
+    let hash = make_hash(&env, 0xABu32);
 
     let payment_id = client.record_payment(
         &agreement_id,
@@ -254,9 +260,9 @@ fn test_record_payment_increments_global_count() {
     let to = Address::generate(&env);
 
     assert_eq!(client.get_global_payment_count(), 0u128);
-    record(&client, &env, 1, 1, &token, 50, &from, &to, 100);
+    record(&client, &env, 1, 1u32, &token, 50, &from, &to, 100);
     assert_eq!(client.get_global_payment_count(), 1u128);
-    record(&client, &env, 1, 2, &token, 50, &from, &to, 200);
+    record(&client, &env, 1, 2u32, &token, 50, &from, &to, 200);
     assert_eq!(client.get_global_payment_count(), 2u128);
 }
 
@@ -270,7 +276,7 @@ fn test_record_payment_emits_event_with_correct_topic() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
 
-    record(&client, &env, 10, 1, &token, 500, &from, &to, 9_000);
+    record(&client, &env, 10, 1u32, &token, 500, &from, &to, 9_000);
 
     let events = env.events().all();
     let last = events.last().unwrap();
@@ -292,7 +298,7 @@ fn test_record_payment_updates_all_three_sequential_indices() {
     let employee = Address::generate(&env);
 
     record(
-        &client, &env, 7, 1, &token, 100, &employer, &employee, 1_000,
+        &client, &env, 7, 1u32, &token, 100, &employer, &employee, 1_000,
     );
 
     assert_eq!(client.get_agreement_payment_count(&7u128), 1u32);
@@ -311,7 +317,7 @@ fn test_record_payment_duplicate_hash_is_idempotent() {
     let employee = Address::generate(&env);
 
     let agreement_id = 77u128;
-    let hash = make_hash(&env, 0x77);
+    let hash = make_hash(&env, 0x77u32);
 
     let id1 = client.record_payment(
         &agreement_id,
@@ -379,7 +385,7 @@ fn test_get_payment_by_hash_returns_correct_record() {
     let token = Address::generate(&env);
     let from = Address::generate(&env);
     let to = Address::generate(&env);
-    let hash = make_hash(&env, 0x42);
+    let hash = make_hash(&env, 0x42u32);
 
     let pid = client.record_payment(&5u128, &hash, &token, &777i128, &from, &to, &55_000u64);
     let rec = client.get_payment_by_hash(&hash);
@@ -399,7 +405,7 @@ fn test_get_payment_by_hash_unknown_returns_none() {
     let (_id, client) = register_contract(&env);
     initialize_contract(&env, &client);
 
-    let unknown_hash = make_hash(&env, 0x99);
+    let unknown_hash = make_hash(&env, 0x99u32);
     let rec = client.get_payment_by_hash(&unknown_hash);
     assert!(rec.is_none(), "unknown hash must return None");
 }
@@ -417,7 +423,7 @@ fn test_hash_index_written_atomically() {
     let token = Address::generate(&env);
     let from = Address::generate(&env);
     let to = Address::generate(&env);
-    let hash = make_hash(&env, 0x01);
+    let hash = make_hash(&env, 0x01u32);
 
     let pid = client.record_payment(&1u128, &hash, &token, &100i128, &from, &to, &0u64);
 
@@ -438,9 +444,9 @@ fn test_different_payments_have_independent_hash_entries() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
 
-    let h1 = make_hash(&env, 1);
-    let h2 = make_hash(&env, 2);
-    let h3 = make_hash(&env, 3);
+    let h1 = make_hash(&env, 1u32);
+    let h2 = make_hash(&env, 2u32);
+    let h3 = make_hash(&env, 3u32);
 
     let pid1 = client.record_payment(&1u128, &h1, &token, &10i128, &from, &to, &0u64);
     let pid2 = client.record_payment(&1u128, &h2, &token, &20i128, &from, &to, &1u64);
@@ -463,7 +469,7 @@ fn test_get_payment_by_id_existing() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
 
-    let pid = record(&client, &env, 5, 1, &token, 777, &from, &to, 55_000);
+    let pid = record(&client, &env, 5, 1u32, &token, 777, &from, &to, 55_000);
     let rec = client.get_payment_by_id(&pid);
     assert!(rec.is_some());
     assert_eq!(rec.unwrap().id, pid);
@@ -515,7 +521,7 @@ fn test_global_count_tracks_all_agreements() {
             &client,
             &env,
             i as u128,
-            i,
+            i as u32,
             &token,
             10,
             &from,
@@ -540,9 +546,9 @@ fn test_agreement_count_before_and_after() {
     let agreement_id = 99u128;
 
     assert_eq!(client.get_agreement_payment_count(&agreement_id), 0u32);
-    record(&client, &env, agreement_id, 1, &token, 1, &from, &to, 0);
+    record(&client, &env, agreement_id, 1u32, &token, 1, &from, &to, 0);
     assert_eq!(client.get_agreement_payment_count(&agreement_id), 1u32);
-    record(&client, &env, agreement_id, 2, &token, 2, &from, &to, 1);
+    record(&client, &env, agreement_id, 2u32, &token, 2, &from, &to, 1);
     assert_eq!(client.get_agreement_payment_count(&agreement_id), 2u32);
 }
 
@@ -556,9 +562,9 @@ fn test_agreement_indices_are_independent() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
 
-    record(&client, &env, 1, 1, &token, 10, &from, &to, 0);
-    record(&client, &env, 1, 2, &token, 20, &from, &to, 1);
-    record(&client, &env, 2, 3, &token, 30, &from, &to, 2);
+    record(&client, &env, 1, 1u32, &token, 10, &from, &to, 0);
+    record(&client, &env, 1, 2u32, &token, 20, &from, &to, 1);
+    record(&client, &env, 2, 3u32, &token, 30, &from, &to, 2);
 
     assert_eq!(client.get_agreement_payment_count(&1u128), 2u32);
     assert_eq!(client.get_agreement_payment_count(&2u128), 1u32);
@@ -575,7 +581,7 @@ fn test_get_payments_by_agreement_single_record() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
 
-    record(&client, &env, 1, 1, &token, 500, &from, &to, 1_000);
+    record(&client, &env, 1, 1u32, &token, 500, &from, &to, 1_000);
     let page = client.get_payments_by_agreement(&1u128, &1u32, &10u32);
     assert_eq!(page.len(), 1u32);
     assert_eq!(page.get(0).unwrap().amount, 500);
@@ -597,7 +603,7 @@ fn test_get_payments_by_agreement_full_pagination() {
             &client,
             &env,
             agreement_id,
-            i,
+            i as u32,
             &token,
             i as i128 * 100,
             &from,
@@ -630,7 +636,7 @@ fn test_get_payments_by_agreement_start_index_zero_returns_empty() {
     let token = Address::generate(&env);
     let from = Address::generate(&env);
     let to = Address::generate(&env);
-    record(&client, &env, 1, 1, &token, 100, &from, &to, 0);
+    record(&client, &env, 1, 1u32, &token, 100, &from, &to, 0);
 
     assert_eq!(
         client
@@ -649,7 +655,7 @@ fn test_get_payments_by_agreement_start_index_above_count_returns_empty() {
     let token = Address::generate(&env);
     let from = Address::generate(&env);
     let to = Address::generate(&env);
-    record(&client, &env, 1, 1, &token, 100, &from, &to, 0);
+    record(&client, &env, 1, 1u32, &token, 100, &from, &to, 0);
 
     assert_eq!(
         client
@@ -690,7 +696,7 @@ fn test_get_payments_by_agreement_limit_capped_at_max_page_size() {
             &client,
             &env,
             agreement_id,
-            i,
+            i as u32,
             &token,
             i as i128,
             &from,
@@ -723,7 +729,7 @@ fn test_get_payments_by_agreement_exact_boundary_read() {
             &client,
             &env,
             agreement_id,
-            i,
+            i as u32,
             &token,
             i as i128,
             &from,
@@ -751,9 +757,9 @@ fn test_employer_count_before_and_after() {
     let employee = Address::generate(&env);
 
     assert_eq!(client.get_employer_payment_count(&employer), 0u32);
-    record(&client, &env, 1, 1, &token, 100, &employer, &employee, 0);
+    record(&client, &env, 1, 1u32, &token, 100, &employer, &employee, 0);
     assert_eq!(client.get_employer_payment_count(&employer), 1u32);
-    record(&client, &env, 2, 2, &token, 200, &employer, &employee, 1);
+    record(&client, &env, 2, 2u32, &token, 200, &employer, &employee, 1);
     assert_eq!(client.get_employer_payment_count(&employer), 2u32);
 }
 
@@ -768,9 +774,9 @@ fn test_employer_indices_are_independent() {
     let employer_b = Address::generate(&env);
     let employee = Address::generate(&env);
 
-    record(&client, &env, 1, 1, &token, 10, &employer_a, &employee, 0);
-    record(&client, &env, 1, 2, &token, 20, &employer_a, &employee, 1);
-    record(&client, &env, 1, 3, &token, 30, &employer_b, &employee, 2);
+    record(&client, &env, 1, 1u32, &token, 10, &employer_a, &employee, 0);
+    record(&client, &env, 1, 2u32, &token, 20, &employer_a, &employee, 1);
+    record(&client, &env, 1, 3u32, &token, 30, &employer_b, &employee, 2);
 
     assert_eq!(client.get_employer_payment_count(&employer_a), 2u32);
     assert_eq!(client.get_employer_payment_count(&employer_b), 1u32);
@@ -791,7 +797,7 @@ fn test_get_payments_by_employer_pagination() {
             &client,
             &env,
             1,
-            i,
+            i as u32,
             &token,
             i as i128 * 10,
             &employer,
@@ -819,7 +825,7 @@ fn test_get_payments_by_employer_start_index_zero_returns_empty() {
     let token = Address::generate(&env);
     let from = Address::generate(&env);
     let to = Address::generate(&env);
-    record(&client, &env, 1, 1, &token, 1, &from, &to, 0);
+    record(&client, &env, 1, 1u32, &token, 1, &from, &to, 0);
 
     assert_eq!(
         client.get_payments_by_employer(&from, &0u32, &10u32).len(),
@@ -836,7 +842,7 @@ fn test_get_payments_by_employer_start_index_above_count_returns_empty() {
     let token = Address::generate(&env);
     let from = Address::generate(&env);
     let to = Address::generate(&env);
-    record(&client, &env, 1, 1, &token, 1, &from, &to, 0);
+    record(&client, &env, 1, 1u32, &token, 1, &from, &to, 0);
 
     assert_eq!(
         client.get_payments_by_employer(&from, &2u32, &10u32).len(),
@@ -872,9 +878,9 @@ fn test_employee_count_before_and_after() {
     let employee = Address::generate(&env);
 
     assert_eq!(client.get_employee_payment_count(&employee), 0u32);
-    record(&client, &env, 1, 1, &token, 100, &employer, &employee, 0);
+    record(&client, &env, 1, 1u32, &token, 100, &employer, &employee, 0);
     assert_eq!(client.get_employee_payment_count(&employee), 1u32);
-    record(&client, &env, 2, 2, &token, 200, &employer, &employee, 1);
+    record(&client, &env, 2, 2u32, &token, 200, &employer, &employee, 1);
     assert_eq!(client.get_employee_payment_count(&employee), 2u32);
 }
 
@@ -889,9 +895,9 @@ fn test_employee_indices_are_independent() {
     let employee_a = Address::generate(&env);
     let employee_b = Address::generate(&env);
 
-    record(&client, &env, 1, 1, &token, 10, &employer, &employee_a, 0);
-    record(&client, &env, 1, 2, &token, 20, &employer, &employee_a, 1);
-    record(&client, &env, 1, 3, &token, 30, &employer, &employee_b, 2);
+    record(&client, &env, 1, 1u32, &token, 10, &employer, &employee_a, 0);
+    record(&client, &env, 1, 2u32, &token, 20, &employer, &employee_a, 1);
+    record(&client, &env, 1, 3u32, &token, 30, &employer, &employee_b, 2);
 
     assert_eq!(client.get_employee_payment_count(&employee_a), 2u32);
     assert_eq!(client.get_employee_payment_count(&employee_b), 1u32);
@@ -912,7 +918,7 @@ fn test_get_payments_by_employee_pagination() {
             &client,
             &env,
             1,
-            i,
+            i as u32,
             &token,
             i as i128 * 10,
             &employer,
@@ -937,7 +943,7 @@ fn test_get_payments_by_employee_start_index_zero_returns_empty() {
     let token = Address::generate(&env);
     let from = Address::generate(&env);
     let to = Address::generate(&env);
-    record(&client, &env, 1, 1, &token, 1, &from, &to, 0);
+    record(&client, &env, 1, 1u32, &token, 1, &from, &to, 0);
 
     assert_eq!(
         client.get_payments_by_employee(&to, &0u32, &10u32).len(),
@@ -954,7 +960,7 @@ fn test_get_payments_by_employee_start_index_above_count_returns_empty() {
     let token = Address::generate(&env);
     let from = Address::generate(&env);
     let to = Address::generate(&env);
-    record(&client, &env, 1, 1, &token, 1, &from, &to, 0);
+    record(&client, &env, 1, 1u32, &token, 1, &from, &to, 0);
 
     assert_eq!(
         client.get_payments_by_employee(&to, &2u32, &10u32).len(),
@@ -1045,21 +1051,21 @@ fn test_records_are_immutable_after_recording() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
 
-    let pid = record(&client, &env, 1, 1, &token, 500, &from, &to, 1_000);
+    let pid = record(&client, &env, 1, 1u32, &token, 500, &from, &to, 1_000);
 
     // Add more payments after the first one.
     for i in 2..7u8 {
-        record(&client, &env, 2, i, &token, 9_999, &from, &to, 2_000);
+        record(&client, &env, 2, i as u32, &token, 9_999, &from, &to, 2_000);
     }
 
     let rec = client.get_payment_by_id(&pid).unwrap();
     assert_eq!(rec.id, pid);
     assert_eq!(rec.amount, 500, "original record must be unchanged");
     assert_eq!(rec.agreement_id, 1u128);
-    assert_eq!(rec.payment_hash, make_hash(&env, 1));
+    assert_eq!(rec.payment_hash, make_hash(&env, 1u32));
 
     // Also verify via hash lookup.
-    let by_hash = client.get_payment_by_hash(&make_hash(&env, 1)).unwrap();
+    let by_hash = client.get_payment_by_hash(&make_hash(&env, 1u32)).unwrap();
     assert_eq!(by_hash.amount, 500);
 }
 
@@ -1082,7 +1088,7 @@ fn test_index_counts_only_increase() {
             &client,
             &env,
             agreement_id,
-            i,
+            i as u32,
             &token,
             i as i128,
             &from,
@@ -1117,7 +1123,7 @@ fn test_large_history_boundary_reads() {
             &client,
             &env,
             agreement_id,
-            i,
+            i as u32,
             &token,
             i as i128,
             &from,
@@ -1154,14 +1160,14 @@ fn test_multiple_agreements_large_history_independent() {
 
     // 10 payments under agreement 1, 5 under agreement 2.
     for i in 0..10u8 {
-        record(&client, &env, 1, i, &token, i as i128, &from, &to, i as u64);
+        record(&client, &env, 1, i as u32, &token, i as i128, &from, &to, i as u64);
     }
     for i in 10..15u8 {
         record(
             &client,
             &env,
             2,
-            i,
+            i as u32,
             &token,
             i as i128 * 10,
             &from,
@@ -1200,7 +1206,7 @@ fn test_event_based_reconciliation_across_payment_sources() {
             source: ReconciliationSource::SchedulerExecution,
             source_event_id: 11,
             agreement_id: 7001,
-            hash_seed: 0x11,
+            hash_seed: 0x11u32,
             token: token.clone(),
             amount: 500,
             from: scheduler_employer.clone(),
@@ -1211,7 +1217,7 @@ fn test_event_based_reconciliation_across_payment_sources() {
             source: ReconciliationSource::EscrowRelease,
             source_event_id: 22,
             agreement_id: 7002,
-            hash_seed: 0x22,
+            hash_seed: 0x22u32,
             token: token.clone(),
             amount: 800,
             from: escrow_manager.clone(),
@@ -1222,7 +1228,7 @@ fn test_event_based_reconciliation_across_payment_sources() {
             source: ReconciliationSource::BonusPayment,
             source_event_id: 33,
             agreement_id: 7003,
-            hash_seed: 0x33,
+            hash_seed: 0x33u32,
             token: token.clone(),
             amount: 300,
             from: bonus_employer.clone(),
@@ -1233,7 +1239,7 @@ fn test_event_based_reconciliation_across_payment_sources() {
             source: ReconciliationSource::ExpenseReimbursement,
             source_event_id: 44,
             agreement_id: 7004,
-            hash_seed: 0x44,
+            hash_seed: 0x44u32,
             token: token.clone(),
             amount: 650,
             from: expense_payer.clone(),
@@ -1284,8 +1290,8 @@ fn test_reconciliation_out_of_order_events_are_stable() {
     let agreement_id = 9001u128;
 
     // Simulate indexer ingestion arriving out of chronological timestamp order.
-    let newer_hash = make_hash(&env, 0x90);
-    let older_hash = make_hash(&env, 0x91);
+    let newer_hash = make_hash(&env, 0x90u32);
+    let older_hash = make_hash(&env, 0x91u32);
 
     let id1 = client.record_payment(
         &agreement_id,
@@ -1325,4 +1331,108 @@ fn test_reconciliation_out_of_order_events_are_stable() {
     assert_eq!(page.len(), 2u32);
     assert_eq!(page.get(0).unwrap().id, id1);
     assert_eq!(page.get(1).unwrap().id, id2);
+}
+
+// ─── Gas benchmark: get_payments_by_employee at large history sizes ─────────────
+
+#[test]
+fn benchmark_get_payments_by_employee_scaling() {
+    /// Benchmark helper that records N payments for a single employee and measures
+    /// the read cost of retrieving them via get_payments_by_employee.
+    ///
+    /// @notice This test measures how read cost scales as an employee accumulates
+    /// hundreds or thousands of recorded payments. The results inform pagination
+    /// policy and response-size limits.
+    ///
+    /// @dev Uses env.cost_estimate() to capture CPU instruction counts before and
+    /// after the read operation. The cost is measured for retrieving the full history
+    /// (up to MAX_PAGE_SIZE) to simulate worst-case read scenarios.
+    ///
+    /// @param num_payments Number of payments to record for the employee.
+    /// @return Tuple of (payment_count, cpu_insns) for the read operation.
+    fn benchmark_employee_read(
+        env: &Env,
+        client: &PaymentHistoryContractClient<'_>,
+        employee: &Address,
+        num_payments: u32,
+    ) -> (u32, u64) {
+        let token = Address::generate(env);
+        let employer = Address::generate(env);
+        let agreement_id = 1u128;
+
+        // Record N payments for the same employee
+        for i in 0..num_payments {
+            record(
+                client,
+                env,
+                agreement_id,
+                i,
+                &token,
+                i as i128 * 100,
+                &employer,
+                employee,
+                i as u64 * 1000,
+            );
+        }
+
+        let count = client.get_employee_payment_count(employee);
+        assert_eq!(count, num_payments, "count must match recorded payments");
+
+        // Reset cost budget to get clean measurement
+        env.cost_estimate().budget().reset_default();
+
+        // Measure cost of reading the full page (up to MAX_PAGE_SIZE)
+        let limit = count.min(MAX_PAGE_SIZE);
+        let _result = client.get_payments_by_employee(employee, &1u32, &limit);
+        let cpu_insns = env.cost_estimate().budget().cpu_instruction_cost();
+
+        (count, cpu_insns)
+    }
+
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    initialize_contract(&env, &client);
+
+    let employee = Address::generate(&env);
+
+    // Benchmark at 10 payments
+    let (count_10, cost_10) = benchmark_employee_read(&env, &client, &employee, 10);
+    println!(
+        "get_payments_by_employee benchmark: {} payments = {} CPU instructions",
+        count_10, cost_10
+    );
+
+    // Benchmark at 100 payments (equals MAX_PAGE_SIZE)
+    let (count_100, cost_100) = benchmark_employee_read(&env, &client, &employee, 100);
+    println!(
+        "get_payments_by_employee benchmark: {} payments = {} CPU instructions",
+        count_100, cost_100
+    );
+
+    // Benchmark at 1000 payments (well beyond MAX_PAGE_SIZE)
+    let (count_1000, cost_1000) = benchmark_employee_read(&env, &client, &employee, 1000);
+    println!(
+        "get_payments_by_employee benchmark: {} payments = {} CPU instructions",
+        count_1000, cost_1000
+    );
+
+    // Validate that costs are reasonable and scaling is predictable
+    // Cost should increase with history size, but not linearly due to pagination cap
+    assert!(cost_10 > 0, "cost must be positive");
+    assert!(cost_100 > cost_10, "cost for 100 payments should exceed cost for 10");
+    assert!(cost_1000 > cost_100, "cost for 1000 payments should exceed cost for 100");
+
+    // The cost difference between 100 and 1000 should be bounded because
+    // MAX_PAGE_SIZE caps the actual number of records read (100 vs 100)
+    // The difference comes from index traversal overhead, not record deserialization
+    let cost_ratio = cost_1000 as f64 / cost_100 as f64;
+    println!(
+        "Cost ratio (1000/100 payments): {:.2}x",
+        cost_ratio
+    );
+    assert!(
+        cost_ratio < 10.0,
+        "Cost ratio should be < 10x due to pagination cap; got {:.2}x",
+        cost_ratio
+    );
 }
