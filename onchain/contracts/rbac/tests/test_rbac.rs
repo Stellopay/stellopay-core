@@ -469,6 +469,119 @@ fn test_bulk_grant_forbidden_for_non_admin() {
 }
 
 #[test]
+fn test_bulk_revoke_removes_multiple_roles() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &user, &Role::Employer);
+    client.grant_role(&admin, &user, &Role::Arbiter);
+    client.grant_role(&admin, &user, &Role::Employee);
+    assert_eq!(client.get_roles(&user).len(), 3);
+
+    let mut roles_to_revoke = Vec::new(&env);
+    roles_to_revoke.push_back(Role::Employer);
+    roles_to_revoke.push_back(Role::Arbiter);
+    client.bulk_revoke(&admin, &user, &roles_to_revoke);
+
+    let roles = client.get_roles(&user);
+    assert_eq!(roles.len(), 1);
+    assert_eq!(roles.get(0).unwrap(), Role::Employee);
+    assert!(!client.has_role(&user, &Role::Employer));
+    assert!(!client.has_role(&user, &Role::Arbiter));
+}
+
+#[test]
+fn test_bulk_revoke_skips_duplicates() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &user, &Role::Employer);
+    client.grant_role(&admin, &user, &Role::Arbiter);
+
+    let mut roles_to_revoke = Vec::new(&env);
+    roles_to_revoke.push_back(Role::Employer);
+    roles_to_revoke.push_back(Role::Employer); // duplicate in batch
+    roles_to_revoke.push_back(Role::Arbiter);
+    client.bulk_revoke(&admin, &user, &roles_to_revoke);
+
+    let roles = client.get_roles(&user);
+    assert_eq!(roles.len(), 0);
+}
+
+#[test]
+fn test_bulk_revoke_skips_already_not_held() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &user, &Role::Employer);
+
+    let mut roles_to_revoke = Vec::new(&env);
+    roles_to_revoke.push_back(Role::Employer); // has this
+    roles_to_revoke.push_back(Role::Arbiter); // doesn't have this
+    roles_to_revoke.push_back(Role::Employee); // doesn't have this
+    client.bulk_revoke(&admin, &user, &roles_to_revoke);
+
+    let roles = client.get_roles(&user);
+    assert_eq!(roles.len(), 0);
+}
+
+#[test]
+#[should_panic(expected = "Only admin can revoke roles")]
+fn test_bulk_revoke_forbidden_for_non_admin() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let employer = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &employer, &Role::Employer);
+    client.grant_role(&admin, &user, &Role::Employee);
+
+    let mut roles_to_revoke = Vec::new(&env);
+    roles_to_revoke.push_back(Role::Employee);
+    client.bulk_revoke(&employer, &user, &roles_to_revoke);
+}
+
+#[test]
+fn test_bulk_revoke_protects_owner_admin() {
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+
+    // Owner has Admin role
+    assert!(client.has_role(&owner, &Role::Admin));
+
+    let mut roles_to_revoke = Vec::new(&env);
+    roles_to_revoke.push_back(Role::Admin);
+    client.bulk_revoke(&owner, &owner, &roles_to_revoke);
+
+    // Owner should still have Admin (protected)
+    assert!(client.has_role(&owner, &Role::Admin));
+}
+
+#[test]
+fn test_bulk_revoke_mixed_held_and_unheld() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &user, &Role::Employer);
+    client.grant_role(&admin, &user, &Role::Employee);
+
+    let mut roles_to_revoke = Vec::new(&env);
+    roles_to_revoke.push_back(Role::Employer); // has this
+    roles_to_revoke.push_back(Role::Arbiter); // doesn't have this
+    roles_to_revoke.push_back(Role::Employee); // has this (directly held)
+    client.bulk_revoke(&admin, &user, &roles_to_revoke);
+
+    let roles = client.get_roles(&user);
+    // Both Employer and Employee were directly held and revoked
+    // Arbiter was never held
+    assert_eq!(roles.len(), 0);
+}
+
+#[test]
 fn test_revoke_all_strips_every_role() {
     let env = create_env();
     let (_cid, client, admin) = setup_contract(&env);
@@ -669,6 +782,17 @@ fn test_bulk_grant_before_init_fails() {
     let a = Address::generate(&env);
     let b = Address::generate(&env);
     client.bulk_grant(&a, &b, &Vec::new(&env));
+}
+
+#[test]
+#[should_panic(expected = "Contract not initialized")]
+fn test_bulk_revoke_before_init_fails() {
+    let env = create_env();
+    let contract_id = env.register_contract(None, RbacContract);
+    let client = RbacContractClient::new(&env, &contract_id);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    client.bulk_revoke(&a, &b, &Vec::new(&env));
 }
 
 #[test]
