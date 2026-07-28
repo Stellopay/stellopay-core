@@ -609,4 +609,3 @@ fn test_jurisdiction_removal_historical_annual_accrual_intact() {
     assert_eq!(tok.balance(&state_treasury), 6_000);
     assert_eq!(client.get_accrued_balance(&j_state), 0);
 }
-
