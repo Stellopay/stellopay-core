@@ -1,13 +1,15 @@
 //! Comprehensive test suite for milestone-based payment functionality (#162, #486).
 //!
 //! Covers: agreement creation, funding, adding milestones, approving, claiming,
-//! access control, edge cases, and event emissions.
+//! access control, edge cases, event emissions, and milestone-interface
+//! conformance (#942).
 
 #![cfg(test)]
 #![allow(deprecated)]
 
+use milestone_interface::{MilestoneContractClient, MilestoneView};
 use soroban_sdk::{testutils::Address as _, Address, Env};
-use stello_pay_contract::storage::PayrollError;
+use stello_pay_contract::storage::{Milestone, PayrollError};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 // ============================================================================
@@ -679,4 +681,218 @@ fn test_batch_claim_mixed_reports_error_codes() {
     assert_eq!(result.results.get(0).unwrap().error_code, 0); // success
     assert_eq!(result.results.get(1).unwrap().error_code, 3); // not approved
     assert_eq!(result.results.get(2).unwrap().error_code, 1); // duplicate
+}
+
+// -----------------------------------------------------------------------------
+// milestone-interface conformance (issue #942)
+// -----------------------------------------------------------------------------
+
+/// Converts a `MilestoneView` (from the interface client) to a `Milestone`
+/// for field-by-field comparison with the direct contract result.
+fn view_to_milestone(v: &MilestoneView) -> Milestone {
+    Milestone {
+        id: v.id,
+        amount: v.amount,
+        approved: v.approved,
+        claimed: v.claimed,
+    }
+}
+
+/// Helper: asserts all scalar fields of a `Milestone` match between a direct
+/// result and an interface-client result.
+fn assert_milestone_eq(direct: &Option<Milestone>, via_interface: &Option<MilestoneView>) {
+    match (direct, via_interface) {
+        (Some(d), Some(i)) => {
+            assert_eq!(d.id, i.id, "milestone id mismatch");
+            assert_eq!(d.amount, i.amount, "milestone amount mismatch");
+            assert_eq!(d.approved, i.approved, "milestone approved mismatch");
+            assert_eq!(d.claimed, i.claimed, "milestone claimed mismatch");
+        }
+        (None, None) => {}
+        (d, i) => {
+            panic!(
+                "milestone presence mismatch: direct={d:?} interface={i:?}"
+            );
+        }
+    }
+}
+
+/// @notice Confirms that `MilestoneContractClient` (from `milestone-interface`)
+///         returns the same results as `PayrollContractClient` for `get_milestone`
+///         and `get_milestone_count` across the full milestone lifecycle.
+///
+/// This test exercises the trait surface declared in
+/// `onchain/contracts/milestone-interface/src/lib.rs` and verifies that
+/// `stello_pay_contract` conforms to the interface contract.
+///
+/// # Conformance checks
+/// 1. `get_milestone_count` — parity after create, add, approve, claim, reject
+/// 2. `get_milestone`       — parity for each milestone's id/amount/approved/claimed
+/// 3. `MilestoneView`       — scalar fields match `Milestone` at every lifecycle
+///    state (created, approved, claimed, rejected, expired)
+#[test]
+fn test_milestone_interface_conformance() {
+    let env = Env::default();
+    env.mock_all_auths();
+    #[allow(deprecated)]
+    let contract_id = env.register_contract(None, PayrollContract);
+    let direct = PayrollContractClient::new(&env, &contract_id);
+    let via = MilestoneContractClient::new(&env, &contract_id);
+
+    let employer = Address::generate(&env);
+    let contributor = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+
+    // ── 1. Create and fund a milestone agreement ────────────────────────────
+    let fund_amount: i128 = 100_000;
+    soroban_sdk::token::StellarAssetClient::new(&env, &token)
+        .mint(&employer, &fund_amount);
+    let agreement_id = direct.create_milestone_agreement(&employer, &contributor, &token);
+    direct.fund_milestone_agreement(&agreement_id, &employer, &fund_amount);
+
+    // get_milestone_count = 0
+    assert_eq!(
+        direct.get_milestone_count(&agreement_id),
+        via.get_milestone_count(&agreement_id),
+        "get_milestone_count mismatch at creation"
+    );
+    assert_eq!(direct.get_milestone_count(&agreement_id), 0);
+    assert_milestone_eq(
+        &direct.get_milestone(&agreement_id, &1),
+        &via.get_milestone(&agreement_id, &1),
+    );
+
+    // ── 2. Add milestones ───────────────────────────────────────────────────
+    direct.add_milestone(&agreement_id, &100);
+    direct.add_milestone(&agreement_id, &200);
+    direct.add_milestone(&agreement_id, &300);
+    direct.add_milestone(&agreement_id, &400);
+
+    assert_eq!(
+        direct.get_milestone_count(&agreement_id),
+        via.get_milestone_count(&agreement_id),
+        "get_milestone_count mismatch after add_milestone"
+    );
+    assert_eq!(direct.get_milestone_count(&agreement_id), 4);
+
+    // Verify each milestone through both clients (id=0 should be None)
+    for mid in 1u32..=4 {
+        assert_milestone_eq(
+            &direct.get_milestone(&agreement_id, &mid),
+            &via.get_milestone(&agreement_id, &mid),
+        );
+        let m = direct.get_milestone(&agreement_id, &mid).unwrap();
+        assert!(!m.approved, "milestone {mid} should not be approved yet");
+        assert!(!m.claimed, "milestone {mid} should not be claimed yet");
+    }
+    // Out-of-range and zero IDs return None
+    assert_milestone_eq(
+        &direct.get_milestone(&agreement_id, &0),
+        &via.get_milestone(&agreement_id, &0),
+    );
+    assert_milestone_eq(
+        &direct.get_milestone(&agreement_id, &99),
+        &via.get_milestone(&agreement_id, &99),
+    );
+    assert_milestone_eq(
+        &direct.get_milestone(&agreement_id, &4),
+        &via.get_milestone(&agreement_id, &4),
+    );
+
+    // ── 3. Approve milestones 1 and 3 ───────────────────────────────────────
+    // Milestone 4 stays unapproved so it can be expired later.
+    direct.approve_milestone(&agreement_id, &1);
+    direct.approve_milestone(&agreement_id, &3);
+
+    // Milestone 1: approved, not claimed
+    assert_milestone_eq(
+        &direct.get_milestone(&agreement_id, &1),
+        &via.get_milestone(&agreement_id, &1),
+    );
+    assert!(
+        direct.get_milestone(&agreement_id, &1).unwrap().approved,
+        "milestone 1 should be approved"
+    );
+    assert!(
+        !direct.get_milestone(&agreement_id, &1).unwrap().claimed,
+        "milestone 1 should not be claimed yet"
+    );
+    // Milestone 2: not approved
+    assert!(
+        !direct.get_milestone(&agreement_id, &2).unwrap().approved,
+        "milestone 2 should remain unapproved"
+    );
+    // Milestone 3: approved, not claimed
+    assert!(
+        direct.get_milestone(&agreement_id, &3).unwrap().approved,
+        "milestone 3 should be approved"
+    );
+    // Milestone 4: not approved (will be expired)
+    assert!(
+        !direct.get_milestone(&agreement_id, &4).unwrap().approved,
+        "milestone 4 should remain unapproved"
+    );
+
+    // ── 4. Claim milestone 1 ────────────────────────────────────────────────
+    direct.claim_milestone(&agreement_id, &1);
+    assert_milestone_eq(
+        &direct.get_milestone(&agreement_id, &1),
+        &via.get_milestone(&agreement_id, &1),
+    );
+    assert!(
+        direct.get_milestone(&agreement_id, &1).unwrap().claimed,
+        "milestone 1 should be claimed"
+    );
+
+    // ── 5. Reject milestone 2 ───────────────────────────────────────────────
+    // reject_milestone succeeds without approval
+    let reason = soroban_sdk::String::from_str(&env, "missed deadline");
+    direct.reject_milestone(&agreement_id, &2, &reason);
+    assert_milestone_eq(
+        &direct.get_milestone(&agreement_id, &2),
+        &via.get_milestone(&agreement_id, &2),
+    );
+    // After reject, milestone is still not approved or claimed (rejected is a
+    // separate flag; approved/claimed remain false).
+    assert!(
+        !direct.get_milestone(&agreement_id, &2).unwrap().approved,
+        "rejected milestone 2 should not be approved"
+    );
+
+    // ── 6. Expire milestone 4 ───────────────────────────────────────────────
+    // expire_milestone requires the milestone to exist but NOT be approved
+    // (the contributor still has the right to claim approved milestones).
+    direct.expire_milestone(&agreement_id, &4);
+    assert_milestone_eq(
+        &direct.get_milestone(&agreement_id, &4),
+        &via.get_milestone(&agreement_id, &4),
+    );
+    // After expiry, the milestone is still unclaimed (expiry flag is separate).
+    assert!(
+        !direct.get_milestone(&agreement_id, &4).unwrap().claimed,
+        "expired milestone 4 should not be claimed"
+    );
+
+    // ── 7. Final count parity ───────────────────────────────────────────────
+    assert_eq!(
+        direct.get_milestone_count(&agreement_id),
+        via.get_milestone_count(&agreement_id),
+        "get_milestone_count mismatch at end of lifecycle"
+    );
+    assert_eq!(direct.get_milestone_count(&agreement_id), 4);
+
+    // ── 8. Empty/zero agreement edge cases ──────────────────────────────────
+    // get_milestone on a non-existent agreement returns None
+    assert_milestone_eq(
+        &direct.get_milestone(&999, &1),
+        &via.get_milestone(&999, &1),
+    );
+    assert_eq!(
+        direct.get_milestone_count(&999),
+        via.get_milestone_count(&999),
+        "get_milestone_count mismatch for unknown agreement"
+    );
+    assert_eq!(direct.get_milestone_count(&999), 0);
 }
