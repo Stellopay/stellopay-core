@@ -495,9 +495,7 @@ fn test_claim_payroll_multisig_3of3_approval_succeeds() {
     let period = 86400u64;
 
     payroll.set_multisig_config(
-        &owner,
-        &ms_id,
-        &500i128, // large_payment_threshold = 500
+        &owner, &ms_id, &500i128, // large_payment_threshold = 500
         &0i128,
     );
 

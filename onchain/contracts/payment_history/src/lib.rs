@@ -95,7 +95,6 @@ use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
 /// from the crate root.
 pub use storage::PaymentRecord;
 use storage::StorageKey;
-
 /// Maximum number of records returned in a single paginated query.
 ///
 /// Capping page size prevents runaway ledger-entry reads that could exhaust
@@ -103,6 +102,14 @@ use storage::StorageKey;
 /// Callers requesting a larger `limit` receive at most this many records
 /// silently; no error is raised.
 pub const MAX_PAGE_SIZE: u32 = 100;
+
+/// Panic message raised by the `*_in_range` query variants when both
+/// `from_ts` and `to_ts` are supplied and `from_ts > to_ts`.
+///
+/// Centralised as a constant so the message stays in lock-step with the
+/// `@panics` documentation on each entry point and so callers (and tests)
+/// can assert against a single canonical string.
+pub const ERR_INVALID_RANGE: &str = "InvalidRange: from_ts must be <= to_ts";
 
 #[contract]
 pub struct PaymentHistoryContract;
@@ -593,18 +600,12 @@ impl PaymentHistoryContract {
         }
 
         let total_count = Self::get_agreement_payment_count(env.clone(), agreement_id);
-        let filtered = Self::collect_filtered(
-            &env,
-            total_count,
-            from_ts,
-            to_ts,
-            |pos| {
-                env.storage()
-                    .persistent()
-                    .get(&StorageKey::AgreementPayment(agreement_id, pos))
-                    .unwrap()
-            },
-        );
+        let filtered = Self::collect_filtered(&env, total_count, from_ts, to_ts, |pos| {
+            env.storage()
+                .persistent()
+                .get(&StorageKey::AgreementPayment(agreement_id, pos))
+                .unwrap()
+        });
         Self::paginate_filtered(&env, &filtered, start_index, limit)
     }
 
@@ -639,18 +640,12 @@ impl PaymentHistoryContract {
         }
 
         let total_count = Self::get_employer_payment_count(env.clone(), employer.clone());
-        let filtered = Self::collect_filtered(
-            &env,
-            total_count,
-            from_ts,
-            to_ts,
-            |pos| {
-                env.storage()
-                    .persistent()
-                    .get(&StorageKey::EmployerPayment(employer.clone(), pos))
-                    .unwrap()
-            },
-        );
+        let filtered = Self::collect_filtered(&env, total_count, from_ts, to_ts, |pos| {
+            env.storage()
+                .persistent()
+                .get(&StorageKey::EmployerPayment(employer.clone(), pos))
+                .unwrap()
+        });
         Self::paginate_filtered(&env, &filtered, start_index, limit)
     }
 
@@ -685,18 +680,12 @@ impl PaymentHistoryContract {
         }
 
         let total_count = Self::get_employee_payment_count(env.clone(), employee.clone());
-        let filtered = Self::collect_filtered(
-            &env,
-            total_count,
-            from_ts,
-            to_ts,
-            |pos| {
-                env.storage()
-                    .persistent()
-                    .get(&StorageKey::EmployeePayment(employee.clone(), pos))
-                    .unwrap()
-            },
-        );
+        let filtered = Self::collect_filtered(&env, total_count, from_ts, to_ts, |pos| {
+            env.storage()
+                .persistent()
+                .get(&StorageKey::EmployeePayment(employee.clone(), pos))
+                .unwrap()
+        });
         Self::paginate_filtered(&env, &filtered, start_index, limit)
     }
 

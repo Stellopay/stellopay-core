@@ -430,13 +430,18 @@ fn cancel_removes_from_consideration_and_rejects_execute_after_eta() {
     // Queue an operation
     let op_id = client.queue(&admin, &withdrawal_kind(&env));
     let op_before = client.get_operation(&op_id).unwrap();
-    
+
     // Cancel the operation
     client.cancel(&admin, &op_id);
 
     // Assert it no longer appears in the Queued list for `get_operations_for`
-    let page_queued = client.get_operations_for(&admin, &Some(OperationStatus::Queued), &None, &None);
-    assert_eq!(page_queued.operations.len(), 0, "Cancelled operation should not appear as Queued");
+    let page_queued =
+        client.get_operations_for(&admin, &Some(OperationStatus::Queued), &None, &None);
+    assert_eq!(
+        page_queued.operations.len(),
+        0,
+        "Cancelled operation should not appear as Queued"
+    );
 
     // Advance time past the original maturity timestamp
     let now = env.ledger().timestamp();
@@ -445,7 +450,11 @@ fn cancel_removes_from_consideration_and_rejects_execute_after_eta() {
 
     // Assert execute is rejected rather than proceeding against stale queued data
     let res = client.try_execute(&admin, &op_id);
-    assert_eq!(res, Err(Ok(TimelockError::AlreadyExecutedOrCancelled)), "Execute should be rejected after cancellation, even if ETA has passed");
+    assert_eq!(
+        res,
+        Err(Ok(TimelockError::AlreadyExecutedOrCancelled)),
+        "Execute should be rejected after cancellation, even if ETA has passed"
+    );
 }
 
 // ─── Group E: Update Delay (5 tests) ─────────────────────────────────────────

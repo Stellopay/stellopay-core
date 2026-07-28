@@ -434,9 +434,7 @@ fn test_register_template_rejects_collision_with_active_template() {
     client.initialize(&admin);
 
     // Step 1 & 2: register + publish active version.
-    let tid_a = client
-        .register_template(&owner_a, &String::from_str(&env, "Payroll"))
-        ;
+    let tid_a = client.register_template(&owner_a, &String::from_str(&env, "Payroll"));
     client.publish_template_version(
         &owner_a,
         &tid_a,
@@ -446,8 +444,7 @@ fn test_register_template_rejects_collision_with_active_template() {
     );
 
     // Step 3: collision must be rejected.
-    let result = client
-        .try_register_template(&owner_b, &String::from_str(&env, "Payroll"));
+    let result = client.try_register_template(&owner_b, &String::from_str(&env, "Payroll"));
     assert_eq!(
         result,
         Err(Ok(VersioningError::NameCollision)),
@@ -493,8 +490,7 @@ fn test_register_template_allowed_after_all_versions_deprecated() {
     );
 
     // Step 2: name is now free — re-registration must succeed.
-    let result = client
-        .try_register_template(&owner_b, &String::from_str(&env, "Payroll"));
+    let result = client.try_register_template(&owner_b, &String::from_str(&env, "Payroll"));
     assert!(
         result.is_ok(),
         "re-registering a fully-deprecated name must succeed"
@@ -553,8 +549,7 @@ fn test_register_template_rejects_when_earlier_version_not_deprecated() {
     client.deprecate_version(&owner, &tid, &v2, &None);
 
     // Now the latest version (v2) is deprecated — name is available.
-    let result = client
-        .try_register_template(&newcomer, &String::from_str(&env, "Wages"));
+    let result = client.try_register_template(&newcomer, &String::from_str(&env, "Wages"));
     assert!(
         result.is_ok(),
         "name must be free once the latest version is deprecated"
@@ -579,12 +574,10 @@ fn test_register_template_allowed_when_prior_has_no_published_versions() {
     client.initialize(&admin);
 
     // Register A but never publish a version.
-    let _tid_a = client
-        .register_template(&owner_a, &String::from_str(&env, "Bonus"));
+    let _tid_a = client.register_template(&owner_a, &String::from_str(&env, "Bonus"));
 
     // Name should still be available — no active version exists.
-    let result = client
-        .try_register_template(&owner_b, &String::from_str(&env, "Bonus"));
+    let result = client.try_register_template(&owner_b, &String::from_str(&env, "Bonus"));
     assert!(
         result.is_ok(),
         "a name with no published versions must be available"
@@ -616,8 +609,7 @@ fn test_register_template_different_names_do_not_collide() {
     );
 
     // "Beta" is a different name — must succeed unconditionally.
-    let result = client
-        .try_register_template(&owner, &String::from_str(&env, "Beta"));
+    let result = client.try_register_template(&owner, &String::from_str(&env, "Beta"));
     assert!(result.is_ok(), "distinct names must not interfere");
 }
 
@@ -698,23 +690,26 @@ fn test_register_template_collision_after_reuse() {
     // First registration + deprecation.
     let tid_a = client.register_template(&owner, &String::from_str(&env, "Reuse"));
     let va = client.publish_template_version(
-        &owner, &tid_a,
+        &owner,
+        &tid_a,
         &BytesN::from_array(&env, &[1u8; 32]),
-        &String::from_str(&env, "v1"), &false,
+        &String::from_str(&env, "v1"),
+        &false,
     );
     client.deprecate_version(&owner, &tid_a, &va, &None);
 
     // Second registration — succeeds because name is free.
     let tid_b = client.register_template(&owner, &String::from_str(&env, "Reuse"));
     client.publish_template_version(
-        &owner, &tid_b,
+        &owner,
+        &tid_b,
         &BytesN::from_array(&env, &[2u8; 32]),
-        &String::from_str(&env, "v1"), &false,
+        &String::from_str(&env, "v1"),
+        &false,
     );
 
     // Third registration while second is active — must be rejected.
-    let result = client
-        .try_register_template(&owner, &String::from_str(&env, "Reuse"));
+    let result = client.try_register_template(&owner, &String::from_str(&env, "Reuse"));
     assert_eq!(
         result,
         Err(Ok(VersioningError::NameCollision)),
