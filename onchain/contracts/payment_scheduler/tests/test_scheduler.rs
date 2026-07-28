@@ -1196,3 +1196,152 @@ fn test_overlapping_schedules_both_fully_funded() {
         200i128
     );
 }
+
+// ─── Due-Date Processing Order ──────────────────────────────────────────────
+
+#[test]
+fn test_due_date_processing_order_low_liquidity() {
+    let env = create_env();
+    let (scheduler_id, sched_client, _retry_client, token_addr, employer) =
+        setup_with_real_retry(&env);
+
+    let recipient_a = Address::generate(&env);
+    let recipient_b = Address::generate(&env);
+    let recipient_c = Address::generate(&env);
+
+    let asset_admin = StellarAssetClient::new(&env, &token_addr);
+    asset_admin.mint(&employer, &100i128);
+    TokenClient::new(&env, &token_addr).transfer(&employer, &scheduler_id, &100i128);
+
+    // Jobs are created in due-date order: job_a (t=0), job_b (t=100), job_c (t=200).
+    // Job IDs are assigned sequentially, so lowest ID = earliest due date.
+    env.ledger().with_mut(|li| li.timestamp = 0);
+
+    let job_a = sched_client.create_job(
+        &employer,
+        &recipient_a,
+        &token_addr,
+        &100i128,
+        &0u64,
+        &0u64,
+        &Some(1u32),
+        &2u32,
+    );
+    let job_b = sched_client.create_job(
+        &employer,
+        &recipient_b,
+        &token_addr,
+        &100i128,
+        &0u64,
+        &100u64,
+        &Some(1u32),
+        &2u32,
+    );
+    let job_c = sched_client.create_job(
+        &employer,
+        &recipient_c,
+        &token_addr,
+        &100i128,
+        &0u64,
+        &200u64,
+        &Some(1u32),
+        &2u32,
+    );
+
+    // Advance time so all three jobs are due.
+    env.ledger().with_mut(|li| li.timestamp = 200);
+
+    // Only 100 tokens in escrow — only the earliest-due job (job_a, t=0) should be paid.
+    let processed = sched_client.process_due_payments(&10u32);
+    assert_eq!(processed, 3);
+
+    let job_a_state = sched_client.get_job(&job_a).unwrap();
+    assert_eq!(
+        job_a_state.executions, 1,
+        "Earliest-due job A should have been executed"
+    );
+    assert_eq!(
+        job_a_state.status,
+        JobStatus::Completed,
+        "Earliest-due job A should be completed"
+    );
+    assert_eq!(
+        TokenClient::new(&env, &token_addr).balance(&recipient_a),
+        100i128,
+        "Recipient A should have received 100 tokens"
+    );
+
+    let job_b_state = sched_client.get_job(&job_b).unwrap();
+    assert_eq!(
+        job_b_state.executions, 0,
+        "Later-due job B should NOT have been executed yet"
+    );
+
+    let job_c_state = sched_client.get_job(&job_c).unwrap();
+    assert_eq!(
+        job_c_state.executions, 0,
+        "Later-due job C should NOT have been executed yet"
+    );
+
+    // Top up for job B and re-run.
+    asset_admin.mint(&employer, &100i128);
+    TokenClient::new(&env, &token_addr).transfer(&employer, &scheduler_id, &100i128);
+
+    let processed = sched_client.process_due_payments(&10u32);
+    assert_eq!(processed, 2);
+
+    let job_b_state = sched_client.get_job(&job_b).unwrap();
+    assert_eq!(
+        job_b_state.executions, 1,
+        "Job B should now be executed after top-up"
+    );
+    assert_eq!(
+        job_b_state.status,
+        JobStatus::Completed,
+        "Job B should be completed"
+    );
+    assert_eq!(
+        TokenClient::new(&env, &token_addr).balance(&recipient_b),
+        100i128,
+        "Recipient B should have received 100 tokens"
+    );
+
+    // Job C still not executed.
+    let job_c_state = sched_client.get_job(&job_c).unwrap();
+    assert_eq!(
+        job_c_state.executions, 0,
+        "Job C should still NOT have been executed"
+    );
+
+    // Top up for job C and re-run.
+    asset_admin.mint(&employer, &100i128);
+    TokenClient::new(&env, &token_addr).transfer(&employer, &scheduler_id, &100i128);
+
+    let processed = sched_client.process_due_payments(&10u32);
+    assert_eq!(processed, 1);
+
+    let job_c_state = sched_client.get_job(&job_c).unwrap();
+    assert_eq!(
+        job_c_state.executions, 1,
+        "Job C should now be executed after top-up"
+    );
+    assert_eq!(
+        job_c_state.status,
+        JobStatus::Completed,
+        "Job C should be completed"
+    );
+    assert_eq!(
+        TokenClient::new(&env, &token_addr).balance(&recipient_c),
+        100i128,
+        "Recipient C should have received 100 tokens"
+    );
+
+    // Total distributed must equal total funding.
+    assert_eq!(
+        TokenClient::new(&env, &token_addr).balance(&recipient_a)
+            + TokenClient::new(&env, &token_addr).balance(&recipient_b)
+            + TokenClient::new(&env, &token_addr).balance(&recipient_c),
+        300i128,
+        "Total distributed must equal total funding — no value lost or created"
+    );
+}
