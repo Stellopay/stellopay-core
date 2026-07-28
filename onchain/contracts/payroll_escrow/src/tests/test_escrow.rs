@@ -957,6 +957,100 @@ fn test_double_refund_fails() {
 }
 
 #[test]
+fn test_double_refund_preserves_accounting() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    let funded: i128 = 1_000;
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &funded);
+
+    let agreement_id = 42u128;
+    client.fund_agreement(&employer, &agreement_id, &employer, &funded);
+
+    // Snapshot before first refund
+    let pre_refund = AccountingSnapshot::take(&env, &token, &client, agreement_id, &recipient);
+    assert_eq!(pre_refund.internal_balance, funded);
+    assert_eq!(token.balance(&employer), 0);
+    pre_refund.assert_accounting_in_sync();
+
+    // First refund succeeds — all accounting must be consistent
+    client.refund_remaining(&manager, &agreement_id);
+
+    let after_refund =
+        AccountingSnapshot::take(&env, &token, &client, agreement_id, &recipient);
+    assert_eq!(after_refund.internal_balance, 0);
+    assert_eq!(after_refund.contract_token_balance, 0);
+    assert_eq!(
+        token.balance(&employer),
+        funded,
+        "employer must receive the full refund"
+    );
+    after_refund.assert_accounting_in_sync();
+    assert_escrow_conservation(&client, agreement_id, funded, 0, funded);
+}
+
+#[test]
+fn test_refund_accounting_matches_funded_exactly() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &100_000);
+
+    // Case 1: fund with no releases → refund total must match fund total
+    let aid1 = 1u128;
+    let fund1 = 7_500i128;
+    client.fund_agreement(&employer, &aid1, &employer, &fund1);
+    client.refund_remaining(&manager, &aid1);
+    assert_escrow_conservation(&client, aid1, fund1, 0, fund1);
+    assert_eq!(client.get_agreement_balance(&aid1), 0);
+
+    // Case 2: fund with partial releases → refund total + releases = fund total
+    let aid2 = 2u128;
+    let fund2 = 5_000i128;
+    let released = 1_200i128;
+    client.fund_agreement(&employer, &aid2, &employer, &fund2);
+    client.release(&manager, &aid2, &recipient, &released);
+    client.refund_remaining(&manager, &aid2);
+    let refunded2 = fund2 - released;
+    assert_escrow_conservation(&client, aid2, fund2, released, refunded2);
+    assert_eq!(client.get_agreement_balance(&aid2), 0);
+
+    // Case 3: multiple funds into same agreement with partial releases
+    let aid3 = 3u128;
+    let fund3a = 3_000i128;
+    let fund3b = 2_000i128;
+    let total_fund3 = fund3a + fund3b;
+    let released3 = 1_500i128;
+    client.fund_agreement(&employer, &aid3, &employer, &fund3a);
+    client.fund_agreement(&employer, &aid3, &employer, &fund3b);
+    client.release(&manager, &aid3, &recipient, &released3);
+    client.refund_remaining(&manager, &aid3);
+    let refunded3 = total_fund3 - released3;
+    assert_escrow_conservation(&client, aid3, total_fund3, released3, refunded3);
+    assert_eq!(client.get_agreement_balance(&aid3), 0);
+}
+
+#[test]
 #[should_panic(expected = "Insufficient balance")]
 fn test_release_after_refund_fails() {
     let env = Env::default();
