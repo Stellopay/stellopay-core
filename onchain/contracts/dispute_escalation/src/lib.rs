@@ -58,6 +58,18 @@
 //! * resurrect a terminal dispute,
 //! * be called twice on the same dispute (`AlreadyPendingReview` / `AlreadyTerminal`).
 //!
+//! ## SLA Violation Event
+//!
+//! `keeper_advance_stage` emits **two** events when it fires due to an SLA
+//! timeout:
+//!
+//! 1. `dispute_sla_breached` (`DisputeSlaBreachedEvent`) — backward-compatible
+//!    event for existing off-chain systems.
+//! 2. `sla_violation_advanced` (`SlaViolationAdvancedEvent`) — a distinct
+//!    event emitted **only** on SLA timeout, not on normal-flow escalation.
+//!    Off-chain SLA-compliance monitors should filter on this topic to
+//!    unambiguously identify every SLA-violation trigger.
+//!
 //! ## Security Model
 //!
 //! | Invariant | Enforcement |
@@ -164,6 +176,41 @@ pub struct DisputeSlaBreachedEvent {
     pub level: EscalationLevel,
     pub breached_at: u64,
     pub review_deadline: u64,
+}
+
+/// Emitted **only** when `keeper_advance_stage` fires due to an SLA timeout.
+///
+/// This event is the primary signal for off-chain SLA-compliance monitoring
+/// systems.  It is deliberately separate from:
+///
+/// * `DisputeEscalatedEvent` — emitted by `escalate_dispute` during normal
+///   (within-deadline) flow, and
+/// * `DisputeSlaBreachedEvent` — a companion event emitted by the same
+///   `keeper_advance_stage` call for backward-compatible observability.
+///
+/// By listening **solely** for `sla_violation_advanced`, an off-chain indexer
+/// can unambiguously identify every SLA-violation trigger without false
+/// positives from normal-flow escalations.
+///
+/// # Fields
+/// * `agreement_id`       — identifies the dispute whose SLA was violated.
+/// * `level`              — escalation level at which the SLA was breached.
+/// * `breached_at`        — ledger timestamp when the violation was observed
+///   and the stage was advanced.
+/// * `review_deadline`    — timestamp by which the admin must act before the
+///   dispute can be expired via `expire_dispute`.
+/// * `previous_status`    — the dispute status **before** the keeper advanced
+///   the stage (one of `Open`, `Escalated`, or `Appealed`).  This lets
+///   monitoring systems distinguish which source state the violation
+///   originated from.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SlaViolationAdvancedEvent {
+    pub agreement_id: u128,
+    pub level: EscalationLevel,
+    pub breached_at: u64,
+    pub review_deadline: u64,
+    pub previous_status: DisputeStatus,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -338,6 +385,13 @@ impl DisputeEscalationContract {
     /// This function **cannot skip stages** — it only ever transitions to
     /// `PendingReview`, never directly to `Resolved` or `Finalised`.
     ///
+    /// # Events emitted
+    /// * `dispute_sla_breached`       — backward-compatible SLA breach signal.
+    /// * `sla_violation_advanced`     — distinct event emitted **only** on SLA
+    ///   timeout, not on normal-flow escalation.  Off-chain SLA-compliance
+    ///   monitors should filter on this topic to unambiguously identify every
+    ///   SLA-violation trigger.
+    ///
     /// # State transitions
     /// `Open @ LevelN`      (now > deadline) → `PendingReview @ LevelN`
     /// `Escalated @ LevelN` (now > deadline) → `PendingReview @ LevelN`
@@ -380,6 +434,12 @@ impl DisputeEscalationContract {
             return Err(DisputeError::DeadlineNotPassed);
         }
 
+        // Capture the status *before* the transition so we can include it in
+        // the SLA-violation event.  Valid source states at this point are
+        // Open, Escalated, or Appealed (all non-terminal, non-Resolved,
+        // non-PendingReview checks have already passed above).
+        let previous_status = dispute.status.clone();
+
         // Open a bounded admin-review window.
         let review_limit = storage::get_pending_review_time_limit(&env);
         let review_deadline = now
@@ -391,15 +451,34 @@ impl DisputeEscalationContract {
         dispute.phase_started_at = now;
         dispute.phase_deadline = review_deadline;
 
+        let level = dispute.level.clone();
         storage::set_dispute(&env, agreement_id, &dispute);
 
+        // Backward-compatible event — existing off-chain systems that listen
+        // for `dispute_sla_breached` continue to work unchanged.
         env.events().publish(
             ("dispute_sla_breached",),
             DisputeSlaBreachedEvent {
                 agreement_id,
-                level: dispute.level,
+                level: level.clone(),
                 breached_at: now,
                 review_deadline,
+            },
+        );
+
+        // ── New: SLA-violation-specific event ──────────────────────────────
+        // Emitted *only* from `keeper_advance_stage` when the SLA deadline
+        // has genuinely elapsed.  Off-chain SLA-compliance monitors should
+        // listen for this topic to unambiguously identify SLA violations
+        // without false positives from normal-flow `dispute_escalated` events.
+        env.events().publish(
+            ("sla_violation_advanced",),
+            SlaViolationAdvancedEvent {
+                agreement_id,
+                level,
+                breached_at: now,
+                review_deadline,
+                previous_status,
             },
         );
 
