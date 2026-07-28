@@ -114,7 +114,7 @@ Function	Caller	Permissionless?	Description
 initialize(owner, admin)	owner	—	One-time setup
 file_dispute(caller, agreement_id)	any	✓	Open a Level1 dispute; SLA clock starts
 escalate_dispute(caller, agreement_id)	any	✓	Move to next tier within the SLA window
-keeper_advance_stage(caller, agreement_id)	any	✓	After SLA elapsed: Open/Escalated/Appealed → PendingReview
+keeper_advance_stage(caller, agreement_id)	any	✓	After SLA elapsed: Open/Escalated/Appealed → PendingReview. Pays configured keeper reward from incentive pool.
 resolve_dispute(caller, agreement_id, outcome)	admin	✗	Issue binding ruling; opens 3-day appeal window at L1/L2
 appeal_ruling(caller, agreement_id)	any	✓	Appeal a Level1/2 ruling within the appeal window
 expire_dispute(caller, agreement_id)	any	✓	Close a stuck dispute after its current deadline
@@ -122,6 +122,7 @@ Configuration & Queries
 Function	Caller	Description
 set_level_time_limit(caller, level, seconds)	admin	Override SLA for a tier (affects future phases)
 set_pending_review_time_limit(caller, seconds)	admin	Override the PendingReview window (affects next keeper call)
+configure_keeper_reward(caller, token, pool, amount)	admin	Sets the token, incentive pool, and amount for keeper SLA breach rewards
 get_dispute(agreement_id)	any	Read full DisputeDetails
 get_level_time_limit(level)	any	Read configured SLA time limit for a tier (default 7 days)
 get_pending_review_time_limit()	any	Read configured PendingReview window (default 3 days)
@@ -216,6 +217,9 @@ SLA enforcement. Key invariants:
   mutated; only status, `phase_started_at`, and `phase_deadline` change.
 - **No outcome authority** — the keeper sets no outcome; only the admin
   can write a binding ruling via `resolve_dispute`.
+- **Incentive payouts** — a keeper who successfully advances the stage on a 
+  genuine SLA timeout is paid a reward from a designated incentive pool, 
+  provided `configure_keeper_reward` was called by an admin.
 - **Dual event emission** — every successful call emits both:
   - `dispute_sla_breached` (`DisputeSlaBreachedEvent`) for backward
     compatibility, and
@@ -530,3 +534,6 @@ client.keeper_advance_stage(&keeper, &agreement_id);
 | `Dispute(u128)` | `DisputeDetails` | Per-dispute state keyed by agreement_id |
 | `LevelTimeLimit(EscalationLevel)` | `u64` | SLA window in seconds per tier |
 | `PendingReviewTimeLimit` | `u64` | Review window in seconds after SLA breach |
+| `RewardToken` | `Address` | Token used to pay keeper rewards |
+| `IncentivePool` | `Address` | Pool from which keeper rewards are drawn |
+| `KeeperRewardAmount` | `i128` | Amount paid per timeout-driven advance |

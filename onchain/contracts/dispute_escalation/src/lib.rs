@@ -92,7 +92,7 @@
 pub mod storage;
 pub mod types;
 
-use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Env, IntoVal, Symbol, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, token, vec, Address, Env, IntoVal, Symbol, Vec};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 use types::{
@@ -503,6 +503,13 @@ impl DisputeEscalationContract {
             },
         );
 
+        // Deduct reward from the designated incentive pool and pay the keeper
+        if let Some((token_addr, pool_addr, amount)) = storage::get_reward_config(&env) {
+            let token_client = token::Client::new(&env, &token_addr);
+            // The contract must be authorized by the incentive pool (e.g. via allowance or being the admin of the pool)
+            token_client.transfer(&pool_addr, &caller, &amount);
+        }
+
         Ok(())
     }
 
@@ -772,6 +779,31 @@ impl DisputeEscalationContract {
     }
 
     // ─── Admin Configuration ──────────────────────────────────────────────
+
+    /// Configure the keeper incentive payout.
+    ///
+    /// # Arguments
+    /// * `caller` - The admin address.
+    /// * `token` - The token used for rewards.
+    /// * `pool` - The incentive pool from which rewards are drawn.
+    /// * `amount` - The amount of tokens paid per genuine timeout advance.
+    ///
+    /// # Errors
+    /// * `Unauthorized` - caller is not the admin.
+    pub fn configure_keeper_reward(
+        env: Env,
+        caller: Address,
+        token: Address,
+        pool: Address,
+        amount: i128,
+    ) -> Result<(), DisputeError> {
+        caller.require_auth();
+        if !storage::is_admin(&env, &caller) {
+            return Err(DisputeError::Unauthorized);
+        }
+        storage::set_reward_config(&env, &token, &pool, &amount);
+        Ok(())
+    }
 
     /// Admin configuration: adjust the SLA time limit for a given escalation level.
     ///

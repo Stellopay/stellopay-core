@@ -7,7 +7,7 @@ use dispute_escalation::{
 };
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
-    Address, Env, IntoVal, String as SorobanString, Val, Vec,
+    token, Address, Env, IntoVal, String as SorobanString, Val, Vec,
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -2250,3 +2250,60 @@ fn test_get_level_time_limit_and_pending_review_queries() {
     assert_eq!(client.get_level_time_limit(&EscalationLevel::Level3), 259200);
     assert_eq!(client.get_pending_review_time_limit(), 43200);
 }
+
+fn create_token<'a>(env: &Env, admin: &Address) -> token::Client<'a> {
+    let token_address = env.register_stellar_asset_contract(admin.clone());
+    token::Client::new(env, &token_address)
+}
+
+#[test]
+fn test_keeper_reward_paid_on_genuine_timeout() {
+    let (env, client, _owner, admin, user) = setup();
+    let keeper = Address::generate(&env);
+    
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let incentive_pool = Address::generate(&env);
+    let reward_amount: i128 = 100_000_000;
+    
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&incentive_pool, &1_000_000_000);
+    client.configure_keeper_reward(&admin, &token_client.address, &incentive_pool, &reward_amount);
+    
+    let id = 1000u128;
+    client.file_dispute(&user, &id);
+    
+    advance(&env, DEFAULT_LEVEL_LIMIT + 1);
+    client.keeper_advance_stage(&keeper, &id);
+    
+    assert_eq!(token_client.balance(&keeper), reward_amount);
+    assert_eq!(token_client.balance(&incentive_pool), 1_000_000_000 - reward_amount);
+}
+
+#[test]
+fn test_keeper_reward_not_paid_if_manually_advanced() {
+    let (env, client, _owner, admin, user) = setup();
+    let keeper = Address::generate(&env);
+    
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let incentive_pool = Address::generate(&env);
+    let reward_amount: i128 = 100_000_000;
+    
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&incentive_pool, &1_000_000_000);
+    client.configure_keeper_reward(&admin, &token_client.address, &incentive_pool, &reward_amount);
+    
+    let id = 1001u128;
+    client.file_dispute(&user, &id);
+    
+    // Manually escalate before deadline
+    client.escalate_dispute(&user, &id);
+    
+    // Keeper tries to advance immediately (SLA for level 2 has not passed)
+    let res = client.try_keeper_advance_stage(&keeper, &id);
+    assert_eq!(res, Err(Ok(DisputeError::DeadlineNotPassed)));
+    
+    // Ensure no reward was paid
+    assert_eq!(token_client.balance(&keeper), 0);
+    assert_eq!(token_client.balance(&incentive_pool), 1_000_000_000);
+}
+

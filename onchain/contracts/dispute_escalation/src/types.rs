@@ -134,6 +134,12 @@ pub enum StorageKey {
     /// Address of the `payroll_escrow` contract to pause/resume on dispute
     /// lifecycle events.
     PayrollEscrow,
+    /// The token used to reward keepers for genuine SLA timeouts.
+    RewardToken,
+    /// The address of the incentive pool that funds keeper rewards.
+    IncentivePool,
+    /// The amount of tokens paid to a keeper upon a genuine timeout-driven advance.
+    KeeperRewardAmount,
 }
 
 /// Errors specific to the dispute escalation logic.
