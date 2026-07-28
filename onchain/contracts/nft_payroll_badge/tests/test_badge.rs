@@ -344,3 +344,156 @@ fn test_start_beyond_count_returns_empty() {
     assert_eq!(page.items.len(), 0);
     assert_eq!(page.next_cursor, None);
 }
+
+// ============================================================================
+// badge_count accuracy tests
+// ============================================================================
+
+/// Mints one badge at a time to 30 distinct recipient addresses and asserts
+/// that each recipient's badge_count equals exactly the number of badges minted
+/// to them so far.
+///
+/// Invariant under test: badge_count(r) must equal the cumulative number of
+/// successful mint calls whose `recipient` argument was `r`, independent of
+/// how many badges were minted to any other address.
+#[test]
+fn test_badge_count_sequential_distinct_recipients() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+
+    // Generate 30 distinct recipients up-front.
+    const N: usize = 30;
+    let recipients: Vec<Address> = (0..N).map(|_| Address::generate(&env)).collect();
+
+    // Baseline: every recipient starts at 0.
+    for r in &recipients {
+        assert_eq!(
+            client.badge_count(r),
+            0,
+            "expected 0 badges before any mints"
+        );
+    }
+
+    // Mint one badge per recipient in sequence and check after each mint.
+    for (i, r) in recipients.iter().enumerate() {
+        client.mint(
+            &owner,
+            r,
+            &String::from_str(&env, "Sequential Badge"),
+            &String::from_str(&env, "ipfs://sequential"),
+        );
+
+        // The recipient just minted to must have exactly 1.
+        assert_eq!(
+            client.badge_count(r),
+            1,
+            "recipient {} should have 1 badge after their first mint",
+            i
+        );
+
+        // All prior recipients still have exactly 1 — their count is stable.
+        for (j, prev) in recipients.iter().enumerate().take(i) {
+            assert_eq!(
+                client.badge_count(prev),
+                1,
+                "recipient {} count should still be 1 after minting to recipient {}",
+                j,
+                i
+            );
+        }
+
+        // All future recipients still have exactly 0.
+        for future in recipients.iter().skip(i + 1) {
+            assert_eq!(
+                client.badge_count(future),
+                0,
+                "un-minted recipient should still have 0 after minting to recipient {}",
+                i
+            );
+        }
+    }
+
+    // Final sanity: every recipient has exactly 1, no more, no less.
+    for (i, r) in recipients.iter().enumerate() {
+        assert_eq!(
+            client.badge_count(r),
+            1,
+            "final check: recipient {} should have exactly 1 badge",
+            i
+        );
+    }
+}
+
+/// Combines mints across 10 distinct recipients with repeated mints to some
+/// of those same recipients.  Asserts that badge_count for each address
+/// always equals the exact number of mints directed at that address,
+/// regardless of mints sent to other addresses.
+///
+/// Invariant under test: badge_count is per-address; concurrent activity on
+/// other addresses must not corrupt or inflate any single address's counter.
+#[test]
+fn test_badge_count_combined_distinct_and_repeated_recipients() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+
+    // 10 distinct recipients; we will vary how many badges each gets.
+    const N: usize = 10;
+    let recipients: Vec<Address> = (0..N).map(|_| Address::generate(&env)).collect();
+
+    // Desired final badge counts per recipient (index → count).
+    // Deliberately non-uniform: some get 1, some get several, one gets many.
+    let target_counts: [u32; N] = [1, 3, 1, 5, 2, 1, 8, 1, 4, 2];
+
+    // Track how many badges we have minted to each recipient so far.
+    let mut minted: [u32; N] = [0; N];
+
+    // Interleave mints across all recipients in round-robin order until every
+    // recipient has reached its target.  This exercises the counter under
+    // concurrent "activity" from many addresses in the same storage context.
+    let max_rounds = *target_counts.iter().max().unwrap();
+    for round in 0..max_rounds {
+        for (i, r) in recipients.iter().enumerate() {
+            if minted[i] < target_counts[i] {
+                client.mint(
+                    &owner,
+                    r,
+                    &String::from_str(&env, "Combined Badge"),
+                    &String::from_str(&env, "ipfs://combined"),
+                );
+                minted[i] += 1;
+            }
+
+            // After every individual mint, verify ALL recipients have the
+            // expected count so far — no cross-contamination.
+            for (j, check) in recipients.iter().enumerate() {
+                assert_eq!(
+                    client.badge_count(check),
+                    minted[j],
+                    "round {round}: recipient {j} count mismatch after minting to recipient {i}"
+                );
+            }
+        }
+    }
+
+    // Final assertion: exact match between target and actual counts.
+    for (i, r) in recipients.iter().enumerate() {
+        assert_eq!(
+            client.badge_count(r),
+            target_counts[i],
+            "final: recipient {i} expected {} badges, got {}",
+            target_counts[i],
+            client.badge_count(r)
+        );
+    }
+
+    // Cross-check: badge_count must equal the length of badges_of for every
+    // recipient, proving the counter is consistent with the stored badge list.
+    for (i, r) in recipients.iter().enumerate() {
+        let ids = client.badges_of(r);
+        assert_eq!(
+            client.badge_count(r),
+            ids.len(),
+            "recipient {i}: badge_count != badges_of.len()"
+        );
+    }
+}
