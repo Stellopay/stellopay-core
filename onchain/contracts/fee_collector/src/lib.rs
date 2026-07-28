@@ -6,10 +6,31 @@
 //!
 //! ## Fee Modes
 //!
-//! | Mode          | Calculation                              | Config key  |
-//! |---------------|------------------------------------------|-------------|
-//! | `Percentage`  | `floor(gross × fee_bps / 10 000)`        | `fee_bps`   |
-//! | `Flat`        | fixed amount per payment (capped at gross)| `flat_fee`  |
+//! | Mode          | Calculation                                       | Config key         |
+//! |---------------|---------------------------------------------------|--------------------|
+//! | `Percentage`  | `floor(gross × fee_bps / 10 000)`                 | `fee_bps`          |
+//! | `Flat`        | fixed amount per payment (capped at gross)        | `flat_fee`         |
+//! | `Tiered`      | tier-selected bps applied to gross amount         | `tiered_schedule`  |
+//!
+//! ### Tiered Mode
+//!
+//! A [`FeeTier`] list is stored as the `tiered_schedule`. On each `collect_fee`
+//! call the contract walks the list in order and selects the first tier whose
+//! `limit ≥ gross_amount`; if no tier matches the last tier's `fee_bps` is used
+//! as a catch-all. Set the last tier's `limit` to `i128::MAX` to create an
+//! explicit open-ended top tier.
+//!
+//! ## Running-Total Invariant
+//!
+//! `get_total_fees_collected()` is a monotonically increasing counter:
+//!
+//! ```text
+//! get_total_fees_collected() == Σ fee_amount  for every collect_fee call since deployment
+//! ```
+//!
+//! The counter is **never** reset by [`FeeCollectorContract::update_tiered_schedule`],
+//! [`FeeCollectorContract::update_fee_config`], or any other admin operation. This
+//! makes it safe to use as an audit trail across schedule changes.
 //!
 //! ## Security Model
 //!
@@ -397,8 +418,47 @@ impl FeeCollectorContract {
 
     /// Updates the tiered fee schedule.
     ///
-    /// The schedule is a list of thresholds; the first threshold that is greater
-    /// than or equal to the gross amount determines the fee rate.
+    /// Replaces the entire tier list atomically. The active fee rate applied to
+    /// any subsequent `collect_fee` call is determined by the **new** schedule
+    /// immediately after this call returns.
+    ///
+    /// # Tier Selection Algorithm
+    ///
+    /// For a given `gross_amount` the contract walks the schedule in order and
+    /// selects the **first** tier whose `limit ≥ gross_amount`. If no tier
+    /// matches (i.e., `gross_amount` exceeds every listed limit), the last
+    /// tier's `fee_bps` is used as a catch-all. Use `limit: i128::MAX` as the
+    /// final tier to make the catch-all explicit.
+    ///
+    /// # Running Total Continuity
+    ///
+    /// `get_total_fees_collected` is a **monotonically increasing** counter that
+    /// is never reset by a schedule change. Fees collected under the old schedule
+    /// are preserved; fees collected after the change are additive. The invariant
+    ///
+    /// ```text
+    /// get_total_fees_collected() == Σ fee_amount for every collect_fee call
+    /// ```
+    ///
+    /// holds across any number of `update_tiered_schedule` calls.
+    ///
+    /// # Arguments
+    ///
+    /// * `env`          — Soroban environment.
+    /// * `admin`        — Current admin (must authenticate).
+    /// * `new_schedule` — Ordered list of [`FeeTier`] values. Must be strictly
+    ///   increasing by `limit` and each `fee_bps` must be ≤ [`MAX_FEE_BPS`].
+    ///
+    /// # Panics
+    ///
+    /// * `"Unauthorized: caller is not admin"` — if `admin` is not the stored admin.
+    /// * `"Tier limits must be strictly increasing and positive"` — if any `limit`
+    ///   is ≤ the previous tier's limit (or ≤ 0 for the first tier).
+    /// * `"Fee in tier exceeds maximum allowed"` — if any `fee_bps > MAX_FEE_BPS`.
+    ///
+    /// # Events
+    ///
+    /// Emits `("tiered_schedule_updated",)` carrying a [`TieredScheduleUpdatedEvent`].
     pub fn update_tiered_schedule(
         env: Env,
         admin: Address,
