@@ -298,6 +298,162 @@ fn retention_update_affects_new_logs() {
     assert_eq!(client.get_log_count(), 5);
 }
 
+// ==================== Prune-on-Lower Retention Limit ====================
+
+// Ensures lowering retention limit permanently discards oldest entries
+// rather than just hiding them.
+#[test]
+fn test_lowering_retention_limit_prunes_oldest_entries() {
+    let (env, owner, client) = setup();
+    let actor = Address::generate(&env);
+
+    // Append 10 entries with distinct actions so we can identify them.
+    for i in 0..10u64 {
+        let label = format!("entry_{}", i);
+        let action = Symbol::new(&env, label.as_str());
+        client.append_log(&actor, &action, &None, &Some(i as i128));
+        env.ledger().with_mut(|li| li.timestamp += 1);
+    }
+    assert_eq!(client.get_log_count(), 10);
+
+    // Lower retention limit to 4 — must immediately prune the 6 oldest entries.
+    client.set_retention_limit(&owner, &4u32);
+
+    // Confirm count reflects the new lower window.
+    assert_eq!(client.get_log_count(), 4);
+
+    // Verify get_logs returns exactly the 4 newest entries (ids 7,8,9,10).
+    let page = client.get_logs(&0u32, &10u32);
+    assert_eq!(page.entries.len(), 4);
+    assert_eq!(page.entries.get(0).unwrap().id, 7u64);
+    assert_eq!(page.entries.get(1).unwrap().id, 8u64);
+    assert_eq!(page.entries.get(2).unwrap().id, 9u64);
+    assert_eq!(page.entries.get(3).unwrap().id, 10u64);
+    assert_eq!(page.next_cursor, None);
+
+    // Verify the pruned (oldest) entries are absent from get_logs.
+    let pruned_ids = [1u64, 2u64, 3u64, 4u64, 5u64, 6u64];
+    for &pruned_id in &pruned_ids {
+        assert!(
+            client.get_log(&pruned_id).is_none(),
+            "Pruned entry {} should not be retrievable",
+            pruned_id
+        );
+    }
+
+    // Verify the surviving entries are still retrievable individually.
+    for id in 7u64..=10u64 {
+        let log = client.get_log(&id).unwrap();
+        assert_eq!(log.id, id);
+        let expected_label = format!("entry_{}", id - 1);
+        assert_eq!(log.action, Symbol::new(&env, expected_label.as_str()));
+    }
+}
+
+// Ensures raising the retention limit after a prune does not bring back
+// entries that were permanently discarded.
+#[test]
+fn test_raising_limit_after_prune_does_not_resurrect_entries() {
+    let (env, owner, client) = setup();
+    let actor = Address::generate(&env);
+
+    // Reuse the same setup as the lowering test: append 10, then lower to 4.
+    for i in 0..10u64 {
+        let label = format!("entry_{}", i);
+        let action = Symbol::new(&env, label.as_str());
+        client.append_log(&actor, &action, &None, &Some(i as i128));
+        env.ledger().with_mut(|li| li.timestamp += 1);
+    }
+    assert_eq!(client.get_log_count(), 10);
+
+    // Lower to 4 — prune oldest 6.
+    client.set_retention_limit(&owner, &4u32);
+    assert_eq!(client.get_log_count(), 4);
+
+    // Now raise the limit back above the current count (e.g. to 10).
+    client.set_retention_limit(&owner, &10u32);
+
+    // Count must remain unchanged — pruned entries are permanently gone.
+    assert_eq!(client.get_log_count(), 4);
+
+    // Verify the same 4 survivors are present and in the same order.
+    let page = client.get_logs(&0u32, &10u32);
+    assert_eq!(page.entries.len(), 4);
+    assert_eq!(page.entries.get(0).unwrap().id, 7u64);
+    assert_eq!(page.entries.get(1).unwrap().id, 8u64);
+    assert_eq!(page.entries.get(2).unwrap().id, 9u64);
+    assert_eq!(page.entries.get(3).unwrap().id, 10u64);
+
+    // Old entries must not be resurrected.
+    for id in 1u64..=6u64 {
+        assert!(
+            client.get_log(&id).is_none(),
+            "Pruned entry {} should remain gone after raising limit",
+            id
+        );
+    }
+}
+
+// Ensures setting retention limit to 0 (unlimited) does not prune anything;
+// 0 means unlimited retention per the contract's convention.
+#[test]
+fn test_set_retention_limit_zero_does_not_prune() {
+    let (env, owner, client) = setup();
+    let actor = Address::generate(&env);
+
+    // Append 5 entries.
+    for i in 0..5u64 {
+        let label = format!("evt_{}", i);
+        let action = Symbol::new(&env, label.as_str());
+        client.append_log(&actor, &action, &None, &None);
+        env.ledger().with_mut(|li| li.timestamp += 1);
+    }
+    assert_eq!(client.get_log_count(), 5);
+
+    // Set limit to 0 (unlimited). No pruning should occur.
+    client.set_retention_limit(&owner, &0u32);
+    assert_eq!(client.get_log_count(), 5);
+    assert_eq!(client.get_retention_limit(), 0u32);
+
+    // All 5 entries must still be retrievable.
+    for id in 1u64..=5u64 {
+        assert!(
+            client.get_log(&id).is_some(),
+            "Entry {} should still exist after setting limit to 0",
+            id
+        );
+    }
+}
+
+// Ensures setting retention limit equal to the current log count is a no-op.
+#[test]
+fn test_set_retention_limit_equal_to_count_is_noop() {
+    let (env, owner, client) = setup();
+    let actor = Address::generate(&env);
+
+    // Append 5 entries.
+    for i in 0..5u64 {
+        let label = format!("evt_{}", i);
+        let action = Symbol::new(&env, label.as_str());
+        client.append_log(&actor, &action, &None, &None);
+        env.ledger().with_mut(|li| li.timestamp += 1);
+    }
+    assert_eq!(client.get_log_count(), 5);
+
+    // Set limit equal to current count (5). Must be a no-op.
+    client.set_retention_limit(&owner, &5u32);
+    assert_eq!(client.get_log_count(), 5);
+
+    // All 5 entries must still be retrievable.
+    for id in 1u64..=5u64 {
+        assert!(
+            client.get_log(&id).is_some(),
+            "Entry {} should still exist after setting limit equal to count",
+            id
+        );
+    }
+}
+
 // ==================== Tamper Evidence ====================
 
 #[test]
