@@ -1194,6 +1194,7 @@ version = "0.0.0"
 dependencies = [
  "audit_logger",
  "bonus_system",
+ "department_manager",
  "dispute_escalation",
  "employee_roles",
  "expense_reimbursement",
@@ -1447,6 +1448,7 @@ dependencies = [
 name = "payment_scheduler"
 version = "0.0.0"
 dependencies = [
+ "payment_retry",
  "soroban-sdk",
 ]
 

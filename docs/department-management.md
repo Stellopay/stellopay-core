@@ -155,6 +155,87 @@ All mutating operations publish events for indexer/integrator consumption:
 
 ---
 
+## Reverse-Index Invariant
+
+The contract maintains **two complementary storage indexes** for employee placement:
+
+| Index | Storage key | Meaning |
+|-------|-------------|---------|
+| Forward | `EmployeeDepartment(employee, org_id) → dept_id` | Which department is the employee currently in? |
+| Reverse | `DepartmentEmployees(dept_id) → Vec<Address>` | Which employees are currently in this department? |
+| Membership flag | `EmployeeInDepartment(dept_id, employee) → ()` | Fast O(1) membership test (no list scan required) |
+
+### The invariant
+
+After every successful call to `assign_employee_to_department` or
+`remove_employee_from_department`, **all three indexes are mutually consistent**:
+
+> For any `(employee, org_id)` pair there is **at most one** department `d` such
+> that the forward index returns `d` **and** the reverse index contains the
+> employee in `d`. For every other department `d'` in the same org, the reverse
+> index for `d'` must **not** contain the employee.
+
+In plain terms:
+
+- `get_employee_department(emp, org)` returns `Some(d)` ↔ `get_department_employees(d)` contains `emp`.
+- If the employee is not assigned, `get_employee_department` returns `None` **and** no department's employee list contains them.
+
+### How the invariant is maintained
+
+`assign_employee_to_department` auto-removes from the previous department:
+
+```text
+assign(caller, org, new_dept, emp):
+  if EmployeeDepartment(emp, org) = Some(old_dept):
+    remove_employee_from_dept_internal(old_dept, emp)  ← clears reverse index + flag
+  set EmployeeInDepartment(new_dept, emp)              ← set flag
+  set EmployeeDepartment(emp, org) = new_dept          ← update forward index
+  push emp to DepartmentEmployees(new_dept)            ← update reverse index
+```
+
+`remove_employee_from_department` clears all three:
+
+```text
+remove(caller, org, emp):
+  old_dept = EmployeeDepartment(emp, org)              ← read forward index
+  remove_employee_from_dept_internal(old_dept, emp)    ← clears reverse index + flag
+  delete EmployeeDepartment(emp, org)                  ← clears forward index
+```
+
+The internal helper `remove_employee_from_dept_internal` only clears the
+**reverse index** (`DepartmentEmployees`) and the **membership flag**
+(`EmployeeInDepartment`). It intentionally does **not** touch the forward index
+(`EmployeeDepartment`), which is the responsibility of each caller. Both callers
+above satisfy this contract.
+
+### Proven by tests
+
+The following tests in `tests/test_department.rs` verify this invariant end-to-end:
+
+- **`test_assign_remove_reassign_indexes_are_consistent`** — exercises the full
+  assign → remove → reassign cycle and asserts that after each step both
+  `get_employee_department` (forward) and `get_department_employees` (reverse)
+  agree with each other and contain no stale references.
+
+- **`test_original_department_excludes_moved_employee`** — assigns two employees
+  to a department, moves one to a second department via direct reassignment, and
+  asserts that the original department's employee list no longer includes the
+  moved employee while the remaining employee is still present.
+
+### Implications for integrators
+
+- There is no need to call `remove_employee_from_department` before
+  `assign_employee_to_department`: the assignment operation handles cleanup
+  automatically if the employee is already placed in another department in the
+  same org.
+- Cross-org assignments are fully independent. Assigning an employee to
+  `org_b.dept_x` does not alter their assignment in `org_a`.
+- If an employee is removed and then re-assigned, both indexes start from a clean
+  state for the new assignment — there are no lingering references to the old
+  department.
+
+---
+
 ## Security Assumptions
 
 1. **Org ownership is irrevocable**: The owner address set at `create_organization` time is permanent. There is no ownership transfer function.
@@ -250,6 +331,9 @@ The test suite covers:
   - All 6 possible cycle-creating moves in a 4-node chain are rejected
   - Subtree move preserves all descendant relationships
 - Employee assignment, reassignment, removal
+- Reverse-index consistency (see [Reverse-Index Invariant](#reverse-index-invariant)):
+  - Full assign → remove → reassign cycle leaves both the forward index (`get_employee_department`) and the reverse index (`get_department_employees`) pointing exclusively at the new department, with no stale references to earlier departments
+  - After an employee is moved to a new department, the original department's employee list no longer includes them, even when other employees remain in it
 - Access control: all mutating ops reject non-owners
 - Cross-org isolation
 - Unique-organization-id guard (Issue #917):

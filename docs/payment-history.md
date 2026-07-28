@@ -295,3 +295,94 @@ assert_eq!(by_id, by_hash); // always true
 | `test_range_single_record_match` | Narrow range returning exactly one record |
 | `test_range_agreement_isolation_*` | One agreement's range is unaffected by other agreements |
 | `test_range_entire_history_when_bounds_are_very_wide` | `[0, u64::MAX]` returns all records |
+
+### Multi-agreement counter-consistency invariant (issue #913)
+
+#### Invariant definition
+
+For any employer address `E` and the complete set of agreement IDs
+`{A₁, A₂, …, Aₙ}` that belong to `E`:
+
+```
+get_employer_payment_count(E)  ==  Σ get_agreement_payment_count(Aᵢ)   for all i
+```
+
+This equality must hold **after every individual `record_payment` call**, not
+only at steady state. Both counters are incremented inside the same
+`record_payment` invocation, so there is no window where they can be observed
+in a mismatched state by any caller.
+
+#### Why the invariant is non-trivial
+
+The employer-level and per-agreement counters are stored under distinct storage
+keys (`EmployerPaymentCount(employer)` vs `AgreementPaymentCount(agreement_id)`).
+A bug that increments one without the other would pass all single-agreement
+tests. The invariant is only visible when multiple agreements belonging to the
+same employer are recorded in an **interleaved** order, so that each counter
+is exercised through different code paths in the same ledger history.
+
+#### Security implications
+
+| Scenario | Impact if invariant is broken |
+|---|---|
+| `EmployerPaymentCount` lags behind the sum | Employer dashboard under-counts; recent payments invisible to paginators |
+| `AgreementPaymentCount` lags behind `EmployerPaymentCount` | Per-agreement view under-counts; reconciliation totals disagree |
+| Either count exceeds the true number of records | Paginated reads dereference non-existent storage keys → contract panic |
+
+Because index counts can only increase (no decrement or delete path), a count
+that is too low means entries have "fallen off" the pagination range. They
+remain in storage but are unreachable from any paginated query. The invariant
+test catches this class of bug at the step where it first appears.
+
+#### Idempotency interaction
+
+Replaying a known `payment_hash` must leave both counters unchanged. The
+idempotency guard in `record_payment` returns the existing ID before reaching
+any counter update, so a duplicate hash injected between two legitimate
+recordings must not shift either counter. The invariant is re-asserted after
+the duplicate replay and again after the next legitimate recording.
+
+#### Test coverage
+
+| Test | What it proves |
+|---|---|
+| `test_multi_agreement_interleaved_employer_count_equals_sum_of_agreement_counts` | Invariant holds after every step in a 12-recording, 4-agreement, 1-employer interleaved sequence; paginated indices are complete and cross-consistent |
+| `test_multi_agreement_invariant_holds_for_two_employers` | Invariant holds independently for two employers whose payments are interleaved; neither employer's index bleeds into the other's |
+| `test_multi_agreement_duplicate_hash_does_not_corrupt_counts` | A duplicate hash replayed inside an interleaved sequence leaves both counters unchanged; the invariant holds before, during, and after the replay |
+
+#### Canonical verification pattern
+
+```rust
+// Collect the complete set of agreement IDs for an employer off-chain,
+// then confirm the invariant on-chain:
+let employer_count = client.get_employer_payment_count(&employer);
+let agreement_sum: u32 = agreement_ids
+    .iter()
+    .map(|id| client.get_agreement_payment_count(id))
+    .sum();
+assert_eq!(employer_count, agreement_sum);
+```
+
+Walk all 12 records from the employer index and cross-check against the
+per-agreement indices:
+
+```rust
+// All IDs reachable via employer index
+let employer_page = client.get_payments_by_employer(&employer, &1, &50);
+let mut employer_ids: Vec<u128> = employer_page.iter().map(|r| r.id).collect();
+
+// All IDs reachable via the union of per-agreement indices
+let mut agreement_ids_union: Vec<u128> = agreement_ids
+    .iter()
+    .flat_map(|agg_id| {
+        client
+            .get_payments_by_agreement(agg_id, &1, &50)
+            .iter()
+            .map(|r| r.id)
+    })
+    .collect();
+
+employer_ids.sort_unstable();
+agreement_ids_union.sort_unstable();
+assert_eq!(employer_ids, agreement_ids_union);
+```
