@@ -15,6 +15,21 @@ The Rate Limiter contract provides per-address and global throttling using the *
 
 A "bucket" is initialized with a **Burst Capacity** (maximum tokens). Every second, a **Refill Rate** number of tokens are added to the bucket, up to the burst capacity. Each operation consumes one token. If no tokens are available, the operation is rejected.
 
+### Fractional Refill and Rounding Policy
+
+The contract uses Soroban ledger timestamps, which are whole seconds, and stores
+bucket balances as whole `u32` tokens. Refill is calculated as:
+
+```text
+new_tokens = elapsed_whole_seconds * refill_rate
+```
+
+There is no fractional-token accumulator. Multiple calls made within the same
+ledger second share the same bucket balance and receive no partial refill
+credit. This intentionally rounds sub-second refill down to zero, preventing an
+attacker from splitting activity into many tiny calls to farm rounding dust or
+exceed `burst + elapsed_whole_seconds * refill_rate`.
+
 ### Example Configuration
 - `Burst: 5`, `Refill Rate: 1`: Allows a user to perform 5 operations immediately, then 1 operation per second thereafter.
 
@@ -41,6 +56,7 @@ A "bucket" is initialized with a **Burst Capacity** (maximum tokens). Every seco
 1. **Admin Trust**: The admin is trusted to set reasonable limits and not maliciously throttle users.
 2. **Lockout Prevention**: The `admin_bypass` flag is critical. It should be set to `true` for contracts controlled by governance to ensure that even in high-load scenarios, administrative actions (like changing limits) can still proceed.
 3. **Clock Accuracy**: The contract relies on `env.ledger().timestamp()`. Minor clock skew between validators is handled by the Stellar protocol.
+4. **No Fractional Drift**: Because refill uses whole-second integer arithmetic and caps balances at burst capacity, repeated sub-second calls cannot accumulate fractional rounding credit beyond the theoretical token-bucket allowance.
 
 ## Integration
 
