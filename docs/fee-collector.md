@@ -173,6 +173,8 @@ pub fn calculate_fee(
 
 Pure read — no token transfers, no state mutation. Use for UI previews and pre-flight checks.
 
+The contract caches the most recently computed quote for a given `gross_amount` so a later `collect_fee` call can settle against the same amounts even if the admin updates the active config in between. A fresh `calculate_fee` call overwrites that cached quote for the same gross amount.
+
 **Panics**: `"Gross amount must be non-negative"` — `gross_amount < 0`.
 
 ---
@@ -189,7 +191,7 @@ pub fn update_fee_config(
 )
 ```
 
-Admin-only. Applies immediately to all subsequent `collect_fee` calls.
+Admin-only. Applies immediately to all subsequent `collect_fee` calls that do not have a cached quote for the same `gross_amount`. A previously computed quote remains stable for settlement until a fresh `calculate_fee` call updates it.
 
 **Emits**: `("fee_config_updated",)` → `FeeConfigUpdatedEvent`
 

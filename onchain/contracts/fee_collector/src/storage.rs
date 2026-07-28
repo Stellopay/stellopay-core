@@ -24,6 +24,8 @@ pub enum StorageKey {
     TieredSchedule,
     /// Cumulative fees collected since initialization (saturates at `i128::MAX`).
     TotalFeesCollected,
+    /// Latest fee quote for a gross amount computed via `calculate_fee`.
+    LatestFeeQuote,
     /// Emergency pause flag — when `true`, `collect_fee` panics.
     Paused,
     /// Initialization guard — prevents re-initialization.
