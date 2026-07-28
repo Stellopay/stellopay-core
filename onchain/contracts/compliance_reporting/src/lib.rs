@@ -28,7 +28,8 @@
 use audit_logger::{AuditLogEntry, AuditLoggerContractClient};
 use payment_history::{PaymentHistoryContractClient, PaymentRecord};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Bytes, Env,
+    Symbol, Vec,
 };
 
 /// Maximum number of records that can be returned in a single `generate_report`
@@ -121,6 +122,120 @@ pub struct ComplianceRecord {
     pub metadata: Bytes,
     /// Address that submitted this record (employer or authorized publisher).
     pub publisher: Address,
+}
+
+/// Row type returned by `generate_flat_report`.
+///
+/// Each row represents one logical record from the three data sources that
+/// make up a `ComplianceReport` (`records`, `payment_history`,
+/// `agreement_events`). Report-level metadata (`employer`, `employee`,
+/// `start_date`, `end_date`, `total_amount`, `record_count`,
+/// `schema_version`) is repeated in every row so that a consumer can
+/// process the export without maintaining join state.
+///
+/// ## Section values
+///
+/// | `section` | Source struct | Populated scalar fields |
+/// |---|---|---|
+/// | `"compliance"` | `ComplianceRecord` | `row_id`, `global_seq`, `token`, `amount_row`, `timestamp_row`, `report_type_u32`, `publisher`, `metadata_len` |
+/// | `"payment"` | `PaymentRecord` | `row_id`, `token`, `amount_row`, `timestamp_row`, `payment_id`, `agreement_id`, `payer` |
+/// | `"audit"` | `AuditLogEntry` | `row_id`, `timestamp_row`, `amount_row` (0 if None), `audit_action`, `audit_subject_set`, `payer` |
+///
+/// Fields that do not apply to a section are set to their zero / empty
+/// default so every row has the same fixed schema, making CSV serialization
+/// straightforward.
+///
+/// ## CSV serialization guidance
+///
+/// Column order (26 columns):
+/// ```text
+/// section, employer, employee, start_date, end_date, total_amount,
+/// record_count, schema_version,
+/// row_id, global_seq, token, amount_row, timestamp_row,
+/// report_type_u32, publisher, metadata_len,
+/// payment_id, agreement_id, payer,
+/// audit_action, audit_subject_set
+/// ```
+///
+/// `Address` values serialize as Stellar strkey strings.
+/// `Bytes` length (`metadata_len`) is the byte count of the raw metadata;
+/// the raw bytes are not included to keep rows flat.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FlatReportRow {
+    // ── Report-level header (repeated in every row) ──────────────────────
+    /// Discriminator: `"compliance"`, `"payment"`, or `"audit"`.
+    pub section: Symbol,
+    /// Employer this report covers (from `ComplianceReport::employer`).
+    pub employer: Address,
+    /// Employee this report covers (from `ComplianceReport::employee`).
+    pub employee: Address,
+    /// Inclusive start of the reporting period.
+    pub start_date: u64,
+    /// Inclusive end of the reporting period.
+    pub end_date: u64,
+    /// Sum of `ComplianceRecord::amount` across all matching withholding records.
+    pub total_amount: i128,
+    /// Number of matching withholding records (`ComplianceReport::record_count`).
+    pub record_count: u32,
+    /// Schema version for off-chain parser compatibility.
+    pub schema_version: u32,
+
+    // ── Per-row fields (common) ───────────────────────────────────────────
+    /// Per-section sequential row index (1-based, resets per section).
+    pub row_index: u32,
+    /// Ledger / record timestamp for this row.
+    /// Compliance: `ComplianceRecord::timestamp`.
+    /// Payment:    `PaymentRecord::timestamp`.
+    /// Audit:      `AuditLogEntry::timestamp`.
+    pub timestamp_row: u64,
+    /// Token amount for this row.
+    /// Compliance: `ComplianceRecord::amount`.
+    /// Payment:    `PaymentRecord::amount`.
+    /// Audit:      `AuditLogEntry::amount.unwrap_or(0)`.
+    pub amount_row: i128,
+
+    // ── Compliance-section fields (`section == "compliance"`) ────────────
+    /// Per-employer monotonic record ID (`ComplianceRecord::id`).
+    /// 0 for payment / audit rows.
+    pub compliance_id: u32,
+    /// Contract-wide global sequence (`ComplianceRecord::global_seq`).
+    /// 0 for payment / audit rows.
+    pub global_seq: u64,
+    /// Token contract address (`ComplianceRecord::token` or `PaymentRecord::token`).
+    /// Zero-value Address for audit rows.
+    pub token: Address,
+    /// Report type as `u32`: 0 = Payroll, 1 = Tax, 2 = Regulatory.
+    /// 0 for payment / audit rows (same as Payroll — consumers should check `section`).
+    pub report_type_u32: u32,
+    /// Address that submitted the compliance record (`ComplianceRecord::publisher`).
+    /// Zero-value Address for payment / audit rows.
+    pub publisher: Address,
+    /// Byte length of the raw metadata blob (`ComplianceRecord::metadata.len()`).
+    /// 0 for payment / audit rows.
+    pub metadata_len: u32,
+
+    // ── Payment-section fields (`section == "payment"`) ──────────────────
+    /// Global payment ID from the PaymentHistory contract (`PaymentRecord::id`).
+    /// 0 for compliance / audit rows.
+    pub payment_id: u128,
+    /// Agreement ID from the PaymentHistory contract (`PaymentRecord::agreement_id`).
+    /// 0 for compliance / audit rows.
+    pub agreement_id: u128,
+    /// Payer address (`PaymentRecord::from` or `AuditLogEntry::actor`).
+    /// Zero-value Address for compliance rows.
+    pub payer: Address,
+
+    // ── Audit-section fields (`section == "audit"`) ───────────────────────
+    /// Action label from the AuditLogger (`AuditLogEntry::action`).
+    /// `symbol_short!("none")` for compliance / payment rows.
+    pub audit_action: Symbol,
+    /// Whether `AuditLogEntry::subject` was `Some` (`true`) or `None` (`false`).
+    /// `false` for compliance / payment rows.
+    pub audit_subject_set: bool,
+    /// Global audit log entry ID (`AuditLogEntry::id`).
+    /// 0 for compliance / payment rows.
+    pub audit_id: u64,
 }
 
 /// Aggregated report returned by `generate_report` and `get_withholding_records`.
@@ -756,6 +871,165 @@ impl ComplianceReportingContract {
             agreement_events: events,
             schema_version,
         })
+    }
+
+    /// @notice Returns a flat, row-oriented representation of the compliance
+    ///         report suitable for direct CSV serialization by off-chain consumers.
+    ///
+    /// ## Design
+    ///
+    /// Internally calls `generate_report` with identical parameters and
+    /// flattens the three nested Vecs (`records`, `payment_history`,
+    /// `agreement_events`) into a single `Vec<FlatReportRow>`. Report-level
+    /// metadata is repeated in every row so the export is self-contained.
+    ///
+    /// The function is **purely additive**: `generate_report` is not modified
+    /// and all its error semantics are preserved and forwarded here.
+    ///
+    /// ## Row ordering
+    ///
+    /// 1. All `"compliance"` rows, in the order returned by `generate_report`.
+    /// 2. All `"payment"` rows, in the order returned by `generate_report`.
+    /// 3. All `"audit"` rows, in the order returned by `generate_report`.
+    ///
+    /// Row indices (`row_index`) are 1-based and reset per section.
+    ///
+    /// ## Security
+    ///
+    /// The flat export exposes exactly the fields already present in
+    /// `ComplianceReport`. No additional sensitive data is introduced.
+    /// Authorization follows `generate_report`'s own rules.
+    ///
+    /// @param employer The employer whose withholding records are aggregated.
+    /// @param employee The employee whose payment history is fetched.
+    /// @param period_start Inclusive start of the reporting period (UNIX timestamp).
+    /// @param period_end Inclusive end of the reporting period (UNIX timestamp).
+    /// @return A flat `Vec<FlatReportRow>` equivalent to the structured report.
+    /// @error Propagates any error returned by `generate_report`.
+    pub fn generate_flat_report(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        period_start: u64,
+        period_end: u64,
+    ) -> Result<Vec<FlatReportRow>, ComplianceError> {
+        let report = Self::generate_report(
+            env.clone(),
+            employer,
+            employee,
+            period_start,
+            period_end,
+        )?;
+
+        let mut rows: Vec<FlatReportRow> = Vec::new(&env);
+
+        let zero_addr = report.employer.clone(); // placeholder; overwritten per-row
+        let none_sym = symbol_short!("none");
+
+        // ── Section 1: compliance withholding records ─────────────────────
+        let compliance_sym = symbol_short!("complianc"); // max 9 chars in symbol_short!
+        let mut idx: u32 = 0;
+        for record in report.records.iter() {
+            idx += 1;
+            let rt_u32: u32 = match record.report_type {
+                ReportType::Payroll => 0,
+                ReportType::Tax => 1,
+                ReportType::Regulatory => 2,
+            };
+            rows.push_back(FlatReportRow {
+                section: compliance_sym.clone(),
+                employer: report.employer.clone(),
+                employee: report.employee.clone(),
+                start_date: report.start_date,
+                end_date: report.end_date,
+                total_amount: report.total_amount,
+                record_count: report.record_count,
+                schema_version: report.schema_version,
+                row_index: idx,
+                timestamp_row: record.timestamp,
+                amount_row: record.amount,
+                compliance_id: record.id,
+                global_seq: record.global_seq,
+                token: record.token.clone(),
+                report_type_u32: rt_u32,
+                publisher: record.publisher.clone(),
+                metadata_len: record.metadata.len(),
+                payment_id: 0u128,
+                agreement_id: 0u128,
+                payer: zero_addr.clone(),
+                audit_action: none_sym.clone(),
+                audit_subject_set: false,
+                audit_id: 0u64,
+            });
+        }
+
+        // ── Section 2: payment history records ────────────────────────────
+        let payment_sym = symbol_short!("payment");
+        idx = 0;
+        for pay in report.payment_history.iter() {
+            idx += 1;
+            rows.push_back(FlatReportRow {
+                section: payment_sym.clone(),
+                employer: report.employer.clone(),
+                employee: report.employee.clone(),
+                start_date: report.start_date,
+                end_date: report.end_date,
+                total_amount: report.total_amount,
+                record_count: report.record_count,
+                schema_version: report.schema_version,
+                row_index: idx,
+                timestamp_row: pay.timestamp,
+                amount_row: pay.amount,
+                compliance_id: 0u32,
+                global_seq: 0u64,
+                token: pay.token.clone(),
+                report_type_u32: 0u32,
+                publisher: zero_addr.clone(),
+                metadata_len: 0u32,
+                payment_id: pay.id,
+                agreement_id: pay.agreement_id,
+                payer: pay.from.clone(),
+                audit_action: none_sym.clone(),
+                audit_subject_set: false,
+                audit_id: 0u64,
+            });
+        }
+
+        // ── Section 3: audit log entries ──────────────────────────────────
+        let audit_sym = symbol_short!("audit");
+        idx = 0;
+        for entry in report.agreement_events.iter() {
+            idx += 1;
+            let amt = entry.amount.unwrap_or(0);
+            let subj_set = entry.subject.is_some();
+            rows.push_back(FlatReportRow {
+                section: audit_sym.clone(),
+                employer: report.employer.clone(),
+                employee: report.employee.clone(),
+                start_date: report.start_date,
+                end_date: report.end_date,
+                total_amount: report.total_amount,
+                record_count: report.record_count,
+                schema_version: report.schema_version,
+                row_index: idx,
+                timestamp_row: entry.timestamp,
+                amount_row: amt,
+                compliance_id: 0u32,
+                global_seq: 0u64,
+                token: zero_addr.clone(),
+                report_type_u32: 0u32,
+                publisher: zero_addr.clone(),
+                metadata_len: 0u32,
+                payment_id: 0u128,
+                agreement_id: 0u128,
+                payer: entry.actor.clone(),
+                audit_action: entry.action.clone(),
+                audit_subject_set: subj_set,
+                audit_id: entry.id,
+            });
+        }
+
+        Ok(rows)
     }
 
     // -----------------------------------------------------------------------
