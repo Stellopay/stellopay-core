@@ -25,9 +25,9 @@
 use soroban_sdk::{
     testutils::{Address as _, EnvTestConfig, Ledger},
     token::StellarAssetClient,
-    Address, Env,
+    vec, Address, Env, Vec as SdkVec,
 };
-use stello_pay_contract::storage::{DataKey, MAX_BATCH_SIZE};
+use stello_pay_contract::storage::{DataKey, PayrollCreateParams, MAX_BATCH_SIZE};
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 // ---------------------------------------------------------------------------
@@ -53,6 +53,12 @@ const BATCH_CLAIM_MILESTONES: [usize; 3] = [1, 5, MAX_BATCH_SIZE as usize];
 /// (includes the per-claim reentrancy guard added to the claim paths).
 const MAX_BATCH_CLAIM_MILESTONE_INSTRUCTIONS: u64 = 9_500_000;
 
+const BATCH_CREATE_PAYROLL_SIZES: [usize; 4] = [1, 5, 10, MAX_BATCH_SIZE as usize];
+/// Documented ceiling for a max-size batch_create_payroll_agreements call.
+/// Measured baseline at MAX_BATCH_SIZE=20 is ~5_808_763 instructions;
+/// this ceiling provides ~20% headroom for SDK-version fluctuations.
+const MAX_BATCH_CREATE_PAYROLL_INSTRUCTIONS: u64 = 7_000_000;
+
 // ---------------------------------------------------------------------------
 // Baseline I/O
 // ---------------------------------------------------------------------------
@@ -67,6 +73,7 @@ struct GasBaseline {
 struct GasBaselines {
     claim_payroll: std::vec::Vec<GasBaseline>,
     batch_claim_milestones: std::vec::Vec<GasBaseline>,
+    batch_create_payroll: std::vec::Vec<GasBaseline>,
 }
 
 fn parse_u64_field(json: &str, key: &str) -> u64 {
@@ -104,6 +111,21 @@ fn parse_claim_payroll_cases(json: &str) -> std::vec::Vec<GasBaseline> {
         .collect()
 }
 
+fn parse_batch_create_payroll_cases(json: &str) -> std::vec::Vec<GasBaseline> {
+    let section = json
+        .split("\"batch_create_payroll\"")
+        .nth(1)
+        .expect("batch_create_payroll section missing");
+    section
+        .split("{ \"agreements\"")
+        .skip(1)
+        .map(|block| GasBaseline {
+            periods_or_milestones: parse_first_u64(block) as u32,
+            instructions: parse_u64_field(block, "instructions"),
+        })
+        .collect()
+}
+
 fn parse_batch_claim_cases(json: &str) -> std::vec::Vec<GasBaseline> {
     let section = json
         .split("\"batch_claim_milestones\"")
@@ -125,15 +147,16 @@ fn load_baselines() -> GasBaselines {
     GasBaselines {
         claim_payroll: parse_claim_payroll_cases(&json),
         batch_claim_milestones: parse_batch_claim_cases(&json),
+        batch_create_payroll: parse_batch_create_payroll_cases(&json),
     }
 }
 
-fn write_baselines(claim: &[(u32, u64)], batch: &[(u32, u64)]) {
+fn write_baselines(claim: &[(u32, u64)], batch: &[(u32, u64)], create: &[(u32, u64)]) {
     let body = format!(
         r#"{{
   "version": 1,
   "sdk_version": "23.5.2",
-  "captured_at": "2026-05-31",
+  "captured_at": "2026-07-28",
   "regression_tolerance_pct": 5,
   "host": "soroban-sdk test host (native Rust, not WASM)",
   "claim_payroll": {{
@@ -147,6 +170,12 @@ fn write_baselines(claim: &[(u32, u64)], batch: &[(u32, u64)]) {
     "cases": [
 {batch_cases}
     ]
+  }},
+  "batch_create_payroll": {{
+    "description": "CPU instructions for batch_create_payroll_agreements with N agreements (linear O(N) in batch size)",
+    "cases": [
+{create_cases}
+    ]
   }}
 }}"#,
         claim_cases = claim
@@ -157,6 +186,11 @@ fn write_baselines(claim: &[(u32, u64)], batch: &[(u32, u64)]) {
         batch_cases = batch
             .iter()
             .map(|(m, i)| format!("      {{ \"milestones\": {m}, \"instructions\": {i} }},"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        create_cases = create
+            .iter()
+            .map(|(a, i)| format!("      {{ \"agreements\": {a}, \"instructions\": {i} }},"))
             .collect::<Vec<_>>()
             .join("\n"),
     );
@@ -320,7 +354,12 @@ fn gas_benchmark_claim_payroll() {
             .iter()
             .map(|b| (b.periods_or_milestones, b.instructions))
             .collect();
-        write_baselines(&measured, &batch_pairs);
+        let create = load_baselines().batch_create_payroll;
+        let create_pairs: std::vec::Vec<(u32, u64)> = create
+            .iter()
+            .map(|b| (b.periods_or_milestones, b.instructions))
+            .collect();
+        write_baselines(&measured, &batch_pairs, &create_pairs);
     }
 }
 
@@ -371,7 +410,105 @@ fn gas_benchmark_batch_claim_milestones() {
             .iter()
             .map(|b| (b.periods_or_milestones, b.instructions))
             .collect();
-        write_baselines(&claim_pairs, &measured);
+        let create = load_baselines().batch_create_payroll;
+        let create_pairs: std::vec::Vec<(u32, u64)> = create
+            .iter()
+            .map(|b| (b.periods_or_milestones, b.instructions))
+            .collect();
+        write_baselines(&claim_pairs, &measured, &create_pairs);
+    }
+}
+
+/// @notice Measures CPU instruction cost of `batch_create_payroll_agreements` at 1, 5, 10, and
+/// MAX_BATCH_SIZE agreements. Cost must scale linearly (O(N)) with batch size.
+#[test]
+fn gas_benchmark_batch_create_payroll_agreements() {
+    let baselines = load_baselines();
+    assert_eq!(
+        baselines.batch_create_payroll.len(),
+        BATCH_CREATE_PAYROLL_SIZES.len(),
+        "baseline file must define one entry per batch_create_payroll size"
+    );
+
+    let update = std::env::var("UPDATE_GAS_BASELINES").ok().as_deref() == Some("1");
+    let mut measured: std::vec::Vec<(u32, u64)> = std::vec::Vec::new();
+
+    for (idx, &n) in BATCH_CREATE_PAYROLL_SIZES.iter().enumerate() {
+        let env = bench_env();
+        env.mock_all_auths();
+        let (_contract_id, client) = deploy(&env);
+        let employer = Address::generate(&env);
+        let token = make_token(&env);
+
+        let mut items: SdkVec<PayrollCreateParams> = vec![&env];
+        for _ in 0..n {
+            items.push_back(PayrollCreateParams {
+                token: token.clone(),
+                grace_period_seconds: ONE_WEEK,
+            });
+        }
+
+        let instructions = measure_instructions(&env, || {
+            let result = client.batch_create_payroll_agreements(&employer, &items);
+            assert_eq!(result.total_created, n as u32);
+        });
+
+        measured.push((n as u32, instructions));
+
+        if !update {
+            let baseline = baselines.batch_create_payroll[idx].instructions;
+            assert_within_tolerance(
+                "batch_create_payroll_agreements",
+                n as u32,
+                instructions,
+                baseline,
+            );
+            if n == MAX_BATCH_SIZE as usize {
+                assert!(
+                    instructions <= MAX_BATCH_CREATE_PAYROLL_INSTRUCTIONS,
+                    "batch_create_payroll_agreements at MAX_BATCH_SIZE={MAX_BATCH_SIZE}: measured {instructions} exceeds documented ceiling {MAX_BATCH_CREATE_PAYROLL_INSTRUCTIONS}"
+                );
+            }
+        }
+    }
+
+    // Linearity check: average cost per agreement at MAX_BATCH_SIZE must not
+    // exceed 1.5x the cost of a single agreement.  The Soroban test host adds a
+    // small overhead per host-object traversal (the items Vec is iterated twice),
+    // which makes the per-agreement marginal cost rise slightly with batch size.
+    // A quadratic algorithm would show >>1.5x growth; 1.5x is enough to catch
+    // accidental O(N²) while tolerating host-level iteration overhead.
+    if !update && measured.len() >= 3 {
+        let (n1, c1) = measured[0];
+        let (n_last, c_last) = measured[3];
+        let avg_per_agreement_1 = c1 / n1 as u64;
+        let avg_per_agreement_last = c_last / n_last as u64;
+        let ratio = if avg_per_agreement_1 > 0 {
+            (avg_per_agreement_last as f64) / (avg_per_agreement_1 as f64)
+        } else {
+            1.0
+        };
+        assert!(
+            ratio <= 1.50,
+            "batch_create_payroll_agreements avg cost per agreement grew {ratio:.2}x (from {avg_per_agreement_1} at n={n1} to {avg_per_agreement_last} at n={n_last}) — expected ≤1.50x for O(N) scaling"
+        );
+        println!(
+            "batch_create_payroll_agreements linearity: avg_cost_per_agreement n={n1}={avg_per_agreement_1} n={n_last}={avg_per_agreement_last} ratio={ratio:.2}"
+        );
+    }
+
+    if update {
+        let claim = load_baselines().claim_payroll;
+        let claim_pairs: std::vec::Vec<(u32, u64)> = claim
+            .iter()
+            .map(|b| (b.periods_or_milestones, b.instructions))
+            .collect();
+        let batch = load_baselines().batch_claim_milestones;
+        let batch_pairs: std::vec::Vec<(u32, u64)> = batch
+            .iter()
+            .map(|b| (b.periods_or_milestones, b.instructions))
+            .collect();
+        write_baselines(&claim_pairs, &batch_pairs, &measured);
     }
 }
 
@@ -436,4 +573,65 @@ fn gas_benchmark_edge_unauthorized_caller() {
         err,
         stello_pay_contract::storage::PayrollError::Unauthorized
     );
+}
+
+/// @notice batch_create_payroll_agreements with an empty items list must be rejected.
+#[test]
+fn gas_benchmark_edge_empty_batch_create_payroll() {
+    let env = bench_env();
+    env.mock_all_auths();
+    let (_contract_id, client) = deploy(&env);
+    let employer = Address::generate(&env);
+    let items = SdkVec::<PayrollCreateParams>::new(&env);
+    let err = client
+        .try_batch_create_payroll_agreements(&employer, &items)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, stello_pay_contract::storage::PayrollError::InvalidData);
+}
+
+/// @notice batch_create_payroll_agreements exceeding MAX_BATCH_SIZE must be rejected.
+#[test]
+fn gas_benchmark_edge_batch_create_payroll_too_large() {
+    let env = bench_env();
+    env.mock_all_auths();
+    let (_contract_id, client) = deploy(&env);
+    let employer = Address::generate(&env);
+    let token = make_token(&env);
+    let mut items: SdkVec<PayrollCreateParams> = vec![&env];
+    for _ in 0..=MAX_BATCH_SIZE {
+        items.push_back(PayrollCreateParams {
+            token: token.clone(),
+            grace_period_seconds: ONE_WEEK,
+        });
+    }
+    assert_eq!(items.len(), MAX_BATCH_SIZE + 1);
+    let err = client
+        .try_batch_create_payroll_agreements(&employer, &items)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(
+        err,
+        stello_pay_contract::storage::PayrollError::BatchTooLarge
+    );
+}
+
+/// @notice batch_create_payroll_agreements with zero grace period must be rejected.
+#[test]
+fn gas_benchmark_edge_batch_create_payroll_zero_grace() {
+    let env = bench_env();
+    env.mock_all_auths();
+    let (_contract_id, client) = deploy(&env);
+    let employer = Address::generate(&env);
+    let token = make_token(&env);
+    let mut items: SdkVec<PayrollCreateParams> = vec![&env];
+    items.push_back(PayrollCreateParams {
+        token,
+        grace_period_seconds: 0,
+    });
+    let err = client
+        .try_batch_create_payroll_agreements(&employer, &items)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, stello_pay_contract::storage::PayrollError::InvalidData);
 }
