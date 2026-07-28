@@ -690,3 +690,155 @@ proptest! {
         });
     }
 }
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(proptest_cases()))]
+
+    /// **Property: Total claimed never exceeds total funded**
+    ///
+    /// This test checks a **per-step** invariant: after every operation, the
+    /// cumulative `agreement_paid_amount` must never exceed the total amount
+    /// funded for the agreement.  This is a stronger invariant than the
+    /// end-state conservation check (which only asserts the final balance) —
+    /// it catches transient over-distribution bugs during the lifecycle.
+    ///
+    /// **Invariant**: For every (agreement, token) pair, at any point:
+    ///   `paid_amount <= total_funded`
+    #[test]
+    fn prop_total_claimed_never_exceeds_total_funded(
+        (employee_count, salaries, period_seconds, grace_period) in payroll_agreement_strategy(),
+        operations in operation_sequence_strategy(),
+    ) {
+        let (env, contract_id, owner, client) = setup_contract();
+
+        let employer = Address::generate(&env);
+        let token = setup_token(&env, &contract_id, 1_000_000);
+
+        let agreement_id = client.create_payroll_agreement(&employer, &token, &grace_period);
+
+        let mut employees = Vec::new();
+        let mut total_salary: i128 = 0;
+        for i in 0..employee_count {
+            let employee = Address::generate(&env);
+            let salary = salaries.get(i as usize).cloned().unwrap_or(1000);
+            client.add_employee_to_agreement(&agreement_id, &employee, &salary);
+            employees.push((employee, salary));
+            total_salary += salary;
+        }
+
+        let initial_escrow = total_salary * 20;
+        env.as_contract(&contract_id, || {
+            let now = env.ledger().timestamp();
+            DataKey::set_agreement_activation_time(&env, agreement_id, now);
+            DataKey::set_agreement_period_duration(&env, agreement_id, period_seconds);
+            DataKey::set_agreement_token(&env, agreement_id, &token);
+            DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, initial_escrow);
+            DataKey::set_employee_count(&env, agreement_id, employee_count);
+            for (idx, (employee, salary)) in employees.iter().enumerate() {
+                DataKey::set_employee(&env, agreement_id, idx as u32, employee);
+                DataKey::set_employee_salary(&env, agreement_id, idx as u32, *salary);
+                DataKey::set_employee_claimed_periods(&env, agreement_id, idx as u32, 0);
+            }
+        });
+
+        client.activate_agreement(&agreement_id);
+
+        let total_funded: i128 = initial_escrow;
+
+        // Check invariant before any operations
+        env.as_contract(&contract_id, || {
+            let paid = DataKey::get_agreement_paid_amount(&env, agreement_id);
+            prop_assert!(
+                paid <= total_funded,
+                "CRITICAL: total paid ({}) exceeds total funded ({}) at start",
+                paid, total_funded
+            );
+        });
+
+        let mut dispute_raised = false;
+
+        for op in operations {
+            match op {
+                Operation::AdvanceTime(periods) => {
+                    env.ledger().with_mut(|li: &mut Ledger| {
+                        li.timestamp += period_seconds * (periods as u64);
+                    });
+                }
+                Operation::ClaimPayroll(employee_idx) => {
+                    if dispute_raised {
+                        continue;
+                    }
+                    let idx = employee_idx % employee_count;
+                    let employee = &employees[idx as usize].0;
+                    let _ = client.try_claim_payroll(employee, &agreement_id, &idx);
+                }
+                Operation::BatchClaimPayroll => {
+                    if dispute_raised {
+                        continue;
+                    }
+                    let employee_indices: SorobanVec<u32> = (0..employee_count)
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .collect::<SorobanVec<u32>>();
+                    let _ = client.try_batch_claim_payroll(&agreement_id, &employee_indices);
+                }
+                Operation::RaiseDispute => {
+                    if !dispute_raised {
+                        if let Ok(_) = client.try_raise_dispute(&employer, &agreement_id) {
+                            dispute_raised = true;
+                        }
+                    }
+                }
+                Operation::ResolveDispute(employee_payout_ratio) => {
+                    if !dispute_raised {
+                        continue;
+                    }
+
+                    let arbiter = Address::generate(&env);
+                    client.set_arbiter(&owner, &arbiter);
+
+                    let remaining_escrow = env.as_contract(&contract_id, || {
+                        DataKey::get_agreement_escrow_balance(&env, agreement_id, &token)
+                    });
+
+                    let employee_payout = (remaining_escrow * (employee_payout_ratio as i128)) / 100;
+                    let employer_refund = remaining_escrow - employee_payout;
+
+                    let _ = client.try_resolve_dispute(
+                        &arbiter,
+                        &agreement_id,
+                        &employee_payout,
+                        &employer_refund,
+                    );
+                    dispute_raised = false;
+                }
+            }
+
+            // Assert invariant after every operation
+            env.as_contract(&contract_id, || {
+                let paid = DataKey::get_agreement_paid_amount(&env, agreement_id);
+                prop_assert!(
+                    paid <= total_funded,
+                    "CRITICAL: total paid ({}) exceeds total funded ({}) after operation",
+                    paid, total_funded
+                );
+            });
+        }
+
+        // Final conservation check (redundant with per-step assertions above,
+        // but serves as documentation of the end-state invariant)
+        env.as_contract(&contract_id, || {
+            let remaining_escrow =
+                DataKey::get_agreement_escrow_balance(&env, agreement_id, &token);
+            let total_paid = DataKey::get_agreement_paid_amount(&env, agreement_id);
+
+            prop_assert!(
+                total_paid + remaining_escrow <= total_funded,
+                "Conservation violated at end: {} + {} > {}",
+                total_paid,
+                remaining_escrow,
+                total_funded
+            );
+        });
+    }
+}

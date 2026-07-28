@@ -80,7 +80,7 @@
 pub mod storage;
 pub mod types;
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Env, IntoVal, Symbol, Vec};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 use types::{
@@ -147,9 +147,14 @@ pub struct DisputeExpiredEvent {
     pub agreement_id: u128,
 }
 
-/// Emitted when a keeper calls `keeper_advance_stage` after an SLA deadline
-/// has elapsed.  The dispute moves from `Open`/`Escalated`/`Appealed` into
-/// `PendingReview`, opening a bounded admin-review window.
+/// Emitted only when `keeper_advance_stage` advances a dispute because an SLA
+/// deadline has elapsed. The dispute moves from `Open`/`Escalated`/`Appealed`
+/// into `PendingReview`, opening a bounded admin-review window.
+///
+/// Off-chain SLA monitors should treat this event as the canonical signal for
+/// an SLA violation. Normal in-window escalation continues to emit only
+/// `dispute_escalated`, so indexers can distinguish timeout-driven advancement
+/// from normal-flow advancement without inspecting contract state.
 ///
 /// # Fields
 /// * `agreement_id`   — identifies the dispute.
@@ -159,7 +164,7 @@ pub struct DisputeExpiredEvent {
 ///   `expire_dispute`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DisputeSlaBreachedEvent {
+pub struct DisputeSlaViolationAdvancedEvent {
     pub agreement_id: u128,
     pub level: EscalationLevel,
     pub breached_at: u64,
@@ -233,6 +238,19 @@ impl DisputeEscalationContract {
         };
 
         storage::set_dispute(&env, agreement_id, &dispute);
+
+        // Notify the payroll escrow so it pauses releases for this agreement.
+        if let Some(escrow_addr) = storage::get_payroll_escrow(&env) {
+            env.invoke_contract::<()>(
+                &escrow_addr,
+                &Symbol::new(&env, "pause_agreement"),
+                vec![
+                    &env,
+                    env.current_contract_address().into_val(&env),
+                    agreement_id.into_val(&env),
+                ],
+            );
+        }
 
         env.events().publish(
             ("dispute_filed",),
@@ -397,8 +415,8 @@ impl DisputeEscalationContract {
         storage::set_dispute(&env, agreement_id, &dispute);
 
         env.events().publish(
-            ("dispute_sla_breached",),
-            DisputeSlaBreachedEvent {
+            ("sla_violation_advanced",),
+            DisputeSlaViolationAdvancedEvent {
                 agreement_id,
                 level: dispute.level,
                 breached_at: now,
@@ -472,6 +490,19 @@ impl DisputeEscalationContract {
 
             storage::set_dispute(&env, agreement_id, &dispute);
 
+            // Resume escrow releases as the dispute has reached a final outcome.
+            if let Some(escrow_addr) = storage::get_payroll_escrow(&env) {
+                env.invoke_contract::<()>(
+                    &escrow_addr,
+                    &Symbol::new(&env, "resume_agreement"),
+                    vec![
+                        &env,
+                        env.current_contract_address().into_val(&env),
+                        agreement_id.into_val(&env),
+                    ],
+                );
+            }
+
             env.events().publish(
                 ("dispute_finalised",),
                 DisputeFinalisedEvent {
@@ -486,6 +517,21 @@ impl DisputeEscalationContract {
             dispute.phase_deadline = appeal_deadline;
 
             storage::set_dispute(&env, agreement_id, &dispute);
+
+            // Resume escrow releases — the admin has issued a ruling.
+            // If the ruling is later appealed, a new dispute phase begins
+            // and the escrow should be paused again by `appeal_ruling`.
+            if let Some(escrow_addr) = storage::get_payroll_escrow(&env) {
+                env.invoke_contract::<()>(
+                    &escrow_addr,
+                    &Symbol::new(&env, "resume_agreement"),
+                    vec![
+                        &env,
+                        env.current_contract_address().into_val(&env),
+                        agreement_id.into_val(&env),
+                    ],
+                );
+            }
 
             env.events().publish(
                 ("dispute_resolved",),
@@ -554,6 +600,19 @@ impl DisputeEscalationContract {
 
         storage::set_dispute(&env, agreement_id, &dispute);
 
+        // Pause escrow again — the dispute is under active re-review.
+        if let Some(escrow_addr) = storage::get_payroll_escrow(&env) {
+            env.invoke_contract::<()>(
+                &escrow_addr,
+                &Symbol::new(&env, "pause_agreement"),
+                vec![
+                    &env,
+                    env.current_contract_address().into_val(&env),
+                    agreement_id.into_val(&env),
+                ],
+            );
+        }
+
         env.events().publish(
             ("dispute_appealed",),
             DisputeAppealedEvent {
@@ -614,6 +673,19 @@ impl DisputeEscalationContract {
         dispute.status = DisputeStatus::Expired;
         storage::set_dispute(&env, agreement_id, &dispute);
 
+        // Resume escrow releases — the dispute has timed out.
+        if let Some(escrow_addr) = storage::get_payroll_escrow(&env) {
+            env.invoke_contract::<()>(
+                &escrow_addr,
+                &Symbol::new(&env, "resume_agreement"),
+                vec![
+                    &env,
+                    env.current_contract_address().into_val(&env),
+                    agreement_id.into_val(&env),
+                ],
+            );
+        }
+
         env.events()
             .publish(("dispute_expired",), DisputeExpiredEvent { agreement_id });
 
@@ -673,6 +745,30 @@ impl DisputeEscalationContract {
         Ok(())
     }
 
+    /// Configures the `payroll_escrow` contract address that will be
+    /// paused on `file_dispute` and resumed on `resolve_dispute` / `expire_dispute`.
+    ///
+    /// If not configured, dispute lifecycle events proceed without interacting
+    /// with any escrow contract (backward-compatible behaviour).
+    ///
+    /// # Access Control
+    /// Caller must be the admin.
+    ///
+    /// # Errors
+    /// * `Unauthorized` — caller is not the admin.
+    pub fn set_payroll_escrow(
+        env: Env,
+        caller: Address,
+        escrow_contract: Address,
+    ) -> Result<(), DisputeError> {
+        caller.require_auth();
+        if !storage::is_admin(&env, &caller) {
+            return Err(DisputeError::Unauthorized);
+        }
+        storage::set_payroll_escrow(&env, &escrow_contract);
+        Ok(())
+    }
+
     // ─── Queries ──────────────────────────────────────────────────────────
 
     /// Returns the details of a dispute, or `None` if it does not exist.
@@ -684,6 +780,11 @@ impl DisputeEscalationContract {
     /// Defaults to 259 200 s (3 days) if never explicitly set.
     pub fn get_pending_review_time_limit(env: Env) -> u64 {
         storage::get_pending_review_time_limit(&env)
+    }
+
+    /// Returns the configured `payroll_escrow` contract address, or `None`.
+    pub fn get_payroll_escrow(env: Env) -> Option<Address> {
+        storage::get_payroll_escrow(&env)
     }
 
     // ─── Private helpers ──────────────────────────────────────────────────
