@@ -482,23 +482,56 @@ impl DepartmentManagerContract {
             .get(&StorageKey::EmployeeDepartment(employee, org_id))
     }
 
-    /// Returns a department-level report:
-    /// `(employee_count, child_department_ids, employee_addresses)`.
+    /// Returns a department-level report that **recursively** aggregates
+    /// employee figures across the full descendant tree:
+    /// `(total_employee_count, direct_child_department_ids, all_employee_addresses)`.
+    ///
+    /// The returned `employee_count` and `employee_addresses` include employees
+    /// from the queried department **and** every descendant department (children,
+    /// grandchildren, …).  `child_department_ids` contains only **direct**
+    /// children (one level) so callers can still traverse the tree structure.
     ///
     /// # Arguments
     /// * `department_id` - The department ID.
-    pub fn get_department_report(env: Env, department_id: u128) -> (u32, Vec<u128>, Vec<Address>) {
-        let employees: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::DepartmentEmployees(department_id))
-            .unwrap_or_else(|| Vec::new(&env));
+    pub fn get_department_report(
+        env: Env,
+        department_id: u128,
+    ) -> (u32, Vec<u128>, Vec<Address>) {
+        Self::collect_descendant_employees(&env, department_id)
+    }
+
+    /// Recursively collects all employee addresses from `dept_id` and its
+    /// full descendant subtree.  Returns `(count, direct_children, employees)`.
+    fn collect_descendant_employees(
+        env: &Env,
+        dept_id: u128,
+    ) -> (u32, Vec<u128>, Vec<Address>) {
         let children: Vec<u128> = env
             .storage()
             .persistent()
-            .get(&StorageKey::DepartmentChildren(department_id))
-            .unwrap_or_else(|| Vec::new(&env));
-        (employees.len(), children, employees)
+            .get(&StorageKey::DepartmentChildren(dept_id))
+            .unwrap_or_else(|| Vec::new(env));
+
+        let mut all_employees: Vec<Address> = Vec::new(env);
+
+        let direct_employees: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::DepartmentEmployees(dept_id))
+            .unwrap_or_else(|| Vec::new(env));
+        for emp in direct_employees.iter() {
+            all_employees.push_back(emp);
+        }
+
+        for child_id in children.iter() {
+            let (_, _, child_employees) =
+                Self::collect_descendant_employees(env, child_id);
+            for emp in child_employees.iter() {
+                all_employees.push_back(emp);
+            }
+        }
+
+        (all_employees.len(), children, all_employees)
     }
 
     /// Reparents a department to a new parent (or makes it top-level).
