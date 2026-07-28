@@ -1572,7 +1572,7 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
     // Mirror the payroll dispute into the escalation module so the integration
     // test covers the off-chain coordination sequence as well as token effects.
     payroll_client.raise_dispute(&employee_b, &agreement_id);
-    dispute_client.file_dispute(&employee_b, &agreement_id);
+    dispute_client.file_dispute(&employee_b, &agreement_id, &DisputeReason::PaymentDispute);
     dispute_client.escalate_dispute(&employee_b, &agreement_id);
     dispute_client.resolve_dispute(
         &dispute_admin,
@@ -1722,7 +1722,7 @@ fn test_cross_contract_workflow_failure_injection_preserves_state() {
     assert_eq!(stored_bonus.claimed_payouts, 0);
     assert_eq!(stored_bonus.status, bonus_system::ApprovalStatus::Approved);
 
-    dispute_client.file_dispute(&employee, &agreement_id);
+    dispute_client.file_dispute(&employee, &agreement_id, &DisputeReason::PaymentDispute);
     advance(&env, ONE_WEEK + 1);
     let escalation_attempt = dispute_client.try_escalate_dispute(&employee, &agreement_id);
     assert_eq!(
@@ -2224,7 +2224,7 @@ fn test_hire_to_resolve_full_workflow() {
     );
 
     // Mirror the dispute into dispute_escalation for the off-chain ladder.
-    dispute_client.file_dispute(&contributor, &agreement_id);
+    dispute_client.file_dispute(&contributor, &agreement_id, &DisputeReason::PaymentDispute);
     let dispute = dispute_client.get_dispute(&agreement_id).unwrap();
     assert_eq!(dispute.status, EscalationStatus::Open);
     assert_eq!(dispute.level, EscalationLevel::Level1);

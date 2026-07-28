@@ -267,6 +267,7 @@ Level1/2 resolution → status = Resolved (3-day appeal window opens)
 | `phase_started_at` | `u64` | Ledger timestamp when the current phase began |
 | `phase_deadline` | `u64` | Ledger timestamp at which the current phase expires |
 | `outcome` | `DisputeOutcome` | Binding ruling once resolved; `Unset` while open |
+| `reason` | `DisputeReason` | Why the dispute was raised; immutable after filing |
 
 > `phase_started_at` doubles as the **SLA breach timestamp** when
 > `status == PendingReview`: it records the exact moment the keeper advanced
@@ -283,7 +284,7 @@ Level1/2 resolution → status = Resolved (3-day appeal window opens)
 client.initialize(&owner, &admin);
 
 // 2. Employee files dispute — SLA clock starts immediately
-client.file_dispute(&employee, &agreement_id);
+client.file_dispute(&employee, &agreement_id, &DisputeReason::PaymentDispute);
 
 // 3. Admin resolves at Level1 — 3-day appeal window opens
 client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::UpholdPayment);
@@ -296,7 +297,7 @@ client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::UpholdPayment);
 
 ```rust
 // 1. File
-client.file_dispute(&employee, &agreement_id);
+client.file_dispute(&employee, &agreement_id, &DisputeReason::PaymentDispute);
 
 // 2. Escalate to Level2 (within SLA window)
 client.escalate_dispute(&employee, &agreement_id);
@@ -316,7 +317,7 @@ client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::GrantClaim);
 
 ```rust
 // 1. File dispute
-client.file_dispute(&employee, &agreement_id);
+client.file_dispute(&employee, &agreement_id, &DisputeReason::PaymentDispute);
 // phase_deadline = now + 604_800 (7 days)
 
 // ...7 days pass, admin has not acted...
@@ -346,7 +347,7 @@ client.set_level_time_limit(&admin, &EscalationLevel::Level1, &3600u64);
 // Set a 6-hour pending-review window
 client.set_pending_review_time_limit(&admin, &21_600u64);
 
-client.file_dispute(&user, &agreement_id);
+client.file_dispute(&user, &agreement_id, &DisputeReason::PaymentDispute);
 // phase_deadline = now + 3600
 
 // After 1 hour + 1 second:
@@ -371,6 +372,32 @@ client.keeper_advance_stage(&keeper, &agreement_id);
 | 9 | `DeadlineNotPassed` | Cannot expire or advance a dispute before its current deadline |
 | 10 | `AlreadyTerminal` | Dispute is already in `Expired` state |
 | 11 | `AlreadyPendingReview` | `keeper_advance_stage` already called; repeated call rejected |
+| 12 | `SlaDeadlineOverflow` | SLA deadline computation overflowed; keeper cannot proceed |
+| 13 | `ReasonTooLong` | `Other` text exceeds 256 bytes |
+
+---
+
+## Audit Logger Integration
+
+Every dispute lifecycle transition can optionally record a compliance entry in
+the shared `audit_logger` contract. Once wired via `set_audit_logger(admin, addr)`:
+
+| Transition | Audit action | Actor |
+|---|---|---|
+| `file_dispute` | `dispute_filed` | Caller |
+| `escalate_dispute` | `dispute_escalated` | Caller |
+| `keeper_advance_stage` | `dispute_sla_breached` | Keeper |
+| `resolve_dispute` (L1/L2) | `dispute_resolved` | Admin |
+| `resolve_dispute` (L3) | `dispute_finalised` | Admin |
+| `appeal_ruling` | `dispute_appealed` | Appellant |
+| `expire_dispute` | `dispute_expired` | Caller |
+
+Unauthorized callers cannot create audit entries — failed transitions return an
+error without recording. When no audit logger is configured, the contract
+operates normally without external audit.
+
+Configuration is admin-gated via `set_audit_logger`; the current logger address
+is visible via `get_audit_logger()`.
 
 ---
 

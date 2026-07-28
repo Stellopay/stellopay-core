@@ -1,4 +1,28 @@
-use soroban_sdk::{contracterror, contracttype, Address};
+use soroban_sdk::{contracterror, contracttype, Address, String};
+
+/// Maximum byte length allowed for the free-text `Other` variant.
+///
+/// Capped to prevent on-chain storage bloat — a single malicious dispute could
+/// otherwise consume an unbounded ledger entry at negligible cost to the filer.
+pub const MAX_OTHER_REASON_LEN: u32 = 256;
+
+/// The reason a dispute was raised.
+///
+/// Structured categories make disputes filterable and reportable. Use `Other`
+/// only when none of the defined categories apply; the text is capped at
+/// [`MAX_OTHER_REASON_LEN`] bytes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisputeReason {
+    /// Goods or services were not delivered.
+    NonDelivery,
+    /// Delivered work did not meet the agreed quality standard.
+    QualityIssue,
+    /// Disagreement over the payment amount or timing.
+    PaymentDispute,
+    /// Free-text reason, capped at [`MAX_OTHER_REASON_LEN`] bytes.
+    Other(String),
+}
 
 /// Represents the level of escalation for a dispute.
 #[contracttype]
@@ -116,6 +140,8 @@ pub struct DisputeDetails {
     pub phase_deadline: u64,
     /// The binding outcome once resolved or finalised; [`DisputeOutcome::Unset`] while open.
     pub outcome: DisputeOutcome,
+    /// The reason the dispute was filed.
+    pub reason: DisputeReason,
 }
 
 /// Storage keys for the dispute escalation contract.
@@ -164,4 +190,6 @@ pub enum DisputeError {
     AlreadyPendingReview = 11,
     /// SLA deadline computation overflowed u64; keeper_advance_stage cannot proceed.
     SlaDeadlineOverflow = 12,
+    /// The free-text reason in `DisputeReason::Other` exceeds [`MAX_OTHER_REASON_LEN`] bytes.
+    ReasonTooLong = 13,
 }
