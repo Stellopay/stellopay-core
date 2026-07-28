@@ -12,7 +12,7 @@ stores a human-readable name plus an off-chain metadata URI.
 ### Design Overview
 
 - **Admin-controlled issuance** - A single owner address initializes the
-  contract and is the only address allowed to mint badges.
+  contract and is the only address allowed to mint and burn badges.
 - **Per-token metadata URI** - `mint` stores the badge metadata URI at issuance
   time. The owner can later update the URI for a specific token id if hosting
   moves or metadata needs correction.
@@ -52,6 +52,10 @@ Badge management:
 - `mint(caller, recipient, name, metadata_uri) -> u64`
   - Owner-only.
   - Mints a badge to `recipient` and returns the new token id.
+- `burn(caller, token_id)`
+  - Owner-only.
+  - Burns (revokes) a badge by token id.
+  - The badge id is never reused; a subsequent mint always receives a fresh id.
 - `update_metadata_uri(caller, token_id, new_uri)`
   - Owner-only.
   - Updates the metadata URI for an existing badge.
@@ -67,6 +71,11 @@ Read helpers:
 
 ### Security Considerations
 
+- Burn is restricted to the initialized owner. This prevents arbitrary callers
+  from revoking employee badges.
+- A burned badge id is never reused; `next_badge_id` always increments, so a
+  subsequent mint for the same employee produces a fresh token id. Off-chain
+  systems can safely reference a burned id without risk of collision.
 - Metadata URI updates are restricted to the initialized owner. This prevents
   arbitrary callers from rewriting badge provenance data.
 - The update path is token-scoped and requires the badge to exist.

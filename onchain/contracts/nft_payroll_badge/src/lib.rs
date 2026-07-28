@@ -167,6 +167,27 @@ impl NftPayrollBadgeContract {
         badge_id
     }
 
+    /// Burns (revokes) an existing badge identified by `token_id`.
+    ///
+    /// Only the contract owner may burn badges. Once burned, the badge's data
+    /// is removed from storage and `get_badge` returns `None` for that id.
+    /// The badge id is never reused; a subsequent [`mint`] always receives a
+    /// fresh id, preventing collisions with off-chain references to the
+    /// original revoked badge.
+    ///
+    /// [`mint`]: NftPayrollBadgeContract::mint
+    pub fn burn(env: Env, caller: Address, token_id: u64) {
+        require_initialized(&env);
+        require_owner(&env, &caller);
+
+        let key = StorageKey::Badge(token_id);
+        env.storage()
+            .persistent()
+            .get::<_, Badge>(&key)
+            .expect("Badge not found");
+        env.storage().persistent().remove(&key);
+    }
+
     /// Updates the metadata URI for an already-minted badge.
     ///
     /// Only the contract owner may update metadata. The update is scoped to a
