@@ -7,7 +7,7 @@ use rbac::{RbacContractClient, Role};
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, IntoVal, Symbol,
-    Val, Vec,
+    Val, Vec, symbol_short,
 };
 use withdrawal_timelock::{
     OperationKind as TimelockOperationKind, OperationStatus as TimelockOperationStatus,
@@ -52,6 +52,9 @@ pub enum GovernanceError {
     /// `voting_period_seconds` was outside the `[MIN_VOTING_PERIOD_SECONDS,
     /// MAX_VOTING_PERIOD_SECONDS]` range.
     VotingPeriodOutOfBounds = 18,
+    /// Quorum has already been reached and the proposal can no longer be
+    /// cancelled by the proposer.
+    ProposalNotCancellable = 19,
 }
 
 /// Validates that `voting_period_seconds` falls within the supported bounds.
@@ -664,6 +667,53 @@ impl GovernanceContract {
 
         proposal.status = ProposalStatus::Cancelled;
         write_proposal(&env, &proposal);
+        Ok(())
+    }
+
+    /// @notice Allows the original proposer to cancel their own proposal
+    ///         before the quorum threshold has been reached.
+    /// @dev Quorum is checked by comparing total votes cast against the
+    ///      proposal's quorum_votes (snapshot at creation time). Cancellation
+    ///      is rejected once total votes >= quorum to prevent griefing of
+    ///      active voters near the quorum boundary. If a Succeeded proposal
+    ///      already queued a timelock operation, that operation is cancelled
+    ///      first so execution cannot later proceed.
+    /// @param caller The original proposer of the proposal.
+    /// @param proposal_id Proposal identifier.
+    pub fn proposer_cancel_proposal(
+        env: Env,
+        caller: Address,
+        proposal_id: u128,
+    ) -> Result<(), GovernanceError> {
+        require_initialized(&env)?;
+        caller.require_auth();
+
+        let mut proposal = read_proposal(&env, proposal_id)?;
+        if proposal.status != ProposalStatus::Active {
+            return Err(GovernanceError::ProposalNotActive);
+        }
+        if proposal.proposer != caller {
+            return Err(GovernanceError::NotOwner);
+        }
+
+        let total_votes = proposal
+            .for_votes
+            .saturating_add(proposal.against_votes)
+            .saturating_add(proposal.abstain_votes);
+        if total_votes >= proposal.quorum_votes {
+            return Err(GovernanceError::ProposalNotCancellable);
+        }
+
+        if let Some(op_id) = proposal.timelock_operation_id {
+            cancel_timelock_operation(&env, op_id)?;
+        }
+
+        proposal.status = ProposalStatus::Cancelled;
+        write_proposal(&env, &proposal);
+
+        env.events()
+            .publish((symbol_short!("prop_cancelled", proposal_id), proposal_id), ());
+
         Ok(())
     }
 
