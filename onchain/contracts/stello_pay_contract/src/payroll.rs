@@ -18,14 +18,58 @@ use crate::storage::{
     BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
     EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
     MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
-    PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE,
+    PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE, get_milestone, get_agreement, set_milestone, MilestoneStatus,
 };
+
+use soroban_sdk::{Env, Address, contracterror, panic_with_error};
 
 /// Minimal interface for cross-contract calls into the deployed multisig contract.
 #[contractclient(name = "MultisigClient")]
 trait MultisigInterface {
     fn get_operation(env: Env, operation_id: u128) -> Option<Operation>;
 }
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub enum PayrollError {
+    NotAuthorized = 1,
+    MilestoneNotFound = 2,
+    InvalidStatus = 3,
+}
+
+/// Approves a milestone, moving it toward a payable status.
+/// 
+/// ### Security
+/// Strictly restricts the caller to the agreement's designated `approver`. 
+/// Prevents self-approval by employees or approval by unrelated third parties.
+pub fn approve_milestone(env: Env, milestone_id: u64) {
+    // 1. Fetch milestone and its parent agreement
+    let mut milestone = get_milestone(&env, milestone_id)
+        .unwrap_or_else(|| panic_with_error!(&env, PayrollError::MilestoneNotFound));
+    
+    let agreement = get_agreement(&env, milestone.agreement_id)
+        .unwrap_or_else(|| panic_with_error!(&env, PayrollError::NotAuthorized));
+
+    // 2. SECURITY HARDENING: Bind auth to the designated approver
+    // This will fail if the signature does not match agreement.approver
+    agreement.approver.require_auth();
+
+    // 3. Logic: Ensure milestone is in a state that can be approved (e.g., Submitted)
+    if milestone.status != MilestoneStatus::Submitted {
+        panic_with_error!(&env, PayrollError::InvalidStatus);
+    }
+
+    // 4. Update status
+    milestone.status = MilestoneStatus::Approved;
+    set_milestone(&env, milestone_id, &milestone);
+
+    // 5. Emit event for indexer
+    env.events().publish(
+        (soroban_sdk::symbol_short!("approve"), milestone_id),
+        agreement.approver.clone()
+    );
+}
+
 
 #[contractclient(name = "RateLimiterClient")]
 trait RateLimiterInterface {
