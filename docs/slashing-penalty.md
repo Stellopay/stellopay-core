@@ -138,6 +138,28 @@ both go through the same `execute_slash` entry point.
 
 ---
 
+### Evidence-Hash-Mismatch Guard
+
+The contract **re-validates** the evidence hash against the originally attested reference at both execution time (`execute_slash`) and countersign time (`attest_slash`):
+
+- **`execute_slash`**: After looking up the `SlashRecord` by the submitted `evidence_hash` (map key), the contract explicitly checks that `record.evidence_hash == evidence_hash`. Under normal operation these always match (the record is stored with the same hash as its key), so this is a **defense-in-depth** check that guards against storage-corruption edge cases.
+- **`attest_slash` (countersign path)**: When a slasher countersigns an existing record, the same check is applied: `record.evidence_hash == evidence_hash`. This ensures the slasher's submitted evidence hash matches the one recorded at initial attestation.
+
+If either check fails, the contract returns `SlashError::EvidenceHashMismatch (18)` **before** performing any state mutation.
+
+```
+Create:  attest_slash(H1)  → store record with key=H1, record.evidence_hash=H1
+Execute: execute_slash(H1) → lookup by H1, check H1 == record.evidence_hash → ✓
+Corrupt: (direct storage edit) → record.evidence_hash ← H2
+Execute: execute_slash(H1) → lookup by H1, check H1 == record.evidence_hash → ✗ (EvidenceHashMismatch)
+```
+
+**Why it matters:** The evidence hash serves as both the record identifier (map key) and a field within the record. While these are always consistent under normal contract operation, this explicit validation protects against:
+- Storage corruption from low-level bugs in Soroban host functions.
+- Abnormal state transitions from edge-case reentrancy or interrupted writes.
+
+---
+
 ## Security Assumptions
 
 ### Role Separation
@@ -297,6 +319,7 @@ pub fn get_quorum(env: Env) -> u32
 | 15   | `LifetimeCapExceeded` | Cumulative slashing exceeds configured lifetime cap |
 | 16   | `ArithmeticOverflow`  | Overflow/underflow protection triggered             |
 | 17   | `ZeroQuorum`          | Quorum must be > 0; passing 0 is rejected rather than silently raised to the default |
+| 18   | `EvidenceHashMismatch`| The evidence hash submitted at execution does not match the reference recorded at attestation time. Defense-in-depth check that guards against storage-corruption edge cases where the map key and stored `evidence_hash` could diverge |
 
 ---
 
@@ -357,6 +380,13 @@ The test suite covers:
   - `test_per_event_bps_cap_exceeds_max_rejected` — cap above `MAX_PENALTY_BPS` (5 000) is rejected
   - `test_max_bps_boundary_slash_succeeds` — slash at hard `MAX_PENALTY_BPS` through full slash-with-evidence path
   - `test_update_cap_then_enforce` — lowering the cap via `set_penalty_caps` correctly rejects previously-valid slashes
+- **Evidence-hash-mismatch rejection (issue reference)**:
+  - `test_execute_slash_matching_evidence_hash_succeeds` — evidence-based slash executes when the hash matches the recorded reference
+  - `test_execute_slash_attestation_matching_evidence_hash_succeeds` — attestation-based slash executes when the hash matches
+  - `test_execute_slash_wrong_hash_key_returns_record_not_found` — submitting a different (unused) hash at execute time returns `RecordNotFound`
+  - `test_execute_slash_rejects_storage_corrupted_evidence_hash` — defense-in-depth: storage corruption that diverges the stored `evidence_hash` from the map key triggers `EvidenceHashMismatch`
+  - `test_attest_slash_countersign_rejects_mismatched_evidence_hash` — countersign path rejects a corrupted record whose stored `evidence_hash` diverges from the submitted hash
+  - `test_attest_slash_countersign_matching_hash_succeeds` — countersign with matching hash succeeds under normal operation
 
 ---
 

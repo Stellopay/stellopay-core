@@ -25,6 +25,10 @@
 //!   bool>`), so lookup time is constant regardless of slash history.
 //! - Slashed funds are held in escrow during the appeal window before burning/redistribution.
 //! - Admin cannot slash; roles are separated (admin ≠ slasher).
+//! - The `execute_slash` and `attest_slash` (countersign) paths re-validate that the submitted
+//!   evidence hash matches the reference stored in the `SlashRecord` at attestation time
+//!   (defense-in-depth against storage-corruption edge cases). A mismatch returns
+//!   `SlashError::EvidenceHashMismatch (18)` before any mutation.
 
 #![no_std]
 #![allow(deprecated)] // env.events().publish() — codebase-wide pattern
@@ -222,6 +226,10 @@ pub enum SlashError {
     ArithmeticOverflow = 16,
     /// Quorum must be greater than zero; passing 0 is a misconfiguration.
     ZeroQuorum = 17,
+    /// The evidence hash submitted at execution does not match the reference recorded at
+    /// attestation time. Each slash record is keyed by its evidence hash; the submitted hash
+    /// must be the same as the one stored in the record.
+    EvidenceHashMismatch = 18,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -468,6 +476,12 @@ impl SlashingPenaltyContract {
 
         if let Some(mut record) = records.get(evidence_hash.clone()) {
             // Countersign existing record
+            // Verify the submitted evidence hash matches the one recorded at initial
+            // attestation. This guards against storage-corruption edge cases where the
+            // map key and stored hash could diverge.
+            if record.evidence_hash != evidence_hash {
+                return Err(SlashError::EvidenceHashMismatch);
+            }
             if record.status != SlashStatus::Pending {
                 return Err(SlashError::InvalidState);
             }
@@ -604,17 +618,27 @@ impl SlashingPenaltyContract {
     /// * `evidence_hash` - SHA-256 hash identifying the slash record (slash record id).
     ///
     /// # Errors
-    /// * `RecordNotFound`     — No slash record exists for the given hash.
-    /// * `InvalidState (8)`   — Record is not `Pending` (already `Executed`, `Reversed`, or
+    /// * `RecordNotFound`        — No slash record exists for the given hash.
+    /// * `EvidenceHashMismatch`  — The submitted evidence hash does not match the reference
+    ///   stored in the record at attestation time.
+    /// * `InvalidState (8)`      — Record is not `Pending` (already `Executed`, `Reversed`, or
     ///   `AppealRejected`). **This is the double-execution guard.**
-    /// * `QuorumNotMet`       — Attestation-based slash does not yet have enough signatures.
-    /// * `AppealWindowOpen`   — Appeal deadline has not yet passed.
+    /// * `QuorumNotMet`          — Attestation-based slash does not yet have enough signatures.
+    /// * `AppealWindowOpen`      — Appeal deadline has not yet passed.
     pub fn execute_slash(env: Env, evidence_hash: BytesN<32>) -> Result<(), SlashError> {
         let mut records: Map<BytesN<32>, SlashRecord> =
             env.storage().instance().get(&SLASH_REC).unwrap();
         let mut record = records
             .get(evidence_hash.clone())
             .ok_or(SlashError::RecordNotFound)?;
+
+        // Defense-in-depth: verify the submitted evidence hash matches the one stored
+        // in the record. While the record is keyed by this hash in the map (guaranteeing
+        // a match in normal operation), this explicit check prevents storage-corruption
+        // edge cases from silently passing.
+        if record.evidence_hash != evidence_hash {
+            return Err(SlashError::EvidenceHashMismatch);
+        }
 
         if record.status != SlashStatus::Pending {
             return Err(SlashError::InvalidState);
