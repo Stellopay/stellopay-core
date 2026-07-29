@@ -19,7 +19,7 @@ Once an agreement is created with `create_agreement`, it is **permanently pinned
 - To use a new template version, a new agreement must be explicitly created with the new version number
 - This prevents silent schema migrations that could break agreement validation logic
 
-This guarantee is tested in `agreement_pinned_to_version_n_after_version_n_plus_one_published` and `new_agreement_uses_latest_version_after_publish`.
+This guarantee is tested in `agreement_pinned_to_version_n_after_version_n_plus_one_published`, `new_agreement_uses_latest_version_after_publish`, and `deprecated_template_remains_listable_not_creatable_and_preserves_existing_agreements`.
 
 ## API overview
 
@@ -29,7 +29,8 @@ This guarantee is tested in `agreement_pinned_to_version_n_after_version_n_plus_
 | `register_template` | Create a new `template_id` and display name. Rejects if an active template with the same name exists. |
 | `publish_template_version` | Append a new immutable version (schema hash + notes). |
 | `latest_version` | Return the highest published version number. |
-| `get_version` | Load metadata for `(template_id, version)`. |
+| `get_version` | Load metadata for `(template_id, version)`, including deprecated historical records. |
+| `get_template` | Load the latest published template record, including if it is deprecated; intended for historical lookup/audit. |
 | `deprecate_version` | Mark a version deprecated; new agreements cannot use it. Frees the name once all versions are deprecated. |
 | `create_agreement` | Create an agreement bound to a **non-deprecated** version. |
 | `get_agreement` | Fetch agreement by id. |
@@ -66,7 +67,7 @@ This guarantee is tested in `agreement_pinned_to_version_n_after_version_n_plus_
 ## Security notes
 
 - Only the template **owner** can publish or deprecate versions.
-- Deprecated versions cannot receive new `create_agreement` calls.
+- Deprecated versions cannot receive new `create_agreement` calls, but `get_template` and `get_version` intentionally continue to return their complete immutable records for auditing and historical agreement resolution.
 - Empty `label` or template `name` is rejected (`InvalidData`).
 - The name index is append-only: once a template ID is associated with a name, that association is permanent and always inspected by the collision check.
 - A caller cannot "skip" the collision check by re-using a template ID from a different name; the check is keyed on the requested name, not on the caller.
@@ -83,6 +84,7 @@ cargo test -p template_versioning
 ### Test coverage
 
 - End-to-end lifecycle: register, publish, bind agreement, deprecate blocks new binds
+- Deprecated-template invariant: `get_template` retains full metadata, `create_agreement` returns `VersionDeprecated`, and pre-existing agreements remain unchanged
 - Non-owner cannot publish or deprecate
 - Deprecation event emission (with and without reason, idempotent, non-owner blocked)
 - **Naming-collision policy (issue #940)**:
