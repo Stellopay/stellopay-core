@@ -211,4 +211,15 @@ pub enum DisputeError {
     SlaDeadlineOverflow = 12,
     /// The free-text reason in `DisputeReason::Other` exceeds [`MAX_OTHER_REASON_LEN`] bytes.
     ReasonTooLong = 13,
+    /// A dispute for this `agreement_id` is already open (non-terminal).
+    ///
+    /// Returned by `file_dispute` when an existing dispute record with a
+    /// non-terminal status (`Open`, `Escalated`, `Appealed`, `PendingReview`,
+    /// or `Resolved`) is found for the same `agreement_id`.  Filing a second
+    /// dispute while the first is still active would produce two conflicting
+    /// SLA timers and is therefore rejected.
+    ///
+    /// Re-filing is permitted once the prior dispute reaches a terminal state
+    /// (`Finalised` or `Expired`).
+    DisputeDuplicateFiling = 14,
 }

@@ -44,6 +44,68 @@ All further transitions are rejected with `AlreadyFinalised` or `AlreadyTerminal
 
 ---
 
+## Duplicate-Filing Guard
+
+Only one **active** (non-terminal) dispute may exist per `agreement_id` at any
+time. If a caller invokes `file_dispute` while an existing dispute for the same
+`agreement_id` is in any non-terminal state, the call is rejected immediately
+with `DisputeDuplicateFiling` (error code 14).
+
+### Why this matters
+
+Allowing a second filing while the first is still in-flight would produce **two
+independent SLA timers** for the same underlying claim. Downstream payroll and
+escrow contracts listen for `dispute_resolved` / `dispute_finalised` /
+`dispute_expired` events to decide how to release funds; two competing records
+would leave them in an undefined state.
+
+### Non-terminal states that block re-filing
+
+| Status | Blocked? |
+|--------|----------|
+| `Open` | ✓ `DisputeDuplicateFiling` |
+| `Escalated` | ✓ `DisputeDuplicateFiling` |
+| `Appealed` | ✓ `DisputeDuplicateFiling` |
+| `PendingReview` | ✓ `DisputeDuplicateFiling` |
+| `Resolved` | ✓ `DisputeDuplicateFiling` (appeal window still open) |
+
+### Terminal states that allow re-filing
+
+| Status | Allowed? |
+|--------|----------|
+| `Finalised` | ✓ Re-filing permitted |
+| `Expired` | ✓ Re-filing permitted |
+
+When re-filing is permitted the new dispute **overwrites** the terminal record
+in storage (same `StorageKey::Dispute(agreement_id)`) and starts a completely
+fresh Level1 SLA window from the current ledger timestamp.
+
+### Example: re-file after Finalised
+
+```rust
+// Prior dispute fully adjudicated at Level3
+client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::GrantClaim);
+// → status = Finalised
+
+// New claim on the same agreement — re-filing now allowed
+client.file_dispute(&employee, &agreement_id, &DisputeReason::QualityIssue);
+// → status = Open @ Level1, fresh SLA clock
+```
+
+### Example: re-file after Expired
+
+```rust
+// Prior dispute never resolved — expired after deadline
+client.expire_dispute(&anyone, &agreement_id);
+// → status = Expired
+
+// Re-file for the same agreement
+client.file_dispute(&employee, &agreement_id, &DisputeReason::NonDelivery);
+// → status = Open @ Level1, fresh SLA clock
+```
+
+---
+
 ## SLA Timer Design
 
 Every dispute phase is governed by a **deterministic ledger timestamp** stored
@@ -233,6 +295,7 @@ Level1/2 resolution → status = Resolved (3-day appeal window opens)
 |-----------|-------------|
 | Only admin resolves | `is_admin` check at the top of `resolve_dispute` |
 | Cannot double-resolve | `AlreadyResolved` / `AlreadyFinalised` on every resolve path |
+| No duplicate active disputes | `file_dispute` returns `DisputeDuplicateFiling` when a non-terminal dispute already exists for the same `agreement_id`; re-filing allowed after `Finalised` or `Expired` |
 | No funds stuck | `expire_dispute` (anyone) closes abandoned disputes |
 | No re-entry into terminal states | `assert_not_terminal` rejects all transitions on `Finalised`/`Expired` |
 | Deadlines enforced on-chain | All time comparisons use `env.ledger().timestamp()` |
@@ -408,6 +471,7 @@ client.keeper_advance_stage(&keeper, &agreement_id);
 | 11 | `AlreadyPendingReview` | `keeper_advance_stage` already called; repeated call rejected |
 | 12 | `SlaDeadlineOverflow` | SLA deadline computation overflowed; keeper cannot proceed |
 | 13 | `ReasonTooLong` | `Other` text exceeds 256 bytes |
+| 14 | `DisputeDuplicateFiling` | A non-terminal dispute already exists for this `agreement_id`; re-filing allowed after `Finalised` or `Expired` |
 
 ---
 
