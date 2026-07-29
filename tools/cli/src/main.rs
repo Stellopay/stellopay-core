@@ -46,6 +46,15 @@ async fn main() -> anyhow::Result<()> {
         Commands::Info { contract_id } => info_command(contract_id, &config).await,
         Commands::Status => status_command(&config).await,
         Commands::Webhook { command } => webhook_command(command, &config).await,
+        Commands::Verify {
+            contract_id,
+            network,
+            wasm,
+            skip_build,
+            deployed_hash,
+        } => {
+            verify_command(contract_id, network, wasm, skip_build, deployed_hash, &config).await
+        }
         Commands::EmergencyWithdraw {
             contract_id,
             token,
