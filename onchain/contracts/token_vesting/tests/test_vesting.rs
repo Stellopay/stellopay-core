@@ -6,8 +6,9 @@ use soroban_sdk::{
     vec, Address, Env, IntoVal, Vec,
 };
 use token_vesting::{
-    ClaimedEvent, CreatedEvent, CustomCheckpoint, EarlyReleaseEvent, RevokedEvent,
-    TokenVestingContract, TokenVestingContractClient, VestingKind, VestingStatus,
+    BeneficiaryAssignedEvent, ClaimedEvent, CreatedEvent, CustomCheckpoint,
+    EarlyReleaseEvent, RevokedEvent, TokenVestingContract, TokenVestingContractClient,
+    VestingKind, VestingStatus,
 };
 
 // ---------------------------------------------------------------------------
@@ -1665,6 +1666,256 @@ fn early_release_then_claim_transfers_exact_amounts() {
     let schedule = client.get_schedule(&sid).unwrap();
     assert_eq!(schedule.status, VestingStatus::Active);
     assert_eq!(schedule.released_amount, 300);
+}
+
+// ===========================================================================
+// P. assign_beneficiary (issue #1067)
+// ===========================================================================
+
+#[test]
+fn test_assign_beneficiary_by_owner() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // Owner reassigns to new beneficiary
+    client.assign_beneficiary(&owner, &sid, &new_beneficiary);
+
+    let schedule = client.get_schedule(&sid).unwrap();
+    assert_eq!(schedule.beneficiary, new_beneficiary);
+}
+
+#[test]
+fn test_assign_beneficiary_by_current_beneficiary() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // Current beneficiary reassigns to new address (wallet migration)
+    client.assign_beneficiary(&beneficiary, &sid, &new_beneficiary);
+
+    let schedule = client.get_schedule(&sid).unwrap();
+    assert_eq!(schedule.beneficiary, new_beneficiary);
+}
+
+#[test]
+fn test_assign_beneficiary_vested_remainder_claimable_by_new_beneficiary() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // At t=30: 300 vested, 700 unvested
+    set_time(&env, 30);
+    assert_eq!(client.get_vested_amount(&sid), 300);
+
+    // Beneficiary reassigns to new address
+    client.assign_beneficiary(&owner, &sid, &new_beneficiary);
+
+    // New beneficiary should be able to claim the 300 vested (not yet claimed)
+    let claimed = client.claim(&new_beneficiary, &sid);
+    assert_eq!(claimed, 300);
+
+    assert_eq!(token.balance(&new_beneficiary), 300);
+}
+
+#[test]
+#[should_panic(expected = "Schedule is not active")]
+fn test_assign_beneficiary_revoked_schedule_fails() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &true, // revocable
+    );
+
+    set_time(&env, 50);
+    client.revoke(&employer, &sid);
+
+    // Revoked schedule cannot be reassigned
+    client.assign_beneficiary(&owner, &sid, &new_beneficiary);
+}
+
+#[test]
+#[should_panic(expected = "Schedule is not active")]
+fn test_assign_beneficiary_completed_schedule_fails() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_cliff_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &500i128,
+        &10u64,
+        &false,
+    );
+
+    set_time(&env, 10);
+    client.claim(&beneficiary, &sid);
+
+    // Completed schedule cannot be reassigned
+    client.assign_beneficiary(&owner, &sid, &new_beneficiary);
+}
+
+#[test]
+#[should_panic(expected = "Only owner or current beneficiary can assign")]
+fn test_assign_beneficiary_stranger_fails() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+    let stranger = Address::generate(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // Stranger cannot reassign
+    client.assign_beneficiary(&stranger, &sid, &new_beneficiary);
+}
+
+#[test]
+#[should_panic(expected = "Only owner or current beneficiary can assign")]
+fn test_assign_beneficiary_employer_not_authorized() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // Employer is not owner and not beneficiary, so fails
+    client.assign_beneficiary(&employer, &sid, &new_beneficiary);
+}
+
+#[test]
+fn test_assign_beneficiary_event_emitted() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    client.assign_beneficiary(&owner, &sid, &new_beneficiary);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(
+        last_event.1,
+        vec![
+            &env,
+            soroban_sdk::String::from_str(&env, "vesting_beneficiary_assigned").into_val(&env),
+            sid.into_val(&env),
+        ]
+    );
+    let event: BeneficiaryAssignedEvent = last_event.2.into_val(&env);
+    assert_eq!(event.id, sid);
+    assert_eq!(event.old_beneficiary, beneficiary);
+    assert_eq!(event.new_beneficiary, new_beneficiary);
+}
+
+#[test]
+#[should_panic(expected = "Schedule is not active")]
+fn test_assign_beneficiary_fully_early_released_fails() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    // Large mint so we don't run out
+    let asset_admin = soroban_sdk::token::StellarAssetClient::new(&env, &token.address);
+    asset_admin.mint(&employer, &10_000i128);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &500i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // Early release all unvested tokens (total is 500, vested at t=0 is 0, so 500 unvested)
+    client.approve_early_release(&owner, &sid, &500i128);
+
+    // Schedule is now fully released
+    client.assign_beneficiary(&owner, &sid, &new_beneficiary);
 }
 
 // ===========================================================================

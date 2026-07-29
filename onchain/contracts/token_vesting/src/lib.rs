@@ -101,6 +101,14 @@ pub struct EarlyReleaseEvent {
     pub amount: i128,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryAssignedEvent {
+    pub id: u128,
+    pub old_beneficiary: Address,
+    pub new_beneficiary: Address,
+}
+
 fn require_initialized(env: &Env) {
     let initialized = env
         .storage()
@@ -705,6 +713,59 @@ impl TokenVestingContract {
         );
 
         unvested
+    }
+
+    /// @notice Reassigns the beneficiary of an unvested schedule.
+    /// @dev Only the contract owner (admin) or the current beneficiary may call this.
+    ///      The schedule must be Active and must have unclaimed tokens remaining
+    ///      (i.e., not fully released). Already-vested-but-unclaimed amounts remain
+    ///      claimable by the new beneficiary after reassignment.
+    ///      Emits event `("vesting_beneficiary_assigned", schedule_id)` with
+    ///      `(old_beneficiary, new_beneficiary)`.
+    /// @param caller         Address requesting the change; must authenticate and
+    ///                       be either the owner or the current beneficiary.
+    /// @param schedule_id    Vesting schedule identifier.
+    /// @param new_beneficiary Address to transfer the schedule to.
+    pub fn assign_beneficiary(
+        env: Env,
+        caller: Address,
+        schedule_id: u128,
+        new_beneficiary: Address,
+    ) {
+        require_initialized(&env);
+        caller.require_auth();
+
+        let mut schedule = read_schedule(&env, schedule_id);
+
+        // Only owner or current beneficiary can reassign.
+        let owner = read_owner(&env);
+        assert!(
+            caller == owner || caller == schedule.beneficiary,
+            "Only owner or current beneficiary can assign"
+        );
+
+        assert!(
+            schedule.status == VestingStatus::Active,
+            "Schedule is not active"
+        );
+
+        assert!(
+            schedule.released_amount < schedule.total_amount,
+            "Schedule fully claimed or released"
+        );
+
+        let old_beneficiary = schedule.beneficiary.clone();
+        schedule.beneficiary = new_beneficiary.clone();
+        write_schedule(&env, &schedule);
+
+        env.events().publish(
+            ("vesting_beneficiary_assigned", schedule_id),
+            BeneficiaryAssignedEvent {
+                id: schedule_id,
+                old_beneficiary,
+                new_beneficiary,
+            },
+        );
     }
 
     /// @notice Reads a vesting schedule by id.
