@@ -661,3 +661,213 @@ fn test_long_idle_gap_refill_is_capped_at_burst_capacity() {
         "bucket should be empty after consuming burst tokens from capped refill"
     );
 }
+
+/// # Per-contract budget configuration
+///
+/// `set_limit_for_contract` stores an opt-in LimitConfig keyed by the integrating
+/// contract address. Until set, `get_limit_for_contract` returns `None` and
+/// `check_and_consume_for_contract` only enforces the address (+ global) budgets.
+#[test]
+fn test_set_and_get_limit_for_contract() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let contract = Address::generate(&env);
+
+    client.initialize(&admin, &10u32, &1u32, &false);
+
+    assert_eq!(client.get_limit_for_contract(&contract), None);
+
+    client.set_limit_for_contract(&contract, &3u32, &0u32);
+    let config = client.get_limit_for_contract(&contract).unwrap();
+    assert_eq!(config.burst, 3);
+    assert_eq!(config.refill_rate, 0);
+
+    client.clear_limit_for_contract(&contract);
+    assert_eq!(client.get_limit_for_contract(&contract), None);
+}
+
+/// # Contract budget is shared across subject addresses
+///
+/// Address rotation inside one integrating contract must not exceed the
+/// contract-scoped burst. With contract burst = 2 and generous per-address
+/// defaults, two different subjects can each consume once; a third call from
+/// either subject is rejected by the shared contract bucket.
+#[test]
+fn test_contract_limit_blocks_address_rotation() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let contract = Address::generate(&env);
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    let user3 = Address::generate(&env);
+
+    // Generous per-address defaults so only the contract bucket can bind.
+    client.initialize(&admin, &10u32, &0u32, &false);
+    client.set_limit_for_contract(&contract, &2u32, &0u32);
+
+    assert_eq!(
+        client.check_and_consume_for_contract(&user1, &contract),
+        9
+    );
+    assert_eq!(
+        client.check_and_consume_for_contract(&user2, &contract),
+        9
+    );
+
+    // Contract bucket exhausted — rotation to user3 must fail.
+    assert!(client
+        .try_check_and_consume_for_contract(&user3, &contract)
+        .is_err());
+    // Fresh address quota still remaining on user1, but contract cap binds.
+    assert!(client
+        .try_check_and_consume_for_contract(&user1, &contract)
+        .is_err());
+}
+
+/// # Address budget still binds independently of the contract budget
+///
+/// With a large contract burst and a tight per-address override, the subject
+/// exhausts its own bucket while the contract bucket still has capacity.
+#[test]
+fn test_address_limit_still_enforced_alongside_contract_limit() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let contract = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &10u32, &0u32, &false);
+    client.set_limit_for_contract(&contract, &10u32, &0u32);
+    client.set_limit_for(&user, &1u32, &0u32);
+
+    assert_eq!(client.check_and_consume_for_contract(&user, &contract), 0);
+    assert!(client
+        .try_check_and_consume_for_contract(&user, &contract)
+        .is_err());
+
+    // Another subject can still consume against the remaining contract budget.
+    let other = Address::generate(&env);
+    assert_eq!(
+        client.check_and_consume_for_contract(&other, &contract),
+        9
+    );
+}
+
+/// # Either limit being hit rejects the call
+///
+/// Covers both failure modes in one scenario sequence:
+/// 1) address bucket empty while contract has tokens → reject
+/// 2) contract bucket empty while address has tokens → reject
+#[test]
+fn test_either_contract_or_address_limit_rejects() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let contract = Address::generate(&env);
+    let user_a = Address::generate(&env);
+    let user_b = Address::generate(&env);
+
+    client.initialize(&admin, &5u32, &0u32, &false);
+    client.set_limit_for_contract(&contract, &2u32, &0u32);
+    client.set_limit_for(&user_a, &1u32, &0u32);
+
+    // user_a: address burst 1 — first call ok, second fails on address limit
+    assert_eq!(
+        client.check_and_consume_for_contract(&user_a, &contract),
+        0
+    );
+    assert!(
+        client
+            .try_check_and_consume_for_contract(&user_a, &contract)
+            .is_err(),
+        "address limit must reject even when contract budget remains"
+    );
+
+    // user_b consumes the last contract token
+    assert_eq!(
+        client.check_and_consume_for_contract(&user_b, &contract),
+        4
+    );
+
+    // Contract empty: a third subject with full address quota is still rejected
+    let user_c = Address::generate(&env);
+    assert!(
+        client
+            .try_check_and_consume_for_contract(&user_c, &contract)
+            .is_err(),
+        "contract limit must reject even when address budget remains"
+    );
+}
+
+/// # Existing check_and_consume address path is unchanged
+///
+/// Configuring a contract budget must not affect callers that still use
+/// `check_and_consume` (address-only path).
+#[test]
+fn test_check_and_consume_ignores_contract_budget() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let contract = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &2u32, &0u32, &false);
+    client.set_limit_for_contract(&contract, &1u32, &0u32);
+
+    // Address-only path can consume full default burst despite contract burst=1
+    assert_eq!(client.check_and_consume(&user), 1);
+    assert_eq!(client.check_and_consume(&user), 0);
+    assert!(client.try_check_and_consume(&user).is_err());
+}
+
+/// # Unconfigured contract skips contract bucket
+#[test]
+fn test_check_and_consume_for_contract_without_budget_is_address_only() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let contract = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &2u32, &0u32, &false);
+
+    assert_eq!(client.get_limit_for_contract(&contract), None);
+    assert_eq!(
+        client.check_and_consume_for_contract(&user, &contract),
+        1
+    );
+    assert_eq!(
+        client.check_and_consume_for_contract(&user, &contract),
+        0
+    );
+    assert!(client
+        .try_check_and_consume_for_contract(&user, &contract)
+        .is_err());
+    assert_eq!(client.get_contract_usage(&contract), None);
+}
+
+/// # Contract usage reset restores the shared bucket
+#[test]
+fn test_reset_contract_usage() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let contract = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &10u32, &0u32, &false);
+    client.set_limit_for_contract(&contract, &1u32, &0u32);
+
+    client.check_and_consume_for_contract(&user, &contract);
+    assert!(client
+        .try_check_and_consume_for_contract(&user, &contract)
+        .is_err());
+
+    client.reset_contract_usage(&contract);
+    assert_eq!(
+        client.check_and_consume_for_contract(&user, &contract),
+        8
+    );
+}
