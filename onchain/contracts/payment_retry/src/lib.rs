@@ -690,7 +690,7 @@ impl PaymentRetryContract {
         let payment_ids = read_pending_payment_ids(&env);
         let mut due_ids = Vec::new(&env);
         let now = env.ledger().timestamp();
-        
+
         let mut i: u32 = 0;
         while i < payment_ids.len() {
             let payment_id = payment_ids.get(i).expect("pending payment id missing");

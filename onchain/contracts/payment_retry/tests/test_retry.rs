@@ -623,7 +623,7 @@ fn test_simultaneously_due_payments_processed_in_stable_order() {
     // Assert that their natural ID order is: id_b < id_c < id_a
     let mut ids = vec![id_a.clone(), id_b.clone(), id_c.clone()];
     ids.sort();
-    
+
     // Process them with max_payments = 2
     let processed = client.process_due_payments(&2);
     assert_eq!(processed, 2, "Should process exactly 2 payments");
