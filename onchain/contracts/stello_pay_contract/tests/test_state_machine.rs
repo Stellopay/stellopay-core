@@ -44,8 +44,10 @@
 //! | 35 | State unchanged after failed transition |
 //! | 36 | Multiple pause/resume cycles consistent |
 //! | 37 | Full lifecycle: Created through finalization |
-//! | 38 | Duplicate dispute raise returns specific error |
-//! | 39 | Fresh dispute can be raised again after prior one resolves |
+//! | 38 | Resume Completed agreement rejected |
+//! | 39 | Resume Cancelled agreement rejected |
+//! | 40 | Resume Disputed agreement rejected |
+//! | 41 | Resume all non-Paused statuses rejected |
 
 #![cfg(test)]
 #![allow(deprecated)]
@@ -849,6 +851,92 @@ fn test_resume_created_agreement_panics() {
     client.resume_agreement(&id);
 }
 
+/// Resuming a Completed agreement must be rejected.
+/// Only Paused agreements can be resumed.
+#[test]
+#[should_panic]
+fn test_resume_completed_agreement_panics() {
+    let env = create_test_env();
+    let (cid, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let contributor = create_address(&env);
+    let token = create_token(&env);
+    let amount_per_period = SALARY;
+    let period_seconds = ONE_DAY;
+    let num_periods = 2u32;
+    let total = amount_per_period * (num_periods as i128);
+
+    let id = client.create_escrow_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &amount_per_period,
+        &period_seconds,
+        &num_periods,
+    );
+    client.activate_agreement(&id);
+
+    mint(&env, &token, &cid, total);
+    env.as_contract(&cid, || {
+        DataKey::set_agreement_escrow_balance(&env, id, &token, total);
+    });
+
+    advance_time(&env, period_seconds * (num_periods as u64) + 1);
+    client.claim_time_based(&id);
+
+    assert_eq!(
+        client.get_agreement(&id).unwrap().status,
+        AgreementStatus::Completed
+    );
+
+    client.resume_agreement(&id);
+}
+
+/// Resuming a Cancelled agreement must be rejected.
+/// Only Paused agreements can be resumed.
+#[test]
+#[should_panic]
+fn test_resume_cancelled_agreement_panics() {
+    let env = create_test_env();
+    let (_cid, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let token = create_address(&env);
+
+    let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
+    client.cancel_agreement(&id);
+
+    assert_eq!(
+        client.get_agreement(&id).unwrap().status,
+        AgreementStatus::Cancelled
+    );
+
+    client.resume_agreement(&id);
+}
+
+/// Resuming a Disputed agreement must be rejected.
+/// Only Paused agreements can be resumed.
+#[test]
+#[should_panic]
+fn test_resume_disputed_agreement_panics() {
+    let env = create_test_env();
+    let (_cid, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let token = create_address(&env);
+    let employee = create_address(&env);
+
+    let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
+    client.add_employee_to_agreement(&id, &employee, &SALARY);
+    client.activate_agreement(&id);
+    client.raise_dispute(&employer, &id);
+
+    assert_eq!(
+        client.get_agreement(&id).unwrap().status,
+        AgreementStatus::Disputed
+    );
+
+    client.resume_agreement(&id);
+}
+
 /// Cancelling a Paused agreement must be rejected.
 /// Only Active or Created agreements can be cancelled.
 #[test]
@@ -976,6 +1064,119 @@ fn test_dispute_outside_grace_window_returns_error() {
 
     let result = client.try_raise_dispute(&employer, &id);
     assert!(result.is_err());
+}
+
+/// Verifies that resume_agreement rejects every non-Paused status.
+/// Each case uses an isolated environment to prevent state interference.
+#[test]
+fn test_resume_rejects_all_non_paused_statuses() {
+    // Created
+    {
+        let env = create_test_env();
+        let (_cid, client) = setup_contract(&env);
+        let employer = create_address(&env);
+        let token = create_address(&env);
+        let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
+        assert!(
+            client.try_resume_agreement(&id).is_err(),
+            "resume from Created must be rejected"
+        );
+    }
+
+    // Active
+    {
+        let env = create_test_env();
+        let (_cid, client) = setup_contract(&env);
+        let employer = create_address(&env);
+        let token = create_address(&env);
+        let employee = create_address(&env);
+        let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
+        client.add_employee_to_agreement(&id, &employee, &SALARY);
+        client.activate_agreement(&id);
+        assert!(
+            client.try_resume_agreement(&id).is_err(),
+            "resume from Active must be rejected"
+        );
+    }
+
+    // Cancelled
+    {
+        let env = create_test_env();
+        let (_cid, client) = setup_contract(&env);
+        let employer = create_address(&env);
+        let token = create_address(&env);
+        let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
+        client.cancel_agreement(&id);
+        assert_eq!(
+            client.get_agreement(&id).unwrap().status,
+            AgreementStatus::Cancelled
+        );
+        assert!(
+            client.try_resume_agreement(&id).is_err(),
+            "resume from Cancelled must be rejected"
+        );
+    }
+
+    // Completed
+    {
+        let env = create_test_env();
+        let (cid, client) = setup_contract(&env);
+        let employer = create_address(&env);
+        let contributor = create_address(&env);
+        let token = create_token(&env);
+        let amount_per_period = SALARY;
+        let period_seconds = ONE_DAY;
+        let num_periods = 2u32;
+        let total = amount_per_period * (num_periods as i128);
+
+        let id = client.create_escrow_agreement(
+            &employer,
+            &contributor,
+            &token,
+            &amount_per_period,
+            &period_seconds,
+            &num_periods,
+        );
+        client.activate_agreement(&id);
+
+        mint(&env, &token, &cid, total);
+        env.as_contract(&cid, || {
+            DataKey::set_agreement_escrow_balance(&env, id, &token, total);
+        });
+
+        advance_time(&env, period_seconds * (num_periods as u64) + 1);
+        client.claim_time_based(&id);
+
+        assert_eq!(
+            client.get_agreement(&id).unwrap().status,
+            AgreementStatus::Completed
+        );
+        assert!(
+            client.try_resume_agreement(&id).is_err(),
+            "resume from Completed must be rejected"
+        );
+    }
+
+    // Disputed
+    {
+        let env = create_test_env();
+        let (_cid, client) = setup_contract(&env);
+        let employer = create_address(&env);
+        let token = create_address(&env);
+        let employee = create_address(&env);
+        let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
+        client.add_employee_to_agreement(&id, &employee, &SALARY);
+        client.activate_agreement(&id);
+        client.raise_dispute(&employer, &id);
+        assert_eq!(
+            client.get_agreement(&id).unwrap().status,
+            AgreementStatus::Disputed
+        );
+        assert!(
+            client.try_resume_agreement(&id).is_err(),
+            "resume from Disputed must be rejected"
+        );
+    }
 }
 
 // ============================================================================
