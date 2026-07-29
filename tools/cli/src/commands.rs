@@ -3,10 +3,17 @@ use log::{error, info, warn};
 use std::path::PathBuf;
 
 use crate::config::load_config;
-use crate::utils::{validate_address, SorobanHttpClient, WebhookInfo, WebhookStats};
+use crate::utils::{
+    build_contract_wasm, compare_wasm_hashes, compute_wasm_hash, fetch_deployed_wasm_hash,
+    format_verify_message, validate_address, VerifyOutcome, DEFAULT_WASM_PATH, SorobanHttpClient,
+    WebhookInfo, WebhookStats,
+};
 use crate::{require_admin, require_not_paused, Config, Error, TokenClient, WebhookCommands};
 
 const MAXIMUM_AMOUNT: i128 = 100_000_000;
+
+/// Supported Stellar network identifiers accepted by `--network`.
+const SUPPORTED_NETWORKS: &[&str] = &["testnet", "mainnet"];
 
 pub async fn deploy_command(
     network: String,
@@ -14,6 +21,15 @@ pub async fn deploy_command(
     wasm: Option<PathBuf>,
     config: &Config,
 ) -> Result<()> {
+    // Validate --network against supported values before any side-effects.
+    if !SUPPORTED_NETWORKS.contains(&network.as_str()) {
+        return Err(anyhow::anyhow!(
+            "unsupported network '{}'. Supported networks: {}",
+            network,
+            SUPPORTED_NETWORKS.join(", ")
+        ));
+    }
+
     info!("Deploying contract to network: {}", network);
 
     // Determine WASM file path
@@ -211,6 +227,91 @@ pub async fn status_command(config: &Config) -> Result<()> {
     println!("Ready to use StellopayCore CLI!");
 
     Ok(())
+}
+
+/// Verify that a deployed contract's on-chain WASM hash matches the current source tree.
+///
+/// Flow:
+/// 1. Build the contract (unless `--wasm` / `--skip-build` is used).
+/// 2. Compute the SHA-256 of the local WASM bytes.
+/// 3. Fetch the deployed WASM (or use `--deployed-hash`) and hash it.
+/// 4. Compare byte-for-byte; print a clear pass/fail and return an error on mismatch
+///    so the process exits non-zero (exit code 5 / Verification).
+pub async fn verify_command(
+    contract_id: Option<String>,
+    network: String,
+    wasm: Option<PathBuf>,
+    skip_build: bool,
+    deployed_hash: Option<String>,
+    config: &Config,
+) -> Result<()> {
+    if !SUPPORTED_NETWORKS.contains(&network.as_str()) {
+        return Err(anyhow::anyhow!(
+            "unsupported network '{}'. Supported networks: {}",
+            network,
+            SUPPORTED_NETWORKS.join(", ")
+        ));
+    }
+
+    // Resolve local WASM: explicit path, optional build, or default artifact.
+    let wasm_path = if let Some(path) = wasm {
+        if !path.exists() {
+            return Err(anyhow::anyhow!("WASM file not found: {}", path.display()));
+        }
+        path
+    } else if skip_build {
+        let path = PathBuf::from(DEFAULT_WASM_PATH);
+        if !path.exists() {
+            return Err(anyhow::anyhow!(
+                "WASM file not found at {}. Build the contract first or pass --wasm.",
+                path.display()
+            ));
+        }
+        path
+    } else {
+        build_contract_wasm()?
+    };
+
+    info!("Computing local WASM hash for {}", wasm_path.display());
+    let local_hash = compute_wasm_hash(&wasm_path)?;
+    println!("Local WASM hash:    {}", local_hash);
+
+    let deployed = if let Some(hash) = deployed_hash {
+        println!("Deployed WASM hash: {} (provided)", hash);
+        hash
+    } else {
+        let contract_id = contract_id
+            .or_else(|| config.contract.default_contract_id.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No contract ID provided. Pass --contract-id or set it in config."
+                )
+            })?;
+
+        info!(
+            "Fetching deployed WASM for contract {} on {}",
+            contract_id, network
+        );
+        let hash = fetch_deployed_wasm_hash(&contract_id, &config.network.rpc_url, &network)?;
+        println!("Deployed WASM hash: {}", hash);
+        hash
+    };
+
+    let outcome = compare_wasm_hashes(&local_hash, &deployed);
+    let message = format_verify_message(&outcome);
+    println!("{}", message);
+
+    match outcome {
+        VerifyOutcome::Match { .. } => Ok(()),
+        VerifyOutcome::Mismatch {
+            local_hash,
+            deployed_hash,
+        } => Err(anyhow::anyhow!(
+            "deployed WASM hash mismatch (drift detected): local={} deployed={}",
+            local_hash,
+            deployed_hash
+        )),
+    }
 }
 
 pub async fn emergency_withdraw(

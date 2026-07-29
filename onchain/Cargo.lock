@@ -1194,11 +1194,14 @@ version = "0.0.0"
 dependencies = [
  "audit_logger",
  "bonus_system",
+ "compliance_checker",
+ "department_manager",
  "dispute_escalation",
  "employee_roles",
  "expense_reimbursement",
  "governance",
  "multisig",
+ "nft-payroll-badge",
  "payment_history",
  "payment_retry",
  "payment_scheduler",
@@ -1207,6 +1210,7 @@ dependencies = [
  "salary_adjustment",
  "soroban-sdk",
  "stello_pay_contract",
+ "template_versioning",
  "token_vesting",
  "withdrawal_timelock",
 ]
@@ -1445,6 +1449,7 @@ dependencies = [
 name = "payment_scheduler"
 version = "0.0.0"
 dependencies = [
+ "payment_retry",
  "soroban-sdk",
 ]
 

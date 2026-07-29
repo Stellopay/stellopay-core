@@ -1,13 +1,12 @@
 #![cfg(test)]
 
+use multisig::{
+    MultisigContract, MultisigContractClient, OperationKind, OperationStatus, OperationType,
+};
 use soroban_sdk::{
     testutils::Address as _,
     token::{Client as TokenClient, StellarAssetClient},
     Address, BytesN, Env, Vec,
-};
-
-use multisig::{
-    MultisigContract, MultisigContractClient, OperationKind, OperationStatus, OperationType,
 };
 
 fn create_env() -> Env {
@@ -571,6 +570,76 @@ fn cancelled_operation_id_is_not_reused() {
     assert!(op2.id > op1_id);
 }
 
+// ==================== Cancel Operation Authorization ====================
+
+#[test]
+fn signer_not_proposer_cannot_cancel() {
+    // Verifies that a signer who is neither the proposer nor the admin
+    // (owner) is rejected from cancelling a pending operation.
+    let env = create_env();
+    let (_id, client, owner, signers, _guardian) = setup_2of3(&env);
+
+    // S1 proposes an operation
+    let proposer = signers.get(0).unwrap();
+    let op_id = client.propose_operation(
+        &proposer,
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+
+    // S2 is a valid signer but NOT the proposer (S1) and NOT the owner
+    let other_signer = signers.get(1).unwrap();
+    assert_ne!(other_signer, proposer);
+    assert_ne!(other_signer, owner);
+
+    let res = client.try_cancel_operation(&other_signer, &op_id);
+    assert!(
+        res.is_err(),
+        "A signer who is not the proposer and not the owner must be rejected from cancelling"
+    );
+
+    // Operation remains pending
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Pending);
+}
+
+#[test]
+fn proposer_can_cancel_own_operation() {
+    // Verifies that the original proposer can cancel their own pending
+    // operation.
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let proposer = signers.get(0).unwrap();
+    let op_id = client.propose_operation(
+        &proposer,
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+
+    // Proposer cancels their own operation — must succeed
+    client.cancel_operation(&proposer, &op_id);
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Cancelled);
+}
+
+#[test]
+fn owner_can_cancel_any_pending_operation() {
+    // Verifies that the admin (owner) can cancel any pending operation,
+    // not just operations they proposed.
+    let env = create_env();
+    let (_id, client, owner, signers, _guardian) = setup_2of3(&env);
+
+    let proposer = signers.get(0).unwrap();
+    let op_id = client.propose_operation(
+        &proposer,
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+
+    // Owner (admin) cancels — must succeed even though owner did not propose
+    client.cancel_operation(&owner, &op_id);
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Cancelled);
+}
+
 // ==================== Large Payment Validation ====================
 
 #[test]
@@ -630,6 +699,154 @@ fn contract_upgrade_proposal_and_execute() {
 
     let op = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Executed);
+}
+
+// ==================== ContractUpgrade Hash Re-Validation ====================
+
+/// Negative test: `execute_operation` rejects execution when the WASM hash
+/// presented at execution time does not match the hash stored in the approved
+/// proposal.
+///
+/// Security invariant: even when a signer provides their final approval
+/// through `execute_operation`, supplying a *different* hash from the one that
+/// was proposed and approved by other signers must be rejected with no state
+/// change. This prevents any party from substituting a different WASM binary
+/// after obtaining co-signers' approvals for a specific hash.
+///
+/// Setup: 3-of-3 multisig. S1 proposes ContractUpgrade with `approved_hash`.
+/// S2 approves via `approve_operation` (2-of-3 → still Pending). S3 attempts
+/// to use `execute_operation` with a *wrong* hash as their final approval vote
+/// — rejected. S3 also tries `None` — also rejected. The operation remains
+/// Pending throughout, confirming no partial state mutation on failure.
+#[test]
+fn execute_operation_rejects_contract_upgrade_hash_mismatch() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_3of3(&env);
+
+    let target = Address::generate(&env);
+    // The hash that was included in the proposal and approved by S1/S2.
+    let approved_hash: BytesN<32> = BytesN::from_array(&env, &[0xAA; 32]);
+    // A different hash that an attacker or mistaken caller tries to substitute.
+    let wrong_hash: BytesN<32> = BytesN::from_array(&env, &[0xBB; 32]);
+
+    // S1 proposes (auto-approves: 1-of-3).
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::ContractUpgrade(target.clone(), approved_hash.clone()),
+    );
+    // S2 approves normally (2-of-3 → still Pending under 3-of-3 threshold).
+    client.approve_operation(&signers.get(1).unwrap(), &op_id);
+
+    assert_eq!(
+        client.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending,
+        "Precondition: operation must be Pending with 2-of-3 approvals"
+    );
+
+    // S3 calls execute_operation with the WRONG hash.
+    // The hash check fires before any approval is recorded → must be rejected.
+    let result_wrong =
+        client.try_execute_operation(&signers.get(2).unwrap(), &op_id, &Some(wrong_hash));
+    assert!(
+        result_wrong.is_err(),
+        "execute_operation must reject a mismatched ContractUpgrade hash"
+    );
+
+    // Operation must remain Pending — no state change on hash-mismatch rejection.
+    assert_eq!(
+        client.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending,
+        "Operation status must stay Pending after hash-mismatch rejection"
+    );
+    // S3's approval must NOT have been recorded on failure.
+    let approvals_after_wrong = client.get_approvals(&op_id);
+    assert_eq!(
+        approvals_after_wrong.len(),
+        2,
+        "Approval count must not increase after hash-mismatch rejection"
+    );
+
+    // S3 also tries with None → also rejected (absent hash = mismatch).
+    let result_none = client.try_execute_operation(&signers.get(2).unwrap(), &op_id, &None);
+    assert!(
+        result_none.is_err(),
+        "execute_operation must reject None as hash for a ContractUpgrade operation"
+    );
+
+    // Operation still Pending and approval count unchanged after None-hash rejection.
+    assert_eq!(
+        client.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending,
+        "Operation status must stay Pending after None-hash rejection"
+    );
+    assert_eq!(
+        client.get_approvals(&op_id).len(),
+        2,
+        "Approval count must not increase after None-hash rejection"
+    );
+}
+
+/// Positive test: `execute_operation` succeeds when the WASM hash presented
+/// at execution time exactly matches the hash stored in the approved proposal,
+/// and the resulting approval count reaches the effective threshold.
+///
+/// Setup: 3-of-3 multisig. S1 proposes ContractUpgrade with `approved_hash`
+/// (auto-approves: 1-of-3). S2 approves via `approve_operation` (2-of-3 →
+/// still Pending). S3 calls `execute_operation` with the *correct* hash as
+/// their final approval vote. The function:
+///   1. Validates the hash against the stored proposal → passes.
+///   2. Records S3's approval (reaching 3-of-3 threshold).
+///   3. Calls `perform_execute` → operation is marked Executed.
+#[test]
+fn execute_operation_succeeds_with_matching_contract_upgrade_hash() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_3of3(&env);
+
+    let target = Address::generate(&env);
+    // The hash approved at proposal time — must be presented identically at execution.
+    let approved_hash: BytesN<32> = BytesN::from_array(&env, &[0xCC; 32]);
+
+    // S1 proposes (auto-approves: 1-of-3).
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::ContractUpgrade(target.clone(), approved_hash.clone()),
+    );
+    // S2 approves via approve_operation (2-of-3 → still Pending under 3-of-3).
+    client.approve_operation(&signers.get(1).unwrap(), &op_id);
+
+    assert_eq!(
+        client.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending,
+        "Precondition: operation must be Pending before S3's execute_operation call"
+    );
+
+    // S3 calls execute_operation with the CORRECT hash. This:
+    //   1. Validates approved_hash against the stored hash → passes.
+    //   2. Records S3's approval (3-of-3 → threshold met).
+    //   3. Calls execute_if_threshold_met → perform_execute → Executed.
+    client.execute_operation(
+        &signers.get(2).unwrap(),
+        &op_id,
+        &Some(approved_hash.clone()),
+    );
+
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(
+        op.status,
+        OperationStatus::Executed,
+        "Operation must be Executed after execute_operation with matching hash"
+    );
+    assert!(
+        op.executed_at.is_some(),
+        "executed_at timestamp must be set on execution"
+    );
+
+    // Confirm approval list now contains all three signers.
+    assert_eq!(
+        client.get_approvals(&op_id).len(),
+        3,
+        "All three signers' approvals must be recorded"
+    );
 }
 
 // ==================== DisputeResolution Flow ====================
@@ -706,12 +923,18 @@ fn test_signer_removal_prior_confirmation_policy() {
     );
 
     // Initial state: threshold is 3. S1 proposed (which auto-approves), so 1 approval.
-    assert_eq!(client.get_operation(&op_id).unwrap().status, OperationStatus::Pending);
+    assert_eq!(
+        client.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending
+    );
     assert_eq!(client.get_approvals(&op_id).len(), 1);
 
     // S2 approves. Now 2 approvals.
     client.approve_operation(&signers.get(1).unwrap(), &op_id);
-    assert_eq!(client.get_operation(&op_id).unwrap().status, OperationStatus::Pending);
+    assert_eq!(
+        client.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending
+    );
 
     // S2 is removed, and the new signer set is S1 and S3. Threshold is updated to 2-of-2.
     let mut new_signers = Vec::new(&env);
@@ -724,7 +947,8 @@ fn test_signer_removal_prior_confirmation_policy() {
     let op = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Pending);
 
-    // If S3 approves, the valid count becomes 2 (S1, S3) which meets the threshold of 2, executing the operation.
+    // If S3 approves, the valid count becomes 2 (S1, S3) which meets the threshold of 2, executing
+    // the operation.
     client.approve_operation(&signers.get(2).unwrap(), &op_id);
     let op = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Executed);
@@ -759,6 +983,103 @@ fn test_removed_signer_cannot_newly_confirm() {
     assert!(res.is_err());
 }
 
+// ==================== Below-Minimum-Threshold Signer Removal Rejection ====================
+
+#[test]
+fn test_reject_signer_reduction_below_threshold() {
+    // Verifies that removing signers such that the new threshold exceeds the
+    // new signer count is rejected. With 3 signers and threshold 2, attempting
+    // to reduce to 1 signer while keeping threshold 2 must fail because
+    // 2 > 1.
+    let env = create_env();
+    let (_multisig_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let mut new_signers = Vec::new(&env);
+    new_signers.push_back(signers.get(0).unwrap());
+
+    let res = client.try_update_signers(&new_signers, &2u32);
+    assert!(
+        res.is_err(),
+        "Must reject reducing signers to 1 while threshold remains 2"
+    );
+
+    // Verify the signer set was not modified.
+    let stored_signers = client.get_signers();
+    assert_eq!(stored_signers.len(), 3);
+    assert_eq!(client.get_threshold(), 2u32);
+}
+
+#[test]
+fn test_reject_update_signers_threshold_exceeding_count() {
+    // Verifies that calling update_signers with a threshold higher than the
+    // new signer count is rejected. With 3 signers total, setting 2 signers
+    // with threshold 3 must fail because 3 > 2.
+    let env = create_env();
+    let (_multisig_id, client, _owner, signers, _guardian) = setup_3of3(&env);
+
+    let mut new_signers = Vec::new(&env);
+    new_signers.push_back(signers.get(0).unwrap());
+    new_signers.push_back(signers.get(1).unwrap());
+
+    let res = client.try_update_signers(&new_signers, &3u32);
+    assert!(
+        res.is_err(),
+        "Must reject setting threshold 3 when only 2 signers remain"
+    );
+
+    // Verify the signer set and threshold were not modified.
+    let stored_signers = client.get_signers();
+    assert_eq!(stored_signers.len(), 3);
+    assert_eq!(client.get_threshold(), 3u32);
+}
+
+#[test]
+fn test_signer_reduction_with_threshold_adjustment_succeeds() {
+    // Verifies that reducing both signers and threshold together succeeds
+    // when the new threshold is <= the new signer count. Starting from 3-of-3,
+    // reducing to 2 signers with threshold 2 is valid because 2 <= 2.
+    // This is the intended recovery path when a signer must be removed.
+    let env = create_env();
+    let (_multisig_id, client, _owner, signers, _guardian) = setup_3of3(&env);
+
+    let mut new_signers = Vec::new(&env);
+    new_signers.push_back(signers.get(0).unwrap());
+    new_signers.push_back(signers.get(1).unwrap());
+
+    client.update_signers(&new_signers, &2u32);
+
+    let stored_signers = client.get_signers();
+    assert_eq!(stored_signers.len(), 2);
+    assert_eq!(stored_signers.get(0).unwrap(), signers.get(0).unwrap());
+    assert_eq!(stored_signers.get(1).unwrap(), signers.get(1).unwrap());
+    assert_eq!(client.get_threshold(), 2u32);
+
+    // Confirm operations can still reach quorum with the new 2-of-2 setup.
+    let token = create_token_contract(&env, &Address::generate(&env));
+    let token_admin = StellarAssetClient::new(&env, &token.address);
+    token_admin.mint(&_multisig_id, &1_000i128);
+
+    let recipient = Address::generate(&env);
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::LargePayment(token.address.clone(), recipient.clone(), 100i128),
+    );
+
+    // 1 approval (proposer) is not enough for threshold 2
+    assert_eq!(
+        client.get_operation(&op_id).unwrap().status,
+        OperationStatus::Pending
+    );
+
+    // Second signer approves, reaching threshold
+    client.approve_operation(&signers.get(1).unwrap(), &op_id);
+    assert_eq!(
+        client.get_operation(&op_id).unwrap().status,
+        OperationStatus::Executed
+    );
+    assert_eq!(token.balance(&recipient), 100i128);
+}
+
 #[test]
 fn test_quorum_override_recalculation_after_signer_removal() {
     let env = create_env();
@@ -784,7 +1105,8 @@ fn test_quorum_override_recalculation_after_signer_removal() {
     new_signers.push_back(signers.get(1).unwrap());
     client.update_signers(&new_signers, &2u32);
 
-    // The override of 3 should have been capped/recalculated to 2 (since the new signer count is 2).
+    // The override of 3 should have been capped/recalculated to 2 (since the new signer count is
+    // 2).
     assert_eq!(
         client.get_threshold_override(&OperationType::ContractUpgrade),
         Some(2)

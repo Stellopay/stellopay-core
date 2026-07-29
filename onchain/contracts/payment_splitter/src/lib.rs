@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 //! Payment Splitting Contract
 //!
@@ -200,9 +201,19 @@ impl PaymentSplitterContract {
     ///
     /// Percent splits use largest-remainder apportionment:
     /// 1. Floor each exact percentage slice.
-    /// 2. Distribute the remaining dust one unit at a time to the recipients
-    ///    with the largest fractional remainder.
+    /// 2. Distribute the remaining dust one unit at a time to the recipients with the largest
+    ///    fractional remainder.
     /// 3. Break exact remainder ties using canonical recipient address order.
+    ///
+    /// # Remainder convention
+    /// When the total amount does not divide evenly among the recipients (i.e., there is
+    /// rounding dust), the sum of all floored amounts is less than `total_amount`. The
+    /// difference (dust) is distributed one unit at a time to recipients sorted by
+    /// (descending remainder, ascending canonical address). This means the first `dust`
+    /// recipients in that sorted order each receive 1 extra unit.
+    ///
+    /// This ensures the invariant `sum(splits) == total_amount` always holds — no value is
+    /// ever lost or created by rounding.
     ///
     /// # Returns
     /// `Vec<(Address, i128)>` where each tuple is a recipient and their share.
@@ -270,7 +281,8 @@ impl PaymentSplitterContract {
             for i in 0..recipient_count {
                 order.push_back(i);
             }
-            // Bubble-sort by (remainder desc, address asc) — acceptable for small n (≤ MAX_RECIPIENTS).
+            // Bubble-sort by (remainder desc, address asc) — acceptable for small n (≤
+            // MAX_RECIPIENTS).
             for i in 0..recipient_count {
                 for j in (i + 1)..recipient_count {
                     let ri = remainders.get_unchecked(order.get_unchecked(i));

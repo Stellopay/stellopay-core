@@ -114,6 +114,14 @@ pub struct EarlyReleaseEvent {
     pub amount: i128,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryAssignedEvent {
+    pub id: u128,
+    pub old_beneficiary: Address,
+    pub new_beneficiary: Address,
+}
+
 fn require_initialized(env: &Env) {
     let initialized = env
         .storage()
@@ -164,13 +172,13 @@ fn write_schedule(env: &Env, schedule: &VestingSchedule) {
 ///
 /// # Vesting kinds
 ///
-/// - **Linear**: proportional interpolation between `start_time` and `end_time`,
-///   gated by an optional `cliff_time` (nothing vests until the cliff is reached).
-///   cliff+linear interaction: before the cliff the result is 0 even after start;
-///   at and after the cliff, linear interpolation applies from `start_time`.
+/// - **Linear**: proportional interpolation between `start_time` and `end_time`, gated by an
+///   optional `cliff_time` (nothing vests until the cliff is reached). cliff+linear interaction:
+///   before the cliff the result is 0 even after start; at and after the cliff, linear
+///   interpolation applies from `start_time`.
 /// - **Cliff**: 0 before `cliff_time`, 100% of `total_amount` at or after `cliff_time`.
-/// - **Custom**: step function — returns the `cumulative_amount` of the last
-///   checkpoint whose `time <= now`, capped at `total_amount`.
+/// - **Custom**: step function — returns the `cumulative_amount` of the last checkpoint whose `time
+///   <= now`, capped at `total_amount`.
 ///
 /// # Arguments
 ///
@@ -181,6 +189,34 @@ fn write_schedule(env: &Env, schedule: &VestingSchedule) {
 ///
 /// The cumulative amount vested at `now`, as an `i128`. Never exceeds
 /// `schedule.total_amount`.
+///
+/// # Monotonicity invariant
+///
+/// **This function is guaranteed to be monotonically non-decreasing in `now`.**
+///
+/// For any two timestamps `t1 <= t2`:
+/// ```text
+/// compute_vested_amount(t1, schedule) <= compute_vested_amount(t2, schedule)
+/// ```
+///
+/// This invariant holds for all three schedule kinds:
+///
+/// - **Linear** (with or without cliff): the result grows proportionally with time after
+///   `start_time` (and after `cliff_time` when set), reaching `total_amount` at `end_time` and
+///   remaining capped there forever.
+/// - **Cliff**: the result is 0 until `cliff_time` and `total_amount` at or after `cliff_time`. The
+///   step is upward only.
+/// - **Custom**: checkpoints are validated at creation to be sorted by `time` with non-decreasing
+///   `cumulative_amount`, so the step function can only stay flat or increase as time advances.
+///
+/// For revoked schedules the effective timestamp is frozen at `revoked_at`,
+/// so the vested amount is constant for all `now >= revoked_at` and the
+/// invariant continues to hold.
+///
+/// Security note: monotonicity is a prerequisite for the anti-double-claim
+/// invariant enforced by `claim`. If vested amounts could decrease, a
+/// beneficiary might be able to re-claim tokens after a prior withdrawal
+/// reduced `released_amount` below the (incorrectly lower) vested amount.
 ///
 /// # Panics
 ///
@@ -211,9 +247,10 @@ fn compute_vested_amount(now: u64, schedule: &VestingSchedule) -> i128 {
                 } else {
                     // Overflow-safe linear interpolation: total * elapsed / duration
                     // Uses divide-before-multiply to prevent intermediate overflow.
-                    // Computes: (total / duration) * elapsed + (total % duration) * elapsed / duration
-                    // Rounding: truncates toward zero (same as original behavior).
-                    // The result is guaranteed to be <= total_amount since elapsed <= duration.
+                    // Computes: (total / duration) * elapsed + (total % duration) * elapsed /
+                    // duration Rounding: truncates toward zero (same as
+                    // original behavior). The result is guaranteed to be <=
+                    // total_amount since elapsed <= duration.
                     let elapsed_i128 = i128::from(elapsed as i64);
                     let duration_i128 = i128::from(duration as i64);
 
@@ -651,9 +688,26 @@ impl TokenVestingContract {
 
     /// @notice Revokes a revocable schedule for a terminated employee.
     /// @dev Employer recovers unvested tokens; vested portion remains claimable.
+    ///
+    /// Fully-vested schedules: if `get_vested_amount` already equals
+    /// `total_amount` (nothing left to claw back), this is a **safe no-op**
+    /// with respect to funds — no transfer is made and `refunded_amount` is
+    /// `0`. The schedule's `status` still transitions to `Revoked` and
+    /// `revoked_at` is still recorded (revocation is a real, one-time event
+    /// on the schedule even when there's nothing to reclaim), but this has
+    /// no effect on `get_vested_amount` or `get_releasable_amount`: both are
+    /// computed from `revoked_at`, which is only ever set once vesting has
+    /// already reached `total_amount` in this case, so they continue to
+    /// report the same values as before the call. Already-vested tokens
+    /// remain fully claimable via `claim` after this no-op revoke.
+    ///
+    /// A second `revoke` call on an already-revoked schedule is rejected
+    /// (`"Schedule not active"`) rather than treated as another no-op.
+    ///
     /// @param employer Employer that created the schedule; must authenticate.
     /// @param schedule_id Vesting schedule identifier.
-    /// @return refunded_amount Amount of unvested tokens refunded to employer.
+    /// @return refunded_amount Amount of unvested tokens refunded to employer
+    ///         (`0` when the schedule was already fully vested).
     pub fn revoke(env: Env, employer: Address, schedule_id: u128) -> i128 {
         require_initialized(&env);
         employer.require_auth();
@@ -698,6 +752,59 @@ impl TokenVestingContract {
         unvested
     }
 
+    /// @notice Reassigns the beneficiary of an unvested schedule.
+    /// @dev Only the contract owner (admin) or the current beneficiary may call this.
+    ///      The schedule must be Active and must have unclaimed tokens remaining
+    ///      (i.e., not fully released). Already-vested-but-unclaimed amounts remain
+    ///      claimable by the new beneficiary after reassignment.
+    ///      Emits event `("vesting_beneficiary_assigned", schedule_id)` with
+    ///      `(old_beneficiary, new_beneficiary)`.
+    /// @param caller         Address requesting the change; must authenticate and
+    ///                       be either the owner or the current beneficiary.
+    /// @param schedule_id    Vesting schedule identifier.
+    /// @param new_beneficiary Address to transfer the schedule to.
+    pub fn assign_beneficiary(
+        env: Env,
+        caller: Address,
+        schedule_id: u128,
+        new_beneficiary: Address,
+    ) {
+        require_initialized(&env);
+        caller.require_auth();
+
+        let mut schedule = read_schedule(&env, schedule_id);
+
+        // Only owner or current beneficiary can reassign.
+        let owner = read_owner(&env);
+        assert!(
+            caller == owner || caller == schedule.beneficiary,
+            "Only owner or current beneficiary can assign"
+        );
+
+        assert!(
+            schedule.status == VestingStatus::Active,
+            "Schedule is not active"
+        );
+
+        assert!(
+            schedule.released_amount < schedule.total_amount,
+            "Schedule fully claimed or released"
+        );
+
+        let old_beneficiary = schedule.beneficiary.clone();
+        schedule.beneficiary = new_beneficiary.clone();
+        write_schedule(&env, &schedule);
+
+        env.events().publish(
+            ("vesting_beneficiary_assigned", schedule_id),
+            BeneficiaryAssignedEvent {
+                id: schedule_id,
+                old_beneficiary,
+                new_beneficiary,
+            },
+        );
+    }
+
     /// @notice Reads a vesting schedule by id.
     /// @param schedule_id Unique identifier of the schedule to look up.
     /// @return `Option<VestingSchedule>` — `None` if `schedule_id` does not exist.
@@ -711,6 +818,15 @@ impl TokenVestingContract {
     /// @notice Returns the cumulative amount vested so far for a schedule.
     /// @param schedule_id Unique identifier of the schedule.
     /// @dev Read-only; no authentication required.
+    ///
+    /// @invariant Monotonicity — for any two calls where the ledger timestamp
+    ///   advances (t1 <= t2), the returned value is non-decreasing:
+    ///
+    ///     get_vested_amount(id) @ t1  <=  get_vested_amount(id) @ t2
+    ///
+    ///   This holds for Linear, Cliff, and Custom schedules as well as for
+    ///   revoked schedules (where the vested amount is frozen at revoked_at).
+    ///   See `compute_vested_amount` for the formal invariant proof.
     pub fn get_vested_amount(env: Env, schedule_id: u128) -> i128 {
         let schedule = read_schedule(&env, schedule_id);
         let now = env.ledger().timestamp();
