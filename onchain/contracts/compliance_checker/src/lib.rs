@@ -172,43 +172,21 @@ impl ComplianceCheckerContract {
             .unwrap_or(false)
     }
 
-    /// @notice Registers a compliance rule that blocks a specific payroll action.
-    /// @dev Only the admin may call this. Registering an already-registered rule
-    ///      is idempotent. The rule is stored in persistent storage and read by
-    ///      `check_action` on every invocation, so it takes effect immediately.
-    /// @param action The payroll action the rule denies.
-    pub fn register_rule(env: Env, caller: Address, action: PayrollAction) {
-        Self::require_initialized(&env);
-        Self::require_admin(&env, &caller);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::BlockedAction(action), &true);
-    }
-
-    /// @notice Removes a previously registered action-blocking rule.
-    /// @dev Only the admin may call this. Removing a rule that was never
-    ///      registered is a no-op rather than an error, so removal is idempotent.
+    /// @notice Returns whether emergency pause is currently active.
+    /// @dev Read-only, permissionless view intended for other contracts
+    ///      (e.g. `payment_scheduler`) that want to respect this contract's
+    ///      emergency pause as a shared halt signal without depending on the
+    ///      heavier `check_action` rules-engine call. Mirrors the same
+    ///      `StorageKey::EmergencyPause` flag read internally by
+    ///      `check_action`, so the two never disagree.
     ///
-    ///      The storage entry is *deleted*, not set to `false`. `check_action`
-    ///      re-reads storage on every invocation and holds no cached or
-    ///      snapshotted copy of the rule set, so enforcement of the removed rule
-    ///      stops on the very next evaluation — including one that occurs later
-    ///      in the same transaction as this removal.
-    /// @param action The payroll action whose blocking rule is removed.
-    pub fn remove_rule(env: Env, caller: Address, action: PayrollAction) {
-        Self::require_initialized(&env);
-        Self::require_admin(&env, &caller);
+    ///      Returns `false` before `initialize` has been called — there is no
+    ///      privileged state to protect yet, so absence of initialization is
+    ///      not itself treated as a paused signal.
+    pub fn is_emergency_paused(env: Env) -> bool {
         env.storage()
             .persistent()
-            .remove(&StorageKey::BlockedAction(action));
-    }
-
-    /// @notice Returns whether a blocking rule is currently registered for an action.
-    /// @dev Reads live persistent storage; returns false once the rule is removed.
-    pub fn is_rule_registered(env: Env, action: PayrollAction) -> bool {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::BlockedAction(action))
+            .get::<_, bool>(&StorageKey::EmergencyPause)
             .unwrap_or(false)
     }
 
