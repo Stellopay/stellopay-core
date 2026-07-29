@@ -1,5 +1,15 @@
 //! Load-testing scenarios for contract behavior under high transaction volumes.
 //! The tests print timing metrics that can be tracked in CI or locally.
+//!
+//! ## Regression detection
+//!
+//! Each test compares its measured throughput and latency against a documented
+//! baseline (see `docs/load-testing.md`). A **soft warning** is printed when
+//! throughput falls below 70% of the baseline floor **or** latency exceeds
+//! 150% of the baseline ceiling. The warning is advisory only — the test
+//! itself still passes so that flaky CI runners don't block unrelated work.
+//!
+//! Baseline capture date: 2026-07-29
 
 #![allow(deprecated)]
 
@@ -10,13 +20,34 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env,
 };
-
-use stello_pay_contract::storage::DataKey;
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{storage::DataKey, PayrollContract, PayrollContractClient};
 
 const ONE_DAY: u64 = 86_400;
 const ONE_WEEK: u64 = 604_800;
 const SALARY: i128 = 100;
+
+/// Fraction of a scenario's baseline floor below which we warn (0.70 = 70%).
+const WARN_THROUGHPUT_FRACTION: f64 = 0.70;
+
+/// Multiplier of a scenario's baseline ceiling above which we warn (1.50 = 150%).
+const WARN_LATENCY_MULTIPLIER: f64 = 1.50;
+
+/// Per-scenario baseline: (throughput_floor_tps, latency_ceiling_us).
+///
+/// These match the figures documented in `docs/load-testing.md` (captured
+/// 2026-07-29). Each label passed to `warn_if_below_baseline` must have an
+/// entry here or the function will silently skip the check.
+fn scenario_baseline(label: &str) -> Option<(f64, f64)> {
+    match label {
+        "agreement_creation" => Some((500.0, 2_000.0)),
+        "large_employee_set" => Some((200.0, 5_000.0)),
+        "high_claim_rate" => Some((1_000.0, 1_000.0)),
+        "degradation_small" => Some((500.0, 2_000.0)),
+        "degradation_medium" => Some((200.0, 5_000.0)),
+        "degradation_large" => Some((100.0, 10_000.0)),
+        _ => None,
+    }
+}
 
 #[derive(Clone, Copy)]
 struct WorkloadMetrics {
@@ -94,6 +125,40 @@ fn fund_payroll_internal(
             DataKey::set_employee_claimed_periods(env, agreement_id, idx, 0);
         }
     });
+}
+
+/// Checks whether measured metrics fall significantly below the documented
+/// per-scenario baseline and prints a visible warning when they do.
+///
+/// This is a **soft check** — it never panics. A degraded CI runner should
+/// still produce a green build while alerting the team to investigate.
+///
+/// If `label` doesn't match a known scenario in `scenario_baseline`, the
+/// function silently returns without checking (no warning, no panic).
+fn warn_if_below_baseline(label: &str, metrics: WorkloadMetrics) {
+    let (baseline_tps, baseline_latency) = match scenario_baseline(label) {
+        Some(b) => b,
+        None => return,
+    };
+
+    let tps = metrics.throughput_tps();
+    let latency = metrics.latency_per_tx_us();
+
+    let throughput_threshold = baseline_tps * WARN_THROUGHPUT_FRACTION;
+    let latency_threshold = baseline_latency * WARN_LATENCY_MULTIPLIER;
+
+    if tps < throughput_threshold {
+        println!(
+            "[load-warn] {label} throughput_tps={tps:.2} is below {:.0}% of baseline floor ({baseline_tps:.0}); possible regression",
+            WARN_THROUGHPUT_FRACTION * 100.0
+        );
+    }
+    if latency > latency_threshold {
+        println!(
+            "[load-warn] {label} latency_us_per_tx={latency:.2} exceeds {:.0}% of baseline ceiling ({baseline_latency:.0}); possible regression",
+            WARN_LATENCY_MULTIPLIER * 100.0
+        );
+    }
 }
 
 /// @notice Executes a full claim workload and returns timing metrics.
@@ -185,6 +250,8 @@ fn test_load_high_agreement_creation_rate() {
         metrics.latency_per_tx_us()
     );
 
+    warn_if_below_baseline("agreement_creation", metrics);
+
     assert!(metrics.transactions > 0);
     assert!(metrics.duration.as_nanos() > 0);
 }
@@ -221,6 +288,8 @@ fn test_load_large_employee_set_on_single_agreement() {
         metrics.latency_per_tx_us()
     );
 
+    warn_if_below_baseline("large_employee_set", metrics);
+
     assert_eq!(registered.len(), employees);
     assert!(metrics.duration.as_nanos() > 0);
 }
@@ -237,6 +306,8 @@ fn test_load_high_transaction_claim_rate() {
         metrics.throughput_tps(),
         metrics.latency_per_tx_us()
     );
+
+    warn_if_below_baseline("high_claim_rate", metrics);
 
     assert_eq!(metrics.transactions, 120);
     assert!(metrics.duration.as_nanos() > 0);
@@ -262,6 +333,10 @@ fn test_load_performance_degradation_profile() {
         large.transactions,
         large_per_tx,
     );
+
+    warn_if_below_baseline("degradation_small", small);
+    warn_if_below_baseline("degradation_medium", medium);
+    warn_if_below_baseline("degradation_large", large);
 
     // Larger total workload should take longer in absolute time.
     assert!(large.duration > small.duration);

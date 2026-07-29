@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{
     contract, contractimpl, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, Symbol,
@@ -486,6 +487,10 @@ impl SalaryAdjustmentContract {
     /// @dev Determines increase or decrease from salary comparison.
     ///      Rejects retroactive effective dates (before current ledger time).
     ///      Rejects new_salary exceeding the configured salary cap.
+    ///      Rejects concurrent proposals for the same employee with the same effective date.
+    ///      Multiple pending proposals for the same employee are allowed if they have
+    ///      different effective dates. Each proposal is identified by its unique id and
+    ///      must be approved/rejected/applied independently.
     ///
     /// @param employer Employer submitting the adjustment; must authenticate.
     /// @param employee Employee whose salary is being adjusted.
@@ -502,6 +507,7 @@ impl SalaryAdjustmentContract {
     /// * `"New salary must differ from current salary"`
     /// * `"New salary exceeds salary cap"`
     /// * `"Effective date cannot be in the past"`
+    /// * `"Conflicting adjustment exists"` (same employee + effective_date)
     ///
     /// # Events
     /// Emits `("adjustment_created", adjustment_id)` with an `AdjustmentCreatedEvent`.
@@ -530,8 +536,14 @@ impl SalaryAdjustmentContract {
     }
 
     /// @notice Creates a retroactive salary adjustment with explicit owner approval.
-    /// @dev Requires both the employer and contract owner to authenticate. The provided
-    ///      reason hash is domain-separated with the adjustment details before storage.
+    /// @dev The `effective_date` is a constraint on when the adjustment can be
+    ///      applied (must be past the effective date). The actual salary change
+    ///      takes effect going forward from the time `apply_adjustment` is called.
+    ///      Retroactive adjustments do NOT retroactively alter already-processed
+    ///      payroll periods — past claims are not recalculated or topped up.
+    ///      Requires both the employer and contract owner to authenticate. The
+    ///      provided reason hash is domain-separated with the adjustment details
+    ///      before storage.
     ///
     /// # Panics
     /// * `"Only owner can authorize retroactive adjustment"`

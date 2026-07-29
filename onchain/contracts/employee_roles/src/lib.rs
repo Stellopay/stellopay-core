@@ -13,6 +13,29 @@ pub enum RoleError {
     Unauthorized = 1,
     /// Invalid or unknown role name.
     InvalidRole = 2,
+    /// Expiration timestamp must be in the future.
+    InvalidExpiration = 3,
+}
+
+/// Role grant assignment with an optional expiration timestamp.
+///
+/// If `expires_at` is `None`, the grant remains valid indefinitely.
+/// If `expires_at` is `Some(ts)`, the grant is valid while `current_timestamp < ts`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleGrant {
+    pub role: BuiltInRole,
+    pub expires_at: Option<u64>,
+}
+
+impl RoleGrant {
+    /// Returns whether this role grant is currently active at `current_timestamp`.
+    pub fn is_active(&self, current_timestamp: u64) -> bool {
+        match self.expires_at {
+            None => true,
+            Some(exp) => current_timestamp < exp,
+        }
+    }
 }
 
 /// Built-in hierarchical roles.
@@ -77,6 +100,8 @@ pub enum StorageKey {
     EmployeeRoles(Address),
     /// Linked RBAC contract address.
     RbacAddress,
+    /// Mapping: BuiltInRole -> Vec<BuiltInRole>
+    RoleImplies(BuiltInRole),
 }
 
 /// Employee Roles Contract
@@ -126,6 +151,14 @@ impl EmployeeRolesContract {
             .set(&StorageKey::RbacAddress, &rbac_address);
     }
 
+    /// Internal helper: retrieves all role grants for `employee`.
+    fn get_grants(env: &Env, employee: &Address) -> Vec<RoleGrant> {
+        env.storage()
+            .persistent()
+            .get::<_, Vec<RoleGrant>>(&StorageKey::EmployeeRoles(employee.clone()))
+            .unwrap_or(Vec::new(env))
+    }
+
     /// Assigns a built-in role to an employee.
     ///
     /// # Access Control
@@ -147,6 +180,33 @@ impl EmployeeRolesContract {
         employee: Address,
         role: BuiltInRole,
     ) -> Result<(), RoleError> {
+        Self::assign_role_with_expiration(env, caller, employee, role, None)
+    }
+
+    /// Assigns a built-in role to an employee with an optional expiration timestamp.
+    ///
+    /// # Access Control
+    /// - Caller must be the owner or hold the `Admin` role.
+    ///
+    /// # Arguments
+    /// * `caller` - caller parameter
+    /// * `employee` - employee parameter
+    /// * `role` - role parameter
+    /// * `expires_at` - optional expiration timestamp in seconds since unix epoch
+    ///
+    /// # Returns
+    /// Result<(), RoleError>
+    ///
+    /// # Errors
+    /// Returns `RoleError::Unauthorized` if authorization fails, or
+    /// `RoleError::InvalidExpiration` if `expires_at` is in the past/present.
+    pub fn assign_role_with_expiration(
+        env: Env,
+        caller: Address,
+        employee: Address,
+        role: BuiltInRole,
+        expires_at: Option<u64>,
+    ) -> Result<(), RoleError> {
         Self::require_role_admin(&env, &caller)?;
 
         // Escalation safeguard: non-owner caller must have at least the role being assigned.
@@ -155,18 +215,32 @@ impl EmployeeRolesContract {
             return Err(RoleError::Unauthorized);
         }
 
-        let mut roles: Vec<BuiltInRole> = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::EmployeeRoles(employee.clone()))
-            .unwrap_or(Vec::new(&env));
-
-        if !roles.iter().any(|r| r == role) {
-            roles.push_back(role);
-            env.storage()
-                .persistent()
-                .set(&StorageKey::EmployeeRoles(employee), &roles);
+        if let Some(exp) = expires_at {
+            if exp <= env.ledger().timestamp() {
+                return Err(RoleError::InvalidExpiration);
+            }
         }
+
+        let grants = Self::get_grants(&env, &employee);
+        let mut found = false;
+        let mut updated_grants = Vec::new(&env);
+
+        for grant in grants.iter() {
+            if grant.role == role {
+                updated_grants.push_back(RoleGrant { role, expires_at });
+                found = true;
+            } else {
+                updated_grants.push_back(grant);
+            }
+        }
+
+        if !found {
+            updated_grants.push_back(RoleGrant { role, expires_at });
+        }
+
+        env.storage()
+            .persistent()
+            .set(&StorageKey::EmployeeRoles(employee), &updated_grants);
 
         Ok(())
     }
@@ -200,16 +274,11 @@ impl EmployeeRolesContract {
             return Err(RoleError::Unauthorized);
         }
 
-        let roles: Vec<BuiltInRole> = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::EmployeeRoles(employee.clone()))
-            .unwrap_or(Vec::new(&env));
-
+        let grants = Self::get_grants(&env, &employee);
         let mut filtered = Vec::new(&env);
-        for r in roles.iter() {
-            if r != role {
-                filtered.push_back(r);
+        for g in grants.iter() {
+            if g.role != role {
+                filtered.push_back(g);
             }
         }
 
@@ -220,7 +289,9 @@ impl EmployeeRolesContract {
         Ok(())
     }
 
-    /// Returns all roles currently assigned to an employee.
+    /// Returns all active roles currently assigned to an employee.
+    ///
+    /// Expired grants are automatically filtered out.
     ///
     /// # Arguments
     /// * `employee` - employee parameter
@@ -228,13 +299,28 @@ impl EmployeeRolesContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn get_roles(env: Env, employee: Address) -> Vec<BuiltInRole> {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::EmployeeRoles(employee))
-            .unwrap_or(Vec::new(&env))
+        let grants = Self::get_grants(&env, &employee);
+        let current_ts = env.ledger().timestamp();
+        let mut active_roles = Vec::new(&env);
+        for g in grants.iter() {
+            if g.is_active(current_ts) {
+                active_roles.push_back(g.role);
+            }
+        }
+        active_roles
+    }
+
+    /// Returns all role grants (including expiration details) for an employee.
+    ///
+    /// # Arguments
+    /// * `employee` - employee parameter
+    pub fn get_role_grants(env: Env, employee: Address) -> Vec<RoleGrant> {
+        Self::get_grants(&env, &employee)
     }
 
     /// Checks whether `employee` has a specific built-in role.
+    ///
+    /// Expiration is evaluated dynamically against the current ledger timestamp.
     ///
     /// # Arguments
     /// * `employee` - employee parameter
@@ -246,13 +332,13 @@ impl EmployeeRolesContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn has_role(env: Env, employee: Address, role: BuiltInRole) -> bool {
-        let roles: Vec<BuiltInRole> = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::EmployeeRoles(employee.clone()))
-            .unwrap_or(Vec::new(&env));
+        let grants = Self::get_grants(&env, &employee);
+        let current_ts = env.ledger().timestamp();
 
-        if roles.iter().any(|r| r == role) {
+        if grants
+            .iter()
+            .any(|g| g.role == role && g.is_active(current_ts))
+        {
             return true;
         }
 
@@ -277,6 +363,8 @@ impl EmployeeRolesContract {
     /// Checks whether `employee` has at least the required role in the
     /// hierarchy (e.g. Admin satisfies Manager and Employee).
     ///
+    /// Expiration is evaluated dynamically against the current ledger timestamp.
+    ///
     /// # Arguments
     /// * `employee` - employee parameter
     /// * `required` - required parameter
@@ -284,14 +372,14 @@ impl EmployeeRolesContract {
     /// # Returns
     /// bool
     pub fn has_role_at_least(env: Env, employee: Address, required: BuiltInRole) -> bool {
-        let roles: Vec<BuiltInRole> = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::EmployeeRoles(employee.clone()))
-            .unwrap_or(Vec::new(&env));
-
+        let grants = Self::get_grants(&env, &employee);
+        let current_ts = env.ledger().timestamp();
         let required_level = required as u32;
-        if roles.iter().any(|r| (r as u32) >= required_level) {
+
+        if grants
+            .iter()
+            .any(|g| (g.role as u32) >= required_level && g.is_active(current_ts))
+        {
             return true;
         }
 

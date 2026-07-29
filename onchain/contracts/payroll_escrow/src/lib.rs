@@ -23,7 +23,28 @@ pub struct PayrollEscrowContract;
 #[derive(Clone)]
 pub enum StorageKey {
     /// Agreement balance: agreement_id -> i128
+    ///
+    /// # Storage Key Layout
+    /// Each agreement ID maps to a distinct persistent storage slot containing
+    /// the escrowed balance for that agreement. The Soroban SDK's `#[contracttype]`
+    /// derive macro ensures that distinct `u128` values always resolve to distinct
+    /// storage keys, preventing cross-agreement balance collisions.
+    ///
+    /// # Key Derivation
+    /// - `AgreementBalance(0)` → unique slot for agreement ID 0
+    /// - `AgreementBalance(1)` → unique slot for agreement ID 1
+    /// - `AgreementBalance(u128::MAX)` → unique slot for max agreement ID
+    ///
+    /// # Security Invariant
+    /// Two distinct agreement IDs must never resolve to the same storage slot.
+    /// A key-derivation bug here would let one agreement's funding silently overwrite
+    /// another's, enabling fund theft or loss. Regression tests verify this invariant
+    /// for adjacent IDs, edge values (0, 1, MAX), and structurally similar IDs.
     AgreementBalance(u128),
+    /// Paused agreement: agreement_id -> bool
+    /// When true, the manager contract has paused this agreement (e.g. due to an
+    /// active dispute), and `release` will reject withdrawals until resumed.
+    PausedAgreement(u128),
     /// Agreement employer: agreement_id -> Address
     AgreementEmployer(u128),
     /// Token address used for this escrow
@@ -67,6 +88,20 @@ pub struct RefundedEvent {
 pub struct ManagerUpdatedEvent {
     pub old_manager: Address,
     pub new_manager: Address,
+}
+
+/// Emitted when the manager pauses an agreement's escrow (e.g. due to a dispute).
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AgreementPausedEvent {
+    pub agreement_id: u128,
+}
+
+/// Emitted when the manager resumes a previously paused agreement.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AgreementResumedEvent {
+    pub agreement_id: u128,
 }
 
 #[contractimpl]
@@ -162,6 +197,83 @@ impl PayrollEscrowContract {
                 old_manager,
                 new_manager,
             },
+        );
+    }
+
+    /// Pauses an agreement, preventing `release` from withdrawing funds.
+    ///
+    /// Only the manager contract can call this. This is used by the dispute
+    /// escalation contract to freeze escrow while a dispute is active.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment
+    /// * `caller` - The caller address (must be manager)
+    /// * `agreement_id` - The agreement to pause
+    ///
+    /// # Access Control
+    ///
+    /// The caller address is compared against the stored manager address.
+    /// No `require_auth` check is performed — the manager contract is
+    /// responsible for verifying the original caller's authorization before
+    /// making the cross-contract call.
+    ///
+    /// # Events
+    ///
+    /// Emits `AgreementPaused` event on success.
+    pub fn pause_agreement(env: Env, caller: Address, agreement_id: u128) {
+        let manager: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Manager)
+            .expect("Manager not set");
+        assert!(caller == manager, "Only manager can pause agreement");
+
+        env.storage()
+            .persistent()
+            .set(&StorageKey::PausedAgreement(agreement_id), &true);
+
+        env.events().publish(
+            ("agreement_paused", agreement_id),
+            AgreementPausedEvent { agreement_id },
+        );
+    }
+
+    /// Resumes a paused agreement, allowing `release` to withdraw funds again.
+    ///
+    /// Only the manager contract can call this. This is used by the dispute
+    /// escalation contract to unfreeze escrow after a dispute is resolved or
+    /// expired.
+    ///
+    /// # Arguments
+    ///
+    /// * `env` - The Soroban environment
+    /// * `caller` - The caller address (must be manager)
+    /// * `agreement_id` - The agreement to resume
+    ///
+    /// # Access Control
+    ///
+    /// Same as `pause_agreement` — identity-based manager check without
+    /// `require_auth`.
+    ///
+    /// # Events
+    ///
+    /// Emits `AgreementResumed` event on success.
+    pub fn resume_agreement(env: Env, caller: Address, agreement_id: u128) {
+        let manager: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Manager)
+            .expect("Manager not set");
+        assert!(caller == manager, "Only manager can resume agreement");
+
+        env.storage()
+            .persistent()
+            .set(&StorageKey::PausedAgreement(agreement_id), &false);
+
+        env.events().publish(
+            ("agreement_resumed", agreement_id),
+            AgreementResumedEvent { agreement_id },
         );
     }
 
@@ -292,8 +404,8 @@ impl PayrollEscrowContract {
     ///
     /// # Invariants
     ///
-    /// - Sum of all `release` and `refund_remaining` calls for an agreement
-    ///   cannot exceed total `fund_agreement` deposits.
+    /// - Sum of all `release` and `refund_remaining` calls for an agreement cannot exceed total
+    ///   `fund_agreement` deposits.
     /// - Individual `AgreementBalance` is reduced by the exact `amount`.
     ///
     /// # Invariant
@@ -314,6 +426,14 @@ impl PayrollEscrowContract {
             .get(&StorageKey::Manager)
             .expect("Manager not set");
         assert!(caller == manager, "Only manager can release funds");
+
+        // Check if agreement is paused (e.g. due to an active dispute)
+        let paused: bool = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::PausedAgreement(agreement_id))
+            .unwrap_or(false);
+        assert!(!paused, "Agreement is paused");
 
         // Validate amount
         assert!(amount > 0, "Amount must be positive");
@@ -422,11 +542,13 @@ impl PayrollEscrowContract {
             .expect("Token not set");
 
         let token_client = soroban_sdk::token::Client::new(&env, &token);
-        token_client.transfer(&env.current_contract_address(), &employer, &balance);
 
+        // Zero balance before transfer (CEI: effects before interactions)
         env.storage()
             .persistent()
             .set(&StorageKey::AgreementBalance(agreement_id), &0i128);
+
+        token_client.transfer(&env.current_contract_address(), &employer, &balance);
 
         // Emit event
         env.events().publish(

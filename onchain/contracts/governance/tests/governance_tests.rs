@@ -160,6 +160,54 @@ fn employer_can_create_vote_finalize_and_multisig_signer_executes() {
 }
 
 #[test]
+fn backward_compatible_aliases_follow_full_lifecycle() {
+    let env = create_env();
+    let setup = setup(&env);
+    let key = Symbol::new(&env, "alias_parameter");
+
+    let proposal_id = setup.governance.propose(
+        &setup.owner,
+        &ProposalKind::ParameterChange(key.clone(), 42i128),
+    );
+    setup
+        .governance
+        .vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .vote(&setup.employer_a, &proposal_id, &VoteChoice::Abstain);
+
+    assert_eq!(
+        setup.governance.get_vote(&proposal_id, &setup.owner),
+        Some(VoteChoice::For)
+    );
+    assert_eq!(
+        setup.governance.get_vote(&proposal_id, &setup.employer_a),
+        Some(VoteChoice::Abstain)
+    );
+
+    advance_time(&env, 3601);
+    setup.governance.queue(&proposal_id);
+    advance_time(&env, 60);
+    setup.governance.execute(&setup.signer_a, &proposal_id);
+
+    assert_eq!(
+        setup.governance.get_proposal(&proposal_id).unwrap().status,
+        ProposalStatus::Executed
+    );
+    assert_eq!(setup.governance.get_parameter(&key), Some(42i128));
+
+    let cancelled_id = setup.governance.propose(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+    setup.governance.cancel(&setup.owner, &cancelled_id);
+    assert_eq!(
+        setup.governance.get_proposal(&cancelled_id).unwrap().status,
+        ProposalStatus::Cancelled
+    );
+}
+
+#[test]
 fn outsider_cannot_propose_or_vote() {
     let env = create_env();
     let setup = setup(&env);
@@ -214,6 +262,86 @@ fn proposal_is_defeated_without_quorum() {
     let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
     assert_eq!(proposal.status, ProposalStatus::Defeated);
     assert!(proposal.timelock_operation_id.is_none());
+}
+
+#[test]
+fn quorum_is_snapshotted_when_voting_power_changes_mid_vote() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // This proposal captures the initial quorum of two votes.
+    let existing_proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+    assert_eq!(
+        setup
+            .governance
+            .get_proposal(&existing_proposal_id)
+            .unwrap()
+            .quorum_votes,
+        2u32
+    );
+
+    // Add a voter and raise the configured quorum while voting is active.
+    // Neither change may retroactively alter the proposal's snapshot.
+    setup
+        .rbac
+        .grant_role(&setup.owner, &setup.outsider, &Role::Employer);
+    setup
+        .governance
+        .update_config(&setup.owner, &3u32, &3600u64);
+    setup
+        .governance
+        .cast_vote(&setup.owner, &existing_proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &existing_proposal_id, &VoteChoice::For);
+
+    let still_open = setup
+        .governance
+        .try_finalize_proposal(&existing_proposal_id);
+    assert_eq!(still_open, Err(Ok(GovernanceError::VotingStillOpen)));
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&existing_proposal_id);
+
+    let existing_proposal = setup
+        .governance
+        .get_proposal(&existing_proposal_id)
+        .unwrap();
+    assert_eq!(existing_proposal.quorum_votes, 2u32);
+    assert_eq!(existing_proposal.status, ProposalStatus::Succeeded);
+
+    // A proposal created after the update captures the new quorum of three.
+    let new_proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+    assert_eq!(
+        setup
+            .governance
+            .get_proposal(&new_proposal_id)
+            .unwrap()
+            .quorum_votes,
+        3u32
+    );
+
+    // Lowering the global configuration mid-vote cannot make this proposal
+    // pass with only one vote.
+    setup
+        .governance
+        .cast_vote(&setup.owner, &new_proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .update_config(&setup.owner, &1u32, &3600u64);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&new_proposal_id);
+
+    let new_proposal = setup.governance.get_proposal(&new_proposal_id).unwrap();
+    assert_eq!(new_proposal.quorum_votes, 3u32);
+    assert_eq!(new_proposal.status, ProposalStatus::Defeated);
 }
 
 #[test]
@@ -595,4 +723,568 @@ fn list_proposals_status_filter_with_pagination() {
     }
 
     assert_eq!(active_proposals.len(), 5);
+}
+
+// ---------------------------------------------------------------------------
+// Repeat-execution safety tests
+// ---------------------------------------------------------------------------
+
+/// Verifies that a second call to execute_proposal on an already-executed
+/// proposal is rejected and side effects are not applied twice.
+#[test]
+fn repeat_execute_proposal_is_rejected_and_side_effect_applied_once() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // Use a ParameterChange so we can verify the side effect value.
+    let key = Symbol::new(&env, "withdraw_fee_bps");
+    let expected_value: i128 = 125;
+    let proposal_id = setup.governance.create_proposal(
+        &setup.employer_a,
+        &ProposalKind::ParameterChange(key.clone(), expected_value),
+    );
+
+    // Vote — two For votes reach quorum (quorum = 2)
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    // Finalize after voting ends
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, ProposalStatus::Succeeded);
+
+    // Advance past the timelock delay (60s) and execute
+    advance_time(&env, 60);
+    setup
+        .governance
+        .execute_proposal(&setup.signer_a, &proposal_id);
+
+    // Verify first execution succeeded
+    let executed = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(executed.status, ProposalStatus::Executed);
+
+    // Verify the side effect was applied once with the correct value
+    assert_eq!(
+        setup.governance.get_parameter(&key),
+        Some(expected_value),
+        "parameter must be set after the first execution"
+    );
+
+    // Second execution must be rejected — the proposal is already Executed,
+    // not Succeeded.
+    let second = setup
+        .governance
+        .try_execute_proposal(&setup.signer_a, &proposal_id);
+    assert_eq!(
+        second,
+        Err(Ok(GovernanceError::ProposalNotSucceeded)),
+        "repeat execute_proposal on an already-executed proposal must be rejected"
+    );
+
+    // Verify the side effect is unchanged — the payload was NOT applied twice.
+    assert_eq!(
+        setup.governance.get_parameter(&key),
+        Some(expected_value),
+        "parameter value must remain unchanged after rejected second execution"
+    );
+}
+
+/// Verifies that re-executing an ArbiterChange proposal is also rejected and
+/// the arbiter address is not overwritten.
+#[test]
+fn repeat_execute_arbiter_change_proposal_side_effect_applied_once() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let new_arbiter = Address::generate(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(new_arbiter.clone()),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+    advance_time(&env, 60);
+
+    // First execution
+    setup
+        .governance
+        .execute_proposal(&setup.signer_a, &proposal_id);
+    assert_eq!(
+        setup.governance.get_arbiter().unwrap(),
+        new_arbiter,
+        "arbiter must be set after first execution"
+    );
+
+    // Second execution must be rejected
+    let second = setup
+        .governance
+        .try_execute_proposal(&setup.signer_b, &proposal_id);
+    assert_eq!(second, Err(Ok(GovernanceError::ProposalNotSucceeded)));
+
+    // Verify arbiter is unchanged
+    assert_eq!(
+        setup.governance.get_arbiter().unwrap(),
+        new_arbiter,
+        "arbiter must remain unchanged after rejected second execution"
+    );
+}
+
+/// Verifies that even an unrelated caller (another signer) cannot re-execute
+/// an already-executed proposal.
+#[test]
+fn different_signer_cannot_re_execute_proposal() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+    advance_time(&env, 60);
+
+    // Execute as signer_a
+    setup
+        .governance
+        .execute_proposal(&setup.signer_a, &proposal_id);
+
+    // Different signer (signer_b) tries to execute again
+    let second = setup
+        .governance
+        .try_execute_proposal(&setup.signer_b, &proposal_id);
+    assert_eq!(
+        second,
+        Err(Ok(GovernanceError::ProposalNotSucceeded)),
+        "even a different multisig signer cannot re-execute an executed proposal"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// proposer_cancel_proposal tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn proposer_cancels_successfully_pre_quorum() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // Cast only 1 vote (quorum is 2)
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+
+    // Proposer cancels before quorum is reached
+    setup
+        .governance
+        .proposer_cancel_proposal(&setup.owner, &proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, ProposalStatus::Cancelled);
+}
+
+#[test]
+fn non_proposer_cannot_cancel_proposal() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.employer_a,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    let res = setup
+        .governance
+        .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
+    assert_eq!(res, Err(Ok(GovernanceError::ProposalNotActive)));
+}
+
+// ---------------------------------------------------------------------------
+// Double-vote rejection and get_vote accuracy tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn double_vote_rejected_get_vote_preserves_original_choice() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    // Confirm original vote is recorded before second attempt
+    assert_eq!(
+        setup.governance.get_vote(&proposal_id, &setup.employer_a),
+        Some(VoteChoice::For)
+    );
+
+    // Attempt a second vote with a different choice
+    let err = setup
+        .governance
+        .try_cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Against);
+    assert_eq!(err, Err(Ok(GovernanceError::AlreadyVoted)));
+
+    // get_vote must still reflect the original choice, not the rejected one
+    assert_eq!(
+        setup.governance.get_vote(&proposal_id, &setup.employer_a),
+        Some(VoteChoice::For)
+    );
+}
+
+#[test]
+fn double_vote_rejected_does_not_double_count_tallies() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // Cast a single For vote
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    // Attempt a second vote from the same address (different choice)
+    let err = setup
+        .governance
+        .try_cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Against);
+    assert_eq!(err, Err(Ok(GovernanceError::AlreadyVoted)));
+
+    // Vote counts must not have been incremented by the rejected call
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.for_votes, 1);
+    assert_eq!(proposal.against_votes, 0);
+    assert_eq!(proposal.abstain_votes, 0);
+
+    // A different voter can still vote independently
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::Against);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.for_votes, 1);
+    assert_eq!(proposal.against_votes, 1);
+}
+
+#[test]
+fn get_vote_returns_none_for_uncast_voter() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // No vote cast yet
+    assert_eq!(
+        setup
+            .governance
+            .get_vote(&proposal_id, &setup.employer_a),
+        None
+    );
+
+    // After voting, returns the choice
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Abstain);
+    assert_eq!(
+        setup.governance.get_vote(&proposal_id, &setup.employer_a),
+        Some(VoteChoice::Abstain)
+    );
+}
+
+#[test]
+fn double_vote_same_choice_also_rejected() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    // Even casting the same choice again must be rejected
+    let err = setup
+        .governance
+        .try_cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+    assert_eq!(err, Err(Ok(GovernanceError::AlreadyVoted)));
+
+    // for_votes must not have been incremented a second time
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.for_votes, 1);
+}
+
+#[test]
+fn proposer_cannot_cancel_after_quorum_reached() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // Cast enough votes to reach quorum (2 votes, quorum is 2)
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    // Proposer tries to cancel after quorum is reached
+    let res = setup
+        .governance
+        .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
+    assert_eq!(res, Err(Ok(GovernanceError::ProposalNotCancellable)));
+}
+
+#[test]
+fn proposer_cannot_cancel_already_cancelled_proposal() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    setup
+        .governance
+        .proposer_cancel_proposal(&setup.owner, &proposal_id);
+
+    let res = setup
+        .governance
+        .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
+    assert_eq!(res, Err(Ok(GovernanceError::ProposalNotActive)));
+}
+
+#[test]
+fn boundary_quorum_minus_one_allows_cancel() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // Cast 1 vote when quorum is 2 (one short of quorum)
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+
+    // Should still be allowed to cancel
+    setup
+        .governance
+        .proposer_cancel_proposal(&setup.owner, &proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, ProposalStatus::Cancelled);
+}
+
+#[test]
+fn exactly_at_quorum_rejects_cancel() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // Cast exactly quorum votes (2 = quorum)
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Against);
+
+    // Exactly at quorum — cancellation must be rejected
+    let res = setup
+        .governance
+        .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
+    assert_eq!(res, Err(Ok(GovernanceError::ProposalNotCancellable)));
+}
+
+#[test]
+fn proposer_cannot_cancel_defeated_proposal() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // Cast only against votes so the proposal is defeated on finalization
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::Against);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Against);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    let res = setup
+        .governance
+        .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
+    assert_eq!(res, Err(Ok(GovernanceError::ProposalNotActive)));
+}
+
+// ---------------------------------------------------------------------------
+// timelock enforcement tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn execution_rejected_one_second_before_timelock_elapses() {
+    let env = create_env();
+    let setup = setup(&env);
+    let key = Symbol::new(&env, "timelock_test_param");
+
+    let proposal_id = setup.governance.create_proposal(
+        &setup.employer_a,
+        &ProposalKind::ParameterChange(key.clone(), 999i128),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, ProposalStatus::Succeeded);
+    assert!(proposal.eta.is_some());
+
+    let eta = proposal.eta.unwrap();
+    let current_time = env.ledger().timestamp();
+
+    // Advance time to one second before the timelock elapses
+    let time_to_advance = eta.saturating_sub(current_time).saturating_sub(1);
+    advance_time(&env, time_to_advance);
+
+    // Attempt execution one second before timelock elapses - should fail
+    let early_execution = setup
+        .governance
+        .try_execute_proposal(&setup.signer_a, &proposal_id);
+    assert_eq!(early_execution, Err(Ok(GovernanceError::TimelockNotReady)));
+
+    // Verify proposal is still not executed
+    let not_executed = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(not_executed.status, ProposalStatus::Succeeded);
+    assert_eq!(setup.governance.get_parameter(&key), None);
+}
+
+#[test]
+fn execution_succeeds_exactly_at_timelock_boundary() {
+    let env = create_env();
+    let setup = setup(&env);
+    let key = Symbol::new(&env, "boundary_test_param");
+
+    let proposal_id = setup.governance.create_proposal(
+        &setup.employer_a,
+        &ProposalKind::ParameterChange(key.clone(), 777i128),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    let eta = proposal.eta.unwrap();
+    let current_time = env.ledger().timestamp();
+
+    // Advance time exactly to the timelock boundary
+    let time_to_advance = eta.saturating_sub(current_time);
+    advance_time(&env, time_to_advance);
+
+    // Execution should succeed exactly at the boundary
+    setup
+        .governance
+        .execute_proposal(&setup.signer_a, &proposal_id);
+
+    let executed = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(executed.status, ProposalStatus::Executed);
+    assert_eq!(setup.governance.get_parameter(&key).unwrap(), 777i128);
+}
+
+#[test]
+fn execution_succeeds_after_timelock_boundary() {
+    let env = create_env();
+    let setup = setup(&env);
+    let key = Symbol::new(&env, "after_boundary_param");
+
+    let proposal_id = setup.governance.create_proposal(
+        &setup.employer_a,
+        &ProposalKind::ParameterChange(key.clone(), 555i128),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    let eta = proposal.eta.unwrap();
+    let current_time = env.ledger().timestamp();
+
+    // Advance time past the timelock boundary by 10 seconds
+    let time_to_advance = eta.saturating_sub(current_time).saturating_add(10);
+    advance_time(&env, time_to_advance);
+
+    // Execution should succeed after the boundary
+    setup
+        .governance
+        .execute_proposal(&setup.signer_b, &proposal_id);
+
+    let executed = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(executed.status, ProposalStatus::Executed);
+    assert_eq!(setup.governance.get_parameter(&key).unwrap(), 555i128);
 }

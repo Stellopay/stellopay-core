@@ -1,6 +1,6 @@
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger, LedgerInfo},
-    Address, BytesN, Env, IntoVal, String, Vec,
+    Address, BytesN, Env, IntoVal, String,
 };
 use template_versioning::{
     AgreementBinding, TemplateVersionDeprecated, TemplateVersionRecord, TemplateVersioning,
@@ -82,11 +82,20 @@ fn template_version_lifecycle() {
     assert_eq!(ag.template_id, tid);
 
     client
-        .try_deprecate_version(&employer, &tid, &1)
+        .try_deprecate_version(
+            &employer,
+            &tid,
+            &1,
+            &Some(String::from_str(&env, "superseded by v2")),
+        )
         .unwrap()
         .unwrap();
     let dep: TemplateVersionRecord = client.try_get_version(&tid, &1).unwrap().unwrap();
     assert!(dep.deprecated);
+    assert_eq!(
+        dep.deprecation_reason,
+        Some(String::from_str(&env, "superseded by v2"))
+    );
 
     assert!(client
         .try_create_agreement(&employer, &tid, &1, &String::from_str(&env, "should fail"),)
@@ -158,7 +167,12 @@ fn deprecate_version_emits_event() {
         .unwrap();
 
     client
-        .try_deprecate_version(&owner, &tid, &ver)
+        .try_deprecate_version(
+            &owner,
+            &tid,
+            &ver,
+            &Some(String::from_str(&env, "security fix")),
+        )
         .unwrap()
         .unwrap();
 
@@ -171,6 +185,7 @@ fn deprecate_version_emits_event() {
     assert_eq!(emitted.template_id, tid);
     assert_eq!(emitted.version, ver);
     assert_eq!(emitted.timestamp, 2_000_000u64);
+    assert_eq!(emitted.reason, Some(String::from_str(&env, "security fix")));
 }
 
 /// Deprecating an already-deprecated version should still emit the event.
@@ -207,13 +222,19 @@ fn deprecate_already_deprecated_emits_event() {
 
     // First deprecation
     client
-        .try_deprecate_version(&owner, &tid, &ver)
+        .try_deprecate_version(&owner, &tid, &ver, &None)
         .unwrap()
         .unwrap();
 
-    // Second deprecation (idempotent flag flip, event still emitted)
+    // Second deprecation (idempotent flag flip, event still emitted), this
+    // time supplying a reason to confirm it overwrites the stored value.
     client
-        .try_deprecate_version(&owner, &tid, &ver)
+        .try_deprecate_version(
+            &owner,
+            &tid,
+            &ver,
+            &Some(String::from_str(&env, "legal change")),
+        )
         .unwrap()
         .unwrap();
 
@@ -233,6 +254,107 @@ fn deprecate_already_deprecated_emits_event() {
         })
         .count();
     assert_eq!(count, 1);
+
+    // Stored record reflects the most recent deprecation call's reason.
+    let rec: TemplateVersionRecord = client.try_get_version(&tid, &ver).unwrap().unwrap();
+    assert_eq!(
+        rec.deprecation_reason,
+        Some(String::from_str(&env, "legal change"))
+    );
+}
+
+/// Deprecating with a reason stores it and it's readable via `get_version`,
+/// and is also included on the emitted event.
+#[test]
+fn deprecate_with_reason_is_stored_and_readable() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 4_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Template"))
+        .unwrap()
+        .unwrap();
+
+    let hash = BytesN::from_array(&env, &[11u8; 32]);
+    let ver = client
+        .try_publish_template_version(&owner, &tid, &hash, &String::from_str(&env, "v1"), &false)
+        .unwrap()
+        .unwrap();
+
+    // Freshly published, non-deprecated version has no reason yet.
+    let fresh: TemplateVersionRecord = client.try_get_version(&tid, &ver).unwrap().unwrap();
+    assert_eq!(fresh.deprecation_reason, None);
+
+    let reason = String::from_str(&env, "security fix: fixes reentrancy in payout path");
+    client
+        .try_deprecate_version(&owner, &tid, &ver, &Some(reason.clone()))
+        .unwrap()
+        .unwrap();
+
+    // Inspect the emitted event right after the call that produced it — the
+    // test env's event log only reflects the most recent top-level
+    // invocation, so a subsequent `get_version` call (itself a fresh
+    // invocation) would clear it before we get a chance to look.
+    let all_events = env.events().all();
+    let last = all_events.last().unwrap();
+    let emitted: TemplateVersionDeprecated = last.2.into_val(&env);
+    assert_eq!(emitted.reason, Some(reason.clone()));
+
+    let rec: TemplateVersionRecord = client.try_get_version(&tid, &ver).unwrap().unwrap();
+    assert!(rec.deprecated);
+    assert_eq!(rec.deprecation_reason, Some(reason));
+}
+
+/// Deprecating without a reason (existing-caller behavior) still succeeds and
+/// leaves `deprecation_reason` as `None`.
+#[test]
+fn deprecate_without_reason_still_works() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 5_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Template"))
+        .unwrap()
+        .unwrap();
+
+    let hash = BytesN::from_array(&env, &[12u8; 32]);
+    let ver = client
+        .try_publish_template_version(&owner, &tid, &hash, &String::from_str(&env, "v1"), &false)
+        .unwrap()
+        .unwrap();
+
+    client
+        .try_deprecate_version(&owner, &tid, &ver, &None)
+        .unwrap()
+        .unwrap();
+
+    // Inspect the emitted event right after the call that produced it, before
+    // the follow-up `get_version` read (itself a fresh top-level invocation)
+    // clears the test env's event log.
+    let all_events = env.events().all();
+    let last = all_events.last().unwrap();
+    let emitted: TemplateVersionDeprecated = last.2.into_val(&env);
+    assert_eq!(emitted.reason, None);
+
+    let rec: TemplateVersionRecord = client.try_get_version(&tid, &ver).unwrap().unwrap();
+    assert!(rec.deprecated);
+    assert_eq!(rec.deprecation_reason, None);
 }
 
 /// Non-owner cannot deprecate, so no event is emitted.
@@ -263,7 +385,9 @@ fn non_owner_cannot_deprecate() {
         .unwrap();
 
     // Attacker attempt should fail
-    assert!(client.try_deprecate_version(&attacker, &tid, &ver).is_err());
+    assert!(client
+        .try_deprecate_version(&attacker, &tid, &ver, &None)
+        .is_err());
 
     // No deprecation event should exist
     let all_events = env.events().all();
@@ -276,4 +400,405 @@ fn non_owner_cannot_deprecate() {
         })
         .count();
     assert_eq!(dep_count, 0);
+}
+
+/// Agreements are pinned to the template version they were created with.
+/// Publishing a new version does not change what an existing agreement resolves to.
+#[test]
+fn agreement_pinned_to_version_n_after_version_n_plus_one_published() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Payroll"))
+        .unwrap()
+        .unwrap();
+
+    // Publish version 1
+    let h1 = BytesN::from_array(&env, &[1u8; 32]);
+    let v1 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &h1,
+            &String::from_str(&env, "v1 initial"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v1, 1);
+
+    // Create agreement pinned to version 1
+    let aid1 = client
+        .try_create_agreement(&owner, &tid, &1, &String::from_str(&env, "Agreement A"))
+        .unwrap()
+        .unwrap();
+    let ag1: AgreementBinding = client.try_get_agreement(&aid1).unwrap().unwrap();
+    assert_eq!(ag1.template_version, 1);
+    assert_eq!(ag1.template_id, tid);
+
+    // Publish version 2 (new latest)
+    ledger_ts(&env, 2_000_000);
+    let h2 = BytesN::from_array(&env, &[2u8; 32]);
+    let v2 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &h2,
+            &String::from_str(&env, "v2 updated schema"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v2, 2);
+
+    // Verify latest version is now 2
+    assert_eq!(client.try_latest_version(&tid).unwrap().unwrap(), 2);
+
+    // Critical: existing agreement still resolves to version 1
+    let ag1_after: AgreementBinding = client.try_get_agreement(&aid1).unwrap().unwrap();
+    assert_eq!(ag1_after.template_version, 1);
+    assert_eq!(ag1_after.template_id, tid);
+
+    // Verify the version 1 record still exists and is unchanged
+    let v1_record: TemplateVersionRecord = client.try_get_version(&tid, &1).unwrap().unwrap();
+    assert_eq!(v1_record.schema_hash, h1);
+    assert_eq!(v1_record.version, 1);
+    assert!(!v1_record.deprecated);
+}
+
+/// New agreements created after publishing a new version correctly use the latest version.
+#[test]
+fn new_agreement_uses_latest_version_after_publish() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Payroll"))
+        .unwrap()
+        .unwrap();
+
+    // Publish version 1
+    let h1 = BytesN::from_array(&env, &[1u8; 32]);
+    let v1 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &h1,
+            &String::from_str(&env, "v1 initial"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v1, 1);
+
+    // Create agreement with version 1
+    let aid1 = client
+        .try_create_agreement(&owner, &tid, &1, &String::from_str(&env, "Agreement A"))
+        .unwrap()
+        .unwrap();
+    let ag1: AgreementBinding = client.try_get_agreement(&aid1).unwrap().unwrap();
+    assert_eq!(ag1.template_version, 1);
+
+    // Publish version 2 (new latest)
+    ledger_ts(&env, 2_000_000);
+    let h2 = BytesN::from_array(&env, &[2u8; 32]);
+    let v2 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &h2,
+            &String::from_str(&env, "v2 updated schema"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v2, 2);
+
+    // Create new agreement explicitly using version 2
+    let aid2 = client
+        .try_create_agreement(&owner, &tid, &2, &String::from_str(&env, "Agreement B"))
+        .unwrap()
+        .unwrap();
+    let ag2: AgreementBinding = client.try_get_agreement(&aid2).unwrap().unwrap();
+    assert_eq!(ag2.template_version, 2);
+    assert_eq!(ag2.template_id, tid);
+
+    // Verify version 2 record has correct schema hash
+    let v2_record: TemplateVersionRecord = client.try_get_version(&tid, &2).unwrap().unwrap();
+    assert_eq!(v2_record.schema_hash, h2);
+    assert_eq!(v2_record.version, 2);
+}
+
+// ── Parameter-schema-mismatch rejection tests for create_agreement ───────────
+
+/// Negative test: create_agreement with a version number that does not exist
+/// (simulates a missing required schema field — the caller references a
+/// template version whose schema was never published).
+#[test]
+fn create_agreement_rejects_nonexistent_version() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Schema test"))
+        .unwrap()
+        .unwrap();
+
+    let hash = BytesN::from_array(&env, &[0xAA; 32]);
+    let ver = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &hash,
+            &String::from_str(&env, "v1"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(ver, 1);
+
+    // Attempt to create an agreement referencing version 99 (never published).
+    let result = client.try_create_agreement(
+        &owner,
+        &tid,
+        &99,
+        &String::from_str(&env, "bad version ref"),
+    );
+    assert!(result.is_err());
+
+    // Also reject version 0 (versions are 1-based).
+    let result_zero = client.try_create_agreement(
+        &owner,
+        &tid,
+        &0,
+        &String::from_str(&env, "zero version ref"),
+    );
+    assert!(result_zero.is_err());
+}
+
+/// Negative test: create_agreement with a wrong template_id (simulates
+/// supplying a wrong-typed / mismatched parameter — the caller targets a
+/// template that does not exist, so the version lookup fails).
+#[test]
+fn create_agreement_rejects_wrong_template_id() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Real template"))
+        .unwrap()
+        .unwrap();
+
+    let hash = BytesN::from_array(&env, &[0xBB; 32]);
+    client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &hash,
+            &String::from_str(&env, "v1"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+
+    // Use a completely wrong template_id (9999) with version 1.
+    let result = client.try_create_agreement(
+        &owner,
+        &9999,
+        &1,
+        &String::from_str(&env, "wrong template"),
+    );
+    assert!(result.is_err());
+}
+
+/// Negative test: create_agreement with an empty label is rejected as
+/// invalid data (label is a required field in the agreement schema).
+#[test]
+fn create_agreement_rejects_empty_label() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Label test"))
+        .unwrap()
+        .unwrap();
+
+    let hash = BytesN::from_array(&env, &[0xCC; 32]);
+    client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &hash,
+            &String::from_str(&env, "v1"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+
+    // Empty label should be rejected.
+    let result = client.try_create_agreement(
+        &owner,
+        &tid,
+        &1,
+        &String::from_str(&env, ""),
+    );
+    assert!(result.is_err());
+}
+
+/// Negative test: create_agreement against a deprecated version is rejected,
+/// even when the template and version are otherwise valid.
+#[test]
+fn create_agreement_rejects_deprecated_version() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Deprecation test"))
+        .unwrap()
+        .unwrap();
+
+    let hash = BytesN::from_array(&env, &[0xDD; 32]);
+    let ver = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &hash,
+            &String::from_str(&env, "v1"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+
+    // Deprecate the only version.
+    client
+        .try_deprecate_version(
+            &owner,
+            &tid,
+            &ver,
+            &Some(String::from_str(&env, "schema retired")),
+        )
+        .unwrap()
+        .unwrap();
+
+    // Agreement creation against deprecated version must fail.
+    let result = client.try_create_agreement(
+        &owner,
+        &tid,
+        &ver,
+        &String::from_str(&env, "should fail"),
+    );
+    assert!(result.is_err());
+}
+
+/// Positive test: create_agreement succeeds when all parameters conform to
+/// the template's schema — valid template_id, existing non-deprecated
+/// version, and a non-empty label.
+#[test]
+fn create_agreement_succeeds_with_conformant_parameters() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let creator = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Conformant test"))
+        .unwrap()
+        .unwrap();
+
+    let hash = BytesN::from_array(&env, &[0xEE; 32]);
+    let ver = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &hash,
+            &String::from_str(&env, "v1 stable"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(ver, 1);
+
+    // Fully conformant: correct template, existing non-deprecated version, non-empty label.
+    let aid = client
+        .try_create_agreement(
+            &creator,
+            &tid,
+            &ver,
+            &String::from_str(&env, "Q3-2026 payroll"),
+        )
+        .unwrap()
+        .unwrap();
+
+    let binding: AgreementBinding = client.try_get_agreement(&aid).unwrap().unwrap();
+    assert_eq!(binding.template_id, tid);
+    assert_eq!(binding.template_version, ver);
+    assert_eq!(binding.creator, creator);
+    assert_eq!(
+        binding.label,
+        String::from_str(&env, "Q3-2026 payroll")
+    );
+    assert_eq!(binding.created_at, 1_000_000);
 }

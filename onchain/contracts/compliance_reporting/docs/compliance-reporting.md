@@ -25,6 +25,7 @@ Calculates totals and extracts raw records over a defined time window.
 * **Date Range**: Specify `start_date` and `end_date` (UNIX timestamps).
 * **Filters**: Provide an optional `ReportType` to isolate specific data (e.g., only `Tax`).
 * **Pagination/Limits**: To ensure the RPC node does not hit Soroban instruction limits during iteration, `limit` must be `<= 100`. The query searches chronologically backwards (newest first).
+* **Security / Isolation**: Reports are strictly scoped to the `employer` address specified in the parameters. Log records from different employers are cryptographically isolated in storage; a generated report for Employer A will mathematically never contain totals or logs belonging to Employer B, even when records are interleaved temporally across the contract.
 
 ## Example Export Output
 When generating a report, the contract returns a structured object containing aggregated metrics alongside the raw list of transactions for easy CSV/PDF generation on the frontend:

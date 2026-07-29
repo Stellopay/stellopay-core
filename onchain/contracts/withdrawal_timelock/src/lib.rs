@@ -313,10 +313,10 @@ impl WithdrawalTimelock {
     ///      - `Withdrawal(_, _, amount)`: `amount` must be `> 0`.
     ///
     ///      **Opaque fields** (not validated by this contract):
-    ///      - `Withdrawal(token, to, _)`: token and recipient addresses are
-    ///        forwarded verbatim to the external orchestrator.
-    ///      - `AdminChange(target_contract, payload_hash)`: entirely opaque;
-    ///        off-chain tooling is responsible for verifying the hash.
+    ///      - `Withdrawal(token, to, _)`: token and recipient addresses are forwarded verbatim to
+    ///        the external orchestrator.
+    ///      - `AdminChange(target_contract, payload_hash)`: entirely opaque; off-chain tooling is
+    ///        responsible for verifying the hash.
     ///
     /// @param caller Admin address queuing the operation; must authenticate.
     /// @param kind   `Withdrawal(token, to, amount)` or
@@ -403,9 +403,23 @@ impl WithdrawalTimelock {
         Ok(())
     }
 
-    /// @notice Cancels a queued operation before it is executed.
+    /// @notice Cancels a queued operation, whether or not its timelock has matured.
     /// @dev Admin-only. Sets `cancelled_at` for the audit trail.
-    ///      Already-executed operations cannot be cancelled.
+    ///      Already-executed or already-cancelled operations cannot be cancelled
+    ///      (returns `Err(AlreadyExecutedOrCancelled)`).
+    ///
+    ///      **Maturity does not block cancellation.**  This function checks only
+    ///      `op.status`, never `op.eta`.  A matured-but-unexecuted operation
+    ///      (i.e. one whose `eta` has already passed) is still in `Queued` status,
+    ///      so the admin retains the choice to either execute it or cancel it.
+    ///      There is therefore no state in which a valid withdrawal can become
+    ///      permanently stuck: at least one of `execute` or `cancel` is always
+    ///      available to a `Queued` operation.
+    ///
+    ///      Once cancelled, an operation enters a terminal state. It is removed
+    ///      from active consideration and any subsequent attempt to execute it
+    ///      will be rejected, even if its original maturity timestamp has passed.
+    ///
     ///      Emits: `("timelock_cancelled", op_id) → ()`.
     /// @param caller Admin address cancelling the operation; must authenticate.
     /// @param op_id  Operation identifier returned by `queue`.

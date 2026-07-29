@@ -1,13 +1,14 @@
 #![cfg(test)]
 
-use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    token::{Client as TokenClient, StellarAssetClient},
-    Address, Env,
+use payment_retry::{
+    PaymentFailedEvent, PaymentRetryContract, PaymentRetryContractClient, RetryState,
 };
-
-use payment_retry::{PaymentRetryContract, PaymentRetryContractClient, RetryState};
 use payment_scheduler::{PaymentSchedulerContract, PaymentSchedulerContractClient};
+use soroban_sdk::{
+    testutils::{Address as _, Events, Ledger},
+    token::{Client as TokenClient, StellarAssetClient},
+    Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
+};
 
 fn env() -> Env {
     let e = Env::default();
@@ -139,7 +140,7 @@ fn test_retry_orchestration_max_retries() {
     let amount = 1000i128;
     let start_time = env.ledger().timestamp();
 
-    sched_client.create_job(
+    let job_id = sched_client.create_job(
         &employer,
         &recipient,
         &tok_addr,
@@ -175,11 +176,50 @@ fn test_retry_orchestration_max_retries() {
         RetryState::Retrying
     );
 
-    // Attempt 2 -> Exceeds max_retries (1)
+    // Attempt 2 -> Exceeds max_retries (1) -> terminal Failed state
     advance(&env, 120);
     retry_client.process_retry(&payment_id);
+    let payment = retry_client.get_payment(&payment_id).unwrap();
+    assert_eq!(payment.state, RetryState::Failed);
+
+    // The PaymentFailedEvent must be emitted — verify the event topic
+    let all_events: Vec<(Address, Vec<Val>, Val)> = env.events().all();
+    let mut found_failed_event = false;
+    for i in 0..all_events.len() {
+        let (_contract_id, topics, _data) = all_events.get(i).unwrap();
+        if topics.len() >= 2 {
+            let topic0 = topics.get(0).unwrap();
+            let topic1 = topics.get(1).unwrap();
+            if topic0 == Symbol::new(&env, "payment_failed").into_val(&env)
+                && topic1 == payment_id.clone().into_val(&env)
+            {
+                found_failed_event = true;
+                break;
+            }
+        }
+    }
+    assert!(found_failed_event, "PaymentFailedEvent was not emitted");
+
+    // The scheduler job must not be in a limbo state — it stays Active
+    // (the retry contract's Failed state is the terminal failure signal)
+    let job = sched_client.get_job(&job_id).unwrap();
+    assert_eq!(
+        job.status,
+        payment_scheduler::JobStatus::Active,
+        "Scheduler job entered unexpected state after retry exhaustion"
+    );
+
+    // Calling process_due_payments again after retry exhaustion must not
+    // throw or enter an inconsistent state
+    sched_client.process_due_payments(&1);
+    let job_after = sched_client.get_job(&job_id).unwrap();
+    assert_eq!(job_after.status, payment_scheduler::JobStatus::Active);
+
+    // Retry contract record must stay Failed (terminal)
     assert_eq!(
         retry_client.get_payment(&payment_id).unwrap().state,
         RetryState::Failed
     );
+    // No funds were ever transferred to recipient
+    assert_eq!(TokenClient::new(&env, &tok_addr).balance(&recipient), 0);
 }

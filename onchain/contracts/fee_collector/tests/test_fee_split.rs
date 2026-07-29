@@ -3,8 +3,7 @@
 //! Focus: fee split routing, multi-recipient, split config edge cases.
 
 use fee_collector::{FeeCollectorContract, FeeCollectorContractClient, FeeMode, FeeSplit};
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{token, Address, Env};
+use soroban_sdk::{testutils::Address as _, token, Address, Env};
 
 fn create_token<'a>(env: &Env, admin: &Address) -> token::Client<'a> {
     let addr = env.register_stellar_asset_contract(admin.clone());

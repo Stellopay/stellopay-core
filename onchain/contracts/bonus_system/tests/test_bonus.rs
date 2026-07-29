@@ -1,6 +1,8 @@
 use bonus_system::{ApprovalStatus, BonusSystemContract, BonusSystemContractClient, IncentiveKind};
-use soroban_sdk::testutils::{Address as _, Ledger};
-use soroban_sdk::{token, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    token, Address, Env,
+};
 
 fn create_token<'a>(env: &Env, admin: &Address) -> token::Client<'a> {
     let token_address = env.register_stellar_asset_contract(admin.clone());
@@ -1135,4 +1137,139 @@ fn test_concurrent_bonuses_respect_caps() {
         &100,
     );
     assert!(result.is_err());
+}
+
+// ============================================
+// FUNDING POOL BALANCE TESTS (approve_incentive)
+// ============================================
+
+/// Negative test: approve_incentive must reject immediately when the contract's
+/// token balance is insufficient to cover the full remaining payout.
+///
+/// Setup:
+///   1. Create `target_incentive` for 300 tokens (escrowed into pool). Pool = 300.
+///   2. Drain 301 tokens from the pool by creating a helper incentive for 301
+///      (pool = 601), then approving and claiming it (pool = 300 – wait, 601 - 301 = 300).
+///      We need pool < 300, so drain 301 more: pool becomes 300 - 1 = 299 after a
+///      second drain of 1 token. Simplest: create target for 300, then drain 1 via
+///      a second approve+claim, leaving pool at 299 < 300.
+///   3. Approve `target_incentive` → must panic with "Insufficient funding pool balance".
+#[test]
+#[should_panic(expected = "Insufficient funding pool balance")]
+fn test_approve_incentive_fails_when_funding_pool_insufficient() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    client.initialize(&owner);
+
+    // Step 1: escrow 300 tokens for the target incentive. Pool = 300.
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&employer, &300);
+    let target_incentive = client.create_one_time_bonus(
+        &employer,
+        &employee,
+        &approver,
+        &token_client.address,
+        &300,
+        &100,
+    );
+
+    // Step 2: drain 1 token by creating, approving, and immediately claiming a
+    // 1-token incentive (unlock_time = 0). Pool drops to 299 < 300.
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&employer, &1);
+    let drain_incentive = client.create_one_time_bonus(
+        &employer,
+        &employee,
+        &approver,
+        &token_client.address,
+        &1,
+        &0, // immediately claimable
+    );
+    client.approve_incentive(&approver, &drain_incentive);
+    client.claim_incentive(&employee, &drain_incentive);
+    // Pool = 300 - 1 = 299, which is less than the 300 required by target_incentive.
+
+    // Step 3: must panic — pool is insufficient.
+    client.approve_incentive(&approver, &target_incentive);
+}
+
+/// Positive test: approve_incentive succeeds once the funding pool is topped up
+/// to at least cover the full incentive amount.
+///
+/// Setup:
+///   1. Create `target_incentive` for 500. Pool = 500.
+///   2. Drain 1 token → pool = 499 < 500. Confirm approval fails.
+///   3. Top up by escrowing 1 more token via a new pending incentive. Pool = 500.
+///   4. Approve `target_incentive` → must succeed, status = Approved.
+#[test]
+fn test_approve_incentive_succeeds_after_pool_topped_up() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    client.initialize(&owner);
+
+    // Step 1: create target incentive for 500. Pool = 500.
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&employer, &500);
+    let target_incentive = client.create_one_time_bonus(
+        &employer,
+        &employee,
+        &approver,
+        &token_client.address,
+        &500,
+        &100,
+    );
+
+    // Step 2: drain 1 token via approve+claim of a helper incentive. Pool = 499.
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&employer, &1);
+    let drain_incentive = client.create_one_time_bonus(
+        &employer,
+        &employee,
+        &approver,
+        &token_client.address,
+        &1,
+        &0,
+    );
+    client.approve_incentive(&approver, &drain_incentive);
+    client.claim_incentive(&employee, &drain_incentive);
+
+    // Confirm approval still fails with pool at 499.
+    let result = client.try_approve_incentive(&approver, &target_incentive);
+    assert!(
+        result.is_err(),
+        "Approval must fail when pool (499) < required (500)"
+    );
+
+    // Step 3: top up pool by 1 — create a pending incentive for 1 token.
+    // Its escrow transfer brings pool back to 500.
+    let helper_employee = Address::generate(&env);
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&employer, &1);
+    client.create_one_time_bonus(
+        &employer,
+        &helper_employee,
+        &approver,
+        &token_client.address,
+        &1,
+        &100,
+    );
+    // Pool = 499 + 1 = 500.
+
+    // Step 4: approval must now succeed.
+    client.approve_incentive(&approver, &target_incentive);
+    let stored = client.get_incentive(&target_incentive).unwrap();
+    assert_eq!(stored.status, ApprovalStatus::Approved);
 }

@@ -36,6 +36,25 @@ total_funded == total_released + total_refunded + remaining_balance
 
 Property-based fuzz tests in `onchain/contracts/payroll_escrow/tests/fuzz/test_fuzzing.rs` generate randomized fund / release / refund sequences and assert this invariant after every successful step. Integration tests in `onchain/integration_tests` verify the same property across a multi-contract lifecycle (fund → partial release → refund).
 
+### 7. Cumulative Release Cap
+
+Repeated calls to `release` can never, in aggregate, release more than the originally funded amount for a given `agreement_id`. This is enforced by the `assert!(balance >= amount, "Insufficient balance")` guard inside `release`, which compares the live `AgreementBalance` counter against the requested amount before any token transfer occurs.
+
+**Key properties of this invariant:**
+
+- `get_agreement_balance(agreement_id)` equals `funded - cumulative_released` after every individual `release` call.
+- A release that would push the cumulative total past `funded` fails immediately with `"Insufficient balance"`.
+- On failure, **no partial or truncated transfer occurs** — the requested amount is either transferred in full or nothing moves.
+- Contract token custody (actual on-chain balance) and the internal `AgreementBalance` counter stay in lock-step at all times.
+
+**Test coverage** — three dedicated tests in `src/tests/test_escrow.rs`:
+
+| Test | What it verifies |
+|------|-----------------|
+| `test_cumulative_release_cap_many_small_releases_never_exceed_funded` | 10 micro-releases of 100 each from a 1 000-funded agreement; cap invariant and counter checked after every step |
+| `test_cumulative_release_cap_over_funded_amount_errors_not_truncates` | After a 300/500 partial release, an attempt to release 201 (total would be 501 > 500) errors; no partial transfer; subsequent valid 200 release succeeds |
+| `test_cumulative_release_internal_balance_tracks_funded_minus_released_after_every_call` | Variable-step sequence [50, 75, 25, 100, 200, 50]; `get_agreement_balance == funded - released` asserted after every individual call |
+
 ## Interaction Flow
 
 1. **Initialization**: Admin sets the token address and the Manager contract address.
@@ -43,11 +62,38 @@ Property-based fuzz tests in `onchain/contracts/payroll_escrow/tests/fuzz/test_f
 3. **Release**: The Manager contract calls `release` to send a specific amount to a recipient (e.g., an employee).
 4. **Refund**: If an agreement is cancelled or completed with a surplus, the Manager calls `refund_remaining` to return all leftover funds to the employer.
 
+## Escrow Agreement Creation Validation
+
+Escrow agreements created through `create_escrow_agreement` must use a strictly positive `period_seconds` value. A zero-duration request is rejected at creation time with `PayrollError::ZeroPeriodDuration` before any agreement state is persisted, preventing immediately expired agreements from entering the system. The smallest valid period duration is one second, which is accepted and stored as the agreement's configured period length.
+
 ## Security Considerations
 
 - **Authentication**: All state-changing functions require `require_auth()` for the appropriate caller.
 - **Token Transfers**: The contract uses the standard Soroban Token interface. If a transfer fails (e.g., due to a frozen balance or insufficient contract funds), the entire transaction reverts.
 - **Storage**: Most data is stored in `persistent` storage to ensure it remains available throughout the agreement's lifecycle.
+
+## Storage Key Layout
+
+### AgreementBalance
+
+The contract uses `StorageKey::AgreementBalance(u128)` to store per-agreement escrowed balances in persistent storage.
+
+**Key Derivation:**
+- `AgreementBalance(0)` → unique storage slot for agreement ID 0
+- `AgreementBalance(1)` → unique storage slot for agreement ID 1
+- `AgreementBalance(u128::MAX)` → unique storage slot for maximum agreement ID
+
+**Security Invariant:**
+Two distinct agreement IDs must never resolve to the same storage slot. The Soroban SDK's `#[contracttype]` derive macro ensures that distinct `u128` values always resolve to distinct storage keys, preventing cross-agreement balance collisions.
+
+**Regression Tests:**
+The test suite includes regression tests that verify this invariant for:
+- Adjacent agreement IDs (e.g., 1000, 1001, 1002)
+- Edge values (0, 1, u128::MAX)
+- Structurally similar IDs (e.g., 12345, 12346, 12347)
+- Release and refund operations to ensure one agreement's operations never mutate another's balance
+
+A key-derivation bug here would let one agreement's funding silently overwrite another's, enabling fund theft or loss.
 
 ---
 

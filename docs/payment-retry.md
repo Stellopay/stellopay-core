@@ -36,7 +36,7 @@ The `payment_retry` contract provides a configurable retry policy for failed tok
                 └─ retry_count > max_retries ──► [Failed] + payment_retry_failed event
 ```
 
-Payers can also cancel a `Pending` request at any time via `cancel_payment()`, transitioning it to the terminal `Cancelled` state.
+Payers can also cancel a non-terminal request at any time via `cancel_payment()`, which moves it to the terminal `Failed` state and atomically refunds the payer's escrow deposit. See [`cancel_payment`](#cancel_paymentpayer-payment_id) for the full contract.
 
 ---
 
@@ -96,13 +96,30 @@ Returns the number of records evaluated.
 
 ### `cancel_payment(payer, payment_id)`
 
-Cancels a `Pending` request. Only the original payer may cancel. Escrowed funds are not automatically returned — the payer should reclaim them externally.
+Cancels a non-terminal request. Only the original payer may cancel (and must authenticate); cancelling a request that has already reached `Success` or `Failed` is rejected.
+
+Cancellation performs two effects atomically in one call:
+
+1. **Stops processing.** The request transitions to the terminal `Failed` state and is removed from the pending index, so `process_due_payments` and `process_retry` skip it thereafter and the recipient is never paid.
+2. **Refunds escrow.** The exact amount the payer deposited for this request via `fund_payment` (tracked per request and accumulated across multiple deposits) is transferred back to the payer. Cancelling an unfunded request refunds nothing.
+
+Because a request can only be cancelled from a non-terminal state, a deposit already paid out to the recipient on success can never also be refunded here, so the same funds are never double-spent, and the refund touches only this request's escrow ledger — deposits belonging to other requests are untouched. A `payment_cancelled` event is emitted carrying the `refunded_amount`.
 
 ---
 
 ### `get_payment(payment_id) -> Option<PaymentRequest>`
 
 Returns the full payment record, or `None` if it does not exist.
+
+**Retry field semantics** (relevant for off-chain monitoring dashboards):
+
+| Field | Initial value | On failed attempt | On successful attempt | After terminal state |
+|---|---|---|---|---|
+| `retry_count` | `0` | Incremented by `1` | **Unchanged** (never incremented) | Retains last value |
+| `next_retry_at` | `created_at` | Set to `now + interval_for_retry(...)` | Not modified by success path | Retains last computed value |
+| `state` | `Scheduled` | → `Retrying` (if retries remain) / `Failed` (if exhausted) | → `Success` | Terminal (`Success` or `Failed`) |
+
+> **Security note**: `retry_count` is only incremented *after* a failed escrow-balance check (state-before-interaction pattern). A successful transfer never bumps the counter, preventing callers from inflating retries to prematurely exhaust the policy.
 
 ---
 
@@ -136,6 +153,52 @@ This means:
 | `[5]`                | `0`                  | Terminal on first failure  |
 
 ---
+
+## Maximum-Attempt Ceiling
+
+Each payment request carries a `max_retry_attempts` field that defines the **maximum number of failed attempts** before the retry policy is exhausted and the request transitions to the terminal `Failed` state. This ceiling prevents indefinite retry loops that could lock escrow funds or cause unbounded gas consumption.
+
+### How the ceiling works
+
+```
+Retry lifecycle (example: max_retry_attempts = 2)
+
+  Attempt 1: retry_count 0 → 1   (1 ≤ 2)  → Retrying, next_retry_at scheduled
+  Attempt 2: retry_count 1 → 2   (2 ≤ 2)  → Retrying, next_retry_at scheduled
+  Attempt 3: retry_count 2 → 3   (3 > 2)  → Failed (terminal), payment_failed event emitted
+  Attempt 4+:                               → No-op (ceiling already enforced)
+```
+
+The contract enforces the ceiling at **two checkpoints** inside `process_payment_if_due`:
+
+1. **Pre-attempt guard** — If `retry_count > max_retry_attempts` at the start of processing (e.g. the record was stored before the ceiling was reached), the payment is immediately marked `Failed` without attempting a transfer.
+2. **Post-failure guard** — After a failed transfer, `retry_count` is incremented. If the new value exceeds `max_retry_attempts`, the payment transitions to `Failed` and emits `payment_failed` **instead** of scheduling another retry.
+
+### Behaviour after the ceiling
+
+Once the ceiling is reached:
+
+- **No further retries.** Calling `process_retry` or `process_due_payments` for this record is a no-op.
+- **`retry_count` is frozen.** It retains the value from the terminal attempt.
+- **`payment_failed` event emitted.** The event carries `retry_count`, `max_retry_attempts`, and the `failure_notifier` address for off-chain alert routing.
+- **No `retry_scheduled` event.** The terminal attempt does not emit a retry-scheduled event, giving indexers a clear signal that retries have stopped.
+
+### Relation to retry interval sequence
+
+The ceiling interacts with the retry interval sequence (see [Retry Interval Semantics](#retry-interval-semantics)) as follows:
+
+| `max_retry_attempts` | `retry_intervals` | Behaviour |
+|---|---|---|
+| `0` | `[30]` | First failure → `Failed` immediately (no retry) |
+| `1` | `[30]` | First failure → retry after 30s; second failure → `Failed` |
+| `3` | `[10, 30, 60]` | Failures 1–3 scheduled at t+10, t+40, t+100; 4th failure → `Failed` |
+| `5` | `[300]` | Failures 1–5 each wait 300s; 6th failure → `Failed` |
+
+The interval for attempt *N* is `retry_intervals[min(N-1, len-1)]`. The ceiling caps *N* such that the last interval in the list is reused for all attempts beyond the list length, but never beyond `max_retry_attempts`.
+
+### Protocol cap
+
+`max_retry_attempts` is hard-capped at [`MAX_RETRY_ATTEMPTS`](#constants) (100) at the contract level. Requests specifying a higher value are rejected at creation time. This prevents infinite-retry scenarios that could lock escrow funds indefinitely or facilitate draining via repeated small transfers.
 
 ## Alternate Payout Address
 
@@ -243,5 +306,12 @@ Test coverage includes:
 - `fund_payment` — happy path, wrong payer, terminal state guard
 - `process_due_payments` — immediate success, retry on insufficient balance, backoff timing, last-interval reuse, terminal failure, alternate payout routing, `max_payments` bound, idempotency
 - `cancel_payment` — cancels pending, prevents processing, wrong payer, completed guard
+- `get_payment` — `retry_count` increments per failed attempt, `next_retry_at` updates each retry, successful retry leaves `retry_count` unchanged
+- **Maximum-attempt ceiling:**
+  - Exhaustion via `process_retry` — verifies `payment_failed` event, no `retry_scheduled` on terminal attempt, no-op after ceiling
+  - Exhaustion via `process_due_payments` — verifies batch path honours the ceiling identically
+  - State distinguishability — asserts `Failed` is not equal to any other `RetryState` variant
+  - Zero max-retries — first failure transitions directly to `Failed` without scheduling
+  - Success before exhaustion — ensures ceiling logic does not interfere with successful payments
 - Security: infinite-retry drain prevention, max_retry_attempts cap enforcement
 - View helpers (`get_payment`, `get_owner`)

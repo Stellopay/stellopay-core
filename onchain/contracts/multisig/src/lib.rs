@@ -1,9 +1,35 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, BytesN,
+    Env, Vec,
+};
+
+/// Errors emitted by the multisig contract.
+///
+/// Uses `#[contracterror]` so that `panic_with_error!` can convert values of
+/// this type into the host's `soroban_sdk::Error` representation.
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum MultisigError {
+    /// The WASM hash presented at execution time does not match the hash that
+    /// was approved and stored in the original `ContractUpgrade` proposal.
+    ContractUpgradeHashMismatch = 1,
+}
 
 #[contract]
 pub struct MultisigContract;
+
+/// Stable identifiers used to configure per-operation thresholds.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OperationType {
+    ContractUpgrade,
+    LargePayment,
+    DisputeResolution,
+}
 
 /// Operation kinds supported by the multisig.
 ///
@@ -24,6 +50,11 @@ pub enum OperationKind {
     ///
     /// Tuple layout: (payroll_contract, agreement_id, pay_employee, refund_employer)
     DisputeResolution(Address, u128, i128, i128),
+    /// Sets or removes the signer threshold override for an operation type.
+    ///
+    /// Tuple layout: (operation_type, threshold). A `None` threshold removes
+    /// the override and restores the default threshold.
+    SetThresholdOverride(OperationType, Option<u32>),
 }
 
 #[contracttype]
@@ -56,6 +87,7 @@ enum StorageKey {
     OperationCounter,
     Operation(u128),
     Approvals(u128),
+    ThresholdOverride(OperationType),
 }
 
 #[contracttype]
@@ -107,6 +139,35 @@ fn read_threshold(env: &Env) -> u32 {
         .persistent()
         .get::<_, u32>(&StorageKey::Threshold)
         .expect("Threshold not set")
+}
+
+fn read_threshold_override(env: &Env, operation_type: &OperationType) -> Option<u32> {
+    env.storage()
+        .persistent()
+        .get(&StorageKey::ThresholdOverride(operation_type.clone()))
+}
+
+fn read_effective_threshold(env: &Env, operation_type: &OperationType) -> u32 {
+    read_threshold_override(env, operation_type).unwrap_or_else(|| read_threshold(env))
+}
+
+fn operation_type(kind: &OperationKind) -> OperationType {
+    match kind {
+        OperationKind::ContractUpgrade(_, _) => OperationType::ContractUpgrade,
+        OperationKind::LargePayment(_, _, _) => OperationType::LargePayment,
+        OperationKind::DisputeResolution(_, _, _, _) => OperationType::DisputeResolution,
+        OperationKind::SetThresholdOverride(operation_type, _) => operation_type.clone(),
+    }
+}
+
+fn validate_threshold_override(env: &Env, threshold: &Option<u32>) {
+    if let Some(threshold) = threshold {
+        let signer_count = read_signers(env).len();
+        assert!(
+            *threshold > 0 && *threshold <= signer_count,
+            "Invalid threshold override"
+        );
+    }
 }
 
 fn is_signer(env: &Env, addr: &Address) -> bool {
@@ -170,7 +231,14 @@ fn has_approved(env: &Env, operation_id: u128, signer: &Address) -> bool {
 
 fn approval_count(env: &Env, operation_id: u128) -> u32 {
     let approvals = read_approvals(env, operation_id);
-    approvals.len()
+    let mut count = 0;
+    for i in 0..approvals.len() {
+        let addr = approvals.get(i).unwrap();
+        if is_signer(env, &addr) {
+            count += 1;
+        }
+    }
+    count
 }
 
 fn is_emergency_guardian(env: &Env, addr: &Address) -> bool {
@@ -185,7 +253,8 @@ fn is_emergency_guardian(env: &Env, addr: &Address) -> bool {
 }
 
 fn execute_if_threshold_met(env: &Env, operation_id: u128) {
-    let threshold = read_threshold(env);
+    let op = read_operation(env, operation_id);
+    let threshold = read_effective_threshold(env, &operation_type(&op.kind));
     let approvals = approval_count(env, operation_id);
     if approvals >= threshold {
         // Execute without additional signer auth (they already authenticated
@@ -200,6 +269,17 @@ fn perform_execute(env: &Env, operation_id: u128) {
         return;
     }
 
+    // Configuration changes must never use the guardian bypass. Re-check the
+    // target type's active threshold here so every write is protected by the
+    // pre-change value, regardless of which execution path reached this code.
+    if let OperationKind::SetThresholdOverride(operation_type, _) = &op.kind {
+        let threshold = read_effective_threshold(env, operation_type);
+        assert!(
+            approval_count(env, operation_id) >= threshold,
+            "Threshold override requires current threshold"
+        );
+    }
+
     match &op.kind {
         OperationKind::LargePayment(token, to, amount) => {
             assert!(*amount > 0, "Amount must be positive");
@@ -212,6 +292,16 @@ fn perform_execute(env: &Env, operation_id: u128) {
         // orchestrators consume these events and perform the concrete action.
         OperationKind::ContractUpgrade(_, _) => {}
         OperationKind::DisputeResolution(_, _, _, _) => {}
+        OperationKind::SetThresholdOverride(operation_type, threshold) => match threshold {
+            Some(threshold) => env.storage().persistent().set(
+                &StorageKey::ThresholdOverride(operation_type.clone()),
+                threshold,
+            ),
+            None => env
+                .storage()
+                .persistent()
+                .remove(&StorageKey::ThresholdOverride(operation_type.clone())),
+        },
     }
 
     op.status = OperationStatus::Executed;
@@ -284,6 +374,59 @@ impl MultisigContract {
             .set(&StorageKey::Initialized, &true);
     }
 
+    /// @notice Updates the signer set and default threshold.
+    /// @dev Can only be called by the designated owner.
+    /// @param new_signers The new list of signers.
+    /// @param new_threshold The new default threshold.
+    pub fn update_signers(env: Env, new_signers: Vec<Address>, new_threshold: u32) {
+        require_initialized(&env);
+        let owner = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&StorageKey::Owner)
+            .expect("Owner not set");
+        owner.require_auth();
+
+        let signer_count = new_signers.len();
+        assert!(signer_count > 0, "At least one signer required");
+        assert!(
+            new_threshold > 0 && new_threshold <= signer_count,
+            "New threshold must be between 1 and the number of signers"
+        );
+
+        // Ensure signer list has no duplicates.
+        for i in 0..signer_count {
+            let a = new_signers.get(i).unwrap();
+            for j in (i + 1)..signer_count {
+                let b = new_signers.get(j).unwrap();
+                assert!(a != b, "Duplicate signer");
+            }
+        }
+
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Signers, &new_signers);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Threshold, &new_threshold);
+
+        // Adjust/cap any active per-operation overrides to ensure they do not exceed the new signer
+        // count.
+        for op_type in [
+            OperationType::ContractUpgrade,
+            OperationType::LargePayment,
+            OperationType::DisputeResolution,
+        ] {
+            if let Some(override_val) = read_threshold_override(&env, &op_type) {
+                if override_val > signer_count as u32 {
+                    env.storage()
+                        .persistent()
+                        .set(&StorageKey::ThresholdOverride(op_type), &signer_count);
+                }
+            }
+        }
+    }
+
     /// @notice Proposes a new multisig-protected operation.
     /// @dev The proposer must be one of the configured signers.
     /// @param proposer Signer creating the operation.
@@ -293,6 +436,9 @@ impl MultisigContract {
         require_initialized(&env);
         proposer.require_auth();
         assert!(is_signer(&env, &proposer), "Only signers can propose");
+        if let OperationKind::SetThresholdOverride(_, threshold) = &kind {
+            validate_threshold_override(&env, threshold);
+        }
 
         let id = next_operation_id(&env);
         let op = Operation {
@@ -346,7 +492,7 @@ impl MultisigContract {
         let mut approvals = read_approvals(&env, operation_id);
         approvals.push_back(signer.clone());
         let count = approvals.len();
-        let threshold = read_threshold(&env);
+        let threshold = read_effective_threshold(&env, &operation_type(&op.kind));
 
         write_approvals(&env, operation_id, &approvals);
 
@@ -398,7 +544,8 @@ impl MultisigContract {
     }
 
     /// @notice Executes a pending operation via the emergency guardian.
-    /// @dev Guardian can bypass threshold checks in break-glass scenarios.
+    /// @dev Guardian can bypass threshold checks for operational actions, but
+    ///      not for signer threshold override changes.
     /// @param guardian Configured guardian address.
     /// @param operation_id Operation identifier.
     pub fn emergency_execute(env: Env, guardian: Address, operation_id: u128) {
@@ -439,10 +586,118 @@ impl MultisigContract {
         read_threshold(&env)
     }
 
+    /// @notice Returns the configured threshold override for an operation type.
+    /// @param operation_type Operation type to query.
+    /// @return The override, or `None` when the default threshold applies.
+    pub fn get_threshold_override(env: Env, operation_type: OperationType) -> Option<u32> {
+        read_threshold_override(&env, &operation_type)
+    }
+
+    /// @notice Returns the threshold currently active for an operation type.
+    /// @param operation_type Operation type to query.
+    /// @return The configured override or, when absent, the default threshold.
+    pub fn get_effective_threshold(env: Env, operation_type: OperationType) -> u32 {
+        read_effective_threshold(&env, &operation_type)
+    }
+
     /// @notice Returns current approvals for an operation.
     /// @param operation_id operation_id parameter
     /// @dev Requires caller authentication
     pub fn get_approvals(env: Env, operation_id: u128) -> Vec<Address> {
         read_approvals(&env, operation_id)
+    }
+
+    /// @notice Records the caller's approval for an operation and, once the
+    ///         effective threshold is met, executes it — with mandatory WASM
+    ///         hash re-validation for `ContractUpgrade` operations.
+    ///
+    /// @dev This function is an explicit, hash-gated alternative to
+    ///      `approve_operation` for the final approval that triggers execution.
+    ///      It is the **required** path when a signer wants to assert that the
+    ///      WASM hash that will be deployed matches exactly what was voted on
+    ///      at proposal time.
+    ///
+    ///      Execution flow:
+    ///      1. Caller authenticates and must be a configured signer.
+    ///      2. For `ContractUpgrade` operations, `expected_hash` is validated against the hash
+    ///         stored in the proposal *before* the approval is recorded. If the hashes differ, the
+    ///         call is rejected with `ContractUpgradeHashMismatch` and no state is modified.
+    ///      3. The caller's approval is recorded (idempotent if already given).
+    ///      4. If the resulting approval count meets the effective threshold, `perform_execute` is
+    ///         called and the operation is marked Executed.
+    ///
+    ///      This design lets the final signing party use `execute_operation`
+    ///      instead of `approve_operation` to enforce that they confirm the
+    ///      correct hash at the moment of execution, closing the window between
+    ///      proposal approval and on-chain execution.
+    ///
+    /// @param caller          A configured signer who is approving and
+    ///                        triggering execution.
+    /// @param operation_id    The ID of the pending operation.
+    /// @param expected_hash   For `ContractUpgrade` operations: the WASM hash
+    ///                        the caller attests to. Must match the hash stored
+    ///                        in the approved proposal exactly.
+    ///                        Pass `None` for non-upgrade operation kinds (it
+    ///                        is ignored for those kinds).
+    ///
+    /// @custom:error ContractUpgradeHashMismatch  Raised when `expected_hash`
+    ///               is absent or does not equal the hash stored in the
+    ///               `ContractUpgrade` proposal. No state is modified.
+    pub fn execute_operation(
+        env: Env,
+        caller: Address,
+        operation_id: u128,
+        expected_hash: Option<BytesN<32>>,
+    ) {
+        require_initialized(&env);
+        caller.require_auth();
+        assert!(is_signer(&env, &caller), "Only signers can execute");
+
+        let op = read_operation(&env, operation_id);
+        assert!(
+            op.status == OperationStatus::Pending,
+            "Operation not pending"
+        );
+
+        // For ContractUpgrade operations, re-validate the WASM hash against
+        // the hash that was approved by signers at proposal time.
+        // Crucially, this check happens BEFORE recording the approval so that
+        // a mismatched hash never results in a partially-modified state.
+        if let OperationKind::ContractUpgrade(_, stored_hash) = &op.kind {
+            match &expected_hash {
+                Some(h) if h == stored_hash => {
+                    // Hash confirmed — safe to proceed.
+                }
+                _ => {
+                    // Either no hash was provided or the supplied hash does
+                    // not match what signers approved. Reject execution and
+                    // leave all state unchanged.
+                    panic_with_error!(&env, MultisigError::ContractUpgradeHashMismatch);
+                }
+            }
+        }
+
+        // Record the caller's approval (idempotent: ignored if already given).
+        if !has_approved(&env, operation_id, &caller) {
+            let mut approvals = read_approvals(&env, operation_id);
+            approvals.push_back(caller.clone());
+            let count = approvals.len();
+            let threshold = read_effective_threshold(&env, &operation_type(&op.kind));
+
+            write_approvals(&env, operation_id, &approvals);
+
+            env.events().publish(
+                ("operation_approved", operation_id),
+                OperationApprovedEvent {
+                    operation_id,
+                    signer: caller,
+                    approvals: count,
+                    threshold,
+                },
+            );
+        }
+
+        // Execute if threshold is now met.
+        execute_if_threshold_met(&env, operation_id);
     }
 }

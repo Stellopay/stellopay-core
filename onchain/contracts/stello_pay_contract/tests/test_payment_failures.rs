@@ -40,8 +40,10 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env, Vec,
 };
-use stello_pay_contract::storage::{DataKey, PayrollError, MAX_BATCH_SIZE};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{DataKey, PayrollError, MAX_BATCH_SIZE},
+    PayrollContract, PayrollContractClient,
+};
 
 // ============================================================================
 // CONSTANTS
