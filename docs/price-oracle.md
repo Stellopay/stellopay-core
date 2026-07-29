@@ -140,7 +140,7 @@ Each `push_price` call passes through these checks in order:
 10. **Single-source fast path** – If `quorum_n == 1`, the rate is accepted immediately.
 11. **Quorum path** – If `quorum_n > 1`, the vote is stored in the active `(pair, bucket)` window.
 12. **Duplicate rejection** – The same source cannot vote twice in the same active bucket.
-13. **Tolerance check** – Quorum is satisfied only when the completing vote finds `quorum_n` distinct source votes within `tolerance_bps`.
+13. **Tolerance check** – Quorum is satisfied only when the completing vote finds `quorum_n` distinct source votes within `tolerance_bps`. Submissions outside the tolerance band are excluded from aggregation — they do not count toward quorum and cannot skew the accepted price.
 14. **Persist & forward** – Save `PairState`, clear pending bucket state, and call `set_exchange_rate` on the payroll contract.
 
 On failure at any step, an `OracleError` is returned and no state in either
@@ -252,7 +252,7 @@ This model keeps the implementation small and storage bounded while still reduci
 | `("oracle", "owner")`     | `new_owner`             | `accept_ownership`   |
 | `("oracle", "cancel")`    | `pending_owner`         | `cancel_ownership_transfer` |
 
-## Test coverage (60 tests)
+## Test coverage (71 tests)
 
 - **Initialization** (2): owner set, double-init blocked
 - **Source management** (4): add/remove, non-owner blocked, removed source can't push
@@ -264,6 +264,6 @@ This model keeps the implementation small and storage bounded while still reduci
 - **Ownership transfer (two-step)** (8): propose/accept success, old owner loses access, unauthorized accept rejection, accept without propose fails, cancel transfer, non-owner propose/cancel blocked, uninitialized guards.
 - **Uninitialized guards** (5): all admin/source functions revert before init
 - **Security scenarios** (4): compromised source blast radius, pair isolation, reconfigure tightens bounds, pair direction matters
-- **Quorum-specific edge cases** (15): quorum success, dissent without quorum, duplicate-vote rejection, tolerance-boundary acceptance, max-supporting-timestamp selection, older-bucket no-op after rollover, removed-source pending vote invalidation, FX forward failure handling, and invalid zero-quorum configuration
+- **Quorum-specific edge cases** (17): quorum success, dissent without quorum, duplicate-vote rejection, tolerance-boundary acceptance, max-supporting-timestamp selection, older-bucket no-op after rollover, removed-source pending vote invalidation, FX forward failure handling, invalid zero-quorum configuration, outlier-beyond-tolerance rejection, within-tolerance acceptance
 - **Helper-path coverage** (3): non-positive tolerance input and arithmetic overflow guards in the tolerance matcher
 - **Rate limiting** (5): rapid resubmission rejected, resubmission allowed after interval, distinct sources unaffected, single source counts once per quorum bucket, interval=0 disables check

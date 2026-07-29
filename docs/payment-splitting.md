@@ -54,6 +54,7 @@ This guarantees:
 - `sum(outputs) == total_amount` for every successful split.
 - No value is lost to truncation.
 - Caller-supplied recipient ordering cannot bias dust allocation.
+- **Idempotent Recomputation**: Repeated calls with an unchanged split configuration and amount will always produce byte-identical share vectors.
 
 ### Dust Bounding and Loop Safety
 Because each floored percentage leaves a remainder strictly less than `10000`, the maximum possible sum of remainders is strictly less than `10000 * recipient_count`. Since `dust = sum(remainders) / 10000`, it follows mathematically that **`dust` is always strictly less than the number of recipients**.
@@ -79,4 +80,5 @@ If splitting **1 stroop** 50/50:
 - **Duplicate Prevention**: Prevents unintentional double-allocation to the same address within one split.
 - **Ordering Resistance**: Dust assignment depends on remainders and canonical address order, not the caller-provided recipient list order.
 - **Fixed Split Integrity**: Fixed splits reject mismatched totals instead of silently shifting the difference onto the final recipient.
+- **Determinism Guarantee (Idempotency)**: `compute_split` repeated executions are strictly guaranteed to return equal share vectors for unchanged inputs, ensuring that downstream settlement operations or off-chain reconciliation tasks have stable outputs.
 - **Off-chain Integration**: This contract does not handle token movements directly. It provides the logic for other contracts or off-chain systems to perform safe token transfers.
