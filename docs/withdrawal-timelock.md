@@ -21,6 +21,10 @@ or higher-level treasury/escrow contracts.
   `initialize` nor `update_delay` may set a delay exceeding this cap.
   This prevents an admin from permanently locking the queue by setting an
   arbitrarily large delay.
+- **Zero delay explicitly rejected** – `initialize(..., 0)` and
+  `update_delay(..., 0)` return `TimelockError::InvalidDelay`. The contract
+  intentionally does not provide an immediate-execution mode because a nonzero
+  observation/review window is the core security value of the timelock.
 - **Non-retroactive delay updates** – Calling `update_delay` changes the delay
   for operations queued *after* the call. Already-queued operations retain their
   original `eta`, which is frozen at queue time. This is a critical security
@@ -50,7 +54,7 @@ or higher-level treasury/escrow contracts.
 - `TimelockError`
   - `NotInitialized`, `AlreadyInitialized`, `NotAdmin`, `DelayTooLarge`,
     `InvalidDelay`, `OperationNotFound`, `NotReady`,
-    `AlreadyExecutedOrCancelled`
+    `AlreadyExecutedOrCancelled`, `InvalidWithdrawalAmount`
 - `OperationKind`
   - `Withdrawal(Address, Address, i128)` – `(token, to, amount)`
   - `AdminChange(Address, BytesN<32>)` – `(target_contract, payload_hash)`
@@ -101,6 +105,8 @@ Timelock workflow:
 - `update_delay(caller, new_delay) -> Result<(), TimelockError>`
   - Admin-only; updates `min_delay_seconds` for **future** operations only.
   - `0 < new_delay <= MAX_DELAY_SECONDS`.
+  - `new_delay == 0` is explicitly rejected with `TimelockError::InvalidDelay`;
+    the current delay and already-queued operation ETAs remain unchanged.
   - Does **not** retroactively alter the `eta` of already-queued operations.
   - Emits: `("timelock_delay_updated", old_delay) -> new_delay`
 
@@ -117,6 +123,25 @@ Read helpers:
   - Returns `OperationPage { operations: Vec<TimelockedOperation>, next_cursor: Option<u32> }`.
 - `get_queued_count() -> u32`
   - O(1) count of currently active (`Queued`) operations.
+
+
+### Zero-Delay Policy
+
+Zero delay is **not allowed**. Both initialization and later delay updates require
+`0 < delay <= MAX_DELAY_SECONDS`, so a call to `update_delay(caller, 0)` fails
+with `TimelockError::InvalidDelay` and does not mutate contract state.
+
+Security rationale:
+
+- A zero delay would make newly queued operations immediately eligible for
+  execution, eliminating the monitoring/review period that a timelock is meant
+  to provide.
+- Rejected zero-delay updates are atomic: the previous nonzero delay remains in
+  `MinDelaySeconds`, already-queued operations retain their frozen `eta`, and
+  new operations continue using the prior delay.
+- Low-risk or trusted flows that genuinely require immediate execution should be
+  modeled outside this timelock or behind a separate, explicitly named control
+  path so reviewers and monitors do not confuse them with timelocked flows.
 
 ### Typical Workflow
 
@@ -208,6 +233,10 @@ fn create_admin_change_payload_hash(
 - `MAX_DELAY_SECONDS` (30 days) is enforced at both `initialize` and
   `update_delay`. An admin cannot lock the queue indefinitely by setting an
   arbitrarily large delay.
+- Zero delay is rejected at both `initialize` and `update_delay`. This preserves
+  the timelock's security purpose by guaranteeing every queued operation has a
+  nonzero observation window. A failed zero-delay update leaves existing
+  configuration and queued operation ETAs unchanged.
 - Monitor `timelock_queued`, `timelock_executed`, and `timelock_cancelled`
   events to audit the full lifecycle of critical operations and detect
   unexpected activity.
