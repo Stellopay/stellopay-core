@@ -398,19 +398,17 @@ fn test_time_bound_role_grant_lifecycle() {
     let expires_at = 1500;
 
     // Grant Manager role with expiration
-    client.assign_role_with_expiration(
-        &owner,
-        &employee,
-        &BuiltInRole::Manager,
-        &Some(expires_at),
-    );
+    client.assign_role_with_expiration(&owner, &employee, &BuiltInRole::Manager, &Some(expires_at));
 
     // Before expiry: timestamp 1200
     env.ledger().set_timestamp(1200);
     assert!(client.has_role(&employee, &BuiltInRole::Manager));
     assert!(client.has_role_at_least(&employee, &BuiltInRole::Employee));
     assert!(client.can_perform(&employee, &PayrollAction::CreatePayrollRecord));
-    assert_eq!(client.get_roles(&employee), soroban_sdk::vec![&env, BuiltInRole::Manager]);
+    assert_eq!(
+        client.get_roles(&employee),
+        soroban_sdk::vec![&env, BuiltInRole::Manager]
+    );
 
     // Check detailed role grants query
     let grants = client.get_role_grants(&employee);
@@ -470,12 +468,7 @@ fn test_expiration_boundary_conditions() {
     env.ledger().set_timestamp(1000);
     let expires_at = 2000;
 
-    client.assign_role_with_expiration(
-        &owner,
-        &employee,
-        &BuiltInRole::Admin,
-        &Some(expires_at),
-    );
+    client.assign_role_with_expiration(&owner, &employee, &BuiltInRole::Admin, &Some(expires_at));
 
     // Immediately before expiry (1999) -> Authorized
     env.ledger().set_timestamp(1999);
@@ -557,15 +550,19 @@ fn test_legacy_storage_compatibility() {
         }
     ];
     env.as_contract(&client.address, || {
-        env.storage()
-            .persistent()
-            .set(&employee_roles::StorageKey::EmployeeRoles(employee.clone()), &stored_grants);
+        env.storage().persistent().set(
+            &employee_roles::StorageKey::EmployeeRoles(employee.clone()),
+            &stored_grants,
+        );
     });
 
     // Non-expiring grants written directly to storage are correctly read as active
     assert!(client.has_role(&employee, &BuiltInRole::Manager));
     assert!(client.can_perform(&employee, &PayrollAction::CreatePayrollRecord));
-    assert_eq!(client.get_roles(&employee), soroban_sdk::vec![&env, BuiltInRole::Manager]);
+    assert_eq!(
+        client.get_roles(&employee),
+        soroban_sdk::vec![&env, BuiltInRole::Manager]
+    );
     assert_eq!(
         client.get_role_grants(&employee),
         soroban_sdk::vec![
@@ -581,4 +578,3 @@ fn test_legacy_storage_compatibility() {
     env.ledger().set_timestamp(999_999_999);
     assert!(client.has_role(&employee, &BuiltInRole::Manager));
 }
-

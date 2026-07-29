@@ -1062,13 +1062,7 @@ fn cap_setup<'a>(
 
     client.initialize(&owner);
     client.add_approver(&owner, &approver);
-    (
-        owner,
-        submitter,
-        approver,
-        token_client.address,
-        client,
-    )
+    (owner, submitter, approver, token_client.address, client)
 }
 
 #[test]
