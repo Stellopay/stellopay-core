@@ -100,6 +100,8 @@ pub enum StorageKey {
     EmployeeRoles(Address),
     /// Linked RBAC contract address.
     RbacAddress,
+    /// Mapping: BuiltInRole -> Vec<BuiltInRole>
+    RoleImplies(BuiltInRole),
 }
 
 /// Employee Roles Contract

@@ -117,6 +117,8 @@ impl RateLimiter {
 
     /// Sets a per-address limit override.
     ///
+    /// @notice Per-address overrides take precedence over the initialized
+    ///         default limit for the target address.
     /// @dev Only callable by admin.
     /// @param addr Subject address.
     /// @param burst Max burst capacity for this address.
@@ -141,6 +143,9 @@ impl RateLimiter {
     ///
     /// @notice Implements Token Bucket algorithm for burst handling.
     /// @notice Validates security by allowing admins to bypass if configured.
+    /// @notice Resolves the subject-specific limit as:
+    ///         `set_limit_for(subject, ...)` override first, otherwise the
+    ///         default values established during `initialize(...)`.
     /// @dev Refill uses whole ledger seconds only: `elapsed_seconds * refill_rate`.
     ///      Multiple calls in the same ledger second share the same balance and
     ///      do not accumulate fractional refill credit.
@@ -284,6 +289,10 @@ impl RateLimiter {
         usage.tokens
     }
 
+    /// Resolves the effective per-address limit configuration.
+    ///
+    /// @dev Precedence is `StorageKey::Limit(addr)` first, then the default
+    ///      limit configured during `initialize`.
     fn get_limit_config(env: &Env, addr: &Address) -> LimitConfig {
         env.storage()
             .persistent()
