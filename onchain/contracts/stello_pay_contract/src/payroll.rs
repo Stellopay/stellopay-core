@@ -4140,6 +4140,13 @@ pub fn finalize_grace_period(env: &Env, agreement_id: u128) {
         "Grace period has not expired yet"
     );
 
+    // Idempotency guard: if already finalized, return early as a no-op
+    // rather than re-executing the refund or re-emitting the event.
+    if DataKey::is_agreement_grace_period_finalized(env, agreement_id) {
+        return;
+    }
+
+
     // Refund remaining balance using escrow contract if available
     // For now, we'll use the existing escrow balance tracking
     let escrow_balance = DataKey::get_agreement_escrow_balance(env, agreement_id, &agreement.token);
@@ -4174,6 +4181,7 @@ pub fn finalize_grace_period(env: &Env, agreement_id: u128) {
     }
 
     emit_grace_period_finalized(env, GracePeriodFinalizedEvent { agreement_id });
+    DataKey::set_agreement_grace_period_finalized(env, agreement_id);
 }
 
 /// Checks if the grace period is currently active for a cancelled agreement.
