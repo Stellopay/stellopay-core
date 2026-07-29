@@ -31,7 +31,8 @@ Employer creates adjustment (Pending)
 |---------|-------------|
 | Only employer creates/applies/cancels | `employer.require_auth()` + identity check |
 | Only designated approver approves/rejects | `approver.require_auth()` + `adjustment.approver == approver` |
-| Retroactive abuse | `create_adjustment` is forward-only; retroactive edits require owner + employer authorization and a reason hash |
+| Retroactive abuse | `create_adjustment` / `propose_adjustment` are forward-only; retroactive edits require owner + employer authorization and a reason hash |
+| Typed proposal bounds | Percentage and fixed-amount values must be `> 0`; decreases that would yield `new_salary <= 0` are rejected |
 | Salary cap enforcement | `new_salary <= effective_salary_cap()` at creation |
 | One-time initialization | Persistent flag; second call panics |
 | Approved adjustments are immutable | Cancel blocked on `Approved`/`Applied` status |
@@ -43,6 +44,7 @@ Employer creates adjustment (Pending)
 | Constant | Value | Meaning |
 |----------|-------|---------|
 | `DEFAULT_MAX_SALARY` | `1_000_000_000_000` | Default cap (1 trillion stroops) when none is set |
+| `BPS_DENOMINATOR` | `10_000` | Basis-points denominator for `propose_adjustment` percentage mode |
 
 ## Storage Layout
 
@@ -111,6 +113,27 @@ Creates a new forward-only adjustment in `Pending` state. `effective_date` must 
 - `"New salary exceeds salary cap"`
 - `"Effective date cannot be in the past"`
 - `"Conflicting adjustment exists"`
+
+### `propose_adjustment(employer, employee, approver, current_salary, adjustment_type, value, kind, effective_date) -> u128`
+Creates a forward-only adjustment from a **percentage** or **fixed-amount** delta instead of an absolute `new_salary`. The resulting absolute salary is computed on-chain, then the same pending → approve → apply workflow is used.
+
+| `adjustment_type` | `value` meaning | Formula |
+|-------------------|-----------------|---------|
+| `Percentage` | Basis points (`10_000` = 100%) | `new = current ± floor(current × value / 10_000)` |
+| `FixedAmount` | Absolute stroop delta | `new = current ± value` |
+
+`kind` selects increase vs decrease. `value` must always be **positive**; direction comes only from `kind`.
+
+**Examples**:
+- Percentage increase: `current=10_000`, `value=1_000` (10%), `kind=Increase` → `11_000`
+- Fixed decrease: `current=10_000`, `value=1_500`, `kind=Decrease` → `8_500`
+
+**Panics** (type-specific):
+- `"Percentage must be positive"` — rejects `value <= 0` (including negative percentages)
+- `"Fixed amount must be positive"` — rejects `value <= 0` (fixed amount below zero)
+- `"Adjustment would result in non-positive salary"` — decrease would drive salary to ≤ 0
+- `"Increase kind requires a higher resulting salary"` / `"Decrease kind requires a lower resulting salary"`
+- All standard `create_adjustment` validation panics after the absolute salary is resolved
 
 ### `create_retroactive_adjustment(owner, employer, employee, approver, current_salary, new_salary, effective_date, reason_hash) -> u128`
 Creates a retroactive adjustment in `Pending` state using the dedicated authorization path.
@@ -208,12 +231,13 @@ Each proposal is managed by its unique `adjustment_id`. All operations (`approve
 
 ## Test Coverage
 
-56 tests covering:
+Tests covering:
 
 - Initialization (one-time guard, owner stored)
 - Double-init and pre-init panics
 - Create: increase, decrease, timestamps, id increment
 - Create validations: zero salary, same salary, retroactive date, cap exceeded, conflicting effective dates
+- **`propose_adjustment` percentage vs fixed-amount**: correct math through `apply_adjustment`, negative percentage rejected, fixed amount ≤ 0 rejected, decrease that would drive salary ≤ 0 rejected, failed proposals leave no state
 - **Concurrent proposals: same effective date rejected, different effective dates allowed, cancel/reject independence**
 - **Proposal targeting: approve/apply/cancel act on specific id, not "latest"**
 - Retroactive authorization: default block, owner authorization, non-owner rejection, non-zero reason hash, domain-separated immutable reason storage
@@ -238,13 +262,16 @@ Each proposal is managed by its unique `adjustment_id`. All operations (`approve
 8. Status transitions are one-way and irreversible (no rollback).
 9. Audit log IDs are monotonic and records are append-only.
 10. One employee/effective-date pair cannot be reused for conflicting unresolved adjustments.
+11. `propose_adjustment` percentage and fixed-amount `value`s must be strictly positive; direction comes only from `kind`.
+12. Typed decreases that would produce `new_salary <= 0` are rejected before any storage write.
 
 ## Security Considerations
 
 - **Retroactive abuse**: `create_adjustment` rejects `effective_date < now`, preventing accidental or unauthorized backdated salary changes. Retroactive changes must use `create_retroactive_adjustment`, which requires both owner and employer auth plus a non-zero reason hash.
+- **Typed proposal bounds**: `propose_adjustment` rejects negative/zero percentages, negative/zero fixed amounts, and any decrease that would drive salary to zero or below, so callers cannot smuggle invalid deltas through percentage or fixed modes.
 - **Reason privacy and integrity**: The raw HR reason is never stored. The contract stores a domain-separated SHA-256 commitment bound to the owner, employer, employee, salaries, and effective date, so the reason cannot be replayed across unrelated adjustments without changing the stored hash.
 - **Auditability**: All successful state changes write append-only audit entries that can be queried by id and correlated with events.
 - **Conflicts**: Duplicate adjustments for the same employee and effective timestamp are rejected to prevent ambiguous payroll interpretation.
-- **Cap bypass**: Cap is read fresh on each `create_adjustment` call, so lowering the cap immediately restricts new requests.
+- **Cap bypass**: Cap is read fresh on each `create_adjustment` / `propose_adjustment` call, so lowering the cap immediately restricts new requests.
 - **Approver identity**: The approver is stored per-adjustment at creation. A global admin change does not affect outstanding adjustments.
 - **Auth checks**: All state-mutating methods call `require_auth()` on the acting address before any reads or writes.
