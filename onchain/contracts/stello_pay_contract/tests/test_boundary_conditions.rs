@@ -262,7 +262,8 @@ fn test_escrow_zero_period_seconds_rejected() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let result = client.try_create_escrow_agreement(&employer, &contributor, &token, &100i128, &0u64, &4u32);
+    let result =
+        client.try_create_escrow_agreement(&employer, &contributor, &token, &100i128, &0u64, &4u32);
     assert_eq!(result, Err(Ok(PayrollError::ZeroPeriodDuration)));
 }
 

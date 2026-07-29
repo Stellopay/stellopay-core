@@ -121,6 +121,18 @@ pub enum VoteChoice {
 }
 
 /// Stored proposal data.
+///
+/// # Immutability Guarantee
+/// The `kind`, `proposer`, `quorum_votes`, `start_time`, and `end_time`
+/// fields are set at creation and are **immutable for the lifetime of the
+/// proposal**. No public entrypoint writes to these fields after the initial
+/// `create_proposal` call. This ensures voters cannot be misled about what
+/// they are approving after votes have begun accumulating.
+///
+/// Fields that DO change during the lifecycle:
+/// - `status` — transitions through Active → Succeeded/Defeated/Cancelled/Expired/Executed
+/// - `for_votes`, `against_votes`, `abstain_votes` — incremented by `cast_vote`
+/// - `timelock_operation_id`, `eta` — set by `finalize_proposal` on success
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Proposal {
@@ -505,6 +517,13 @@ impl GovernanceContract {
     /// - `GovernanceError::NotEligibleVoter` — proposer lacks RBAC Admin or Employer role
     /// - `GovernanceError::InvalidVotingPeriod` — internal arithmetic overflow (extremely rare)
     ///
+    /// # Immutability Guarantee
+    /// Once created, the proposal's `kind`, `proposer`, `quorum_votes`,
+    /// `start_time`, and `end_time` can never be altered by any public
+    /// entrypoint. This means voters can verify what they are approving
+    /// before casting a vote and be certain the action cannot be swapped
+    /// out mid-vote.
+    ///
     /// # Security
     /// - Eligibility is evaluated live from RBAC; role changes affect future proposals, not active
     ///   ones
@@ -560,6 +579,12 @@ impl GovernanceContract {
     ///   snapshotted `quorum_votes` threshold
     /// - **Majority**: For any proposal to succeed, `For > Against` (abstain votes do not
     ///   participate)
+    ///
+    /// # Re-voting
+    /// Re-voting is **not** allowed. Each address may cast at most one vote per proposal.
+    /// A second `cast_vote` call from the same address on the same proposal is rejected with
+    /// `AlreadyVoted` — the original choice is preserved, the vote counts are not modified,
+    /// and there is no vote-change mechanism. Callers should confirm their choice before submitting.
     ///
     /// # Parameters
     /// - `env` — Soroban environment

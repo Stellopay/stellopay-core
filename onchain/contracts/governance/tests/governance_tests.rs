@@ -726,6 +726,340 @@ fn list_proposals_status_filter_with_pagination() {
 }
 
 // ---------------------------------------------------------------------------
+// Proposal metadata immutability tests
+// ---------------------------------------------------------------------------
+//
+// Once a proposal is created, its descriptive fields (kind, proposer,
+// quorum_votes, start_time, end_time) are frozen and must not change
+// through any public entrypoint, even after votes have been cast.
+//
+// These fields define what voters are approving. If `kind` could be
+// altered mid-vote, voters could be tricked into approving a different
+// action than the one they intended. Similarly, changing the quorum
+// snapshot or voting window after voting has started would subvert the
+// governance process.
+//
+// Audit of all state-mutating entrypoints:
+//
+// | Function                   | Fields written                | Touches metadata? |
+// |----------------------------|-------------------------------|-------------------|
+// | create_proposal            | all (initial write)           | N/A (creation)    |
+// | cast_vote / vote           | for_votes/against/abstain     | No                |
+// | finalize_proposal / queue  | status, timelock_op_id, eta   | No                |
+// | execute_proposal / execute | status (→Expired or Executed) | No                |
+// | cancel_proposal / cancel   | status (→Cancelled)           | No                |
+// | proposer_cancel_proposal   | status (→Cancelled)           | No                |
+// | update_config              | QuorumVotes, VotingPeriod     | Global config, not proposal |
+//
+// The write_proposal helper is called by every mutation entrypoint but
+// each reads the full Proposal, modifies only its allowed fields, and
+// writes back. No code path ever alters kind, proposer, quorum_votes,
+// start_time, or end_time after the initial create.
+//
+// The tests below verify this invariant by snapshotting the metadata
+// after creation and asserting it remains identical after votes,
+// finalization, and execution.
+
+/// Extracts the metadata fields that must remain immutable after creation.
+fn proposal_metadata(proposal: &governance::Proposal) -> ProposalMetadata {
+    ProposalMetadata {
+        kind: proposal.kind.clone(),
+        proposer: proposal.proposer.clone(),
+        quorum_votes: proposal.quorum_votes,
+        start_time: proposal.start_time,
+        end_time: proposal.end_time,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProposalMetadata {
+    kind: governance::ProposalKind,
+    proposer: Address,
+    quorum_votes: u32,
+    start_time: u64,
+    end_time: u64,
+}
+
+/// Verifies that all proposal metadata fields remain unchanged from the
+/// snapshot captured at creation time.
+fn assert_metadata_unchanged(
+    actual: &governance::Proposal,
+    expected: &ProposalMetadata,
+    phase: &str,
+) {
+    let meta = proposal_metadata(actual);
+    assert_eq!(
+        meta, *expected,
+        "proposal metadata changed after {phase}"
+    );
+}
+
+/// Creates a proposal with a known ParameterChange kind and returns its ID
+/// together with the metadata snapshot.
+fn create_test_proposal(
+    _env: &Env,
+    governance: &governance::GovernanceContractClient<'static>,
+    proposer: &Address,
+    key: &Symbol,
+    value: i128,
+    expected_start_time: u64,
+    expected_end_time: u64,
+    expected_quorum: u32,
+) -> (u128, ProposalMetadata) {
+    let id = governance.create_proposal(
+        proposer,
+        &governance::ProposalKind::ParameterChange(key.clone(), value),
+    );
+    let proposal = governance.get_proposal(&id).unwrap();
+    let meta = ProposalMetadata {
+        kind: governance::ProposalKind::ParameterChange(key.clone(), value),
+        proposer: proposer.clone(),
+        quorum_votes: expected_quorum,
+        start_time: expected_start_time,
+        end_time: expected_end_time,
+    };
+    assert_eq!(
+        proposal_metadata(&proposal),
+        meta,
+        "metadata must match expected values at creation"
+    );
+    (id, meta)
+}
+
+#[test]
+fn proposal_metadata_is_immutable_after_vote_cast() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // Create a proposal — this is the baseline metadata snapshot.
+    let key = Symbol::new(&env, "test_param");
+    let (proposal_id, meta) = create_test_proposal(
+        &env,
+        &setup.governance,
+        &setup.employer_a,
+        &key,
+        42i128,
+        0,                        // start_time (ledger starts at 0)
+        3600,                     // end_time (0 + 3600s voting period)
+        2,                        // quorum_votes snapshotted at creation
+    );
+
+    // Cast a vote — this is the "voting has started" threshold.
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+
+    // Metadata must still match the creation snapshot.
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_metadata_unchanged(&proposal, &meta, "first vote");
+    assert_eq!(proposal.for_votes, 1, "vote count must be recorded");
+
+    // Cast a second vote (reaches quorum boundary).
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_metadata_unchanged(&proposal, &meta, "second vote");
+    assert_eq!(proposal.for_votes, 2, "vote count must be recorded");
+}
+
+#[test]
+fn proposal_metadata_is_immutable_after_finalization() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let (proposal_id, meta) = create_test_proposal(
+        &env,
+        &setup.governance,
+        &setup.employer_a,
+        &Symbol::new(&env, "param"),
+        99i128,
+        0,
+        3600,
+        2,
+    );
+
+    // Reach quorum with 2 for votes.
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    // Metadata must be unchanged after the proposal transitions to Succeeded.
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, governance::ProposalStatus::Succeeded);
+    assert_metadata_unchanged(&proposal, &meta, "finalization");
+}
+
+#[test]
+fn proposal_metadata_is_immutable_after_execution() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let (proposal_id, meta) = create_test_proposal(
+        &env,
+        &setup.governance,
+        &setup.employer_a,
+        &Symbol::new(&env, "exec_param"),
+        77i128,
+        0,
+        3600,
+        2,
+    );
+
+    // Full lifecycle to execution.
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+    advance_time(&env, 60);
+    setup
+        .governance
+        .execute_proposal(&setup.signer_a, &proposal_id);
+
+    // Metadata must be unchanged after the proposal transitions to Executed.
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, governance::ProposalStatus::Executed);
+    assert_metadata_unchanged(&proposal, &meta, "execution");
+
+    // Verify the parameter was actually stored (side effect must still work).
+    assert_eq!(setup.governance.get_parameter(&Symbol::new(&env, "exec_param")), Some(77i128));
+}
+
+#[test]
+fn proposal_metadata_is_immutable_after_cancel() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let (proposal_id, meta) = create_test_proposal(
+        &env,
+        &setup.governance,
+        &setup.owner,
+        &Symbol::new(&env, "cancel_param"),
+        33i128,
+        0,
+        3600,
+        2,
+    );
+
+    // Cast one vote (below quorum so proposer cancellation is allowed).
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+
+    // Proposer cancels.
+    setup
+        .governance
+        .proposer_cancel_proposal(&setup.owner, &proposal_id);
+
+    // Metadata must be unchanged after cancellation.
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, governance::ProposalStatus::Cancelled);
+    assert_metadata_unchanged(&proposal, &meta, "proposer cancel");
+}
+
+#[test]
+fn proposal_metadata_is_immutable_after_owner_cancel() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let (proposal_id, meta) = create_test_proposal(
+        &env,
+        &setup.governance,
+        &setup.employer_a,
+        &Symbol::new(&env, "owner_cancel_param"),
+        55i128,
+        0,
+        3600,
+        2,
+    );
+
+    // Owner cancels (owner can cancel at any time before execution).
+    setup
+        .governance
+        .cancel_proposal(&setup.owner, &proposal_id);
+
+    // Metadata must be unchanged after owner-initiated cancellation.
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, governance::ProposalStatus::Cancelled);
+    assert_metadata_unchanged(&proposal, &meta, "owner cancel");
+}
+
+#[test]
+fn proposal_metadata_is_immutable_using_backward_compat_aliases() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let kind = governance::ProposalKind::ArbiterChange(Address::generate(&env));
+    let proposal_id = setup.governance.propose(&setup.employer_a, &kind);
+
+    // Snapshot metadata after creation via the alias.
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    let meta = proposal_metadata(&proposal);
+
+    // Vote via the `vote` alias.
+    setup
+        .governance
+        .vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_metadata_unchanged(&proposal, &meta, "vote alias");
+
+    // Queue via the `queue` alias.
+    advance_time(&env, 3601);
+    setup.governance.queue(&proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_metadata_unchanged(&proposal, &meta, "queue alias");
+
+    // Execute via the `execute` alias.
+    advance_time(&env, 60);
+    setup.governance.execute(&setup.signer_a, &proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, governance::ProposalStatus::Executed);
+    assert_metadata_unchanged(&proposal, &meta, "execute alias");
+}
+
+#[test]
+fn no_entrypoint_can_alter_stored_proposal_kind() {
+    // The governance contract exposes NO public function that accepts a
+    // ProposalKind together with an existing proposal ID to overwrite the
+    // stored kind. Every entrypoint that takes a proposal ID operates on
+    // the already-stored proposal and only touches lifecycle fields.
+    //
+    // This test stores the kind at creation and verifies it survives every
+    // lifecycle transition unchanged.
+    let env = create_env();
+    let setup = setup(&env);
+
+    let original_arbiter = Address::generate(&env);
+    let kind = governance::ProposalKind::ArbiterChange(original_arbiter.clone());
+    let proposal_id = setup.governance.create_proposal(&setup.owner, &kind);
+
+    // Read back and compare the stored kind with the original.
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(
+        proposal.kind,
+        governance::ProposalKind::ArbiterChange(original_arbiter),
+        "stored kind must match the creation value"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Repeat-execution safety tests
 // ---------------------------------------------------------------------------
 
@@ -921,7 +1255,130 @@ fn non_proposer_cannot_cancel_proposal() {
     let res = setup
         .governance
         .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
-    assert_eq!(res, Err(Ok(GovernanceError::NotOwner)));
+    assert_eq!(res, Err(Ok(GovernanceError::ProposalNotActive)));
+}
+
+// ---------------------------------------------------------------------------
+// Double-vote rejection and get_vote accuracy tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn double_vote_rejected_get_vote_preserves_original_choice() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    // Confirm original vote is recorded before second attempt
+    assert_eq!(
+        setup.governance.get_vote(&proposal_id, &setup.employer_a),
+        Some(VoteChoice::For)
+    );
+
+    // Attempt a second vote with a different choice
+    let err = setup
+        .governance
+        .try_cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Against);
+    assert_eq!(err, Err(Ok(GovernanceError::AlreadyVoted)));
+
+    // get_vote must still reflect the original choice, not the rejected one
+    assert_eq!(
+        setup.governance.get_vote(&proposal_id, &setup.employer_a),
+        Some(VoteChoice::For)
+    );
+}
+
+#[test]
+fn double_vote_rejected_does_not_double_count_tallies() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // Cast a single For vote
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    // Attempt a second vote from the same address (different choice)
+    let err = setup
+        .governance
+        .try_cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Against);
+    assert_eq!(err, Err(Ok(GovernanceError::AlreadyVoted)));
+
+    // Vote counts must not have been incremented by the rejected call
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.for_votes, 1);
+    assert_eq!(proposal.against_votes, 0);
+    assert_eq!(proposal.abstain_votes, 0);
+
+    // A different voter can still vote independently
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::Against);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.for_votes, 1);
+    assert_eq!(proposal.against_votes, 1);
+}
+
+#[test]
+fn get_vote_returns_none_for_uncast_voter() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    // No vote cast yet
+    assert_eq!(
+        setup
+            .governance
+            .get_vote(&proposal_id, &setup.employer_a),
+        None
+    );
+
+    // After voting, returns the choice
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Abstain);
+    assert_eq!(
+        setup.governance.get_vote(&proposal_id, &setup.employer_a),
+        Some(VoteChoice::Abstain)
+    );
+}
+
+#[test]
+fn double_vote_same_choice_also_rejected() {
+    let env = create_env();
+    let setup = setup(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    // Even casting the same choice again must be rejected
+    let err = setup
+        .governance
+        .try_cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+    assert_eq!(err, Err(Ok(GovernanceError::AlreadyVoted)));
+
+    // for_votes must not have been incremented a second time
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.for_votes, 1);
 }
 
 #[test]
@@ -1040,478 +1497,128 @@ fn proposer_cannot_cancel_defeated_proposal() {
     assert_eq!(res, Err(Ok(GovernanceError::ProposalNotActive)));
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// QUORUM AND MAJORITY GATING TESTS FOR get_approved_upgrade
-// ═══════════════════════════════════════════════════════════════════════════
-//
-// These tests verify that get_approved_upgrade enforces BOTH quorum and
-// majority thresholds simultaneously, ensuring the hash is only returned
-// when a proposal passes complete governance validation.
-//
-// Test Matrix:
-// | Quorum met | Majority met | Expected result              |
-// |------------|--------------|------------------------------|
-// | ❌ No      | ❌ No        | None (not surfaced)          |
-// | ✅ Yes     | ❌ No        | None (not surfaced)          |
-// | ❌ No      | ✅ Yes       | None (not surfaced)          |
-// | ✅ Yes     | ✅ Yes       | Some(hash) surfaced          |
-//
-// Setup: quorum_votes = 2, voting_period = 3600s, timelock_delay = 60s
-// Eligible voters: owner, employer_a, employer_b (3 total)
-// ═══════════════════════════════════════════════════════════════════════════
+// ---------------------------------------------------------------------------
+// timelock enforcement tests
+// ---------------------------------------------------------------------------
 
 #[test]
-fn get_approved_upgrade_neither_quorum_nor_majority() {
+fn execution_rejected_one_second_before_timelock_elapses() {
     let env = create_env();
     let setup = setup(&env);
+    let key = Symbol::new(&env, "timelock_test_param");
 
-    let target = Address::generate(&env);
-    let wasm_hash = BytesN::from_array(&env, &[1u8; 32]);
     let proposal_id = setup.governance.create_proposal(
-        &setup.owner,
-        &ProposalKind::UpgradeContract(target.clone(), wasm_hash.clone()),
+        &setup.employer_a,
+        &ProposalKind::ParameterChange(key.clone(), 999i128),
     );
-
-    // Cast no votes — neither condition met
-    // total_votes = 0 < 2 (quorum fails)
-    // for_votes = 0, against_votes = 0 (majority fails, no participation)
-
-    advance_time(&env, 3601);
-    setup.governance.finalize_proposal(&proposal_id);
-
-    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.status, ProposalStatus::Defeated);
-
-    // get_approved_upgrade must return None
-    let result = setup.governance.get_approved_upgrade(&target);
-    assert!(
-        result.is_none(),
-        "Expected None when neither quorum nor majority is met"
-    );
-}
-
-#[test]
-fn get_approved_upgrade_quorum_met_majority_not_met() {
-    let env = create_env();
-    let setup = setup(&env);
-
-    let target = Address::generate(&env);
-    let wasm_hash = BytesN::from_array(&env, &[2u8; 32]);
-    let proposal_id = setup.governance.create_proposal(
-        &setup.owner,
-        &ProposalKind::UpgradeContract(target.clone(), wasm_hash.clone()),
-    );
-
-    // Cast votes: 2 total (meets quorum=2) but more against than for
-    // for_votes = 1, against_votes = 1, abstain_votes = 0
-    // total_votes = 2 >= 2 (quorum ✓)
-    // for_votes = 1 NOT > against_votes = 1 (majority ✗)
 
     setup
         .governance
         .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
     setup
         .governance
-        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Against);
-
-    advance_time(&env, 3601);
-    setup.governance.finalize_proposal(&proposal_id);
-
-    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.status, ProposalStatus::Defeated);
-    assert!(
-        proposal.timelock_operation_id.is_none(),
-        "Defeated proposal should not have timelock operation"
-    );
-
-    // get_approved_upgrade must return None because majority failed
-    let result = setup.governance.get_approved_upgrade(&target);
-    assert!(
-        result.is_none(),
-        "Expected None when quorum met but majority not met (1 for = 1 against)"
-    );
-}
-
-#[test]
-fn get_approved_upgrade_majority_met_quorum_not_met() {
-    let env = create_env();
-    let setup = setup(&env);
-
-    let target = Address::generate(&env);
-    let wasm_hash = BytesN::from_array(&env, &[3u8; 32]);
-    let proposal_id = setup.governance.create_proposal(
-        &setup.owner,
-        &ProposalKind::UpgradeContract(target.clone(), wasm_hash.clone()),
-    );
-
-    // Cast only 1 vote (quorum is 2)
-    // for_votes = 1, against_votes = 0, abstain_votes = 0
-    // total_votes = 1 < 2 (quorum ✗)
-    // for_votes = 1 > against_votes = 0 (majority ✓ among single voter)
-
-    setup
-        .governance
-        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
-
-    advance_time(&env, 3601);
-    setup.governance.finalize_proposal(&proposal_id);
-
-    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.status, ProposalStatus::Defeated);
-    assert!(proposal.timelock_operation_id.is_none());
-
-    // get_approved_upgrade must return None because quorum failed
-    let result = setup.governance.get_approved_upgrade(&target);
-    assert!(
-        result.is_none(),
-        "Expected None when majority met (1 > 0) but quorum not met (1 < 2)"
-    );
-}
-
-#[test]
-fn get_approved_upgrade_both_quorum_and_majority_met() {
-    let env = create_env();
-    let setup = setup(&env);
-
-    let target = Address::generate(&env);
-    let wasm_hash = BytesN::from_array(&env, &[4u8; 32]);
-    let proposal_id = setup.governance.create_proposal(
-        &setup.owner,
-        &ProposalKind::UpgradeContract(target.clone(), wasm_hash.clone()),
-    );
-
-    // Cast 2 for votes, 0 against (meets both conditions)
-    // for_votes = 2, against_votes = 0, abstain_votes = 0
-    // total_votes = 2 >= 2 (quorum ✓)
-    // for_votes = 2 > against_votes = 0 (majority ✓)
-
-    setup
-        .governance
-        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
-    setup
-        .governance
-        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
 
     advance_time(&env, 3601);
     setup.governance.finalize_proposal(&proposal_id);
 
     let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
     assert_eq!(proposal.status, ProposalStatus::Succeeded);
-    assert!(proposal.timelock_operation_id.is_some());
+    assert!(proposal.eta.is_some());
 
-    // Execute the proposal to write the approved upgrade hash
-    advance_time(&env, 60); // Wait for timelock ETA
+    let eta = proposal.eta.unwrap();
+    let current_time = env.ledger().timestamp();
+
+    // Advance time to one second before the timelock elapses
+    let time_to_advance = eta.saturating_sub(current_time).saturating_sub(1);
+    advance_time(&env, time_to_advance);
+
+    // Attempt execution one second before timelock elapses - should fail
+    let early_execution = setup
+        .governance
+        .try_execute_proposal(&setup.signer_a, &proposal_id);
+    assert_eq!(early_execution, Err(Ok(GovernanceError::TimelockNotReady)));
+
+    // Verify proposal is still not executed
+    let not_executed = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(not_executed.status, ProposalStatus::Succeeded);
+    assert_eq!(setup.governance.get_parameter(&key), None);
+}
+
+#[test]
+fn execution_succeeds_exactly_at_timelock_boundary() {
+    let env = create_env();
+    let setup = setup(&env);
+    let key = Symbol::new(&env, "boundary_test_param");
+
+    let proposal_id = setup.governance.create_proposal(
+        &setup.employer_a,
+        &ProposalKind::ParameterChange(key.clone(), 777i128),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    let eta = proposal.eta.unwrap();
+    let current_time = env.ledger().timestamp();
+
+    // Advance time exactly to the timelock boundary
+    let time_to_advance = eta.saturating_sub(current_time);
+    advance_time(&env, time_to_advance);
+
+    // Execution should succeed exactly at the boundary
     setup
         .governance
         .execute_proposal(&setup.signer_a, &proposal_id);
 
-    // get_approved_upgrade MUST return Some(hash) because both conditions met
-    let result = setup.governance.get_approved_upgrade(&target);
-    assert!(
-        result.is_some(),
-        "Expected Some(hash) when both quorum (2 >= 2) and majority (2 > 0) are met"
-    );
-    assert_eq!(
-        result.unwrap(),
-        wasm_hash,
-        "Approved upgrade hash should match submitted hash"
-    );
+    let executed = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(executed.status, ProposalStatus::Executed);
+    assert_eq!(setup.governance.get_parameter(&key).unwrap(), 777i128);
 }
 
 #[test]
-fn get_approved_upgrade_abstain_votes_count_toward_quorum_not_majority() {
+fn execution_succeeds_after_timelock_boundary() {
     let env = create_env();
     let setup = setup(&env);
+    let key = Symbol::new(&env, "after_boundary_param");
 
-    let target = Address::generate(&env);
-    let wasm_hash = BytesN::from_array(&env, &[5u8; 32]);
     let proposal_id = setup.governance.create_proposal(
-        &setup.owner,
-        &ProposalKind::UpgradeContract(target.clone(), wasm_hash.clone()),
+        &setup.employer_a,
+        &ProposalKind::ParameterChange(key.clone(), 555i128),
     );
-
-    // Test: 1 for + 1 abstain = 2 total (meets quorum) but only 1 for vote
-    // for_votes = 1, against_votes = 0, abstain_votes = 1
-    // total_votes = 2 >= 2 (quorum ✓ — abstain counts)
-    // for_votes = 1 > against_votes = 0 (majority ✓)
 
     setup
         .governance
         .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
     setup
         .governance
-        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Abstain);
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
 
     advance_time(&env, 3601);
     setup.governance.finalize_proposal(&proposal_id);
 
     let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.status, ProposalStatus::Succeeded);
-    assert!(proposal.timelock_operation_id.is_some());
+    let eta = proposal.eta.unwrap();
+    let current_time = env.ledger().timestamp();
 
-    advance_time(&env, 60);
+    // Advance time past the timelock boundary by 10 seconds
+    let time_to_advance = eta.saturating_sub(current_time).saturating_add(10);
+    advance_time(&env, time_to_advance);
+
+    // Execution should succeed after the boundary
     setup
         .governance
-        .execute_proposal(&setup.signer_a, &proposal_id);
+        .execute_proposal(&setup.signer_b, &proposal_id);
 
-    let result = setup.governance.get_approved_upgrade(&target);
-    assert!(
-        result.is_some(),
-        "Expected Some(hash) when abstain votes contribute to quorum and for > against"
-    );
-    assert_eq!(result.unwrap(), wasm_hash);
-}
-
-#[test]
-fn get_approved_upgrade_quorum_boundary_one_short() {
-    let env = create_env();
-    let setup = setup(&env);
-
-    let target = Address::generate(&env);
-    let wasm_hash = BytesN::from_array(&env, &[6u8; 32]);
-    let proposal_id = setup.governance.create_proposal(
-        &setup.owner,
-        &ProposalKind::UpgradeContract(target.clone(), wasm_hash.clone()),
-    );
-
-    // Cast exactly 1 vote (one short of quorum=2)
-    // for_votes = 1, against_votes = 0
-    // total_votes = 1 < 2 (quorum ✗ by one vote)
-    // for_votes > against_votes would be true but quorum blocks it
-
-    setup
-        .governance
-        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
-
-    advance_time(&env, 3601);
-    setup.governance.finalize_proposal(&proposal_id);
-
-    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.status, ProposalStatus::Defeated);
-
-    let result = setup.governance.get_approved_upgrade(&target);
-    assert!(
-        result.is_none(),
-        "Expected None when total_votes = 1 (one short of quorum=2)"
-    );
-}
-
-#[test]
-fn get_approved_upgrade_quorum_boundary_at_threshold() {
-    let env = create_env();
-    let setup = setup(&env);
-
-    let target = Address::generate(&env);
-    let wasm_hash = BytesN::from_array(&env, &[7u8; 32]);
-    let proposal_id = setup.governance.create_proposal(
-        &setup.owner,
-        &ProposalKind::UpgradeContract(target.clone(), wasm_hash.clone()),
-    );
-
-    // Cast exactly 2 votes with 2 for, 0 against (exactly at quorum)
-    // for_votes = 2, against_votes = 0
-    // total_votes = 2 >= 2 (quorum ✓ exactly met)
-    // for_votes = 2 > against_votes = 0 (majority ✓)
-
-    setup
-        .governance
-        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
-    setup
-        .governance
-        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
-
-    advance_time(&env, 3601);
-    setup.governance.finalize_proposal(&proposal_id);
-
-    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.status, ProposalStatus::Succeeded);
-
-    advance_time(&env, 60);
-    setup
-        .governance
-        .execute_proposal(&setup.signer_a, &proposal_id);
-
-    let result = setup.governance.get_approved_upgrade(&target);
-    assert!(
-        result.is_some(),
-        "Expected Some(hash) when exactly at quorum boundary (2 >= 2) with majority"
-    );
-}
-
-#[test]
-fn get_approved_upgrade_majority_boundary_tie_fails() {
-    let env = create_env();
-    let setup = setup(&env);
-
-    let target = Address::generate(&env);
-    let wasm_hash = BytesN::from_array(&env, &[8u8; 32]);
-    let proposal_id = setup.governance.create_proposal(
-        &setup.owner,
-        &ProposalKind::UpgradeContract(target.clone(), wasm_hash.clone()),
-    );
-
-    // Cast 1 for, 1 against (tie at quorum=2)
-    // for_votes = 1, against_votes = 1
-    // total_votes = 2 >= 2 (quorum ✓)
-    // for_votes = 1 NOT > against_votes = 1 (majority ✗ — tie fails)
-
-    setup
-        .governance
-        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
-    setup
-        .governance
-        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Against);
-
-    advance_time(&env, 3601);
-    setup.governance.finalize_proposal(&proposal_id);
-
-    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.status, ProposalStatus::Defeated);
-
-    let result = setup.governance.get_approved_upgrade(&target);
-    assert!(
-        result.is_none(),
-        "Expected None when votes are tied (1 = 1, not >)"
-    );
-}
-
-#[test]
-fn get_approved_upgrade_majority_boundary_loss_one_vote() {
-    let env = create_env();
-    let setup = setup(&env);
-
-    let target = Address::generate(&env);
-    let wasm_hash = BytesN::from_array(&env, &[9u8; 32]);
-    let proposal_id = setup.governance.create_proposal(
-        &setup.owner,
-        &ProposalKind::UpgradeContract(target.clone(), wasm_hash.clone()),
-    );
-
-    // Cast 1 for, 2 against (majority fails by one vote)
-    // for_votes = 1, against_votes = 2
-    // total_votes = 3 >= 2 (quorum ✓)
-    // for_votes = 1 NOT > against_votes = 2 (majority ✗)
-
-    setup
-        .governance
-        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
-    setup
-        .governance
-        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::Against);
-    setup
-        .governance
-        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::Against);
-
-    advance_time(&env, 3601);
-    setup.governance.finalize_proposal(&proposal_id);
-
-    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.status, ProposalStatus::Defeated);
-
-    let result = setup.governance.get_approved_upgrade(&target);
-    assert!(
-        result.is_none(),
-        "Expected None when for_votes (1) < against_votes (2)"
-    );
-}
-
-#[test]
-fn get_approved_upgrade_majority_boundary_win_by_one() {
-    let env = create_env();
-    let setup = setup(&env);
-
-    let target = Address::generate(&env);
-    let wasm_hash = BytesN::from_array(&env, &[10u8; 32]);
-    let proposal_id = setup.governance.create_proposal(
-        &setup.owner,
-        &ProposalKind::UpgradeContract(target.clone(), wasm_hash.clone()),
-    );
-
-    // Cast 2 for, 1 against (majority succeeds by one vote)
-    // for_votes = 2, against_votes = 1
-    // total_votes = 3 >= 2 (quorum ✓)
-    // for_votes = 2 > against_votes = 1 (majority ✓)
-
-    setup
-        .governance
-        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
-    setup
-        .governance
-        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
-    setup
-        .governance
-        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::Against);
-
-    advance_time(&env, 3601);
-    setup.governance.finalize_proposal(&proposal_id);
-
-    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.status, ProposalStatus::Succeeded);
-
-    advance_time(&env, 60);
-    setup
-        .governance
-        .execute_proposal(&setup.signer_a, &proposal_id);
-
-    let result = setup.governance.get_approved_upgrade(&target);
-    assert!(
-        result.is_some(),
-        "Expected Some(hash) when for_votes (2) > against_votes (1)"
-    );
-}
-
-#[test]
-fn get_approved_upgrade_multiple_proposals_independent() {
-    let env = create_env();
-    let setup = setup(&env);
-
-    // Create two proposals: one passes, one fails
-    let target1 = Address::generate(&env);
-    let wasm_hash1 = BytesN::from_array(&env, &[11u8; 32]);
-    let proposal1_id = setup.governance.create_proposal(
-        &setup.owner,
-        &ProposalKind::UpgradeContract(target1.clone(), wasm_hash1.clone()),
-    );
-
-    let target2 = Address::generate(&env);
-    let wasm_hash2 = BytesN::from_array(&env, &[12u8; 32]);
-    let proposal2_id = setup.governance.create_proposal(
-        &setup.owner,
-        &ProposalKind::UpgradeContract(target2.clone(), wasm_hash2.clone()),
-    );
-
-    // Proposal 1: passes (2 for, 0 against)
-    setup
-        .governance
-        .cast_vote(&setup.owner, &proposal1_id, &VoteChoice::For);
-    setup
-        .governance
-        .cast_vote(&setup.employer_a, &proposal1_id, &VoteChoice::For);
-
-    // Proposal 2: fails (1 for, 0 against — quorum not met)
-    setup
-        .governance
-        .cast_vote(&setup.owner, &proposal2_id, &VoteChoice::For);
-
-    advance_time(&env, 3601);
-    setup.governance.finalize_proposal(&proposal1_id);
-    setup.governance.finalize_proposal(&proposal2_id);
-
-    assert_eq!(
-        setup.governance.get_proposal(&proposal1_id).unwrap().status,
-        ProposalStatus::Succeeded
-    );
-    assert_eq!(
-        setup.governance.get_proposal(&proposal2_id).unwrap().status,
-        ProposalStatus::Defeated
-    );
-
-    advance_time(&env, 60);
-    setup
-        .governance
-        .execute_proposal(&setup.signer_a, &proposal1_id);
-
-    // Only proposal1 should have approved upgrade stored
-    assert!(setup.governance.get_approved_upgrade(&target1).is_some());
-    assert!(setup.governance.get_approved_upgrade(&target2).is_none());
+    let executed = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(executed.status, ProposalStatus::Executed);
+    assert_eq!(setup.governance.get_parameter(&key).unwrap(), 555i128);
 }

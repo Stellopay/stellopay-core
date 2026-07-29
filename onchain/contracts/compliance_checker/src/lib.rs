@@ -250,31 +250,72 @@ impl ComplianceCheckerContract {
         }
 
         let mut traces = soroban_sdk::Vec::new(&env);
+        let sorted_rules = Self::get_sorted_rule_ids(&env);
 
-        // 1. Emergency Pause check
+        for rule in sorted_rules.iter() {
+            let entry = match rule {
+                TraceRule::EmergencyPause => Self::evaluate_emergency_pause(&env),
+                TraceRule::AuxiliaryNotAllowed => {
+                    Self::evaluate_auxiliary_not_allowed(&env, &actor, &executor)
+                }
+                TraceRule::TerminalState => Self::evaluate_terminal_state(&current_state),
+                TraceRule::InvalidCurrentState => {
+                    Self::evaluate_invalid_current_state(&action, &current_state)
+                }
+                TraceRule::InvalidTargetState => {
+                    Self::evaluate_invalid_target_state(&action, &current_state, &target_state)
+                }
+                TraceRule::GracePeriodRequired => {
+                    Self::evaluate_grace_period_required(&action, &current_state, grace_period_active)
+                }
+            };
+
+            if let Some(entry) = entry {
+                let is_deny = entry.result == Decision::Deny;
+                let reason = entry.reason;
+                traces.push_back(entry);
+                if is_deny {
+                    return Self::make_decision(Decision::Deny, reason, traces);
+                }
+            }
+        }
+
+        Self::make_decision(Decision::Allow, ReasonCode::Allowed, traces)
+    }
+
+    // -------------------------------------------------------------------------
+    // Rule evaluation functions
+    // -------------------------------------------------------------------------
+
+    fn evaluate_emergency_pause(env: &Env) -> Option<TraceEntry> {
         let is_paused = env
             .storage()
             .persistent()
             .get::<_, bool>(&StorageKey::EmergencyPause)
             .unwrap_or(false);
 
-        let pause_result = if is_paused {
-            Decision::Deny
-        } else {
-            Decision::Allow
-        };
-        traces.push_back(TraceEntry {
+        Some(TraceEntry {
             rule: TraceRule::EmergencyPause,
-            result: pause_result,
+            result: if is_paused {
+                Decision::Deny
+            } else {
+                Decision::Allow
+            },
             reason: if is_paused {
                 ReasonCode::EmergencyPaused
             } else {
                 ReasonCode::Allowed
             },
-        });
+        })
+    }
 
-        if is_paused {
-            return Self::make_decision(Decision::Deny, ReasonCode::EmergencyPaused, traces);
+    fn evaluate_auxiliary_not_allowed(
+        env: &Env,
+        actor: &Address,
+        executor: &Address,
+    ) -> Option<TraceEntry> {
+        if executor == actor {
+            return None;
         }
 
         // 2. Registered action-blocking rule check.
@@ -306,24 +347,14 @@ impl ComplianceCheckerContract {
                 Decision::Allow
             } else {
                 Decision::Deny
-            };
-            traces.push_back(TraceEntry {
-                rule: TraceRule::AuxiliaryNotAllowed,
-                result: aux_result,
-                reason: if is_allowed {
-                    ReasonCode::Allowed
-                } else {
-                    ReasonCode::AuxiliaryNotAllowed
-                },
-            });
-            if !is_allowed {
-                return Self::make_decision(
-                    Decision::Deny,
-                    ReasonCode::AuxiliaryNotAllowed,
-                    traces,
-                );
-            }
-        }
+            },
+            reason: if is_allowed {
+                ReasonCode::Allowed
+            } else {
+                ReasonCode::AuxiliaryNotAllowed
+            },
+        })
+    }
 
         // 4. Terminal State check
         let is_terminal = current_state == AgreementStatus::Completed;
@@ -334,16 +365,18 @@ impl ComplianceCheckerContract {
         };
         traces.push_back(TraceEntry {
             rule: TraceRule::TerminalState,
-            result: terminal_result,
+            result: if is_terminal {
+                Decision::Deny
+            } else {
+                Decision::Allow
+            },
             reason: if is_terminal {
                 ReasonCode::TerminalState
             } else {
                 ReasonCode::Allowed
             },
-        });
-        if is_terminal {
-            return Self::make_decision(Decision::Deny, ReasonCode::TerminalState, traces);
-        }
+        })
+    }
 
         // 5. Invalid Current State check
         let is_current_valid = Self::is_action_allowed_from_state(action, current_state);
@@ -354,16 +387,18 @@ impl ComplianceCheckerContract {
         };
         traces.push_back(TraceEntry {
             rule: TraceRule::InvalidCurrentState,
-            result: current_valid_result,
-            reason: if is_current_valid {
+            result: if is_valid {
+                Decision::Allow
+            } else {
+                Decision::Deny
+            },
+            reason: if is_valid {
                 ReasonCode::Allowed
             } else {
                 ReasonCode::InvalidCurrentState
             },
-        });
-        if !is_current_valid {
-            return Self::make_decision(Decision::Deny, ReasonCode::InvalidCurrentState, traces);
-        }
+        })
+    }
 
         // 6. Invalid Target State check
         let expected_target = Self::expected_target_state(action, current_state);
@@ -375,15 +410,30 @@ impl ComplianceCheckerContract {
         };
         traces.push_back(TraceEntry {
             rule: TraceRule::InvalidTargetState,
-            result: target_valid_result,
-            reason: if is_target_valid {
+            result: if is_valid {
+                Decision::Allow
+            } else {
+                Decision::Deny
+            },
+            reason: if is_valid {
                 ReasonCode::Allowed
             } else {
                 ReasonCode::InvalidTargetState
             },
-        });
-        if !is_target_valid {
-            return Self::make_decision(Decision::Deny, ReasonCode::InvalidTargetState, traces);
+        })
+    }
+
+    fn evaluate_grace_period_required(
+        action: &PayrollAction,
+        current_state: &AgreementStatus,
+        grace_period_active: bool,
+    ) -> Option<TraceEntry> {
+        let is_claim_action = *action == PayrollAction::ClaimPayroll
+            || *action == PayrollAction::ClaimTimeBased
+            || *action == PayrollAction::ClaimMilestone;
+
+        if !is_claim_action || *current_state != AgreementStatus::Cancelled {
+            return None;
         }
 
         // 7. Grace Period Required check
@@ -395,26 +445,83 @@ impl ComplianceCheckerContract {
                 Decision::Allow
             } else {
                 Decision::Deny
-            };
-            traces.push_back(TraceEntry {
-                rule: TraceRule::GracePeriodRequired,
-                result: grace_result,
-                reason: if grace_period_active {
-                    ReasonCode::Allowed
-                } else {
-                    ReasonCode::GracePeriodRequired
-                },
-            });
-            if !grace_period_active {
-                return Self::make_decision(
-                    Decision::Deny,
-                    ReasonCode::GracePeriodRequired,
-                    traces,
-                );
+            },
+            reason: if grace_period_active {
+                ReasonCode::Allowed
+            } else {
+                ReasonCode::GracePeriodRequired
+            },
+        })
+    }
+
+    // -------------------------------------------------------------------------
+    // Priority helpers
+    // -------------------------------------------------------------------------
+
+    fn default_rule_priority(rule: &TraceRule) -> u32 {
+        match rule {
+            TraceRule::EmergencyPause => 0,
+            TraceRule::AuxiliaryNotAllowed => 1,
+            TraceRule::TerminalState => 2,
+            TraceRule::InvalidCurrentState => 3,
+            TraceRule::InvalidTargetState => 4,
+            TraceRule::GracePeriodRequired => 5,
+        }
+    }
+
+    fn effective_rule_priority(env: &Env, rule: &TraceRule) -> u32 {
+        env.storage()
+            .persistent()
+            .get::<_, u32>(&StorageKey::RulePriority(*rule))
+            .unwrap_or_else(|| Self::default_rule_priority(rule))
+    }
+
+    /// Returns rule IDs sorted by effective priority (ascending). Uses a
+    /// stable insertion sort so equal-priority rules keep their default order.
+    fn get_sorted_rule_ids(env: &Env) -> soroban_sdk::Vec<TraceRule> {
+        let mut sorted = [
+            (
+                Self::effective_rule_priority(env, &TraceRule::EmergencyPause),
+                TraceRule::EmergencyPause,
+            ),
+            (
+                Self::effective_rule_priority(env, &TraceRule::AuxiliaryNotAllowed),
+                TraceRule::AuxiliaryNotAllowed,
+            ),
+            (
+                Self::effective_rule_priority(env, &TraceRule::TerminalState),
+                TraceRule::TerminalState,
+            ),
+            (
+                Self::effective_rule_priority(env, &TraceRule::InvalidCurrentState),
+                TraceRule::InvalidCurrentState,
+            ),
+            (
+                Self::effective_rule_priority(env, &TraceRule::InvalidTargetState),
+                TraceRule::InvalidTargetState,
+            ),
+            (
+                Self::effective_rule_priority(env, &TraceRule::GracePeriodRequired),
+                TraceRule::GracePeriodRequired,
+            ),
+        ];
+
+        // Stable insertion sort
+        let mut i: usize = 1;
+        while i < 6 {
+            let mut j = i;
+            while j > 0 && sorted[j - 1].0 > sorted[j].0 {
+                sorted.swap(j - 1, j);
+                j -= 1;
             }
+            i += 1;
         }
 
-        Self::make_decision(Decision::Allow, ReasonCode::Allowed, traces)
+        let mut result: soroban_sdk::Vec<TraceRule> = soroban_sdk::Vec::new(env);
+        for (_, rule) in sorted {
+            result.push_back(rule);
+        }
+        result
     }
 
     fn make_decision(
