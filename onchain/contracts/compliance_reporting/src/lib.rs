@@ -32,8 +32,10 @@ use soroban_sdk::{
     Vec,
 };
 
-/// Maximum number of records that can be returned in a single `generate_report`
-/// call. Prevents instruction-limit overflows on Soroban.
+/// Maximum number of records that can be returned in a single paginated
+/// report page. This bounds ledger reads and is used by the explicit
+/// follow-up pagination API, not by the full-history `generate_report`
+/// path.
 pub const MAX_QUERY_LIMIT: u32 = 100;
 
 /// Maximum byte length of metadata in a compliance record.
@@ -285,6 +287,42 @@ pub struct ComplianceReport {
     pub agreement_events: Vec<AuditLogEntry>,
     /// Schema version for off-chain parsing.
     pub schema_version: u32,
+}
+
+/// Paginated follow-up response for very large compliance histories.
+///
+/// `generate_report()` returns the complete matching history for the requested
+/// window. Callers that need to page the result set can use
+/// `generate_report_paginated()` to receive the next batch together with a
+/// cursor for the next page. This avoids silently truncating large histories
+/// while still keeping each page bounded by `MAX_QUERY_LIMIT`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComplianceReportPage {
+    /// Employer this report covers.
+    pub employer: Address,
+    /// Employee this report covers.
+    pub employee: Address,
+    /// Inclusive start of the reporting period (UNIX timestamp).
+    pub start_date: u64,
+    /// Inclusive end of the reporting period (UNIX timestamp).
+    pub end_date: u64,
+    /// Sum of `amount` across the records returned in this page.
+    pub total_amount: i128,
+    /// Number of matching withholding records returned in this page.
+    pub record_count: u32,
+    /// Total matching withholding records across the whole requested window.
+    pub total_record_count: u32,
+    /// Withholding records from this contract for the requested page.
+    pub records: Vec<ComplianceRecord>,
+    /// Payment history records from the registered PaymentHistory contract.
+    pub payment_history: Vec<PaymentRecord>,
+    /// Audit log events from the registered AuditLogger contract.
+    pub agreement_events: Vec<AuditLogEntry>,
+    /// Schema version for off-chain parsing.
+    pub schema_version: u32,
+    /// Cursor for the next page, or `None` when the history has been exhausted.
+    pub next_cursor: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -750,6 +788,13 @@ impl ComplianceReportingContract {
     ///         pair within a time window, cross-referencing on-chain withholding
     ///         records with payment history and audit log events.
     ///
+    /// ## Large-history semantics
+    ///
+    /// This function returns every matching withholding record in the requested
+    /// window. It does not silently truncate longer histories. For very large
+    /// histories, callers can use `generate_report_paginated()` to retrieve the
+    /// result in bounded pages while preserving the same security guarantees.
+    ///
     /// ## Aggregation semantics
     ///
     /// Withholding records are fetched from **this contract's** own storage,
@@ -821,7 +866,7 @@ impl ComplianceReportingContract {
         let mut total_amount: i128 = 0;
         let mut current_id = total_on_chain;
 
-        while current_id > 0 && (matching_records.len() as u32) < MAX_QUERY_LIMIT {
+        while current_id > 0 {
             if let Some(record) = env
                 .storage()
                 .persistent()
@@ -869,6 +914,134 @@ impl ComplianceReportingContract {
             payment_history: payments,
             agreement_events: events,
             schema_version,
+        })
+    }
+
+    /// @notice Returns a paginated slice of the full compliance history for a
+    ///         report window. This is intended for very large histories where an
+    ///         off-chain consumer wants to page through the result set without
+    ///         relying on implicit truncation.
+    ///
+    /// ## Pagination semantics
+    ///
+    /// The page size is bounded by `MAX_QUERY_LIMIT`. Callers that receive a
+    /// `next_cursor` should pass it back in a subsequent call to continue from
+    /// the next older record. The `total_record_count` field reports the total
+    /// number of matching records in the full window, while `record_count` and
+    /// `records` reflect only the current page.
+    ///
+    /// @param employer The employer whose withholding records are aggregated.
+    /// @param employee The employee whose payment history is fetched.
+    /// @param period_start Inclusive start of the reporting period (UNIX timestamp).
+    /// @param period_end Inclusive end of the reporting period (UNIX timestamp).
+    /// @param cursor Optional starting record ID for the next page; `None` starts
+    ///               from the newest matching record.
+    /// @param limit Maximum number of records to include in the page.
+    /// @return A `ComplianceReportPage` containing the current page and pagination state.
+    /// @error DependencyUnavailable if PaymentHistory or AuditLogger cannot be called.
+    /// @error InvalidDateRange if period_start > period_end.
+    /// @error QueryLimitExceeded if `limit` is `0` or exceeds `MAX_QUERY_LIMIT`.
+    pub fn generate_report_paginated(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        period_start: u64,
+        period_end: u64,
+        cursor: Option<u32>,
+        limit: u32,
+    ) -> Result<ComplianceReportPage, ComplianceError> {
+        Self::require_initialized(&env)?;
+
+        if period_start > period_end {
+            return Err(ComplianceError::InvalidDateRange);
+        }
+        if limit == 0 || limit > MAX_QUERY_LIMIT {
+            return Err(ComplianceError::QueryLimitExceeded);
+        }
+
+        let audit_logger_addr: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AuditLogger)
+            .ok_or(ComplianceError::DependencyUnavailable)?;
+        let payment_history_addr: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PaymentHistory)
+            .ok_or(ComplianceError::DependencyUnavailable)?;
+
+        let total_on_chain: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RecordCount(employer.clone()))
+            .unwrap_or(0);
+
+        let mut all_matching_records: Vec<ComplianceRecord> = Vec::new(&env);
+        let mut current_id = total_on_chain;
+
+        while current_id > 0 {
+            if let Some(record) = env
+                .storage()
+                .persistent()
+                .get::<_, ComplianceRecord>(&DataKey::Record(employer.clone(), current_id))
+            {
+                if record.timestamp < period_start {
+                    break;
+                }
+                if record.timestamp <= period_end {
+                    all_matching_records.push_back(record);
+                }
+            }
+            current_id -= 1;
+        }
+
+        let total_record_count = all_matching_records.len() as u32;
+        let start_offset = cursor.unwrap_or(0) as usize;
+        let page_records = if start_offset >= all_matching_records.len() as usize {
+            Vec::new(&env)
+        } else {
+            let end_offset = (start_offset + limit as usize).min(all_matching_records.len() as usize);
+            let mut page = Vec::new(&env);
+            for index in start_offset..end_offset {
+                let record = all_matching_records.get(index as u32).unwrap().clone();
+                page.push_back(record);
+            }
+            page
+        };
+        let page_total_amount = page_records.iter().fold(0i128, |sum, record| sum + record.amount);
+        let next_cursor = if start_offset + (page_records.len() as usize) < (all_matching_records.len() as usize) {
+            Some((start_offset + (page_records.len() as usize)) as u32)
+        } else {
+            None
+        };
+
+        let ph_client = PaymentHistoryContractClient::new(&env, &payment_history_addr);
+        let payments = ph_client
+            .try_get_payments_by_employee(&employee, &1, &MAX_QUERY_LIMIT)
+            .map_err(|_| ComplianceError::DependencyUnavailable)?
+            .map_err(|_| ComplianceError::DependencyUnavailable)?;
+
+        let al_client = AuditLoggerContractClient::new(&env, &audit_logger_addr);
+        let events = al_client
+            .try_get_latest_logs(&MAX_QUERY_LIMIT)
+            .map_err(|_| ComplianceError::DependencyUnavailable)?
+            .map_err(|_| ComplianceError::DependencyUnavailable)?;
+
+        let schema_version = Self::get_report_schema_version(env.clone());
+
+        Ok(ComplianceReportPage {
+            employer,
+            employee,
+            start_date: period_start,
+            end_date: period_end,
+            total_amount: page_total_amount,
+            record_count: page_records.len() as u32,
+            total_record_count,
+            records: page_records,
+            payment_history: payments,
+            agreement_events: events,
+            schema_version,
+            next_cursor,
         })
     }
 

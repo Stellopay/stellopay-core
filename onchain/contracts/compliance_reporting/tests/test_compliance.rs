@@ -15,9 +15,11 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
+use audit_logger::{AuditLoggerContract, AuditLoggerContractClient};
 use compliance_reporting::{
     ComplianceError, ComplianceReportingContract, ComplianceReportingContractClient, ReportType,
 };
+use payment_history::{PaymentHistoryContract, PaymentHistoryContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Bytes, Env,
@@ -1498,6 +1500,52 @@ fn test_generate_report_multi_record_aggregation() {
     }
 }
 
+/// Verifies that generate_report does not silently truncate a large employer
+/// history. Once the count grows beyond the small internal query window, the
+/// contract must still return every matching record in the requested window.
+#[test]
+fn test_generate_report_large_history_returns_all_matching_records() {
+    let (env, client, admin) = setup();
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token = Address::generate(&env);
+    let audit_logger = Address::generate(&env);
+    let payment_history = Address::generate(&env);
+
+    client.set_contract_addresses(&admin, &audit_logger, &payment_history);
+
+    let record_count = 125u32;
+    for i in 1..=record_count {
+        env.ledger().set_timestamp(1000 + u64::from(i) * 10);
+        log_as_employer(
+            &client,
+            &env,
+            &employer,
+            &employee,
+            &token,
+            100 + i as i128,
+            &ReportType::Payroll,
+        );
+    }
+
+    let end_date = 1000 + u64::from(record_count) * 10;
+    let audit_logger_id = env.register_contract(None, AuditLoggerContract);
+    let audit_logger_client = AuditLoggerContractClient::new(&env, &audit_logger_id);
+    audit_logger_client.initialize(&admin, &1000);
+
+    let payment_history_id = env.register_contract(None, PaymentHistoryContract);
+    let payment_history_client = PaymentHistoryContractClient::new(&env, &payment_history_id);
+    payment_history_client.initialize(&admin, &Address::generate(&env));
+
+    client.set_contract_addresses(&admin, &audit_logger_id, &payment_history_id);
+
+    let report = client.generate_report(&employer, &employee, &1000, &end_date);
+
+    assert_eq!(report.record_count, record_count, "large employer histories must not be truncated");
+    assert_eq!(report.records.len(), record_count as u32, "every matching record must be returned");
+    assert_eq!(report.total_amount, 100u128 as i128 * u128::from(record_count) as i128 + (1..=record_count).sum::<u32>() as i128, "total amount must include every matching record");
+}
+
 /// Verifies that generate_report only includes records within the
 /// requested window and that the total reflects only those records.
 #[test]
@@ -1549,7 +1597,8 @@ fn test_generate_report_window_filters_total() {
 }
 
 /// Verifies that records from different employers are never mixed:
-/// each employer's report contains only its own totals.
+/// each employer's report contains only its own totals and records,
+/// even when records are interleaved temporally and by global sequence in storage.
 #[test]
 fn test_generate_report_multi_employer_isolation() {
     let (env, client, _) = setup();
@@ -1558,6 +1607,7 @@ fn test_generate_report_multi_employer_isolation() {
     let employee = Address::generate(&env);
     let token = Address::generate(&env);
 
+    // Interleave employer A and employer B's log records in time
     env.ledger().set_timestamp(1000);
     log_as_employer(
         &client,
@@ -1565,43 +1615,85 @@ fn test_generate_report_multi_employer_isolation() {
         &employer_a,
         &employee,
         &token,
-        1000,
+        100,
         &ReportType::Payroll,
     );
-    log_as_employer(
-        &client,
-        &env,
-        &employer_a,
-        &employee,
-        &token,
-        2000,
-        &ReportType::Tax,
-    );
+
+    env.ledger().set_timestamp(2000);
     log_as_employer(
         &client,
         &env,
         &employer_b,
         &employee,
         &token,
-        9999,
+        200,
+        &ReportType::Tax,
+    );
+
+    env.ledger().set_timestamp(3000);
+    log_as_employer(
+        &client,
+        &env,
+        &employer_a,
+        &employee,
+        &token,
+        300,
         &ReportType::Payroll,
+    );
+
+    env.ledger().set_timestamp(4000);
+    log_as_employer(
+        &client,
+        &env,
+        &employer_b,
+        &employee,
+        &token,
+        400,
+        &ReportType::Regulatory,
+    );
+
+    env.ledger().set_timestamp(5000);
+    log_as_employer(
+        &client,
+        &env,
+        &employer_a,
+        &employee,
+        &token,
+        500,
+        &ReportType::Tax,
     );
 
     let report_a = client.get_withholding_records(&employer_a, &employee, &0, &9999, &None, &100);
     let report_b = client.get_withholding_records(&employer_b, &employee, &0, &9999, &None, &100);
 
-    // employer_a's totals must not include employer_b's record.
+    // employer_a's totals must not include employer_b's records.
     assert_eq!(report_a.employer, employer_a);
     assert_eq!(
-        report_a.total_amount, 3000,
-        "employer_a total must be 1000+2000"
+        report_a.total_amount, 900,
+        "employer_a total must be exactly 100+300+500"
     );
-    assert_eq!(report_a.record_count, 2);
+    assert_eq!(
+        report_a.record_count, 3,
+        "employer_a must have exactly 3 records"
+    );
+    // ensure no cross-contamination in the returned records array
+    for record in report_a.records.iter() {
+        assert_eq!(record.employer, employer_a, "employer A report contains non-A record");
+    }
 
     // employer_b's totals must not include employer_a's records.
     assert_eq!(report_b.employer, employer_b);
-    assert_eq!(report_b.total_amount, 9999, "employer_b total must be 9999");
-    assert_eq!(report_b.record_count, 1);
+    assert_eq!(
+        report_b.total_amount, 600, 
+        "employer_b total must be exactly 200+400"
+    );
+    assert_eq!(
+        report_b.record_count, 2,
+        "employer_b must have exactly 2 records"
+    );
+    for record in report_b.records.iter() {
+        assert_eq!(record.employer, employer_b, "employer B report contains non-B record");
+    }
 }
 
 // ---------------------------------------------------------------------------

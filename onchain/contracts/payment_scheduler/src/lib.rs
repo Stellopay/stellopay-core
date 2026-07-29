@@ -115,6 +115,10 @@ pub enum RetryState {
     Retrying,
     Success,
     Failed,
+    /// Payer explicitly revoked the request in the `payment_retry` contract.
+    /// Terminal — mirrors `payment_retry::RetryState::Cancelled` so XDR decoded
+    /// from that contract round-trips through this local mirror type.
+    Cancelled,
 }
 
 #[contracttype]
@@ -521,6 +525,11 @@ impl PaymentSchedulerContract {
     ///      For one-time payments (`max_executions == Some(1)`) `interval_seconds`
     ///      may be zero. For all other jobs it must be > 0.
     ///
+    ///      `start_time` must be >= the current ledger timestamp. A past-due
+    ///      `start_time` is rejected with `Err(StartTimeInPast)` to prevent
+    ///      a backlog of instantly-due payments the first time
+    ///      `process_due_payments` runs.
+    ///
     /// @param employer  Employer funding the job. Must authenticate.
     /// @param recipient Payment destination address.
     /// @param token     Token contract used for transfers.
@@ -554,6 +563,12 @@ impl PaymentSchedulerContract {
         // One-time payments (max_executions == Some(1)) may have a zero interval.
         if max_executions != Some(1) && interval_seconds == 0 {
             return Err(SchedulerError::IntervalRequired);
+        }
+
+        // Reject start_time already in the past to avoid an instant backlog.
+        let now = env.ledger().timestamp();
+        if start_time < now {
+            return Err(SchedulerError::StartTimeInPast);
         }
 
         // Derive and check the deterministic idempotency key.
@@ -914,3 +929,4 @@ impl PaymentSchedulerContract {
             .get(&StorageKey::ScheduleId(schedule_id))
     }
 }
+                     

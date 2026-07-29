@@ -1726,3 +1726,405 @@ fn test_original_department_excludes_moved_employee() {
         "forward index must still point to dept_a for emp2"
     );
 }
+
+
+// ---------------------------------------------------------------------------
+// Department rename tests (Issue #1095)
+// ---------------------------------------------------------------------------
+//
+// Verifies that renaming a department via `rename_department` does not
+// orphan or drop reverse-index links to employees already assigned to it.
+// Employee-to-department lookups must continue to resolve correctly after
+// the rename, ensuring data integrity for payroll and org structure queries.
+//
+// Key Invariant:
+//   A department rename affects only the `Department.name` field.
+//   All employee indexes remain unchanged:
+//   - Forward: `EmployeeDepartment(emp, org) → dept_id` (unaffected)
+//   - Reverse: `DepartmentEmployees(dept_id) → Vec<Address>` (unaffected)
+//   Therefore, employee lookups work identically before and after rename.
+
+/// Comprehensive test: rename a department and verify all employee associations
+/// remain intact. Tests both forward and reverse index correctness.
+///
+/// Setup:
+/// ```
+/// Org: "TestCorp"
+///  ├── Engineering (eng_id) → [emp1, emp2, emp3]
+///  └── Sales (sales_id) → [emp4]
+/// ```
+///
+/// Operation: Rename "Engineering" to "TechTeam"
+///
+/// Verification:
+/// 1. Department record name is updated to "TechTeam"
+/// 2. All three employees still resolve to eng_id via forward lookup
+/// 3. All three employees still appear in get_department_employees(eng_id)
+/// 4. Department report still aggregates all three employees
+/// 5. Unrelated department (Sales) and its employees unaffected
+#[test]
+fn test_department_rename_preserves_employee_associations() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+
+    // Create departments
+    let eng_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+    let sales_id = client.create_department(&owner, &org_id, &symbol_short!("Sales"), &None);
+
+    // Assign multiple employees to Engineering department
+    let emp1 = Address::generate(&env);
+    let emp2 = Address::generate(&env);
+    let emp3 = Address::generate(&env);
+    let emp4 = Address::generate(&env);
+
+    client.assign_employee_to_department(&owner, &org_id, &eng_id, &emp1);
+    client.assign_employee_to_department(&owner, &org_id, &eng_id, &emp2);
+    client.assign_employee_to_department(&owner, &org_id, &eng_id, &emp3);
+    client.assign_employee_to_department(&owner, &org_id, &sales_id, &emp4);
+
+    // Snapshot before rename
+    let eng_before = client.get_department(&eng_id);
+    assert_eq!(eng_before.name, symbol_short!("Eng"));
+    let eng_emps_before = client.get_department_employees(&eng_id);
+    assert_eq!(eng_emps_before.len(), 3, "Engineering should have 3 employees before rename");
+
+    // ======================== RENAME OPERATION ========================
+    client.rename_department(&owner, &eng_id, &symbol_short!("TechTeam"));
+    // ===================================================================
+
+    // Assertion 1: Department name is updated
+    let eng_after = client.get_department(&eng_id);
+    assert_eq!(
+        eng_after.name,
+        symbol_short!("TechTeam"),
+        "Department name should be updated after rename"
+    );
+    // Other fields remain unchanged
+    assert_eq!(eng_after.id, eng_id);
+    assert_eq!(eng_after.org_id, org_id);
+    assert_eq!(eng_after.parent_id, eng_before.parent_id);
+
+    // Assertion 2: All employees' forward index lookups still resolve to renamed department
+    assert_eq!(
+        client.get_employee_department(&emp1, &org_id),
+        Some(eng_id),
+        "emp1 forward lookup must still resolve to eng_id after rename"
+    );
+    assert_eq!(
+        client.get_employee_department(&emp2, &org_id),
+        Some(eng_id),
+        "emp2 forward lookup must still resolve to eng_id after rename"
+    );
+    assert_eq!(
+        client.get_employee_department(&emp3, &org_id),
+        Some(eng_id),
+        "emp3 forward lookup must still resolve to eng_id after rename"
+    );
+
+    // Assertion 3: Reverse index (get_department_employees) returns unchanged roster
+    let eng_emps_after = client.get_department_employees(&eng_id);
+    assert_eq!(
+        eng_emps_after.len(),
+        3,
+        "get_department_employees should return full unchanged roster after rename"
+    );
+    assert!(
+        eng_emps_after.contains(&emp1),
+        "emp1 must be in reverse index after rename"
+    );
+    assert!(
+        eng_emps_after.contains(&emp2),
+        "emp2 must be in reverse index after rename"
+    );
+    assert!(
+        eng_emps_after.contains(&emp3),
+        "emp3 must be in reverse index after rename"
+    );
+
+    // Assertion 4: Employees appear in same insertion order (stability preserved)
+    assert_eq!(
+        eng_emps_after.get(0),
+        Some(emp1.clone()),
+        "emp1 should remain at insertion index 0 (order stable)"
+    );
+    assert_eq!(
+        eng_emps_after.get(1),
+        Some(emp2.clone()),
+        "emp2 should remain at insertion index 1 (order stable)"
+    );
+    assert_eq!(
+        eng_emps_after.get(2),
+        Some(emp3.clone()),
+        "emp3 should remain at insertion index 2 (order stable)"
+    );
+
+    // Assertion 5: Department report still aggregates correctly
+    let (count, _children, addrs) = client.get_department_report(&eng_id);
+    assert_eq!(
+        count, 3,
+        "Department report should aggregate 3 employees after rename"
+    );
+    assert_eq!(
+        addrs.len(),
+        3,
+        "Department report addresses should include all 3 employees"
+    );
+    assert!(addrs.contains(&emp1));
+    assert!(addrs.contains(&emp2));
+    assert!(addrs.contains(&emp3));
+
+    // Assertion 6: Unrelated department (Sales) and its employee remain unaffected
+    let sales_after = client.get_department(&sales_id);
+    assert_eq!(
+        sales_after.name,
+        symbol_short!("Sales"),
+        "Sales department name should NOT change"
+    );
+    let sales_emps = client.get_department_employees(&sales_id);
+    assert_eq!(sales_emps.len(), 1);
+    assert_eq!(sales_emps.get(0), Some(emp4.clone()));
+    assert_eq!(
+        client.get_employee_department(&emp4, &org_id),
+        Some(sales_id)
+    );
+}
+
+/// Edge case: Rename a department multiple times in sequence.
+/// Verifies that each rename correctly updates the name and preserves associations.
+#[test]
+fn test_department_rename_multiple_times() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+
+    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("V1"), &None);
+    let emp = Address::generate(&env);
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp);
+
+    assert_eq!(client.get_department(&dept_id).name, symbol_short!("V1"));
+    assert_eq!(client.get_employee_department(&emp, &org_id), Some(dept_id));
+
+    // First rename: V1 → V2
+    client.rename_department(&owner, &dept_id, &symbol_short!("V2"));
+    assert_eq!(client.get_department(&dept_id).name, symbol_short!("V2"));
+    assert_eq!(
+        client.get_employee_department(&emp, &org_id),
+        Some(dept_id),
+        "emp lookup still works after first rename"
+    );
+
+    // Second rename: V2 → V3
+    client.rename_department(&owner, &dept_id, &symbol_short!("V3"));
+    assert_eq!(client.get_department(&dept_id).name, symbol_short!("V3"));
+    assert_eq!(
+        client.get_employee_department(&emp, &org_id),
+        Some(dept_id),
+        "emp lookup still works after second rename"
+    );
+
+    // Third rename: V3 → Final
+    client.rename_department(&owner, &dept_id, &symbol_short!("Final"));
+    assert_eq!(client.get_department(&dept_id).name, symbol_short!("Final"));
+    assert_eq!(
+        client.get_employee_department(&emp, &org_id),
+        Some(dept_id),
+        "emp lookup still works after third rename"
+    );
+
+    let employees = client.get_department_employees(&dept_id);
+    assert_eq!(employees.len(), 1);
+    assert_eq!(employees.get(0), Some(emp.clone()));
+}
+
+/// Edge case: Rename a nested department (with parent) and verify parent
+/// relationship and all employee associations remain intact.
+#[test]
+fn test_department_rename_nested_preserves_hierarchy() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+
+    // Create a 2-level hierarchy
+    let parent_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+    let child_id =
+        client.create_department(&owner, &org_id, &symbol_short!("Backend"), &Some(parent_id));
+
+    // Assign employees to both departments
+    let parent_emp = Address::generate(&env);
+    let child_emp = Address::generate(&env);
+    client.assign_employee_to_department(&owner, &org_id, &parent_id, &parent_emp);
+    client.assign_employee_to_department(&owner, &org_id, &child_id, &child_emp);
+
+    // Snapshot before rename
+    let parent_before = client.get_department(&parent_id);
+    let child_before = client.get_department(&child_id);
+    assert_eq!(child_before.parent_id, Some(parent_id));
+
+    // Rename the child department
+    client.rename_department(&owner, &child_id, &symbol_short!("Rust"));
+
+    // Verify hierarchy is unchanged
+    let child_after = client.get_department(&child_id);
+    assert_eq!(
+        child_after.name,
+        symbol_short!("Rust"),
+        "Child name updated"
+    );
+    assert_eq!(
+        child_after.parent_id,
+        Some(parent_id),
+        "Child parent_id unchanged after rename"
+    );
+
+    // Verify parent's children list still contains child
+    let parent_children = client.get_child_departments(&parent_id);
+    assert_eq!(parent_children.len(), 1);
+    assert_eq!(parent_children.get(0), Some(child_id));
+
+    // Verify all employees still resolve correctly
+    assert_eq!(
+        client.get_employee_department(&parent_emp, &org_id),
+        Some(parent_id),
+        "parent emp lookup works after child rename"
+    );
+    assert_eq!(
+        client.get_employee_department(&child_emp, &org_id),
+        Some(child_id),
+        "child emp lookup works after child rename"
+    );
+
+    // Verify reverse indexes
+    let parent_emps = client.get_department_employees(&parent_id);
+    assert_eq!(parent_emps.len(), 1);
+    assert_eq!(parent_emps.get(0), Some(parent_emp.clone()));
+
+    let child_emps = client.get_department_employees(&child_id);
+    assert_eq!(child_emps.len(), 1);
+    assert_eq!(child_emps.get(0), Some(child_emp.clone()));
+
+    // Verify hierarchical report still works
+    let (parent_count, parent_children, parent_addrs) = client.get_department_report(&parent_id);
+    assert_eq!(parent_count, 2, "parent report should include both parent and child emps");
+    assert!(parent_addrs.contains(&parent_emp));
+    assert!(parent_addrs.contains(&child_emp));
+    assert_eq!(parent_children.len(), 1);
+    assert_eq!(parent_children.get(0), Some(child_id));
+}
+
+/// Edge case: Rename after employee reassignment.
+/// Verifies that rename doesn't create any stale references when employees
+/// have been moved between departments.
+#[test]
+fn test_department_rename_after_employee_reassignment() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+
+    let dept_a = client.create_department(&owner, &org_id, &symbol_short!("A"), &None);
+    let dept_b = client.create_department(&owner, &org_id, &symbol_short!("B"), &None);
+
+    let emp1 = Address::generate(&env);
+    let emp2 = Address::generate(&env);
+
+    // Assign both to dept_a
+    client.assign_employee_to_department(&owner, &org_id, &dept_a, &emp1);
+    client.assign_employee_to_department(&owner, &org_id, &dept_a, &emp2);
+    assert_eq!(client.get_department_employees(&dept_a).len(), 2);
+
+    // Move emp1 to dept_b
+    client.assign_employee_to_department(&owner, &org_id, &dept_b, &emp1);
+    assert_eq!(client.get_department_employees(&dept_a).len(), 1);
+    assert_eq!(client.get_department_employees(&dept_b).len(), 1);
+
+    // Now rename dept_a
+    client.rename_department(&owner, &dept_a, &symbol_short!("TeamA"));
+
+    // Verify emp1 is in dept_b and forward lookup resolves correctly
+    assert_eq!(
+        client.get_employee_department(&emp1, &org_id),
+        Some(dept_b),
+        "emp1 should still resolve to dept_b after dept_a rename"
+    );
+    let dept_b_emps = client.get_department_employees(&dept_b);
+    assert_eq!(dept_b_emps.len(), 1);
+    assert_eq!(dept_b_emps.get(0), Some(emp1.clone()));
+
+    // Verify emp2 is in dept_a and forward lookup resolves correctly
+    assert_eq!(
+        client.get_employee_department(&emp2, &org_id),
+        Some(dept_a),
+        "emp2 should still resolve to dept_a after rename"
+    );
+    let dept_a_emps = client.get_department_employees(&dept_a);
+    assert_eq!(dept_a_emps.len(), 1);
+    assert_eq!(dept_a_emps.get(0), Some(emp2.clone()));
+
+    // Verify renamed dept name is correct
+    assert_eq!(
+        client.get_department(&dept_a).name,
+        symbol_short!("TeamA")
+    );
+}
+
+/// Access control: Non-owner cannot rename a department.
+#[test]
+#[should_panic(expected = "Not organization owner")]
+fn test_rename_department_non_owner_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let other = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+    client.rename_department(&other, &dept_id, &symbol_short!("NewName"));
+}
+
+/// Error handling: Cannot rename a department that doesn't exist.
+#[test]
+#[should_panic(expected = "Department not found")]
+fn test_rename_nonexistent_department_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+    client.rename_department(&owner, &999u128, &symbol_short!("NewName"));
+}
+
+/// Security: Verify rename doesn't affect the org or other departments.
+/// This property test verifies that renaming one department in an org
+/// does not affect the organization's department list or other departments.
+#[test]
+fn test_rename_department_isolated_from_org_list() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+
+    let d1 = client.create_department(&owner, &org_id, &symbol_short!("D1"), &None);
+    let d2 = client.create_department(&owner, &org_id, &symbol_short!("D2"), &None);
+    let d3 = client.create_department(&owner, &org_id, &symbol_short!("D3"), &None);
+
+    let org_depts_before = client.get_org_departments(&org_id);
+    assert_eq!(org_depts_before.len(), 3);
+
+    // Rename d2
+    client.rename_department(&owner, &d2, &symbol_short!("D2_Renamed"));
+
+    // Organization department list should be unchanged
+    let org_depts_after = client.get_org_departments(&org_id);
+    assert_eq!(org_depts_after.len(), 3);
+    assert_eq!(org_depts_after.get(0), Some(d1));
+    assert_eq!(org_depts_after.get(1), Some(d2));
+    assert_eq!(org_depts_after.get(2), Some(d3));
+
+    // Other departments unchanged
+    let d1_name = client.get_department(&d1).name;
+    let d3_name = client.get_department(&d3).name;
+    assert_eq!(d1_name, symbol_short!("D1"));
+    assert_eq!(d3_name, symbol_short!("D3"));
+}

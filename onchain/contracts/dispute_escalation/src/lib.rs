@@ -64,6 +64,7 @@
 //! |-----------|-------------|
 //! | Only admin resolves | `is_admin` check at the top of `resolve_dispute` |
 //! | Cannot double-resolve | `AlreadyResolved` / `AlreadyFinalised` guard every resolve path |
+//! | No duplicate active disputes | `file_dispute` returns `DisputeDuplicateFiling` when a non-terminal dispute already exists for the same `agreement_id`; re-filing is allowed after `Finalised` or `Expired` |
 //! | No funds stuck | `expire_dispute` (callable by anyone) closes abandoned disputes |
 //! | No re-entry into terminal states | `assert_not_terminal` rejects all transitions on `Finalised`/`Expired` |
 //! | Deadlines enforced on-chain | All time comparisons use `env.ledger().timestamp()` |
@@ -86,7 +87,7 @@ use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 use types::{
     DisputeDetails, DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel,
-    StorageKey, MAX_OTHER_REASON_LEN,
+    KeeperAdvance, StorageKey, MAX_OTHER_REASON_LEN,
 };
 
 // ─── Events ──────────────────────────────────────────────────────────────────
@@ -157,14 +158,20 @@ pub struct DisputeExpiredEvent {
 /// # Fields
 /// * `agreement_id`   — identifies the dispute.
 /// * `level`          — escalation level at which the SLA was breached.
+/// * `keeper`         — address of the keeper who triggered the advance.
 /// * `breached_at`    — ledger timestamp at which the advance was triggered.
-/// * `review_deadline`— timestamp by which the admin must act before the dispute can be expired via
-///   `expire_dispute`.
+/// * `review_deadline`— timestamp by which the admin must act before the
+///   dispute can be expired via `expire_dispute`.
+///
+/// > **Backward-compatibility note:** this event is retained alongside
+/// > [`DisputeSlaViolationAdvancedEvent`].  Both carry identical data; new
+/// > integrations should prefer `sla_violation_advanced`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisputeSlaBreachedEvent {
     pub agreement_id: u128,
     pub level: EscalationLevel,
+    pub keeper: Address,
     pub breached_at: u64,
     pub review_deadline: u64,
 }
@@ -177,8 +184,33 @@ pub struct DisputeSlaBreachedEvent {
 /// # Fields
 /// * `agreement_id`    — identifies the dispute.
 /// * `level`           — escalation level at which the SLA was breached.
+/// * `keeper`          — address of the keeper who triggered the advance.
 /// * `breached_at`     — ledger timestamp at which the advance was triggered.
 /// * `review_deadline` — timestamp by which the admin must act before the
+///   dispute can be expired via `expire_dispute`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeSlaViolationAdvancedEvent {
+    pub agreement_id: u128,
+    pub level: EscalationLevel,
+    pub keeper: Address,
+    pub breached_at: u64,
+    pub review_deadline: u64,
+}
+
+/// Emitted alongside [`DisputeSlaBreachedEvent`] when a keeper calls
+/// `keeper_advance_stage` after an SLA deadline has elapsed.
+///
+/// This event carries the same data under a more descriptive topic
+/// (`sla_violation_advanced`).  Downstream indexers and payroll contracts
+/// should prefer this event; `dispute_sla_breached` is retained for
+/// backward compatibility with existing integrations.
+///
+/// # Fields
+/// * `agreement_id`   — identifies the dispute.
+/// * `level`          — escalation level at which the SLA was breached.
+/// * `breached_at`    — ledger timestamp at which the advance was triggered.
+/// * `review_deadline`— timestamp by which the admin must act before the
 ///   dispute can be expired via `expire_dispute`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -251,6 +283,20 @@ impl DisputeEscalationContract {
     ///
     /// The SLA clock starts immediately: `phase_deadline = now + level_time_limit(Level1)`.
     ///
+    /// # Duplicate-filing guard
+    ///
+    /// Only one **active** (non-terminal) dispute may exist per `agreement_id`
+    /// at any time.  If a prior dispute record exists in any of the open states
+    /// (`Open`, `Escalated`, `Appealed`, `PendingReview`, or `Resolved`), this
+    /// function returns `DisputeDuplicateFiling`.  Allowing a second filing
+    /// while the first is unresolved would produce two conflicting SLA timers
+    /// for the same underlying claim.
+    ///
+    /// Re-filing is explicitly **permitted** once the prior dispute reaches a
+    /// terminal state (`Finalised` or `Expired`).  The new dispute starts a
+    /// fresh Level1 SLA window and is stored under the same `agreement_id` key,
+    /// overwriting the terminal record.
+    ///
     /// # Arguments
     /// * `caller`       — party filing the dispute; must authenticate.
     /// * `agreement_id` — ID of the agreement under dispute.
@@ -261,8 +307,10 @@ impl DisputeEscalationContract {
     /// `(none)` → `Open @ Level1`
     ///
     /// # Errors
-    /// * `InvalidTransition` — a dispute for this agreement already exists.
-    /// * `ReasonTooLong`     — `Other` text exceeds the maximum allowed length.
+    /// * `DisputeDuplicateFiling` — a non-terminal dispute already exists for
+    ///   this `agreement_id`.  The caller must wait for the prior dispute to
+    ///   reach `Finalised` or `Expired` before re-filing.
+    /// * `ReasonTooLong`          — `Other` text exceeds the maximum allowed length.
     pub fn file_dispute(
         env: Env,
         caller: Address,
@@ -278,8 +326,20 @@ impl DisputeEscalationContract {
             }
         }
 
-        if storage::get_dispute(&env, agreement_id).is_some() {
-            return Err(DisputeError::InvalidTransition);
+        // Duplicate-filing guard: reject a new filing when an active
+        // (non-terminal) dispute already exists for this agreement_id.
+        //
+        // Terminal states (Finalised, Expired) allow re-filing because the
+        // prior dispute has been fully concluded.  All other states indicate
+        // an open dispute whose SLA timer is still running; a second filing
+        // would introduce a conflicting parallel timer for the same claim.
+        if let Some(existing) = storage::get_dispute(&env, agreement_id) {
+            match existing.status {
+                // Terminal: prior dispute fully concluded — re-filing is allowed.
+                DisputeStatus::Finalised | DisputeStatus::Expired => {}
+                // Any open / unresolved state: reject with a dedicated error.
+                _ => return Err(DisputeError::DisputeDuplicateFiling),
+            }
         }
 
         let time_limit = storage::get_level_time_limit(&env, EscalationLevel::Level1);
@@ -295,6 +355,7 @@ impl DisputeEscalationContract {
             phase_deadline: deadline,
             outcome: DisputeOutcome::Unset,
             reason: reason.clone(),
+            keeper_advances: Vec::new(&env),
         };
 
         storage::set_dispute(&env, agreement_id, &dispute);
@@ -461,6 +522,15 @@ impl DisputeEscalationContract {
             .checked_add(review_limit)
             .ok_or(DisputeError::SlaDeadlineOverflow)?;
 
+        // Record the keeper's identity and the advance timestamp on the
+        // dispute record for full accountability — queryable later via
+        // `get_dispute`.
+        dispute.keeper_advances.push_back(KeeperAdvance {
+            keeper: caller.clone(),
+            advanced_at: now,
+            level: dispute.level.clone(),
+        });
+
         // `phase_started_at` records exactly when the SLA breach was observed.
         dispute.status = DisputeStatus::PendingReview;
         dispute.phase_started_at = now;
@@ -468,6 +538,7 @@ impl DisputeEscalationContract {
 
         storage::set_dispute(&env, agreement_id, &dispute);
 
+        // Emit the legacy event for backward compatibility with existing integrations.
         env.events().publish(
             ("dispute_sla_breached",),
             DisputeSlaBreachedEvent {
@@ -478,11 +549,13 @@ impl DisputeEscalationContract {
             },
         );
 
+        // Emit the canonical SLA-violation event preferred by new integrations.
         env.events().publish(
             ("sla_violation_advanced",),
             DisputeSlaViolationAdvancedEvent {
                 agreement_id,
                 level: dispute.level,
+                keeper: caller,
                 breached_at: now,
                 review_deadline,
             },

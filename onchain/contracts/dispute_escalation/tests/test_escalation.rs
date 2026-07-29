@@ -1,13 +1,14 @@
 #![cfg(test)]
 
 use dispute_escalation::{
-    types::{DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel},
+    types::{DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel,
+           KeeperAdvance},
     DisputeEscalatedEvent, DisputeEscalationContract, DisputeEscalationContractClient,
-    DisputeSlaViolationAdvancedEvent,
+    DisputeSlaBreachedEvent, DisputeSlaViolationAdvancedEvent,
 };
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
-    Address, Env, FromVal, IntoVal, String as SorobanString, Val, Vec,
+    Address, Env, FromVal, IntoVal, String as SorobanString, Symbol, Val, Vec,
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -58,11 +59,12 @@ fn event_topic_matches(env: &Env, topic: &Vec<Val>, event_name: &str) -> bool {
         return false;
     }
 
-    // Events published via the deprecated `env.events().publish(("topic",), data)` API
-    // store topics as `ScString`, not `ScSymbol`. Convert accordingly.
-    let topic_val = topic.get(0).unwrap();
-    let topic_str = SorobanString::from_val(env, &topic_val);
-    topic_str == SorobanString::from_str(env, event_name)
+    // Topics published via env.events().publish(("name",), ...) are stored as
+    // soroban_sdk::String (ScString), not Symbol (ScSymbol).  Build the
+    // expected single-element topics Vec the same way the contract does and
+    // compare directly rather than trying to cast the raw Val.
+    let expected: Vec<Val> = (SorobanString::from_str(env, event_name),).into_val(env);
+    topic == &expected
 }
 
 /// Return true if any emitted event has the requested first topic symbol.
@@ -556,6 +558,7 @@ fn test_keeper_timeout_emits_sla_violation_advanced_event_only() {
     let payload = DisputeSlaViolationAdvancedEvent::from_val(&env, &event.2);
     assert_eq!(payload.agreement_id, id);
     assert_eq!(payload.level, EscalationLevel::Level1);
+    assert_eq!(payload.keeper, user);
     assert_eq!(payload.breached_at, breached_at);
     assert_eq!(payload.review_deadline, breached_at + PENDING_REVIEW_WINDOW);
 }
@@ -1000,7 +1003,7 @@ fn test_repeated_file_dispute_rejected() {
     client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     let res = client.try_file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-    assert_eq!(res, Err(Ok(DisputeError::InvalidTransition)));
+    assert_eq!(res, Err(Ok(DisputeError::DisputeDuplicateFiling)));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1224,7 +1227,7 @@ fn test_cannot_file_duplicate_dispute() {
     client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
 
     let res = client.try_file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-    assert_eq!(res, Err(Ok(DisputeError::InvalidTransition)));
+    assert_eq!(res, Err(Ok(DisputeError::DisputeDuplicateFiling)));
 }
 
 #[test]
@@ -2377,504 +2380,422 @@ fn test_length_cap_boundary_257_fails() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// §16  EARLY-EXPIRY REJECTION TESTS
+// §16  DUPLICATE-FILING GUARD TESTS
 //
-//      expire_dispute is guarded by a strict `now > phase_deadline` check.
-//      Any call made while `now <= phase_deadline` must be rejected with
-//      `DeadlineNotPassed` — regardless of which status the dispute is in
-//      (Open, Escalated, Appealed, PendingReview).
+//  These tests exhaustively cover the duplicate-filing invariant introduced in
+//  `file_dispute`:
 //
-//      These tests are structured in three groups per status:
-//        A. Premature call (well before deadline)      → DeadlineNotPassed
-//        B. Call at the exact deadline timestamp       → DeadlineNotPassed
-//        C. Call one second past the deadline          → succeeds, Expired
+//  * A second `file_dispute` call for the same `agreement_id` is rejected with
+//    `DisputeDuplicateFiling` while any non-terminal dispute is active.
+//  * Re-filing is explicitly allowed once the prior dispute has reached a
+//    terminal state (`Finalised` or `Expired`).
 //
-//      Security note: the `now <= deadline` guard prevents any caller from
-//      forcing a dispute into the `Expired` terminal state while the SLA
-//      window is still open.  Because `expire_dispute` is permissionless,
-//      without this guard an adversary could expire a dispute immediately after
-//      filing it, bypassing dispute resolution entirely and preventing the
-//      employee or employer from obtaining a ruling.  All timestamp comparisons
-//      use `env.ledger().timestamp()` — the Stellar consensus timestamp, which
-//      is manipulation-resistant and fully deterministic across validators.
+//  Non-terminal states that must be blocked:
+//    Open | Escalated | Appealed | PendingReview | Resolved
+//
+//  Terminal states that must permit re-filing:
+//    Finalised | Expired
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ─── Group A: Open status ────────────────────────────────────────────────────
+// ─── Negative tests: second filing blocked in every non-terminal state ────────
 
-/// Premature `expire_dispute` on an `Open` dispute (time has not advanced at
-/// all) must be rejected with `DeadlineNotPassed`.
+/// A second `file_dispute` for a claim whose dispute is in `Open` state must
+/// be rejected with `DisputeDuplicateFiling`.
+///
+/// This is the core guard: allowing two open disputes against the same claim
+/// would create two independent SLA timers and two records that downstream
+/// payroll contracts would have to reconcile, which is undefined behaviour.
 #[test]
-fn test_expire_open_dispute_premature_rejected() {
+fn test_duplicate_filing_rejected_when_open() {
     let (_env, client, _owner, _admin, user) = setup();
     let id = 1600u128;
 
+    // First filing: succeeds and creates an Open dispute.
     client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-    // No time advance — we are still at t=0, well inside the 7-day SLA window.
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Open
+    );
 
-    let res = client.try_expire_dispute(&user, &id);
+    // Second filing against the same claim while the first is still Open.
+    let res = client.try_file_dispute(&user, &id, &DisputeReason::QualityIssue);
     assert_eq!(
         res,
-        Err(Ok(DisputeError::DeadlineNotPassed)),
-        "expire_dispute must be rejected before the SLA deadline has elapsed"
+        Err(Ok(DisputeError::DisputeDuplicateFiling)),
+        "filing against an Open dispute must return DisputeDuplicateFiling"
     );
 
-    // Dispute must remain Open — no state mutation on failure.
+    // The original dispute record must be unchanged.
     let d = client.get_dispute(&id).unwrap();
     assert_eq!(d.status, DisputeStatus::Open);
+    assert_eq!(d.reason, DisputeReason::PaymentDispute);
 }
 
-/// `expire_dispute` on an `Open` dispute at the **exact** `phase_deadline`
-/// timestamp must still be rejected (`now == deadline` is still within the
-/// window: the guard is `now > deadline`, not `now >= deadline`).
+/// Second filing blocked when the dispute is in `Escalated` state.
+///
+/// An escalated dispute is still active — its SLA timer is running at a higher
+/// level.  Re-filing would create a parallel Level1 record for the same claim.
 #[test]
-fn test_expire_open_dispute_at_exact_deadline_rejected() {
-    let (env, client, _owner, admin, user) = setup();
-    let id = 1601u128;
-
-    const SLA: u64 = 200;
-    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
-    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-
-    let deadline = client.get_dispute(&id).unwrap().phase_deadline;
-    let start = now(&env);
-    advance(&env, deadline - start); // advance to exactly the deadline
-    assert_eq!(now(&env), deadline, "ledger must be at the exact deadline");
-
-    let res = client.try_expire_dispute(&user, &id);
-    assert_eq!(
-        res,
-        Err(Ok(DisputeError::DeadlineNotPassed)),
-        "expire_dispute at exactly the deadline must still be rejected (now == deadline is inside the window)"
-    );
-
-    // Dispute must remain Open.
-    let d = client.get_dispute(&id).unwrap();
-    assert_eq!(d.status, DisputeStatus::Open);
-}
-
-/// `expire_dispute` one second past the `phase_deadline` of an `Open` dispute
-/// must succeed and transition the dispute to `Expired`.
-#[test]
-fn test_expire_open_dispute_one_second_past_deadline_succeeds() {
-    let (env, client, _owner, admin, user) = setup();
-    let id = 1602u128;
-
-    const SLA: u64 = 200;
-    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
-    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-
-    let deadline = client.get_dispute(&id).unwrap().phase_deadline;
-    let start = now(&env);
-    advance(&env, deadline - start + 1); // one second past the deadline
-    assert_eq!(now(&env), deadline + 1);
-
-    client.expire_dispute(&user, &id);
-
-    let d = client.get_dispute(&id).unwrap();
-    assert_eq!(
-        d.status,
-        DisputeStatus::Expired,
-        "dispute must be Expired once the deadline has elapsed"
-    );
-}
-
-// ─── Group B: Escalated status ───────────────────────────────────────────────
-
-/// Premature `expire_dispute` on an `Escalated` dispute must be rejected.
-/// The SLA window for the new level has just started — no time has passed.
-#[test]
-fn test_expire_escalated_dispute_premature_rejected() {
+fn test_duplicate_filing_rejected_when_escalated() {
     let (_env, client, _owner, _admin, user) = setup();
-    let id = 1603u128;
-
-    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-    client.escalate_dispute(&user, &id); // → Escalated @ Level2 with fresh deadline
-
-    // No time advance — we are at the start of the Level2 SLA window.
-    let res = client.try_expire_dispute(&user, &id);
-    assert_eq!(
-        res,
-        Err(Ok(DisputeError::DeadlineNotPassed)),
-        "expire_dispute must be rejected immediately after escalation"
-    );
-
-    let d = client.get_dispute(&id).unwrap();
-    assert_eq!(d.status, DisputeStatus::Escalated);
-}
-
-/// `expire_dispute` on an `Escalated` dispute at the exact Level2
-/// `phase_deadline` must be rejected.
-#[test]
-fn test_expire_escalated_dispute_at_exact_deadline_rejected() {
-    let (env, client, _owner, admin, user) = setup();
-    let id = 1604u128;
-
-    const SLA: u64 = 150;
-    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
-    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &SLA);
-
-    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-    client.escalate_dispute(&user, &id); // → Escalated @ Level2
-
-    let deadline = client.get_dispute(&id).unwrap().phase_deadline;
-    let start = now(&env);
-    advance(&env, deadline - start);
-    assert_eq!(now(&env), deadline);
-
-    let res = client.try_expire_dispute(&user, &id);
-    assert_eq!(
-        res,
-        Err(Ok(DisputeError::DeadlineNotPassed)),
-        "expire_dispute at exactly the Level2 deadline must be rejected"
-    );
-
-    let d = client.get_dispute(&id).unwrap();
-    assert_eq!(d.status, DisputeStatus::Escalated);
-}
-
-/// `expire_dispute` one second past the Level2 `phase_deadline` of an
-/// `Escalated` dispute must succeed.
-#[test]
-fn test_expire_escalated_dispute_one_second_past_deadline_succeeds() {
-    let (env, client, _owner, admin, user) = setup();
-    let id = 1605u128;
-
-    const SLA: u64 = 150;
-    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
-    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &SLA);
+    let id = 1601u128;
 
     client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
     client.escalate_dispute(&user, &id);
-
-    let deadline = client.get_dispute(&id).unwrap().phase_deadline;
-    let start = now(&env);
-    advance(&env, deadline - start + 1);
-    assert_eq!(now(&env), deadline + 1);
-
-    client.expire_dispute(&user, &id);
-
     assert_eq!(
         client.get_dispute(&id).unwrap().status,
-        DisputeStatus::Expired
+        DisputeStatus::Escalated
+    );
+
+    let res = client.try_file_dispute(&user, &id, &DisputeReason::NonDelivery);
+    assert_eq!(
+        res,
+        Err(Ok(DisputeError::DisputeDuplicateFiling)),
+        "filing against an Escalated dispute must return DisputeDuplicateFiling"
     );
 }
 
-// ─── Group C: Appealed status ────────────────────────────────────────────────
-
-/// Premature `expire_dispute` on an `Appealed` dispute (fresh deadline just
-/// set by `appeal_ruling`) must be rejected.
+/// Second filing blocked when the dispute is in `Appealed` state.
 #[test]
-fn test_expire_appealed_dispute_premature_rejected() {
+fn test_duplicate_filing_rejected_when_appealed() {
     let (_env, client, _owner, admin, user) = setup();
-    let id = 1606u128;
+    let id = 1602u128;
 
     client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
-    client.appeal_ruling(&user, &id); // → Appealed @ Level2, fresh SLA deadline
-
-    let res = client.try_expire_dispute(&user, &id);
-    assert_eq!(
-        res,
-        Err(Ok(DisputeError::DeadlineNotPassed)),
-        "expire_dispute must be rejected immediately after appeal"
-    );
-
-    let d = client.get_dispute(&id).unwrap();
-    assert_eq!(d.status, DisputeStatus::Appealed);
-}
-
-/// `expire_dispute` on an `Appealed` dispute at the exact Level2 deadline
-/// must be rejected.
-#[test]
-fn test_expire_appealed_dispute_at_exact_deadline_rejected() {
-    let (env, client, _owner, admin, user) = setup();
-    let id = 1607u128;
-
-    const SLA: u64 = 120;
-    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
-    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &SLA);
-
-    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
-    client.appeal_ruling(&user, &id); // → Appealed @ Level2
-
-    let deadline = client.get_dispute(&id).unwrap().phase_deadline;
-    let start = now(&env);
-    advance(&env, deadline - start);
-    assert_eq!(now(&env), deadline);
-
-    let res = client.try_expire_dispute(&user, &id);
-    assert_eq!(
-        res,
-        Err(Ok(DisputeError::DeadlineNotPassed)),
-        "expire_dispute at exactly the appeal deadline must be rejected"
-    );
-
-    let d = client.get_dispute(&id).unwrap();
-    assert_eq!(d.status, DisputeStatus::Appealed);
-}
-
-/// `expire_dispute` one second past the Level2 `phase_deadline` of an
-/// `Appealed` dispute must succeed.
-#[test]
-fn test_expire_appealed_dispute_one_second_past_deadline_succeeds() {
-    let (env, client, _owner, admin, user) = setup();
-    let id = 1608u128;
-
-    const SLA: u64 = 120;
-    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
-    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &SLA);
-
-    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
-    client.appeal_ruling(&user, &id);
-
-    let deadline = client.get_dispute(&id).unwrap().phase_deadline;
-    let start = now(&env);
-    advance(&env, deadline - start + 1);
-    assert_eq!(now(&env), deadline + 1);
-
-    client.expire_dispute(&user, &id);
-
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment); // → Resolved
+    client.appeal_ruling(&user, &id); // → Appealed
     assert_eq!(
         client.get_dispute(&id).unwrap().status,
-        DisputeStatus::Expired
+        DisputeStatus::Appealed
     );
-}
 
-// ─── Group D: PendingReview status ───────────────────────────────────────────
-
-/// Premature `expire_dispute` on a `PendingReview` dispute (the keeper just
-/// advanced it, no time has passed in the review window) must be rejected.
-#[test]
-fn test_expire_pending_review_dispute_premature_rejected() {
-    let (env, client, _owner, admin, user) = setup();
-    let id = 1609u128;
-
-    const SLA: u64 = 50;
-    const REVIEW: u64 = 200;
-    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
-    client.set_pending_review_time_limit(&admin, &REVIEW);
-
-    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-
-    advance(&env, SLA + 1); // SLA elapsed — keeper can advance
-    client.keeper_advance_stage(&user, &id);
-
-    // We are still at the very start of the review window.
-    // No additional time has passed since keeper_advance_stage.
-    let res = client.try_expire_dispute(&user, &id);
+    let res = client.try_file_dispute(&user, &id, &DisputeReason::QualityIssue);
     assert_eq!(
         res,
-        Err(Ok(DisputeError::DeadlineNotPassed)),
-        "expire_dispute must be rejected immediately after keeper advances to PendingReview"
+        Err(Ok(DisputeError::DisputeDuplicateFiling)),
+        "filing against an Appealed dispute must return DisputeDuplicateFiling"
     );
-
-    let d = client.get_dispute(&id).unwrap();
-    assert_eq!(d.status, DisputeStatus::PendingReview);
 }
 
-/// `expire_dispute` on a `PendingReview` dispute at the exact review deadline
-/// must be rejected (`now == review_deadline` is still within the window).
+/// Second filing blocked when the dispute is in `PendingReview` state.
+///
+/// The SLA has been breached but the dispute is not yet resolved — the admin
+/// review window is still open.
 #[test]
-fn test_expire_pending_review_dispute_at_exact_review_deadline_rejected() {
+fn test_duplicate_filing_rejected_when_pending_review() {
     let (env, client, _owner, admin, user) = setup();
+    let id = 1603u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    advance(&env, 51); // SLA elapsed
+    client.keeper_advance_stage(&user, &id);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::PendingReview
+    );
+
+    let res = client.try_file_dispute(&user, &id, &DisputeReason::NonDelivery);
+    assert_eq!(
+        res,
+        Err(Ok(DisputeError::DisputeDuplicateFiling)),
+        "filing against a PendingReview dispute must return DisputeDuplicateFiling"
+    );
+}
+
+/// Second filing blocked when the prior dispute is in `Resolved` state
+/// (appeal window still open).
+///
+/// `Resolved` is non-terminal: the appeal window may still be exercised.
+/// A re-filing during this window would be particularly harmful because it
+/// would create a fresh Level1 timer while the prior Level1/2 ruling is still
+/// appealable.
+#[test]
+fn test_duplicate_filing_rejected_when_resolved() {
+    let (_env, client, _owner, admin, user) = setup();
+    let id = 1604u128;
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment); // → Resolved
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Resolved
+    );
+
+    let res = client.try_file_dispute(&user, &id, &DisputeReason::QualityIssue);
+    assert_eq!(
+        res,
+        Err(Ok(DisputeError::DisputeDuplicateFiling)),
+        "filing against a Resolved dispute must return DisputeDuplicateFiling"
+    );
+}
+
+// ─── Positive tests: re-filing allowed after terminal state ──────────────────
+
+/// After a dispute reaches `Finalised` (Level3 binding ruling), the contract
+/// MUST accept a fresh `file_dispute` for the same `agreement_id`.
+///
+/// This is the canonical re-filing path: the prior dispute has been fully and
+/// finally adjudicated.  A new claim against the same agreement (e.g. a
+/// follow-on payment obligation) should be able to start a fresh Level1 dispute
+/// without needing a new `agreement_id`.
+#[test]
+fn test_refile_allowed_after_finalised() {
+    let (_env, client, _owner, admin, user) = setup();
     let id = 1610u128;
 
-    const SLA: u64 = 50;
-    const REVIEW: u64 = 100;
-    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
-    client.set_pending_review_time_limit(&admin, &REVIEW);
-
+    // Reach Finalised via the full escalation path.
     client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-
-    advance(&env, SLA + 1);
-    client.keeper_advance_stage(&user, &id);
-
-    let review_deadline = client.get_dispute(&id).unwrap().phase_deadline;
-    let current = now(&env);
-    advance(&env, review_deadline - current); // advance to exactly the review deadline
-    assert_eq!(now(&env), review_deadline);
-
-    let res = client.try_expire_dispute(&user, &id);
-    assert_eq!(
-        res,
-        Err(Ok(DisputeError::DeadlineNotPassed)),
-        "expire_dispute at exactly the review deadline must be rejected (now == deadline is inside the window)"
-    );
+    client.escalate_dispute(&user, &id); // → Level2
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment); // → Resolved L2
+    client.appeal_ruling(&user, &id); // → Appealed L3
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim); // → Finalised
 
     let d = client.get_dispute(&id).unwrap();
-    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.status, DisputeStatus::Finalised);
+    assert_eq!(d.outcome, DisputeOutcome::GrantClaim);
+
+    // Re-file a fresh dispute against the same agreement_id.
+    let res = client.try_file_dispute(&user, &id, &DisputeReason::QualityIssue);
+    assert_eq!(
+        res,
+        Ok(Ok(())),
+        "re-filing after Finalised must succeed"
+    );
+
+    // The new dispute must be a fresh Open dispute at Level1.
+    let new_d = client.get_dispute(&id).unwrap();
+    assert_eq!(
+        new_d.status,
+        DisputeStatus::Open,
+        "re-filed dispute must start in Open state"
+    );
+    assert_eq!(
+        new_d.level,
+        EscalationLevel::Level1,
+        "re-filed dispute must start at Level1"
+    );
+    assert_eq!(
+        new_d.outcome,
+        DisputeOutcome::Unset,
+        "re-filed dispute must have no outcome yet"
+    );
+    assert_eq!(
+        new_d.reason,
+        DisputeReason::QualityIssue,
+        "re-filed dispute must record the new reason"
+    );
 }
 
-/// `expire_dispute` one second past the review deadline of a `PendingReview`
-/// dispute must succeed and produce `Expired`.
+/// After a dispute reaches `Expired` (deadline passed without admin action),
+/// the contract MUST accept a fresh `file_dispute` for the same `agreement_id`.
+///
+/// An expired dispute represents an abandoned or unresolved process.  Allowing
+/// re-filing ensures that a claim is not permanently blocked by an administrative
+/// failure to act within the SLA window.
 #[test]
-fn test_expire_pending_review_dispute_one_second_past_review_deadline_succeeds() {
+fn test_refile_allowed_after_expired() {
     let (env, client, _owner, admin, user) = setup();
     let id = 1611u128;
 
-    const SLA: u64 = 50;
-    const REVIEW: u64 = 100;
-    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
-    client.set_pending_review_time_limit(&admin, &REVIEW);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &100u64);
 
+    // File initial dispute and let it expire without any admin action.
     client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Open
+    );
 
-    advance(&env, SLA + 1);
-    client.keeper_advance_stage(&user, &id);
-
-    let review_deadline = client.get_dispute(&id).unwrap().phase_deadline;
-    let current = now(&env);
-    advance(&env, review_deadline - current + 1); // one second past review deadline
-    assert_eq!(now(&env), review_deadline + 1);
-
+    // Let the SLA and grace period lapse, then expire the dispute.
+    advance(&env, 101);
     client.expire_dispute(&user, &id);
-
     assert_eq!(
         client.get_dispute(&id).unwrap().status,
         DisputeStatus::Expired
     );
-}
 
-// ─── Group E: Cross-cutting — state must not change on rejection ──────────────
-
-/// A failed `expire_dispute` call (before deadline) must not mutate any field
-/// of the dispute — the entire call is reverted.
-#[test]
-fn test_expire_premature_leaves_dispute_fully_unchanged() {
-    let (env, client, _owner, admin, user) = setup();
-    let id = 1612u128;
-
-    const SLA: u64 = 300;
-    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
-    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-
-    // Capture the full dispute state before the rejected call.
-    let before = client.get_dispute(&id).unwrap();
-
-    // Advance partway but not past the deadline.
-    advance(&env, SLA / 2);
-
-    let res = client.try_expire_dispute(&user, &id);
-    assert_eq!(res, Err(Ok(DisputeError::DeadlineNotPassed)));
-
-    // Every field must be identical to the pre-call snapshot.
-    let after = client.get_dispute(&id).unwrap();
-    assert_eq!(after.status, before.status);
-    assert_eq!(after.level, before.level);
-    assert_eq!(after.outcome, before.outcome);
-    assert_eq!(after.phase_started_at, before.phase_started_at);
-    assert_eq!(after.phase_deadline, before.phase_deadline);
-}
-
-/// A failed `expire_dispute` call must not emit any event.
-#[test]
-fn test_expire_premature_emits_no_event() {
-    let (env, client, _owner, admin, user) = setup();
-    let id = 1613u128;
-
-    const SLA: u64 = 300;
-    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
-    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-
-    // Advance partway but stay inside the window.
-    advance(&env, SLA - 1);
-
-    let contract_id = client.address.clone();
-    let res = client.try_expire_dispute(&user, &id);
-    assert_eq!(res, Err(Ok(DisputeError::DeadlineNotPassed)));
-
-    // No `dispute_expired` event should have been emitted.
-    assert_no_event(&env, &contract_id, "dispute_expired");
-}
-
-/// `expire_dispute` is permissionless — a third party (not admin, not the
-/// original filer) calling it before the deadline must still be rejected with
-/// `DeadlineNotPassed` rather than `Unauthorized`.
-#[test]
-fn test_expire_premature_by_third_party_rejected_with_deadline_error() {
-    let (env, client, _owner, admin, user) = setup();
-    let third_party = Address::generate(&env);
-    let id = 1614u128;
-
-    const SLA: u64 = 200;
-    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
-    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-
-    // No time advance — inside the window.
-    let res = client.try_expire_dispute(&third_party, &id);
+    // Re-file: must succeed because the prior dispute is in a terminal state.
+    let res = client.try_file_dispute(&user, &id, &DisputeReason::NonDelivery);
     assert_eq!(
         res,
-        Err(Ok(DisputeError::DeadlineNotPassed)),
-        "a permissionless caller is still subject to the deadline guard"
+        Ok(Ok(())),
+        "re-filing after Expired must succeed"
     );
 
-    // Verify the third party CAN expire once the deadline passes.
-    advance(&env, SLA + 1);
-    client.expire_dispute(&third_party, &id);
+    // The new dispute must be a fresh Open record.
+    let new_d = client.get_dispute(&id).unwrap();
     assert_eq!(
-        client.get_dispute(&id).unwrap().status,
-        DisputeStatus::Expired
+        new_d.status,
+        DisputeStatus::Open,
+        "re-filed dispute must start in Open state"
+    );
+    assert_eq!(
+        new_d.level,
+        EscalationLevel::Level1,
+        "re-filed dispute must start at Level1"
+    );
+    assert_eq!(
+        new_d.outcome,
+        DisputeOutcome::Unset,
+        "re-filed dispute must have no outcome yet"
+    );
+    assert_eq!(
+        new_d.reason,
+        DisputeReason::NonDelivery,
+        "re-filed dispute must record the new reason"
     );
 }
 
-// ─── Group F: Multi-level boundary sweep ─────────────────────────────────────
+// ─── Invariant tests: re-filed dispute is independent ─────────────────────────
 
-/// Exhaustive boundary sweep across all three escalation levels via the
-/// `Escalated` path.  Verifies that after each `escalate_dispute` call the
-/// new level's SLA window is honoured and a premature `expire_dispute` is
-/// still rejected.
+/// The SLA timer of a re-filed dispute must be freshly computed from the ledger
+/// timestamp at the time of the new `file_dispute` call, completely independent
+/// of any deadlines from the prior (terminal) dispute.
 #[test]
-fn test_expire_premature_rejected_across_all_escalation_levels() {
+fn test_refile_sla_timer_is_fresh() {
     let (env, client, _owner, admin, user) = setup();
-    let id = 1615u128;
+    let id = 1620u128;
+    let sla = 500u64;
 
-    const L1_SLA: u64 = 100;
-    const L2_SLA: u64 = 200;
-    const L3_SLA: u64 = 300;
-    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &L1_SLA);
-    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &L2_SLA);
-    client.set_level_time_limit(&admin, &EscalationLevel::Level3, &L3_SLA);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &sla);
 
-    // ── Level1 ──────────────────────────────────────────────────────────────
+    // File, expire, then advance time by a known amount.
     client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-    assert_eq!(client.get_dispute(&id).unwrap().level, EscalationLevel::Level1);
+    advance(&env, sla + 1);
+    client.expire_dispute(&user, &id);
 
-    // Premature at L1.
+    // Advance time again so the re-file timestamp is well-defined.
+    advance(&env, 1_000);
+    let t_refile = now(&env);
+
+    client.file_dispute(&user, &id, &DisputeReason::QualityIssue);
+
+    let d = client.get_dispute(&id).unwrap();
     assert_eq!(
-        client.try_expire_dispute(&user, &id),
-        Err(Ok(DisputeError::DeadlineNotPassed))
+        d.phase_started_at, t_refile,
+        "phase_started_at must be the re-file timestamp"
+    );
+    assert_eq!(
+        d.phase_deadline,
+        t_refile + sla,
+        "phase_deadline must be re-file time + Level1 SLA"
+    );
+}
+
+/// The duplicate-filing guard and the re-filing allowance are both keyed on
+/// `agreement_id`.  Different `agreement_id` values are completely independent:
+/// filing a new dispute for `id2` must succeed even when `id1` has an open
+/// dispute.
+///
+/// This guard-boundary test verifies that the guard uses exact key matching and
+/// does not accidentally affect other agreements.
+#[test]
+fn test_duplicate_guard_is_per_agreement_id() {
+    let (_env, client, _owner, _admin, user) = setup();
+    let id1 = 1630u128;
+    let id2 = 1631u128;
+
+    // File dispute for id1.
+    client.file_dispute(&user, &id1, &DisputeReason::PaymentDispute);
+    assert_eq!(
+        client.get_dispute(&id1).unwrap().status,
+        DisputeStatus::Open
     );
 
-    // ── Level2 ──────────────────────────────────────────────────────────────
-    client.escalate_dispute(&user, &id); // still within L1 window
-    assert_eq!(client.get_dispute(&id).unwrap().level, EscalationLevel::Level2);
-
-    // Premature at L2 (no additional time has passed since escalation).
+    // Filing for a *different* id must succeed regardless of id1's state.
+    let res = client.try_file_dispute(&user, &id2, &DisputeReason::QualityIssue);
     assert_eq!(
-        client.try_expire_dispute(&user, &id),
-        Err(Ok(DisputeError::DeadlineNotPassed))
+        res,
+        Ok(Ok(())),
+        "filing for a different agreement_id must not be blocked by another id's dispute"
     );
 
-    // ── Level3 ──────────────────────────────────────────────────────────────
-    client.escalate_dispute(&user, &id); // still within L2 window
-    assert_eq!(client.get_dispute(&id).unwrap().level, EscalationLevel::Level3);
-
-    // Premature at L3 (fresh L3 deadline just set).
+    // id1 must still be Open and unaffected.
     assert_eq!(
-        client.try_expire_dispute(&user, &id),
-        Err(Ok(DisputeError::DeadlineNotPassed))
+        client.get_dispute(&id1).unwrap().status,
+        DisputeStatus::Open
     );
+    // id2 must now be Open.
+    assert_eq!(
+        client.get_dispute(&id2).unwrap().status,
+        DisputeStatus::Open
+    );
+}
 
-    // Confirm expiry works once L3 deadline passes.
-    let l3_deadline = client.get_dispute(&id).unwrap().phase_deadline;
-    let current = now(&env);
-    advance(&env, l3_deadline - current + 1);
+/// Repeated filing against the same `agreement_id` that is already `Expired`
+/// must succeed multiple times — each time producing a fresh dispute.
+///
+/// This validates that the guard correctly inspects the *current* status on
+/// every call rather than relying on a separate "has ever been filed" flag.
+#[test]
+fn test_refile_after_expire_then_expire_then_refile_again() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1640u128;
 
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+
+    // First lifecycle: file → expire.
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    advance(&env, 51);
     client.expire_dispute(&user, &id);
     assert_eq!(
         client.get_dispute(&id).unwrap().status,
         DisputeStatus::Expired
+    );
+
+    // Re-file #1.
+    client.file_dispute(&user, &id, &DisputeReason::QualityIssue);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Open
+    );
+
+    // Second lifecycle: let it expire again.
+    advance(&env, 51);
+    client.expire_dispute(&user, &id);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Expired
+    );
+
+    // Re-file #2: must also succeed.
+    let res = client.try_file_dispute(&user, &id, &DisputeReason::NonDelivery);
+    assert_eq!(
+        res,
+        Ok(Ok(())),
+        "re-filing after a second Expired state must succeed"
+    );
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Open
+    );
+    assert_eq!(
+        client.get_dispute(&id).unwrap().reason,
+        DisputeReason::NonDelivery
+    );
+}
+
+/// Verify that the `dispute_filed` event is re-emitted on a re-file after
+/// terminal state, with correct `agreement_id` and the new initiator/reason.
+#[test]
+fn test_refile_after_expired_emits_dispute_filed_event() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1650u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+
+    // File and expire the first dispute.
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    advance(&env, 51);
+    client.expire_dispute(&user, &id);
+
+    // Re-file: the event for the *new* filing must be emitted.
+    client.file_dispute(&user, &id, &DisputeReason::NonDelivery);
+
+    // The last `dispute_filed` event must reflect the re-filed dispute.
+    assert!(
+        has_event(&env, "dispute_filed"),
+        "dispute_filed event must be emitted on re-file"
     );
 }

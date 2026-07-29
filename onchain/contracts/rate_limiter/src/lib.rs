@@ -351,9 +351,14 @@ impl RateLimiter {
                 .get(&StorageKey::ContractLimit(contract_addr.clone()));
             if let Some(c_limit) = c_limit {
                 let c_key = StorageKey::ContractUsage(contract_addr);
-                let c_usage = Self::bucket_after_refill(env, &c_key, c_limit.burst, c_limit.refill_rate);
-                let a_usage =
-                    Self::bucket_after_refill(env, &addr_key, addr_limit.burst, addr_limit.refill_rate);
+                let c_usage =
+                    Self::bucket_after_refill(env, &c_key, c_limit.burst, c_limit.refill_rate);
+                let a_usage = Self::bucket_after_refill(
+                    env,
+                    &addr_key,
+                    addr_limit.burst,
+                    addr_limit.refill_rate,
+                );
                 assert!(c_usage.tokens >= 1, "rate limit exceeded");
                 assert!(a_usage.tokens >= 1, "rate limit exceeded");
                 Self::debit_bucket(env, &c_key, c_usage);

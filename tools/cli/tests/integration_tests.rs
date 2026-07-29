@@ -406,7 +406,11 @@ async fn test_query_empty_result() {
 
     let client = SorobanHttpClient::new(&server.uri());
     let result = client
-        .query(VALID_CONTRACT, "list_owner_webhooks", vec![("owner", "G...")])
+        .query(
+            VALID_CONTRACT,
+            "list_owner_webhooks",
+            vec![("owner", "G...")],
+        )
         .await
         .expect("query should succeed even with an empty result");
 
@@ -641,7 +645,6 @@ fn unknown_flag_exits_with_usage_code() {
     cmd.assert().failure().code(2);
 }
 
-
 #[test]
 fn test_deploy_with_invalid_network_produces_clear_error() {
     let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
@@ -651,12 +654,10 @@ fn test_deploy_with_invalid_network_produces_clear_error() {
         .arg("--owner")
         .arg("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF");
 
-    cmd.assert()
-        .failure()
-        .stderr(
-            predicate::str::contains("unsupported network")
-                .and(predicate::str::contains("testnet, mainnet")),
-        );
+    cmd.assert().failure().stderr(
+        predicate::str::contains("unsupported network")
+            .and(predicate::str::contains("testnet, mainnet")),
+    );
 }
 
 // --- Issue #800: `verify` subcommand (WASM hash match / mismatch) ------------
@@ -685,18 +686,20 @@ fn test_verify_matching_hashes_succeeds() {
         .arg("--deployed-hash")
         .arg(&local_hash);
 
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("Verification passed").and(
-            predicate::str::contains(&local_hash),
-        ));
+    cmd.assert().success().stdout(
+        predicate::str::contains("Verification passed").and(predicate::str::contains(&local_hash)),
+    );
 }
 
 #[test]
 fn test_verify_mismatching_hashes_fails_with_both_hashes() {
     let temp_dir = TempDir::new().unwrap();
     let wasm_path = temp_dir.path().join("contract.wasm");
-    std::fs::write(&wasm_path, b"\0asm\x01\x00\x00\x00stellopay-verify-mismatch").unwrap();
+    std::fs::write(
+        &wasm_path,
+        b"\0asm\x01\x00\x00\x00stellopay-verify-mismatch",
+    )
+    .unwrap();
 
     let local_hash = stellopay_cli::utils::compute_wasm_hash(&wasm_path).unwrap();
     let wrong_hash = "ff".repeat(32);
@@ -726,6 +729,70 @@ fn test_verify_mismatching_hashes_fails_with_both_hashes() {
         combined.to_lowercase().contains("mismatch")
             || combined.to_lowercase().contains("verification failed"),
         "mismatch output must clearly indicate failure, got: {combined}"
+    );
+}
+
+/// Rebuild a WASM artifact, flip one byte, and ensure verify rejects the tampered file.
+#[test]
+fn test_verify_detects_tampered_wasm_artifact() {
+    let temp_dir = TempDir::new().unwrap();
+    let original_path = temp_dir.path().join("contract-original.wasm");
+    let tampered_path = temp_dir.path().join("contract-tampered.wasm");
+
+    let mut wasm_bytes = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+    wasm_bytes.extend_from_slice(b"stellopay-verify-tampered");
+    std::fs::write(&original_path, &wasm_bytes).unwrap();
+
+    let mut tampered_bytes = wasm_bytes.clone();
+    tampered_bytes[4] ^= 0x01;
+    std::fs::write(&tampered_path, &tampered_bytes).unwrap();
+
+    let expected_hash = stellopay_cli::utils::compute_wasm_hash(&original_path).unwrap();
+
+    let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
+    cmd.arg("verify")
+        .arg("--wasm")
+        .arg(tampered_path.to_str().unwrap())
+        .arg("--deployed-hash")
+        .arg(&expected_hash);
+
+    let assert = cmd.assert().failure().code(5);
+    let output = assert.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+
+    assert!(
+        combined.contains("Verification failed") || combined.contains("mismatch"),
+        "tampered artifact should fail with a hash mismatch message, got: {combined}"
+    );
+    assert!(
+        combined.contains(&expected_hash),
+        "failure output should include the expected hash, got: {combined}"
+    );
+}
+
+/// Rebuild an untampered WASM artifact and ensure verify succeeds.
+#[test]
+fn test_verify_accepts_untampered_rebuilt_wasm() {
+    let temp_dir = TempDir::new().unwrap();
+    let wasm_path = temp_dir.path().join("contract.wasm");
+
+    let mut wasm_bytes = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+    wasm_bytes.extend_from_slice(b"stellopay-verify-untampered");
+    std::fs::write(&wasm_path, &wasm_bytes).unwrap();
+
+    let local_hash = stellopay_cli::utils::compute_wasm_hash(&wasm_path).unwrap();
+
+    let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
+    cmd.arg("verify")
+        .arg("--wasm")
+        .arg(wasm_path.to_str().unwrap())
+        .arg("--deployed-hash")
+        .arg(&local_hash);
+
+    cmd.assert().success().stdout(
+        predicate::str::contains("Verification passed").and(predicate::str::contains(&local_hash)),
     );
 }
 
