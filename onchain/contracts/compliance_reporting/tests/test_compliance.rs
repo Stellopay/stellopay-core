@@ -3,7 +3,7 @@
 //! Coverage targets:
 //! - Initialization (happy path, double-init guard, pre-init rejection)
 //! - Publisher management (grant, revoke, admin-only enforcement)
-//! - Emergency pause (write blocked, reads unaffected, unpause restores writes)
+//! - Emergency pause (write blocked, reads unaffected, unpause restores writes, read/write asymmetry)
 //! - Record logging (happy path, auth enforcement, amount validation, monotonic IDs, global
 //!   sequence, publisher tracking, metadata)
 //! - Report generation (date filtering, type filtering, limit enforcement, empty results,
@@ -15,15 +15,74 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
-use audit_logger::{AuditLoggerContract, AuditLoggerContractClient};
+use audit_logger::{AuditError, AuditLogEntry};
 use compliance_reporting::{
     ComplianceError, ComplianceReportingContract, ComplianceReportingContractClient, ReportType,
 };
-use payment_history::{PaymentHistoryContract, PaymentHistoryContractClient};
+use payment_history::PaymentRecord;
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, Ledger},
-    Address, Bytes, Env,
+    Address, Bytes, BytesN, Env, Symbol,
 };
+
+// ---------------------------------------------------------------------------
+// Mock contracts for cross-contract dependency testing
+// ---------------------------------------------------------------------------
+
+/// Mock PaymentHistory contract used in tests where `generate_report`
+/// needs real cross-contract call responses. Returns a single pre-built
+/// payment record.
+#[contract]
+pub struct MockPaymentHistory;
+
+#[contractimpl]
+impl MockPaymentHistory {
+    pub fn get_payments_by_employee(
+        env: Env,
+        _employee: Address,
+        _start_index: u32,
+        _limit: u32,
+    ) -> soroban_sdk::Vec<PaymentRecord> {
+        let mut records: soroban_sdk::Vec<PaymentRecord> = soroban_sdk::Vec::new(&env);
+        records.push_back(PaymentRecord {
+            id: 1,
+            agreement_id: 42,
+            payment_hash: BytesN::from_array(&env, &[0u8; 32]),
+            token: Address::generate(&env),
+            amount: 1000,
+            from: Address::generate(&env),
+            to: Address::generate(&env),
+            timestamp: 5000,
+        });
+        records
+    }
+}
+
+/// Mock AuditLogger contract used in tests where `generate_report`
+/// needs real cross-contract call responses. Returns a single pre-built
+/// audit log entry.
+#[contract]
+pub struct MockAuditLogger;
+
+#[contractimpl]
+impl MockAuditLogger {
+    pub fn get_latest_logs(
+        env: Env,
+        _limit: u32,
+    ) -> Result<soroban_sdk::Vec<AuditLogEntry>, AuditError> {
+        let mut entries: soroban_sdk::Vec<AuditLogEntry> = soroban_sdk::Vec::new(&env);
+        entries.push_back(AuditLogEntry {
+            id: 1,
+            timestamp: 5000,
+            actor: Address::generate(&env),
+            action: Symbol::new(&env, "agreement_created"),
+            subject: Some(Address::generate(&env)),
+            amount: Some(1000),
+        });
+        Ok(entries)
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -58,6 +117,31 @@ fn log_as_employer(
         report_type,
         &Bytes::new(env),
     )
+}
+
+/// Sets up the contract with registered mock dependency contracts so that
+/// `generate_report` can make successful cross-contract calls.
+/// Returns (env, client, admin, mock_audit_id, mock_ph_id).
+fn setup_with_mocks() -> (
+    Env,
+    ComplianceReportingContractClient<'static>,
+    Address,
+    Address,
+    Address,
+) {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+
+    let compliance_id = env.register_contract(None, ComplianceReportingContract);
+    let client = ComplianceReportingContractClient::new(&env, &compliance_id);
+    client.initialize(&admin);
+
+    let mock_audit_id = env.register_contract(None, MockAuditLogger);
+    let mock_ph_id = env.register_contract(None, MockPaymentHistory);
+    client.set_contract_addresses(&admin, &mock_audit_id, &mock_ph_id);
+
+    (env, client, admin, mock_audit_id, mock_ph_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -245,9 +329,162 @@ fn test_set_paused_non_admin_rejected() {
     assert_eq!(err, ComplianceError::NotAuthorized);
 }
 
-// ---------------------------------------------------------------------------
-// Record logging
-// ---------------------------------------------------------------------------
+/// Verifies the asymmetric behavior of the pause flag:
+/// - Writes (`log_record`) are blocked while the contract is paused.
+/// - Reads (`generate_report`, `get_withholding_records`, `get_record`,
+///   `get_record_count`) continue to work on pre-existing data while paused.
+/// - After unpausing, writes are restored and new records are visible to reads.
+///
+/// This is the core security property of the emergency pause: it stops new
+/// records from being added while allowing off-chain indexers to continue
+/// reading already-recorded history without interruption.
+#[test]
+fn test_pause_read_write_asymmetry() {
+    let (env, client, admin, _mock_audit_id, _mock_ph_id) = setup_with_mocks();
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    // ── Phase 1: log pre-existing records while unpaused ─────────────────
+    env.ledger().set_timestamp(1000);
+    let _id1 = log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        500,
+        &ReportType::Payroll,
+    );
+    env.ledger().set_timestamp(2000);
+    let _id2 = log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        300,
+        &ReportType::Tax,
+    );
+
+    assert_eq!(client.get_record_count(&employer), 2);
+    assert_eq!(client.get_global_seq(), 2);
+
+    // ── Phase 2: pause the contract ───────────────────────────────────────
+    client.set_paused(&admin, &true);
+    assert!(client.is_paused());
+
+    // ── Phase 3A: writes are BLOCKED while paused (asymmetric) ───────────
+    let err = client
+        .try_log_record(
+            &employer,
+            &employer,
+            &employee,
+            &token,
+            &100,
+            &ReportType::Payroll,
+            &Bytes::new(&env),
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(
+        err,
+        ComplianceError::ContractPaused,
+        "log_record must be rejected when paused"
+    );
+
+    // ── Phase 3B: reads are ALLOWED while paused (asymmetric) ────────────
+    // 3B-i: get_record_count still works
+    assert_eq!(
+        client.get_record_count(&employer),
+        2,
+        "get_record_count must work while paused"
+    );
+
+    // 3B-ii: get_record still works
+    let rec1 = client.get_record(&employer, &1);
+    assert!(
+        rec1.is_some(),
+        "get_record must return existing records while paused"
+    );
+    assert_eq!(rec1.unwrap().amount, 500);
+
+    // 3B-iii: get_withholding_records still works
+    let report = client.get_withholding_records(&employer, &employee, &0, &9999, &None, &100);
+    assert_eq!(
+        report.record_count, 2,
+        "get_withholding_records must work while paused"
+    );
+    assert_eq!(
+        report.total_amount, 800,
+        "total_amount must be correct while paused"
+    );
+
+    // 3B-iv: generate_report still works (requires mock dependencies)
+    let gen_report = client
+        .try_generate_report(&employer, &employee, &0, &9999)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        gen_report.record_count, 2,
+        "generate_report must work while paused"
+    );
+    assert_eq!(
+        gen_report.total_amount, 800,
+        "generate_report total must be correct while paused"
+    );
+    assert_eq!(
+        gen_report.employer, employer,
+        "generate_report employer must match"
+    );
+
+    // 3B-v: global_seq remains unchanged (no new records were written)
+    assert_eq!(
+        client.get_global_seq(),
+        2,
+        "global_seq must not advance while paused"
+    );
+
+    // ── Phase 4: unpause and verify writes are restored ──────────────────
+    client.set_paused(&admin, &false);
+    assert!(!client.is_paused());
+
+    env.ledger().set_timestamp(3000);
+    let id3 = log_as_employer(
+        &client,
+        &env,
+        &employer,
+        &employee,
+        &token,
+        200,
+        &ReportType::Regulatory,
+    );
+    assert_eq!(id3, 3, "record IDs must resume after unpause");
+    assert_eq!(
+        client.get_record_count(&employer),
+        3,
+        "record count must reflect new records after unpause"
+    );
+    assert_eq!(
+        client.get_global_seq(),
+        3,
+        "global_seq must advance after unpause"
+    );
+
+    // ── Phase 5: final reads confirm all data is intact (re-pause optional) ─
+    let final_report =
+        client.get_withholding_records(&employer, &employee, &0, &9999, &None, &100);
+    assert_eq!(
+        final_report.record_count, 3,
+        "all three records must be readable after unpause cycle"
+    );
+    assert_eq!(
+        final_report.total_amount,
+        1000,
+        "total must include all three records"
+    );
+}
+
 
 #[test]
 fn test_log_record_employer_as_publisher() {
