@@ -87,41 +87,71 @@ The contract's pagination implementation (`get_payments_by_employee`, `get_payme
 - Pin the same Rust and `stellar` CLI versions as CI (see `.github/workflows/contracts.yml`).
 - Store a baseline file in your team's wiki or issue tracker; update it intentionally when the contract or SDK changes.
 
-## Gas benchmark tests
+## Gas benchmark thresholds
 
-In addition to the bench binary, `tests/gas_benchmarks.rs` provides regression-guarded instruction-count tests for high-frequency operations including:
+In addition to the bench binary, `tests/gas_benchmarks.rs` provides regression-guarded instruction-count tests for high-traffic entrypoints. The committed baselines live in `benchmarks/stello_pay_contract_gas.json`, and the test fails when a measured value exceeds the recorded baseline by more than 5%.
 
-- `claim_payroll` at 1, 10, and 50 elapsed periods
-- `batch_claim_milestones` at 1, 5, and 20 milestones
-- `batch_create_payroll_agreements` at 1, 5, 10, and 20 agreements (with a linearity assertion)
-
-Run with:
+Run the guard locally with:
 
 ```bash
-cd onchain/contracts/stello_pay_contract
+cd onchain
 cargo test -p stello_pay_contract gas_benchmark -- --nocapture
 ```
 
-These tests compare measured instruction counts against committed baselines in `benchmarks/stello_pay_contract_gas.json`. CI fails when measured counts exceed the baseline by more than 5%. To update baselines after an intentional contract change:
+### Current thresholds
+
+The current regression guard covers these entrypoints:
+
+| Entrypoint | Scenario | Baseline CPU instructions | Max acceptable in CI (+5%) |
+|------------|----------|---------------------------|----------------------------|
+| `claim_payroll` | 1 elapsed period | 584,717 | 613,952 |
+| `claim_payroll` | 10 elapsed periods | 584,717 | 613,952 |
+| `claim_payroll` | 50 elapsed periods | 584,717 | 613,952 |
+| `batch_claim_milestones` | 1 approved milestone | 408,917 | 429,362 |
+| `batch_claim_milestones` | 5 approved milestones | 1,750,598 | 1,838,127 |
+| `batch_claim_milestones` | 20 approved milestones | 8,965,821 | 9,414,112 |
+| `batch_create_payroll_agreements` | 1 agreement | 223,146 | 234,303 |
+| `batch_create_payroll_agreements` | 5 agreements | 1,117,375 | 1,173,243 |
+| `batch_create_payroll_agreements` | 10 agreements | 2,450,605 | 2,573,135 |
+| `batch_create_payroll_agreements` | 20 agreements | 5,808,763 | 6,099,201 |
+
+At max batch size, the test also enforces these documented hard ceilings:
+
+- `batch_claim_milestones(20)` must stay at or below `9,500,000` instructions
+- `batch_create_payroll_agreements(20)` must stay at or below `7,000,000` instructions
+
+### Updating thresholds intentionally
+
+When a contract change is expected to increase cost:
+
+1. Run `cargo test -p stello_pay_contract gas_benchmark -- --nocapture` and confirm the higher cost is intentional.
+2. Refresh `benchmarks/stello_pay_contract_gas.json`:
 
 ```bash
+cd onchain
 UPDATE_GAS_BASELINES=1 cargo test -p stello_pay_contract gas_benchmark -- --nocapture
 ```
 
-## Regression guard (optional)
-
-To fail CI when costs exceed a threshold, capture the baseline `cpu_insns` values into a small script that parses `cargo bench` output and compares with limits. **Do not** hardcode thresholds in this repo without team agreement—they change with SDK upgrades.
+3. Update the threshold table above to match the new committed baselines and CI ceilings.
+4. Mention the reason for the cost increase in the PR so reviewers know the threshold move was deliberate.
 
 ## CI
 
-The workflow builds the main contract and runs the full test suite. To compile benchmarks without executing them:
+`.github/workflows/contracts.yml` runs the benchmark regression guard explicitly before the rest of the workspace tests:
+
+```bash
+cd onchain
+cargo test -p stello_pay_contract gas_benchmark -- --nocapture
+```
+
+That step is the enforced comparison between current instruction counts and the recorded thresholds in `benchmarks/stello_pay_contract_gas.json`.
+
+To compile the standalone bench target without executing it:
 
 ```bash
 cd onchain/contracts/stello_pay_contract
 cargo bench --bench critical_paths --no-run
 ```
-
-Add this to `.github/workflows/ci.yml` if you want compile-time coverage of the bench target.
 
 ## Related
 
