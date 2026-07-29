@@ -113,7 +113,27 @@ pub fn get_latest_logs(env: Env, limit: u32) -> Result<Vec<AuditLogEntry>, Audit
 ### Security Properties
 
 #### Append-Only Guarantee
-Logs cannot be modified after creation. There are no update or delete entrypoints. The `AuditLogEntry` struct is immutable once stored.
+Logs cannot be modified or deleted after creation. Every public entrypoint in `audit_logger` has been enumerated to confirm non-mutability of existing records:
+
+| Entrypoint | Type | Record ID Parameter | Accepts Mutating Parameters for Existing Records |
+|---|---|---|---|
+| `initialize` | Write (1-time) | None | No |
+| `set_retention_limit` | Write (Owner) | None | No |
+| `get_retention_limit` | Read-only | None | No |
+| `append_log` | Write | Monotonic (Returned) | No |
+| `get_log_count` | Read-only | None | No |
+| `get_log` | Read-only | Input (`id: u64`) | No |
+| `get_logs` | Read-only | Offset/Limit | No |
+| `get_latest_logs` | Read-only | Limit | No |
+
+None of the contract's public entrypoints accept a record index/ID alongside mutating parameters (such as `update_log(id, ...)` or `delete_log(id)`). The `AuditLogEntry` struct is stored directly under `StorageKey::LogEntry(id)` and cannot be mutated by any external call.
+
+> **Compliance Guarantee**: This append-only non-mutability invariant is explicitly relied upon by `compliance_reporting` (as well as `expense_reimbursement` and `salary_adjustment`). `compliance_reporting` relies on this guarantee to ensure that audit history, global sequence ordering, and recorded financial event logs cannot be retroactively tampered with, altered, or forged after commitment.
+
+This invariant is regression-tested by:
+- `test_audit_logger_append_only_invariant_regression_guard`: Appends a record, attempts all plausible mutation paths (interleaved appends, retention expansions/reductions/unlimited, query entrypoints, window filling), and asserts that original record content is unchanged when re-read.
+- `test_interleaved_append_and_get_latest_logs_maintains_order`: Verifies that `get_latest_logs` returns entries in strictly increasing order with no gaps when called interleaved with `append_log`
+- `test_interleaved_append_and_read_consistency`: Verifies that `get_log` and `get_latest_logs` return consistent results with no skipped or duplicated entries across interleaved operations
 
 #### Append-Order Invariant (Core Guarantee)
 The audit logger maintains a **strict append-order invariant** that is fundamental to its correctness:
@@ -140,6 +160,24 @@ This invariant is tested by:
 
 #### Retention as Pruning
 Old logs age out of the queryable window when retention is exceeded. Underlying storage entries remain but are logically invisible. This prevents unbounded storage growth while maintaining tamper evidence within the window.
+
+#### Storage-Growth Risk (retention_limit = 0)
+
+When `retention_limit` is set to `0` (unlimited), every `append_log` call
+writes a new `LogEntry(id)` key to persistent storage. Storage on Stellar
+ledger is not free — each entry occupies rent-paying ledger space, and a
+contract instance with a very large log count will accumulate proportionally
+higher ledger rent obligations.
+
+**Recommended mitigation:** Set a non-zero `retention_limit` at initialization
+that matches the operational history window needed (e.g. `500` for ~500 recent
+events). If a higher initial ceiling was used and the contract is approaching
+practical limits, the owner can call `set_retention_limit(n)` with a lower `n`
+to immediately prune the oldest entries down to `n`.
+
+**Effect of lowering the limit:** Pruning is irreversible. Always export
+historical entries via `get_logs()` or `get_latest_logs()` before lowering
+the limit if the full history is needed off-chain.
 
 #### Log Injection Prevention
 Since `actor.require_auth()` is enforced, a malicious contract cannot impersonate another address to inject false log entries. Each entry is cryptographically attributed to the authenticating signer.

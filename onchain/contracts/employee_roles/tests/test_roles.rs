@@ -384,3 +384,30 @@ fn test_initialize_twice_fails() {
     client.initialize(&owner);
     client.initialize(&owner);
 }
+
+#[test]
+fn test_circular_role_implies_two_roles() {
+    let (_env, owner, client) = setup();
+    
+    // Manager implies Employee
+    client.set_role_implies(&owner, &BuiltInRole::Manager, &BuiltInRole::Employee);
+    
+    // Employee implies Manager (Cycle)
+    let res = client.try_set_role_implies(&owner, &BuiltInRole::Employee, &BuiltInRole::Manager);
+    assert!(res.is_err(), "Must reject circular role implication (2 roles)");
+}
+
+#[test]
+fn test_circular_role_implies_three_roles() {
+    let (_env, owner, client) = setup();
+    
+    // Admin implies Manager
+    client.set_role_implies(&owner, &BuiltInRole::Admin, &BuiltInRole::Manager);
+    
+    // Manager implies Employee
+    client.set_role_implies(&owner, &BuiltInRole::Manager, &BuiltInRole::Employee);
+    
+    // Employee implies Admin (Cycle)
+    let res = client.try_set_role_implies(&owner, &BuiltInRole::Employee, &BuiltInRole::Admin);
+    assert!(res.is_err(), "Must reject circular role implication (3 roles)");
+}

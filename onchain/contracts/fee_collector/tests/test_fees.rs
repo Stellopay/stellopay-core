@@ -1142,6 +1142,64 @@ fn test_collect_fee_while_paused_panics() {
     client.collect_fee(&payer, &recipient, &tok.address, &500);
 }
 
+// ─── calculate_fee zero-amount edge cases (issue #767) ────────────────────
+
+#[test]
+fn test_calculate_fee_zero_gross_returns_zero() {
+    // Issue #767: verify that calculate_fee(0) returns (0, 0)
+    // without panicking and that the result is a valid FeeQuote.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    let (net, fee) = client.calculate_fee(&0i128);
+    assert_eq!(net, 0);
+    assert_eq!(fee, 0);
+}
+
+#[test]
+fn test_calculate_fee_small_amount_percentage_rounds_to_zero() {
+    // Issue #767: when the gross amount is so small that the
+    // percentage-based fee rounds down to 0, verify calculate_fee
+    // returns fee=0 and net=gross rather than silently assuming
+    // a non-zero fee.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    // 1 bps = 0.01%. 1 token * 0.01% = 0.0001 -> floor = 0.
+    let client = setup_percentage(&env, &admin, &treasury, 1);
+    let (net, fee) = client.calculate_fee(&1i128);
+    assert_eq!(fee, 0, "1 bps on 1 token must round to 0 fee");
+    assert_eq!(net, 1);
+}
+
+#[test]
+fn test_calculate_fee_exactly_one_percent_threshold() {
+    // Issue #767: verify the edge where gross is just below and
+    // exactly at the threshold where a non-zero fee first appears.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    // At 100 bps (1%), 99 tokens rounds down to 0; 100 -> fee = 1.
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+    let (net_99, fee_99) = client.calculate_fee(&99i128);
+    assert_eq!(fee_99, 0, "1% of 99 rounds down to 0");
+    assert_eq!(net_99, 99);
+
+    let (net_100, fee_100) = client.calculate_fee(&100i128);
+    assert_eq!(fee_100, 1, "1% of 100 yields exactly 1");
+    assert_eq!(net_100, 99);
+}
+
 // ─── calculate_fee error cases ────────────────────────────────────────────────
 
 #[test]

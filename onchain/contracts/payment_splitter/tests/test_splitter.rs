@@ -601,13 +601,13 @@ fn test_sum_preservation_property_diverse_splits_and_amounts() {
 
     // Test multiple split configurations across a range of amounts
     let split_configs = [
-        vec![10000],                   // 1 recipient, 100%
-        vec![5000, 5000],              // 2 recipients, equal
-        vec![6000, 4000],              // 2 recipients, unequal
-        vec[]{3333, 3333, 3334},       // 3 recipients, unequal
-        vec![2500, 2500, 2500, 2500],  // 4 recipients, equal
-        vec![1000, 2000, 3000, 4000],  // 4 recipients, unequal
-        vec![200; 5],                  // 5 recipients, equal (5*200=1000 ≠ 10000)
+        vec![10000],                  // 1 recipient, 100%
+        vec![5000, 5000],             // 2 recipients, equal
+        vec![6000, 4000],             // 2 recipients, unequal
+        vec![3333, 3333, 3334],       // 3 recipients, unequal
+        vec![2500, 2500, 2500, 2500], // 4 recipients, equal
+        vec![1000, 2000, 3000, 4000], // 4 recipients, unequal
+        vec![200; 5],                 // 5 recipients, equal (5*200=1000 ≠ 10000)
     ];
 
     for (config_idx, bps_list) in split_configs.iter().enumerate() {
@@ -686,6 +686,48 @@ fn test_no_dust_lost_or_created_fixed_splits() {
     assert_eq!(out.get(0).unwrap().1, 123);
     assert_eq!(out.get(1).unwrap().1, 456);
     assert_eq!(out.get(2).unwrap().1, 789);
+}
+
+#[test]
+fn test_compute_split_is_deterministic_idempotent() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+
+    let mut recipients = Vec::new(&env);
+    // 3333 + 3333 + 3334 = 10000 with a complex rounding case
+    recipients.push_back(RecipientShare {
+        recipient: a.clone(),
+        kind: ShareKind::Percent(3333),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b.clone(),
+        kind: ShareKind::Percent(3333),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: c.clone(),
+        kind: ShareKind::Percent(3334),
+    });
+
+    let id = client.create_split(&creator, &recipients);
+
+    // Call compute_split multiple times with the exact same inputs
+    let first_out = client.compute_split(&id, &100);
+    let second_out = client.compute_split(&id, &100);
+    let third_out = client.compute_split(&id, &100);
+
+    // Verify share vectors are byte-identical across repeated calls
+    assert_eq!(first_out, second_out, "Second call output differs from first");
+    assert_eq!(first_out, third_out, "Third call output differs from first");
+
+    // Verify stable rounding allocation (the specific amounts)
+    assert_eq!(first_out.get(0).unwrap().1, 33);
+    assert_eq!(first_out.get(1).unwrap().1, 33);
+    assert_eq!(first_out.get(2).unwrap().1, 34);
 }
 
 #[test]

@@ -329,6 +329,66 @@ fn live_rbac_changes_affect_future_voting() {
     assert_eq!(vote_res, Err(Ok(GovernanceError::NotEligibleVoter)));
 }
 
+/// Cancels a succeeded proposal while it is still sitting in its timelock
+/// window, then advances past the original ETA and asserts that execution is
+/// permanently blocked — guarding against orphaned or replayable timelock
+/// entries.
+#[test]
+fn cancel_during_timelock_prevents_execution_after_delay() {
+    let env = env();
+    let setup = setup_contracts(&env);
+
+    let new_arbiter = addr(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.employer1,
+        &ProposalKind::ArbiterChange(new_arbiter.clone()),
+    );
+
+    // Reach quorum (2 votes) and majority.
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer2, &proposal_id, &VoteChoice::For);
+
+    // Finalize — proposal enters Succeeded, timelock operation is Queued.
+    advance(&env, VOTING_PERIOD + 1);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, ProposalStatus::Succeeded);
+    let op_id = proposal.timelock_operation_id.unwrap();
+    assert!(op_id > 0);
+
+    // Cancel while the timelock is still active (before ETA).
+    setup.governance.cancel_proposal(&setup.owner, &proposal_id);
+
+    // Proposal and its timelock operation are both Cancelled.
+    let cancelled = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(cancelled.status, ProposalStatus::Cancelled);
+    let cancelled_op = setup.timelock.get_operation(&op_id).unwrap();
+    assert_eq!(cancelled_op.status, OperationStatus::Cancelled);
+
+    // Advance past the original timelock delay — the proposal must still be
+    // unexecutable because it was cancelled.
+    advance(&env, TIMELOCK_DELAY);
+    let execute_after_cancel = setup
+        .governance
+        .try_execute_proposal(&setup.signer1, &proposal_id);
+    assert_eq!(
+        execute_after_cancel,
+        Err(Ok(GovernanceError::ProposalNotSucceeded))
+    );
+
+    // The arbiter must NOT have been changed — side effects were never applied.
+    assert!(setup.governance.get_arbiter().is_none());
+
+    // The timelock operation must remain Cancelled (no orphaned entry).
+    let final_op = setup.timelock.get_operation(&op_id).unwrap();
+    assert_eq!(final_op.status, OperationStatus::Cancelled);
+}
+
 #[test]
 fn governance_uses_configured_multisig_signers() {
     let env = env();

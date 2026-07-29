@@ -1111,7 +1111,7 @@ impl PayrollContract {
     pub fn pause_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
         // Try new-style agreement first (payroll/escrow)
         if payroll::get_agreement(&env, agreement_id).is_some() {
-            payroll::pause_agreement(&env, agreement_id);
+            payroll::pause_agreement(&env, agreement_id)?;
             return Ok(());
         }
 
@@ -1280,6 +1280,40 @@ impl PayrollContract {
     /// Cumulative extra seconds applied on top of `Agreement.grace_period_seconds`.
     pub fn get_grace_extension_seconds(env: Env, agreement_id: u128) -> u64 {
         payroll::get_grace_extension_seconds(&env, agreement_id)
+    }
+
+    // ============================================================================
+    // Employer Bulk Pause / Unpause
+    // ============================================================================
+
+    /// Pauses all active agreements belonging to `employer`.
+    ///
+    /// # Arguments
+    /// * `employer` - Address whose agreements should be paused.  Must authenticate.
+    ///
+    /// # Returns
+    /// The number of agreements that were actually paused.
+    ///
+    /// # Access Control
+    /// Requires employer authentication — an employer can only pause their own
+    /// agreements.  Cross-employer pause is rejected.
+    pub fn pause_employer_agreements(env: Env, employer: Address) -> Result<u32, PayrollError> {
+        payroll::pause_employer_agreements(&env, employer)
+    }
+
+    /// Unpauses all paused agreements belonging to `employer`.
+    ///
+    /// # Arguments
+    /// * `employer` - Address whose agreements should be unpaused.  Must authenticate.
+    ///
+    /// # Returns
+    /// The number of agreements that were actually unpaused.
+    ///
+    /// # Access Control
+    /// Requires employer authentication — an employer can only unpause their own
+    /// agreements.  Cross-employer unpause is rejected.
+    pub fn unpause_employer_agreements(env: Env, employer: Address) -> Result<u32, PayrollError> {
+        payroll::unpause_employer_agreements(&env, employer)
     }
 
     // ============================================================================
