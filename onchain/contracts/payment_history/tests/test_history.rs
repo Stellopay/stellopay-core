@@ -2081,3 +2081,102 @@ fn test_record_payment_identical_hash_is_idempotent_replay() {
     assert_eq!(client.get_employer_payment_count(&from), 1u32);
     assert_eq!(client.get_employee_payment_count(&to), 1u32);
 }
+
+// ─── prune_record ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_prune_record_emits_event_with_correct_key() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let (_owner, _payroll) = initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let hash = make_hash(&env, 0xAA);
+    let payment_id = client.record_payment(
+        &1u128,
+        &hash,
+        &token,
+        &1000i128,
+        &employer,
+        &employee,
+        &1_000u64,
+    );
+
+    // Prune as owner.
+    client.prune_record(&payment_id);
+
+    let events = env.events().all();
+    // The last event should be record_pruned (after payment_recorded).
+    let last = events.last().unwrap();
+    assert_eq!(last.0, contract_id);
+
+    let expected_topics: soroban_sdk::Vec<soroban_sdk::Val> =
+        (Symbol::new(&env, "record_pruned"),).into_val(&env);
+    assert_eq!(last.1, expected_topics);
+}
+
+#[test]
+fn test_prune_record_removes_record_from_storage() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let (_owner, _payroll) = initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let hash = make_hash(&env, 0xBB);
+    let payment_id = client.record_payment(
+        &1u128,
+        &hash,
+        &token,
+        &2000i128,
+        &employer,
+        &employee,
+        &2_000u64,
+    );
+
+    // Confirm record exists before pruning.
+    assert!(client.get_payment_by_id(&payment_id).is_some());
+    assert!(client.get_payment_by_hash(&hash).is_some());
+
+    client.prune_record(&payment_id);
+
+    // Record should be gone from both lookup paths.
+    assert!(client.get_payment_by_id(&payment_id).is_none());
+    assert!(client.get_payment_by_hash(&hash).is_none());
+}
+
+#[test]
+#[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
+fn test_prune_record_unauthorized_no_auth() {
+    // Deliberately do NOT call mock_all_auths so the auth check fires.
+    let env = Env::default();
+    let (_id, client) = register_contract(&env);
+    let (_owner, _payroll) = initialize_contract(&env, &client);
+
+    // Calling prune_record without owner auth must panic.
+    client.prune_record(&1u128);
+}
+
+#[test]
+fn test_non_pruning_operations_do_not_emit_prune_event() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let (_owner, _payroll) = initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+
+    // Record a payment - this should only emit payment_recorded, not record_pruned.
+    record(&client, &env, 1, 1u32, &token, 500, &from, &to, 1_000);
+
+    let events = env.events().all();
+    assert_eq!(events.len(), 1, "record_payment must emit exactly one event");
+    let (_contract, topics, _data) = events.get(0).unwrap();
+    let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> =
+        (Symbol::new(&env, "payment_recorded"),).into_val(&env);
+    assert_eq!(topics, expected_topic, "event must be payment_recorded, not record_pruned");
+}
