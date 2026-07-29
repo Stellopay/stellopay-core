@@ -31,6 +31,17 @@ fn setup(env: &Env) -> (WithdrawalTimelockClient<'static>, Address) {
     (client, admin)
 }
 
+/// Registers the contract and calls `initialize` with a custom delay.
+/// Returns `(client, admin_address)`.
+fn setup_with_delay(env: &Env, delay: u64) -> (WithdrawalTimelockClient<'static>, Address) {
+    #[allow(deprecated)]
+    let contract_id = env.register_contract(None, WithdrawalTimelock);
+    let client = WithdrawalTimelockClient::new(env, &contract_id);
+    let admin = Address::generate(env);
+    client.initialize(&admin, &delay);
+    (client, admin)
+}
+
 /// Advances the ledger timestamp by `seconds`.
 fn advance_time(env: &Env, seconds: u64) {
     env.ledger().with_mut(|li| {
@@ -514,11 +525,64 @@ fn update_delay_does_not_alter_queued_eta() {
     let op_after: TimelockedOperation = client.get_operation(&op_id).unwrap();
     assert_eq!(op_after.eta, eta_before);
 
-    // New ops queued after the update must use the new delay
+    // New ops queued after the update must use the new delay exactly
     let op_id2 = client.queue(&admin, &withdrawal_kind(&env));
     let op2: TimelockedOperation = client.get_operation(&op_id2).unwrap();
-    // op2.eta = op2.created_at + 3600 >= op_before.created_at + 3600 > eta_before
-    assert!(op2.eta > eta_before);
+    assert_eq!(
+        op2.eta,
+        op2.created_at.checked_add(3600).unwrap(),
+        "new op must use the updated delay rather than the old 60s delay"
+    );
+
+    // The old operation can still be executed at its original eta (not affected by new delay)
+    let now = env.ledger().timestamp();
+    let delta = eta_before.saturating_sub(now);
+    advance_time(&env, delta);
+    // Must succeed at the old eta
+    client.execute(&admin, &op_id);
+    let executed_op: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    assert_eq!(executed_op.status, OperationStatus::Executed);
+}
+
+#[test]
+fn update_delay_decrease_non_retroactive() {
+    // Security invariant: decreasing the delay must NOT make already-queued
+    // operations executable earlier. Their eta is frozen at queue time.
+    let env = create_env();
+    // Initialize with a large delay
+    let (client, admin) = setup_with_delay(&env, 3600u64); // 1 hour delay
+
+    let op_id = client.queue(&admin, &withdrawal_kind(&env));
+    let op_before: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    let eta_before = op_before.eta;
+
+    // Decrease delay to 60 seconds
+    client.update_delay(&admin, &60u64);
+
+    // The already-queued op's eta must be unchanged (still at 1 hour)
+    let op_after: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    assert_eq!(op_after.eta, eta_before);
+
+    // Try to execute just after the new (shorter) delay would have elapsed but
+    // before the original eta — must fail because old op's eta is frozen.
+    let now = env.ledger().timestamp();
+    let half_delta = eta_before.saturating_sub(now) / 2;
+    advance_time(&env, half_delta);
+    let res = client.try_execute(&admin, &op_id);
+    assert_eq!(
+        res,
+        Err(Ok(TimelockError::NotReady)),
+        "decreasing the delay must not make a queued op executable earlier"
+    );
+
+    // New ops queued after the decrease use the new delay
+    let op_id2 = client.queue(&admin, &withdrawal_kind(&env));
+    let op2: TimelockedOperation = client.get_operation(&op_id2).unwrap();
+    assert_eq!(
+        op2.eta,
+        op2.created_at.checked_add(60).unwrap(),
+        "new op must use the decreased delay"
+    );
 }
 
 // ─── Group F: Read Helpers (10 tests) ────────────────────────────────────────
