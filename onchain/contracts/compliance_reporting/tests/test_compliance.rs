@@ -15,9 +15,11 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
+use audit_logger::{AuditLoggerContract, AuditLoggerContractClient};
 use compliance_reporting::{
     ComplianceError, ComplianceReportingContract, ComplianceReportingContractClient, ReportType,
 };
+use payment_history::{PaymentHistoryContract, PaymentHistoryContractClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Bytes, Env,
@@ -1496,6 +1498,52 @@ fn test_generate_report_multi_record_aggregation() {
             "each record's employer field must be the seeded employer"
         );
     }
+}
+
+/// Verifies that generate_report does not silently truncate a large employer
+/// history. Once the count grows beyond the small internal query window, the
+/// contract must still return every matching record in the requested window.
+#[test]
+fn test_generate_report_large_history_returns_all_matching_records() {
+    let (env, client, admin) = setup();
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let token = Address::generate(&env);
+    let audit_logger = Address::generate(&env);
+    let payment_history = Address::generate(&env);
+
+    client.set_contract_addresses(&admin, &audit_logger, &payment_history);
+
+    let record_count = 125u32;
+    for i in 1..=record_count {
+        env.ledger().set_timestamp(1000 + u64::from(i) * 10);
+        log_as_employer(
+            &client,
+            &env,
+            &employer,
+            &employee,
+            &token,
+            100 + i as i128,
+            &ReportType::Payroll,
+        );
+    }
+
+    let end_date = 1000 + u64::from(record_count) * 10;
+    let audit_logger_id = env.register_contract(None, AuditLoggerContract);
+    let audit_logger_client = AuditLoggerContractClient::new(&env, &audit_logger_id);
+    audit_logger_client.initialize(&admin, &1000);
+
+    let payment_history_id = env.register_contract(None, PaymentHistoryContract);
+    let payment_history_client = PaymentHistoryContractClient::new(&env, &payment_history_id);
+    payment_history_client.initialize(&admin, &Address::generate(&env));
+
+    client.set_contract_addresses(&admin, &audit_logger_id, &payment_history_id);
+
+    let report = client.generate_report(&employer, &employee, &1000, &end_date);
+
+    assert_eq!(report.record_count, record_count, "large employer histories must not be truncated");
+    assert_eq!(report.records.len(), record_count as u32, "every matching record must be returned");
+    assert_eq!(report.total_amount, 100u128 as i128 * u128::from(record_count) as i128 + (1..=record_count).sum::<u32>() as i128, "total amount must include every matching record");
 }
 
 /// Verifies that generate_report only includes records within the
