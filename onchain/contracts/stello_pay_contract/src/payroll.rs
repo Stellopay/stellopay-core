@@ -8,14 +8,14 @@ use crate::{
     events::{
         emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
         emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
-        emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
+        emit_employee_added, emit_exchange_rate_updated, emit_grace_period_extended,
         emit_grace_period_finalized, emit_milestone_expired, emit_milestone_funded,
         emit_milestone_rejected, emit_multisig_config_changed, emit_payment_received,
         emit_payment_sent, emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent,
         AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent,
         AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
         BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
-        ExchangeRateChangedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent,
+        ExchangeRateUpdatedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent,
         MilestoneAdded, MilestoneApproved, MilestoneClaimed, MilestoneExpiredEvent,
         MilestoneFundedEvent, MilestoneRejectedEvent, MultisigConfigChangedEvent,
         PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
@@ -2102,6 +2102,12 @@ pub fn extend_grace_period(
 
 /// Raise a dispute during the grace period (escrow or payroll agreement).
 ///
+/// # Re-filing guard
+/// Rejects the call with `DisputeAlreadyRaised` if the agreement already has an
+/// **active** dispute (`dispute_status == Raised`).  Once the active dispute is
+/// resolved (`dispute_status` transitions to `Resolved`), a fresh dispute may be
+/// raised again within the same grace window.
+///
 /// # Arguments
 /// * `env` - Contract environment
 /// * `agreement_id` - Agreement ID to dispute
@@ -2125,7 +2131,7 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
         return Err(PayrollError::NotParty);
     }
 
-    if agreement.dispute_status != DisputeStatus::None {
+    if agreement.dispute_status == DisputeStatus::Raised {
         return Err(PayrollError::DisputeAlreadyRaised);
     }
 
@@ -2208,6 +2214,19 @@ pub fn resolve_dispute(
     pay_employee: i128,
     refund_employer: i128,
 ) -> Result<(), PayrollError> {
+    acquire_reentrancy_guard(&env)?;
+    let result = resolve_dispute_inner(env, caller, agreement_id, pay_employee, refund_employer);
+    release_reentrancy_guard(&env);
+    result
+}
+
+fn resolve_dispute_inner(
+    env: Env,
+    caller: Address,
+    agreement_id: u128,
+    pay_employee: i128,
+    refund_employer: i128,
+) -> Result<(), PayrollError> {
     // If a DisputeResolution threshold is configured and the total payout meets
     // it, reject and require the caller to use resolve_dispute_multisig instead.
     let total_payout = pay_employee + refund_employer;
@@ -2235,6 +2254,27 @@ pub fn resolve_dispute(
 /// # Access Control
 /// Requires arbiter authentication and a valid Executed multisig operation.
 pub fn resolve_dispute_multisig(
+    env: Env,
+    caller: Address,
+    agreement_id: u128,
+    pay_employee: i128,
+    refund_employer: i128,
+    multisig_operation_id: u128,
+) -> Result<(), PayrollError> {
+    acquire_reentrancy_guard(&env)?;
+    let result = resolve_dispute_multisig_inner(
+        env,
+        caller,
+        agreement_id,
+        pay_employee,
+        refund_employer,
+        multisig_operation_id,
+    );
+    release_reentrancy_guard(&env);
+    result
+}
+
+fn resolve_dispute_multisig_inner(
     env: Env,
     caller: Address,
     agreement_id: u128,
@@ -2505,13 +2545,14 @@ pub fn set_exchange_rate(
 
     DataKey::set_exchange_rate(env, &base, &quote, rate);
 
-    emit_exchange_rate_changed(
+    emit_exchange_rate_updated(
         env,
-        ExchangeRateChangedEvent {
+        ExchangeRateUpdatedEvent {
             base,
             quote,
             new_rate: rate,
             prev_rate,
+            updater: caller,
             updated_at: env.ledger().timestamp(),
         },
     );

@@ -193,14 +193,29 @@ Every successful mutating action appends a `SalaryAdjustmentAuditEntry` and emit
 
 Audit records include the actor, action, optional adjustment id, optional employee, optional amount, optional reason hash, and ledger timestamp. There is no update or delete entrypoint for audit records.
 
+## Concurrent Pending Proposals
+
+When an employer submits a second proposal for the same employee **before** the first is approved, the behavior depends on the effective dates:
+
+| Scenario | Result |
+|----------|--------|
+| Same effective date, first still pending | **Rejected** — `"Conflicting adjustment exists"` |
+| Different effective dates | **Allowed** — proposals coexist independently |
+
+Each proposal is managed by its unique `adjustment_id`. All operations (`approve_adjustment`, `apply_adjustment`, `cancel_adjustment`) target the specific id — there is no ambiguous "latest proposal" pointer.
+
+**Note**: Cancelling or rejecting a proposal does **not** free its effective date slot. A new proposal with the same effective date will still be rejected. This prevents accidental reuse and preserves a complete audit record for the slot.
+
 ## Test Coverage
 
-49 tests covering:
+56 tests covering:
 
 - Initialization (one-time guard, owner stored)
 - Double-init and pre-init panics
 - Create: increase, decrease, timestamps, id increment
 - Create validations: zero salary, same salary, retroactive date, cap exceeded, conflicting effective dates
+- **Concurrent proposals: same effective date rejected, different effective dates allowed, cancel/reject independence**
+- **Proposal targeting: approve/apply/cancel act on specific id, not "latest"**
 - Retroactive authorization: default block, owner authorization, non-owner rejection, non-zero reason hash, domain-separated immutable reason storage
 - Cap: default, set, boundary (`new_salary == cap`), cap tightened
 - Approve: status change, wrong approver, double-approve, approve-after-reject

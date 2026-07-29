@@ -1,9 +1,10 @@
 #![cfg(test)]
 
 use dispute_escalation::{
-    types::{DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel},
+    types::{DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel,
+           KeeperAdvance},
     DisputeEscalatedEvent, DisputeEscalationContract, DisputeEscalationContractClient,
-    DisputeSlaViolationAdvancedEvent,
+    DisputeSlaBreachedEvent, DisputeSlaViolationAdvancedEvent,
 };
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
@@ -556,6 +557,7 @@ fn test_keeper_timeout_emits_sla_violation_advanced_event_only() {
     let payload = DisputeSlaViolationAdvancedEvent::from_val(&env, &event.2);
     assert_eq!(payload.agreement_id, id);
     assert_eq!(payload.level, EscalationLevel::Level1);
+    assert_eq!(payload.keeper, user);
     assert_eq!(payload.breached_at, breached_at);
     assert_eq!(payload.review_deadline, breached_at + PENDING_REVIEW_WINDOW);
 }
@@ -2839,7 +2841,10 @@ fn test_expire_premature_rejected_across_all_escalation_levels() {
 
     // ── Level1 ──────────────────────────────────────────────────────────────
     client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-    assert_eq!(client.get_dispute(&id).unwrap().level, EscalationLevel::Level1);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level1
+    );
 
     // Premature at L1.
     assert_eq!(
@@ -2849,7 +2854,10 @@ fn test_expire_premature_rejected_across_all_escalation_levels() {
 
     // ── Level2 ──────────────────────────────────────────────────────────────
     client.escalate_dispute(&user, &id); // still within L1 window
-    assert_eq!(client.get_dispute(&id).unwrap().level, EscalationLevel::Level2);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level2
+    );
 
     // Premature at L2 (no additional time has passed since escalation).
     assert_eq!(
@@ -2859,7 +2867,10 @@ fn test_expire_premature_rejected_across_all_escalation_levels() {
 
     // ── Level3 ──────────────────────────────────────────────────────────────
     client.escalate_dispute(&user, &id); // still within L2 window
-    assert_eq!(client.get_dispute(&id).unwrap().level, EscalationLevel::Level3);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level3
+    );
 
     // Premature at L3 (fresh L3 deadline just set).
     assert_eq!(
@@ -2877,4 +2888,148 @@ fn test_expire_premature_rejected_across_all_escalation_levels() {
         client.get_dispute(&id).unwrap().status,
         DisputeStatus::Expired
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §17  KEEPER ACCOUNTABILITY TESTS
+//      Verify that the keeper's address and the advance timestamp are
+//      persisted on the dispute record for a full accountability trail.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_keeper_advance_records_keeper_address_and_timestamp() {
+    // Verifies that a single keeper_advance_stage call persists the calling
+    // keeper's address and the advance timestamp on the dispute record
+    // (queryable via get_dispute).
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    advance(&env, 51); // SLA elapsed
+    let t_advance = now(&env);
+
+    client.keeper_advance_stage(&user, &id);
+
+    // Read the persisted dispute record — keeper identity and timestamp must
+    // be stored in the keeper_advances history.
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.keeper_advances.len(), 1);
+
+    let record = d.keeper_advances.get(0).unwrap();
+    assert_eq!(record.keeper, user);
+    assert_eq!(record.advanced_at, t_advance);
+    assert_eq!(record.level, EscalationLevel::Level1);
+
+    // The SLA breach event must also include the keeper address.
+    let sla_event = last_event(&env, "sla_violation_advanced")
+        .expect("sla_violation_advanced event");
+    let payload = DisputeSlaViolationAdvancedEvent::from_val(&env, &sla_event.2);
+    assert_eq!(payload.keeper, user);
+
+    // The legacy event topic also carries the keeper.
+    let legacy_event = last_event(&env, "dispute_sla_breached")
+        .expect("dispute_sla_breached event");
+    let legacy_payload = DisputeSlaBreachedEvent::from_val(&env, &legacy_event.2);
+    assert_eq!(legacy_payload.keeper, user);
+}
+
+#[test]
+fn test_two_sequential_keeper_advances_retain_distinct_records() {
+    // Two sequential keeper-driven advances across two SLA tiers must retain
+    // both keeper addresses and timestamps distinctly so that a full
+    // accountability trail is queryable after the dispute lifecycle completes.
+    let (env, client, _owner, admin, user) = setup();
+    let id = 2u128;
+    let keeper1 = Address::generate(&env);
+    let keeper2 = Address::generate(&env);
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &50u64);
+    client.set_pending_review_time_limit(&admin, &200u64);
+
+    // — Phase 1: Level1 SLA elapses; keeper1 advances —
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    advance(&env, 51);
+    let t_advance_1 = now(&env);
+
+    client.keeper_advance_stage(&keeper1, &id);
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.level, EscalationLevel::Level1);
+    assert_eq!(d.keeper_advances.len(), 1);
+    assert_eq!(d.keeper_advances.get(0).unwrap().keeper, keeper1);
+    assert_eq!(d.keeper_advances.get(0).unwrap().advanced_at, t_advance_1);
+    assert_eq!(
+        d.keeper_advances.get(0).unwrap().level,
+        EscalationLevel::Level1
+    );
+
+    // — Phase 2: Admin resolves, user appeals to Level2, SLA elapses;
+    //   keeper2 advances —
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Resolved
+    );
+
+    client.appeal_ruling(&user, &id);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Appealed
+    );
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level2
+    );
+
+    advance(&env, 51); // Level2 SLA elapsed
+    let t_advance_2 = now(&env);
+
+    client.keeper_advance_stage(&keeper2, &id);
+
+    // — Verify the record retains BOTH advances distinctly —
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.level, EscalationLevel::Level2);
+    assert_eq!(d.keeper_advances.len(), 2);
+
+    // First advance (keeper1 at Level1).
+    let r1 = d.keeper_advances.get(0).unwrap();
+    assert_eq!(r1.keeper, keeper1);
+    assert_eq!(r1.advanced_at, t_advance_1);
+    assert_eq!(r1.level, EscalationLevel::Level1);
+
+    // Second advance (keeper2 at Level2).
+    let r2 = d.keeper_advances.get(1).unwrap();
+    assert_eq!(r2.keeper, keeper2);
+    assert_eq!(r2.advanced_at, t_advance_2);
+    assert_eq!(r2.level, EscalationLevel::Level2);
+
+    // The keepers and timestamps must be distinct.
+    assert_ne!(r1.keeper, r2.keeper);
+    assert_ne!(r1.advanced_at, r2.advanced_at);
+    assert_ne!(r1.level, r2.level);
+
+    // Events from the second advance carry keeper2.
+    let sla_event = last_event(&env, "sla_violation_advanced")
+        .expect("sla_violation_advanced event");
+    let payload = DisputeSlaViolationAdvancedEvent::from_val(&env, &sla_event.2);
+    assert_eq!(payload.keeper, keeper2);
+}
+
+#[test]
+fn test_fresh_dispute_has_empty_keeper_advances() {
+    // A freshly filed dispute (before any keeper call) must have an empty
+    // keeper_advances vector — guarding against accidental pre-population.
+    let (_env, client, _owner, _admin, user) = setup();
+    let id = 3u128;
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Open);
+    assert_eq!(d.keeper_advances.len(), 0);
 }

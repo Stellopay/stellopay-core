@@ -374,7 +374,10 @@ impl EmployeeRolesContract {
         let grants = Self::get_grants(&env, &employee);
         let current_ts = env.ledger().timestamp();
 
-        if grants.iter().any(|g| g.role == role && g.is_active(current_ts)) {
+        if grants
+            .iter()
+            .any(|g| g.role == role && g.is_active(current_ts))
+        {
             return true;
         }
 

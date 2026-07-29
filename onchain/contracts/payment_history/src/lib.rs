@@ -89,7 +89,7 @@
 mod events;
 mod storage;
 
-use events::PaymentRecorded;
+use events::{emit_record_pruned, PaymentRecorded, RecordPruned};
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
 /// Re-export `PaymentRecord` so consumers and tests can import it directly
 /// from the crate root.
@@ -307,6 +307,54 @@ impl PaymentHistoryContract {
         id
     }
 
+    /// Prune (remove) a payment record from storage. Only callable by the
+    /// contract owner.
+    ///
+    /// @notice Removes the primary record and its hash reverse-lookup index
+    /// entry, then emits `record_pruned`. Sequential index entries (agreement,
+    /// employer, employee) are **not** removed — paginated queries gracefully
+    /// skip pruned records whose primary storage has been deleted.
+    ///
+    /// @dev Security: `owner.require_auth()` enforces that only the address
+    /// registered at initialization may prune records. Once pruned,
+    /// `get_payment_by_id` and `get_payment_by_hash` return `None` for this
+    /// record's keys.
+    ///
+    /// @param payment_id  The global ID of the payment record to prune.
+    ///
+    /// @panics "HostError: Error(Auth, InvalidAction)" when called by any
+    ///         address other than the contract owner.
+    /// @panics If no record exists for the given `payment_id`.
+    pub fn prune_record(env: Env, payment_id: u128) {
+        let owner: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Owner)
+            .unwrap();
+        owner.require_auth();
+
+        let record: PaymentRecord = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Payment(payment_id))
+            .unwrap();
+
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::Payment(payment_id));
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::PaymentByHash(record.payment_hash.clone()));
+
+        emit_record_pruned(
+            &env,
+            RecordPruned {
+                payment_id,
+                payment_hash: record.payment_hash,
+            },
+        );
+    }
+
     /// Look up a payment record by its 32-byte reference hash.
     ///
     /// @notice Returns `None` if no payment with the given hash has been recorded.
@@ -401,12 +449,13 @@ impl PaymentHistoryContract {
                 .persistent()
                 .get(&StorageKey::AgreementPayment(agreement_id, i))
                 .unwrap();
-            let record: PaymentRecord = env
+            if let Some(record) = env
                 .storage()
                 .persistent()
                 .get(&StorageKey::Payment(global_id))
-                .unwrap();
-            result.push_back(record);
+            {
+                result.push_back(record);
+            }
         }
         result
     }
@@ -459,12 +508,13 @@ impl PaymentHistoryContract {
                 .persistent()
                 .get(&StorageKey::EmployerPayment(employer.clone(), i))
                 .unwrap();
-            let record: PaymentRecord = env
+            if let Some(record) = env
                 .storage()
                 .persistent()
                 .get(&StorageKey::Payment(global_id))
-                .unwrap();
-            result.push_back(record);
+            {
+                result.push_back(record);
+            }
         }
         result
     }
@@ -517,12 +567,13 @@ impl PaymentHistoryContract {
                 .persistent()
                 .get(&StorageKey::EmployeePayment(employee.clone(), i))
                 .unwrap();
-            let record: PaymentRecord = env
+            if let Some(record) = env
                 .storage()
                 .persistent()
                 .get(&StorageKey::Payment(global_id))
-                .unwrap();
-            result.push_back(record);
+            {
+                result.push_back(record);
+            }
         }
         result
     }
@@ -710,11 +761,14 @@ impl PaymentHistoryContract {
         let mut result = Vec::new(env);
         for pos in 1..=total_count {
             let global_id = get_global_id(pos);
-            let record: PaymentRecord = env
+            let record: PaymentRecord = match env
                 .storage()
                 .persistent()
                 .get(&StorageKey::Payment(global_id))
-                .unwrap();
+            {
+                Some(r) => r,
+                None => continue,
+            };
 
             let ts = record.timestamp;
             if let Some(from) = from_ts {
