@@ -1,26 +1,32 @@
-use crate::audit::{record_entry, AuditEvent};
-use crate::events::{
-    emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
-    emit_agreement_paused, emit_agreement_resumed, emit_bulk_agreements_paused,
-    emit_bulk_agreements_unpaused, emit_dsipute_raised, emit_dsipute_resolved,
-    emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
-    emit_grace_period_finalized, emit_milestone_funded, emit_milestone_rejected,
-    emit_milestone_expired, emit_multisig_config_changed, emit_payment_received, emit_payment_sent,
-    emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent,
-    AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent,
-    BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, BulkAgreementsPausedEvent,
-    BulkAgreementsUnpausedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
-    ExchangeRateChangedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded,
-    MilestoneApproved, MilestoneClaimed, MilestoneExpiredEvent, MilestoneFundedEvent,
-    MilestoneRejectedEvent, MultisigConfigChangedEvent, PaymentReceivedEvent, PaymentSentEvent,
-    PayrollClaimedEvent,
+use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
+    IntoVal, Symbol, Val, Vec,
 };
-use crate::storage::{
-    Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
-    BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
-    EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
-    MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
-    PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE,
+
+use crate::{
+    audit::{record_entry, AuditEvent},
+    events::{
+        emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
+        emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
+        emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
+        emit_grace_period_finalized, emit_milestone_expired, emit_milestone_funded,
+        emit_milestone_rejected, emit_multisig_config_changed, emit_payment_received,
+        emit_payment_sent, emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent,
+        AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent,
+        AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
+        BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
+        ExchangeRateChangedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent,
+        MilestoneAdded, MilestoneApproved, MilestoneClaimed, MilestoneExpiredEvent,
+        MilestoneFundedEvent, MilestoneRejectedEvent, MultisigConfigChangedEvent,
+        PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
+    },
+    storage::{
+        Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
+        BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
+        EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
+        MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
+        PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE,
+    },
 };
 
 /// Minimal interface for cross-contract calls into the deployed multisig contract.
@@ -1818,17 +1824,44 @@ pub fn add_employee_to_agreement(
     );
 }
 
-/// Activates an agreement
+/// Activates a payroll or escrow agreement, transitioning it from `Created` to `Active`.
 ///
 /// # Arguments
-/// * `env` - Contract environment
-/// * `agreement_id` - ID of the agreement to activate
+///
+/// * `env` - Contract environment used to authenticate the employer and update the stored agreement.
+/// * `agreement_id` - ID of the agreement to activate; must resolve to a valid agreement in
+///   `Created` status.
+///
+/// # Preconditions
+///
+/// * The agreement must exist and its status must be `AgreementStatus::Created`.
+/// * For `Payroll`-mode agreements, at least one employee must have been added via
+///   `add_employee_to_agreement` before activation.
+/// * The caller must be the agreement's employer (`employer.require_auth()`).
 ///
 /// # State Transition
-/// Created -> Active
+///
+/// `Created` → `Active`
 ///
 /// # Access Control
-/// Requires employer authentication
+///
+/// Requires employer authentication via `Address::require_auth`.
+///
+/// # Postconditions
+///
+/// * `agreement.status` is set to `AgreementStatus::Active`.
+/// * `agreement.activated_at` is set to the current ledger timestamp.
+/// * The updated agreement is persisted to durable storage.
+///
+/// # Panics
+///
+/// * If the agreement is not in `Created` status (includes already-Active, Paused, Cancelled,
+///   Completed, or Disputed agreements).
+/// * If the agreement is in `Payroll` mode and has no employees.
+///
+/// # Emits
+///
+/// * [`AgreementActivatedEvent`] with the `agreement_id`.
 pub fn activate_agreement(env: &Env, agreement_id: u128) {
     let mut agreement = get_agreement(env, agreement_id).expect("Agreement not found");
 
@@ -3716,28 +3749,42 @@ fn convert_amount(
     Ok(converted)
 }
 
-/// Pauses an active agreement, preventing claims
+/// Pauses an active agreement, preventing further claims until resumed.
 ///
 /// # Arguments
-/// * `env` - Contract environment
-/// * `agreement_id` - ID of the agreement to pause
+///
+/// * `env` - Contract environment used to authenticate the employer and update the stored agreement.
+/// * `agreement_id` - ID of the agreement to pause.
+///
+/// # Preconditions
+///
+/// * The agreement must be in `AgreementStatus::Active`.
+/// * The caller must be the agreement's employer (`employer.require_auth()`).
 ///
 /// # State Transition
-/// Active -> Paused
+///
+/// `Active` → `Paused`
 ///
 /// # Access Control
-/// Requires employer authentication
 ///
-/// # Requirements
-/// - Agreement must be in Active status
-/// - Only the employer can pause the agreement
+/// Requires employer authentication via `Address::require_auth`.
 ///
-/// # Behavior
-/// - Paused agreements cannot have claims processed
-/// - Agreement state is preserved
-/// - Can be resumed later or cancelled
-pub fn pause_agreement(env: &Env, agreement_id: u128) -> Result<(), PayrollError> {
-    let mut agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
+/// # Postconditions
+///
+/// * `agreement.status` is set to `AgreementStatus::Paused`.
+/// * The updated agreement is persisted to durable storage.
+/// * Claims (both payroll and time-based) are blocked until the agreement is resumed.
+///
+/// # Panics
+///
+/// * If the agreement is not in `Active` status (includes already-Paused, Created, Cancelled,
+///   Completed, or Disputed agreements).
+///
+/// # Emits
+///
+/// * [`AgreementPausedEvent`] with the `agreement_id`.
+pub fn pause_agreement(env: &Env, agreement_id: u128) {
+    let mut agreement = get_agreement(env, agreement_id).expect("Agreement not found");
 
     agreement.employer.require_auth();
 
@@ -3756,26 +3803,41 @@ pub fn pause_agreement(env: &Env, agreement_id: u128) -> Result<(), PayrollError
     Ok(())
 }
 
-/// Resumes a paused agreement, allowing claims again
+/// Resumes a paused agreement, allowing claims to be processed again.
 ///
 /// # Arguments
-/// * `env` - Contract environment
-/// * `agreement_id` - ID of the agreement to resume
+///
+/// * `env` - Contract environment used to authenticate the employer and update the stored agreement.
+/// * `agreement_id` - ID of the agreement to resume.
+///
+/// # Preconditions
+///
+/// * The agreement must be in `AgreementStatus::Paused`.
+/// * The caller must be the agreement's employer (`employer.require_auth()`).
 ///
 /// # State Transition
-/// Paused -> Active
+///
+/// `Paused` → `Active`
 ///
 /// # Access Control
-/// Requires employer authentication
 ///
-/// # Requirements
-/// - Agreement must be in Paused status
-/// - Only the employer can resume the agreement
+/// Requires employer authentication via `Address::require_auth`.
 ///
-/// # Behavior
-/// - Agreement returns to Active status
-/// - Claims can be processed again
-/// - All agreement data is preserved
+/// # Postconditions
+///
+/// * `agreement.status` is set to `AgreementStatus::Active`.
+/// * The updated agreement is persisted to durable storage.
+/// * Claims can be processed again.
+/// * All agreement data (employees, amounts, timestamps) is preserved.
+///
+/// # Panics
+///
+/// * If the agreement is not in `Paused` status (includes Active, Created, Cancelled, Completed,
+///   or Disputed agreements).
+///
+/// # Emits
+///
+/// * [`AgreementResumedEvent`] with the `agreement_id`.
 pub fn resume_agreement(env: &Env, agreement_id: u128) {
     let mut agreement = get_agreement(env, agreement_id).expect("Agreement not found");
 
@@ -3925,23 +3987,43 @@ fn add_to_employer_agreements(env: &Env, employer: &Address, agreement_id: u128)
 // Grace Period and Cancellation
 // -----------------------------------------------------------------------------
 
-/// Cancels an agreement, initiating the grace period.
+/// Cancels an agreement, initiating the grace period and blocking new claims after expiry.
 ///
 /// # Arguments
-/// * `env` - Contract environment
-/// * `agreement_id` - ID of the agreement to cancel
 ///
-/// # Requirements
-/// - Agreement must be in Active or Created status
-/// - Caller must be the employer
+/// * `env` - Contract environment used to authenticate the employer and update the stored agreement.
+/// * `agreement_id` - ID of the agreement to cancel.
+///
+/// # Preconditions
+///
+/// * The agreement must be in `AgreementStatus::Active` or `AgreementStatus::Created`.
+/// * The caller must be the agreement's employer (`employer.require_auth()`).
 ///
 /// # State Transition
-/// Active/Created -> Cancelled
 ///
-/// # Behavior
-/// - Sets cancelled_at timestamp
-/// - Claims are allowed during grace period
-/// - Refunds are prevented until grace period expires
+/// `Active` or `Created` → `Cancelled`
+///
+/// # Access Control
+///
+/// Requires employer authentication via `Address::require_auth`.
+///
+/// # Postconditions
+///
+/// * `agreement.status` is set to `AgreementStatus::Cancelled`.
+/// * `agreement.cancelled_at` is set to the current ledger timestamp.
+/// * The updated agreement is persisted to durable storage.
+/// * Claims are still allowed during the grace period but blocked after expiry.
+/// * Refunds are prevented until the grace period expires and `finalize_grace_period` is called.
+///
+/// # Panics
+///
+/// * If the agreement is not in `Active` or `Created` status (includes already-Cancelled, Paused,
+///   Completed, or Disputed agreements).
+///
+/// # Emits
+///
+/// * [`AgreementCancelledEvent`] with the `agreement_id`.
+/// * An audit entry of type `AuditEvent::AgreementCancelled` for the employer.
 pub fn cancel_agreement(env: &Env, agreement_id: u128) {
     let mut agreement = get_agreement(env, agreement_id).expect("Agreement not found");
 

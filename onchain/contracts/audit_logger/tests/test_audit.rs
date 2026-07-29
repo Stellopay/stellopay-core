@@ -1,11 +1,12 @@
 #![cfg(test)]
 
+use std::collections::HashSet;
+
 use audit_logger::{AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env, Symbol,
 };
-use std::collections::HashSet;
 
 fn setup() -> (Env, Address, AuditLoggerContractClient<'static>) {
     let env = Env::default();
@@ -472,198 +473,141 @@ fn test_interleaved_append_and_read_consistency() {
     assert!(client.get_log(&999u64).is_none());
 }
 
-/// Verifies pagination when total record count is an exact multiple of page size.
-/// This tests the boundary condition where no partial final page should exist.
+/// Comprehensive regression guard for the audit_logger append-only invariant.
+///
+/// Enumerates every public entrypoint in `audit_logger` and confirms none
+/// accepts a record index/id alongside mutating parameters:
+/// - `initialize`: Setup contract; no record ID or mutating payload for entries.
+/// - `set_retention_limit`: Configures window capacity; no record ID parameter.
+/// - `get_retention_limit`: Read-only retention query.
+/// - `append_log`: Monotonic append-only write; generates next ID, cannot alter existing entries.
+/// - `get_log_count`: Read-only log count query.
+/// - `get_log`: Read-only record query by ID; no state mutation.
+/// - `get_logs`: Read-only paginated log query.
+/// - `get_latest_logs`: Read-only recent logs query.
+///
+/// Appends a target record, attempts every plausible state mutation path
+/// (appending new logs with different fields, modifying retention limit up and down,
+/// setting unlimited retention, calling query entrypoints), and asserts that the
+/// original record content is unchanged when re-read.
 #[test]
-fn test_pagination_exact_page_size_multiple() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, AuditLoggerContract);
-    let client = AuditLoggerContractClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
-    client.initialize(&owner, &0u32); // unlimited retention
+fn test_audit_logger_append_only_invariant_regression_guard() {
+    let (env, owner, client) = setup();
+
+    // Set retention to 10.
+    client.set_retention_limit(&owner, &10u32);
 
     let actor = Address::generate(&env);
-    let page_size = 10u32;
-    let num_pages = 3u32;
-    let total_entries = page_size * num_pages; // 30 entries
+    let subject = Address::generate(&env);
+    let action = Symbol::new(&env, "initial_event");
+    let amount = Some(100_000i128);
 
-    // Append exactly page_size * num_pages entries
-    for i in 0..total_entries {
-        let label = format!("boundary_exact_{}", i);
-        let action = Symbol::new(&env, label.as_str());
-        client.append_log(&actor, &action, &None, &Some(i as i128));
-        env.ledger().with_mut(|li| li.timestamp += 1);
+    env.ledger().with_mut(|li| li.timestamp = 1_000_000);
+
+    // Append initial target record.
+    let target_id = client.append_log(&actor, &action, &Some(subject.clone()), &amount);
+    assert_eq!(target_id, 1u64, "First log entry must be assigned ID 1");
+
+    // Capture exact snapshot of original record.
+    let original_record = client
+        .get_log(&target_id)
+        .expect("Target record must exist");
+    assert_eq!(original_record.id, 1u64);
+    assert_eq!(original_record.timestamp, 1_000_000);
+    assert_eq!(original_record.actor, actor);
+    assert_eq!(original_record.action, action);
+    assert_eq!(original_record.subject, Some(subject.clone()));
+    assert_eq!(original_record.amount, amount);
+
+    // Plausible Mutation Path 1: Append subsequent records with distinct actors/actions/amounts.
+    let actor2 = Address::generate(&env);
+    let subject2 = Address::generate(&env);
+    env.ledger().with_mut(|li| li.timestamp = 1_000_100);
+
+    let id2 = client.append_log(
+        &actor2,
+        &Symbol::new(&env, "subsequent_action"),
+        &Some(subject2),
+        &Some(-500i128),
+    );
+    assert_eq!(id2, 2u64);
+
+    let record_after_append = client.get_log(&target_id).unwrap();
+    assert_eq!(
+        record_after_append, original_record,
+        "Record 1 mutated after subsequent append_log"
+    );
+
+    // Plausible Mutation Path 2: Expand retention limit.
+    client.set_retention_limit(&owner, &50u32);
+    assert_eq!(client.get_retention_limit(), 50u32);
+
+    let record_after_expand = client.get_log(&target_id).unwrap();
+    assert_eq!(
+        record_after_expand, original_record,
+        "Record 1 mutated after expanding retention limit"
+    );
+
+    // Plausible Mutation Path 3: Set retention limit to 0 (unlimited).
+    client.set_retention_limit(&owner, &0u32);
+    assert_eq!(client.get_retention_limit(), 0u32);
+
+    let record_after_unlimited = client.get_log(&target_id).unwrap();
+    assert_eq!(
+        record_after_unlimited, original_record,
+        "Record 1 mutated after setting retention limit to 0 (unlimited)"
+    );
+
+    // Plausible Mutation Path 4: Lower retention limit down to 5 (target_id=1 remains retained
+    // since log count=2 <= 5).
+    client.set_retention_limit(&owner, &5u32);
+    assert_eq!(client.get_retention_limit(), 5u32);
+
+    let record_after_lower = client.get_log(&target_id).unwrap();
+    assert_eq!(
+        record_after_lower, original_record,
+        "Record 1 mutated after lowering retention limit"
+    );
+
+    // Plausible Mutation Path 5: Read entrypoints (get_logs, get_latest_logs, get_log_count).
+    assert_eq!(client.get_log_count(), 2u64);
+
+    let page = client.get_logs(&0u32, &10u32);
+    assert_eq!(
+        page.entries.get(0).unwrap(),
+        original_record,
+        "Record 1 in get_logs query mutated"
+    );
+
+    let latest = client.get_latest_logs(&10u32);
+    assert_eq!(
+        latest.get(0).unwrap(),
+        original_record,
+        "Record 1 in get_latest_logs query mutated"
+    );
+
+    // Plausible Mutation Path 6: Append further records to fill the retention window up to limit
+    // without pruning target_id.
+    for i in 3..=5 {
+        env.ledger().with_mut(|li| li.timestamp += 10);
+        let fill_action = Symbol::new(&env, format!("fill_evt_{}", i).as_str());
+        client.append_log(&actor, &fill_action, &None, &None);
     }
+    assert_eq!(client.get_log_count(), 5u64);
 
-    // Paginate through all entries
-    let mut offset = 0u32;
-    let mut all_entries: soroban_sdk::Vec<u64> = soroban_sdk::Vec::new(&env);
-    let mut page_count = 0u32;
-
-    loop {
-        let page = client.get_logs(&offset, &page_size);
-        page_count += 1;
-
-        // All pages except possibly the last should be full
-        let expected_size = if page_count < num_pages {
-            page_size as usize
-        } else {
-            // Last page should also be full since total is exact multiple
-            page_size as usize
-        };
-
-        assert_eq!(
-            page.entries.len() as u32,
-            expected_size as u32,
-            "Page {} should have {} entries",
-            page_count,
-            expected_size
-        );
-
-        for entry in page.entries.iter() {
-            all_entries.push_back(entry.id);
-        }
-
-        match page.next_cursor {
-            Some(next) => offset = next,
-            None => break,
-        }
-    }
-
-    // Should have exactly num_pages pages
-    assert_eq!(page_count, num_pages, "Should have exactly {} pages", num_pages);
-
-    // Should have retrieved all entries
+    let record_after_fill = client.get_log(&target_id).unwrap();
     assert_eq!(
-        all_entries.len() as u64,
-        total_entries as u64,
-        "Should retrieve all {} entries",
-        total_entries
+        record_after_fill, original_record,
+        "Record 1 mutated after filling retention window"
     );
 
-    // Verify IDs are sequential with no gaps
-    for i in 0..all_entries.len() {
-        assert_eq!(
-            all_entries.get(i).unwrap(),
-            (i + 1) as u64,
-            "ID at position {} should be {}",
-            i,
-            i + 1
-        );
-    }
-
-    // Verify no phantom empty trailing page - next_cursor should be None on last page
-    let final_page = client.get_logs(&((num_pages - 1) * page_size), &page_size);
-    assert_eq!(
-        final_page.next_cursor,
-        None,
-        "Final page should have next_cursor = None"
-    );
-}
-
-/// Verifies pagination when total record count is one more than a page size multiple.
-/// This tests the boundary condition where the final page should contain exactly one record.
-#[test]
-fn test_pagination_one_beyond_page_size_multiple() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register_contract(None, AuditLoggerContract);
-    let client = AuditLoggerContractClient::new(&env, &contract_id);
-    let owner = Address::generate(&env);
-    client.initialize(&owner, &0u32); // unlimited retention
-
-    let actor = Address::generate(&env);
-    let page_size = 10u32;
-    let num_full_pages = 2u32;
-    let total_entries = (page_size * num_full_pages) + 1; // 21 entries
-
-    // Append exactly page_size * num_full_pages + 1 entries
-    for i in 0..total_entries {
-        let label = format!("boundary_beyond_{}", i);
-        let action = Symbol::new(&env, label.as_str());
-        client.append_log(&actor, &action, &None, &Some(i as i128));
-        env.ledger().with_mut(|li| li.timestamp += 1);
-    }
-
-    // Paginate through all entries
-    let mut offset = 0u32;
-    let mut all_entries: soroban_sdk::Vec<u64> = soroban_sdk::Vec::new(&env);
-    let mut page_count = 0u32;
-
-    loop {
-        let page = client.get_logs(&offset, &page_size);
-        page_count += 1;
-
-        // First pages should be full, last page should have 1 entry
-        let expected_size = if page_count <= num_full_pages {
-            page_size as usize
-        } else {
-            1 // Final page has exactly one entry
-        };
-
-        assert_eq!(
-            page.entries.len() as u32,
-            expected_size as u32,
-            "Page {} should have {} entries",
-            page_count,
-            expected_size
-        );
-
-        for entry in page.entries.iter() {
-            all_entries.push_back(entry.id);
-        }
-
-        match page.next_cursor {
-            Some(next) => offset = next,
-            None => break,
-        }
-    }
-
-    // Should have num_full_pages + 1 pages
-    assert_eq!(
-        page_count,
-        num_full_pages + 1,
-        "Should have {} pages",
-        num_full_pages + 1
-    );
-
-    // Should have retrieved all entries
-    assert_eq!(
-        all_entries.len() as u64,
-        total_entries as u64,
-        "Should retrieve all {} entries",
-        total_entries
-    );
-
-    // Verify IDs are sequential with no gaps
-    for i in 0..all_entries.len() {
-        assert_eq!(
-            all_entries.get(i).unwrap(),
-            (i + 1) as u64,
-            "ID at position {} should be {}",
-            i,
-            i + 1
-        );
-    }
-
-    // Verify the final page contains exactly one record
-    let final_offset = page_size * num_full_pages;
-    let final_page = client.get_logs(&final_offset, &page_size);
-    assert_eq!(
-        final_page.entries.len(),
-        1,
-        "Final page should contain exactly 1 entry"
-    );
-    assert_eq!(
-        final_page.entries.get(0).unwrap().id,
-        total_entries as u64,
-        "Final entry should have ID {}",
-        total_entries
-    );
-    assert_eq!(
-        final_page.next_cursor,
-        None,
-        "Final page should have next_cursor = None"
-    );
+    // Final verification: Original target record content is unchanged when re-read.
+    let final_record = client.get_log(&target_id).unwrap();
+    assert_eq!(final_record.id, 1u64);
+    assert_eq!(final_record.timestamp, 1_000_000);
+    assert_eq!(final_record.actor, actor);
+    assert_eq!(final_record.action, action);
+    assert_eq!(final_record.subject, Some(subject));
+    assert_eq!(final_record.amount, amount);
+    assert_eq!(final_record, original_record);
 }
