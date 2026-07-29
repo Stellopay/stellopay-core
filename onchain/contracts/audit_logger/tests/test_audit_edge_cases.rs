@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use audit_logger::{AuditError, AuditLoggerContract, AuditLoggerContractClient};
+use audit_logger::{AuditError, AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env, Symbol,
@@ -582,4 +582,130 @@ fn get_latest_logs_under_max_returns_all() {
     assert_eq!(result.len(), 5);
     assert_eq!(result.get(0).unwrap().id, 1);
     assert_eq!(result.get(4).unwrap().id, 5);
+}
+
+// ==================== Storage ceiling / unbounded-growth ====================
+
+/// The contract is unbounded-by-design when `retention_limit = 0`.
+/// This test documents that behavior: every append increments the count with
+/// no rejection, no rotation, and no implicit ceiling. Operators who do not
+/// want unbounded growth must set a non-zero `retention_limit` at
+/// initialization or via `set_retention_limit`.
+#[test]
+fn test_unlimited_retention_grows_without_bound() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, AuditLoggerContract);
+    let client = AuditLoggerContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    // retention_limit = 0 → unlimited
+    client.initialize(&owner, &0u32);
+
+    let actor = Address::generate(&env);
+    let action = Symbol::new(&env, "event");
+    let n: u64 = 200;
+
+    for i in 0..n {
+        client.append_log(&actor, &action, &None, &Some(i as i128));
+        env.ledger().with_mut(|li| li.timestamp += 1);
+    }
+
+    // Count must equal the number of appends — no ceiling applied.
+    assert_eq!(client.get_log_count(), n);
+
+    // All entries must be individually retrievable.
+    for id in 1..=n {
+        assert!(
+            client.get_log(&id).is_some(),
+            "entry {id} should be retained under unlimited policy"
+        );
+    }
+}
+
+/// A non-zero retention ceiling keeps the retained count stable regardless
+/// of how many entries are appended. This is the recommended mitigation for
+/// operators concerned about per-instance storage growth.
+#[test]
+fn test_retention_ceiling_keeps_count_stable_at_scale() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, AuditLoggerContract);
+    let client = AuditLoggerContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let ceiling: u32 = 50;
+    client.initialize(&owner, &ceiling);
+
+    let actor = Address::generate(&env);
+    let action = Symbol::new(&env, "event");
+
+    for i in 0..200u64 {
+        client.append_log(&actor, &action, &None, &Some(i as i128));
+        env.ledger().with_mut(|li| li.timestamp += 1);
+        // Once the ceiling is reached the count must never exceed it.
+        if i as u32 >= ceiling {
+            assert_eq!(
+                client.get_log_count(),
+                ceiling as u64,
+                "log_count must not exceed retention ceiling after {} appends",
+                i + 1
+            );
+        }
+    }
+
+    // After all appends only the newest `ceiling` entries are visible.
+    let page = client.get_logs(&0u32, &ceiling);
+    assert_eq!(page.entries.len(), ceiling as u32);
+    // Entries should be the last `ceiling` IDs (151..=200).
+    let first_retained = page.entries.get(0).unwrap().id;
+    let last_retained = page.entries.get(ceiling - 1).unwrap().id;
+    assert_eq!(last_retained - first_retained, (ceiling - 1) as u64);
+}
+
+/// Storage-growth benchmark: measures how `get_log_count` scales with
+/// append volume at different retention settings. This is not a hard
+/// assertion but rather a documented data point for operators sizing
+/// their retention limit.
+///
+/// Three scenarios:
+///   - unlimited (0): count == appends, storage grows linearly
+///   - ceiling 100:   count stays at 100 after the first 100 appends
+///   - ceiling 10:    count stays at 10 after the first 10 appends
+#[test]
+fn benchmark_storage_growth_vs_log_count() {
+    let checkpoints: &[u64] = &[10, 50, 100, 200];
+
+    for &retention in &[0u32, 100u32, 10u32] {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, AuditLoggerContract);
+        let client = AuditLoggerContractClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        client.initialize(&owner, &retention);
+
+        let actor = Address::generate(&env);
+        let action = Symbol::new(&env, "evt");
+        let mut last_appended: u64 = 0;
+
+        for &target in checkpoints {
+            while last_appended < target {
+                client.append_log(&actor, &action, &None, &None);
+                env.ledger().with_mut(|li| li.timestamp += 1);
+                last_appended += 1;
+            }
+
+            let count = client.get_log_count();
+            let expected = if retention == 0 {
+                // unbounded: count == appends
+                target
+            } else {
+                // capped: count never exceeds the ceiling
+                target.min(retention as u64)
+            };
+            assert_eq!(
+                count, expected,
+                "retention={retention} after {target} appends: \
+                 expected count={expected}, got {count}"
+            );
+        }
+    }
 }

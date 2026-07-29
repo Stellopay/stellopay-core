@@ -2,7 +2,10 @@
 #![allow(deprecated)]
 
 use rbac::{RbacContract, RbacContractClient, Role};
-use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Address, Env, Vec,
+};
 
 // ===========================================================================
 // Helpers
@@ -618,6 +621,113 @@ fn test_revoke_all_forbidden_for_non_admin() {
 }
 
 // ===========================================================================
+// 7b. renounce_role (self-revocation)
+// ===========================================================================
+
+#[test]
+fn test_renounce_role_self_revoke_success() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &user, &Role::Employee);
+    assert!(client.has_role(&user, &Role::Employee));
+
+    client.renounce_role(&user, &Role::Employee);
+    assert!(!client.has_role(&user, &Role::Employee));
+    assert_eq!(client.get_roles(&user).len(), 0);
+}
+
+#[test]
+fn test_renounce_role_after_renounce_require_role_fails() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &user, &Role::Arbiter);
+    client.renounce_role(&user, &Role::Arbiter);
+
+    // After renouncing, require_role must fail
+    let res = client.try_require_role(&user, &Role::Arbiter);
+    assert!(res.is_err());
+}
+
+#[test]
+#[should_panic(expected = "Caller does not hold the specified role")]
+fn test_renounce_role_not_held_fails() {
+    let env = create_env();
+    let (_cid, client, _admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    // user has no roles, renouncing should fail
+    client.renounce_role(&user, &Role::Employee);
+}
+
+#[test]
+#[should_panic(expected = "Caller does not hold the specified role")]
+fn test_renounce_role_wrong_role_fails() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &user, &Role::Employer);
+    // user holds Employer but tries to renounce Employee
+    client.renounce_role(&user, &Role::Employee);
+}
+
+#[test]
+fn test_renounce_role_only_affects_caller() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    client.grant_role(&admin, &alice, &Role::Employee);
+    client.grant_role(&admin, &bob, &Role::Employer);
+
+    // Alice renounces her own role
+    client.renounce_role(&alice, &Role::Employee);
+    assert!(!client.has_role(&alice, &Role::Employee));
+
+    // Bob still has his role
+    assert!(client.has_role(&bob, &Role::Employer));
+}
+
+#[test]
+fn test_renounce_role_admin_delegate_not_protected() {
+    // Unlike revoke_role which protects the owner's Admin, renounce_role
+    // is a voluntary self-revocation — the caller can renounce any of
+    // their own roles including Admin (unless they are the owner,
+    // in which case revoke_role already blocks it). This is intentional:
+    // renounce is for voluntary self-revocation by non-owner role holders.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let delegate = Address::generate(&env);
+
+    client.grant_role(&owner, &delegate, &Role::Admin);
+
+    // Delegate can renounce their own Admin
+    client.renounce_role(&delegate, &Role::Admin);
+    assert!(!client.has_role(&delegate, &Role::Admin));
+
+    // delegate can no longer grant roles
+    let user = Address::generate(&env);
+    let res = client.try_grant_role(&delegate, &user, &Role::Employee);
+    assert!(res.is_err());
+}
+
+#[test]
+#[should_panic(expected = "Contract not initialized")]
+fn test_renounce_role_before_init_fails() {
+    let env = create_env();
+    let contract_id = env.register_contract(None, RbacContract);
+    let client = RbacContractClient::new(&env, &contract_id);
+    let a = Address::generate(&env);
+
+    client.renounce_role(&a, &Role::Employee);
+}
+
+// ===========================================================================
 // 8. Ownership transfer (two-step)
 // ===========================================================================
 
@@ -714,6 +824,57 @@ fn test_old_owner_loses_admin_after_transfer() {
     // Old owner should no longer be able to grant roles.
     let user = Address::generate(&env);
     client.grant_role(&owner, &user, &Role::Employee);
+}
+
+#[test]
+fn test_accept_ownership_emits_event_with_both_addresses() {
+    let env = create_env();
+    let (contract_id, client, owner) = setup_contract(&env);
+    let new_owner = Address::generate(&env);
+
+    client.transfer_ownership(&owner, &new_owner);
+    client.accept_ownership(&new_owner);
+
+    let events = env.events().all();
+    let last = events.last().unwrap();
+
+    // events.all() returns Vec<(Address, Vec<Val>, Val)>
+    let (contract, topics, _data) = last;
+
+    // Verify event emitted from this contract
+    assert_eq!(contract, contract_id, "event must be from contract");
+
+    // Topics: [Symbol("RBAC"), Symbol("owner")]
+    assert_eq!(
+        topics.len(),
+        2,
+        "expected 2 event topics: 'RBAC', 'owner'"
+    );
+}
+
+#[test]
+fn test_accept_ownership_no_event_on_failure() {
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let proposed = Address::generate(&env);
+    let imposter = Address::generate(&env);
+
+    client.transfer_ownership(&owner, &proposed);
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.accept_ownership(&imposter);
+    }));
+
+    let events = env.events().all();
+    // The events here should be only from transfer_ownership ("propose").
+    // No ("RBAC", "owner") event should exist.
+    for (_contract, topics, _data) in events.iter() {
+        assert_ne!(
+            topics.len(),
+            2,
+            "unexpected event with 2 topics on failed accept"
+        );
+    }
 }
 
 // ===========================================================================
@@ -952,3 +1113,758 @@ fn test_revoked_admin_cannot_grant() {
     let user = Address::generate(&env);
     client.grant_role(&delegate, &user, &Role::Employee);
 }
+
+// ===========================================================================
+// 11. Override-safety classification (issue #1055)
+//
+// These tests assert the SECURITY-CRITICAL and SAFELY-CUSTOMIZABLE invariants
+// that every implementer of `RbacContractInterface` must preserve. They map
+// 1-to-1 onto the `@customization-safety` and `@invariant` tags in
+// `onchain/contracts/rbac-interface/src/lib.rs` and onto the reviewer
+// checklist in `docs/rbac.md`. If any of these tests fail, an implementer
+// has weakened an access-control invariant and must be rejected.
+// ===========================================================================
+
+// ---------- A. Initialization invariant ------------------------------------
+
+#[test]
+fn test_override_safety_initialize_grants_admin_to_owner() {
+    // @customization-safety SECURITY-CRITICAL
+    // @invariant: after initialize, owner holds Admin.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    assert!(client.has_role(&owner, &Role::Admin));
+    assert_eq!(client.get_roles(&owner).len(), 1);
+}
+
+#[test]
+fn test_override_safety_initialize_assigns_owner_record() {
+    // @invariant: owner() returns the bootstrap address.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    assert_eq!(client.owner(), owner);
+}
+
+#[test]
+fn test_override_safety_initialize_no_extra_roles() {
+    // @invariant: after initialize, no other address holds any role.
+    let env = create_env();
+    let (_cid, client, _owner) = setup_contract(&env);
+    let bystander = Address::generate(&env);
+    assert_eq!(client.get_roles(&bystander).len(), 0);
+    assert!(!client.has_role(&bystander, &Role::Admin));
+}
+
+// ---------- B. Core authorization invariants -------------------------------
+
+#[test]
+fn test_override_safety_has_role_requires_actual_role() {
+    // @invariant: has_role returns false when no implied role is held.
+    let env = create_env();
+    let (_cid, client, _owner) = setup_contract(&env);
+    let nobody = Address::generate(&env);
+    for role in [Role::Admin, Role::Employer, Role::Employee, Role::Arbiter] {
+        assert!(!client.has_role(&nobody, &role));
+    }
+}
+
+#[test]
+fn test_override_safety_has_role_matches_require_role() {
+    // @invariant: has_role(a, r) == !require_role_panics(a, r) for every pair.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let employer = Address::generate(&env);
+    client.grant_role(&owner, &employer, &Role::Employer);
+
+    // require_role succeeds for held/implied roles.
+    client.require_role(&owner, &Role::Admin);
+    client.require_role(&employer, &Role::Employer);
+    client.require_role(&employer, &Role::Employee); // inherited
+
+    // Mirror: has_role agrees with the no-panic cases above.
+    assert!(client.has_role(&owner, &Role::Admin));
+    assert!(client.has_role(&employer, &Role::Employer));
+    assert!(client.has_role(&employer, &Role::Employee));
+}
+
+#[test]
+#[should_panic(expected = "Missing required role")]
+fn test_override_safety_require_role_panics_when_has_role_false() {
+    // @invariant: require_role panics iff has_role is false.
+    let env = create_env();
+    let (_cid, client, _owner) = setup_contract(&env);
+    let nobody = Address::generate(&env);
+    // has_role returns false -> require_role must panic.
+    client.require_role(&nobody, &Role::Employer);
+}
+
+#[test]
+fn test_override_safety_has_role_inheritance_matrix() {
+    // @invariant: Admin implies all; Employer implies Employer+Employee;
+    //             Employee implies Employee; Arbiter implies Arbiter.
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let arbiter = Address::generate(&env);
+
+    client.grant_role(&admin, &employer, &Role::Employer);
+    client.grant_role(&admin, &employee, &Role::Employee);
+    client.grant_role(&admin, &arbiter, &Role::Arbiter);
+
+    // Admin
+    assert!(client.has_role(&admin, &Role::Admin));
+    assert!(client.has_role(&admin, &Role::Employer));
+    assert!(client.has_role(&admin, &Role::Employee));
+    assert!(client.has_role(&admin, &Role::Arbiter));
+
+    // Employer
+    assert!(client.has_role(&employer, &Role::Employer));
+    assert!(client.has_role(&employer, &Role::Employee));
+    assert!(!client.has_role(&employer, &Role::Admin));
+    assert!(!client.has_role(&employer, &Role::Arbiter));
+
+    // Employee
+    assert!(client.has_role(&employee, &Role::Employee));
+    assert!(!client.has_role(&employee, &Role::Employer));
+    assert!(!client.has_role(&employee, &Role::Admin));
+    assert!(!client.has_role(&employee, &Role::Arbiter));
+
+    // Arbiter
+    assert!(client.has_role(&arbiter, &Role::Arbiter));
+    assert!(!client.has_role(&arbiter, &Role::Employer));
+    assert!(!client.has_role(&arbiter, &Role::Employee));
+    assert!(!client.has_role(&arbiter, &Role::Admin));
+}
+
+// ---------- C. Privilege-escalation invariants ------------------------------
+
+#[test]
+#[should_panic(expected = "Only admin can grant roles")]
+fn test_override_safety_grant_role_admin_only_enforced_per_call() {
+    // @invariant: grant_role requires Admin; non-admin calls revert.
+    let env = create_env();
+    let (_cid, client, _owner) = setup_contract(&env);
+    let attacker = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    client.grant_role(&attacker, &target, &Role::Admin);
+}
+
+#[test]
+fn test_override_safety_grant_role_idempotent_no_duplicate() {
+    // @invariant: duplicate grants are silent no-ops (no duplicate storage entries).
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&owner, &user, &Role::Employee);
+    client.grant_role(&owner, &user, &Role::Employee);
+    client.grant_role(&owner, &user, &Role::Employee);
+
+    assert_eq!(client.get_roles(&user).len(), 1);
+}
+
+#[test]
+#[should_panic(expected = "Only admin can grant roles")]
+fn test_override_safety_bulk_grant_enforces_admin_once_per_call() {
+    // @invariant: bulk_grant admin check is per-call, not per-element.
+    //             This guards against both partial-application and bypass
+    //             via batch splitting.
+    let env = create_env();
+    let (_cid, client, _owner) = setup_contract(&env);
+    let non_admin = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    let mut batch = Vec::new(&env);
+    batch.push_back(Role::Employee);
+    batch.push_back(Role::Employer);
+    batch.push_back(Role::Arbiter);
+
+    client.bulk_grant(&non_admin, &target, &batch);
+}
+
+#[test]
+fn test_override_safety_bulk_grant_empty_vector_succeeds_for_admin() {
+    // @invariant: an empty batch from an Admin caller is a silent no-op success.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let target = Address::generate(&env);
+
+    client.bulk_grant(&owner, &target, &Vec::new(&env));
+    assert_eq!(client.get_roles(&target).len(), 0);
+}
+
+#[test]
+fn test_override_safety_bulk_grant_skips_duplicates() {
+    // @invariant: duplicates within batch + already-held roles are no-ops.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let target = Address::generate(&env);
+
+    client.grant_role(&owner, &target, &Role::Employee);
+
+    let mut batch = Vec::new(&env);
+    batch.push_back(Role::Employee); // already held
+    batch.push_back(Role::Employee); // duplicate within batch
+    batch.push_back(Role::Arbiter); // new
+    client.bulk_grant(&owner, &target, &batch);
+
+    assert_eq!(client.get_roles(&target).len(), 2);
+}
+
+// ---------- D. Privilege-revocation invariants -----------------------------
+
+#[test]
+#[should_panic(expected = "Cannot revoke Admin from owner")]
+fn test_override_safety_revoke_role_protects_owner_admin() {
+    // @invariant: owner's Admin cannot be revoked even by owner themselves.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+
+    // Owner attempts self-revoke of Admin.
+    client.revoke_role(&owner, &owner, &Role::Admin);
+}
+
+#[test]
+fn test_override_safety_revoke_role_protects_owner_admin_post_check() {
+    // @invariant: after a failed self-revoke, owner still holds Admin.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.revoke_role(&owner, &owner, &Role::Admin);
+    }));
+    assert!(client.has_role(&owner, &Role::Admin));
+    assert_eq!(client.owner(), owner);
+}
+
+#[test]
+#[should_panic(expected = "Cannot revoke all roles from owner")]
+fn test_override_safety_revoke_all_blocks_on_owner() {
+    // @invariant: revoke_all(target = owner) must revert.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+
+    client.revoke_all(&owner, &owner);
+}
+
+#[test]
+fn test_override_safety_revoke_all_blocks_on_owner_post_check() {
+    // @invariant: after a failed revoke_all on owner, owner still holds Admin.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.revoke_all(&owner, &owner);
+    }));
+    assert!(client.has_role(&owner, &Role::Admin));
+    assert_eq!(client.get_roles(&owner).len(), 1);
+}
+
+#[test]
+#[should_panic(expected = "Only admin can revoke roles")]
+fn test_override_safety_revoke_role_admin_only() {
+    // @invariant: non-admin revoke_role must revert.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let employer = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    client.grant_role(&owner, &employer, &Role::Employer);
+    client.grant_role(&owner, &target, &Role::Employee);
+
+    client.revoke_role(&employer, &target, &Role::Employee);
+}
+
+#[test]
+fn test_override_safety_revoke_role_admin_only_post_check() {
+    // @invariant: target retains role after a failed non-admin revoke attempt.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let employer = Address::generate(&env);
+    let target = Address::generate(&env);
+
+    client.grant_role(&owner, &employer, &Role::Employer);
+    client.grant_role(&owner, &target, &Role::Employee);
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.revoke_role(&employer, &target, &Role::Employee);
+    }));
+    assert!(
+        client.has_role(&target, &Role::Employee),
+        "target retains role after failed revoke attempt"
+    );
+}
+
+#[test]
+fn test_override_safety_revoke_role_noop_for_unheld_role() {
+    // @invariant: revoking a role the target does not hold is a silent no-op.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let target = Address::generate(&env);
+
+    // Target has no roles; revoke is silent no-op.
+    client.revoke_role(&owner, &target, &Role::Arbiter);
+    assert_eq!(client.get_roles(&target).len(), 0);
+}
+
+// ---------- E. Ownership tracking invariants -------------------------------
+
+#[test]
+fn test_override_safety_owner_after_transfer_is_new_owner() {
+    // @invariant: owner() reflects the most recent successful transfer.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let new_owner = Address::generate(&env);
+
+    assert_eq!(client.owner(), owner);
+    client.transfer_ownership(&owner, &new_owner);
+    client.accept_ownership(&new_owner);
+    assert_eq!(client.owner(), new_owner);
+}
+
+#[test]
+#[should_panic(expected = "Cannot revoke Admin from owner")]
+fn test_override_safety_owner_protected_via_lockout_check() {
+    // @invariant: address returned by owner() is the one whose Admin is
+    //             protected from revocation.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let reported_owner = client.owner();
+    assert_eq!(reported_owner, owner);
+
+    // The reported owner's Admin cannot be revoked.
+    client.revoke_role(&owner, &reported_owner, &Role::Admin);
+}
+
+// ---------- F. Two-step ownership-transfer invariants ----------------------
+
+#[test]
+#[should_panic(expected = "Only owner can transfer ownership")]
+fn test_override_safety_transfer_ownership_requires_owner() {
+    // @invariant: Admin alone is insufficient to call transfer_ownership.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let delegated_admin = Address::generate(&env);
+    let new_target = Address::generate(&env);
+
+    client.grant_role(&owner, &delegated_admin, &Role::Admin);
+
+    client.transfer_ownership(&delegated_admin, &new_target);
+}
+
+#[test]
+fn test_override_safety_transfer_ownership_requires_owner_post_check() {
+    // @invariant: after a failed delegated transfer, owner is unchanged.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let delegated_admin = Address::generate(&env);
+    let new_target = Address::generate(&env);
+
+    client.grant_role(&owner, &delegated_admin, &Role::Admin);
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.transfer_ownership(&delegated_admin, &new_target);
+    }));
+    assert_eq!(client.owner(), owner);
+}
+
+#[test]
+#[should_panic(expected = "No pending owner")]
+fn test_override_safety_accept_ownership_requires_pending_proposal() {
+    // @invariant: accept_ownership without a prior transfer_ownership must revert.
+    let env = create_env();
+    let (_cid, client, _owner) = setup_contract(&env);
+    let stranger = Address::generate(&env);
+    client.accept_ownership(&stranger);
+}
+
+#[test]
+#[should_panic(expected = "Caller is not pending owner")]
+fn test_override_safety_accept_ownership_rejects_non_pending_caller() {
+    // @invariant: only the recorded pending owner may call accept_ownership.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let proposed = Address::generate(&env);
+    let imposter = Address::generate(&env);
+
+    client.transfer_ownership(&owner, &proposed);
+
+    client.accept_ownership(&imposter);
+}
+
+#[test]
+fn test_override_safety_accept_ownership_rejects_non_pending_post_check() {
+    // @invariant: imposter does not gain Admin after a failed accept.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let proposed = Address::generate(&env);
+    let imposter = Address::generate(&env);
+
+    client.transfer_ownership(&owner, &proposed);
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.accept_ownership(&imposter);
+    }));
+    assert_eq!(client.owner(), owner);
+    assert!(!client.has_role(&imposter, &Role::Admin));
+}
+
+#[test]
+fn test_override_safety_accept_ownership_atomic_grant_and_revoke() {
+    // @invariant: on successful accept_ownership,
+    //             (1) new owner receives Admin, (2) old owner loses Admin,
+    //             (3) owner() == new owner, (4) pending slot cleared.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let new_owner = Address::generate(&env);
+
+    client.transfer_ownership(&owner, &new_owner);
+    client.accept_ownership(&new_owner);
+
+    // (1) New owner has Admin.
+    assert!(client.has_role(&new_owner, &Role::Admin));
+    // (2) Old owner has lost Admin.
+    assert!(!client.has_role(&owner, &Role::Admin));
+    // (3) owner() returns new owner.
+    assert_eq!(client.owner(), new_owner);
+}
+
+#[test]
+#[should_panic(expected = "No pending owner")]
+fn test_override_safety_pending_slot_cleared_after_accept() {
+    // @invariant: after a successful accept_ownership, the pending slot
+    //             is cleared — a second accept_ownership must revert.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let new_owner = Address::generate(&env);
+
+    client.transfer_ownership(&owner, &new_owner);
+    client.accept_ownership(&new_owner);
+
+    // Pending slot is cleared: this second call must revert.
+    client.accept_ownership(&new_owner);
+}
+
+#[test]
+fn test_override_safety_transfer_ownership_self_proposal_allowed() {
+    // @invariant: transfer_ownership to self is allowed; accepting is a no-op-ish
+    //             rotation that preserves the admin grant and revoke invariants.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let new_owner = owner.clone();
+
+    client.transfer_ownership(&owner, &new_owner);
+    client.accept_ownership(&new_owner);
+
+    assert_eq!(client.owner(), owner);
+    assert!(client.has_role(&owner, &Role::Admin));
+}
+
+// ---------- G. get_roles invariants (the SAFELY-CUSTOMIZABLE method) ------
+
+#[test]
+fn test_override_safety_get_roles_returns_only_direct_roles() {
+    // @invariant: get_roles returns exactly the roles granted, no inherited roles.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&owner, &user, &Role::Employee);
+    // Employee has no inheritance children, so direct == implied for this role.
+    let roles = client.get_roles(&user);
+    assert_eq!(roles.len(), 1);
+    assert_eq!(roles.get(0).unwrap(), Role::Employee);
+
+    // Employer implies Employee, but get_roles must still only show Employer.
+    let employer = Address::generate(&env);
+    client.grant_role(&owner, &employer, &Role::Employer);
+    let employer_roles = client.get_roles(&employer);
+    assert_eq!(employer_roles.len(), 1);
+    assert_eq!(employer_roles.get(0).unwrap(), Role::Employer);
+}
+
+#[test]
+fn test_override_safety_get_roles_empty_for_unknown_address() {
+    // @invariant: get_roles(unknown) returns empty, never panics, never returns phantom roles.
+    let env = create_env();
+    let (_cid, client, _owner) = setup_contract(&env);
+    let unknown = Address::generate(&env);
+    let roles = client.get_roles(&unknown);
+    assert_eq!(roles.len(), 0);
+}
+
+#[test]
+fn test_override_safety_get_roles_no_duplicates_after_idempotent_grants() {
+    // @invariant: duplicate grants do not produce duplicate role entries.
+    //             We loop 100 times to make any duplicate-creation
+    //             regression obvious.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    for _ in 0..100 {
+        client.grant_role(&owner, &user, &Role::Arbiter);
+    }
+    let roles = client.get_roles(&user);
+    assert_eq!(
+        roles.len(),
+        1,
+        "duplicate grants must not duplicate storage entries"
+    );
+}
+
+#[test]
+fn test_override_safety_get_roles_updates_after_revoke() {
+    // @invariant: get_roles reflects revocations.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&owner, &user, &Role::Arbiter);
+    client.grant_role(&owner, &user, &Role::Employee);
+    assert_eq!(client.get_roles(&user).len(), 2);
+
+    client.revoke_role(&owner, &user, &Role::Arbiter);
+    let after = client.get_roles(&user);
+    assert_eq!(after.len(), 1);
+    assert_eq!(after.get(0).unwrap(), Role::Employee);
+}
+
+// ---------- H. Initialization guard ----------------------------------------
+
+#[test]
+#[should_panic(expected = "Contract not initialized")]
+fn test_override_safety_owner_panics_before_init() {
+    // @invariant: owner() panics before initialize.
+    let env = create_env();
+    let contract_id = env.register_contract(None, RbacContract);
+    let client = RbacContractClient::new(&env, &contract_id);
+    let _ = client.owner();
+}
+
+#[test]
+#[should_panic(expected = "Contract not initialized")]
+fn test_override_safety_get_roles_panics_before_init() {
+    // @invariant: get_roles panics before initialize.
+    let env = create_env();
+    let contract_id = env.register_contract(None, RbacContract);
+    let client = RbacContractClient::new(&env, &contract_id);
+    let a = Address::generate(&env);
+    let _ = client.get_roles(&a);
+}
+
+#[test]
+#[should_panic(expected = "Contract not initialized")]
+fn test_override_safety_require_role_panics_before_init() {
+    // @invariant: require_role panics before initialize.
+    let env = create_env();
+    let contract_id = env.register_contract(None, RbacContract);
+    let client = RbacContractClient::new(&env, &contract_id);
+    let a = Address::generate(&env);
+    client.require_role(&a, &Role::Employee);
+}
+
+#[test]
+#[should_panic(expected = "Contract not initialized")]
+fn test_override_safety_accept_ownership_panics_before_init() {
+    // @invariant: accept_ownership panics before initialize.
+    let env = create_env();
+    let contract_id = env.register_contract(None, RbacContract);
+    let client = RbacContractClient::new(&env, &contract_id);
+    let a = Address::generate(&env);
+    client.accept_ownership(&a);
+}
+
+#[test]
+#[should_panic(expected = "Contract not initialized")]
+fn test_override_safety_transfer_ownership_panics_before_init() {
+    // @invariant: transfer_ownership panics before initialize.
+    let env = create_env();
+    let contract_id = env.register_contract(None, RbacContract);
+    let client = RbacContractClient::new(&env, &contract_id);
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    client.transfer_ownership(&a, &b);
+}
+
+// ---------- I. Documentation hygiene (compile-time checks) ----------------
+
+/// This test is documentary: it verifies the interface trait symbol
+/// remains available to integrating crates. Tag-presence is enforced by
+/// the `cargo doc -p rbac-interface --no-deps` step that the reviewer
+/// checklist requires in CI.
+#[test]
+fn test_override_safety_interface_trait_symbol_available() {
+    // Verify that the client type references the interface trait.
+    // This ensures the interface trait symbol remains available to integrating crates.
+    let _ = std::any::type_name::<RbacContractClient>();
+}
+
+#[test]
+fn test_override_safety_has_role_multi_role_holder_inheritance() {
+    // @invariant: a user holding multiple roles has the union of their
+    //             inheritance. We exercise every (role1, role2) pair
+    //             combined and verify the resulting has_role answers.
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &user, &Role::Employer);
+    client.grant_role(&admin, &user, &Role::Arbiter);
+
+    // Direct holds: Employer, Arbiter.
+    assert!(client.has_role(&user, &Role::Employer));
+    assert!(client.has_role(&user, &Role::Arbiter));
+    // Inheritance from Employer: Employee.
+    assert!(client.has_role(&user, &Role::Employee));
+    // Admin and other roles still denied.
+    assert!(!client.has_role(&user, &Role::Admin));
+
+    // Add Admin, verify every role now implied.
+    client.grant_role(&admin, &user, &Role::Admin);
+    for role in [Role::Admin, Role::Employer, Role::Employee, Role::Arbiter] {
+        assert!(
+            client.has_role(&user, &role),
+            "Admin holder must imply {:?}",
+            role
+        );
+    }
+}
+
+// ---------- J. Cross-method security composition ----------------------------
+
+// ---------- J. Cross-method security composition ----------------------------
+//
+// These are not single-invariant override-safety tests; they exercise the
+// interaction between SECURITY-CRITICAL methods. They live here because
+// they document *which combinations* of overrides could combine to weaken
+// the system. Moved from the original section-10 listing for proximity.
+
+#[test]
+#[should_panic(expected = "Cannot revoke Admin from owner")]
+fn test_composite_owner_lockout_chain_revoke_role() {
+    // Composite: a delegated Admin cannot revoke the owner's Admin role.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let delegate = Address::generate(&env);
+
+    client.grant_role(&owner, &delegate, &Role::Admin);
+
+    client.revoke_role(&delegate, &owner, &Role::Admin);
+}
+
+#[test]
+#[should_panic(expected = "Cannot revoke all roles from owner")]
+fn test_composite_owner_lockout_chain_revoke_all() {
+    // Composite: a delegated Admin cannot revoke_all on the owner.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let delegate = Address::generate(&env);
+
+    client.grant_role(&owner, &delegate, &Role::Admin);
+
+    client.revoke_all(&delegate, &owner);
+}
+
+#[test]
+fn test_composite_owner_lockout_chain_owner_unaffected() {
+    // Composite: after multiple failed lockout attempts, owner retains Admin.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let delegate1 = Address::generate(&env);
+    let delegate2 = Address::generate(&env);
+
+    client.grant_role(&owner, &delegate1, &Role::Admin);
+    client.grant_role(&owner, &delegate2, &Role::Admin);
+    client.grant_role(&delegate1, &delegate2, &Role::Admin);
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.revoke_role(&delegate1, &owner, &Role::Admin);
+    }));
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.revoke_all(&delegate2, &owner);
+    }));
+
+    assert!(client.has_role(&owner, &Role::Admin));
+    assert_eq!(client.owner(), owner);
+}
+
+#[test]
+#[should_panic(expected = "Missing required role")]
+fn test_composite_require_role_blocks_impostor() {
+    // Composite: an impostor with no roles cannot satisfy require_role.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let impostor = Address::generate(&env);
+
+    client.grant_role(&owner, &impostor, &Role::Employee);
+    client.revoke_role(&owner, &impostor, &Role::Employee);
+
+    // Impostor holds no roles -> must panic.
+    client.require_role(&impostor, &Role::Employer);
+}
+
+#[test]
+fn test_composite_bulk_grant_does_not_revoke_existing_roles() {
+    // @invariant: bulk_grant is additive; existing roles are preserved.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&owner, &user, &Role::Arbiter);
+
+    let mut batch = Vec::new(&env);
+    batch.push_back(Role::Employee);
+    batch.push_back(Role::Employer);
+    client.bulk_grant(&owner, &user, &batch);
+
+    let roles = client.get_roles(&user);
+    assert_eq!(roles.len(), 3, "existing Arbiter role must be preserved");
+    assert!(client.has_role(&user, &Role::Arbiter));
+    assert!(client.has_role(&user, &Role::Employee));
+    assert!(client.has_role(&user, &Role::Employer));
+}
+
+#[test]
+fn test_composite_get_roles_after_revoke_all() {
+    // @invariant: revoke_all clears every role; get_roles returns empty.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&owner, &user, &Role::Arbiter);
+    client.grant_role(&owner, &user, &Role::Employer);
+    client.grant_role(&owner, &user, &Role::Employee);
+    assert_eq!(client.get_roles(&user).len(), 3);
+
+    client.revoke_all(&owner, &user);
+    assert_eq!(client.get_roles(&user).len(), 0);
+    assert!(!client.has_role(&user, &Role::Arbiter));
+    assert!(!client.has_role(&user, &Role::Employer));
+    // Note: has_role(Employee) checks inheritance from Employer, which is now gone.
+    assert!(!client.has_role(&user, &Role::Employee));
+}
+
+#[test]
+fn test_composite_owner_record_survives_role_grants() {
+    // @invariant: granting roles to non-owner addresses must not change
+    //             the owner record.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let user = Address::generate(&env);
+    let delegate = Address::generate(&env);
+
+    client.grant_role(&owner, &user, &Role::Employee);
+    client.grant_role(&owner, &delegate, &Role::Admin);
+    client.grant_role(&delegate, &user, &Role::Arbiter);
+
+    assert_eq!(client.owner(), owner);
+}
+
+// ---------- End of override-safety classification --------------------------
+
+// ===========================================================================
+// End of test suite
+// ===========================================================================

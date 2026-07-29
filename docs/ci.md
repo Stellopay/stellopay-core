@@ -57,6 +57,14 @@ cargo build --workspace --verbose
 cargo test --workspace --verbose
 ```
 
+For CLI-specific regression coverage around the verify subcommand, also run:
+
+```bash
+cargo test --manifest-path tools/cli/Cargo.toml
+```
+
+This explicitly exercises the tampered-WASM and matching-WASM verification paths so the CLI remains secure even when a rebuilt artifact is mutated by a single byte.
+
 All three commands must exit with code `0` for a PR to be mergeable.
 
 ### Fixing common failures
@@ -99,6 +107,12 @@ not required to pass before merging:
 - Coverage reporting — no `cargo llvm-cov` step exists in the current workflow.
 - WASM contract builds — `stellar contract build` is not run by CI.
 - Per-package test runs — CI uses `--workspace`; there are no per-crate steps.
+- `tools/doc_checker` — the documentation linter (undocumented public
+  functions, undocumented error-enum variants, and orphaned `docs/*.md`
+  files) is a standalone tool contributors can run manually; it is not
+  wired into `.github/workflows/contracts.yml`. See
+  [`tools/doc_checker/README.md`](../tools/doc_checker/README.md) for usage,
+  including its `--strict` flag for promoting warnings to hard failures.
 
 > If any of the above are added to `.github/workflows/contracts.yml` in the
 > future, this section and the **Run locally** section above must both be

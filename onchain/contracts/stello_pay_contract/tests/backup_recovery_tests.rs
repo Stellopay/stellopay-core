@@ -561,7 +561,13 @@ fn test_key_rotation_correct_keys_decrypt_matching_backups() {
 
     // Simulate key rotation: operator switches to new passphrase
     // Create backup under new key (post-rotation)
-    let new_backup = backup_agreement(&env, &agreement, new_passphrase, &TEST_SALT_2, &TEST_NONCE_2);
+    let new_backup = backup_agreement(
+        &env,
+        &agreement,
+        new_passphrase,
+        &TEST_SALT_2,
+        &TEST_NONCE_2,
+    );
 
     // Old key must still decrypt old backup
     let recovered_old = restore_agreement(&env, &old_backup, old_passphrase)

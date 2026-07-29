@@ -1,4 +1,28 @@
-use soroban_sdk::{contracterror, contracttype, Address};
+use soroban_sdk::{contracterror, contracttype, Address, String};
+
+/// Maximum byte length allowed for the free-text `Other` variant.
+///
+/// Capped to prevent on-chain storage bloat — a single malicious dispute could
+/// otherwise consume an unbounded ledger entry at negligible cost to the filer.
+pub const MAX_OTHER_REASON_LEN: u32 = 256;
+
+/// The reason a dispute was raised.
+///
+/// Structured categories make disputes filterable and reportable. Use `Other`
+/// only when none of the defined categories apply; the text is capped at
+/// [`MAX_OTHER_REASON_LEN`] bytes.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DisputeReason {
+    /// Goods or services were not delivered.
+    NonDelivery,
+    /// Delivered work did not meet the agreed quality standard.
+    QualityIssue,
+    /// Disagreement over the payment amount or timing.
+    PaymentDispute,
+    /// Free-text reason, capped at [`MAX_OTHER_REASON_LEN`] bytes.
+    Other(String),
+}
 
 /// Represents the level of escalation for a dispute.
 #[contracttype]
@@ -98,6 +122,21 @@ pub enum DisputeStatus {
     Expired,
 }
 
+/// Record of a permissionless keeper-driven SLA advance.
+///
+/// Stored on the dispute record so that a full accountability trail of who
+/// triggered each automatic advance — and when — is queryable later.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct KeeperAdvance {
+    /// Address of the keeper who called [`super::DisputeEscalationContract::keeper_advance_stage`].
+    pub keeper: Address,
+    /// Ledger timestamp at which the advance was triggered.
+    pub advanced_at: u64,
+    /// Escalation level at the time of the advance.
+    pub level: EscalationLevel,
+}
+
 /// Holds all relevant information for an active dispute.
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -116,6 +155,12 @@ pub struct DisputeDetails {
     pub phase_deadline: u64,
     /// The binding outcome once resolved or finalised; [`DisputeOutcome::Unset`] while open.
     pub outcome: DisputeOutcome,
+    /// The reason the dispute was filed.
+    pub reason: DisputeReason,
+    /// Ordered history of every [`KeeperAdvance`] call on this dispute.
+    /// Each entry records which keeper triggered the advance, the timestamp,
+    /// and the escalation level at the time of the advance.
+    pub keeper_advances: Vec<KeeperAdvance>,
 }
 
 /// Storage keys for the dispute escalation contract.
@@ -131,9 +176,8 @@ pub enum StorageKey {
     /// Time window (in seconds) the admin has to act once a dispute enters
     /// `PendingReview`. Defaults to 3 days (259_200 s) if not explicitly set.
     PendingReviewTimeLimit,
-    /// Address of the `payroll_escrow` contract to pause/resume on dispute
-    /// lifecycle events.
-    PayrollEscrow,
+    /// Optional address of the shared audit_logger contract.
+    AuditLogger,
 }
 
 /// Errors specific to the dispute escalation logic.
@@ -165,4 +209,17 @@ pub enum DisputeError {
     AlreadyPendingReview = 11,
     /// SLA deadline computation overflowed u64; keeper_advance_stage cannot proceed.
     SlaDeadlineOverflow = 12,
+    /// The free-text reason in `DisputeReason::Other` exceeds [`MAX_OTHER_REASON_LEN`] bytes.
+    ReasonTooLong = 13,
+    /// A dispute for this `agreement_id` is already open (non-terminal).
+    ///
+    /// Returned by `file_dispute` when an existing dispute record with a
+    /// non-terminal status (`Open`, `Escalated`, `Appealed`, `PendingReview`,
+    /// or `Resolved`) is found for the same `agreement_id`.  Filing a second
+    /// dispute while the first is still active would produce two conflicting
+    /// SLA timers and is therefore rejected.
+    ///
+    /// Re-filing is permitted once the prior dispute reaches a terminal state
+    /// (`Finalised` or `Expired`).
+    DisputeDuplicateFiling = 14,
 }

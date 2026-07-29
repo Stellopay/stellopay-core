@@ -85,21 +85,100 @@ fn test_not_configured_employee() {
     assert_eq!(res, Err(Ok(TaxError::NotConfigured)));
 }
 
+/// Test that a 0% tax bracket does not cause division-by-zero panic.
+///
+/// This is a safety test to ensure that when a jurisdiction is configured
+/// with a 0% rate (legitimate tax-exempt tier), the calculation path does not
+/// divide by a rate-derived denominator that could be zero. The implementation
+/// divides by the constant 10_000 (basis points), not by the rate itself,
+/// so zero rates are safe.
 #[test]
-fn test_zero_rate_jurisdiction() {
+fn test_zero_percent_bracket_division_safety() {
     let (env, owner, client) = setup();
 
     let employee = Address::generate(&env);
-    let jurisdiction = Symbol::new(&env, "ZERO");
+    let tax_exempt_jurisdiction = Symbol::new(&env, "TAX_EXEMPT");
 
-    client.set_jurisdiction_rate(&owner, &jurisdiction, &0u32, &1);
+    // Configure a jurisdiction with 0% rate (tax-exempt bracket)
+    client.set_jurisdiction_rate(&owner, &tax_exempt_jurisdiction, &0u32, &1);
 
-    let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
+    let jurisdictions = Vec::from_array(&env, [tax_exempt_jurisdiction.clone()]);
     client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
 
+    // This should not panic - zero rate should result in zero withholding
     let result: TaxComputation = client.calculate_withholding(&employee, &10_000i128);
+
+    // Assert zero withholding is correctly computed
     assert_eq!(result.total_tax, 0);
     assert_eq!(result.net_amount, 10_000);
+    assert_eq!(result.shares.len(), 1);
+
+    let share = result.shares.get(0).unwrap();
+    assert_eq!(share.jurisdiction, tax_exempt_jurisdiction);
+    assert_eq!(share.amount, 0);
+}
+
+/// Test blended calculation with 0% bracket mixed with non-zero brackets.
+///
+/// Verifies that when an employee has multiple jurisdictions including a 0%
+/// tax-exempt bracket, the calculation correctly blends the rates and computes
+/// the total withholding as the sum of non-zero bracket contributions.
+#[test]
+fn test_zero_percent_bracket_blended_with_non_zero_brackets() {
+    let (env, owner, client) = setup();
+
+    let employee = Address::generate(&env);
+    let tax_exempt_jurisdiction = Symbol::new(&env, "TAX_EXEMPT");
+    let federal_jurisdiction = Symbol::new(&env, "US_FED");
+    let state_jurisdiction = Symbol::new(&env, "US_STATE");
+
+    // Configure jurisdictions: 0%, 10%, and 5%
+    client.set_jurisdiction_rate(&owner, &tax_exempt_jurisdiction, &0u32, &1);
+    client.set_jurisdiction_rate(&owner, &federal_jurisdiction, &1000u32, &1); // 10%
+    client.set_jurisdiction_rate(&owner, &state_jurisdiction, &500u32, &1); // 5%
+
+    let jurisdictions = Vec::from_array(
+        &env,
+        [
+            tax_exempt_jurisdiction.clone(),
+            federal_jurisdiction.clone(),
+            state_jurisdiction.clone(),
+        ],
+    );
+    client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
+
+    let gross: i128 = 20_000;
+    let result: TaxComputation = client.calculate_withholding(&employee, &gross);
+
+    // Expected: 0% + 10% + 5% = 15% total
+    // Federal: 20_000 * 0.10 = 2_000
+    // State: 20_000 * 0.05 = 1_000
+    // Tax-exempt: 20_000 * 0.00 = 0
+    // Total: 3_000
+    assert_eq!(result.gross_amount, gross);
+    assert_eq!(result.total_tax, 3_000);
+    assert_eq!(result.net_amount, 17_000);
+    assert_eq!(result.shares.len(), 3);
+
+    // Verify each jurisdiction's share
+    let mut found_exempt = false;
+    let mut found_fed = false;
+    let mut found_state = false;
+
+    for share in result.shares.iter() {
+        if share.jurisdiction == tax_exempt_jurisdiction {
+            assert_eq!(share.amount, 0);
+            found_exempt = true;
+        } else if share.jurisdiction == federal_jurisdiction {
+            assert_eq!(share.amount, 2_000);
+            found_fed = true;
+        } else if share.jurisdiction == state_jurisdiction {
+            assert_eq!(share.amount, 1_000);
+            found_state = true;
+        }
+    }
+
+    assert!(found_exempt && found_fed && found_state);
 }
 
 #[test]
@@ -297,7 +376,7 @@ fn test_remit_withholding_transfers_to_treasury() {
     let tok = create_token(&env, &token_admin);
     token::StellarAssetClient::new(&env, &tok.address).mint(&owner, &1_000i128);
 
-    let remitted = client.remit_withholding(&owner, &jurisdiction, &tok.address);
+    let remitted = client.remit_withholding(&owner, &jurisdiction, &tok.address, &1_000i128);
     assert_eq!(remitted, 1_000);
 
     // Accrued balance reset to zero after remittance
@@ -329,7 +408,7 @@ fn test_remit_withholding_resets_balance_to_zero() {
     let tok = create_token(&env, &token_admin);
     token::StellarAssetClient::new(&env, &tok.address).mint(&owner, &1_000i128);
 
-    client.remit_withholding(&owner, &jurisdiction, &tok.address);
+    client.remit_withholding(&owner, &jurisdiction, &tok.address, &1_000i128);
     assert_eq!(client.get_accrued_balance(&jurisdiction), 0);
 }
 
@@ -349,7 +428,7 @@ fn test_remit_treasury_not_set() {
     let token_admin = Address::generate(&env);
     let tok = create_token(&env, &token_admin);
 
-    let res = client.try_remit_withholding(&owner, &jurisdiction, &tok.address);
+    let res = client.try_remit_withholding(&owner, &jurisdiction, &tok.address, &1i128);
     assert_eq!(res, Err(Ok(TaxError::TreasuryNotSet)));
 }
 
@@ -365,7 +444,7 @@ fn test_remit_nothing_to_remit() {
     let token_admin = Address::generate(&env);
     let tok = create_token(&env, &token_admin);
 
-    let res = client.try_remit_withholding(&owner, &jurisdiction, &tok.address);
+    let res = client.try_remit_withholding(&owner, &jurisdiction, &tok.address, &1i128);
     assert_eq!(res, Err(Ok(TaxError::NothingToRemit)));
 }
 
@@ -382,7 +461,7 @@ fn test_remit_withholding_unauthorized() {
     let token_admin = Address::generate(&env);
     let tok = create_token(&env, &token_admin);
 
-    let res = client.try_remit_withholding(&non_owner, &jurisdiction, &tok.address);
+    let res = client.try_remit_withholding(&non_owner, &jurisdiction, &tok.address, &1i128);
     assert_eq!(res, Err(Ok(TaxError::Unauthorized)));
 }
 
@@ -405,7 +484,7 @@ fn test_remit_partial_then_accrue_and_remit_again() {
 
     // Period 1: accrue 1_000, remit it
     client.accrue_withholding(&owner, &employee, &10_000i128);
-    client.remit_withholding(&owner, &jurisdiction, &tok.address);
+    client.remit_withholding(&owner, &jurisdiction, &tok.address, &1_000i128);
     assert_eq!(tok.balance(&treasury), 1_000);
     assert_eq!(client.get_accrued_balance(&jurisdiction), 0);
 
@@ -413,47 +492,119 @@ fn test_remit_partial_then_accrue_and_remit_again() {
     client.accrue_withholding(&owner, &employee, &10_000i128);
     assert_eq!(client.get_accrued_balance(&jurisdiction), 1_000);
 
-    client.remit_withholding(&owner, &jurisdiction, &tok.address);
+    client.remit_withholding(&owner, &jurisdiction, &tok.address, &1_000i128);
     assert_eq!(tok.balance(&treasury), 2_000);
     assert_eq!(client.get_accrued_balance(&jurisdiction), 0);
 }
 
+/// A calculated amount is only remittable after it has been accrued, and every
+/// successful remittance reduces the outstanding liability by exactly its amount.
 #[test]
-fn test_remit_withholding_idempotent_after_full_remittance() {
-    // Verifies that attempting to remit the same accrued balance twice
-    // is safely rejected rather than under/overflowing or double-counting.
+fn test_cumulative_remittances_never_exceed_calculated_liability() {
     let (env, owner, client) = setup();
 
     let employee = Address::generate(&env);
     let treasury = Address::generate(&env);
     let jurisdiction = Symbol::new(&env, "US_FED");
-
     client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
     client.set_jurisdiction_treasury(&owner, &jurisdiction, &treasury);
-    let jurisdictions = Vec::from_array(&env, [jurisdiction.clone()]);
-    client.set_employee_jurisdictions(&owner, &employee, &jurisdictions);
+    client.set_employee_jurisdictions(
+        &owner,
+        &employee,
+        &Vec::from_array(&env, [jurisdiction.clone()]),
+    );
+
+    let token_admin = Address::generate(&env);
+    let tok = create_token(&env, &token_admin);
+    token::StellarAssetClient::new(&env, &tok.address).mint(&owner, &10_000i128);
+
+    let mut cumulative_calculated = 0i128;
+    let mut cumulative_remitted = 0i128;
+
+    // Each calculation is verified against the accrual performed for the same
+    // completed pay period. The remittances deliberately include partial and
+    // full settlements to exercise the outstanding-liability invariant.
+    for (gross, requested_remittance) in [(10_000i128, 400i128), (15_000, 1_100), (5_000, 500)] {
+        let calculated = client.calculate_withholding(&employee, &gross);
+        cumulative_calculated += calculated.total_tax;
+
+        let accrued = client.accrue_withholding(&owner, &employee, &gross);
+        assert_eq!(accrued, calculated);
+
+        let outstanding_before = client.get_accrued_balance(&jurisdiction);
+        let remitted =
+            client.remit_withholding(&owner, &jurisdiction, &tok.address, &requested_remittance);
+        cumulative_remitted += remitted;
+
+        assert_eq!(remitted, requested_remittance);
+        assert_eq!(
+            client.get_accrued_balance(&jurisdiction),
+            outstanding_before - remitted,
+        );
+        assert!(cumulative_remitted <= cumulative_calculated);
+    }
+
+    assert_eq!(cumulative_calculated, 3_000);
+    assert_eq!(cumulative_remitted, 2_000);
+    assert_eq!(client.get_accrued_balance(&jurisdiction), 1_000);
+    assert_eq!(tok.balance(&treasury), cumulative_remitted);
+}
+
+#[test]
+fn test_remit_more_than_outstanding_liability_is_rejected() {
+    let (env, owner, client) = setup();
+
+    let employee = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let jurisdiction = Symbol::new(&env, "US_FED");
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
+    client.set_jurisdiction_treasury(&owner, &jurisdiction, &treasury);
+    client.set_employee_jurisdictions(
+        &owner,
+        &employee,
+        &Vec::from_array(&env, [jurisdiction.clone()]),
+    );
+    client.accrue_withholding(&owner, &employee, &10_000i128);
+
+    let token_admin = Address::generate(&env);
+    let tok = create_token(&env, &token_admin);
+    token::StellarAssetClient::new(&env, &tok.address).mint(&owner, &2_000i128);
+
+    let res = client.try_remit_withholding(&owner, &jurisdiction, &tok.address, &1_001i128);
+    assert_eq!(res, Err(Ok(TaxError::AmountExceedsAccrued)));
+    assert_eq!(client.get_accrued_balance(&jurisdiction), 1_000);
+    assert_eq!(tok.balance(&owner), 2_000);
+    assert_eq!(tok.balance(&treasury), 0);
+}
+
+#[test]
+fn test_remit_non_positive_amount_is_rejected_without_changing_liability() {
+    let (env, owner, client) = setup();
+
+    let employee = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let jurisdiction = Symbol::new(&env, "US_FED");
+    client.set_jurisdiction_rate(&owner, &jurisdiction, &1000u32, &1);
+    client.set_jurisdiction_treasury(&owner, &jurisdiction, &treasury);
+    client.set_employee_jurisdictions(
+        &owner,
+        &employee,
+        &Vec::from_array(&env, [jurisdiction.clone()]),
+    );
+    client.accrue_withholding(&owner, &employee, &10_000i128);
 
     let token_admin = Address::generate(&env);
     let tok = create_token(&env, &token_admin);
     token::StellarAssetClient::new(&env, &tok.address).mint(&owner, &1_000i128);
 
-    // Accrue and remit once
-    client.accrue_withholding(&owner, &employee, &10_000i128);
-    assert_eq!(client.get_accrued_balance(&jurisdiction), 1_000);
-
-    let remitted = client.remit_withholding(&owner, &jurisdiction, &tok.address);
-    assert_eq!(remitted, 1_000);
-    assert_eq!(client.get_accrued_balance(&jurisdiction), 0);
-    assert_eq!(tok.balance(&treasury), 1_000);
-
-    // Attempt to remit the same (now-zero) balance again
-    // This should be rejected with NothingToRemit, not cause underflow or double-counting
-    let res = client.try_remit_withholding(&owner, &jurisdiction, &tok.address);
-    assert_eq!(res, Err(Ok(TaxError::NothingToRemit)));
-
-    // Verify state remains unchanged: balance still zero, treasury still has 1_000
-    assert_eq!(client.get_accrued_balance(&jurisdiction), 0);
-    assert_eq!(tok.balance(&treasury), 1_000);
+    for invalid_amount in [0i128, -1i128] {
+        let res =
+            client.try_remit_withholding(&owner, &jurisdiction, &tok.address, &invalid_amount);
+        assert_eq!(res, Err(Ok(TaxError::AmountExceedsAccrued)));
+        assert_eq!(client.get_accrued_balance(&jurisdiction), 1_000);
+        assert_eq!(tok.balance(&owner), 1_000);
+        assert_eq!(tok.balance(&treasury), 0);
+    }
 }
 
 // ─── Security invariant tests ─────────────────────────────────────────────────
@@ -507,7 +658,7 @@ fn test_withholding_destination_is_owner_controlled() {
 
     // Attacker cannot set treasury (verified by test_unauthorized_set_treasury).
     // Remit goes to legitimate_treasury, not attacker_treasury.
-    client.remit_withholding(&owner, &jurisdiction, &tok.address);
+    client.remit_withholding(&owner, &jurisdiction, &tok.address, &1_000i128);
     assert_eq!(tok.balance(&legitimate_treasury), 1_000);
     assert_eq!(tok.balance(&attacker_treasury), 0);
 }

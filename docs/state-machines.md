@@ -73,6 +73,7 @@ Status is Cancelled
 Grace period has fully elapsed
 Effects:
 Remaining escrow refunded to employer
+If no claims were made, the refund equals the full escrow balance; if earlier claims already paid out some periods, the refund equals the unclaimed remainder only
 Agreement marked logically complete (no further claims expected)
 Active → Completed
 
@@ -325,3 +326,202 @@ Negative tests: Each setter panics when called by a non-admin address.
 Positive tests: Each setter succeeds when called by the contract owner.
 Validation tests: admin_set_agreement_paid_amount(-1) and admin_set_agreement_period_duration(0) panic even for the admin.
 Try-variant tests: Using try_admin_set_* confirms non-admin callers receive errors rather than silently succeeding.
+
+
+## Milestone Interface Versioning and Backward-Compatibility Policy
+
+### Overview
+
+`onchain/contracts/milestone-interface/src/lib.rs` is the **stable contract
+surface** that third-party milestone-capable implementations build against.
+This section defines what changes to the trait are considered breaking versus
+additive, how implementors should track compatibility over time, and how the
+versioning scheme maps to the test and documentation artifacts in this
+repository.
+
+For the authoritative machine-readable policy (stability labels, XDR encoding
+notes, NatSpec-style comments) see the crate-level documentation in
+[`onchain/contracts/milestone-interface/src/lib.rs`](../onchain/contracts/milestone-interface/src/lib.rs).
+
+---
+
+### Current interface version
+
+```
+INTERFACE_VERSION = 1   (pub const u32 in milestone_interface crate)
+```
+
+The constant `INTERFACE_VERSION` is the single source of truth for the
+interface generation. It is a compile-time `u32` exported from the
+`milestone_interface` crate. Off-chain tooling, CI pipelines, and third-party
+contracts may read it to assert they are compiled against the expected revision.
+
+The test `test_interface_version_is_1` in
+`stello_pay_contract/tests/test_milestones.rs` hard-codes this value. Any
+major version bump must update that test, add a changelog entry to this
+section, and follow the upgrade procedure described below.
+
+---
+
+### Method surface (version 1)
+
+| Method | Stability | Signature |
+|--------|-----------|-----------|
+| `get_milestone` | `@stable` | `(Env, u128, u32) -> Option<MilestoneView>` |
+| `get_milestone_count` | `@stable` | `(Env, u128) -> u32` |
+| `on_milestone_expired` | `@stable-default` | `(Env, u128, u32) -> ()` — no-op default |
+
+**Stability labels**
+
+| Label | Meaning |
+|-------|---------|
+| `@stable` | Signature, semantics, and XDR encoding are frozen. Changes require a major version bump and a deprecation cycle. |
+| `@stable-default` | Method has a provided default body (no-op). The *presence* of the method is stable; the *default body* may evolve between minor versions as long as the observable no-op contract is preserved. |
+| `@unstable` | May change in any release without notice. Not suitable for third-party production use. |
+
+---
+
+### Breaking changes (require a major version bump)
+
+The following changes **require incrementing `INTERFACE_VERSION`**, keeping
+the old version accessible for one full release cycle, and adding a changelog
+entry to this document:
+
+1. **Removing any trait method** — existing implementors no longer compile.
+2. **Changing a method signature** — parameter type, parameter order, or
+   return type change breaks both callers and implementors at compile time.
+3. **Changing XDR-encoded type layouts** — adding, removing, or reordering
+   fields on `#[contracttype]` structs or enums used as method parameters or
+   return values breaks cross-contract calls at runtime even when Rust code
+   compiles cleanly.
+4. **Narrowing a method's documented contract** — e.g. changing a guaranteed
+   "returns `None` on unknown id" to "panics on unknown id" is a semantic
+   breaking change even when the signature is unchanged.
+5. **Changing the discriminant value of an existing enum variant** — XDR
+   decoding on the calling side will misinterpret the value. Variants must
+   never be reordered and new variants must always be appended.
+
+---
+
+### Additive (non-breaking) changes
+
+The following changes are **backward-compatible** and do not require a major
+version bump:
+
+1. **Adding a new method with a provided default body** — existing implementors
+   inherit the default silently and continue to compile without change.
+   `on_milestone_expired` was introduced this way in version 1 and is the
+   canonical example.
+2. **Widening a method's documented contract** — e.g. changing "may panic on
+   unknown id" to "returns `None` on unknown id" is strictly more permissive.
+3. **Appending a new variant to an enum** — provided (a) it is appended at the
+   end so existing discriminants are unchanged, and (b) all call-site match
+   arms include a wildcard `_` arm.
+4. **Adding new `#[contracttype]` structs** not yet used as method parameters
+   or return values — they are inert until referenced.
+5. **Improving or expanding doc comments** — no runtime impact.
+
+---
+
+### Shared type stability
+
+#### `MilestoneView` fields (version 1)
+
+| Field | Type | Since |
+|-------|------|-------|
+| `id` | `u32` | 1 |
+| `amount` | `i128` | 1 |
+| `approved` | `bool` | 1 |
+| `claimed` | `bool` | 1 |
+
+Field declaration order must not change. New fields may only be appended in a
+future major version. The conformance test `test_milestone_view_fields_stable`
+locks these fields and their types.
+
+#### `MilestoneAgreementStatus` variants (version 1)
+
+| Variant | XDR discriminant (0-based) | Since |
+|---------|---------------------------|-------|
+| `Created` | 0 | 1 |
+| `Active` | 1 | 1 |
+| `Paused` | 2 | 1 |
+| `Cancelled` | 3 | 1 |
+| `Completed` | 4 | 1 |
+| `Disputed` | 5 | 1 |
+
+The test `test_milestone_agreement_status_variants_stable` locks all six
+variants. Any removal causes a compile error; any rename or reorder causes the
+test to fail.
+
+---
+
+### Upgrade procedure
+
+When a breaking change is unavoidable:
+
+1. Increment `INTERFACE_VERSION` by 1 in `milestone-interface/src/lib.rs`.
+2. Keep the previous interface accessible under a versioned re-export or
+   sibling crate (`milestone-interface-v1`) for at least one release cycle so
+   existing implementors can migrate at their own pace.
+3. Update `stello_pay_contract` to implement the new interface version.
+4. Update the conformance test `test_milestone_interface_conformance` and the
+   version lock test `test_interface_version_is_1` in
+   `stello_pay_contract/tests/test_milestones.rs` to reflect the new version.
+5. Add a changelog entry to this section (see format below).
+
+---
+
+### Implementor guidance
+
+Third-party contracts that implement `MilestoneContractInterface` should:
+
+1. **Pin the version** in `Cargo.toml` with an exact or `~` specifier:
+   ```toml
+   milestone-interface = { version = "=0.0.0", path = "../../milestone-interface" }
+   ```
+   Open `*` or `^` ranges silently pick up breaking changes on re-build.
+
+2. **Add a conformance test** that exercises every `@stable` method via
+   `MilestoneContractClient` and compares output against direct client calls.
+   Use `test_milestone_interface_conformance` in
+   `stello_pay_contract/tests/test_milestones.rs` as the reference template.
+
+3. **Pin `INTERFACE_VERSION`** in a test:
+   ```rust
+   #[test]
+   fn interface_version_unchanged() {
+       assert_eq!(milestone_interface::INTERFACE_VERSION, 1u32);
+   }
+   ```
+   This test fails immediately when the upstream interface is bumped, giving
+   the implementor a clear signal to review the changelog and migrate.
+
+4. **Do not override `on_milestone_expired` with a panicking body** unless
+   your contract can guarantee the hook is always called in a valid state. A
+   panic inside the hook rolls back the entire `expire_milestone` transaction
+   in the calling contract.
+
+5. **Handle `None` and `0` defensively** — `get_milestone` returns `None` and
+   `get_milestone_count` returns `0` for unknown agreements. These are
+   documented semantic guarantees, not implementation details; do not assume
+   they imply contract absence.
+
+---
+
+### Cross-reference
+
+| Resource | Location |
+|----------|----------|
+| Trait definition and inline policy | [`onchain/contracts/milestone-interface/src/lib.rs`](../onchain/contracts/milestone-interface/src/lib.rs) |
+| Milestone workflow and data structures | [`onchain/contracts/stello_pay_contract/MILESTONE_DOCS.md`](../onchain/contracts/stello_pay_contract/MILESTONE_DOCS.md) |
+| Conformance and versioning tests | [`onchain/contracts/stello_pay_contract/tests/test_milestones.rs`](../onchain/contracts/stello_pay_contract/tests/test_milestones.rs) |
+| `PayrollError` discriminant stability convention | [`onchain/contracts/stello_pay_contract/src/storage.rs`](../onchain/contracts/stello_pay_contract/src/storage.rs) |
+| Hook integration tests (`on_milestone_expired`) | [`onchain/contracts/stello_pay_contract/tests/test_expire_milestone.rs`](../onchain/contracts/stello_pay_contract/tests/test_expire_milestone.rs) |
+
+---
+
+### Changelog
+
+| Version | Date | Change summary |
+|---------|------|----------------|
+| 1 | 2026-07-28 | Initial stable release. Defines `get_milestone` (`@stable`), `get_milestone_count` (`@stable`), and `on_milestone_expired` hook (`@stable-default`, no-op default). Exports `INTERFACE_VERSION = 1`, `MilestoneView`, `MilestoneAgreementView`, `MilestoneAgreementStatus`. |

@@ -51,19 +51,37 @@ Call once per pay period after the gross amount is finalised. Internally:
 ### Remittance Hook
 
 ```
-remit_withholding(caller, jurisdiction, token) → i128
+remit_withholding(caller, jurisdiction, token, amount) → i128
 ```
 
 Call periodically (monthly/quarterly) to settle the employer's tax liability. Internally:
 
 1. Reads the treasury address from owner-controlled storage.
 2. Reads the `AccruedWithholding` balance for the jurisdiction.
-3. Resets the balance to `0` **before** the token transfer (state-before-interaction).
-4. Transfers `amount` of `token` from `caller` to `treasury`.
-5. Emits `("withholding_remitted", WithholdingRemittedEvent)`.
-6. Returns the remitted amount.
+3. Rejects a non-positive amount or one greater than the outstanding balance.
+4. Decreases the balance by `amount` **before** the token transfer (state-before-interaction).
+5. Transfers `amount` of `token` from `caller` to `treasury`.
+6. Emits `("withholding_remitted", WithholdingRemittedEvent)`.
+7. Returns the remitted amount.
 
-The caller must hold at least `accrued_balance` of `token` in their account.
+The caller must hold at least `amount` of `token` in their account. `amount` may
+not exceed the accrued balance, so cumulative remittances cannot exceed
+cumulative recorded liability.
+
+### Liability conservation
+
+`calculate_withholding` is a read-only quote and never creates a remittable
+balance. A completed payroll period must be recorded with `accrue_withholding`.
+For each jurisdiction, the outstanding liability is conserved as:
+
+```
+outstanding = cumulative accrued withholding - cumulative remittances
+```
+
+`remit_withholding` accepts only a positive `amount` no greater than
+`outstanding` and subtracts exactly that amount before transferring tokens.
+Consequently, a duplicated, stale, or oversized remittance request fails with
+`AmountExceedsAccrued` without changing the liability balance or moving funds.
 
 ### View Functions
 
@@ -91,14 +109,44 @@ Floor division means any sub-unit fractional remainder stays with the employee i
 
 **Example:** 15% of 10_001 = 1500.15 → withheld = 1500, net = 8501.
 
+## Zero-Percent Bracket Safety
+
+The contract safely supports 0% tax rates (tax-exempt jurisdictions) without risk of division-by-zero panics.
+
+### Implementation Safety
+
+The withholding calculation divides by the constant `10_000` (basis points), not by the rate itself:
+
+```rust
+let part = gross_amount
+    .checked_mul(rate_bps as i128)
+    .ok_or(TaxError::ArithmeticError)?
+    .checked_div(10_000)  // Constant divisor, never zero
+    .ok_or(TaxError::ArithmeticError)?;
+```
+
+When `rate_bps = 0`, the calculation becomes `gross_amount * 0 / 10_000 = 0`, which is mathematically correct and safe.
+
+### Use Cases
+
+- **Tax-exempt jurisdictions**: Some regions may have 0% income tax for certain income types
+- **Blended calculations**: Employees can have multiple jurisdictions where some are 0% and others are non-zero
+- **Future-proofing**: The design allows legitimate 0% brackets without special handling
+
+### Test Coverage
+
+The test suite includes:
+- `test_zero_percent_bracket_division_safety`: Verifies 0% bracket returns zero withholding without panic
+- `test_zero_percent_bracket_blended_with_non_zero_brackets`: Verifies correct blended calculation when 0% brackets are mixed with non-zero brackets
+
 ## Security Model
 
 | Invariant | Enforcement |
 |-----------|-------------|
 | Only owner can configure rates, treasuries, and employee jurisdictions | `require_owner` helper checks caller == stored owner before any write |
 | Withheld funds cannot be redirected to arbitrary addresses | `remit_withholding` reads treasury from owner-controlled `JurisdictionTreasury` storage — the caller supplies only the token, never the destination |
-| No re-entrancy on remittance | Accrued balance is reset to `0` before `token.transfer` is called |
-| Idempotent remittance prevents double-remittance | Once an accrued balance is remitted to zero, subsequent calls return `NothingToRemit` rather than causing underflow or double-counting |
+| No re-entrancy on remittance | Accrued balance is decreased before `token.transfer` is called |
+| No over-remittance | Requested amount must be positive and no greater than the currently accrued balance |
 | Overflow-safe arithmetic | All multiplications and additions use `checked_*` and return `ArithmeticError` on overflow |
 | Total withholding ≤ gross | Validated after summation; returns `ArithmeticError` if combined rates exceed 100% |
 | Historical accrual preservation | `set_employee_jurisdictions` changes are forward-only; prior `AccruedWithholding` balances and event logs are never erased or retroactively modified |
@@ -130,8 +178,8 @@ let computation = client.accrue_withholding(&owner, &employee, &10_000i128);
 // computation.total_tax  = 1_500  (accrued liability)
 
 // 6. Monthly/quarterly — remit to tax authorities
-client.remit_withholding(&owner, &Symbol::new(&env, "US_FED"), &token);
-client.remit_withholding(&owner, &Symbol::new(&env, "US_STATE"), &token);
+client.remit_withholding(&owner, &Symbol::new(&env, "US_FED"), &token, &1_000i128);
+client.remit_withholding(&owner, &Symbol::new(&env, "US_STATE"), &token, &500i128);
 ```
 
 ## Error Codes
@@ -144,3 +192,4 @@ client.remit_withholding(&owner, &Symbol::new(&env, "US_STATE"), &token);
 | 4 | `ArithmeticError` | Overflow, underflow, or non-positive gross amount |
 | 5 | `TreasuryNotSet` | No treasury configured for the jurisdiction |
 | 6 | `NothingToRemit` | Accrued balance is zero |
+| 9 | `AmountExceedsAccrued` | Requested amount is non-positive or exceeds the accrued balance |

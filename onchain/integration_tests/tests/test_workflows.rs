@@ -1149,7 +1149,7 @@ fn test_cross_escrow_fund_partial_release_then_refund_conservation() {
     assert_eq!(
         balance(&env, &tok, &employer),
         employer_after_fund + remaining,
-        "employer receives refunded remainder",
+        "employer receives refunded remainder"
     );
     assert_eq!(
         funded,
@@ -1574,7 +1574,7 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
     // Mirror the payroll dispute into the escalation module so the integration
     // test covers the off-chain coordination sequence as well as token effects.
     payroll_client.raise_dispute(&employee_b, &agreement_id);
-    dispute_client.file_dispute(&employee_b, &agreement_id);
+    dispute_client.file_dispute(&employee_b, &agreement_id, &DisputeReason::PaymentDispute);
     dispute_client.escalate_dispute(&employee_b, &agreement_id);
     dispute_client.resolve_dispute(
         &dispute_admin,
@@ -1622,11 +1622,11 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
 
     assert_eq!(
         payroll_client.get_dispute_status(&agreement_id),
-        DisputeStatus::Resolved,
+        DisputeStatus::Resolved
     );
     assert_eq!(
         payroll_client.get_agreement(&agreement_id).unwrap().status,
-        AgreementStatus::Completed,
+        AgreementStatus::Completed
     );
 
     let escalated = dispute_client.get_dispute(&agreement_id).unwrap();
@@ -1723,7 +1723,7 @@ fn test_cross_contract_workflow_failure_injection_preserves_state() {
     assert_eq!(stored_bonus.claimed_payouts, 0);
     assert_eq!(stored_bonus.status, bonus_system::ApprovalStatus::Approved);
 
-    dispute_client.file_dispute(&employee, &agreement_id);
+    dispute_client.file_dispute(&employee, &agreement_id, &DisputeReason::PaymentDispute);
     advance(&env, ONE_WEEK + 1);
     let escalation_attempt = dispute_client.try_escalate_dispute(&employee, &agreement_id);
     assert_eq!(
@@ -2119,14 +2119,12 @@ fn test_hire_to_resolve_full_workflow() {
     let contributor = addr(&env);
     let arbiter = addr(&env);
 
-    // Escrow: 500 per period, 1-day periods, 6 periods total = 3000
+    // Mint ALL tokens upfront so token conservation can be checked by tracking
+    // transfers among the tracked addresses (mint would inflate the total).
     let amount_per_period = 500i128;
     let period_seconds = ONE_DAY;
     let num_periods = 6u32;
     let total_agreement_value = amount_per_period * (num_periods as i128); // 3000
-
-    // Mint ALL tokens upfront so token conservation can be checked by tracking
-    // transfers among the tracked addresses (mint would inflate the total).
     let external_escrow_amount = 1_000i128;
     let internal_escrow_amount = total_agreement_value; // 3000
     let total_employer_fund = internal_escrow_amount + external_escrow_amount; // 4000
@@ -2146,7 +2144,6 @@ fn test_hire_to_resolve_full_workflow() {
     assert_eq!(payroll_client.get_arbiter().unwrap(), arbiter);
 
     // Escrow: 500 per period, 1-day periods, 6 periods total = 3000
-
     let agreement_id = payroll_client.create_escrow_agreement(
         &employer,
         &contributor,
@@ -2183,15 +2180,15 @@ fn test_hire_to_resolve_full_workflow() {
         external_escrow_amount
     );
 
-    // Advance 2 periods so at least one is claimable.
+    // Advance 2 periods so two are claimable.
     advance(&env, ONE_DAY * 2);
 
-    // Claim one period as the milestone payment.
+    // Claim time-based — all available periods are claimed at once.
     let contributor_before_claim = balance(&env, &tok, &contributor);
     payroll_client.claim_time_based(&agreement_id);
     assert_eq!(
         balance(&env, &tok, &contributor),
-        contributor_before_claim + amount_per_period
+        contributor_before_claim + amount_per_period * 2
     );
     assert_eq!(payroll_client.get_claimed_periods(&agreement_id), 2);
 
@@ -2228,7 +2225,7 @@ fn test_hire_to_resolve_full_workflow() {
     );
 
     // Mirror the dispute into dispute_escalation for the off-chain ladder.
-    dispute_client.file_dispute(&contributor, &agreement_id);
+    dispute_client.file_dispute(&contributor, &agreement_id, &DisputeReason::PaymentDispute);
     let dispute = dispute_client.get_dispute(&agreement_id).unwrap();
     assert_eq!(dispute.status, EscalationStatus::Open);
     assert_eq!(dispute.level, EscalationLevel::Level1);
@@ -2312,7 +2309,7 @@ fn test_hire_to_resolve_full_workflow() {
     assert_eq!(
         agr.claimed_periods,
         Some(2),
-        "must have claimed exactly 2 periods (milestone payment)",
+        "must have claimed exactly 2 periods (milestone payment)"
     );
 
     // dispute_escalation: dispute is finalised with UpholdPayment outcome.
@@ -2332,7 +2329,7 @@ fn test_hire_to_resolve_full_workflow() {
     assert_eq!(
         escrow_client.get_agreement_balance(&agreement_id),
         external_escrow_amount - escrow_release_amount,
-        "external escrow balance reduced by release amount",
+        "external escrow balance reduced by release amount"
     );
 
     // Refund the remaining escrow back to the employer.
@@ -2340,14 +2337,14 @@ fn test_hire_to_resolve_full_workflow() {
     assert_eq!(
         escrow_client.get_agreement_balance(&agreement_id),
         0,
-        "external escrow fully cleared after refund",
+        "external escrow fully cleared after refund"
     );
 
     // payment_history: 3 payment records (milestone claim + dispute payout split).
     assert_eq!(
         history_client.get_agreement_payment_count(&agreement_id),
         3,
-        "three payment records must exist: milestone claim + dispute resolution (employee + employer)",
+        "three payment records must exist: milestone claim + dispute resolution (employee + employer)"
     );
 
     // Token conservation: total across all tracked addresses must be unchanged
@@ -2355,7 +2352,7 @@ fn test_hire_to_resolve_full_workflow() {
     let final_total = tracked_total(&env, &tok, &tracked);
     assert_eq!(
         final_total, initial_total,
-        "token conservation must hold: total before == total after",
+        "token conservation must hold: total before == total after"
     );
 
     // ── 6. Verify no double-payout or stuck funds ───────────────────────────

@@ -25,8 +25,7 @@ fn setup_tiered<'a>(
     admin: &Address,
     treasury: &Address,
 ) -> FeeCollectorContractClient<'a> {
-    let client =
-        FeeCollectorContractClient::new(env, &env.register(FeeCollectorContract, ()));
+    let client = FeeCollectorContractClient::new(env, &env.register(FeeCollectorContract, ()));
     // Initialize in Percentage mode so initialize() accepts fee_bps = 0.
     client.initialize(admin, treasury, &0u32, &0i128, &FeeMode::Percentage);
 
@@ -387,12 +386,7 @@ fn test_total_fees_reconciles_multi_call_sequence() {
         let expected_fee = expected_tiered_fee(gross);
         let (net, fee) = client.collect_fee(&payer, &recipient, &tok.address, &gross);
 
-        assert_eq!(
-            net + fee,
-            gross,
-            "Invariant broken for gross={}",
-            gross
-        );
+        assert_eq!(net + fee, gross, "Invariant broken for gross={}", gross);
         assert_eq!(
             fee, expected_fee,
             "Fee mismatch for gross={}: got {} want {}",
@@ -450,8 +444,17 @@ fn test_total_fees_reconciles_after_tiered_schedule_change() {
         let expected_fee = expected_tiered_fee(gross);
         let (net, fee) = client.collect_fee(&payer, &recipient, &tok.address, &gross);
 
-        assert_eq!(net + fee, gross, "Phase 1 invariant broken for gross={}", gross);
-        assert_eq!(fee, expected_fee, "Phase 1 fee mismatch for gross={}", gross);
+        assert_eq!(
+            net + fee,
+            gross,
+            "Phase 1 invariant broken for gross={}",
+            gross
+        );
+        assert_eq!(
+            fee, expected_fee,
+            "Phase 1 fee mismatch for gross={}",
+            gross
+        );
 
         independent_sum += fee;
         let on_chain_total = client.get_total_fees_collected();
@@ -492,7 +495,12 @@ fn test_total_fees_reconciles_after_tiered_schedule_change() {
         let expected_fee = expected_fee_new(gross);
         let (net, fee) = client.collect_fee(&payer, &recipient, &tok.address, &gross);
 
-        assert_eq!(net + fee, gross, "Phase 2 invariant broken for gross={}", gross);
+        assert_eq!(
+            net + fee,
+            gross,
+            "Phase 2 invariant broken for gross={}",
+            gross
+        );
         assert_eq!(
             fee, expected_fee,
             "Phase 2 fee mismatch for gross={}: got {} want {}",
@@ -536,8 +544,7 @@ fn test_total_fees_unchanged_for_zero_fee_tier() {
     let token_admin = Address::generate(&env);
     let tok = create_token(&env, &token_admin);
 
-    let client =
-        FeeCollectorContractClient::new(&env, &env.register(FeeCollectorContract, ()));
+    let client = FeeCollectorContractClient::new(&env, &env.register(FeeCollectorContract, ()));
     client.initialize(&admin, &treasury, &0u32, &0i128, &FeeMode::Percentage);
 
     // Schedule with a 0-bps tier for amounts ≤ 1 000 and 100 bps above.
@@ -582,8 +589,7 @@ fn test_total_fees_reconciles_across_multiple_schedule_rotations() {
     let token_admin = Address::generate(&env);
     let tok = create_token(&env, &token_admin);
 
-    let client =
-        FeeCollectorContractClient::new(&env, &env.register(FeeCollectorContract, ()));
+    let client = FeeCollectorContractClient::new(&env, &env.register(FeeCollectorContract, ()));
     client.initialize(&admin, &treasury, &0u32, &0i128, &FeeMode::Percentage);
 
     // Three rotations: (fee_bps, gross_amount).
@@ -612,7 +618,13 @@ fn test_total_fees_reconciles_across_multiple_schedule_rotations() {
         let expected_fee = gross * bps as i128 / 10_000;
         let (net, fee) = client.collect_fee(&payer, &recipient, &tok.address, &gross);
 
-        assert_eq!(net + fee, gross, "Invariant broken for gross={} bps={}", gross, bps);
+        assert_eq!(
+            net + fee,
+            gross,
+            "Invariant broken for gross={} bps={}",
+            gross,
+            bps
+        );
         assert_eq!(
             fee, expected_fee,
             "Fee mismatch for gross={} bps={}: got {} want {}",

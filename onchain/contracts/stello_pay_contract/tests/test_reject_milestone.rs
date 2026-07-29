@@ -120,8 +120,7 @@ fn test_reject_milestone_reason_propagated_to_event() {
     let reason = String::from_str(&env, expected_reason);
     client.reject_milestone(&agreement_id, &milestone_id, &reason);
 
-    use soroban_sdk::testutils::Events;
-    use soroban_sdk::{Map, Symbol, TryFromVal, TryIntoVal};
+    use soroban_sdk::{testutils::Events, Map, Symbol, TryFromVal, TryIntoVal};
 
     let all_events = env.events().all();
     let event_symbol = Symbol::new(&env, "milestone_rejected_event");
@@ -176,11 +175,8 @@ fn test_reject_milestone_whitespace_only_reason_rejected() {
     let (agreement_id, milestone_id) =
         funded_milestone(&client, &employer, &contributor, &token, 1_000, 300);
 
-    let result = client.try_reject_milestone(
-        &agreement_id,
-        &milestone_id,
-        &String::from_str(&env, "   "),
-    );
+    let result =
+        client.try_reject_milestone(&agreement_id, &milestone_id, &String::from_str(&env, "   "));
     assert_eq!(
         result,
         Err(Ok(PayrollError::MilestoneRejectionReasonEmpty)),
@@ -377,8 +373,11 @@ fn test_reject_milestone_id_zero_returns_not_found() {
     let (env, employer, contributor, token, client) = setup();
     let (agreement_id, _) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
 
-    let result =
-        client.try_reject_milestone(&agreement_id, &0u32, &String::from_str(&env, "valid reason"));
+    let result = client.try_reject_milestone(
+        &agreement_id,
+        &0u32,
+        &String::from_str(&env, "valid reason"),
+    );
     assert_eq!(
         result,
         Err(Ok(PayrollError::MilestoneNotFound)),

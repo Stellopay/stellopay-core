@@ -22,7 +22,8 @@ Stellopay. It is designed to work with three existing contracts:
 4. If quorum is met and `for_votes > against_votes`, governance queues an
    `AdminChange` operation in `withdrawal_timelock`.
 5. After the timelock `eta` is reached, a configured multisig signer calls
-   `execute_proposal`.
+   `execute_proposal` within the 14-day execution window (`PROPOSAL_EXECUTION_WINDOW_SECONDS`).
+6. If the execution window lapses, the proposal status becomes `Expired` and it can no longer be executed.
 6. Governance executes the timelock operation and then applies the proposal’s
    state change.
 
@@ -72,7 +73,7 @@ Backward-compatible aliases are also present for earlier local names:
   - Values outside this range (including zero) are rejected with
     `GovernanceError::VotingPeriodOutOfBounds`.
 - The timelock delay is owned by the linked `withdrawal_timelock` contract.
-- The governance contract does not store a separate execution delay.
+- The governance contract has a bounded 14-day execution window (`PROPOSAL_EXECUTION_WINDOW_SECONDS`) after the timelock matures, during which a proposal must be executed. Proposals executed outside this window are rejected and marked as `Expired`.
 
 ### RBAC Integration
 
@@ -112,6 +113,59 @@ This means a passed and matured proposal still cannot be executed by an
 arbitrary account. Only configured multisig signers can trigger the final
 state transition.
 
+### Proposal Metadata Immutability
+
+Once a proposal is created, its descriptive fields are **immutable for the
+lifetime of the proposal**. No public entrypoint can alter:
+
+| Field        | Contents                                    |
+|--------------|---------------------------------------------|
+| `kind`       | The governance action voters are approving  |
+| `proposer`   | Address that created the proposal           |
+| `quorum_votes` | Participation threshold at creation time |
+| `start_time` | Timestamp when voting opened                |
+| `end_time`   | Timestamp when voting closes                |
+
+#### Why This Matters
+
+If `kind` could be altered mid-vote, a proposer or admin could swap out the
+action being voted on — for example, replacing a benign parameter change with
+an arbiter change or upgrade — after votes have accumulated, tricking voters
+into approving something they did not intend.
+
+Similarly, changing `quorum_votes` or the voting window after voting has
+started would let an admin subvert the governance process.
+
+#### Audit of All State-Mutating Entrypoints
+
+| Function                   | Fields written                | Touches metadata? |
+|----------------------------|-------------------------------|-------------------|
+| `create_proposal`          | all (initial write)           | N/A (creation)    |
+| `cast_vote` / `vote`      | for_votes/against/abstain     | No                |
+| `finalize_proposal` / `queue` | status, timelock_op_id, eta | No              |
+| `execute_proposal` / `execute` | status (→Expired/Executed) | No              |
+| `cancel_proposal` / `cancel` | status (→Cancelled)         | No                |
+| `proposer_cancel_proposal` | status (→Cancelled)           | No                |
+| `update_config`            | QuorumVotes, VotingPeriod     | Global config, not proposal |
+
+No code path ever writes to `kind`, `proposer`, `quorum_votes`, `start_time`,
+or `end_time` after the initial `create_proposal` call.
+
+#### Test Coverage
+
+Six dedicated tests verify this invariant:
+
+1. `proposal_metadata_is_immutable_after_vote_cast()` — metadata unchanged after voting
+2. `proposal_metadata_is_immutable_after_finalization()` — metadata unchanged after a proposal passes
+3. `proposal_metadata_is_immutable_after_execution()` — metadata unchanged after execution
+4. `proposal_metadata_is_immutable_after_cancel()` — metadata unchanged after proposer cancellation
+5. `proposal_metadata_is_immutable_after_owner_cancel()` — metadata unchanged after owner cancellation
+6. `proposal_metadata_is_immutable_using_backward_compat_aliases()` — metadata unchanged through `propose`/`vote`/`queue`/`execute` aliases
+7. `no_entrypoint_can_alter_stored_proposal_kind()` — confirms contract API has no mutation path for `kind`
+
+Each test snapshots the five metadata fields at creation and asserts they
+remain identical after every lifecycle transition.
+
 ### Security Notes
 
 - Voting eligibility is role-based, so RBAC integrity is critical.
@@ -119,12 +173,103 @@ state transition.
   RBAC for governance participation, and multisig signers for execution.
 - The timelock creates a review window between approval and execution.
 - Cancelling a succeeded proposal also cancels its queued timelock operation.
+- **Repeat-execution payload safety**: `execute_proposal` checks that the
+  proposal status is exactly `Succeeded` before applying its payload. After
+  the first successful execution the status is set to `Executed`, so any
+  subsequent call fails with `ProposalNotSucceeded`. This prevents a
+  critical-parameter-change, upgrade, or arbiter-change payload from being
+  applied a second time even if called by a different multisig signer.
 - Quorum is absolute, so deployments should set `quorum_votes` to reflect the
   expected number of active governance participants.
 - Snapshotting quorum prevents configuration or voter-population changes from
   changing the rules of an active proposal. This avoids both last-minute quorum
   inflation that blocks a proposal and last-minute quorum reduction that makes
   an under-participated proposal pass.
+- **Proposal metadata immutability** ensures the `kind`, `proposer`,
+  `quorum_votes`, `start_time`, and `end_time` fields are frozen at creation
+  and cannot be altered by any public entrypoint, preventing bait-and-switch
+  attacks on voters.
+
+### get_approved_upgrade() — Quorum and Majority Gating
+
+The `get_approved_upgrade(target)` function returns an approved WASM hash only
+when a proposal passes **both** quorum and majority thresholds simultaneously.
+
+#### Approval Conditions
+
+Both conditions must be satisfied:
+
+| Condition | Formula | Significance |
+|-----------|---------|--------------|
+| **Quorum** | `total_votes >= proposal.quorum_votes` | Ensures sufficient participation |
+| **Majority** | `for_votes > against_votes` | Ensures clear directional consensus |
+
+Where `total_votes = for_votes + against_votes + abstain_votes`.
+
+Note: Abstain votes count toward quorum but not majority. Only For and Against
+votes participate in the majority calculation.
+
+#### Conditional Approval Matrix
+
+| Quorum Met | Majority Met | get_approved_upgrade() Returns |
+|------------|--------------|--------------------------------|
+| ❌ No     | ❌ No        | `None` (proposal defeated)     |
+| ✅ Yes    | ❌ No        | `None` (majority failed)       |
+| ❌ No     | ✅ Yes       | `None` (quorum failed)         |
+| ✅ Yes    | ✅ Yes       | `Some(hash)` (approved)        |
+
+#### Why Both Conditions Matter
+
+- **Quorum alone** would allow a small minority to approve upgrades when most
+  token holders are absent or unengaged.
+- **Majority alone** (without quorum) would allow a tiny group — even two
+  voters, one yes — to approve with 51%.
+- **Both together** ensure meaningful participation AND clear directional
+  consensus before governance decisions take effect.
+
+#### Approval Lifecycle
+
+1. A proposal of kind `UpgradeContract(target, wasm_hash)` is created.
+2. Eligible voters cast For, Against, or Abstain votes.
+3. After voting closes, `finalize_proposal` checks both conditions:
+   - If `total_votes < quorum_votes` OR `for_votes <= against_votes`, proposal
+     is marked `Defeated`.
+   - Otherwise, proposal is marked `Succeeded` and queued in timelock.
+4. After the timelock delay, a multisig signer calls `execute_proposal`.
+5. Execution persists the approved hash to storage under the target address.
+6. Calling `get_approved_upgrade(target)` returns `Some(hash)` if and only if
+   the proposal reached both thresholds.
+
+#### Configuration
+
+- `quorum_votes` — absolute number of votes required (not percentage)
+- Default in tests: 2 votes
+- Can be updated via `update_config` (affects only future proposals)
+
+#### Test Coverage
+
+Quorum and majority gating is tested with 11 dedicated tests:
+
+1. `get_approved_upgrade_neither_quorum_nor_majority()` — No votes → None
+2. `get_approved_upgrade_quorum_met_majority_not_met()` — Quorum ✓ Majority ✗ → None
+3. `get_approved_upgrade_majority_met_quorum_not_met()` — Quorum ✗ Majority ✓ → None
+4. `get_approved_upgrade_both_quorum_and_majority_met()` — Both ✓ → Some(hash)
+5. `get_approved_upgrade_abstain_votes_count_toward_quorum_not_majority()` — Validates abstain behavior
+6. `get_approved_upgrade_quorum_boundary_one_short()` — One vote short of quorum
+7. `get_approved_upgrade_quorum_boundary_at_threshold()` — Exactly at quorum
+8. `get_approved_upgrade_majority_boundary_tie_fails()` — For=Against (tie) → None
+9. `get_approved_upgrade_majority_boundary_loss_one_vote()` — For<Against → None
+10. `get_approved_upgrade_majority_boundary_win_by_one()` — For>Against (barely) → Some(hash)
+11. `get_approved_upgrade_multiple_proposals_independent()` — Multiple targets tracked independently
+
+#### Security Notes
+
+- Both conditions are checked atomically in `finalize_proposal`.
+- A proposal meeting only one condition is never surfaced.
+- Zero votes: `total_votes = 0 < quorum` → proposal defeated (no division by zero).
+- Thresholds use integer arithmetic to avoid floating-point precision issues.
+- Once persisted to storage, an approved upgrade hash represents governance
+  consensus backed by both gates and cannot be modified.
 
 ### Test Coverage
 
@@ -132,15 +277,23 @@ The governance test suite covers:
 
 - initialization and dependency wiring
 - RBAC-gated proposal creation and voting
-- double-vote prevention
+- double-vote prevention (rejection with `AlreadyVoted`)
+- get_vote preserves original choice after rejected double-vote
+- double-vote does not double-count vote tallies
+- get_vote returns `None` for uncast voters
+- same-choice double-vote also rejected and tallies unchanged
 - quorum failure and rejection paths
 - timelock queueing and early-execution rejection
 - multisig signer enforcement
 - proposal cancellation after success
 - parameter, arbiter, and upgrade execution paths
+- repeat-execution rejection with side-effect-only-once verification for both
+  ParameterChange and ArbiterChange proposal types
 - live RBAC role revocation impact on future voting
 - proposal-time quorum snapshots when configuration and voting power change
   during an active vote
+- **quorum and majority gating for get_approved_upgrade** (11 dedicated tests)
+- **proposal metadata immutability** (7 dedicated tests covering all lifecycle transitions)
 
 Run locally with:
 

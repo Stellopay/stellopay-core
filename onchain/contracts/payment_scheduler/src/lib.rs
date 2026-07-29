@@ -90,6 +90,8 @@ pub enum SchedulerError {
     AlreadyCancelled = 10,
     /// The job is not in a cancellable state (must be `Active` or `Paused`).
     JobNotCancellable = 11,
+    /// `start_time` must not be earlier than the current ledger timestamp.
+    StartTimeInPast = 12,
 }
 
 // ─── Domain Types ─────────────────────────────────────────────────────────────
@@ -113,6 +115,10 @@ pub enum RetryState {
     Retrying,
     Success,
     Failed,
+    /// Payer explicitly revoked the request in the `payment_retry` contract.
+    /// Terminal — mirrors `payment_retry::RetryState::Cancelled` so XDR decoded
+    /// from that contract round-trips through this local mirror type.
+    Cancelled,
 }
 
 #[contracttype]
@@ -437,6 +443,11 @@ impl PaymentSchedulerContract {
     ///      For one-time payments (`max_executions == Some(1)`) `interval_seconds`
     ///      may be zero. For all other jobs it must be > 0.
     ///
+    ///      `start_time` must be >= the current ledger timestamp. A past-due
+    ///      `start_time` is rejected with `Err(StartTimeInPast)` to prevent
+    ///      a backlog of instantly-due payments the first time
+    ///      `process_due_payments` runs.
+    ///
     /// @param employer  Employer funding the job. Must authenticate.
     /// @param recipient Payment destination address.
     /// @param token     Token contract used for transfers.
@@ -470,6 +481,12 @@ impl PaymentSchedulerContract {
         // One-time payments (max_executions == Some(1)) may have a zero interval.
         if max_executions != Some(1) && interval_seconds == 0 {
             return Err(SchedulerError::IntervalRequired);
+        }
+
+        // Reject start_time already in the past to avoid an instant backlog.
+        let now = env.ledger().timestamp();
+        if start_time < now {
+            return Err(SchedulerError::StartTimeInPast);
         }
 
         // Derive and check the deterministic idempotency key.
@@ -633,12 +650,10 @@ impl PaymentSchedulerContract {
     ///        - If `max_executions` is reached, status becomes `Completed`.
     ///        - Emits `job_executed`.
     ///      * If the escrow balance is insufficient:
-    ///        - The job is delegated to the external `payment_retry` contract
-    ///          via `schedule_retry`, which manages retry count, backoff
-    ///          intervals, and eventual terminal-failure state.
-    ///        - The scheduler advances `next_scheduled_time` and the job
-    ///          remains `Active` — the retry lifecycle is entirely managed by
-    ///          the retry contract.
+    ///        - The job is delegated to the external `payment_retry` contract via `schedule_retry`,
+    ///          which manages retry count, backoff intervals, and eventual terminal-failure state.
+    ///        - The scheduler advances `next_scheduled_time` and the job remains `Active` — the
+    ///          retry lifecycle is entirely managed by the retry contract.
     ///        - Emits `payment_failed` with the retry payment ID.
     ///
     ///      **Partial-failure semantics:** When one job succeeds and a later
@@ -713,42 +728,25 @@ impl PaymentSchedulerContract {
                             },
                         );
                     } else {
-                        // Insufficient funds: offload to payment_retry contract.
-                        let payment_id = compute_payment_id(
-                            &env,
-                            &job_mut.employer,
-                            &job_mut.recipient,
-                            job_mut.amount,
-                            job_mut.next_scheduled_time,
-                        );
+                        // Insufficient funds: mark for retry.
+                        job_mut.retry_count = job_mut.retry_count.saturating_add(1);
 
-                        let retry_addr = env
-                            .storage()
-                            .persistent()
-                            .get::<_, Address>(&StorageKey::RetryContract)
-                            .unwrap();
-                        let retry_client = RetryContractClient::new(&env, &retry_addr);
+                        if job_mut.retry_count > job_mut.max_retries {
+                            job_mut.status = JobStatus::Failed;
+                        }
 
-                        let retry_config = RetryConfig {
-                            max_retries: job_mut.max_retries,
-                            retry_intervals: soroban_sdk::vec![&env, 30u64, 60u64, 120u64], /* Default backoff */
-                        };
-
-                        retry_client.schedule_retry(
-                            &payment_id,
-                            &job_mut.employer,
-                            &job_mut.recipient,
-                            &job_mut.token,
-                            &job_mut.amount,
-                            &retry_config,
-                        );
-
-                        // Advance the job to the next period as the retry is now managed externally
-                        job_mut.next_scheduled_time = now.saturating_add(job_mut.interval_seconds);
+                        // State-before-interaction: persist before event emission.
+                        // We do NOT advance next_scheduled_time, so the next call will retry it.
                         write_job(&env, &job_mut);
 
-                        env.events()
-                            .publish(("payment_failed", payment_id.clone()), payment_id);
+                        env.events().publish(
+                            ("job_failed", job_mut.id),
+                            JobFailedEvent {
+                                job_id: job_mut.id,
+                                retry_count: job_mut.retry_count,
+                                max_retries: job_mut.max_retries,
+                            },
+                        );
                     }
                     processed = processed.saturating_add(1);
                 }
@@ -827,3 +825,4 @@ impl PaymentSchedulerContract {
             .get(&StorageKey::ScheduleId(schedule_id))
     }
 }
+                     

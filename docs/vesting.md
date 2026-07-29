@@ -114,6 +114,17 @@ balance for active schedules.
   "Nothing to claim".
 - Revocation freezes the vesting clock at `revoked_at`; the beneficiary can
   still claim the already-vested portion, but no further tokens accrue.
+- **Fully-vested revoke is a safe no-op**: if `get_vested_amount` already
+  equals `total_amount` when `revoke` is called, no tokens are transferred
+  (`refunded_amount` is `0`), and schedule bookkeeping is unaffected —
+  `get_vested_amount` and `get_releasable_amount` return the same values
+  before and after the call, since `revoked_at` is only ever set at or after
+  the point vesting had already completed. The schedule's `status` still
+  moves to `Revoked` (revocation is recorded as a real event even when there
+  is nothing left to claw back), and a second `revoke` call is rejected
+  (`"Schedule not active"`) rather than accepted as another no-op. See
+  `test_revoke_after_fully_vested_is_safe_noop` and related tests in
+  `tests/test_vesting.rs` (issue #1066).
 - `approve_early_release` caps the released amount at the unvested remainder
   (`total_amount - vested`), so the admin cannot over-release even when a
   prior `claim` has already consumed part of the vested portion. The cap
@@ -215,13 +226,13 @@ All tests use only Soroban SDK primitives (no external `proptest` or
 
 ### Testing Focus
 
-The test suite contains **54 tests** across 15 categories:
+The test suite contains **55 tests** across 15 categories:
 
 | Category | Count | What it covers |
 |---|---|---|
 | A. Initialization | 4 | `initialize` idempotency, pre-init guards, missing schedule, owner before init |
 | B. Linear | 7 | Exact start/end boundaries, past-end cap, cliff gate (before/at/after), full claim flow |
-| C. Cliff | 4 | 1 s before cliff (=0), exact cliff (=total), full claim, revoke-before-cliff refund |
+| C. Cliff | 5 | 1 s before cliff (=0), exact cliff (=total), 1 s after cliff (still total — no linear accrual), full claim, revoke-before-cliff refund |
 | D. Custom | 4 | Before first checkpoint, between checkpoints, at final checkpoint, early release |
 | E. Claim Security | 5 | Non-beneficiary rejected, double-claim fails, completed schedule rejected, released_amount accumulates, token balance verification |
 | F. Revocation | 4 | Non-revocable rejected, non-employer rejected, double-revoke rejected, partial-vesting split (employer refund + beneficiary claim remainder) |
@@ -246,9 +257,12 @@ The test suite contains **54 tests** across 15 categories:
 | `now == cliff_time` (Linear w/ cliff) | Linear | proportional from `start_time` |
 | `now == cliff_time - 1` | Cliff | 0 |
 | `now == cliff_time` | Cliff | `total_amount` |
+| `now == cliff_time + 1` | Cliff | `total_amount` (no further linear accrual) |
 | Before first checkpoint | Custom | 0 |
 | Between checkpoints | Custom | last passed `cumulative_amount` |
 | After revocation (`now > revoked_at`) | Any | vested amount frozen at `revoked_at` |
+| `revoke` called once fully vested | Any | safe no-op: `refunded_amount == 0`, no transfer, `status` → `Revoked`, vested/releasable amounts unchanged |
+| `revoke` called twice (second call after fully-vested revoke) | Any | panics `"Schedule not active"` — not treated as a further no-op |
 
 ### Soroban Events
 

@@ -267,3 +267,291 @@ fn test_no_adjustment_yet_returns_none() {
     let result = salary_client.get_employee_salary(&employee);
     assert!(result.is_none(), "Expected None before any adjustment");
 }
+
+/// Verifies that the very next `claim_payroll` call after `apply_adjustment`
+/// disburses the updated post-adjustment amount, not the stale pre-adjustment
+/// figure.
+///
+/// Flow:
+///   1. Deploy both contracts and link them via `set_salary_adjustment_contract`.
+///   2. Create a payroll agreement, add employee at `INITIAL_SALARY = 1_000`.
+///   3. Fund internal escrow and claim 2 periods at the original salary.
+///   4. Create, approve, and apply an increase to `NEW_SALARY = 2_500`.
+///   5. Claim the next single period — it must pay at the new rate.
+#[test]
+fn test_applied_adjustment_reflected_in_next_claim() {
+    let env = env();
+    set_time(&env, 1_000);
+
+    let salary_id = env.register_contract(None, SalaryAdjustmentContract);
+    let salary_client = SalaryAdjustmentContractClient::new(&env, &salary_id);
+    let payroll_id = env.register_contract(None, PayrollContract);
+    let payroll_client = PayrollContractClient::new(&env, &payroll_id);
+
+    let salary_owner = addr(&env);
+    let employer = addr(&env);
+    let employee = addr(&env);
+    let approver = addr(&env);
+    let tok = token(&env);
+    mint(&env, &tok, &employer, EMPLOYER_FLOAT);
+
+    salary_client.initialize(&salary_owner);
+    payroll_client.initialize(&employer);
+    payroll_client.set_salary_adjustment_contract(&employer, &salary_id);
+
+    // --- Set up payroll agreement ---
+    let agreement_id = payroll_client.create_payroll_agreement(&employer, &tok, &ONE_WEEK);
+    payroll_client.add_employee_to_agreement(&agreement_id, &employee, &INITIAL_SALARY);
+    payroll_client.activate_agreement(&agreement_id);
+    mint(&env, &tok, &payroll_id, PAYROLL_FUND);
+    seed_payroll(
+        &env,
+        &payroll_id,
+        agreement_id,
+        &tok,
+        &employee,
+        INITIAL_SALARY,
+        PAYROLL_FUND,
+    );
+
+    // --- Claim 2 periods at pre-adjustment salary ---
+    advance(&env, ONE_DAY * 2);
+    payroll_client.claim_payroll(&employee, &agreement_id, &0);
+    assert_eq!(balance(&env, &tok, &employee), INITIAL_SALARY * 2);
+
+    // --- Create + approve + apply a salary increase ---
+    let effective_ts = env.ledger().timestamp();
+    let adj_id = salary_client.create_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &INITIAL_SALARY,
+        &NEW_SALARY,
+        &effective_ts,
+    );
+    salary_client.approve_adjustment(&approver, &adj_id);
+    salary_client.apply_adjustment(&employer, &adj_id);
+
+    // Confirm salary adjustment contract reflects the new salary
+    let tracked_salary = salary_client.get_employee_salary(&employee).unwrap();
+    assert_eq!(tracked_salary, NEW_SALARY);
+
+    // --- Claim the very next period — must use NEW_SALARY ---
+    advance(&env, ONE_DAY * 1);
+    payroll_client.claim_payroll(&employee, &agreement_id, &0);
+
+    // Total = 2 * 1_000 + 1 * 2_500 = 4_500
+    assert_eq!(
+        balance(&env, &tok, &employee),
+        INITIAL_SALARY * 2 + NEW_SALARY * 1
+    );
+}
+
+/// Verifies that a still-pending (or approved-but-unapplied) adjustment does
+/// NOT affect `claim_payroll` amounts. Only an explicitly `apply_adjustment`'d
+/// salary override is visible to the payroll contract.
+///
+/// Flow:
+///   1. Deploy both contracts and link them.
+///   2. Create a payroll agreement, fund, claim 1 period at `INITIAL_SALARY`.
+///   3. Create + approve an increase to `NEW_SALARY` but **do not apply** it.
+///   4. Advance time and claim another period.
+///   5. Assert the second claim still uses `INITIAL_SALARY`, not `NEW_SALARY`.
+#[test]
+fn test_pending_adjustment_does_not_affect_claim_amount() {
+    let env = env();
+    set_time(&env, 1_000);
+
+    let salary_id = env.register_contract(None, SalaryAdjustmentContract);
+    let salary_client = SalaryAdjustmentContractClient::new(&env, &salary_id);
+    let payroll_id = env.register_contract(None, PayrollContract);
+    let payroll_client = PayrollContractClient::new(&env, &payroll_id);
+
+    let salary_owner = addr(&env);
+    let employer = addr(&env);
+    let employee = addr(&env);
+    let approver = addr(&env);
+    let tok = token(&env);
+    mint(&env, &tok, &employer, EMPLOYER_FLOAT);
+
+    salary_client.initialize(&salary_owner);
+    payroll_client.initialize(&employer);
+    payroll_client.set_salary_adjustment_contract(&employer, &salary_id);
+
+    // --- Set up payroll agreement ---
+    let agreement_id = payroll_client.create_payroll_agreement(&employer, &tok, &ONE_WEEK);
+    payroll_client.add_employee_to_agreement(&agreement_id, &employee, &INITIAL_SALARY);
+    payroll_client.activate_agreement(&agreement_id);
+    mint(&env, &tok, &payroll_id, PAYROLL_FUND);
+    seed_payroll(
+        &env,
+        &payroll_id,
+        agreement_id,
+        &tok,
+        &employee,
+        INITIAL_SALARY,
+        PAYROLL_FUND,
+    );
+
+    // --- Claim 1 period at initial salary ---
+    advance(&env, ONE_DAY * 1);
+    payroll_client.claim_payroll(&employee, &agreement_id, &0);
+    assert_eq!(balance(&env, &tok, &employee), INITIAL_SALARY * 1);
+
+    // --- Create + approve adjustment but do NOT apply it ---
+    let effective_ts = env.ledger().timestamp();
+    let adj_id = salary_client.create_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &INITIAL_SALARY,
+        &NEW_SALARY,
+        &effective_ts,
+    );
+    salary_client.approve_adjustment(&approver, &adj_id);
+
+    // Confirm the adjustment exists and is Approved, NOT Applied
+    let adj = salary_client.get_adjustment(&adj_id).unwrap();
+    assert_eq!(adj.status, salary_adjustment::AdjustmentStatus::Approved);
+
+    // Confirm get_employee_salary still returns None (no Applied adjustment yet)
+    assert!(salary_client.get_employee_salary(&employee).is_none());
+
+    // --- Claim another period — must still use INITIAL_SALARY ---
+    advance(&env, ONE_DAY * 1);
+    payroll_client.claim_payroll(&employee, &agreement_id, &0);
+
+    // Total = 1 * 1_000 + 1 * 1_000 = 2_000 (NOT 1_000 + 2_500)
+    assert_eq!(balance(&env, &tok, &employee), INITIAL_SALARY * 2);
+    assert_eq!(
+        payroll_client.get_employee_claimed_periods(&agreement_id, &0),
+        2
+    );
+}
+
+/// Verifies that after an adjustment is applied, the next claim uses the new
+/// rate, and that a subsequent (second) pending adjustment that has NOT yet
+/// been applied is correctly ignored — proving per-adjustment granularity.
+///
+/// This is a regression guard against any coarse "latest adjustment wins"
+/// logic that might leak unapplied state into payroll.
+#[test]
+fn test_second_pending_adjustment_ignored_after_first_applied() {
+    let env = env();
+    set_time(&env, 1_000);
+
+    let salary_id = env.register_contract(None, SalaryAdjustmentContract);
+    let salary_client = SalaryAdjustmentContractClient::new(&env, &salary_id);
+    let payroll_id = env.register_contract(None, PayrollContract);
+    let payroll_client = PayrollContractClient::new(&env, &payroll_id);
+
+    let salary_owner = addr(&env);
+    let employer = addr(&env);
+    let employee = addr(&env);
+    let approver = addr(&env);
+    let tok = token(&env);
+    mint(&env, &tok, &employer, EMPLOYER_FLOAT);
+
+    salary_client.initialize(&salary_owner);
+    payroll_client.initialize(&employer);
+    payroll_client.set_salary_adjustment_contract(&employer, &salary_id);
+
+    // --- Set up payroll agreement ---
+    let agreement_id = payroll_client.create_payroll_agreement(&employer, &tok, &ONE_WEEK);
+    payroll_client.add_employee_to_agreement(&agreement_id, &employee, &INITIAL_SALARY);
+    payroll_client.activate_agreement(&agreement_id);
+    mint(&env, &tok, &payroll_id, PAYROLL_FUND);
+    seed_payroll(
+        &env,
+        &payroll_id,
+        agreement_id,
+        &tok,
+        &employee,
+        INITIAL_SALARY,
+        PAYROLL_FUND,
+    );
+
+    // --- Claim 1 period at initial salary ---
+    advance(&env, ONE_DAY * 1);
+    payroll_client.claim_payroll(&employee, &agreement_id, &0);
+    assert_eq!(balance(&env, &tok, &employee), INITIAL_SALARY * 1);
+
+    // --- Adjustment A: create, approve, and apply (1_000 → 2_000) ---
+    let effective_ts_a = env.ledger().timestamp();
+    let adj_a = salary_client.create_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &INITIAL_SALARY,
+        &2_000i128,
+        &effective_ts_a,
+    );
+    salary_client.approve_adjustment(&approver, &adj_a);
+    salary_client.apply_adjustment(&employer, &adj_a);
+
+    let tracked = salary_client.get_employee_salary(&employee).unwrap();
+    assert_eq!(tracked, 2_000);
+
+    // --- Advance to a new period, then claim at 2_000 ---
+    advance(&env, ONE_DAY * 1);
+    payroll_client.claim_payroll(&employee, &agreement_id, &0);
+    assert_eq!(
+        balance(&env, &tok, &employee),
+        INITIAL_SALARY * 1 + 2_000 * 1
+    );
+
+    // --- Adjustment B: create, approve but do NOT apply (2_000 → 3_000) ---
+    // The effective_date must be AFTER adjustment A's to avoid the
+    // "Conflicting adjustment exists" guard.
+    let effective_ts_b = env.ledger().timestamp();
+    let adj_b = salary_client.create_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &2_000i128,
+        &3_000i128,
+        &effective_ts_b,
+    );
+    salary_client.approve_adjustment(&approver, &adj_b);
+
+    // Confirm adjustment B is still Approved (not Applied)
+    let adj_b_status = salary_client.get_adjustment(&adj_b).unwrap();
+    assert_eq!(
+        adj_b_status.status,
+        salary_adjustment::AdjustmentStatus::Approved
+    );
+
+    // Employee still sees 2_000 from the applied adjustment A
+    assert_eq!(salary_client.get_employee_salary(&employee).unwrap(), 2_000);
+
+    // --- Claim another period — must use 2_000 (adjustment A), not 3_000 ---
+    advance(&env, ONE_DAY * 1);
+    payroll_client.claim_payroll(&employee, &agreement_id, &0);
+
+    // Total = 1 * 1_000 + 1 * 2_000 + 1 * 2_000 = 5_000 (NOT 1_000 + 2_000 + 3_000)
+    assert_eq!(
+        balance(&env, &tok, &employee),
+        INITIAL_SALARY * 1 + 2_000 * 2
+    );
+    assert_eq!(
+        payroll_client.get_employee_claimed_periods(&agreement_id, &0),
+        3
+    );
+
+    // Now apply adjustment B and verify the next claim uses 3_000
+    advance(&env, ONE_DAY * 1);
+    salary_client.apply_adjustment(&employer, &adj_b);
+    assert_eq!(salary_client.get_employee_salary(&employee).unwrap(), 3_000);
+
+    payroll_client.claim_payroll(&employee, &agreement_id, &0);
+
+    // Total = 1_000 + 2_000 + 2_000 + 3_000 = 8_000
+    assert_eq!(
+        balance(&env, &tok, &employee),
+        INITIAL_SALARY * 1 + 2_000 * 2 + 3_000 * 1
+    );
+    assert_eq!(
+        payroll_client.get_employee_claimed_periods(&agreement_id, &0),
+        4
+    );
+}
