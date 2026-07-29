@@ -1092,3 +1092,85 @@ fn test_get_payment_reports_terminal_cancelled_state() {
         RetryState::Cancelled
     );
 }
+
+#[test]
+fn test_simultaneously_due_payments_processed_in_stable_order() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    client.initialize(&owner);
+    env.ledger().with_mut(|li| li.timestamp = 100);
+
+    // Queue 3 payments at the same time, but with different seeds so their IDs differ.
+    // They will all be due immediately (next_retry_at = 100).
+    // We intentionally create them in an order such that their IDs are not naturally sorted.
+    let id_a = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 200,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+    let id_b = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 50,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+    let id_c = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 100,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+
+    // Ensure we have funds
+    asset_admin.mint(&payer, &300);
+    client.fund_payment(&payer, &id_a, &100);
+    client.fund_payment(&payer, &id_b, &100);
+    client.fund_payment(&payer, &id_c, &100);
+
+    // Assert that their natural ID order is: id_b < id_c < id_a
+    let mut ids = vec![id_a.clone(), id_b.clone(), id_c.clone()];
+    ids.sort();
+
+    // Process them with max_payments = 2
+    let processed = client.process_due_payments(&2);
+    assert_eq!(processed, 2, "Should process exactly 2 payments");
+
+    // Because they were sorted by ID, the first two in ascending ID order should be processed (id_b and id_c)
+    // The third one should still be pending.
+    let pay_b = client.get_payment(&ids[0]).unwrap();
+    let pay_c = client.get_payment(&ids[1]).unwrap();
+    let pay_a = client.get_payment(&ids[2]).unwrap();
+
+    assert_eq!(pay_b.state, RetryState::Success);
+    assert_eq!(pay_c.state, RetryState::Success);
+    assert_eq!(pay_a.state, RetryState::Scheduled);
+}

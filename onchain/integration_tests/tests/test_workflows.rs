@@ -456,17 +456,22 @@ fn test_milestone_full_lifecycle() {
     let tok = token(&env);
 
     // Create milestone agreement
-    let aid = client.create_milestone_agreement(&employer, &contributor, &tok);
-    assert_eq!(client.get_milestone_count(&aid), 0);
+    let aid = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &tok,
+        &soroban_sdk::vec![&env, 1i128],
+    );
+    assert_eq!(client.get_milestone_count(&aid), 1);
 
     // Add 3 milestones
     client.add_milestone(&aid, &500);
     client.add_milestone(&aid, &1000);
     client.add_milestone(&aid, &1500);
-    assert_eq!(client.get_milestone_count(&aid), 3);
+    assert_eq!(client.get_milestone_count(&aid), 4);
 
     // Verify milestones are not approved or claimed
-    for id in 1..=3u32 {
+    for id in 1..=4u32 {
         let m = client.get_milestone(&aid, &id).unwrap();
         assert!(!m.approved);
         assert!(!m.claimed);
@@ -509,8 +514,12 @@ fn test_milestone_selective_approval() {
     let contributor = addr(&env);
     let tok = token(&env);
 
-    let aid = client.create_milestone_agreement(&employer, &contributor, &tok);
-    client.add_milestone(&aid, &100);
+    let aid = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &tok,
+        &soroban_sdk::vec![&env, 100i128],
+    );
     client.add_milestone(&aid, &200);
     client.add_milestone(&aid, &300);
 
@@ -543,8 +552,12 @@ fn test_milestone_batch_claim() {
     let contributor = addr(&env);
     let tok = token(&env);
 
-    let aid = client.create_milestone_agreement(&employer, &contributor, &tok);
-    client.add_milestone(&aid, &100);
+    let aid = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &tok,
+        &soroban_sdk::vec![&env, 100i128],
+    );
     client.add_milestone(&aid, &200);
     client.add_milestone(&aid, &300);
 
@@ -590,8 +603,12 @@ fn test_milestone_batch_claim_duplicate_ids() {
     let contributor = addr(&env);
     let tok = token(&env);
 
-    let aid = client.create_milestone_agreement(&employer, &contributor, &tok);
-    client.add_milestone(&aid, &500);
+    let aid = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &tok,
+        &soroban_sdk::vec![&env, 500i128],
+    );
 
     // Fund the agreement: `approve_milestone` requires the accounted escrow
     // balance to cover all unclaimed milestones before approval is allowed.
@@ -621,8 +638,12 @@ fn test_milestone_pause_resume() {
     let contributor = addr(&env);
     let tok = token(&env);
 
-    let aid = client.create_milestone_agreement(&employer, &contributor, &tok);
-    client.add_milestone(&aid, &1000);
+    let aid = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &tok,
+        &soroban_sdk::vec![&env, 1000i128],
+    );
 
     // Fund the agreement: `approve_milestone` requires the accounted escrow
     // balance to cover all unclaimed milestones before approval is allowed.
@@ -655,8 +676,13 @@ fn test_milestone_many_milestones_lifecycle() {
     let contributor = addr(&env);
     let tok = token(&env);
 
-    let aid = client.create_milestone_agreement(&employer, &contributor, &tok);
-    for i in 1..=10i128 {
+    let aid = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &tok,
+        &soroban_sdk::vec![&env, 100i128],
+    );
+    for i in 2..=10i128 {
         client.add_milestone(&aid, &(i * 100));
     }
     assert_eq!(client.get_milestone_count(&aid), 10);
@@ -1834,7 +1860,12 @@ fn test_mixed_agreement_types_coexist() {
     let e1 = client.create_escrow_agreement(&employer, &contributor, &tok, &500, &ONE_DAY, &4);
 
     // Milestone agreement (uses separate counter)
-    let m1 = client.create_milestone_agreement(&employer, &contributor, &tok);
+    let m1 = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &tok,
+        &soroban_sdk::vec![&env, 1i128],
+    );
 
     // Payroll and escrow share the same counter; milestone has its own
     assert_eq!(
@@ -1845,7 +1876,7 @@ fn test_mixed_agreement_types_coexist() {
         client.get_agreement(&e1).unwrap().mode,
         AgreementMode::Escrow
     );
-    assert!(client.get_milestone_count(&m1) == 0);
+    assert!(client.get_milestone_count(&m1) == 1);
 }
 
 /// Zero grace period — cancellation immediately prevents claims.
@@ -1901,12 +1932,20 @@ fn test_concurrent_milestone_agreements() {
     let contributor2 = addr(&env);
     let tok = token(&env);
 
-    let a1 = client.create_milestone_agreement(&employer, &contributor1, &tok);
-    let a2 = client.create_milestone_agreement(&employer, &contributor2, &tok);
+    let a1 = client.create_milestone_agreement(
+        &employer,
+        &contributor1,
+        &tok,
+        &soroban_sdk::vec![&env, 100i128],
+    );
+    let a2 = client.create_milestone_agreement(
+        &employer,
+        &contributor2,
+        &tok,
+        &soroban_sdk::vec![&env, 500i128],
+    );
 
-    client.add_milestone(&a1, &100);
     client.add_milestone(&a1, &200);
-    client.add_milestone(&a2, &500);
 
     assert_eq!(client.get_milestone_count(&a1), 2);
     assert_eq!(client.get_milestone_count(&a2), 1);

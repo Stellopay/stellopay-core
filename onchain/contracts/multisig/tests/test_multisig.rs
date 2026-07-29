@@ -236,3 +236,86 @@ fn cancel_operation_by_creator_or_owner() {
     let res = client.try_cancel_operation(&owner, &op_id);
     assert!(res.is_err());
 }
+
+
+// --- Duplicate-signature rejection tests (#1084) ---
+
+#[test]
+fn test_duplicate_approval_does_not_inflate_approval_count() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_initialized(&env);
+
+    let proposer = signers.get(0).unwrap();
+    let op_id = client.propose_operation(
+        &proposer,
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+
+    // After proposal, creator has auto-approved (count = 1)
+    let approvals = client.get_approvals(&op_id);
+    assert_eq!(approvals.len(), 1);
+
+    // The same signer calling approve_operation again on the same operation
+    // must not inflate the approval count.
+    client.approve_operation(&proposer, &op_id);
+
+    let approvals_after = client.get_approvals(&op_id);
+    assert_eq!(
+        approvals_after.len(),
+        1,
+        "Duplicate approval from the same signer must not increase approval count"
+    );
+
+    // Operation must stay Pending because threshold (2) is not met with only 1 distinct signer.
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Pending);
+}
+
+#[test]
+fn test_operation_only_executes_with_distinct_signers_reaching_threshold() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_initialized(&env);
+
+    let s1 = signers.get(0).unwrap();
+    let s2 = signers.get(1).unwrap();
+    let s3 = signers.get(2).unwrap();
+
+    let op_id = client.propose_operation(
+        &s1,
+        &OperationKind::DisputeResolution(Address::generate(&env), 2u128, 20, 0),
+    );
+
+    // s1 is auto-approved. A duplicate approval from s1 must not trigger execution.
+    client.approve_operation(&s1, &op_id);
+    let op_mid = client.get_operation(&op_id).unwrap();
+    assert_eq!(
+        op_mid.status,
+        OperationStatus::Pending,
+        "Operation must remain Pending after duplicate approval from the same signer"
+    );
+
+    // s2 is a distinct signer. Threshold (2) is now met → execution fires.
+    client.approve_operation(&s2, &op_id);
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(
+        op.status,
+        OperationStatus::Executed,
+        "Operation must execute only when distinct signers reach the threshold"
+    );
+
+    // After execution, any further approval from a remaining signer must be rejected.
+    let res = client.try_approve_operation(&s3, &op_id);
+    assert!(
+        res.is_err(),
+        "Approving an already-executed operation must fail"
+    );
+
+    // The approval list must contain exactly the 2 distinct signers (s1 and s2),
+    // not inflated by the duplicate approval or the post-execution attempt.
+    let approvals = client.get_approvals(&op_id);
+    assert_eq!(
+        approvals.len(),
+        2,
+        "Approval list must contain exactly 2 distinct signers, not duplicate entries"
+    );
+}

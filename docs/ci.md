@@ -12,8 +12,10 @@
 **File:** `.github/workflows/contracts.yml`  
 **Triggers:** push and pull_request to `main`
 
-The workflow runs a single job (`contracts`) on `ubuntu-latest` with the
-following steps, in order:
+The workflow runs two parallel/independent jobs on `ubuntu-latest`:
+
+### Job: `contracts`
+This job runs a smoke check on formatting, building, and testing the onchain contracts tree.
 
 | # | Step | Command | Working directory |
 |---|---|---|---|
@@ -31,6 +33,16 @@ Steps 1–2 are handled automatically by GitHub Actions and have no equivalent
 local command. Steps 3–8 are the checks contributors must pass. Step 9 is a
 diagnostic convenience — its presence is gated on `if: always()` so it is
 preserved on failure for post-mortem download.
+
+### Job: `doc-checker`
+This job builds and runs `tools/doc_checker` against the full `docs/` and `onchain/contracts/` tree.
+It runs with the `--strict` and `--events` flags to promote any documentation gaps into hard failures.
+
+| Step | Command | Working directory |
+|---|---|---|
+| 1. Install Rust | _managed by `dtolnay/rust-toolchain@stable`_ | — |
+| 2. Cache Cargo registry | _managed by `Swatinem/rust-cache@v2`_ | — |
+| 3. Run doc_checker | `./tools/doc_checker/run_ci.py` | — |
 
 ---
 
@@ -53,16 +65,18 @@ rationale.
 
 ### Commands
 
+**1. Contract checks (formatting, build, test)**
+
 ```bash
 cd onchain
 
-# 1. Formatting — must produce no diff
+# Formatting — must produce no diff
 cargo fmt --all -- --check
 
-# 2. Build — all workspace crates must compile
+# Build — all workspace crates must compile
 cargo build --workspace --verbose
 
-# 3. Tests — all workspace tests must pass
+# Tests — all workspace tests must pass
 cargo test --workspace --verbose
 
 # 4. WASM build (step 7 in CI)
@@ -240,12 +254,6 @@ not required to pass before merging:
 - `stellar contract build` — CI uses raw `cargo build --target wasm32-unknown-unknown`.
   `stellar contract build` is functionally equivalent but is not a dependency of CI.
 - Per-package test runs — CI uses `--workspace`; there are no per-crate steps.
-- `tools/doc_checker` — the documentation linter (undocumented public
-  functions, undocumented error-enum variants, and orphaned `docs/*.md`
-  files) is a standalone tool contributors can run manually; it is not
-  wired into `.github/workflows/contracts.yml`. See
-  [`tools/doc_checker/README.md`](../tools/doc_checker/README.md) for usage,
-  including its `--strict` flag for promoting warnings to hard failures.
 
 > If any of the above are added to `.github/workflows/contracts.yml` in the
 > future, this section and the **Run locally** section above must both be
