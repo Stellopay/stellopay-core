@@ -1,9 +1,10 @@
 #![cfg(test)]
 
 use dispute_escalation::{
-    types::{DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel},
+    types::{DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel,
+           KeeperAdvance},
     DisputeEscalatedEvent, DisputeEscalationContract, DisputeEscalationContractClient,
-    DisputeSlaViolationAdvancedEvent,
+    DisputeSlaBreachedEvent, DisputeSlaViolationAdvancedEvent,
 };
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
@@ -557,6 +558,7 @@ fn test_keeper_timeout_emits_sla_violation_advanced_event_only() {
     let payload = DisputeSlaViolationAdvancedEvent::from_val(&env, &event.2);
     assert_eq!(payload.agreement_id, id);
     assert_eq!(payload.level, EscalationLevel::Level1);
+    assert_eq!(payload.keeper, user);
     assert_eq!(payload.breached_at, breached_at);
     assert_eq!(payload.review_deadline, breached_at + PENDING_REVIEW_WINDOW);
 }

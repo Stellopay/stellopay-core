@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, Address, Env, Symbol, Vec,
@@ -703,6 +704,14 @@ impl TaxWithholdingContract {
     /// Does not modify state. Use `accrue_withholding` to record an actual
     /// pay period and update the running liability balances.
     ///
+    /// @notice Calculates tax withholding for an employee without modifying state
+    /// @dev Uses the employee's configured jurisdictions and their rates to compute withholding
+    /// @dev The calculation divides by the constant 10_000 (basis points), not by the rate itself,
+    ///      so zero-rate jurisdictions (tax-exempt brackets) are safe and will not cause division-by-zero
+    /// @param employee Address of the employee whose jurisdictions determine the tax calculation
+    /// @param gross_amount Gross payment amount before withholding (must be positive)
+    /// @return TaxComputation containing gross amount, total tax, net amount, per-jurisdiction shares, and ruleset version
+    ///
     /// # Arguments
     /// * `employee`     — Employee address whose jurisdictions are used.
     /// * `gross_amount` — Gross payment amount before withholding.
@@ -798,13 +807,12 @@ impl TaxWithholdingContract {
     /// state can leave the system vulnerable to double-remittance attacks.
     ///
     /// # Arguments
-    /// * `caller`       — Must be the contract owner. Tokens are transferred
-    ///                    **from** this address, so the caller must hold the
-    ///                    requested amount in `token`.
+    /// * `caller`       — Must be the contract owner. Tokens are transferred **from** this address,
+    ///   so the caller must hold the requested amount in `token`.
     /// * `jurisdiction` — Jurisdiction whose balance is being remitted.
     /// * `token`        — Token contract address for the transfer.
-    /// * `amount`       — Positive amount to remit, not greater than the
-    ///                    currently accrued liability.
+    /// * `amount`       — Positive amount to remit, not greater than the currently accrued
+    ///   liability.
     ///
     /// # Returns
     /// Amount remitted.
@@ -823,8 +831,8 @@ impl TaxWithholdingContract {
     /// * `Unauthorized`   — caller is not the owner.
     /// * `TreasuryNotSet` — no treasury configured for the jurisdiction.
     /// * `NothingToRemit` — accrued balance is zero.
-    /// * `AmountExceedsAccrued` — `amount` is non-positive or exceeds the
-    ///                             currently accrued balance.
+    /// * `AmountExceedsAccrued` — `amount` is non-positive or exceeds the currently accrued
+    ///   balance.
     pub fn remit_withholding(
         env: Env,
         caller: Address,

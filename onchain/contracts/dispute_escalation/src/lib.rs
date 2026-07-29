@@ -78,6 +78,7 @@
 //! act on the `outcome` field to release or redirect funds.
 
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 pub mod storage;
 pub mod types;
 
@@ -86,7 +87,7 @@ use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 use types::{
     DisputeDetails, DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel,
-    StorageKey, MAX_OTHER_REASON_LEN,
+    KeeperAdvance, StorageKey, MAX_OTHER_REASON_LEN,
 };
 
 // ─── Events ──────────────────────────────────────────────────────────────────
@@ -157,6 +158,7 @@ pub struct DisputeExpiredEvent {
 /// # Fields
 /// * `agreement_id`   — identifies the dispute.
 /// * `level`          — escalation level at which the SLA was breached.
+/// * `keeper`         — address of the keeper who triggered the advance.
 /// * `breached_at`    — ledger timestamp at which the advance was triggered.
 /// * `review_deadline`— timestamp by which the admin must act before the
 ///   dispute can be expired via `expire_dispute`.
@@ -169,6 +171,29 @@ pub struct DisputeExpiredEvent {
 pub struct DisputeSlaBreachedEvent {
     pub agreement_id: u128,
     pub level: EscalationLevel,
+    pub keeper: Address,
+    pub breached_at: u64,
+    pub review_deadline: u64,
+}
+
+/// New-style SLA violation event emitted alongside [`DisputeSlaBreachedEvent`]
+/// for forward-looking consumers.  Both events are emitted from a single
+/// `keeper_advance_stage` call so that existing indexers remain unaffected
+/// while new integrations can subscribe to the more descriptive topic.
+///
+/// # Fields
+/// * `agreement_id`    — identifies the dispute.
+/// * `level`           — escalation level at which the SLA was breached.
+/// * `keeper`          — address of the keeper who triggered the advance.
+/// * `breached_at`     — ledger timestamp at which the advance was triggered.
+/// * `review_deadline` — timestamp by which the admin must act before the
+///   dispute can be expired via `expire_dispute`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeSlaViolationAdvancedEvent {
+    pub agreement_id: u128,
+    pub level: EscalationLevel,
+    pub keeper: Address,
     pub breached_at: u64,
     pub review_deadline: u64,
 }
@@ -275,9 +300,8 @@ impl DisputeEscalationContract {
     /// # Arguments
     /// * `caller`       — party filing the dispute; must authenticate.
     /// * `agreement_id` — ID of the agreement under dispute.
-    /// * `reason`       — structured reason for the dispute. `Other(text)` is
-    ///   capped at [`MAX_OTHER_REASON_LEN`] bytes; longer text returns
-    ///   `ReasonTooLong`.
+    /// * `reason`       — structured reason for the dispute. `Other(text)` is capped at
+    ///   [`MAX_OTHER_REASON_LEN`] bytes; longer text returns `ReasonTooLong`.
     ///
     /// # State transition
     /// `(none)` → `Open @ Level1`
@@ -331,6 +355,7 @@ impl DisputeEscalationContract {
             phase_deadline: deadline,
             outcome: DisputeOutcome::Unset,
             reason: reason.clone(),
+            keeper_advances: Vec::new(&env),
         };
 
         storage::set_dispute(&env, agreement_id, &dispute);
@@ -372,7 +397,8 @@ impl DisputeEscalationContract {
     /// * `AlreadyResolved`       — dispute is already in `Resolved` state.
     /// * `AlreadyFinalised`      — dispute is in terminal `Finalised` state.
     /// * `AlreadyTerminal`       — dispute is in terminal `Expired` state.
-    /// * `InvalidTransition`     — dispute is in `PendingReview` (SLA already breached; escalation window has passed).
+    /// * `InvalidTransition`     — dispute is in `PendingReview` (SLA already breached; escalation
+    ///   window has passed).
     /// * `TimeLimitExpired`      — escalation window has passed.
     /// * `MaxEscalationReached`  — already at Level3.
     pub fn escalate_dispute(
@@ -455,8 +481,10 @@ impl DisputeEscalationContract {
     /// * `DisputeNotFound`       — no dispute for this agreement.
     /// * `AlreadyFinalised`      — dispute is in terminal `Finalised` state.
     /// * `AlreadyTerminal`       — dispute is in terminal `Expired` state.
-    /// * `AlreadyResolved`       — dispute is in `Resolved` state (appeal window manages its own deadline).
-    /// * `AlreadyPendingReview`  — `keeper_advance_stage` was already called; idempotent call rejected.
+    /// * `AlreadyResolved`       — dispute is in `Resolved` state (appeal window manages its own
+    ///   deadline).
+    /// * `AlreadyPendingReview`  — `keeper_advance_stage` was already called; idempotent call
+    ///   rejected.
     /// * `DeadlineNotPassed`     — SLA deadline has not yet elapsed; too early to advance.
     pub fn keeper_advance_stage(
         env: Env,
@@ -494,6 +522,15 @@ impl DisputeEscalationContract {
             .checked_add(review_limit)
             .ok_or(DisputeError::SlaDeadlineOverflow)?;
 
+        // Record the keeper's identity and the advance timestamp on the
+        // dispute record for full accountability — queryable later via
+        // `get_dispute`.
+        dispute.keeper_advances.push_back(KeeperAdvance {
+            keeper: caller.clone(),
+            advanced_at: now,
+            level: dispute.level.clone(),
+        });
+
         // `phase_started_at` records exactly when the SLA breach was observed.
         dispute.status = DisputeStatus::PendingReview;
         dispute.phase_started_at = now;
@@ -518,6 +555,7 @@ impl DisputeEscalationContract {
             DisputeSlaViolationAdvancedEvent {
                 agreement_id,
                 level: dispute.level,
+                keeper: caller,
                 breached_at: now,
                 review_deadline,
             },
@@ -554,8 +592,8 @@ impl DisputeEscalationContract {
     /// `* @ L3` → `Finalised @ L3` (terminal — no further appeal)
     ///
     /// # Security
-    /// * Cannot double-resolve: `AlreadyResolved` / `AlreadyFinalised` returned
-    ///   if the dispute is already in a terminal or resolved state.
+    /// * Cannot double-resolve: `AlreadyResolved` / `AlreadyFinalised` returned if the dispute is
+    ///   already in a terminal or resolved state.
     /// * `Unset` is not a valid outcome — returns `InvalidTransition`.
     ///
     /// # Access Control
@@ -743,8 +781,8 @@ impl DisputeEscalationContract {
     /// * `DisputeNotFound`    — no dispute for this agreement.
     /// * `AlreadyFinalised`   — cannot expire a finalised dispute.
     /// * `AlreadyTerminal`    — already `Expired`.
-    /// * `AlreadyResolved`    — `Resolved` disputes have an appeal window; use
-    ///                          `appeal_ruling` or let it become de-facto binding.
+    /// * `AlreadyResolved`    — `Resolved` disputes have an appeal window; use `appeal_ruling` or
+    ///   let it become de-facto binding.
     /// * `DeadlineNotPassed`  — deadline has not yet passed.
     pub fn expire_dispute(
         env: Env,

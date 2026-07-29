@@ -363,3 +363,35 @@ impl MaliciousMilestoneHook {
             .get::<_, Address>(&Symbol::new(&env, "payroll"))
     }
 }
+
+
+// ============================================================================
+// Compile-time interface guard (#813)
+// ============================================================================
+//
+// Constant function-pointer assertions ensure that public method signatures
+// in `UpgradeableContract` stay in sync with the interface that upgrade and
+// migration tests depend on.  If a signature changes, tests will not compile,
+// preventing the mock from silently diverging.
+#[cfg(test)]
+mod __interface_guard {
+    use super::UpgradeableContract;
+    use soroban_sdk::{Address, BytesN, Env, Symbol};
+
+    // Lifecycle methods
+    const _INIT: fn(Env, Address) -> u32 = UpgradeableContract::initialize;
+    const _VERSION: fn(Env) -> u32 = UpgradeableContract::get_contract_version;
+    const _AUTH_UPGRADE: fn(Env, Address, BytesN<32>) = UpgradeableContract::authorize_upgrade;
+    const _UPGRADE: fn(Env, BytesN<32>) = UpgradeableContract::upgrade;
+    const _MIGRATE: fn(Env) -> bool = UpgradeableContract::migrate;
+
+    // Data-store methods used by upgrade-persistence tests
+    const _STORE_AGREEMENT: fn(Env, u32, Symbol) = UpgradeableContract::store_agreement;
+    const _GET_AGREEMENT: fn(Env, u32) -> Option<Symbol> = UpgradeableContract::get_agreement;
+    const _STORE_EMPLOYEE: fn(Env, u32, Symbol) = UpgradeableContract::store_employee;
+    const _GET_EMPLOYEE: fn(Env, u32) -> Option<Symbol> = UpgradeableContract::get_employee;
+    const _STORE_BALANCE: fn(Env, Address, i128) = UpgradeableContract::store_balance;
+    const _GET_BALANCE: fn(Env, Address) -> i128 = UpgradeableContract::get_balance;
+    const _STORE_SETTING: fn(Env, Symbol, u32) = UpgradeableContract::store_setting;
+    const _GET_SETTING: fn(Env, Symbol) -> Option<u32> = UpgradeableContract::get_setting;
+}
