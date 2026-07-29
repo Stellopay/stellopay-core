@@ -86,7 +86,7 @@ use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 use types::{
     DisputeDetails, DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel,
-    StorageKey, MAX_OTHER_REASON_LEN,
+    KeeperAdvance, StorageKey, MAX_OTHER_REASON_LEN,
 };
 
 // ─── Events ──────────────────────────────────────────────────────────────────
@@ -157,6 +157,7 @@ pub struct DisputeExpiredEvent {
 /// # Fields
 /// * `agreement_id`   — identifies the dispute.
 /// * `level`          — escalation level at which the SLA was breached.
+/// * `keeper`         — address of the keeper who triggered the advance.
 /// * `breached_at`    — ledger timestamp at which the advance was triggered.
 /// * `review_deadline`— timestamp by which the admin must act before the dispute can be expired via
 ///   `expire_dispute`.
@@ -165,6 +166,7 @@ pub struct DisputeExpiredEvent {
 pub struct DisputeSlaBreachedEvent {
     pub agreement_id: u128,
     pub level: EscalationLevel,
+    pub keeper: Address,
     pub breached_at: u64,
     pub review_deadline: u64,
 }
@@ -177,6 +179,7 @@ pub struct DisputeSlaBreachedEvent {
 /// # Fields
 /// * `agreement_id`    — identifies the dispute.
 /// * `level`           — escalation level at which the SLA was breached.
+/// * `keeper`          — address of the keeper who triggered the advance.
 /// * `breached_at`     — ledger timestamp at which the advance was triggered.
 /// * `review_deadline` — timestamp by which the admin must act before the
 ///   dispute can be expired via `expire_dispute`.
@@ -185,6 +188,7 @@ pub struct DisputeSlaBreachedEvent {
 pub struct DisputeSlaViolationAdvancedEvent {
     pub agreement_id: u128,
     pub level: EscalationLevel,
+    pub keeper: Address,
     pub breached_at: u64,
     pub review_deadline: u64,
 }
@@ -295,6 +299,7 @@ impl DisputeEscalationContract {
             phase_deadline: deadline,
             outcome: DisputeOutcome::Unset,
             reason: reason.clone(),
+            keeper_advances: Vec::new(&env),
         };
 
         storage::set_dispute(&env, agreement_id, &dispute);
@@ -461,6 +466,15 @@ impl DisputeEscalationContract {
             .checked_add(review_limit)
             .ok_or(DisputeError::SlaDeadlineOverflow)?;
 
+        // Record the keeper's identity and the advance timestamp on the
+        // dispute record for full accountability — queryable later via
+        // `get_dispute`.
+        dispute.keeper_advances.push_back(KeeperAdvance {
+            keeper: caller.clone(),
+            advanced_at: now,
+            level: dispute.level.clone(),
+        });
+
         // `phase_started_at` records exactly when the SLA breach was observed.
         dispute.status = DisputeStatus::PendingReview;
         dispute.phase_started_at = now;
@@ -473,6 +487,7 @@ impl DisputeEscalationContract {
             DisputeSlaBreachedEvent {
                 agreement_id,
                 level: dispute.level.clone(),
+                keeper: caller.clone(),
                 breached_at: now,
                 review_deadline,
             },
@@ -483,6 +498,7 @@ impl DisputeEscalationContract {
             DisputeSlaViolationAdvancedEvent {
                 agreement_id,
                 level: dispute.level,
+                keeper: caller,
                 breached_at: now,
                 review_deadline,
             },
