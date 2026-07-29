@@ -1,9 +1,22 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Env, Vec};
 
 #[contract]
 pub struct TokenVestingContract;
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub enum Error {
+    ContractNotInitialized = 1,
+    AlreadyInitialized = 2,
+    Unauthorized = 3,
+    InvalidInput = 4,
+    ScheduleNotFound = 5,
+    NothingToClaim = 6,
+    ScheduleCompleted = 7,
+    RevokedSchedule = 8,
+}
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -115,7 +128,9 @@ fn require_initialized(env: &Env) {
         .persistent()
         .get::<_, bool>(&StorageKey::Initialized)
         .unwrap_or(false);
-    assert!(initialized, "Contract not initialized");
+    if !initialized {
+        panic_with_error!(env, Error::ContractNotInitialized);
+    }
 }
 
 fn read_owner(env: &Env) -> Address {
@@ -142,7 +157,7 @@ fn read_schedule(env: &Env, id: u128) -> VestingSchedule {
     env.storage()
         .persistent()
         .get::<_, VestingSchedule>(&StorageKey::Schedule(id))
-        .expect("Schedule not found")
+        .unwrap_or_else(|| panic_with_error!(env, Error::ScheduleNotFound))
 }
 
 fn write_schedule(env: &Env, schedule: &VestingSchedule) {
@@ -312,7 +327,9 @@ impl TokenVestingContract {
             .persistent()
             .get::<_, bool>(&StorageKey::Initialized)
             .unwrap_or(false);
-        assert!(!initialized, "Contract already initialized");
+        if initialized {
+            panic_with_error!(env, Error::AlreadyInitialized);
+        }
 
         env.storage().persistent().set(&StorageKey::Owner, &owner);
         env.storage()
@@ -345,14 +362,17 @@ impl TokenVestingContract {
         require_initialized(&env);
         employer.require_auth();
 
-        assert!(total_amount > 0, "Total amount must be positive");
-        assert!(end_time > start_time, "End time must be after start time");
+        if total_amount <= 0 {
+            panic_with_error!(env, Error::InvalidInput);
+        }
+        if end_time <= start_time {
+            panic_with_error!(env, Error::InvalidInput);
+        }
 
         if let Some(cliff) = cliff_time {
-            assert!(
-                cliff >= start_time && cliff <= end_time,
-                "Cliff must be within [start, end]"
-            );
+            if cliff < start_time || cliff > end_time {
+                panic_with_error!(env, Error::InvalidInput);
+            }
         }
 
         // Escrow tokens in the vesting contract.
@@ -415,7 +435,9 @@ impl TokenVestingContract {
         require_initialized(&env);
         employer.require_auth();
 
-        assert!(total_amount > 0, "Total amount must be positive");
+        if total_amount <= 0 {
+            panic_with_error!(env, Error::InvalidInput);
+        }
 
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&employer, env.current_contract_address(), &total_amount);
@@ -478,25 +500,29 @@ impl TokenVestingContract {
         require_initialized(&env);
         employer.require_auth();
 
-        assert!(total_amount > 0, "Total amount must be positive");
-        assert!(!checkpoints.is_empty(), "At least one checkpoint required");
+        if total_amount <= 0 {
+            panic_with_error!(env, Error::InvalidInput);
+        }
+        if checkpoints.is_empty() {
+            panic_with_error!(env, Error::InvalidInput);
+        }
 
         let mut last_time: u64 = 0;
         let mut last_amount: i128 = 0;
         for i in 0..checkpoints.len() {
             let cp = checkpoints.get(i).unwrap();
-            assert!(cp.time >= last_time, "Checkpoints must be sorted");
-            assert!(
-                cp.cumulative_amount >= last_amount,
-                "Checkpoint amounts must be non-decreasing"
-            );
+            if cp.time < last_time {
+                panic_with_error!(env, Error::InvalidInput);
+            }
+            if cp.cumulative_amount < last_amount {
+                panic_with_error!(env, Error::InvalidInput);
+            }
             last_time = cp.time;
             last_amount = cp.cumulative_amount;
         }
-        assert!(
-            last_amount == total_amount,
-            "Last checkpoint must equal total_amount"
-        );
+        if last_amount != total_amount {
+            panic_with_error!(env, Error::InvalidInput);
+        }
 
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&employer, env.current_contract_address(), &total_amount);
@@ -539,23 +565,27 @@ impl TokenVestingContract {
     /// @param beneficiary Schedule beneficiary; must authenticate.
     /// @param schedule_id Vesting schedule identifier.
     /// @return amount Claimed token amount.
+    /// @dev Returns RevokedSchedule error if the schedule has been revoked.
     pub fn claim(env: Env, beneficiary: Address, schedule_id: u128) -> i128 {
         require_initialized(&env);
         beneficiary.require_auth();
 
         let mut schedule = read_schedule(&env, schedule_id);
-        assert!(
-            schedule.beneficiary == beneficiary,
-            "Only beneficiary can claim"
-        );
-        assert!(
-            schedule.status != VestingStatus::Completed,
-            "Schedule already completed"
-        );
+        if schedule.beneficiary != beneficiary {
+            panic_with_error!(env, Error::Unauthorized);
+        }
+        if schedule.status == VestingStatus::Completed {
+            panic_with_error!(env, Error::ScheduleCompleted);
+        }
 
         let now = env.ledger().timestamp();
         let amount = compute_releasable(now, &schedule);
-        assert!(amount > 0, "Nothing to claim");
+        if amount <= 0 {
+            if schedule.status == VestingStatus::Revoked {
+                panic_with_error!(env, Error::RevokedSchedule);
+            }
+            panic_with_error!(env, Error::NothingToClaim);
+        }
 
         // Checks-effects-interactions:
         // commit released amount before external transfer to prevent reentrant
@@ -601,22 +631,24 @@ impl TokenVestingContract {
         admin.require_auth();
 
         let owner = read_owner(&env);
-        assert!(admin == owner, "Only owner can approve early release");
-        assert!(amount > 0, "Amount must be positive");
+        if admin != owner {
+            panic_with_error!(env, Error::Unauthorized);
+        }
+        if amount <= 0 {
+            panic_with_error!(env, Error::InvalidInput);
+        }
 
         let mut schedule = read_schedule(&env, schedule_id);
-        assert!(
-            schedule.status == VestingStatus::Active,
-            "Schedule not active"
-        );
+        if schedule.status != VestingStatus::Active {
+            panic_with_error!(env, Error::InvalidInput);
+        }
 
         let now = env.ledger().timestamp();
         let vested = compute_vested_amount(now, &schedule);
         let unvested_remaining = schedule.total_amount.checked_sub(vested).unwrap_or(0);
-        assert!(
-            unvested_remaining > 0,
-            "No unvested tokens remain for early release"
-        );
+        if unvested_remaining <= 0 {
+            panic_with_error!(env, Error::InvalidInput);
+        }
 
         let release_amount = if amount > unvested_remaining {
             unvested_remaining
@@ -681,17 +713,22 @@ impl TokenVestingContract {
         employer.require_auth();
 
         let mut schedule = read_schedule(&env, schedule_id);
-        assert!(schedule.employer == employer, "Only employer can revoke");
-        assert!(schedule.revocable, "Schedule is not revocable");
-        assert!(
-            schedule.status == VestingStatus::Active,
-            "Schedule not active"
-        );
+        if schedule.employer != employer {
+            panic_with_error!(env, Error::Unauthorized);
+        }
+        if !schedule.revocable {
+            panic_with_error!(env, Error::Unauthorized);
+        }
+        if schedule.status != VestingStatus::Active {
+            panic_with_error!(env, Error::InvalidInput);
+        }
 
         let now = env.ledger().timestamp();
         let vested = compute_vested_amount(now, &schedule);
         let unvested = schedule.total_amount.checked_sub(vested).unwrap_or(0);
-        assert!(unvested >= 0, "Invalid vesting state");
+        if unvested < 0 {
+            panic_with_error!(env, Error::InvalidInput);
+        }
 
         schedule.status = VestingStatus::Revoked;
         schedule.revoked_at = Some(now);
