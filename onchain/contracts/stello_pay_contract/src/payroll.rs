@@ -1,6 +1,8 @@
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    IntoVal, Symbol, Val, Vec,
+    contractclient, contracttype, panic_with_error, token,
+    token::TokenClient,
+    Address, Env, IntoVal, String, Symbol, Val, Vec,
 };
 
 use crate::{
@@ -19,6 +21,8 @@ use crate::{
         MilestoneAdded, MilestoneApproved, MilestoneClaimed, MilestoneExpiredEvent,
         MilestoneFundedEvent, MilestoneRejectedEvent, MultisigConfigChangedEvent,
         PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
+        emit_bulk_agreements_paused, emit_bulk_agreements_unpaused,
+        BulkAgreementsPausedEvent, BulkAgreementsUnpausedEvent,
     },
     storage::{
         Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
@@ -2215,7 +2219,7 @@ pub fn resolve_dispute(
     refund_employer: i128,
 ) -> Result<(), PayrollError> {
     acquire_reentrancy_guard(&env)?;
-    let result = resolve_dispute_inner(env, caller, agreement_id, pay_employee, refund_employer);
+    let result = resolve_dispute_inner(env.clone(), caller, agreement_id, pay_employee, refund_employer);
     release_reentrancy_guard(&env);
     result
 }
@@ -2263,7 +2267,7 @@ pub fn resolve_dispute_multisig(
 ) -> Result<(), PayrollError> {
     acquire_reentrancy_guard(&env)?;
     let result = resolve_dispute_multisig_inner(
-        env,
+        env.clone(),
         caller,
         agreement_id,
         pay_employee,
@@ -3824,7 +3828,7 @@ fn convert_amount(
 /// # Emits
 ///
 /// * [`AgreementPausedEvent`] with the `agreement_id`.
-pub fn pause_agreement(env: &Env, agreement_id: u128) {
+pub fn pause_agreement(env: &Env, agreement_id: u128) -> Result<(), PayrollError> {
     let mut agreement = get_agreement(env, agreement_id).expect("Agreement not found");
 
     agreement.employer.require_auth();

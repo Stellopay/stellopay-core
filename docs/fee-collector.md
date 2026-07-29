@@ -1,7 +1,7 @@
 # Fee Collector
 
 > **Contract path**: `onchain/contracts/fee_collector/src/lib.rs`  
-> **Test path**: `onchain/contracts/fee_collector/tests/test_fees.rs`
+> **Test path**: `onchain/contracts/fee_collector/tests/test_tiered_fees.rs`
 
 ## Overview
 
@@ -60,6 +60,8 @@ When `mode = Tiered`, the fee rate is resolved from a stored `tiered_schedule` (
 4. Apply `floor(gross_amount × selected_fee_bps / 10 000)`.
 
 Use `limit: i128::MAX` for the final tier to create an explicit open-ended top tier.
+
+Boundary amounts are resolved with an inclusive lower-bound rule: a gross amount equal to a tier's `limit` uses that tier's fee rate, while one unit above the threshold moves to the next tier. This is covered by regression tests in `onchain/contracts/fee_collector/tests/test_tiered_fees.rs` for each configured threshold.
 
 **Example schedule:**
 
