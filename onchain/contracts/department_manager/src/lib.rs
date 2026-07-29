@@ -818,6 +818,113 @@ impl DepartmentManagerContract {
             .publish((symbol_short!("dept_mrg"), source), target);
     }
 
+    /// Removes a department from an organization.
+    ///
+    /// # Arguments
+    /// * `caller`   - Must be the **org owner** (must authenticate).
+    /// * `dept_id`  - Department ID to remove.
+    ///
+    /// # Panics
+    /// - `"Organization not found"` – org not found.
+    /// - `"Not organization owner"` – caller is not the org owner.
+    /// - `"Department not found"` – dept_id does not exist.
+    /// - `"Cannot remove department with active employees"` – department has employees assigned.
+    /// - `"Cannot remove department with child departments"` – department has child departments.
+    ///
+    /// # Events
+    /// Publishes `("dept_rmvd", dept_id)` on success.
+    pub fn remove_department(env: Env, caller: Address, dept_id: u128) {
+        caller.require_auth();
+        Self::require_initialized(&env);
+
+        let dept: Department = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Department(dept_id))
+            .expect("Department not found");
+
+        let org: Organization = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Organization(dept.org_id))
+            .expect("Organization not found");
+        assert!(org.owner == caller, "Not organization owner");
+
+        // Check for active employees
+        let employees: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::DepartmentEmployees(dept_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        assert!(
+            employees.is_empty(),
+            "Cannot remove department with active employees"
+        );
+
+        // Check for child departments
+        let children: Vec<u128> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::DepartmentChildren(dept_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        assert!(
+            children.is_empty(),
+            "Cannot remove department with child departments"
+        );
+
+        // Remove dept from its parent's children list (if it has a parent)
+        if let Some(parent_id) = dept.parent_id {
+            let mut parent_children: Vec<u128> = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::DepartmentChildren(parent_id))
+                .unwrap_or_else(|| Vec::new(&env));
+            let mut i = 0u32;
+            while i < parent_children.len() {
+                if parent_children.get(i) == Some(dept_id) {
+                    parent_children.remove(i);
+                    break;
+                }
+                i += 1;
+            }
+            env.storage()
+                .persistent()
+                .set(&StorageKey::DepartmentChildren(parent_id), &parent_children);
+        }
+
+        // Remove dept from org's department list
+        let mut org_depts: Vec<u128> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::OrgDepartments(dept.org_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut i = 0u32;
+        while i < org_depts.len() {
+            if org_depts.get(i) == Some(dept_id) {
+                org_depts.remove(i);
+                break;
+            }
+            i += 1;
+        }
+        env.storage()
+            .persistent()
+            .set(&StorageKey::OrgDepartments(dept.org_id), &org_depts);
+
+        // Clean up department storage entries
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::Department(dept_id));
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::DepartmentChildren(dept_id));
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::DepartmentEmployees(dept_id));
+
+        env.events()
+            .publish((symbol_short!("dept_rmvd"), dept_id), dept_id);
+    }
+
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
