@@ -107,3 +107,49 @@ fn test_claim_payroll_paid_amount_addition_overflow_guard() {
     let result = client.try_claim_payroll(&employee, &agreement_id, &0u32);
     assert_eq!(result, Err(Ok(PayrollError::InvalidData)));
 }
+
+/// Verifies that `add_milestone` rejects an amount that would overflow the
+/// cumulative total, returning `InvalidData` instead of silently wrapping.
+#[test]
+fn test_milestone_amount_summation_overflow_guard() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_contract_id, client, _owner) = setup_contract(&env);
+    let employer = Address::generate(&env);
+    let contributor = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+
+    // Add a milestone at i128::MAX — the total will be i128::MAX.
+    client.add_milestone(&agreement_id, &i128::MAX);
+
+    // Any positive amount would overflow i128::MAX + positive > i128::MAX.
+    let result = client.try_add_milestone(&agreement_id, &1i128);
+    assert_eq!(
+        result,
+        Err(Ok(PayrollError::InvalidData)),
+        "adding a milestone that overflows the cumulative total must be rejected"
+    );
+}
+
+/// Verifies that adding normal (non-overflowing) milestone amounts succeeds.
+#[test]
+fn test_milestone_amount_summation_normal_amounts_ok() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_contract_id, client, _owner) = setup_contract(&env);
+    let employer = Address::generate(&env);
+    let contributor = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+
+    client.add_milestone(&agreement_id, &100i128);
+    client.add_milestone(&agreement_id, &200i128);
+    client.add_milestone(&agreement_id, &300i128);
+    // No panic on overflow means normal amounts are unaffected.
+    assert!(true);
+}

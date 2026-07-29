@@ -726,6 +726,163 @@ fn list_proposals_status_filter_with_pagination() {
 }
 
 // ---------------------------------------------------------------------------
+// Repeat-execution safety tests
+// ---------------------------------------------------------------------------
+
+/// Verifies that a second call to execute_proposal on an already-executed
+/// proposal is rejected and side effects are not applied twice.
+#[test]
+fn repeat_execute_proposal_is_rejected_and_side_effect_applied_once() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // Use a ParameterChange so we can verify the side effect value.
+    let key = Symbol::new(&env, "withdraw_fee_bps");
+    let expected_value: i128 = 125;
+    let proposal_id = setup.governance.create_proposal(
+        &setup.employer_a,
+        &ProposalKind::ParameterChange(key.clone(), expected_value),
+    );
+
+    // Vote — two For votes reach quorum (quorum = 2)
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    // Finalize after voting ends
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, ProposalStatus::Succeeded);
+
+    // Advance past the timelock delay (60s) and execute
+    advance_time(&env, 60);
+    setup
+        .governance
+        .execute_proposal(&setup.signer_a, &proposal_id);
+
+    // Verify first execution succeeded
+    let executed = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(executed.status, ProposalStatus::Executed);
+
+    // Verify the side effect was applied once with the correct value
+    assert_eq!(
+        setup.governance.get_parameter(&key),
+        Some(expected_value),
+        "parameter must be set after the first execution"
+    );
+
+    // Second execution must be rejected — the proposal is already Executed,
+    // not Succeeded.
+    let second = setup
+        .governance
+        .try_execute_proposal(&setup.signer_a, &proposal_id);
+    assert_eq!(
+        second,
+        Err(Ok(GovernanceError::ProposalNotSucceeded)),
+        "repeat execute_proposal on an already-executed proposal must be rejected"
+    );
+
+    // Verify the side effect is unchanged — the payload was NOT applied twice.
+    assert_eq!(
+        setup.governance.get_parameter(&key),
+        Some(expected_value),
+        "parameter value must remain unchanged after rejected second execution"
+    );
+}
+
+/// Verifies that re-executing an ArbiterChange proposal is also rejected and
+/// the arbiter address is not overwritten.
+#[test]
+fn repeat_execute_arbiter_change_proposal_side_effect_applied_once() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let new_arbiter = Address::generate(&env);
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(new_arbiter.clone()),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+    advance_time(&env, 60);
+
+    // First execution
+    setup
+        .governance
+        .execute_proposal(&setup.signer_a, &proposal_id);
+    assert_eq!(
+        setup.governance.get_arbiter().unwrap(),
+        new_arbiter,
+        "arbiter must be set after first execution"
+    );
+
+    // Second execution must be rejected
+    let second = setup
+        .governance
+        .try_execute_proposal(&setup.signer_b, &proposal_id);
+    assert_eq!(second, Err(Ok(GovernanceError::ProposalNotSucceeded)));
+
+    // Verify arbiter is unchanged
+    assert_eq!(
+        setup.governance.get_arbiter().unwrap(),
+        new_arbiter,
+        "arbiter must remain unchanged after rejected second execution"
+    );
+}
+
+/// Verifies that even an unrelated caller (another signer) cannot re-execute
+/// an already-executed proposal.
+#[test]
+fn different_signer_cannot_re_execute_proposal() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_a, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+    advance_time(&env, 60);
+
+    // Execute as signer_a
+    setup
+        .governance
+        .execute_proposal(&setup.signer_a, &proposal_id);
+
+    // Different signer (signer_b) tries to execute again
+    let second = setup
+        .governance
+        .try_execute_proposal(&setup.signer_b, &proposal_id);
+    assert_eq!(
+        second,
+        Err(Ok(GovernanceError::ProposalNotSucceeded)),
+        "even a different multisig signer cannot re-execute an executed proposal"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // proposer_cancel_proposal tests
 // ---------------------------------------------------------------------------
 

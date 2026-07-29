@@ -69,6 +69,22 @@ priority order, highest first:
 There is no third tier: if no per-address override exists, the contract always
 falls back to the default values stored during `initialize`.
 
+### Precedence examples
+
+The intended behavior is exclusive precedence, not additive merging:
+
+- If the default limit is `burst = 5` and a caller-specific override sets
+  `burst = 2`, that caller gets only 2 immediate successful calls. The default
+  burst of 5 is ignored for that caller.
+- If the default limit is `burst = 2` and a caller-specific override sets
+  `burst = 4`, that caller gets 4 immediate successful calls. The stricter
+  default is ignored for that caller.
+- If an address has no override at all, it continues to use the default
+  `default_burst` and `default_refill_rate` from `initialize`.
+
+The test suite covers all three cases so reviewers can verify the precedence
+rule directly in `test_rate_limit.rs`.
+
 ### What `clear_limit_for` does
 
 `clear_limit_for(addr)` removes the `StorageKey::Limit(addr)` entry from
@@ -110,6 +126,10 @@ StorageKey::DefaultBurst + StorageKey::DefaultRefillRate  ──► use default 
 2. **Lockout Prevention**: The `admin_bypass` flag is critical. It should be set to `true` for contracts controlled by governance to ensure that even in high-load scenarios, administrative actions (like changing limits) can still proceed.
 3. **Clock Accuracy**: The contract relies on `env.ledger().timestamp()`. Minor clock skew between validators is handled by the Stellar protocol.
 4. **No Fractional Drift**: Because refill uses whole-second integer arithmetic and caps balances at burst capacity, repeated sub-second calls cannot accumulate fractional rounding credit beyond the theoretical token-bucket allowance.
+5. **Override Isolation**: A per-address override changes only that caller's
+   effective limit configuration. It does not mutate the initialized default
+   values, and callers without overrides remain governed by the default bucket.
+5. **Burst Capacity Capping**: After any idle gap (even extremely long ones), the bucket refills to exactly the configured `burst` capacity. The contract explicitly caps token accumulation at `burst` in the `consume_bucket` function, preventing attackers from "farming" tokens by waiting extended periods between calls. This is verified by the `test_long_idle_gap_refill_is_capped_at_burst_capacity` test.
 
 ## Integration
 
