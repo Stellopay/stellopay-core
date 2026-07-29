@@ -1,7 +1,8 @@
 #![cfg(test)]
 
 use multisig::{
-    MultisigContract, MultisigContractClient, OperationKind, OperationStatus, OperationType,
+    MultisigContract, MultisigContractClient, MultisigError, OperationKind, OperationStatus,
+    OperationType,
 };
 use soroban_sdk::{
     testutils::Address as _,
@@ -642,8 +643,123 @@ fn owner_can_cancel_any_pending_operation() {
 
 // ==================== Large Payment Validation ====================
 
+/// Zero-amount `LargePayment` must be rejected **at proposal time**, before
+/// any approval can be recorded. Previously the payload was stored and the
+/// error was only triggered at execution; this test asserts the earlier guard.
 #[test]
 fn large_payment_rejects_zero_amount() {
+    let env = create_env();
+    let (_multisig_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let admin = Address::generate(&env);
+    let token = create_token_contract(&env, &admin);
+
+    let recipient = Address::generate(&env);
+
+    // propose_operation itself must fail — zero is not a valid amount
+    let res = client.try_propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::LargePayment(token.address.clone(), recipient.clone(), 0i128),
+    );
+    assert!(
+        res.is_err(),
+        "propose_operation must reject a LargePayment with zero amount"
+    );
+
+    // Confirm the error kind is InvalidAmount
+    let err = res.unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from(MultisigError::InvalidAmount));
+}
+
+/// Negative-amount `LargePayment` must also be rejected at proposal time.
+/// A negative `amount` is as meaningless as zero — it would either
+/// do nothing or reverse the transfer direction, which is never the intent.
+#[test]
+fn large_payment_rejects_negative_amount() {
+    let env = create_env();
+    let (_multisig_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let admin = Address::generate(&env);
+    let token = create_token_contract(&env, &admin);
+
+    let recipient = Address::generate(&env);
+
+    let res = client.try_propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::LargePayment(token.address.clone(), recipient.clone(), -1i128),
+    );
+    assert!(
+        res.is_err(),
+        "propose_operation must reject a LargePayment with negative amount"
+    );
+
+    let err = res.unwrap_err().unwrap();
+    assert_eq!(err, soroban_sdk::Error::from(MultisigError::InvalidAmount));
+}
+
+/// A `LargePayment` whose recipient is the multisig contract itself must be
+/// rejected at proposal time.  Sending tokens to oneself is almost always a
+/// configuration error and would waste gas on approvals for an operation that
+/// achieves nothing.
+#[test]
+fn large_payment_rejects_self_referential_recipient() {
+    let env = create_env();
+    let (multisig_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let admin = Address::generate(&env);
+    let token = create_token_contract(&env, &admin);
+    let token_admin_client = StellarAssetClient::new(&env, &token.address);
+    token_admin_client.mint(&multisig_id, &1_000i128);
+
+    // The recipient IS the multisig contract itself — must be rejected
+    let res = client.try_propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::LargePayment(token.address.clone(), multisig_id.clone(), 500i128),
+    );
+    assert!(
+        res.is_err(),
+        "propose_operation must reject a LargePayment targeting the contract itself"
+    );
+
+    let err = res.unwrap_err().unwrap();
+    assert_eq!(
+        err,
+        soroban_sdk::Error::from(MultisigError::SelfReferentialRecipient)
+    );
+}
+
+/// A `ContractUpgrade` whose target is the multisig contract itself must be
+/// rejected at proposal time.  Upgrading a contract through itself would be a
+/// configuration error that could permanently brick the multisig; we reject
+/// it early so no approvals can accumulate for such a payload.
+#[test]
+fn contract_upgrade_rejects_self_referential_target() {
+    let env = create_env();
+    let (multisig_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let hash: BytesN<32> = BytesN::from_array(&env, &[0xAB; 32]);
+
+    // The upgrade target IS the multisig contract itself — must be rejected
+    let res = client.try_propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::ContractUpgrade(multisig_id.clone(), hash),
+    );
+    assert!(
+        res.is_err(),
+        "propose_operation must reject a ContractUpgrade targeting the contract itself"
+    );
+
+    let err = res.unwrap_err().unwrap();
+    assert_eq!(
+        err,
+        soroban_sdk::Error::from(MultisigError::SelfReferentialRecipient)
+    );
+}
+
+/// A valid `LargePayment` (positive amount, distinct recipient) must still be
+/// accepted at proposal time so that validation is not over-broad.
+#[test]
+fn large_payment_valid_payload_is_accepted() {
     let env = create_env();
     let (multisig_id, client, _owner, signers, _guardian) = setup_2of3(&env);
 
@@ -653,14 +769,34 @@ fn large_payment_rejects_zero_amount() {
     token_admin_client.mint(&multisig_id, &1_000i128);
 
     let recipient = Address::generate(&env);
+
+    // Positive amount, distinct recipient — must succeed
     let op_id = client.propose_operation(
         &signers.get(0).unwrap(),
-        &OperationKind::LargePayment(token.address.clone(), recipient.clone(), 0i128),
+        &OperationKind::LargePayment(token.address.clone(), recipient.clone(), 1i128),
     );
 
-    // Second approval triggers execution which should fail
-    let res = client.try_approve_operation(&signers.get(1).unwrap(), &op_id);
-    assert!(res.is_err());
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Pending);
+}
+
+/// A valid `ContractUpgrade` (distinct target) must still be accepted at
+/// proposal time.
+#[test]
+fn contract_upgrade_valid_payload_is_accepted() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let target = Address::generate(&env); // different from multisig contract
+    let hash: BytesN<32> = BytesN::from_array(&env, &[0x01; 32]);
+
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::ContractUpgrade(target.clone(), hash),
+    );
+
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Pending);
 }
 
 // ==================== Duplicate Signer Rejection ====================
