@@ -382,6 +382,105 @@ The full lifecycle described above is exercised in:
 
 ---
 
+### Compliance Checker Emergency Pause Halting the Payment Scheduler
+
+#### Design intent: opt-in, loosely-coupled cross-contract gate
+
+`compliance_checker` and `payment_scheduler` are normally independent contracts,
+but `payment_scheduler` can optionally be pointed at a deployed
+`compliance_checker` instance so that a single, shared emergency-pause
+authority can halt scheduled disbursements without the scheduler needing a
+separate pause mechanism of its own.
+
+The link is:
+
+- **Opt-in**: a scheduler that never calls `set_compliance_checker` behaves
+  exactly as it always has — no compliance check is performed, and an
+  unrelated `compliance_checker` deployment being paused has zero effect on
+  it.
+- **Owner-gated**: only the scheduler's own `owner` (set at `initialize`) may
+  call `set_compliance_checker`; a mismatched caller address is rejected with
+  `SchedulerError::Unauthorized`.
+- **Loosely coupled**: `payment_scheduler` does not take a compile-time Cargo
+  dependency on the `compliance_checker` crate. It calls
+  `compliance_checker::is_emergency_paused() -> bool` dynamically via
+  `env.invoke_contract`, the same pattern already used for the
+  `payment_retry` integration (`RetryContractClient`). The two contracts only
+  need to agree on a function name and return type.
+
+#### What `process_due_payments` does when paused
+
+`compliance_checker::is_emergency_paused()` is a permissionless, read-only
+view mirroring the same `EmergencyPause` flag consulted internally by
+`check_action`. When a `compliance_checker` is configured and reports an
+active pause, `process_due_payments` returns immediately, before evaluating,
+transferring for, or advancing **any** job:
+
+| State | Effect |
+|---|---|
+| Jobs already settled by an earlier, unpaused call | Untouched — remain `Completed`/paid. |
+| Jobs not yet reached when the pause takes effect | Untouched — remain exactly as they were (`Active`, unpaid, same `next_scheduled_time`, `executions`, `retry_count`). |
+| Return value of a paused call | `0` — no job was evaluated. |
+
+Because a real keeper drains due jobs by calling `process_due_payments`
+repeatedly (see the contract's own module docs), pausing `compliance_checker`
+*between* two such calls is sufficient to halt a batch mid-flight: the next
+call is a complete no-op, and once the pause is lifted, the following call
+resumes and correctly settles exactly the jobs that were left pending.
+
+#### Recommended workflow
+
+```
+1. employer/owner: payment_scheduler::set_compliance_checker(owner, compliance_checker_id)
+      → One-time wiring; owner-gated.
+
+2. keeper (any address, repeatedly): payment_scheduler::process_due_payments(max_jobs)
+      → Normal operation: due jobs settle or get delegated to payment_retry.
+
+3. compliance admin: compliance_checker::set_emergency_pause(admin, true)
+      → Shared halt signal flips on.
+
+4. keeper: payment_scheduler::process_due_payments(max_jobs)
+      → Returns 0; every remaining due job is left untouched.
+
+5. compliance admin: compliance_checker::set_emergency_pause(admin, false)
+      → Halt signal flips off.
+
+6. keeper: payment_scheduler::process_due_payments(max_jobs)
+      → Resumes exactly where it left off.
+```
+
+#### Integration test coverage
+
+`onchain/integration_tests/tests/test_compliance_pause_scheduler_integration.rs`:
+
+| Test | Scenario |
+|---|---|
+| `test_emergency_pause_halts_remaining_jobs_mid_batch` | **Core**: process 2 of 5 due jobs, pause mid-batch, verify 0 jobs evaluated and the remaining 3 are byte-for-byte untouched, unpause, verify all 3 settle correctly and no job is ever double-paid |
+| `test_pause_before_any_processing_evaluates_zero_jobs` | Pause active before the very first call — no partial progress is possible |
+| `test_repeated_pause_unpause_cycles_do_not_corrupt_state` | Multiple pause/unpause cycles interleaved with partial processing do not lose progress or double-process a job |
+| `test_scheduler_without_compliance_checker_configured_is_unaffected_by_pause` | Backward compatibility: an unconfigured scheduler ignores an unrelated, paused `compliance_checker` |
+| `test_set_compliance_checker_rejects_non_owner` | Only the scheduler's owner may wire up (or repoint) the compliance checker link |
+
+#### Security notes
+
+- **No auth needed for the read.** `is_emergency_paused` requires no
+  `require_auth`, by design — any caller of the permissionless
+  `process_due_payments` entrypoint must observe the same halt behavior, not
+  just the scheduler's owner.
+- **Only the compliance admin can flip the flag.** `set_emergency_pause`
+  requires the `compliance_checker` admin's signature; a scheduler consulting
+  it inherits that same trust boundary rather than introducing a new one.
+- **Only the scheduler owner can (re)point the link.** `set_compliance_checker`
+  requires `owner.require_auth()` plus an exact match against the stored
+  owner, preventing any other address from redirecting the scheduler's pause
+  signal to a malicious contract that always reports "not paused".
+- **Fully backward compatible.** The `ComplianceChecker` storage key is
+  optional and absent by default; existing deployments and existing tests are
+  unaffected unless `set_compliance_checker` is explicitly called.
+
+---
+
 ### Salary Adjustment + Payroll Claim Integration
 
 `salary_adjustment` and `stello_pay_contract` are linked at the contract level via `set_salary_adjustment_contract`. When configured, `claim_payroll` reads the employee's current salary from the salary adjustment contract and uses it as an override.
@@ -450,6 +549,7 @@ See `onchain/integration_tests/tests/test_salary_adjustment_payroll_integration.
 
 ---
 
+
 ### Slashing Penalty + Payroll Escrow Integration
 
 The slashing_penalty and payroll_escrow contracts are designed to interoperate via an orchestrated pattern. When a participant is penalized, an orchestrator applies the slash and reflects the penalty against their escrowed payroll funds.
@@ -473,3 +573,116 @@ See onchain/integration_tests/tests/test_slashing_escrow_integration.rs for the 
 - Simulating a slashing orchestrator
 - Verifying execute_slash correctly reduces the balance payroll_escrow reports as available
 - Ensuring unrelated party escrow balances are unaffected by another party's slash
+
+### Rate Limiter + Payment Retry Integration
+
+#### Design Intent: Preventing Double-Counting of Throttled Attempts
+
+The `rate_limiter` and `payment_retry` contracts are designed to operate **independently** while maintaining consistent state. The key invariant is:
+
+> A single throttled payment attempt must increment `payment_retry.retry_count` by **exactly one**, regardless of how many times `rate_limiter` enforces its quota.
+
+#### How the Contracts Interact
+
+The integration is **orchestration-based** (not direct cross-contract calls):
+
+1. An off-chain keeper or service calls `rate_limiter.check_and_consume()` before attempting a payment
+2. If rate limiting occurs, the call panics with "rate limit exceeded" — this is NOT counted as a payment retry attempt
+3. The keeper then calls `payment_retry.process_retry()` for actual payment processing
+4. `payment_retry` increments `retry_count` only when escrow balance is insufficient (`escrowed < amount`)
+
+#### Separation of Concerns
+
+| Contract | What it tracks | When it updates |
+|----------|---------------|-----------------|
+| `rate_limiter` | Token bucket per address | On every `check_and_consume` call |
+| `payment_retry` | Failed payment attempts per `payment_id` | Only when `escrowed < amount` in `process_payment_if_due` |
+
+#### Security Invariants
+
+| Invariant | Enforcement |
+|-----------|-------------|
+| Single-counting | `payment_retry` only increments `retry_count` when escrow is insufficient, not when rate limiting occurs |
+| No double-counting | Rate limiter and payment retry have **separate** storage key namespaces |
+| Idempotency | `process_payment_if_due` checks `next_retry_at` before processing; calls during backoff are no-ops |
+| Terminal state isolation | Once `state ∈ {Success, Failed, Cancelled}`, counter never changes |
+
+#### Integration Test Coverage
+
+`onchain/integration_tests/tests/test_rate_limiter_payment_retry_integration.rs`:
+
+| Test | Scenario | Invariant Verified |
+|------|----------|-------------------|
+| `test_throttled_attempt_counts_as_one` | Basic throttling → retry_count = 1 | Single-counting |
+| `test_successful_retry_after_throttle_increments_by_one` | Success after throttle → counter stays at failed attempts | No double-increment on success |
+| `test_multiple_throttles_before_funding` | Multiple throttles → counter increments correctly | Counter accuracy under load |
+| `test_rate_limiter_exhaustion_then_refill` | Exhaust + refill → counter continues correctly | State consistency |
+| `test_full_lifecycle_throttle_to_success` | E2E: throttle → partial → success | Complete lifecycle correctness |
+| `test_throttle_during_retry_backoff` | Throttle during backoff window | No early increment |
+| `test_rate_limiter_external_exhaustion_does_not_affect_payment_counter` | External rate limiting | Independent tracking |
+| `test_integrated_rate_limiter_and_payment_retry_flow` | E2E integration flow | End-to-end correctness |
+| `test_batch_process_due_payments_counter_integrity` | Batch processing | Per-payment isolation |
+| `test_zero_max_retries_counter_behavior` | Edge case: max_retries = 0 | Zero max_retries |
+| `test_rapid_successive_calls_counter_integrity` | Rapid calls during backoff | Idempotency |
+| `test_retry_failed_events_emitted_during_throttle` | Event emission | Event correctness |
+
+#### Security Notes
+
+- **Rate limiting does NOT cause retry counting.** A `rate_limiter` panic is separate from `payment_retry` state. Only `process_payment_if_due` increments the counter.
+- **Backoff window protection.** Calls to `process_retry` during `next_retry_at - now > 0` are no-ops and do NOT increment the counter.
+- **Terminal state is absolute.** Once a payment reaches `Success`, `Failed`, or `Cancelled`, the counter is frozen regardless of subsequent calls.
+- **Counter is per-payment, not per-address.** Each `payment_id` has its own `retry_count`, preventing one payment's failures from affecting another.
+
+#### Recommended Integration Pattern
+
+```rust
+// Off-chain keeper pseudocode
+async fn process_payment_with_rate_limiting(
+    rate_limiter: &RateLimiterClient,
+    payment_retry: &PaymentRetryContractClient,
+    payment_id: BytesN<32>,
+    caller: &Address,
+) -> Result<PaymentState, Error> {
+    // Step 1: Check rate limit (non-mutating read)
+    let usage = rate_limiter.get_usage(caller)?;
+    if usage.map(|u| u.tokens).unwrap_or(1) == 0 {
+        return Err(RateLimitExceeded);
+    }
+
+    // Step 2: Consume rate limit token
+    match rate_limiter.try_check_and_consume(caller) {
+        Ok(_) => { /* proceed */ }
+        Err(_) => return Err(RateLimitExceeded),
+    }
+
+    // Step 3: Process the payment
+    payment_retry.process_retry(&payment_id);
+
+    // Step 4: Return current state
+    Ok(payment_retry.get_payment(&payment_id)?.state)
+}
+```
+
+#### Running the Tests
+
+```bash
+# Run all rate limiter + payment retry integration tests
+cargo test -p integration_tests test_rate_limiter_payment_retry
+
+# Run a specific test
+cargo test -p integration_tests test_throttled_attempt_counts_as_one
+
+# Run with verbose output
+cargo test -p integration_tests test_rate_limiter_payment_retry -- --nocapture
+```
+
+#### Test Execution Evidence
+
+Each test in the integration suite verifies:
+1. The counter starts at 0 for new payments
+2. Each failed escrow attempt increments the counter by exactly 1
+3. Successful payments do NOT increment the counter
+4. Terminal states (`Success`, `Failed`) preserve the counter
+5. Rate limiter state changes do not affect the counter
+6. Batch processing maintains per-payment counter isolation
+

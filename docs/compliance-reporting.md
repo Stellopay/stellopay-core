@@ -80,7 +80,7 @@ Returns whether an address is currently an authorized publisher.
 
 Pauses or unpauses the contract. Only the admin may call this.
 
-- When paused, `log_record` is blocked. All read operations remain available.
+- **Read/write asymmetry** (see dedicated section below): When paused, `log_record` is blocked but all read operations (`generate_report`, `get_withholding_records`, `get_record`, `get_record_count`) continue to work.
 - Errors: `NotAuthorized`
 
 ### `is_paused() -> bool`
@@ -116,7 +116,35 @@ Generates an aggregated report for a given employer and time window.
 - Iterates backwards (newest-first) through the employer's records.
 - Stops early when a record's timestamp falls below `start_date`, saving instruction budget.
 - `limit` must be between 1 and 100 (inclusive).
+- `generate_report` uses the same on-chain aggregation path as `get_withholding_records`; it does not silently truncate a long employer history. For very large histories, callers should use paginated follow-up queries or off-chain indexed snapshots.
 - Errors: `NotInitialized`, `InvalidDateRange`, `QueryLimitExceeded`
+
+## Emergency Pause — Read/Write Asymmetry
+
+The emergency pause (`set_paused`) exhibits deliberate asymmetric behavior:
+
+| Operation     | While Paused | Category |
+|---------------|-------------|----------|
+| `log_record`  | **Blocked** (returns `ContractPaused`) | Write |
+| `generate_report` | Allowed | Read |
+| `get_withholding_records` | Allowed | Read |
+| `get_record` | Allowed | Read |
+| `get_record_count` | Allowed | Read |
+| `get_global_seq` | Allowed | Read |
+| `is_paused` | Allowed | Read |
+| `is_publisher` | Allowed | Read |
+
+### Design Rationale
+
+Only `log_record` calls the `require_not_paused` guard. All read-only functions intentionally skip this check so that:
+
+1. **Indexers stay online**: Off-chain indexers reconstructing reporting periods can continue reading already-recorded records without interruption.
+2. **Emergency use case**: The pause is designed to stop the flow of new records during an incident, not to deny access to historical data.
+3. **Fail-open for reads**: Blocking reads while paused would create a secondary incident by cutting off dependent systems that need to verify or export pre-existing compliance data.
+
+### Security Consideration
+
+The pause does not provide confidentiality — paused or not, all on-chain data is publicly readable. It is strictly an availability control for writes, ensuring that during an incident window no new (potentially malicious or erroneous) records are accepted until the admin has assessed the situation and either unpauses or takes additional mitigation steps.
 
 ## Events
 

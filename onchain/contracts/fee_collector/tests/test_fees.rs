@@ -757,6 +757,60 @@ fn test_set_paused_unauthorized_panics() {
     client.set_paused(&attacker, &true);
 }
 
+#[test]
+fn test_calculate_fee_still_works_while_paused() {
+    // Pause blocks only collect_fee — calculate_fee (read-only) must
+    // continue to function so integrators can preview fees during an
+    // incident response window.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    client.set_paused(&admin, &true);
+    assert!(client.get_config().paused);
+
+    let (net, fee) = client.calculate_fee(&1_000);
+    assert_eq!(fee, 10);
+    assert_eq!(net, 990);
+}
+
+#[test]
+fn test_paused_collect_fee_preserves_balances_and_counter() {
+    // When collect_fee panics due to pause, no tokens should move
+    // and the TotalFeesCollected counter must remain unchanged.
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let tok = create_token(&env, &token_admin);
+    token::StellarAssetClient::new(&env, &tok.address).mint(&payer, &500);
+
+    let client = setup_percentage(&env, &admin, &treasury, 100);
+
+    // Capture pre-pause state.
+    let payer_balance_before = tok.balance(&payer);
+    let treasury_balance_before = tok.balance(&treasury);
+    let total_before = client.get_total_fees_collected();
+
+    client.set_paused(&admin, &true);
+
+    // collect_fee must panic while paused.
+    let result = client.try_collect_fee(&payer, &recipient, &tok.address, &500);
+    assert!(result.is_err());
+
+    // Balances and counter must be unchanged.
+    assert_eq!(tok.balance(&payer), payer_balance_before);
+    assert_eq!(tok.balance(&treasury), treasury_balance_before);
+    assert_eq!(client.get_total_fees_collected(), total_before);
+}
+
 // ─── Two-step admin transfer ──────────────────────────────────────────────────
 
 #[test]

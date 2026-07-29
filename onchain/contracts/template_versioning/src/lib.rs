@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 //! Payroll / escrow template versioning: immutable version records, lookup, and agreement bindings.
 //!
@@ -185,14 +186,14 @@ impl TemplateVersioning {
     ///
     /// # Arguments
     /// * `owner` – Address that will own and manage this template. Must sign.
-    /// * `name`  – Human-readable name for the template. Must be non-empty.
-    ///             Uniqueness within the active namespace is enforced.
+    /// * `name`  – Human-readable name for the template. Must be non-empty. Uniqueness within the
+    ///   active namespace is enforced.
     ///
     /// # Errors
     /// * [`VersioningError::NotInitialized`] – Contract not yet initialised.
     /// * [`VersioningError::InvalidData`]    – `name` is empty.
-    /// * [`VersioningError::NameCollision`]  – An active template with this name
-    ///                                         already exists (see policy above).
+    /// * [`VersioningError::NameCollision`]  – An active template with this name already exists
+    ///   (see policy above).
     pub fn register_template(
         env: Env,
         owner: Address,
@@ -351,7 +352,11 @@ impl TemplateVersioning {
             .ok_or(VersioningError::VersionNotFound)
     }
 
-    /// Fetch a specific version record.
+    /// Fetch a specific version record, including deprecated records.
+    ///
+    /// This is deliberately a read-only historical lookup: deprecation prevents
+    /// *new* agreement creation, but never erases the version metadata needed to
+    /// audit agreements that were already pinned to it.
     pub fn get_version(
         env: Env,
         template_id: u64,
@@ -361,6 +366,25 @@ impl TemplateVersioning {
         storage
             .get(&DataKey::TemplateVersion(template_id, version))
             .ok_or(VersioningError::VersionNotFound)
+    }
+
+    /// Fetch the latest published record for a template, including if deprecated.
+    ///
+    /// This endpoint is intentionally independent of the creation policy. A
+    /// deprecated template remains listable with its schema hash, migration
+    /// notes, timestamps, and deprecation metadata so auditors can resolve
+    /// historical agreements. Use [`create_agreement`] to enforce whether a
+    /// version may be used for a new agreement.
+    ///
+    /// # Errors
+    /// Returns [`VersioningError::VersionNotFound`] when the template has no
+    /// published version or its latest record cannot be found.
+    pub fn get_template(
+        env: Env,
+        template_id: u64,
+    ) -> Result<TemplateVersionRecord, VersioningError> {
+        let version = Self::latest_version(env.clone(), template_id)?;
+        Self::get_version(env, template_id, version)
     }
 
     /// Return all template IDs ever registered under a given name.
@@ -384,7 +408,8 @@ impl TemplateVersioning {
     /// specified at creation time. This pinning is immutable:
     /// - The `template_version` stored in `AgreementBinding` never changes
     /// - Future calls to `publish_template_version` do not affect this agreement
-    /// - Future calls to `deprecate_version` on this version only prevent new agreements from using it
+    /// - Future calls to `deprecate_version` on this version only prevent new agreements from using
+    ///   it
     /// - Existing agreements remain valid and continue to resolve to their pinned version
     ///
     /// This prevents silent schema migrations that could break agreement validation logic.
@@ -458,12 +483,12 @@ impl TemplateVersioning {
     ///
     /// # Algorithm
     ///
-    /// 1. Load `TemplateNameIndex(name)` — the append-only list of all template IDs
-    ///    ever registered under this name. If the key is absent, the name is free.
-    /// 2. For each ID, read `TemplateLatest(id)`. If `latest == 0` the template has
-    ///    no published versions and is inert — skip it.
-    /// 3. Read `TemplateVersion(id, latest)`. If that version is **not** deprecated,
-    ///    the name is still active → return `NameCollision`.
+    /// 1. Load `TemplateNameIndex(name)` — the append-only list of all template IDs ever registered
+    ///    under this name. If the key is absent, the name is free.
+    /// 2. For each ID, read `TemplateLatest(id)`. If `latest == 0` the template has no published
+    ///    versions and is inert — skip it.
+    /// 3. Read `TemplateVersion(id, latest)`. If that version is **not** deprecated, the name is
+    ///    still active → return `NameCollision`.
     /// 4. If every ID is either versionless or fully deprecated, the name is available.
     ///
     /// # Security

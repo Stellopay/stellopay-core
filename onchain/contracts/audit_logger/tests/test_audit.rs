@@ -1,11 +1,14 @@
 #![cfg(test)]
 
+use std::collections::HashSet;
+
 use audit_logger::{AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env, Symbol,
 };
-use std::collections::HashSet;
+
+use audit_logger::{AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
 
 fn setup() -> (Env, Address, AuditLoggerContractClient<'static>) {
     let env = Env::default();
@@ -160,7 +163,7 @@ fn test_get_latest_logs_oversized_limit_clamped() {
     // Request far more than MAX_PAGE_SIZE.
     let latest = client.get_latest_logs(&u32::MAX);
     assert!(
-        latest.len() <= MAX_PAGE_SIZE,
+        latest.len() as u32 <= MAX_PAGE_SIZE,
         "get_latest_logs must clamp to MAX_PAGE_SIZE"
     );
 }
@@ -552,7 +555,8 @@ fn test_audit_logger_append_only_invariant_regression_guard() {
         "Record 1 mutated after setting retention limit to 0 (unlimited)"
     );
 
-    // Plausible Mutation Path 4: Lower retention limit down to 5 (target_id=1 remains retained since log count=2 <= 5).
+    // Plausible Mutation Path 4: Lower retention limit down to 5 (target_id=1 remains retained
+    // since log count=2 <= 5).
     client.set_retention_limit(&owner, &5u32);
     assert_eq!(client.get_retention_limit(), 5u32);
 
@@ -579,7 +583,8 @@ fn test_audit_logger_append_only_invariant_regression_guard() {
         "Record 1 in get_latest_logs query mutated"
     );
 
-    // Plausible Mutation Path 6: Append further records to fill the retention window up to limit without pruning target_id.
+    // Plausible Mutation Path 6: Append further records to fill the retention window up to limit
+    // without pruning target_id.
     for i in 3..=5 {
         env.ledger().with_mut(|li| li.timestamp += 10);
         let fill_action = Symbol::new(&env, format!("fill_evt_{}", i).as_str());

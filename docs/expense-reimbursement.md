@@ -41,7 +41,66 @@ The Expense Reimbursement Contract provides a secure, auditable system for manag
 4. **Approver reviews** and validates `SHA256(retrieved_document) == stored_hash`.
 5. **Approver triggers approval** using `approve_expense`. (Can approve partially). Status enters `Approved`.
 6. **Optional audit linkage**: if `audit_logger` is configured, approval writes `append_log(actor=approver, action="expense_approved", subject=submitter, amount=approved_amount)` and stores returned `audit_log_id`.
-7. **Payment released** via `pay_expense`. Employee gets their portion, Employer is refunded any unapproved surplus automatically. Status enters `Paid` — this is a **terminal state**: the expense status transitions to `Paid` and `escrow_amount` is zeroed **before** any token transfer occurs (checks-effects-interactions). Any subsequent `pay_expense` call for the same expense id is rejected, guaranteeing the expense cannot be paid more than once.
+7. **Payment released** via `pay_expense`. The contract validates that the `receipt_hash` stored on the expense still matches the original binding in `ReceiptHash` storage, ensuring the payout is bound to the original submitted receipt. Employee gets their portion, Employer is refunded any unapproved surplus automatically. Status enters `Paid` — this is a **terminal state**: the expense status transitions to `Paid` and `escrow_amount` is zeroed **before** any token transfer occurs (checks-effects-interactions). Any subsequent `pay_expense` call for the same expense id is rejected, guaranteeing the expense cannot be paid more than once.
+
+## Settlement Currency Model
+
+Each expense carries its **own** token, chosen by the submitter at
+`submit_expense` time and stored on the `Expense` record. Every later step
+operates on that same stored token:
+
+- `fund_expense` escrows the expense's `token`.
+- `pay_expense` pays the employee, and refunds any unapproved surplus to the
+  payer, in the expense's `token`.
+
+There is no global or per-agreement "settlement currency" that an expense is
+validated against; the contract is intentionally multi-token, with each expense
+fully self-contained in a single currency. Because no step ever references a
+second token, a paid-out expense can never mis-convert an amount or transfer a
+different token than the one submitted, and distinct expenses in distinct tokens
+cannot interfere with one another.
+
+## Audit Logging
+
+The expense reimbursement contract supports optional audit logging via integration with an external audit logger contract. This provides traceability for approval decisions while maintaining privacy for other operations.
+
+### Audit Logger Configuration
+
+The contract owner can configure an audit logger using `set_audit_logger(owner, audit_logger_address)`. Once configured:
+
+- Only the `approve_expense` operation creates audit log entries
+- Submit, fund, reject, cancel, and pay operations do not create audit entries
+- The audit log ID is stored in `expense.audit_log_id` for traceability
+
+### Audit Entry Schema
+
+When an expense is approved, the contract appends a single audit log entry with the following schema:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | Symbol | `"expense_approved"` |
+| `actor` | Address | The approver's address who performed the approval |
+| `subject` | Option\<Address\> | The submitter's address (the expense beneficiary) |
+| `amount` | Option\<i128\> | The approved amount (may be less than the requested amount for partial approvals) |
+
+### Audit Invariants
+
+- **Exactly one entry per approval**: Each call to `approve_expense` appends exactly one audit log entry
+- **No duplicate entries**: The audit log ID is stored in the expense and cannot be modified
+- **Amount accuracy**: The audit entry amount reflects the approved amount, not the original requested amount
+- **Sequential IDs**: Multiple approvals generate audit entries with sequential IDs
+- **No entries for other operations**: Submit, fund, reject, cancel, and pay operations do not create audit entries
+
+### Audit-Linkage Completeness
+
+The contract includes comprehensive tests to verify audit log completeness across the full expense lifecycle:
+
+- **Submit → Approve → Pay**: Verifies exactly one audit entry is created for approval, with correct actor, subject, and amount
+- **Submit → Reject**: Verifies no audit entries are created for the rejection lifecycle
+- **Partial Approval**: Verifies the audit entry contains the approved amount (not the requested amount)
+- **Multiple Expenses**: Verifies each approval generates a unique audit entry with sequential IDs
+
+See `onchain/contracts/expense_reimbursement/tests/test_expense.rs` for the complete test suite.
 
 ## Receipt Hashing Scheme
 
@@ -52,6 +111,14 @@ The Expense Reimbursement Contract provides a secure, auditable system for manag
 - Replay protection: each `receipt_hash` is unique globally in contract storage (`ReceiptHash(hash) -> expense_id`)
 
 This prevents reimbursing the same receipt payload twice, even when submitted by different users or in separate requests.
+
+### Receipt-Hash Attestation Guarantee
+
+The `receipt_hash` captured at `submit_expense` time is bound to the expense for its entire lifecycle. When `pay_expense` is called, it validates that the `receipt_hash` stored on the expense still matches the original binding recorded in the `ReceiptHash` global storage entry (`ReceiptHash(hash) -> expense_id`). This means:
+
+- The receipt hash cannot be mutated after submission without invalidating the payout.
+- Any code path that attempts to alter the stored `receipt_hash` will cause `pay_expense` to reject the payout with a `"Receipt hash binding invalid"` error.
+- The attestation guarantee is enforced on-chain, providing cryptographic assurance that the payout corresponds to the original submitted receipt.
 
 ## Privacy and Security Notes
 

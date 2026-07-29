@@ -55,6 +55,7 @@
 //! ```
 
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 mod events;
 mod helpers;
@@ -66,16 +67,13 @@ pub use events::{
     FeeConfigUpdatedEvent, PauseStateChangedEvent, RecipientUpdatedEvent,
     TieredScheduleUpdatedEvent,
 };
-pub use storage::StorageKey;
-pub use types::{FeeConfig, FeeMode, FeeQuote, FeeSplit, FeeTier};
-
 use helpers::{
     apply_basis_points, bump_ttl, compute_fee_internal, require_admin, require_initialized,
     require_not_paused,
 };
 use soroban_sdk::{contract, contractimpl, token, Address, Env};
 pub use storage::StorageKey;
-pub use types::{FeeConfig, FeeMode, FeeSplit, FeeTier};
+pub use types::{FeeConfig, FeeMode, FeeQuote, FeeSplit, FeeTier};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -201,8 +199,8 @@ impl FeeCollectorContract {
     /// # Flow
     ///
     /// 1. Validates contract state and payer authentication.
-    /// 2. Reuses the most recently cached quote for `gross_amount` when present;
-    ///    otherwise it computes `fee_amount` and `net_amount` from the live config.
+    /// 2. Reuses the most recently cached quote for `gross_amount` when present; otherwise it
+    ///    computes `fee_amount` and `net_amount` from the live config.
     /// 3. Updates the cumulative `TotalFeesCollected` counter **before** any transfer
     ///    (state-before-interaction pattern).
     /// 4. Transfers `fee_amount` from `payer` to the treasury (if `> 0`).
@@ -459,10 +457,11 @@ impl FeeCollectorContract {
     /// # Tier Selection Algorithm
     ///
     /// For a given `gross_amount` the contract walks the schedule in order and
-    /// selects the **first** tier whose `limit ≥ gross_amount`. If no tier
-    /// matches (i.e., `gross_amount` exceeds every listed limit), the last
-    /// tier's `fee_bps` is used as a catch-all. Use `limit: i128::MAX` as the
-    /// final tier to make the catch-all explicit.
+    /// selects the **first** tier whose `limit ≥ gross_amount`. Amounts equal
+    /// to a tier limit resolve to that tier (inclusive lower-bound behavior),
+    /// and if no tier matches (i.e., `gross_amount` exceeds every listed
+    /// limit), the last tier's `fee_bps` is used as a catch-all. Use
+    /// `limit: i128::MAX` as the final tier to make the catch-all explicit.
     ///
     /// # Running Total Continuity
     ///
@@ -480,14 +479,14 @@ impl FeeCollectorContract {
     ///
     /// * `env`          — Soroban environment.
     /// * `admin`        — Current admin (must authenticate).
-    /// * `new_schedule` — Ordered list of [`FeeTier`] values. Must be strictly
-    ///   increasing by `limit` and each `fee_bps` must be ≤ [`MAX_FEE_BPS`].
+    /// * `new_schedule` — Ordered list of [`FeeTier`] values. Must be strictly increasing by
+    ///   `limit` and each `fee_bps` must be ≤ [`MAX_FEE_BPS`].
     ///
     /// # Panics
     ///
     /// * `"Unauthorized: caller is not admin"` — if `admin` is not the stored admin.
-    /// * `"Tier limits must be strictly increasing and positive"` — if any `limit`
-    ///   is ≤ the previous tier's limit (or ≤ 0 for the first tier).
+    /// * `"Tier limits must be strictly increasing and positive"` — if any `limit` is ≤ the
+    ///   previous tier's limit (or ≤ 0 for the first tier).
     /// * `"Fee in tier exceeds maximum allowed"` — if any `fee_bps > MAX_FEE_BPS`.
     ///
     /// # Events

@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, BytesN,
@@ -249,6 +250,26 @@ fn is_emergency_guardian(env: &Env, addr: &Address) -> bool {
         Some(g) => &g == addr,
         None => false,
     }
+}
+
+/// Returns whether an operation kind is eligible for emergency execution.
+///
+/// Only time-sensitive, break-glass operations are eligible. Routine
+/// operations (e.g. `LargePayment`) and governance changes
+/// (e.g. `ContractUpgrade`, `SetThresholdOverride`) are intentionally
+/// excluded so that the emergency guardian cannot bypass the normal
+/// multi-signer approval process for operations that are not urgent.
+///
+/// ## Eligible kinds
+///
+/// | OperationKind       | Eligible | Rationale                          |
+/// |---------------------|----------|------------------------------------|
+/// | DisputeResolution   | Yes      | Prevents fund lockup; time-critical|
+/// | ContractUpgrade     | No       | Governance change; needs consensus |
+/// | LargePayment        | No       | Routine operation; use approvals   |
+/// | SetThresholdOverride| No       | Already blocked in `perform_execute`|
+fn is_emergency_eligible(kind: &OperationKind) -> bool {
+    matches!(kind, OperationKind::DisputeResolution(_, _, _, _))
 }
 
 fn execute_if_threshold_met(env: &Env, operation_id: u128) {
@@ -543,8 +564,14 @@ impl MultisigContract {
     }
 
     /// @notice Executes a pending operation via the emergency guardian.
-    /// @dev Guardian can bypass threshold checks for operational actions, but
-    ///      not for signer threshold override changes.
+    /// @dev Guardian can bypass threshold checks **only** for operations
+    ///      explicitly flagged as emergency-eligible (currently only
+    ///      `DisputeResolution`). Routine operations (`LargePayment`),
+    ///      governance changes (`ContractUpgrade`), and threshold overrides
+    ///      (`SetThresholdOverride`) are rejected even when called by the
+    ///      configured guardian. This prevents the break-glass mechanism
+    ///      from being used to circumvent the normal multi-signer approval
+    ///      process for non-urgent operations.
     /// @param guardian Configured guardian address.
     /// @param operation_id Operation identifier.
     pub fn emergency_execute(env: Env, guardian: Address, operation_id: u128) {
@@ -559,6 +586,11 @@ impl MultisigContract {
         assert!(
             op.status == OperationStatus::Pending,
             "Operation not pending"
+        );
+
+        assert!(
+            is_emergency_eligible(&op.kind),
+            "Operation kind not eligible for emergency execution"
         );
 
         perform_execute(&env, operation_id);
@@ -618,13 +650,12 @@ impl MultisigContract {
     ///
     ///      Execution flow:
     ///      1. Caller authenticates and must be a configured signer.
-    ///      2. For `ContractUpgrade` operations, `expected_hash` is validated
-    ///         against the hash stored in the proposal *before* the approval is
-    ///         recorded. If the hashes differ, the call is rejected with
-    ///         `ContractUpgradeHashMismatch` and no state is modified.
+    ///      2. For `ContractUpgrade` operations, `expected_hash` is validated against the hash
+    ///         stored in the proposal *before* the approval is recorded. If the hashes differ, the
+    ///         call is rejected with `ContractUpgradeHashMismatch` and no state is modified.
     ///      3. The caller's approval is recorded (idempotent if already given).
-    ///      4. If the resulting approval count meets the effective threshold,
-    ///         `perform_execute` is called and the operation is marked Executed.
+    ///      4. If the resulting approval count meets the effective threshold, `perform_execute` is
+    ///         called and the operation is marked Executed.
     ///
     ///      This design lets the final signing party use `execute_operation`
     ///      instead of `approve_operation` to enforce that they confirm the

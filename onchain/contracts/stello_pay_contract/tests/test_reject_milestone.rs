@@ -120,8 +120,7 @@ fn test_reject_milestone_reason_propagated_to_event() {
     let reason = String::from_str(&env, expected_reason);
     client.reject_milestone(&agreement_id, &milestone_id, &reason);
 
-    use soroban_sdk::testutils::Events;
-    use soroban_sdk::{Map, Symbol, TryFromVal, TryIntoVal};
+    use soroban_sdk::{testutils::Events, Map, Symbol, TryFromVal, TryIntoVal};
 
     let all_events = env.events().all();
     let event_symbol = Symbol::new(&env, "milestone_rejected_event");

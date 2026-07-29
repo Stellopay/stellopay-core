@@ -470,12 +470,44 @@ fn update_delay_succeeds() {
 }
 
 #[test]
-fn update_delay_zero_fails() {
+fn update_delay_zero_is_rejected_and_preserves_existing_state() {
+    // Documented zero-delay policy: update_delay(0) is not an immediate-mode
+    // switch. It must fail atomically and preserve the active delay plus any
+    // already queued operation's frozen ETA.
     let env = create_env();
-    let (client, admin) = setup(&env);
+    let (client, admin) = setup(&env); // delay = 60s
+
+    let (cfg_admin_before, delay_before) = client.get_config();
+    assert_eq!(cfg_admin_before, admin);
+    assert_eq!(delay_before, 60u64);
+
+    let op_id = client.queue(&admin, &withdrawal_kind(&env));
+    let op_before: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    assert_eq!(op_before.eta, op_before.created_at + delay_before);
 
     let res = client.try_update_delay(&admin, &0u64);
     assert_eq!(res, Err(Ok(TimelockError::InvalidDelay)));
+
+    // Failed zero-delay update must not mutate configuration.
+    let (cfg_admin_after, delay_after) = client.get_config();
+    assert_eq!(cfg_admin_after, admin);
+    assert_eq!(delay_after, delay_before);
+
+    // Failed zero-delay update must not mutate already queued operations.
+    let op_after: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    assert_eq!(op_after.eta, op_before.eta);
+    assert_eq!(op_after.created_at, op_before.created_at);
+    assert_eq!(op_after.status, OperationStatus::Queued);
+
+    // Because zero was rejected, the existing nonzero-delay operation is still
+    // not immediately executable.
+    let early = client.try_execute(&admin, &op_id);
+    assert_eq!(early, Err(Ok(TimelockError::NotReady)));
+
+    // Future operations also continue using the prior nonzero delay.
+    let op_id2 = client.queue(&admin, &withdrawal_kind(&env));
+    let op2: TimelockedOperation = client.get_operation(&op_id2).unwrap();
+    assert_eq!(op2.eta, op2.created_at + delay_before);
 }
 
 #[test]

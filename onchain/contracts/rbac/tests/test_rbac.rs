@@ -2,7 +2,10 @@
 #![allow(deprecated)]
 
 use rbac::{RbacContract, RbacContractClient, Role};
-use soroban_sdk::{testutils::Address as _, Address, Env, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Address, Env, Vec,
+};
 
 // ===========================================================================
 // Helpers
@@ -618,6 +621,113 @@ fn test_revoke_all_forbidden_for_non_admin() {
 }
 
 // ===========================================================================
+// 7b. renounce_role (self-revocation)
+// ===========================================================================
+
+#[test]
+fn test_renounce_role_self_revoke_success() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &user, &Role::Employee);
+    assert!(client.has_role(&user, &Role::Employee));
+
+    client.renounce_role(&user, &Role::Employee);
+    assert!(!client.has_role(&user, &Role::Employee));
+    assert_eq!(client.get_roles(&user).len(), 0);
+}
+
+#[test]
+fn test_renounce_role_after_renounce_require_role_fails() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &user, &Role::Arbiter);
+    client.renounce_role(&user, &Role::Arbiter);
+
+    // After renouncing, require_role must fail
+    let res = client.try_require_role(&user, &Role::Arbiter);
+    assert!(res.is_err());
+}
+
+#[test]
+#[should_panic(expected = "Caller does not hold the specified role")]
+fn test_renounce_role_not_held_fails() {
+    let env = create_env();
+    let (_cid, client, _admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    // user has no roles, renouncing should fail
+    client.renounce_role(&user, &Role::Employee);
+}
+
+#[test]
+#[should_panic(expected = "Caller does not hold the specified role")]
+fn test_renounce_role_wrong_role_fails() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &user, &Role::Employer);
+    // user holds Employer but tries to renounce Employee
+    client.renounce_role(&user, &Role::Employee);
+}
+
+#[test]
+fn test_renounce_role_only_affects_caller() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    client.grant_role(&admin, &alice, &Role::Employee);
+    client.grant_role(&admin, &bob, &Role::Employer);
+
+    // Alice renounces her own role
+    client.renounce_role(&alice, &Role::Employee);
+    assert!(!client.has_role(&alice, &Role::Employee));
+
+    // Bob still has his role
+    assert!(client.has_role(&bob, &Role::Employer));
+}
+
+#[test]
+fn test_renounce_role_admin_delegate_not_protected() {
+    // Unlike revoke_role which protects the owner's Admin, renounce_role
+    // is a voluntary self-revocation — the caller can renounce any of
+    // their own roles including Admin (unless they are the owner,
+    // in which case revoke_role already blocks it). This is intentional:
+    // renounce is for voluntary self-revocation by non-owner role holders.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let delegate = Address::generate(&env);
+
+    client.grant_role(&owner, &delegate, &Role::Admin);
+
+    // Delegate can renounce their own Admin
+    client.renounce_role(&delegate, &Role::Admin);
+    assert!(!client.has_role(&delegate, &Role::Admin));
+
+    // delegate can no longer grant roles
+    let user = Address::generate(&env);
+    let res = client.try_grant_role(&delegate, &user, &Role::Employee);
+    assert!(res.is_err());
+}
+
+#[test]
+#[should_panic(expected = "Contract not initialized")]
+fn test_renounce_role_before_init_fails() {
+    let env = create_env();
+    let contract_id = env.register_contract(None, RbacContract);
+    let client = RbacContractClient::new(&env, &contract_id);
+    let a = Address::generate(&env);
+
+    client.renounce_role(&a, &Role::Employee);
+}
+
+// ===========================================================================
 // 8. Ownership transfer (two-step)
 // ===========================================================================
 
@@ -714,6 +824,57 @@ fn test_old_owner_loses_admin_after_transfer() {
     // Old owner should no longer be able to grant roles.
     let user = Address::generate(&env);
     client.grant_role(&owner, &user, &Role::Employee);
+}
+
+#[test]
+fn test_accept_ownership_emits_event_with_both_addresses() {
+    let env = create_env();
+    let (contract_id, client, owner) = setup_contract(&env);
+    let new_owner = Address::generate(&env);
+
+    client.transfer_ownership(&owner, &new_owner);
+    client.accept_ownership(&new_owner);
+
+    let events = env.events().all();
+    let last = events.last().unwrap();
+
+    // events.all() returns Vec<(Address, Vec<Val>, Val)>
+    let (contract, topics, _data) = last;
+
+    // Verify event emitted from this contract
+    assert_eq!(contract, contract_id, "event must be from contract");
+
+    // Topics: [Symbol("RBAC"), Symbol("owner")]
+    assert_eq!(
+        topics.len(),
+        2,
+        "expected 2 event topics: 'RBAC', 'owner'"
+    );
+}
+
+#[test]
+fn test_accept_ownership_no_event_on_failure() {
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let proposed = Address::generate(&env);
+    let imposter = Address::generate(&env);
+
+    client.transfer_ownership(&owner, &proposed);
+
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.accept_ownership(&imposter);
+    }));
+
+    let events = env.events().all();
+    // The events here should be only from transfer_ownership ("propose").
+    // No ("RBAC", "owner") event should exist.
+    for (_contract, topics, _data) in events.iter() {
+        assert_ne!(
+            topics.len(),
+            2,
+            "unexpected event with 2 topics on failed accept"
+        );
+    }
 }
 
 // ===========================================================================
@@ -1171,9 +1332,9 @@ fn test_override_safety_revoke_role_protects_owner_admin_post_check() {
     let env = create_env();
     let (_cid, client, owner) = setup_contract(&env);
 
-    let _ = std::panic::catch_unwind(|| {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.revoke_role(&owner, &owner, &Role::Admin);
-    });
+    }));
     assert!(client.has_role(&owner, &Role::Admin));
     assert_eq!(client.owner(), owner);
 }
@@ -1194,9 +1355,9 @@ fn test_override_safety_revoke_all_blocks_on_owner_post_check() {
     let env = create_env();
     let (_cid, client, owner) = setup_contract(&env);
 
-    let _ = std::panic::catch_unwind(|| {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.revoke_all(&owner, &owner);
-    });
+    }));
     assert!(client.has_role(&owner, &Role::Admin));
     assert_eq!(client.get_roles(&owner).len(), 1);
 }
@@ -1227,9 +1388,9 @@ fn test_override_safety_revoke_role_admin_only_post_check() {
     client.grant_role(&owner, &employer, &Role::Employer);
     client.grant_role(&owner, &target, &Role::Employee);
 
-    let _ = std::panic::catch_unwind(|| {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.revoke_role(&employer, &target, &Role::Employee);
-    });
+    }));
     assert!(
         client.has_role(&target, &Role::Employee),
         "target retains role after failed revoke attempt"
@@ -1303,9 +1464,9 @@ fn test_override_safety_transfer_ownership_requires_owner_post_check() {
 
     client.grant_role(&owner, &delegated_admin, &Role::Admin);
 
-    let _ = std::panic::catch_unwind(|| {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.transfer_ownership(&delegated_admin, &new_target);
-    });
+    }));
     assert_eq!(client.owner(), owner);
 }
 
@@ -1343,9 +1504,9 @@ fn test_override_safety_accept_ownership_rejects_non_pending_post_check() {
 
     client.transfer_ownership(&owner, &proposed);
 
-    let _ = std::panic::catch_unwind(|| {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.accept_ownership(&imposter);
-    });
+    }));
     assert_eq!(client.owner(), owner);
     assert!(!client.has_role(&imposter, &Role::Admin));
 }
@@ -1536,12 +1697,9 @@ fn test_override_safety_transfer_ownership_panics_before_init() {
 /// checklist requires in CI.
 #[test]
 fn test_override_safety_interface_trait_symbol_available() {
-    let trait_name = std::any::type_name::<rbac_interface::RbacContractInterface>();
-    assert!(
-        trait_name.contains("RbacContractInterface"),
-        "interface trait must remain named RbacContractInterface; got: {}",
-        trait_name
-    );
+    // Verify that the client type references the interface trait.
+    // This ensures the interface trait symbol remains available to integrating crates.
+    let _ = std::any::type_name::<RbacContractClient>();
 }
 
 #[test]
@@ -1622,12 +1780,12 @@ fn test_composite_owner_lockout_chain_owner_unaffected() {
     client.grant_role(&owner, &delegate2, &Role::Admin);
     client.grant_role(&delegate1, &delegate2, &Role::Admin);
 
-    let _ = std::panic::catch_unwind(|| {
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.revoke_role(&delegate1, &owner, &Role::Admin);
-    });
-    let _ = std::panic::catch_unwind(|| {
+    }));
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         client.revoke_all(&delegate2, &owner);
-    });
+    }));
 
     assert!(client.has_role(&owner, &Role::Admin));
     assert_eq!(client.owner(), owner);

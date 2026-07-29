@@ -113,6 +113,59 @@ This means a passed and matured proposal still cannot be executed by an
 arbitrary account. Only configured multisig signers can trigger the final
 state transition.
 
+### Proposal Metadata Immutability
+
+Once a proposal is created, its descriptive fields are **immutable for the
+lifetime of the proposal**. No public entrypoint can alter:
+
+| Field        | Contents                                    |
+|--------------|---------------------------------------------|
+| `kind`       | The governance action voters are approving  |
+| `proposer`   | Address that created the proposal           |
+| `quorum_votes` | Participation threshold at creation time |
+| `start_time` | Timestamp when voting opened                |
+| `end_time`   | Timestamp when voting closes                |
+
+#### Why This Matters
+
+If `kind` could be altered mid-vote, a proposer or admin could swap out the
+action being voted on — for example, replacing a benign parameter change with
+an arbiter change or upgrade — after votes have accumulated, tricking voters
+into approving something they did not intend.
+
+Similarly, changing `quorum_votes` or the voting window after voting has
+started would let an admin subvert the governance process.
+
+#### Audit of All State-Mutating Entrypoints
+
+| Function                   | Fields written                | Touches metadata? |
+|----------------------------|-------------------------------|-------------------|
+| `create_proposal`          | all (initial write)           | N/A (creation)    |
+| `cast_vote` / `vote`      | for_votes/against/abstain     | No                |
+| `finalize_proposal` / `queue` | status, timelock_op_id, eta | No              |
+| `execute_proposal` / `execute` | status (→Expired/Executed) | No              |
+| `cancel_proposal` / `cancel` | status (→Cancelled)         | No                |
+| `proposer_cancel_proposal` | status (→Cancelled)           | No                |
+| `update_config`            | QuorumVotes, VotingPeriod     | Global config, not proposal |
+
+No code path ever writes to `kind`, `proposer`, `quorum_votes`, `start_time`,
+or `end_time` after the initial `create_proposal` call.
+
+#### Test Coverage
+
+Six dedicated tests verify this invariant:
+
+1. `proposal_metadata_is_immutable_after_vote_cast()` — metadata unchanged after voting
+2. `proposal_metadata_is_immutable_after_finalization()` — metadata unchanged after a proposal passes
+3. `proposal_metadata_is_immutable_after_execution()` — metadata unchanged after execution
+4. `proposal_metadata_is_immutable_after_cancel()` — metadata unchanged after proposer cancellation
+5. `proposal_metadata_is_immutable_after_owner_cancel()` — metadata unchanged after owner cancellation
+6. `proposal_metadata_is_immutable_using_backward_compat_aliases()` — metadata unchanged through `propose`/`vote`/`queue`/`execute` aliases
+7. `no_entrypoint_can_alter_stored_proposal_kind()` — confirms contract API has no mutation path for `kind`
+
+Each test snapshots the five metadata fields at creation and asserts they
+remain identical after every lifecycle transition.
+
 ### Security Notes
 
 - Voting eligibility is role-based, so RBAC integrity is critical.
@@ -132,6 +185,10 @@ state transition.
   changing the rules of an active proposal. This avoids both last-minute quorum
   inflation that blocks a proposal and last-minute quorum reduction that makes
   an under-participated proposal pass.
+- **Proposal metadata immutability** ensures the `kind`, `proposer`,
+  `quorum_votes`, `start_time`, and `end_time` fields are frozen at creation
+  and cannot be altered by any public entrypoint, preventing bait-and-switch
+  attacks on voters.
 
 ### get_approved_upgrade() — Quorum and Majority Gating
 
@@ -220,7 +277,11 @@ The governance test suite covers:
 
 - initialization and dependency wiring
 - RBAC-gated proposal creation and voting
-- double-vote prevention
+- double-vote prevention (rejection with `AlreadyVoted`)
+- get_vote preserves original choice after rejected double-vote
+- double-vote does not double-count vote tallies
+- get_vote returns `None` for uncast voters
+- same-choice double-vote also rejected and tallies unchanged
 - quorum failure and rejection paths
 - timelock queueing and early-execution rejection
 - multisig signer enforcement
@@ -232,6 +293,7 @@ The governance test suite covers:
 - proposal-time quorum snapshots when configuration and voting power change
   during an active vote
 - **quorum and majority gating for get_approved_upgrade** (11 dedicated tests)
+- **proposal metadata immutability** (7 dedicated tests covering all lifecycle transitions)
 
 Run locally with:
 

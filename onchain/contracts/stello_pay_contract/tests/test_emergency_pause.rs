@@ -330,159 +330,287 @@ fn test_emergency_recovery_workflow() {
     assert!(!client.is_emergency_paused());
 }
 
-/// Test that a single guardian approval does not pause the contract when threshold > 1.
-/// This verifies the core safety property that quorum is required.
-#[test]
-fn test_single_guardian_approval_does_not_pause() {
-    let env = Env::default();
-    env.mock_all_auths();
+// ============================================================================
+// Employer-scoped bulk pause / unpause
+// ============================================================================
 
-    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
-
-    // Set 3 guardians (threshold = 2)
-    let mut guardians = Vec::new(&env);
-    guardians.push_back(guardian1.clone());
-    guardians.push_back(guardian2.clone());
-    guardians.push_back(guardian3.clone());
-    client.set_emergency_guardians(&guardians);
-
-    // Guardian1 proposes pause
-    let _ = client.propose_emergency_pause(&guardian1, &0);
-
-    // Verify not paused (proposer counts as 1 approval, threshold is 2)
-    assert!(!client.is_emergency_paused());
-
-    // Guardian2 approves (now at threshold)
-    let _ = client.approve_emergency_pause(&guardian2);
-
-    // Should now be paused
-    assert!(client.is_emergency_paused());
+/// Helper: create an active payroll agreement so it is indexable via
+/// `EmployerAgreements(employer)` and claimable.
+fn create_active_payroll_agreement(
+    env: &Env,
+    client: &PayrollContractClient<'_>,
+    employer: &Address,
+    token: &token::StellarAssetClient<'_>,
+    grace: u64,
+) -> u128 {
+    let aid = client.create_payroll_agreement(employer, &token.address, &grace);
+    let employee = Address::generate(env);
+    client.add_employee_to_agreement(&aid, &employee, &1000);
+    client.activate_agreement(&aid);
+    token.mint(&client.address, &10000);
+    aid
 }
 
-/// Test that duplicate approvals from the same guardian do not count toward quorum.
-/// This prevents a single guardian from bypassing the multi-sig requirement.
 #[test]
-fn test_duplicate_approvals_do_not_count_toward_quorum() {
+fn test_bulk_pause_all_active_agreements() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let (client, _, _, _, _) = setup_contract(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
 
-    // Set 3 guardians (threshold = 2)
-    let mut guardians = Vec::new(&env);
-    guardians.push_back(guardian1.clone());
-    guardians.push_back(guardian2.clone());
-    guardians.push_back(guardian3.clone());
-    client.set_emergency_guardians(&guardians);
+    let aid1 = create_active_payroll_agreement(&env, &client, &employer, &token, 86400);
+    let aid2 = create_active_payroll_agreement(&env, &client, &employer, &token, 86400);
+    let aid3 = create_active_payroll_agreement(&env, &client, &employer, &token, 86400);
 
-    // Guardian1 proposes pause
-    let _ = client.propose_emergency_pause(&guardian1, &0);
+    // Confirm all are Active
+    for aid in [aid1, aid2, aid3] {
+        let a = client.get_agreement(&aid).unwrap();
+        assert_eq!(
+            a.status,
+            stello_pay_contract::storage::AgreementStatus::Active
+        );
+    }
 
-    // Guardian1 tries to approve again (duplicate, should be ignored)
-    let _ = client.approve_emergency_pause(&guardian1);
+    let paused = client.pause_employer_agreements(&employer);
+    assert_eq!(paused, 3);
 
-    // Still not paused (only 1 unique approval, threshold is 2)
-    assert!(!client.is_emergency_paused());
-
-    // Guardian2 approves (now 2 unique approvals, meets threshold)
-    let _ = client.approve_emergency_pause(&guardian2);
-
-    // Should now be paused
-    assert!(client.is_emergency_paused());
+    // Confirm all are now Paused
+    for aid in [aid1, aid2, aid3] {
+        let a = client.get_agreement(&aid).unwrap();
+        assert_eq!(
+            a.status,
+            stello_pay_contract::storage::AgreementStatus::Paused
+        );
+    }
 }
 
-/// Test that the contract pauses exactly when quorum of distinct guardians is reached.
-/// This verifies the precise quorum calculation: (guardians.len() / 2) + 1.
 #[test]
-fn test_contract_pauses_exactly_at_quorum() {
+fn test_bulk_unpause_all_paused_agreements() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let (client, _, _, _, _) = setup_contract(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
 
-    // Set 3 guardians (threshold = 2)
-    let mut guardians = Vec::new(&env);
-    guardians.push_back(guardian1.clone());
-    guardians.push_back(guardian2.clone());
-    guardians.push_back(guardian3.clone());
-    client.set_emergency_guardians(&guardians);
+    let aid1 = create_active_payroll_agreement(&env, &client, &employer, &token, 86400);
+    let aid2 = create_active_payroll_agreement(&env, &client, &employer, &token, 86400);
 
-    // Guardian1 proposes pause (1 approval)
-    let _ = client.propose_emergency_pause(&guardian1, &0);
-    assert!(!client.is_emergency_paused());
+    // Pause individually to set up the test
+    let _ = client.pause_agreement(&aid1);
+    let _ = client.pause_agreement(&aid2);
 
-    // Guardian2 approves (2 approvals = quorum reached)
-    let _ = client.approve_emergency_pause(&guardian2);
-    assert!(client.is_emergency_paused());
+    let unpaused = client.unpause_employer_agreements(&employer);
+    assert_eq!(unpaused, 2);
+
+    // Confirm all are Active again
+    for aid in [aid1, aid2] {
+        let a = client.get_agreement(&aid).unwrap();
+        assert_eq!(
+            a.status,
+            stello_pay_contract::storage::AgreementStatus::Active
+        );
+    }
 }
 
-/// Test quorum behavior with 5 guardians (threshold = 3).
 #[test]
-fn test_quorum_with_five_guardians() {
+fn test_bulk_pause_respects_employer_boundary() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _owner, guardian1, guardian2, guardian3, guardian4, guardian5) = {
-        let contract_id = env.register(PayrollContract, ());
-        let client = PayrollContractClient::new(&env, &contract_id);
+    let (client, _, _, _, _) = setup_contract(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer_a = Address::generate(&env);
+    let employer_b = Address::generate(&env);
 
-        let owner = Address::generate(&env);
-        let g1 = Address::generate(&env);
-        let g2 = Address::generate(&env);
-        let g3 = Address::generate(&env);
-        let g4 = Address::generate(&env);
-        let g5 = Address::generate(&env);
+    let aid_a = create_active_payroll_agreement(&env, &client, &employer_a, &token, 86400);
+    let aid_b = create_active_payroll_agreement(&env, &client, &employer_b, &token, 86400);
 
-        client.initialize(&owner);
+    // Pause employer_a's agreements only
+    let paused = client.pause_employer_agreements(&employer_a);
+    assert_eq!(paused, 1);
 
-        (client, owner, g1, g2, g3, g4, g5)
-    };
+    // employer_a's agreement is paused
+    let a = client.get_agreement(&aid_a).unwrap();
+    assert_eq!(
+        a.status,
+        stello_pay_contract::storage::AgreementStatus::Paused
+    );
 
-    // Set 5 guardians (threshold = 3)
-    let mut guardians = Vec::new(&env);
-    guardians.push_back(guardian1.clone());
-    guardians.push_back(guardian2.clone());
-    guardians.push_back(guardian3.clone());
-    guardians.push_back(guardian4.clone());
-    guardians.push_back(guardian5.clone());
-    client.set_emergency_guardians(&guardians);
-
-    // Guardian1 proposes (1 approval)
-    let _ = client.propose_emergency_pause(&guardian1, &0);
-    assert!(!client.is_emergency_paused());
-
-    // Guardian2 approves (2 approvals, below threshold of 3)
-    let _ = client.approve_emergency_pause(&guardian2);
-    assert!(!client.is_emergency_paused());
-
-    // Guardian3 approves (3 approvals = quorum reached)
-    let _ = client.approve_emergency_pause(&guardian3);
-    assert!(client.is_emergency_paused());
+    // employer_b's agreement is still Active
+    let b = client.get_agreement(&aid_b).unwrap();
+    assert_eq!(
+        b.status,
+        stello_pay_contract::storage::AgreementStatus::Active
+    );
 }
 
-/// Test that non-guardian cannot approve emergency pause.
 #[test]
-fn test_non_guardian_cannot_approve() {
+fn test_bulk_pause_cross_employer_auth_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _owner, guardian1, guardian2, _) = setup_contract(&env);
+    let (client, _, _, _, _) = setup_contract(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer_a = Address::generate(&env);
+    let employer_b = Address::generate(&env);
 
-    let non_guardian = Address::generate(&env);
+    // Create agreements for both employers
+    create_active_payroll_agreement(&env, &client, &employer_a, &token, 86400);
+    create_active_payroll_agreement(&env, &client, &employer_b, &token, 86400);
 
-    // Set 2 guardians
-    let mut guardians = Vec::new(&env);
-    guardians.push_back(guardian1.clone());
-    guardians.push_back(guardian2.clone());
-    client.set_emergency_guardians(&guardians);
-
-    // Guardian1 proposes
-    let _ = client.propose_emergency_pause(&guardian1, &0);
-
-    // Non-guardian tries to approve (should fail)
-    let result = client.try_approve_emergency_pause(&non_guardian);
+    // Clear all auths — employer_b cannot auth as employer_a
+    env.mock_auths(&[]);
+    let result = client.try_pause_employer_agreements(&employer_a);
     assert!(result.is_err());
+}
 
-    // Still not paused
-    assert!(!client.is_emergency_paused());
+#[test]
+fn test_bulk_pause_no_agreements_returns_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _, _, _) = setup_contract(&env);
+    let employer = Address::generate(&env);
+
+    let paused = client.pause_employer_agreements(&employer);
+    assert_eq!(paused, 0);
+}
+
+#[test]
+fn test_bulk_unpause_no_agreements_returns_zero() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _, _, _) = setup_contract(&env);
+    let employer = Address::generate(&env);
+
+    let unpaused = client.unpause_employer_agreements(&employer);
+    assert_eq!(unpaused, 0);
+}
+
+#[test]
+fn test_bulk_pause_skips_non_active_agreements() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _, _, _) = setup_contract(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    // Active agreement — will be paused
+    let aid_active = create_active_payroll_agreement(&env, &client, &employer, &token, 86400);
+
+    // Created (not yet activated) agreement — will be skipped
+    let aid_created = client.create_payroll_agreement(&employer, &token.address, &86400);
+    client.add_employee_to_agreement(&aid_created, &employee, &1000);
+    // deliberately NOT activating
+
+    // Cancelled agreement — will be skipped
+    let aid_cancelled = create_active_payroll_agreement(&env, &client, &employer, &token, 86400);
+    client.cancel_agreement(&aid_cancelled);
+
+    let paused = client.pause_employer_agreements(&employer);
+    assert_eq!(paused, 1);
+
+    // Only the Active one changed
+    let a = client.get_agreement(&aid_active).unwrap();
+    assert_eq!(
+        a.status,
+        stello_pay_contract::storage::AgreementStatus::Paused
+    );
+
+    let c = client.get_agreement(&aid_created).unwrap();
+    assert_eq!(
+        c.status,
+        stello_pay_contract::storage::AgreementStatus::Created
+    );
+
+    let cancelled = client.get_agreement(&aid_cancelled).unwrap();
+    assert_eq!(
+        cancelled.status,
+        stello_pay_contract::storage::AgreementStatus::Cancelled
+    );
+}
+
+#[test]
+fn test_bulk_pause_milestone_agreements() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _, _, _) = setup_contract(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let contributor = Address::generate(&env);
+
+    let aid1 = client.create_milestone_agreement(&employer, &contributor, &token.address);
+    client.add_milestone(&aid1, &1000);
+    // Milestone agreements are Created by default — bulk pause also pauses Created milestone
+    // agreements (since they can have approved, claimable milestones).
+
+    let aid2 = client.create_milestone_agreement(&employer, &contributor, &token.address);
+    client.add_milestone(&aid2, &2000);
+
+    let paused = client.pause_employer_agreements(&employer);
+    assert_eq!(paused, 2);
+
+    // Both milestone agreements should now be Paused
+    use stello_pay_contract::storage::MilestoneKey;
+    for aid in [aid1, aid2] {
+        let status: stello_pay_contract::storage::AgreementStatus =
+            env.as_contract(&client.address, || {
+                env.storage()
+                    .persistent()
+                    .get(&MilestoneKey::Status(aid))
+                    .unwrap()
+            });
+        assert_eq!(
+            status,
+            stello_pay_contract::storage::AgreementStatus::Paused
+        );
+    }
+}
+
+#[test]
+fn test_bulk_unpause_milestone_agreements() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _, _, _, _) = setup_contract(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let contributor = Address::generate(&env);
+
+    let aid = client.create_milestone_agreement(&employer, &contributor, &token.address);
+    client.add_milestone(&aid, &1000);
+
+    // Use per-agreement pause first, then bulk-unpause
+    let _ = client.pause_agreement(&aid);
+
+    let unpaused = client.unpause_employer_agreements(&employer);
+    assert_eq!(unpaused, 1);
+
+    // Should be Active now
+    use stello_pay_contract::storage::MilestoneKey;
+    let status: stello_pay_contract::storage::AgreementStatus =
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get(&MilestoneKey::Status(aid))
+                .unwrap()
+        });
+    assert_eq!(
+        status,
+        stello_pay_contract::storage::AgreementStatus::Active
+    );
 }

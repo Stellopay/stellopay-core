@@ -957,6 +957,100 @@ fn test_double_refund_fails() {
 }
 
 #[test]
+fn test_double_refund_preserves_accounting() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    let funded: i128 = 1_000;
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &funded);
+
+    let agreement_id = 42u128;
+    client.fund_agreement(&employer, &agreement_id, &employer, &funded);
+
+    // Snapshot before first refund
+    let pre_refund = AccountingSnapshot::take(&env, &token, &client, agreement_id, &recipient);
+    assert_eq!(pre_refund.internal_balance, funded);
+    assert_eq!(token.balance(&employer), 0);
+    pre_refund.assert_accounting_in_sync();
+
+    // First refund succeeds — all accounting must be consistent
+    client.refund_remaining(&manager, &agreement_id);
+
+    let after_refund =
+        AccountingSnapshot::take(&env, &token, &client, agreement_id, &recipient);
+    assert_eq!(after_refund.internal_balance, 0);
+    assert_eq!(after_refund.contract_token_balance, 0);
+    assert_eq!(
+        token.balance(&employer),
+        funded,
+        "employer must receive the full refund"
+    );
+    after_refund.assert_accounting_in_sync();
+    assert_escrow_conservation(&client, agreement_id, funded, 0, funded);
+}
+
+#[test]
+fn test_refund_accounting_matches_funded_exactly() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &100_000);
+
+    // Case 1: fund with no releases → refund total must match fund total
+    let aid1 = 1u128;
+    let fund1 = 7_500i128;
+    client.fund_agreement(&employer, &aid1, &employer, &fund1);
+    client.refund_remaining(&manager, &aid1);
+    assert_escrow_conservation(&client, aid1, fund1, 0, fund1);
+    assert_eq!(client.get_agreement_balance(&aid1), 0);
+
+    // Case 2: fund with partial releases → refund total + releases = fund total
+    let aid2 = 2u128;
+    let fund2 = 5_000i128;
+    let released = 1_200i128;
+    client.fund_agreement(&employer, &aid2, &employer, &fund2);
+    client.release(&manager, &aid2, &recipient, &released);
+    client.refund_remaining(&manager, &aid2);
+    let refunded2 = fund2 - released;
+    assert_escrow_conservation(&client, aid2, fund2, released, refunded2);
+    assert_eq!(client.get_agreement_balance(&aid2), 0);
+
+    // Case 3: multiple funds into same agreement with partial releases
+    let aid3 = 3u128;
+    let fund3a = 3_000i128;
+    let fund3b = 2_000i128;
+    let total_fund3 = fund3a + fund3b;
+    let released3 = 1_500i128;
+    client.fund_agreement(&employer, &aid3, &employer, &fund3a);
+    client.fund_agreement(&employer, &aid3, &employer, &fund3b);
+    client.release(&manager, &aid3, &recipient, &released3);
+    client.refund_remaining(&manager, &aid3);
+    let refunded3 = total_fund3 - released3;
+    assert_escrow_conservation(&client, aid3, total_fund3, released3, refunded3);
+    assert_eq!(client.get_agreement_balance(&aid3), 0);
+}
+
+#[test]
 #[should_panic(expected = "Insufficient balance")]
 fn test_release_after_refund_fails() {
     let env = Env::default();
@@ -1724,5 +1818,256 @@ fn test_accounting_integrity_across_full_withdrawal_lifecycle() {
         token.balance(&employer),
         600,
         "employer must receive the refunded amount"
+    );
+}
+
+// ============================================================================
+// Cumulative release-cap tests
+//
+// These tests directly address the requirement that repeated calls to
+// `release` can never, in aggregate, release more than the originally funded
+// amount, even across many small partial releases.
+//
+// Covered assertions per call:
+//   • running_total_released <= funded_amount  (cap invariant)
+//   • get_agreement_balance == funded - running_total_released  (counter sync)
+//   • A release that would push the running total past `funded` errors
+//     immediately and does NOT release a truncated/partial amount.
+//   • State (internal balance + contract custody) is identical before and
+//     after any rejected call.
+// ============================================================================
+
+/// Positive test: ten micro-releases in a loop; after each one the running
+/// total must not exceed the funded amount and the internal balance counter
+/// must equal `funded - running_total`.
+///
+/// Funded = 1_000. Ten releases of 100 each, total = 1_000 == funded.
+/// The cap invariant holds throughout and the final balance is exactly 0.
+#[test]
+fn test_cumulative_release_cap_many_small_releases_never_exceed_funded() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    // Fund exactly 1_000 tokens.
+    let funded: i128 = 1_000;
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &funded);
+
+    let agreement_id = 42u128;
+    client.fund_agreement(&employer, &agreement_id, &employer, &funded);
+
+    // Sanity: balance starts at funded amount.
+    assert_eq!(client.get_agreement_balance(&agreement_id), funded);
+
+    // Release in 10 equal instalments of 100.
+    let release_amount: i128 = 100;
+    let steps: u32 = 10;
+    let mut running_total: i128 = 0;
+
+    for step in 1..=steps {
+        client.release(&manager, &agreement_id, &recipient, &release_amount);
+        running_total += release_amount;
+
+        let expected_remaining = funded - running_total;
+        let internal_balance = client.get_agreement_balance(&agreement_id);
+
+        // Cap invariant: aggregate released must never exceed funded.
+        assert!(
+            running_total <= funded,
+            "step {step}: cumulative release ({running_total}) exceeded funded ({funded})"
+        );
+
+        // Counter sync: internal balance must equal funded minus released.
+        assert_eq!(
+            internal_balance,
+            expected_remaining,
+            "step {step}: internal balance ({internal_balance}) != funded ({funded}) \
+             - released ({running_total}) = {expected_remaining}"
+        );
+    }
+
+    // All 10 × 100 = 1_000 released — balance must be exactly zero.
+    assert_eq!(
+        client.get_agreement_balance(&agreement_id),
+        0,
+        "balance must be zero after all instalments are released"
+    );
+    assert_eq!(
+        running_total, funded,
+        "total released must equal exactly the funded amount"
+    );
+    assert_eq!(
+        token.balance(&recipient),
+        funded,
+        "recipient must hold all funded tokens after final instalment"
+    );
+}
+
+/// Negative test: a single `release` call whose amount would push the
+/// cumulative total past `funded` must error immediately.
+///
+/// It must NOT release a partial/truncated amount — the full requested
+/// amount is either transferred or nothing is transferred (atomic failure).
+///
+/// Setup: fund 500, release 300 (running = 300, remaining = 200).
+/// Attempt release of 201 — this would push total to 501 > 500 funded.
+/// Expected: error with "Insufficient balance"; state entirely unchanged.
+#[test]
+fn test_cumulative_release_cap_over_funded_amount_errors_not_truncates() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    let funded: i128 = 500;
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &funded);
+
+    let agreement_id = 7u128;
+    client.fund_agreement(&employer, &agreement_id, &employer, &funded);
+
+    // First legitimate partial release: 300 tokens.
+    let first_release: i128 = 300;
+    client.release(&manager, &agreement_id, &recipient, &first_release);
+
+    let remaining = funded - first_release; // 200
+    assert_eq!(
+        client.get_agreement_balance(&agreement_id),
+        remaining,
+        "internal balance must be funded - first_release after the first call"
+    );
+
+    // Snapshot state before the rejected call.
+    let balance_before = client.get_agreement_balance(&agreement_id);
+    let contract_tokens_before = token.balance(&client.address);
+    let recipient_tokens_before = token.balance(&recipient);
+
+    // Attempt to release 201 — one more than the 200 remaining.
+    // This would make cumulative = 300 + 201 = 501, exceeding funded (500).
+    let over_amount: i128 = remaining + 1; // 201
+    let result = client.try_release(&manager, &agreement_id, &recipient, &over_amount);
+
+    // Must error — not silently release a truncated 200.
+    assert!(
+        result.is_err(),
+        "release that exceeds remaining balance must return an error, not succeed with truncation"
+    );
+
+    // State must be byte-for-byte identical to before the rejected call.
+    assert_eq!(
+        client.get_agreement_balance(&agreement_id),
+        balance_before,
+        "internal balance must be unchanged after rejected over-release"
+    );
+    assert_eq!(
+        token.balance(&client.address),
+        contract_tokens_before,
+        "contract token custody must be unchanged after rejected over-release"
+    );
+    assert_eq!(
+        token.balance(&recipient),
+        recipient_tokens_before,
+        "recipient balance must be unchanged — no partial transfer must have occurred"
+    );
+
+    // Confirm the valid remaining 200 can still be released after the failed attempt.
+    client.release(&manager, &agreement_id, &recipient, &remaining);
+    assert_eq!(
+        client.get_agreement_balance(&agreement_id),
+        0,
+        "balance must be zero after releasing the exact remaining amount"
+    );
+    assert_eq!(
+        token.balance(&recipient),
+        funded,
+        "recipient must now hold the full funded amount"
+    );
+}
+
+/// Property test: assert `get_agreement_balance == funded - released` after
+/// every individual `release` call in a variable-step sequence.
+///
+/// Uses amounts [50, 75, 25, 100, 200, 50] totalling 500 == funded.
+/// The internal counter is verified after each step, not just at the end.
+#[test]
+fn test_cumulative_release_internal_balance_tracks_funded_minus_released_after_every_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+
+    let client = create_payroll_escrow_contract(&env);
+    client.initialize(&admin, &token.address, &manager);
+
+    let funded: i128 = 500;
+    soroban_sdk::token::StellarAssetClient::new(&env, &token.address).mint(&employer, &funded);
+
+    let agreement_id = 99u128;
+    client.fund_agreement(&employer, &agreement_id, &employer, &funded);
+
+    // Variable release sequence — total intentionally equals funded exactly.
+    let releases: [i128; 6] = [50, 75, 25, 100, 200, 50];
+    let mut cumulative_released: i128 = 0;
+
+    for (i, &amount) in releases.iter().enumerate() {
+        client.release(&manager, &agreement_id, &recipient, &amount);
+        cumulative_released += amount;
+
+        let expected_balance = funded - cumulative_released;
+        let actual_balance = client.get_agreement_balance(&agreement_id);
+
+        // Primary assertion from the issue: counter == funded - released after every call.
+        assert_eq!(
+            actual_balance,
+            expected_balance,
+            "call {}: get_agreement_balance ({actual_balance}) must equal \
+             funded ({funded}) - cumulative_released ({cumulative_released}) = {expected_balance}",
+            i + 1
+        );
+
+        // Bonus: cap invariant must hold at every step too.
+        assert!(
+            cumulative_released <= funded,
+            "call {}: cumulative released ({cumulative_released}) must never exceed funded ({funded})",
+            i + 1
+        );
+    }
+
+    // Final state checks.
+    assert_eq!(
+        client.get_agreement_balance(&agreement_id),
+        0,
+        "final balance must be zero"
+    );
+    assert_eq!(
+        token.balance(&recipient),
+        funded,
+        "recipient must hold all funded tokens"
+    );
+    assert_eq!(
+        token.balance(&client.address),
+        0,
+        "contract must hold zero tokens"
     );
 }
