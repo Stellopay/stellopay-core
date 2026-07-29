@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 //! Payroll / escrow template versioning: immutable version records, lookup, and agreement bindings.
 //!

@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use core::cmp::Ordering;
 

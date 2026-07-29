@@ -77,6 +77,7 @@
 //! act on the `outcome` field to release or redirect funds.
 
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 pub mod storage;
 pub mod types;
 
@@ -162,6 +163,26 @@ pub struct DisputeExpiredEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisputeSlaBreachedEvent {
+    pub agreement_id: u128,
+    pub level: EscalationLevel,
+    pub breached_at: u64,
+    pub review_deadline: u64,
+}
+
+/// New-style SLA violation event emitted alongside [`DisputeSlaBreachedEvent`]
+/// for forward-looking consumers.  Both events are emitted from a single
+/// `keeper_advance_stage` call so that existing indexers remain unaffected
+/// while new integrations can subscribe to the more descriptive topic.
+///
+/// # Fields
+/// * `agreement_id`    — identifies the dispute.
+/// * `level`           — escalation level at which the SLA was breached.
+/// * `breached_at`     — ledger timestamp at which the advance was triggered.
+/// * `review_deadline` — timestamp by which the admin must act before the
+///   dispute can be expired via `expire_dispute`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeSlaViolationAdvancedEvent {
     pub agreement_id: u128,
     pub level: EscalationLevel,
     pub breached_at: u64,
@@ -451,6 +472,16 @@ impl DisputeEscalationContract {
             ("dispute_sla_breached",),
             DisputeSlaBreachedEvent {
                 agreement_id,
+                level: dispute.level.clone(),
+                breached_at: now,
+                review_deadline,
+            },
+        );
+
+        env.events().publish(
+            ("sla_violation_advanced",),
+            DisputeSlaViolationAdvancedEvent {
+                agreement_id,
                 level: dispute.level,
                 breached_at: now,
                 review_deadline,
@@ -464,6 +495,13 @@ impl DisputeEscalationContract {
             Some(caller.clone()),
             None,
         );
+
+        // Deduct reward from the designated incentive pool and pay the keeper
+        if let Some((token_addr, pool_addr, amount)) = storage::get_reward_config(&env) {
+            let token_client = token::Client::new(&env, &token_addr);
+            // The contract must be authorized by the incentive pool (e.g. via allowance or being the admin of the pool)
+            token_client.transfer(&pool_addr, &caller, &amount);
+        }
 
         Ok(())
     }
@@ -713,6 +751,31 @@ impl DisputeEscalationContract {
 
     // ─── Admin Configuration ──────────────────────────────────────────────
 
+    /// Configure the keeper incentive payout.
+    ///
+    /// # Arguments
+    /// * `caller` - The admin address.
+    /// * `token` - The token used for rewards.
+    /// * `pool` - The incentive pool from which rewards are drawn.
+    /// * `amount` - The amount of tokens paid per genuine timeout advance.
+    ///
+    /// # Errors
+    /// * `Unauthorized` - caller is not the admin.
+    pub fn configure_keeper_reward(
+        env: Env,
+        caller: Address,
+        token: Address,
+        pool: Address,
+        amount: i128,
+    ) -> Result<(), DisputeError> {
+        caller.require_auth();
+        if !storage::is_admin(&env, &caller) {
+            return Err(DisputeError::Unauthorized);
+        }
+        storage::set_reward_config(&env, &token, &pool, &amount);
+        Ok(())
+    }
+
     /// Admin configuration: adjust the SLA time limit for a given escalation level.
     ///
     /// Changes take effect for new disputes and new phase windows; existing
@@ -769,6 +832,13 @@ impl DisputeEscalationContract {
     /// Returns the details of a dispute, or `None` if it does not exist.
     pub fn get_dispute(env: Env, agreement_id: u128) -> Option<DisputeDetails> {
         storage::get_dispute(&env, agreement_id)
+    }
+
+    /// Returns the configured SLA time limit in seconds for the given
+    /// escalation level.  Defaults to 604 800 s (7 days) if never explicitly
+    /// set via [`set_level_time_limit`].
+    pub fn get_level_time_limit(env: Env, level: EscalationLevel) -> u64 {
+        storage::get_level_time_limit(&env, level)
     }
 
     /// Configure the optional external audit logger contract for dispute

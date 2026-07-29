@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 pub use rbac_interface::Role;
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
@@ -372,7 +373,7 @@ impl RbacContract {
     ///      1. Admin role is granted to the new owner.
     ///      2. Admin role is revoked from the old owner.
     ///      3. Ownership record is updated.
-    ///      Emits event `("RBAC", "owner")` with the new owner address.
+    ///      Emits event `("RBAC", "owner")` with `(previous_owner, new_owner)`.
     /// @param caller Must be the pending owner; must authenticate.
     pub fn accept_ownership(env: Env, caller: Address) {
         require_initialized(&env);
@@ -416,6 +417,6 @@ impl RbacContract {
         env.storage().persistent().remove(&StorageKey::PendingOwner);
 
         env.events()
-            .publish((symbol_short!("RBAC"), symbol_short!("owner")), &caller);
+            .publish((symbol_short!("RBAC"), symbol_short!("owner")), (&old_owner, &caller));
     }
 }

@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, BytesN,
@@ -418,9 +419,10 @@ impl MultisigContract {
         ] {
             if let Some(override_val) = read_threshold_override(&env, &op_type) {
                 if override_val > signer_count as u32 {
-                    env.storage()
-                        .persistent()
-                        .set(&StorageKey::ThresholdOverride(op_type), &signer_count);
+                    env.storage().persistent().set(
+                        &StorageKey::ThresholdOverride(op_type),
+                        &signer_count,
+                    );
                 }
             }
         }

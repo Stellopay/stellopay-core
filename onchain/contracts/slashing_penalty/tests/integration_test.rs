@@ -1074,3 +1074,284 @@ fn test_attestation_slash_execute_slash_double_execution_is_rejected() {
         "double-execution guard must fire for attestation-based slashes"
     );
 }
+
+// ─── Maximum Slash Percentage Cap (per_event_bps) ─────────────────────────────
+
+/// Helper to create a fresh environment with a custom per-event bps cap.
+struct CustomCapEnv {
+    env: Env,
+    client: SlashingPenaltyContractClient<'static>,
+    admin: Address,
+    slasher: Address,
+    offender: Address,
+    token: Address,
+}
+
+impl CustomCapEnv {
+    fn new(per_event_bps_cap: u32) -> Self {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SlashingPenaltyContract);
+        let client = SlashingPenaltyContractClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let slasher = Address::generate(&env);
+        let offender = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+        let token = env
+            .register_stellar_asset_contract_v2(token_admin)
+            .address();
+        let token_sac = StellarAssetClient::new(&env, &token);
+        token_sac.mint(&offender, &1_000_000i128);
+
+        client.initialize(
+            &admin,
+            &token,
+            &2u32,
+            &per_event_bps_cap,
+            &1_000_000i128,
+            &10_000_000i128,
+            &86_400u64,
+        );
+        client.add_slasher(&slasher);
+        client.stake(&offender, &100_000i128);
+        CustomCapEnv { env, client, admin, slasher, offender, token }
+    }
+
+    fn evidence_hash(&self, seed: u8) -> BytesN<32> {
+        BytesN::from_array(&self.env, &[seed; 32])
+    }
+
+    fn advance_time(&self, seconds: u64) {
+        let current = self.env.ledger().timestamp();
+        self.env.ledger().set(LedgerInfo {
+            timestamp: current + seconds,
+            ..self.env.ledger().get()
+        });
+    }
+}
+
+/// Slashing at exactly the per-event bps cap must succeed.
+#[test]
+fn test_slash_at_percentage_cap_succeeds() {
+    let t = CustomCapEnv::new(2_000); // 20% cap
+    let hash = t.evidence_hash(210);
+
+    t.client.slash_with_evidence(
+        &t.slasher,
+        &t.offender,
+        &Offense::FraudProof,
+        &2_000u32, // exactly at 20% cap
+        &hash,
+        &0u64,
+    );
+
+    let record = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(record.status, SlashStatus::Pending);
+    // 20% of 100_000 = 20_000
+    assert_eq!(record.escrowed_amount, 20_000i128);
+    assert_eq!(t.client.get_stake_balance(&t.offender), 80_000i128);
+}
+
+/// Slashing above the per-event bps cap must be rejected.
+#[test]
+fn test_slash_above_percentage_cap_fails() {
+    let t = CustomCapEnv::new(2_000); // 20% cap
+    let hash = t.evidence_hash(211);
+
+    let result = t.client.try_slash_with_evidence(
+        &t.slasher,
+        &t.offender,
+        &Offense::FraudProof,
+        &2_001u32, // 1 bps above the 20% cap
+        &hash,
+        &0u64,
+    );
+    assert_eq!(result, Err(Ok(SlashError::PenaltyTooHigh)));
+    // Stake must be untouched
+    assert_eq!(t.client.get_stake_balance(&t.offender), 100_000i128);
+}
+
+/// Slash at cap, execute full lifecycle, verify correct amount deducted end-to-end.
+#[test]
+fn test_execute_slash_respects_percentage_cap() {
+    let t = CustomCapEnv::new(1_000); // 10% cap
+    let hash = t.evidence_hash(212);
+
+    // Slash exactly at 10% cap
+    t.client.slash_with_evidence(
+        &t.slasher,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+
+    let balance_after_slash = t.client.get_stake_balance(&t.offender);
+    assert_eq!(balance_after_slash, 90_000i128); // 100_000 - 10_000
+
+    // Execute after appeal window
+    t.advance_time(APPEAL_WINDOW + 1);
+    t.client.execute_slash(&hash);
+
+    // Balance must remain 90_000 (escrow burned, not returned)
+    assert_eq!(t.client.get_stake_balance(&t.offender), 90_000i128);
+    let record = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(record.status, SlashStatus::Executed);
+    assert_eq!(record.escrowed_amount, 10_000i128);
+}
+
+/// Attestation-based slash at cap must succeed.
+#[test]
+fn test_attestation_slash_at_percentage_cap_succeeds() {
+    let t = CustomCapEnv::new(3_000); // 30% cap
+    let hash = t.evidence_hash(213);
+
+    t.client.attest_slash(
+        &t.slasher,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &3_000u32, // exactly at 30% cap
+        &hash,
+        &0u64,
+    );
+    // Quorum of 2 — second attestor also needed
+    let admin_addr = t.admin.clone();
+    t.client.add_slasher(&admin_addr);
+    t.client.attest_slash(
+        &admin_addr,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &3_000u32,
+        &hash,
+        &0u64,
+    );
+
+    let record = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(record.status, SlashStatus::Pending);
+    // 30% of 100_000 = 30_000
+    assert_eq!(record.escrowed_amount, 30_000i128);
+}
+
+/// Attestation-based slash above cap must be rejected.
+#[test]
+fn test_attestation_slash_above_percentage_cap_fails() {
+    let t = CustomCapEnv::new(3_000); // 30% cap
+    let hash = t.evidence_hash(214);
+
+    let result = t.client.try_attest_slash(
+        &t.slasher,
+        &t.offender,
+        &Offense::FraudProof,
+        &3_001u32, // 1 bps above the 30% cap
+        &hash,
+        &0u64,
+    );
+    assert_eq!(result, Err(Ok(SlashError::PenaltyTooHigh)));
+}
+
+/// Zero per_event_bps_cap must be rejected at initialization.
+#[test]
+fn test_zero_per_event_bps_cap_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SlashingPenaltyContract);
+    let client = SlashingPenaltyContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let result = client.try_initialize(
+        &admin, &token, &2u32, &0u32, &10_000i128, &50_000i128, &86_400u64,
+    );
+    assert_eq!(result, Err(Ok(SlashError::InvalidConfig)));
+}
+
+/// per_event_bps_cap above MAX_PENALTY_BPS must be rejected.
+#[test]
+fn test_per_event_bps_cap_exceeds_max_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SlashingPenaltyContract);
+    let client = SlashingPenaltyContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let token = Address::generate(&env);
+
+    let result = client.try_initialize(
+        &admin, &token, &2u32, &5_001u32, &10_000i128, &50_000i128, &86_400u64,
+    );
+    assert_eq!(result, Err(Ok(SlashError::InvalidConfig)));
+}
+
+/// Slashing at the hard MAX_PENALTY_BPS (5_000 = 50%) through
+/// the full slash-with-evidence path must succeed.
+#[test]
+fn test_max_bps_boundary_slash_succeeds() {
+    let t = TestEnv::setup();
+    let hash = t.evidence_hash(220);
+
+    t.client.slash_with_evidence(
+        &t.slasher1,
+        &t.offender,
+        &Offense::FraudProof,
+        &5_000u32, // MAX_PENALTY_BPS = 50%
+        &hash,
+        &0u64,
+    );
+    let record = t.client.get_slash_record(&hash).unwrap();
+    // 50% of 10_000 = 5_000
+    assert_eq!(record.escrowed_amount, 5_000i128);
+    assert_eq!(t.client.get_stake_balance(&t.offender), 5_000i128);
+}
+
+/// Lower the per-event bps cap via set_penalty_caps and verify that
+/// subsequent slashes are gated by the updated cap.
+#[test]
+fn test_update_cap_then_enforce() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SlashingPenaltyContract);
+    let client = SlashingPenaltyContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let slasher = Address::generate(&env);
+    let offender = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    let token_sac = StellarAssetClient::new(&env, &token);
+    token_sac.mint(&offender, &1_000_000i128);
+
+    // Initialize with 40% cap.
+    client.initialize(
+        &admin, &token, &2u32, &4_000u32, &1_000_000i128, &10_000_000i128, &86_400u64,
+    );
+    client.add_slasher(&slasher);
+    client.stake(&offender, &100_000i128);
+
+    // Lower cap to 20% (2_000 bps).
+    client.set_penalty_caps(&2_000u32, &1_000_000i128, &10_000_000i128, &86_400u64);
+
+    // 15% is below the new 20% cap — must succeed.
+    let hash_ok = BytesN::from_array(&env, &[215u8; 32]);
+    client.slash_with_evidence(
+        &slasher,
+        &offender,
+        &Offense::MissedDuty,
+        &1_500u32,
+        &hash_ok,
+        &0u64,
+    );
+    let record = client.get_slash_record(&hash_ok).unwrap();
+    assert_eq!(record.escrowed_amount, 15_000i128);
+
+    // 25% exceeds the new 20% cap — must be rejected.
+    let result = client.try_slash_with_evidence(
+        &slasher,
+        &offender,
+        &Offense::FraudProof,
+        &2_500u32,
+        &BytesN::from_array(&env, &[216u8; 32]),
+        &0u64,
+    );
+    assert_eq!(result, Err(Ok(SlashError::PenaltyTooHigh)));
+}

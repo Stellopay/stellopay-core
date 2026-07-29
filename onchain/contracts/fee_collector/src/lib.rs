@@ -55,6 +55,7 @@
 //! ```
 
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 mod events;
 mod helpers;

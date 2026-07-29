@@ -27,6 +27,7 @@
 //! - Admin cannot slash; roles are separated (admin ≠ slasher).
 
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
