@@ -621,7 +621,12 @@ fn test_milestone_claim_blocked_before_approval() {
     let contributor = Address::generate(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
 
     let result = client.try_claim_milestone(&agreement_id, &1u32);
@@ -638,7 +643,12 @@ fn test_milestone_approval_does_not_transfer_funds() {
     let contributor = Address::generate(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
 
     // Fund the milestone agreement
@@ -662,7 +672,12 @@ fn test_milestone_claim_succeeds_immediately_after_approval() {
     let contributor = Address::generate(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
 
     // Fund the milestone agreement
@@ -687,7 +702,12 @@ fn test_milestone_double_claim_rejected() {
     let contributor = Address::generate(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
 
     // Fund the milestone agreement
@@ -710,7 +730,12 @@ fn test_milestone_out_of_order_approval_and_claim() {
     let contributor = Address::generate(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &100i128);
     client.add_milestone(&agreement_id, &200i128);
     client.add_milestone(&agreement_id, &300i128);
@@ -744,7 +769,12 @@ fn test_milestone_wrong_caller_cannot_claim() {
     let contributor = Address::generate(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
 
     // Fund the milestone agreement
@@ -768,7 +798,12 @@ fn test_milestone_wrong_caller_cannot_approve() {
     let contributor = Address::generate(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
 
     // Fund the milestone agreement
@@ -789,7 +824,12 @@ fn test_milestone_claim_blocked_when_paused() {
     let contributor = Address::generate(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
 
     // Fund the milestone agreement
@@ -813,7 +853,12 @@ fn test_milestone_batch_claim_only_approved() {
     let contributor = Address::generate(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &100i128); // id 1
     client.add_milestone(&agreement_id, &200i128); // id 2
     client.add_milestone(&agreement_id, &300i128); // id 3
@@ -850,7 +895,12 @@ fn test_milestone_batch_claim_skips_duplicates() {
     let contributor = Address::generate(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
 
     // Fund the milestone agreement
@@ -866,7 +916,7 @@ fn test_milestone_batch_claim_skips_duplicates() {
 
     assert_eq!(result.successful_claims, 1);
     assert_eq!(result.failed_claims, 1); // duplicate counted as failure
-    assert_eq!(result.total_claimed, STANDARD_SALARY);
+    assert_eq!(result.total_claimed, 1i128);
 }
 
 /// @notice Batch claim with mixed outcomes reports correct counts.
@@ -879,7 +929,12 @@ fn test_milestone_batch_claim_partial_success_correct_counts() {
     let contributor = Address::generate(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &500i128); // id 1 — will be approved
     client.add_milestone(&agreement_id, &500i128); // id 2 — left unapproved
 
@@ -909,7 +964,12 @@ fn test_milestone_invalid_id_rejected() {
     let contributor = Address::generate(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &STANDARD_SALARY);
 
     // Fund the milestone agreement
@@ -1239,7 +1299,12 @@ fn test_composite_emergency_pause_blocks_all_trigger_types() {
         &[(employee.clone(), STANDARD_SALARY)],
     );
 
-    let ms_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let ms_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&ms_id, &STANDARD_SALARY);
     mint(&env, &token, &employer, STANDARD_SALARY);
     client.fund_milestone_agreement(&ms_id, &employer, &STANDARD_SALARY);

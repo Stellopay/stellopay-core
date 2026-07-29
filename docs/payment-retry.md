@@ -377,3 +377,9 @@ Test coverage includes:
   - Success before exhaustion — ensures ceiling logic does not interfere with successful payments
 - Security: infinite-retry drain prevention, max_retry_attempts cap enforcement
 - View helpers (`get_payment`, `get_owner`)
+
+## Queue Ordering and Idempotency
+
+When multiple payments become due at the same ledger timestamp, process_due_payments gathers all due payments and explicitly sorts them by their payment_id (ascending order) before processing. This ensures a stable, deterministic processing order that does not vary between runs or depend on insertion order, avoiding edge cases where the limit max_payments cuts off a randomly-ordered queue inconsistently.
+
+Callers may invoke this function multiple times within the same ledger period or concurrently from different cron jobs without coordination. The contract guarantees that each due record is evaluated in this sorted order, and terminal states are safely written to prevent double-processing.

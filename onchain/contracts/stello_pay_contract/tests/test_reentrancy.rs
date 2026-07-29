@@ -294,7 +294,12 @@ fn setup_milestone_agreement(
     let token = create_token(env);
 
     // Create and fund a milestone agreement.
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     let milestone_amount = 1000i128;
     client.add_milestone(&agreement_id, &milestone_amount);
     client.fund_milestone_agreement(&agreement_id, &employer, &milestone_amount);
@@ -426,8 +431,12 @@ fn test_expire_milestone_hook_fires_and_milestone_remains_expired() {
     let contributor2 = create_address(&env);
     let token2 = create_token(&env);
     let fresh_token_amount = 500i128;
-    let fresh_agreement_id =
-        fresh_client.create_milestone_agreement(&employer2, &contributor2, &token2);
+    let fresh_agreement_id = fresh_client.create_milestone_agreement(
+        &employer2,
+        &contributor2,
+        &token2,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     fresh_client.add_milestone(&fresh_agreement_id, &fresh_token_amount);
     fresh_client.fund_milestone_agreement(&fresh_agreement_id, &employer2, &fresh_token_amount);
     mint(&env, &token2, &fresh_contract_id, fresh_token_amount);

@@ -188,7 +188,12 @@ fn test_milestone_agreement_creation() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
 
     // Milestone agreements don't emit agreement_created_event
     // They use a separate storage system
@@ -339,8 +344,12 @@ fn test_milestone_added_event() {
     let token = create_test_address(&env);
     let amount = 5000i128;
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &amount);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, amount],
+    );
 
     assert!(has_event(&env, "milestone_added"));
 
@@ -362,8 +371,12 @@ fn test_milestone_approved_event() {
     let contributor = create_test_address(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &5000);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 5000i128],
+    );
     mint(&env, &token, &employer, 5000);
     client.fund_milestone_agreement(&agreement_id, &employer, &5000);
     client.approve_milestone(&agreement_id, &1);
@@ -387,8 +400,12 @@ fn test_milestone_claimed_event() {
     let token = create_token(&env);
     let amount = 5000i128;
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &amount);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, amount],
+    );
     mint(&env, &token, &employer, amount);
     client.fund_milestone_agreement(&agreement_id, &employer, &amount);
     client.approve_milestone(&agreement_id, &1);
@@ -558,7 +575,12 @@ fn test_event_ordering_milestone_workflow() {
     let contributor = create_test_address(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
 
     client.add_milestone(&agreement_id, &5000);
     assert!(
@@ -643,7 +665,12 @@ fn test_complete_milestone_workflow_events() {
     let contributor = create_test_address(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
 
     client.add_milestone(&agreement_id, &1000);
     assert!(

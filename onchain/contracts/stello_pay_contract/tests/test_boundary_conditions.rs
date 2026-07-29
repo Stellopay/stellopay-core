@@ -467,7 +467,12 @@ fn test_add_milestone_zero_amount_panics() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     let result = client.try_add_milestone(&agreement_id, &0i128);
     assert_eq!(result, Err(Ok(PayrollError::MilestoneAmountInvalid)));
 }
@@ -483,7 +488,12 @@ fn test_add_milestone_negative_amount_panics() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     let result = client.try_add_milestone(&agreement_id, &(-500i128));
     assert_eq!(result, Err(Ok(PayrollError::MilestoneAmountInvalid)));
 }
@@ -500,11 +510,16 @@ fn test_add_milestone_minimum_valid_amount_succeeds() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &1i128);
 
-    assert_eq!(client.get_milestone_count(&agreement_id), 1);
-    let milestone = client.get_milestone(&agreement_id, &1u32).unwrap();
+    assert_eq!(client.get_milestone_count(&agreement_id), 2);
+    let milestone = client.get_milestone(&agreement_id, &2u32).unwrap();
     assert_eq!(milestone.amount, 1);
     assert!(!milestone.approved);
     assert!(!milestone.claimed);
@@ -524,7 +539,12 @@ fn test_add_milestone_i128_max_amount_overflow_risk() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
 
     // First milestone: total = 0 + i128::MAX = i128::MAX (OK)
     client.add_milestone(&agreement_id, &i128::MAX);
@@ -786,7 +806,12 @@ fn test_approve_milestone_id_zero_panics() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &1000i128);
 
     // Milestone IDs are 1-based; 0 is always invalid
@@ -806,7 +831,12 @@ fn test_approve_milestone_id_beyond_count_panics() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &500i128);
     client.add_milestone(&agreement_id, &500i128);
 
@@ -828,7 +858,12 @@ fn test_claim_milestone_id_zero_panics() {
     let token = create_token_contract(&env, &token_admin);
     let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &1000i128);
 
     // Fund the accounted escrow so the approval invariant is satisfied.
@@ -853,7 +888,12 @@ fn test_get_milestone_id_zero_returns_none() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &1000i128);
 
     // ID 0 is explicitly handled: returns None

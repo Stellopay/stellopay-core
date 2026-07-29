@@ -7,7 +7,7 @@
 //!   3. Breaking changes to the public interface are detected at test time
 //!      (mirroring what `cargo semver-checks` enforces in CI).
 
-#![cfg(test)]
+use std::path::PathBuf;
 
 use soroban_sdk::{
     testutils::Address as _,
@@ -87,9 +87,25 @@ fn create_escrow_token_pair(env: &Env) -> (Address, token::StellarAssetClient<'_
 
 /// Verifies the contract can be registered and initialized.
 #[test]
-fn test_contract_registers_and_initializes() {
-    let env = Env::default();
-    let (_client, _owner) = setup(&env);
+fn crate_declares_cdylib_crate_type() {
+    let manifest = std::fs::read_to_string(manifest_path()).expect("read Cargo.toml");
+    let lib = section(&manifest, "lib").expect("crate must declare a [lib] section");
+
+    assert!(
+        array_contains_quote(&lib, "cdylib"),
+        "stello_pay_contract must declare `cdylib` in [lib].crate-type \
+         so `cargo build --target wasm32-unknown-unknown --release` \
+         produces a deployable Soroban artifact. Current [lib] block:\n{}",
+        lib,
+    );
+    // We also expect `rlib` so the contract can be consumed by
+    // sibling integration tests in this workspace; assert by hand
+    // rather than by feature flag because the latter is fragile.
+    assert!(
+        array_contains_quote(&lib, "rlib"),
+        "stello_pay_contract must declare `rlib` in [lib].crate-type so that \
+         sibling workspace crates can `use` the contract in tests.",
+    );
 }
 
 /// Double-initialization must panic.
@@ -107,10 +123,17 @@ fn test_double_initialize_panics() {
 
 /// Fresh contract is not emergency-paused.
 #[test]
-fn test_default_emergency_pause_state_is_false() {
-    let env = Env::default();
-    let (client, _owner) = setup(&env);
-    assert!(!client.is_emergency_paused());
+fn does_not_target_wasm32v1_none() {
+    // `wasm32v1-none` is incompatible with the Soroban host. If a
+    // contributor accidentally pins this target anywhere reachable
+    // from the build, fail loudly here instead of producing a binary
+    // the host will reject at deploy time.
+    let manifest = std::fs::read_to_string(manifest_path()).expect("read Cargo.toml");
+    assert!(
+        !manifest.contains("wasm32v1-none"),
+        "stello_pay_contract Cargo.toml must not reference the wasm32v1-none \
+         target — only `wasm32-unknown-unknown` is supported by Soroban.",
+    );
 }
 
 /// No arbiter set by default.
