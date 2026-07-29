@@ -5,6 +5,7 @@ A command-line interface for managing StellopayCore contracts on the Stellar net
 ## Features
 
 - **Deploy contracts** to any Stellar network (testnet, mainnet, futurenet)
+- **Verify deployed WASM** against a fresh source build (byte-for-byte SHA-256)
 - **Query contract information** and details
 - **Configuration management** with persistent settings
 - **Status monitoring** for dependencies and contract builds
@@ -36,6 +37,9 @@ stellopay-cli status
 
 # Deploy a contract
 stellopay-cli deploy --owner <STELLAR_ADDRESS>
+
+# Verify deployed WASM matches source
+stellopay-cli verify --contract-id <CONTRACT_ID>
 
 # Get contract information
 stellopay-cli info --contract-id <CONTRACT_ID>
@@ -124,6 +128,32 @@ This command checks:
 - ✅ Soroban CLI availability
 - ✅ Contract WASM build status
 - ✅ Network connectivity
+
+#### Verify
+
+Verify that a deployed contract's on-chain WASM hash matches a fresh build from the current source (byte-for-byte SHA-256):
+
+```bash
+stellopay-cli verify --contract-id <CONTRACT_ID>
+```
+
+Options:
+- `--contract-id <ID>`: Deployed contract to check (or use config default)
+- `--network <NETWORK>`: Network to query (testnet, mainnet) [default: testnet]
+- `--wasm <PATH>`: Use an existing WASM file instead of building
+- `--skip-build`: Skip rebuilding; use the default WASM artifact path
+- `--deployed-hash <HEX>`: Compare against a known hash (skips on-chain fetch; useful for CI)
+
+On success the command prints a clear pass message and exits `0`. On mismatch it prints both the local and deployed hashes and exits with code `5` (`Verification`), so it can gate CI/release checks.
+
+Examples:
+```bash
+# Build from source, fetch on-chain WASM, compare hashes
+stellopay-cli verify --contract-id CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE
+
+# Offline check against a known hash
+stellopay-cli verify --wasm ./stello_pay_contract.wasm --deployed-hash <sha256-hex>
+```
 
 ### Global Options
 

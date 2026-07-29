@@ -6,8 +6,7 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{testutils::Address as _, Address, Env};
-use stello_pay_contract::storage::PayrollError;
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{storage::PayrollError, PayrollContract, PayrollContractClient};
 
 fn create_env() -> (
     Env,

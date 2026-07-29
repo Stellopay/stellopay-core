@@ -1572,7 +1572,7 @@ fn test_cross_contract_workflow_payroll_escrow_dispute_bonus_history_conservatio
     // Mirror the payroll dispute into the escalation module so the integration
     // test covers the off-chain coordination sequence as well as token effects.
     payroll_client.raise_dispute(&employee_b, &agreement_id);
-    dispute_client.file_dispute(&employee_b, &agreement_id);
+    dispute_client.file_dispute(&employee_b, &agreement_id, &DisputeReason::PaymentDispute);
     dispute_client.escalate_dispute(&employee_b, &agreement_id);
     dispute_client.resolve_dispute(
         &dispute_admin,
@@ -1722,7 +1722,7 @@ fn test_cross_contract_workflow_failure_injection_preserves_state() {
     assert_eq!(stored_bonus.claimed_payouts, 0);
     assert_eq!(stored_bonus.status, bonus_system::ApprovalStatus::Approved);
 
-    dispute_client.file_dispute(&employee, &agreement_id);
+    dispute_client.file_dispute(&employee, &agreement_id, &DisputeReason::PaymentDispute);
     advance(&env, ONE_WEEK + 1);
     let escalation_attempt = dispute_client.try_escalate_dispute(&employee, &agreement_id);
     assert_eq!(
@@ -2120,6 +2120,10 @@ fn test_hire_to_resolve_full_workflow() {
 
     // Mint ALL tokens upfront so token conservation can be checked by tracking
     // transfers among the tracked addresses (mint would inflate the total).
+    let amount_per_period = 500i128;
+    let period_seconds = ONE_DAY;
+    let num_periods = 6u32;
+    let total_agreement_value = amount_per_period * (num_periods as i128); // 3000
     let external_escrow_amount = 1_000i128;
     let internal_escrow_amount = total_agreement_value; // 3000
     let total_employer_fund = internal_escrow_amount + external_escrow_amount; // 4000
@@ -2139,11 +2143,6 @@ fn test_hire_to_resolve_full_workflow() {
     assert_eq!(payroll_client.get_arbiter().unwrap(), arbiter);
 
     // Escrow: 500 per period, 1-day periods, 6 periods total = 3000
-    let amount_per_period = 500i128;
-    let period_seconds = ONE_DAY;
-    let num_periods = 6u32;
-    let total_agreement_value = amount_per_period * (num_periods as i128); // 3000
-
     let agreement_id = payroll_client.create_escrow_agreement(
         &employer,
         &contributor,
@@ -2180,15 +2179,15 @@ fn test_hire_to_resolve_full_workflow() {
         external_escrow_amount
     );
 
-    // Advance 2 periods so at least one is claimable.
+    // Advance 2 periods so two are claimable.
     advance(&env, ONE_DAY * 2);
 
-    // Claim one period as the milestone payment.
+    // Claim time-based — all available periods are claimed at once.
     let contributor_before_claim = balance(&env, &tok, &contributor);
     payroll_client.claim_time_based(&agreement_id);
     assert_eq!(
         balance(&env, &tok, &contributor),
-        contributor_before_claim + amount_per_period
+        contributor_before_claim + amount_per_period * 2
     );
     assert_eq!(payroll_client.get_claimed_periods(&agreement_id), 2);
 
@@ -2225,7 +2224,7 @@ fn test_hire_to_resolve_full_workflow() {
     );
 
     // Mirror the dispute into dispute_escalation for the off-chain ladder.
-    dispute_client.file_dispute(&contributor, &agreement_id);
+    dispute_client.file_dispute(&contributor, &agreement_id, &DisputeReason::PaymentDispute);
     let dispute = dispute_client.get_dispute(&agreement_id).unwrap();
     assert_eq!(dispute.status, EscalationStatus::Open);
     assert_eq!(dispute.level, EscalationLevel::Level1);
@@ -2320,7 +2319,12 @@ fn test_hire_to_resolve_full_workflow() {
     // payroll_escrow: release the external escrow to the contributor to close
     // the full escrow lifecycle (fund → hold → release).
     let escrow_release_amount = 500i128;
-    escrow_client.release(&payroll_id, &agreement_id, &contributor, &escrow_release_amount);
+    escrow_client.release(
+        &payroll_id,
+        &agreement_id,
+        &contributor,
+        &escrow_release_amount,
+    );
     assert_eq!(
         escrow_client.get_agreement_balance(&agreement_id),
         external_escrow_amount - escrow_release_amount,

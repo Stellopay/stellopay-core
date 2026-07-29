@@ -500,6 +500,10 @@ impl BonusSystemContract {
 
     /// @notice Approves a pending incentive.
     /// @dev Only the configured approver can move status from Pending to Approved.
+    ///      Verifies the contract's token balance covers the full remaining payout before
+    ///      approval, ensuring the incentive can be honored when the employee claims.
+    ///      Fails immediately with "Insufficient funding pool balance" if the contract
+    ///      does not hold enough tokens, rather than deferring the failure to claim time.
     /// @param approver Approver address.
     /// @param incentive_id Incentive identifier.
     pub fn approve_incentive(env: Env, approver: Address, incentive_id: u128) {
@@ -511,6 +515,21 @@ impl BonusSystemContract {
         assert!(
             incentive.status == ApprovalStatus::Pending,
             "Incentive is not pending"
+        );
+
+        // Guard: verify the contract holds sufficient token balance to cover the full
+        // remaining payout of this incentive before transitioning to Approved.
+        // This prevents creating a claim that can never be fully honored.
+        let remaining_payouts = incentive
+            .total_payouts
+            .checked_sub(incentive.claimed_payouts)
+            .expect("Invalid payout state");
+        let required_balance = checked_mul_amount(incentive.amount_per_payout, remaining_payouts);
+        let contract_balance =
+            token::Client::new(&env, &incentive.token).balance(&env.current_contract_address());
+        assert!(
+            contract_balance >= required_balance,
+            "Insufficient funding pool balance"
         );
 
         incentive.status = ApprovalStatus::Approved;
@@ -553,8 +572,8 @@ impl BonusSystemContract {
     }
 
     /// @notice Claims currently available payouts for an approved incentive.
-    /// @dev One-time bonus claims exactly one payout after unlock. Recurring claims all accrued payouts.
-    /// @param employee Employee claiming funds.
+    /// @dev One-time bonus claims exactly one payout after unlock. Recurring claims all accrued
+    /// payouts. @param employee Employee claiming funds.
     /// @param incentive_id Incentive identifier.
     /// @return amount Claimed token amount.
     pub fn claim_incentive(env: Env, employee: Address, incentive_id: u128) -> i128 {

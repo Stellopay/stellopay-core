@@ -28,9 +28,9 @@
 //!  - Hook contract with default no-op is called and does not break expiry.
 //!
 //! ## Trait / compile-time coverage
-//!  - A struct that delegates `on_milestone_expired` as a no-op still compiles
-//!    and registers as a contract — confirming the hook can be added with zero
-//!    business logic (body is `{}`) without breaking the interface.
+//!  - A struct that delegates `on_milestone_expired` as a no-op still compiles and registers as a
+//!    contract — confirming the hook can be added with zero business logic (body is `{}`) without
+//!    breaking the interface.
 
 #![cfg(test)]
 
@@ -40,8 +40,7 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env,
 };
-use stello_pay_contract::storage::PayrollError;
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{storage::PayrollError, PayrollContract, PayrollContractClient};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Compile-time check: a minimal implementor of MilestoneContractInterface that
@@ -98,14 +97,12 @@ impl RecordingHook {
 
     pub fn on_milestone_expired(env: Env, agreement_id: u128, milestone_id: u32) {
         // Persist call arguments so the test can assert they were received.
-        env.storage().persistent().set(
-            &soroban_sdk::symbol_short!("agr"),
-            &agreement_id,
-        );
-        env.storage().persistent().set(
-            &soroban_sdk::symbol_short!("ms"),
-            &milestone_id,
-        );
+        env.storage()
+            .persistent()
+            .set(&soroban_sdk::symbol_short!("agr"), &agreement_id);
+        env.storage()
+            .persistent()
+            .set(&soroban_sdk::symbol_short!("ms"), &milestone_id);
     }
 }
 
@@ -116,10 +113,10 @@ impl RecordingHook {
 /// Bootstrap environment, contract, and participants.
 fn setup() -> (
     Env,
-    Address,   // owner
-    Address,   // employer
-    Address,   // contributor
-    Address,   // token
+    Address, // owner
+    Address, // employer
+    Address, // contributor
+    Address, // token
     PayrollContractClient<'static>,
 ) {
     let env = Env::default();
@@ -170,7 +167,10 @@ fn test_expire_milestone_success() {
     let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token);
 
     let result = client.try_expire_milestone(&agreement_id, &milestone_id);
-    assert!(result.is_ok(), "expire_milestone should succeed: {result:?}");
+    assert!(
+        result.is_ok(),
+        "expire_milestone should succeed: {result:?}"
+    );
 }
 
 /// Expiry emits a `MilestoneExpiredEvent` with the correct field values.
@@ -236,7 +236,9 @@ fn test_expire_milestone_created_status() {
     let (_env, _owner, employer, contributor, token, client) = setup();
     let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token);
     // Agreement is still in Created status (no activate_agreement called).
-    assert!(client.try_expire_milestone(&agreement_id, &milestone_id).is_ok());
+    assert!(client
+        .try_expire_milestone(&agreement_id, &milestone_id)
+        .is_ok());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -271,10 +273,7 @@ fn test_expire_approved_milestone_returns_error() {
     let err = client
         .try_expire_milestone(&agreement_id, &milestone_id)
         .expect_err("expiring an approved milestone should fail");
-    assert_eq!(
-        err.unwrap(),
-        PayrollError::MilestoneAlreadyApproved
-    );
+    assert_eq!(err.unwrap(), PayrollError::MilestoneAlreadyApproved);
 }
 
 /// A claimed milestone cannot be expired.
@@ -298,10 +297,7 @@ fn test_expire_claimed_milestone_returns_error() {
     let err = client
         .try_expire_milestone(&agreement_id, &1u32)
         .expect_err("expiring a claimed milestone should fail");
-    assert_eq!(
-        err.unwrap(),
-        PayrollError::MilestoneAlreadyClaimed
-    );
+    assert_eq!(err.unwrap(), PayrollError::MilestoneAlreadyClaimed);
 }
 
 /// A rejected milestone cannot be expired.
@@ -319,10 +315,7 @@ fn test_expire_rejected_milestone_returns_error() {
     let err = client
         .try_expire_milestone(&agreement_id, &milestone_id)
         .expect_err("expiring a rejected milestone should fail");
-    assert_eq!(
-        err.unwrap(),
-        PayrollError::MilestoneAlreadyRejected
-    );
+    assert_eq!(err.unwrap(), PayrollError::MilestoneAlreadyRejected);
 }
 
 /// `milestone_id = 0` returns `MilestoneNotFound`.
@@ -424,8 +417,7 @@ fn test_expire_milestone_hook_receives_correct_args() {
     // Register the recording hook.
     #[allow(deprecated)]
     let hook_id = env.register_contract(None, RecordingHook);
-    let hook_client =
-        milestone_interface::MilestoneContractClient::new(&env, &hook_id);
+    let hook_client = milestone_interface::MilestoneContractClient::new(&env, &hook_id);
 
     client.set_milestone_hook_contract(&owner, &hook_id);
 
@@ -434,20 +426,18 @@ fn test_expire_milestone_hook_receives_correct_args() {
     client.expire_milestone(&agreement_id, &milestone_id);
 
     // Verify the hook stored the correct argument values.
-    let recorded_agreement: u128 = env
-        .as_contract(&hook_id, || {
-            env.storage()
-                .persistent()
-                .get(&soroban_sdk::symbol_short!("agr"))
-                .expect("hook did not record agreement_id")
-        });
-    let recorded_milestone: u32 = env
-        .as_contract(&hook_id, || {
-            env.storage()
-                .persistent()
-                .get(&soroban_sdk::symbol_short!("ms"))
-                .expect("hook did not record milestone_id")
-        });
+    let recorded_agreement: u128 = env.as_contract(&hook_id, || {
+        env.storage()
+            .persistent()
+            .get(&soroban_sdk::symbol_short!("agr"))
+            .expect("hook did not record agreement_id")
+    });
+    let recorded_milestone: u32 = env.as_contract(&hook_id, || {
+        env.storage()
+            .persistent()
+            .get(&soroban_sdk::symbol_short!("ms"))
+            .expect("hook did not record milestone_id")
+    });
 
     assert_eq!(
         recorded_agreement, agreement_id,

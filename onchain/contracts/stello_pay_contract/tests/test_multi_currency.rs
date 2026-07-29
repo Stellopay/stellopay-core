@@ -5,10 +5,10 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env, Vec,
 };
-
-use stello_pay_contract::storage::ExchangeRateInfo;
-use stello_pay_contract::storage::{DataKey, PayrollError};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{DataKey, ExchangeRateInfo, PayrollError},
+    PayrollContract, PayrollContractClient,
+};
 
 /// Create a fresh test environment with a deployed payroll contract, owner,
 /// arbiter and employer. Returns `(env, owner, employer, arbiter, client)`.
@@ -246,7 +246,10 @@ fn test_convert_amount_at_parity_one_unit_succeeds() {
     client.set_exchange_rate(&owner, &base, &quote, &rate);
 
     let converted = client.convert_currency(&base, &quote, &1i128);
-    assert_eq!(converted, 1, "1 base at 1:1 rate must yield exactly 1 quote");
+    assert_eq!(
+        converted, 1,
+        "1 base at 1:1 rate must yield exactly 1 quote"
+    );
 }
 
 /// Any rate strictly less than FX_SCALE (< 1_000_000) applied to amount=1
@@ -323,7 +326,10 @@ fn test_convert_amount_fractional_rate_exact_multiple() {
 
     // (2 * 1_500_000) / 1_000_000 = 3_000_000 / 1_000_000 = 3  (exact)
     let converted = client.convert_currency(&base, &quote, &2i128);
-    assert_eq!(converted, 3, "2 base at 1.5x rate must yield exactly 3 quote");
+    assert_eq!(
+        converted, 3,
+        "2 base at 1.5x rate must yield exactly 3 quote"
+    );
 }
 
 /// rate = 1_333_333 (≈ 1.333333x).  Verifies that sub-unit precision in the
@@ -386,8 +392,7 @@ fn test_claim_payroll_in_token_rounding_to_zero_rejects_and_does_not_burn_period
     // salary = 1  →  amount_payout = floor(1 * 999_999 / 1_000_000) = 0
     let salary_per_period: i128 = 1;
 
-    let agreement_id =
-        client.create_payroll_agreement(&employer, &base_token, &grace_period);
+    let agreement_id = client.create_payroll_agreement(&employer, &base_token, &grace_period);
 
     let employee = Address::generate(&env);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary_per_period);
@@ -407,19 +412,13 @@ fn test_claim_payroll_in_token_rounding_to_zero_rejects_and_does_not_burn_period
         DataKey::set_employee_salary(&env, agreement_id, 0, salary_per_period);
         DataKey::set_employee_claimed_periods(&env, agreement_id, 0, 0);
         DataKey::set_employee_count(&env, agreement_id, 1);
-        DataKey::set_agreement_escrow_balance(
-            &env,
-            agreement_id,
-            &payout_token,
-            escrow_total,
-        );
+        DataKey::set_agreement_escrow_balance(&env, agreement_id, &payout_token, escrow_total);
     });
 
     env.ledger().with_mut(|li| li.timestamp += period_seconds);
 
     // Claim must be rejected — the conversion rounds to zero.
-    let result =
-        client.try_claim_payroll_in_token(&employee, &agreement_id, &0u32, &payout_token);
+    let result = client.try_claim_payroll_in_token(&employee, &agreement_id, &0u32, &payout_token);
     assert_eq!(
         result,
         Err(Ok(PayrollError::ExchangeRateInvalid)),
@@ -429,8 +428,7 @@ fn test_claim_payroll_in_token_rounding_to_zero_rejects_and_does_not_burn_period
     // Critical security check: claimed_periods must still be 0 — the period
     // was NOT consumed.  If it were consumed the employee could never reclaim.
     env.as_contract(&contract_address, || {
-        let claimed =
-            DataKey::get_employee_claimed_periods(&env, agreement_id, 0);
+        let claimed = DataKey::get_employee_claimed_periods(&env, agreement_id, 0);
         assert_eq!(
             claimed, 0,
             "period must NOT be marked claimed when payout converts to zero"
@@ -447,9 +445,11 @@ fn test_claim_payroll_in_token_rounding_to_zero_rejects_and_does_not_burn_period
 
     // Escrow balance is unchanged.
     env.as_contract(&contract_address, || {
-        let balance =
-            DataKey::get_agreement_escrow_balance(&env, agreement_id, &payout_token);
-        assert_eq!(balance, escrow_total, "escrow must be untouched on rejected claim");
+        let balance = DataKey::get_agreement_escrow_balance(&env, agreement_id, &payout_token);
+        assert_eq!(
+            balance, escrow_total,
+            "escrow must be untouched on rejected claim"
+        );
     });
 }
 
@@ -476,8 +476,7 @@ fn test_claim_payroll_in_token_accumulated_periods_escape_dust_guard() {
     let period_seconds: u64 = 86_400;
     let salary_per_period: i128 = 1;
 
-    let agreement_id =
-        client.create_payroll_agreement(&employer, &base_token, &grace_period);
+    let agreement_id = client.create_payroll_agreement(&employer, &base_token, &grace_period);
     let employee = Address::generate(&env);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary_per_period);
     client.activate_agreement(&agreement_id);
@@ -496,12 +495,7 @@ fn test_claim_payroll_in_token_accumulated_periods_escape_dust_guard() {
         DataKey::set_employee_salary(&env, agreement_id, 0, salary_per_period);
         DataKey::set_employee_claimed_periods(&env, agreement_id, 0, 0);
         DataKey::set_employee_count(&env, agreement_id, 1);
-        DataKey::set_agreement_escrow_balance(
-            &env,
-            agreement_id,
-            &payout_token,
-            escrow_total,
-        );
+        DataKey::set_agreement_escrow_balance(&env, agreement_id, &payout_token, escrow_total);
     });
 
     // Advance TWO full periods.
@@ -520,9 +514,11 @@ fn test_claim_payroll_in_token_accumulated_periods_escape_dust_guard() {
 
     // Both periods are now consumed.
     env.as_contract(&contract_address, || {
-        let claimed =
-            DataKey::get_employee_claimed_periods(&env, agreement_id, 0);
-        assert_eq!(claimed, 2, "both periods must be marked claimed after successful payout");
+        let claimed = DataKey::get_employee_claimed_periods(&env, agreement_id, 0);
+        assert_eq!(
+            claimed, 2,
+            "both periods must be marked claimed after successful payout"
+        );
     });
 }
 
@@ -547,8 +543,7 @@ fn test_claim_payroll_in_token_fractional_rate_floors_not_rounds() {
     let period_seconds: u64 = 86_400;
     let salary_per_period: i128 = 3;
 
-    let agreement_id =
-        client.create_payroll_agreement(&employer, &base_token, &grace_period);
+    let agreement_id = client.create_payroll_agreement(&employer, &base_token, &grace_period);
     let employee = Address::generate(&env);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary_per_period);
     client.activate_agreement(&agreement_id);
@@ -567,12 +562,7 @@ fn test_claim_payroll_in_token_fractional_rate_floors_not_rounds() {
         DataKey::set_employee_salary(&env, agreement_id, 0, salary_per_period);
         DataKey::set_employee_claimed_periods(&env, agreement_id, 0, 0);
         DataKey::set_employee_count(&env, agreement_id, 1);
-        DataKey::set_agreement_escrow_balance(
-            &env,
-            agreement_id,
-            &payout_token,
-            escrow_total,
-        );
+        DataKey::set_agreement_escrow_balance(&env, agreement_id, &payout_token, escrow_total);
     });
 
     env.ledger().with_mut(|li| li.timestamp += period_seconds);

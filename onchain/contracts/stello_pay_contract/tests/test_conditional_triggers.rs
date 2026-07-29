@@ -5,12 +5,12 @@
 //! not yet met.  All three trigger categories supported by the contract are
 //! covered:
 //!
-//! 1. **Time-based triggers** — escrow `claim_time_based` and payroll
-//!    `claim_payroll` honour the activation timestamp and period duration.
-//! 2. **Milestone-based triggers** — `approve_milestone` / `claim_milestone`
-//!    gate payment behind an explicit employer approval step.
-//! 3. **Composite / cross-cutting triggers** — combinations of the above,
-//!    plus emergency-pause, dispute, and grace-period conditions.
+//! 1. **Time-based triggers** — escrow `claim_time_based` and payroll `claim_payroll` honour the
+//!    activation timestamp and period duration.
+//! 2. **Milestone-based triggers** — `approve_milestone` / `claim_milestone` gate payment behind an
+//!    explicit employer approval step.
+//! 3. **Composite / cross-cutting triggers** — combinations of the above, plus emergency-pause,
+//!    dispute, and grace-period conditions.
 //!
 //! # Coverage map
 //!
@@ -60,8 +60,10 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, Vec,
 };
-use stello_pay_contract::storage::{AgreementStatus, DataKey, PayrollError};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{AgreementStatus, DataKey, PayrollError},
+    PayrollContract, PayrollContractClient,
+};
 
 // ============================================================================
 // CONSTANTS

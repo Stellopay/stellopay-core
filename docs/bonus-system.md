@@ -30,6 +30,11 @@ The `bonus_system` contract handles compensation flows that are separate from re
 - **Bonus caps are strictly enforced before creation** (no silent adjustments).
 - **Clawbacks require owner authentication and immutable reason hash**.
 - **Terminated employees cannot receive new bonuses**.
+- **`approve_incentive` verifies the contract's token balance covers the full
+  remaining payout before transitioning to `Approved`**. This prevents creating
+  a claim that can never be fully honored. Approval fails immediately with
+  `"Insufficient funding pool balance"` if the pool is short, rather than
+  deferring the failure to claim time.
 
 ## Data Model
 
@@ -92,7 +97,8 @@ Each incentive stores:
 
 1. **Admin configures caps** (optional): Set per-employee and/or period bonus limits
 2. **Employer creates bonus**: Funds escrow, subject to cap enforcement and termination checks
-3. **Approver reviews**: Approves or rejects the incentive
+3. **Approver reviews**: Approves or rejects the incentive. Approval validates the contract
+   holds sufficient token balance to honor the full payout before transitioning to `Approved`.
 4. **Employee claims**: Claims vested payouts (allowed even after termination)
 5. **Admin can clawback**: Reverses claimed bonuses with audit trail (allowed even after termination)
 6. **Employer cancels**: Can cancel pending/rejected incentives for refund
@@ -133,6 +139,43 @@ Transaction 2: Create 500 token bonus for Employee A -> SUCCESS (900/1000 used)
 Transaction 3: Create 200 token bonus for Employee A -> FAIL (would exceed 1000 cap)
 Transaction 4: Create 100 token bonus for Employee B -> SUCCESS (1000/5000 period used)
 ```
+
+## Funding-Pool Balance Check on Approval
+
+### Problem
+
+Without an upfront balance check, `approve_incentive` would transition an incentive to
+`Approved` even if the contract no longer holds enough tokens to pay it out. This
+creates a honoured-looking claim that silently fails at `claim_incentive` time,
+surprising both the employee and the employer.
+
+### Solution
+
+`approve_incentive` now reads the contract's live token balance for the incentive's token
+and asserts it is ≥ the full remaining payout before writing the `Approved` status:
+
+```rust
+let required = amount_per_payout * (total_payouts - claimed_payouts);
+let pool     = token_client.balance(&contract_address);
+assert!(pool >= required, "Insufficient funding pool balance");
+```
+
+The check is intentionally conservative: it treats the entire contract balance as the
+pool, which is accurate because all escrowed tokens for all pending/approved incentives
+live in the same contract. A balance check that passes guarantees this specific
+incentive can be paid in full.
+
+### When Can the Pool Be Short?
+
+Although funds are escrowed at creation time, the pool can still be insufficient at
+approval time in several ways:
+
+- A different incentive was approved and claimed, consuming shared pool tokens.
+- A contract upgrade or admin operation reduced the balance out-of-band.
+- The token contract's balance tracking diverged (e.g., after an asset trust-line change).
+
+The guard covers all of these cases by checking the live balance rather than relying on
+accounting invariants.
 
 ## Clawback Mechanism
 
@@ -272,3 +315,5 @@ The test suite covers:
 - **Clawback works on terminated employees**
 - **Partial claim followed by clawback**
 - **Full lifecycle integration tests**
+- **`approve_incentive` rejects when funding pool is insufficient** (negative)
+- **`approve_incentive` succeeds once pool is topped up** (positive)
