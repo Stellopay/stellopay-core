@@ -244,6 +244,78 @@ artifact in the GitHub Actions UI to see the full regression table.
 
 ---
 
+## Workflow: Scheduled Semver Checks
+
+**File:** `.github/workflows/security-scan.yml`  
+**Triggers:** schedule (weekly, Monday 06:00 UTC) and `workflow_dispatch`
+
+The workflow runs a single job (`semver-checks`) on `ubuntu-latest` that
+installs `cargo-semver-checks` and runs `check-release` against every
+contract crate under `onchain/contracts/`.
+
+Each crate is compared against its last tagged release (e.g.
+`stello_pay_contract-v0.1.0`).  If no tag exists for the current
+`Cargo.toml` version, the crate is skipped (first release).
+
+| Step | Command / Action |
+|---|---|
+| 1. Checkout full history | `actions/checkout@v7` with `fetch-depth: 0` |
+| 2. Install Rust stable | `dtolnay/rust-toolchain@stable` |
+| 3. Cache Cargo artifacts | `Swatinem/rust-cache@v2` |
+| 4. Install `cargo-semver-checks` | `taiki-e/install-action@v2` |
+| 5. Semver check per crate | `cargo semver-checks check-release -p <crate> --baseline-rev <tag>` |
+
+### Breaking change policy
+
+Any of the following is a **breaking change** and must be accompanied by a
+version bump in `Cargo.toml`:
+
+- Removing or renaming a `#[contractimpl]` method.
+- Adding, removing, or reordering parameters.
+- Changing a parameter or return type.
+- Removing or renaming a public struct, enum, or variant.
+- Narrowing the visibility of a public item.
+
+Additive changes (new methods, new types) are allowed without a version bump.
+
+### Run locally
+
+Prerequisites:
+
+```bash
+cargo install cargo-semver-checks
+```
+
+Check a single crate against its last tagged release:
+
+```bash
+cd onchain
+cargo semver-checks check-release -p stello_pay_contract \
+    --baseline-rev stello_pay_contract-v0.0.0
+```
+
+Compare against the previous commit (useful during development):
+
+```bash
+cargo semver-checks check-release -p stello_pay_contract \
+    --baseline-rev HEAD~1
+```
+
+### Tagging a release
+
+After bumping a crate's version in `Cargo.toml`, create a matching tag so
+the scheduled workflow can use it as a baseline:
+
+```bash
+git tag stello_pay_contract-v0.1.0
+git push origin stello_pay_contract-v0.1.0
+```
+
+Tag format: `<crate_name>-v<semver>` (e.g. `rbac-v0.1.0`,
+`compliance_checker-v0.1.0`).
+
+---
+
 ## What CI does not check
 
 The following are **not** part of the automated CI pipeline and are therefore
