@@ -419,9 +419,10 @@ impl MultisigContract {
         ] {
             if let Some(override_val) = read_threshold_override(&env, &op_type) {
                 if override_val > signer_count as u32 {
-                    env.storage()
-                        .persistent()
-                        .set(&StorageKey::ThresholdOverride(op_type), &signer_count);
+                    env.storage().persistent().set(
+                        &StorageKey::ThresholdOverride(op_type),
+                        &signer_count,
+                    );
                 }
             }
         }

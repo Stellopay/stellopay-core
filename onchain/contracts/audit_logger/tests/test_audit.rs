@@ -8,6 +8,8 @@ use soroban_sdk::{
     Address, Env, Symbol,
 };
 
+use audit_logger::{AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
+
 fn setup() -> (Env, Address, AuditLoggerContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
@@ -342,17 +344,17 @@ fn test_interleaved_append_and_get_latest_logs_maintains_order() {
     for i in 1..=10u64 {
         let label = format!("action_{}", i);
         let action = Symbol::new(&env, label.as_str());
-
+        
         // Append a new log entry.
         let id = client.append_log(&actor, &action, &None, &Some(i as i128));
         assert_eq!(id, i, "append_log should return sequential ID {}", i);
-
+        
         expected_ids.push(i);
         env.ledger().with_mut(|li| li.timestamp += 1);
 
         // Read all latest logs after this append.
         let latest = client.get_latest_logs(&10u32);
-
+        
         // Verify the count matches expected.
         assert_eq!(
             latest.len(),
@@ -366,9 +368,12 @@ fn test_interleaved_append_and_get_latest_logs_maintains_order() {
         for (idx, entry) in latest.iter().enumerate() {
             let expected_id = expected_ids[idx];
             assert_eq!(
-                entry.id, expected_id,
+                entry.id,
+                expected_id,
                 "Entry at index {} should have ID {} after {} appends",
-                idx, expected_id, i
+                idx,
+                expected_id,
+                i
             );
             assert_eq!(
                 entry.action,
@@ -392,7 +397,7 @@ fn test_interleaved_append_and_get_latest_logs_maintains_order() {
     // Final verification: get_latest_logs with limit=10 should return all 10 entries.
     let final_latest = client.get_latest_logs(&10u32);
     assert_eq!(final_latest.len(), 10, "Should return all 10 entries");
-
+    
     // Verify strict ordering one more time.
     for (idx, entry) in final_latest.iter().enumerate() {
         assert_eq!(
@@ -420,7 +425,7 @@ fn test_interleaved_append_and_read_consistency() {
     for i in 1..=5u64 {
         let label = format!("event_{}", i);
         let action = Symbol::new(&env, label.as_str());
-
+        
         let id = client.append_log(&actor, &action, &None, &Some(i as i128));
         appended_ids.push(id);
         env.ledger().with_mut(|li| li.timestamp += 1);
@@ -437,9 +442,11 @@ fn test_interleaved_append_and_read_consistency() {
         // Verify each appended ID is present in get_latest_logs.
         for (idx, entry) in latest.iter().enumerate() {
             assert_eq!(
-                entry.id, appended_ids[idx],
+                entry.id,
+                appended_ids[idx],
                 "get_latest_logs entry {} should match appended ID {}",
-                idx, appended_ids[idx]
+                idx,
+                appended_ids[idx]
             );
         }
 

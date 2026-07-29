@@ -125,6 +125,11 @@ response shares any fields with a real badge.
 
 ### Security Considerations
 
+- Burn is restricted to the initialized owner. This prevents arbitrary callers
+  from revoking employee badges.
+- A burned badge id is never reused; `next_badge_id` always increments, so a
+  subsequent mint for the same employee produces a fresh token id. Off-chain
+  systems can safely reference a burned id without risk of collision.
 - Metadata URI updates are restricted to the initialized owner. This prevents
   arbitrary callers from rewriting badge provenance data.
 - The update path is token-scoped and requires the badge to exist.
