@@ -352,7 +352,11 @@ impl TemplateVersioning {
             .ok_or(VersioningError::VersionNotFound)
     }
 
-    /// Fetch a specific version record.
+    /// Fetch a specific version record, including deprecated records.
+    ///
+    /// This is deliberately a read-only historical lookup: deprecation prevents
+    /// *new* agreement creation, but never erases the version metadata needed to
+    /// audit agreements that were already pinned to it.
     pub fn get_version(
         env: Env,
         template_id: u64,
@@ -362,6 +366,25 @@ impl TemplateVersioning {
         storage
             .get(&DataKey::TemplateVersion(template_id, version))
             .ok_or(VersioningError::VersionNotFound)
+    }
+
+    /// Fetch the latest published record for a template, including if deprecated.
+    ///
+    /// This endpoint is intentionally independent of the creation policy. A
+    /// deprecated template remains listable with its schema hash, migration
+    /// notes, timestamps, and deprecation metadata so auditors can resolve
+    /// historical agreements. Use [`create_agreement`] to enforce whether a
+    /// version may be used for a new agreement.
+    ///
+    /// # Errors
+    /// Returns [`VersioningError::VersionNotFound`] when the template has no
+    /// published version or its latest record cannot be found.
+    pub fn get_template(
+        env: Env,
+        template_id: u64,
+    ) -> Result<TemplateVersionRecord, VersioningError> {
+        let version = Self::latest_version(env.clone(), template_id)?;
+        Self::get_version(env, template_id, version)
     }
 
     /// Return all template IDs ever registered under a given name.

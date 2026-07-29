@@ -802,3 +802,93 @@ fn create_agreement_succeeds_with_conformant_parameters() {
     );
     assert_eq!(binding.created_at, 1_000_000);
 }
+
+/// A deprecated template remains fully readable for historical audits, while
+/// its deprecation prevents new bindings and does not alter existing bindings.
+///
+/// This is the central deprecation invariant: `get_template` is a historical
+/// read path, not an eligibility check. Only `create_agreement` enforces the
+/// no-new-agreements policy.
+#[test]
+fn deprecated_template_remains_listable_not_creatable_and_preserves_existing_agreements() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 6_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let creator = Address::generate(&env);
+
+    client.initialize(&admin);
+    let template_id = client
+        .try_register_template(&owner, &String::from_str(&env, "Auditable payroll"))
+        .unwrap()
+        .unwrap();
+    let schema_hash = BytesN::from_array(&env, &[0xAB; 32]);
+    let notes = String::from_str(&env, "Original payroll schema");
+    let version = client
+        .try_publish_template_version(&owner, &template_id, &schema_hash, &notes, &false)
+        .unwrap()
+        .unwrap();
+
+    // This agreement is valid before the version is retired and must remain
+    // readable and pinned after retirement.
+    let agreement_id = client
+        .try_create_agreement(
+            &creator,
+            &template_id,
+            &version,
+            &String::from_str(&env, "Historical July payroll"),
+        )
+        .unwrap()
+        .unwrap();
+    let agreement_before: AgreementBinding = client
+        .try_get_agreement(&agreement_id)
+        .unwrap()
+        .unwrap();
+
+    let reason = String::from_str(&env, "Replaced after compliance update");
+    client
+        .try_deprecate_version(&owner, &template_id, &version, &Some(reason.clone()))
+        .unwrap()
+        .unwrap();
+
+    // `get_template` must retain every detail necessary to audit the retired
+    // schema; deprecation changes only its status and reason.
+    let retired: TemplateVersionRecord = client
+        .try_get_template(&template_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(retired.template_id, template_id);
+    assert_eq!(retired.version, version);
+    assert_eq!(retired.schema_hash, schema_hash);
+    assert_eq!(retired.migration_notes, notes);
+    assert_eq!(retired.created_at, 6_000_000);
+    assert!(retired.deprecated);
+    assert_eq!(retired.deprecation_reason, Some(reason));
+
+    // The rejection must be the deprecation guard, rather than an unrelated
+    // authorization or lookup failure.
+    let rejected = client.try_create_agreement(
+        &creator,
+        &template_id,
+        &version,
+        &String::from_str(&env, "Must not be created"),
+    );
+    assert_eq!(rejected, Err(Ok(VersioningError::VersionDeprecated)));
+
+    // The existing agreement remains unchanged and continues to point at the
+    // historical version, which can still be resolved for audit purposes.
+    let agreement_after: AgreementBinding = client
+        .try_get_agreement(&agreement_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(agreement_after, agreement_before);
+    let historical_version: TemplateVersionRecord = client
+        .try_get_version(&template_id, &agreement_after.template_version)
+        .unwrap()
+        .unwrap();
+    assert_eq!(historical_version, retired);
+}
