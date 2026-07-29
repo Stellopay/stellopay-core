@@ -447,3 +447,29 @@ See `onchain/integration_tests/tests/test_salary_adjustment_payroll_integration.
 - **One adjustment contract per payroll contract.** The binding is a single address set by the owner. There is no multi-contract aggregation; a single source of truth avoids ambiguity.
 - **No retroactive payout recalculation.** The adjustment affects only future claims. Past claims at the old salary are not retroactively adjusted.
 - **Effective date gating.** `apply_adjustment` enforces `now >= effective_date`. The payroll contract does not re-check the effective date — it trusts the salary adjustment contract's state machine. This is safe because `apply_adjustment` is the only path that writes `EmployeeSalary`.
+
+---
+
+### Slashing Penalty + Payroll Escrow Integration
+
+The slashing_penalty and payroll_escrow contracts are designed to interoperate via an orchestrated pattern. When a participant is penalized, an orchestrator applies the slash and reflects the penalty against their escrowed payroll funds.
+
+#### Orchestrated Pattern
+
+1. A participant commits a slashable offense.
+2. An authorized slasher initiates and eventually finalizes the slash via slashing_penalty::execute_slash.
+3. An orchestrator (which is configured as the Manager of the payroll_escrow contract) verifies the slash status.
+4. The orchestrator calls payroll_escrow::release to deduct the penalized amount from the available escrow balance, redirecting it to a treasury or burn address.
+
+#### Security Assumptions
+
+- **Manager Authority**: Only the address stored as the Manager in payroll_escrow can authorize the release of funds to apply the penalty.
+- **Slash Execution Verification**: The orchestrator must securely query get_slash_record to verify that the slash reached the Executed status before deducting funds.
+- **Isolated Balances**: A penalty executed against one participant must strictly only reduce the escrow balance tied to that specific participant's agreements. Unrelated parties remain unaffected.
+
+#### Integration Tests
+
+See onchain/integration_tests/tests/test_slashing_escrow_integration.rs for the full test suite covering:
+- Simulating a slashing orchestrator
+- Verifying execute_slash correctly reduces the balance payroll_escrow reports as available
+- Ensuring unrelated party escrow balances are unaffected by another party's slash
