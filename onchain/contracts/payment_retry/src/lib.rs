@@ -688,15 +688,53 @@ impl PaymentRetryContract {
         }
 
         let payment_ids = read_pending_payment_ids(&env);
-        let mut processed: u32 = 0;
+        let mut due_ids = Vec::new(&env);
+        let now = env.ledger().timestamp();
+        
         let mut i: u32 = 0;
-
-        while i < payment_ids.len() && processed < max_payments {
+        while i < payment_ids.len() {
             let payment_id = payment_ids.get(i).expect("pending payment id missing");
+            if !already_processed(&env, payment_id.clone()) {
+                let payment = read_payment(&env, payment_id.clone());
+                if payment.state != RetryState::Success && payment.state != RetryState::Failed {
+                    if payment.retry_count > payment.max_retry_attempts
+                        || now >= payment.next_retry_at
+                    {
+                        due_ids.push_back(payment_id);
+                    }
+                }
+            }
+            i = i.saturating_add(1);
+        }
+
+        if due_ids.len() > 1 {
+            let mut j: u32 = 1;
+            while j < due_ids.len() {
+                let mut k = j;
+                while k > 0 {
+                    let prev = due_ids.get(k - 1).unwrap();
+                    let curr = due_ids.get(k).unwrap();
+                    if curr < prev {
+                        due_ids.set(k, prev.clone());
+                        due_ids.set(k - 1, curr.clone());
+                        k -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                j += 1;
+            }
+        }
+
+        let mut processed: u32 = 0;
+        let mut m: u32 = 0;
+
+        while m < due_ids.len() && processed < max_payments {
+            let payment_id = due_ids.get(m).unwrap();
             if process_payment_if_due(&env, payment_id) {
                 processed = processed.saturating_add(1);
             }
-            i = i.saturating_add(1);
+            m = m.saturating_add(1);
         }
 
         processed
