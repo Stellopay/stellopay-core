@@ -1,11 +1,13 @@
 #![cfg(test)]
 use slashing_penalty::{
-    Offense, SlashError, SlashStatus, SlashingPenaltyContract, SlashingPenaltyContractClient,
+    Offense, SlashError, SlashRecord, SlashStatus, SlashingPenaltyContract,
+    SlashingPenaltyContractClient,
 };
 use soroban_sdk::{
+    symbol_short,
     testutils::{Address as _, Ledger, LedgerInfo},
     token::StellarAssetClient,
-    Address, BytesN, Env,
+    Address, BytesN, Env, Map, Symbol,
 };
 
 // ─── Test Helpers ─────────────────────────────────────────────────────────────
@@ -1534,4 +1536,328 @@ fn test_update_cap_then_enforce() {
         &0u64,
     );
     assert_eq!(result, Err(Ok(SlashError::PenaltyTooHigh)));
+}
+
+// ─── Evidence-Hash-Mismatch Rejection ─────────────────────────────────────────
+//
+// Requirements addressed:
+//   1. The slash-execution path re-validates the evidence hash against the originally
+//      attested reference recorded at attest_slash / slash_with_evidence time.
+//   2. A submitted evidence hash that does not match the recorded reference is
+//      rejected with SlashError::EvidenceHashMismatch.
+//   3. Execution succeeds when the evidence hash matches exactly.
+//
+// Security invariant:
+//   The evidence_hash is both the map key AND a field inside SlashRecord. Under
+//   normal operation they are always equal. The explicit check in execute_slash
+//   and attest_slash is defense-in-depth against storage-corruption edge cases.
+
+/// Positive test: execution succeeds when the evidence hash matches the recorded reference.
+///
+/// This establishes the baseline — a correctly-matched hash flows through the entire
+/// slash lifecycle without triggering EvidenceHashMismatch.
+#[test]
+fn test_execute_slash_matching_evidence_hash_succeeds() {
+    let t = TestEnv::setup();
+    let hash = t.evidence_hash(230);
+
+    // Create a slash record via slash_with_evidence (hash = key = stored field).
+    t.client.slash_with_evidence(
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+
+    // Advance past the appeal window.
+    t.advance_time(APPEAL_WINDOW + 1);
+
+    // Execute with the SAME hash — must succeed because the submitted hash matches
+    // the one stored in the record at creation time.
+    t.client.execute_slash(&hash);
+
+    let record = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(
+        record.status,
+        SlashStatus::Executed,
+        "slash must be Executed when evidence hash matches"
+    );
+    assert_eq!(
+        record.evidence_hash, hash,
+        "record.evidence_hash must equal the hash used for lookup"
+    );
+}
+
+/// Positive test: attest_slash followed by execute_slash with matching hash succeeds.
+///
+/// Attestation-based slashes go through the same execute_slash codepath, so the
+/// hash-match invariant must hold for them as well.
+#[test]
+fn test_execute_slash_attestation_matching_evidence_hash_succeeds() {
+    let t = TestEnv::setup();
+    let hash = t.evidence_hash(231);
+
+    // Create attestation record (two slashers meet quorum of 2).
+    t.client.attest_slash(
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+    t.client.attest_slash(
+        &t.slasher2,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+
+    // Advance past appeal window.
+    t.advance_time(APPEAL_WINDOW + 1);
+
+    // Execute with matching hash — must succeed.
+    t.client.execute_slash(&hash);
+
+    let record = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(record.status, SlashStatus::Executed);
+}
+
+/// Negative test: submitting a different hash at execute time produces
+/// RecordNotFound (because the record is keyed by a different hash).
+///
+/// Even though there EXISTS a record, looking it up with a non-matching hash
+/// returns a different key — RecordNotFound, not EvidenceHashMismatch.
+/// This test documents that failure mode explicitly in context.
+#[test]
+fn test_execute_slash_wrong_hash_key_returns_record_not_found() {
+    let t = TestEnv::setup();
+    let hash = t.evidence_hash(232);
+    let other_hash = t.evidence_hash(233);
+
+    // Create a record at `hash`.
+    t.client.slash_with_evidence(
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+
+    // Advance past appeal window.
+    t.advance_time(APPEAL_WINDOW + 1);
+
+    // Try to execute with `other_hash` — different key, so the record isn't found.
+    let result = t.client.try_execute_slash(&other_hash);
+    assert_eq!(
+        result,
+        Err(Ok(SlashError::RecordNotFound)),
+        "a wrong hash key must produce RecordNotFound since the record is keyed by the original hash"
+    );
+
+    // Sanity check: the record at `hash` is still intact.
+    let record = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(record.status, SlashStatus::Pending);
+}
+
+/// Negative test: direct storage corruption that causes a mismatch between the map
+/// key and the stored evidence_hash field triggers EvidenceHashMismatch.
+///
+/// This proves the defense-in-depth check in execute_slash works even when the map
+/// key points to a valid record whose evidence_hash field has diverged from the key.
+#[test]
+fn test_execute_slash_rejects_storage_corrupted_evidence_hash() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, SlashingPenaltyContract);
+    let client = SlashingPenaltyContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let slasher1 = Address::generate(&env);
+    let offender = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    let token_sac = StellarAssetClient::new(&env, &token);
+    token_sac.mint(&offender, &1_000_000i128);
+
+    client.initialize(
+        &admin, &token, &2u32, &5_000u32, &6_000i128, &9_000i128, &86_400u64,
+    );
+    client.add_slasher(&slasher1);
+    client.stake(&offender, &10_000i128);
+
+    let hash = BytesN::from_array(&env, &[1; 32]);
+    let wrong_hash = BytesN::from_array(&env, &[2; 32]);
+
+    // Step 1: create a slash record at `hash`.
+    client.slash_with_evidence(
+        &slasher1,
+        &offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+
+    // Step 2: advance past the appeal window.
+    let current = env.ledger().timestamp();
+    env.ledger().set(LedgerInfo {
+        timestamp: current + APPEAL_WINDOW + 1,
+        ..env.ledger().get()
+    });
+
+    // Step 3: directly corrupt the stored record — change its evidence_hash field
+    // to `wrong_hash` while keeping the map key as `hash`.
+    env.as_contract(&contract_id, || {
+        let rec_key: Symbol = symbol_short!("SLASHREC");
+        let mut records: Map<BytesN<32>, SlashRecord> =
+            env.storage().instance().get(&rec_key).unwrap();
+        if let Some(mut record) = records.get(hash.clone()) {
+            record.evidence_hash = wrong_hash.clone();
+            records.set(hash.clone(), record);
+            env.storage().instance().set(&rec_key, &records);
+        }
+    });
+
+    // Step 4: try to execute with `hash` — the map key finds the record, but the
+    // stored evidence_hash (`wrong_hash`) does not match the submitted hash (`hash`).
+    let result = client.try_execute_slash(&hash);
+    assert_eq!(
+        result,
+        Err(Ok(SlashError::EvidenceHashMismatch)),
+        "execute_slash must reject a record whose evidence_hash field diverges from the map key"
+    );
+
+    // Step 5: confirm the record was NOT modified (status still Pending, escrow intact).
+    let record = client.get_slash_record(&hash).unwrap();
+    assert_eq!(
+        record.status,
+        SlashStatus::Pending,
+        "record must remain Pending when execution is rejected"
+    );
+    assert_eq!(
+        record.evidence_hash, wrong_hash,
+        "corrupted evidence_hash should still be visible in storage"
+    );
+    assert!(record.escrowed_amount > 0, "escrow must be intact");
+}
+
+/// Negative test: attest_slash countersign path rejects a mismatched evidence hash
+/// when the record's stored hash has been corrupted away from the map key.
+#[test]
+fn test_attest_slash_countersign_rejects_mismatched_evidence_hash() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register_contract(None, SlashingPenaltyContract);
+    let client = SlashingPenaltyContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let slasher1 = Address::generate(&env);
+    let slasher2 = Address::generate(&env);
+    let offender = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin)
+        .address();
+    let token_sac = StellarAssetClient::new(&env, &token);
+    token_sac.mint(&offender, &1_000_000i128);
+
+    client.initialize(
+        &admin, &token, &2u32, &5_000u32, &6_000i128, &9_000i128, &86_400u64,
+    );
+    client.add_slasher(&slasher1);
+    client.add_slasher(&slasher2);
+    client.stake(&offender, &10_000i128);
+
+    let hash = BytesN::from_array(&env, &[10; 32]);
+    let wrong_hash = BytesN::from_array(&env, &[20; 32]);
+
+    // Step 1: first attestor creates a record at `hash`.
+    client.attest_slash(
+        &slasher1,
+        &offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+
+    // Step 2: corrupt the stored record's evidence_hash so it diverges from the
+    // map key.
+    env.as_contract(&contract_id, || {
+        let rec_key: Symbol = symbol_short!("SLASHREC");
+        let mut records: Map<BytesN<32>, SlashRecord> =
+            env.storage().instance().get(&rec_key).unwrap();
+        if let Some(mut record) = records.get(hash.clone()) {
+            record.evidence_hash = wrong_hash.clone();
+            records.set(hash.clone(), record);
+            env.storage().instance().set(&rec_key, &records);
+        }
+    });
+
+    // Step 3: second attestor tries to countersign with `hash` (the correct key).
+    // The map lookup succeeds (record exists), but the stored evidence_hash no
+    // longer matches — must be rejected.
+    let result = client.try_attest_slash(
+        &slasher2,
+        &offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+    assert_eq!(
+        result,
+        Err(Ok(SlashError::EvidenceHashMismatch)),
+        "attest_slash countersign must reject a record whose evidence_hash diverges from the submitted hash"
+    );
+
+    // Step 4: the first attestor's record remains intact (no double-attestation).
+    let record = client.get_slash_record(&hash).unwrap();
+    assert_eq!(record.attestors.len(), 1, "only slasher1 should be an attestor");
+    assert!(record.attestors.contains(&slasher1), "slasher1 must still be the sole attestor");
+}
+
+/// Verify that the EvidenceHashMismatch error is not triggered during normal
+/// attest_slash flow (defense-in-depth does not break the happy path).
+#[test]
+fn test_attest_slash_countersign_matching_hash_succeeds() {
+    let t = TestEnv::setup();
+    let hash = t.evidence_hash(240);
+
+    // First attestor creates the record.
+    t.client.attest_slash(
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+
+    // Second attestor countersigns with the same hash — must succeed
+    // (no EvidenceHashMismatch).
+    t.client.attest_slash(
+        &t.slasher2,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+
+    // Two attestors recorded.
+    let record = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(record.attestors.len(), 2);
+    assert!(record.attestors.contains(&t.slasher1));
+    assert!(record.attestors.contains(&t.slasher2));
 }
