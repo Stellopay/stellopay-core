@@ -111,7 +111,7 @@ Where:
 | Function                                                     | Access | Description                          |
 |--------------------------------------------------------------|--------|--------------------------------------|
 | `push_price(source, base, quote, rate, source_timestamp)`   | Source | Submit a new rate for a pair         |
-| `get_pair_state(base, quote)`                                | Any    | Read last accepted rate and metadata |
+| `get_pair_state(base, quote)`                                | Any    | Read last accepted state; rejects with `PairNotConfigured` if pair is disabled, and `PriceTooOld` if state is older than `max_staleness_seconds` |
 
 ### Admin
 
@@ -140,7 +140,7 @@ Each `push_price` call passes through these checks in order:
 10. **Single-source fast path** – If `quorum_n == 1`, the rate is accepted immediately.
 11. **Quorum path** – If `quorum_n > 1`, the vote is stored in the active `(pair, bucket)` window.
 12. **Duplicate rejection** – The same source cannot vote twice in the same active bucket.
-13. **Tolerance check** – Quorum is satisfied only when the completing vote finds `quorum_n` distinct source votes within `tolerance_bps`.
+13. **Tolerance check** – Quorum is satisfied only when the completing vote finds `quorum_n` distinct source votes within `tolerance_bps`. Submissions outside the tolerance band are excluded from aggregation — they do not count toward quorum and cannot skew the accepted price.
 14. **Persist & forward** – Save `PairState`, clear pending bucket state, and call `set_exchange_rate` on the payroll contract.
 
 On failure at any step, an `OracleError` is returned and no state in either
@@ -191,6 +191,8 @@ Integration steps:
 | 10   | InvalidPairConfig | Invalid configuration parameters               |
 | 11   | DuplicateVote     | Source already voted in the active quorum bucket |
 | 12   | SubmissionRateLimited | Source resubmitted before `min_submission_interval_seconds` elapsed |
+| 13   | TooManySources    | Quorum bucket is full                          |
+| 14   | PriceTooOld       | Read rejected because the price is older than `max_staleness_seconds` |
 
 ## Quorum model
 
@@ -225,7 +227,7 @@ This model keeps the implementation small and storage bounded while still reduci
 | Admin takeover                  | Only owner can add sources, configure pairs, transfer ownership                 |
 | Rate manipulation via wide bounds | Bounds are per-pair and admin-controlled; tighten as needed                   |
 | Quorum drift via wide tolerance | Admin should keep `tolerance_bps` tight; accepted rate is anchored to the completing vote |
-| Disabled pair bypass            | `push_price` checks `enabled` flag before accepting                             |
+| Disabled pair bypass            | `push_price` checks `enabled` flag before accepting; `disable_pair` clears stored `PairState` so `get_pair_state` returns `PairNotConfigured` instead of serving stale cached data |
 | Pair direction confusion        | `(A, B)` and `(B, A)` are independent pairs in storage                         |
 
 ## Trade-offs
@@ -250,18 +252,18 @@ This model keeps the implementation small and storage bounded while still reduci
 | `("oracle", "owner")`     | `new_owner`             | `accept_ownership`   |
 | `("oracle", "cancel")`    | `pending_owner`         | `cancel_ownership_transfer` |
 
-## Test coverage (57 tests)
+## Test coverage (71 tests)
 
 - **Initialization** (2): owner set, double-init blocked
 - **Source management** (4): add/remove, non-owner blocked, removed source can't push
 - **Pair configuration** (8): read config, same-token rejected, min>max rejected, zero min, negative rate, zero staleness, zero quorum window, non-owner blocked
-- **Disable/enable** (4): disable blocks updates, enable resumes, unconfigured pair error, non-owner blocked
+- **Disable/enable** (7): disable blocks updates and clears state, enabled pair distinguishable from disabled, enable requires fresh push, enable resumes, unconfigured pair error, non-owner blocked
 - **Push price happy path** (4): full integration, min boundary, max boundary, max staleness boundary
 - **Push price forbidden** (8): unregistered source, zero rate, negative rate, below min, above max, future timestamp, stale timestamp, unconfigured pair
 - **Monotonic/multi-source** (3): older ignored, equal ignored, latest-wins with backup source
 - **Ownership transfer (two-step)** (8): propose/accept success, old owner loses access, unauthorized accept rejection, accept without propose fails, cancel transfer, non-owner propose/cancel blocked, uninitialized guards.
 - **Uninitialized guards** (5): all admin/source functions revert before init
 - **Security scenarios** (4): compromised source blast radius, pair isolation, reconfigure tightens bounds, pair direction matters
-- **Quorum-specific edge cases** (15): quorum success, dissent without quorum, duplicate-vote rejection, tolerance-boundary acceptance, max-supporting-timestamp selection, older-bucket no-op after rollover, removed-source pending vote invalidation, FX forward failure handling, and invalid zero-quorum configuration
+- **Quorum-specific edge cases** (17): quorum success, dissent without quorum, duplicate-vote rejection, tolerance-boundary acceptance, max-supporting-timestamp selection, older-bucket no-op after rollover, removed-source pending vote invalidation, FX forward failure handling, invalid zero-quorum configuration, outlier-beyond-tolerance rejection, within-tolerance acceptance
 - **Helper-path coverage** (3): non-positive tolerance input and arithmetic overflow guards in the tolerance matcher
 - **Rate limiting** (5): rapid resubmission rejected, resubmission allowed after interval, distinct sources unaffected, single source counts once per quorum bucket, interval=0 disables check

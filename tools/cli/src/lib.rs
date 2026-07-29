@@ -74,6 +74,31 @@ pub enum Commands {
         #[command(subcommand)]
         command: WebhookCommands,
     },
+
+    /// Verify that a deployed contract's on-chain WASM hash matches a fresh
+    /// build from the current source tree (byte-for-byte SHA-256 comparison).
+    Verify {
+        /// Contract ID to verify against (falls back to config default)
+        #[arg(long)]
+        contract_id: Option<String>,
+
+        /// Network to query (testnet, mainnet)
+        #[arg(long, default_value = "testnet")]
+        network: String,
+
+        /// Local WASM file path (skips build when provided)
+        #[arg(long)]
+        wasm: Option<PathBuf>,
+
+        /// Skip rebuilding the contract from source
+        #[arg(long)]
+        skip_build: bool,
+
+        /// Optional deployed WASM hash override (hex). When set, skips the
+        /// on-chain fetch — useful for offline/CI checks and tests.
+        #[arg(long)]
+        deployed_hash: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

@@ -1,65 +1,132 @@
-# Continuous integration (contracts)
+# Continuous Integration
 
-## Workflow
+> **Canonical source:** `.github/workflows/contracts.yml`
+>
+> This document mirrors that workflow. If the workflow changes, update this
+> file in the same pull request.
 
-The GitHub Actions workflow **Contracts CI** (`.github/workflows/contracts.yml`) runs on pushes and pull requests targeting `main`.
+---
 
-It performs:
+## Workflow: Contracts CI
 
-1. **Rust toolchain** — stable channel, `wasm32-unknown-unknown` target, `llvm-tools-preview` (for coverage instrumentation).
-2. **Stellar CLI** — `cargo install stellar-cli --locked` for `stellar contract build`.
-3. **Unit / integration tests**
-   - `cargo test -p payroll_escrow --verbose`
-   - `cargo test -p stello_pay_contract --verbose`
-   - `cargo test -p integration_tests --verbose`
-   - `cargo test -p template_versioning --verbose`
-4. **WASM build** — `stellar contract build` in `onchain/contracts/stello_pay_contract` and `onchain/contracts/template_versioning`.
-5. **Coverage** — `cargo llvm-cov` over the same two packages; produces `onchain/codecov.json` and uploads it as a workflow artifact.
+**File:** `.github/workflows/contracts.yml`  
+**Triggers:** push and pull_request to `main`
 
-### Optional Codecov
+The workflow runs a single job (`contracts`) on `ubuntu-latest` with the
+following steps, in order:
 
-To publish reports to [Codecov](https://codecov.io), add a repository secret `CODECOV_TOKEN` and uncomment (or enable) the Codecov step in `contracts.yml`. The job is configured so missing token does not fail the workflow by default.
+| Step | Command | Working directory |
+|---|---|---|
+| 1. Install Rust (stable + rustfmt) | _managed by `dtolnay/rust-toolchain@stable`_ | — |
+| 2. Cache Cargo registry | _managed by `Swatinem/rust-cache@v2`_ | — |
+| 3. Check formatting | `cargo fmt --all -- --check` | `onchain/` |
+| 4. Build workspace | `cargo build --workspace --verbose` | `onchain/` |
+| 5. Test workspace | `cargo test --workspace --verbose` | `onchain/` |
 
-### Coverage thresholds
+Steps 1–2 are handled automatically by GitHub Actions and have no equivalent
+local command. Steps 3–5 are the checks contributors must pass.
 
-The workflow does **not** enforce a minimum coverage percentage by default (Soroban contract tests mix host and WASM targets; thresholds are easier to tune locally first). To fail CI below a threshold, add for example:
+---
 
-```bash
-cargo llvm-cov test -p stello_pay_contract --fail-under-lines 95
-```
+## Run Locally
 
-after validating numbers in your environment.
+Run the same three checks CI executes, in the same order, before opening a PR.
 
-### Disabled tests
+### Prerequisites
 
-Tests on `main` must be either active or deleted. Do not leave Rust test files
-with a `.disabled` suffix or similar opt-out extension in contract test
-directories. If a test breaks during SDK or API migration, either update it in
-the same change, merge the still-useful cases into an active suite, or delete it
-when active coverage already supersedes it.
+| Requirement | How to install |
+|---|---|
+| Rust (stable) | `rustup install stable && rustup default stable` |
+| `rustfmt` component | `rustup component add rustfmt` |
 
-## Local environment
-
-Align with CI for reproducible runs:
-
-| Requirement | Notes |
-|-------------|--------|
-| Rust | Stable, edition 2021 (see workspace `Cargo.toml`). |
-| Target | `rustup target add wasm32-unknown-unknown` |
-| Stellar CLI | Same major line as Soroban SDK in the workspace (e.g. install via `cargo install stellar-cli --locked`). |
-| Coverage | `rustup component add llvm-tools-preview` and `cargo install cargo-llvm-cov` |
+No Stellar CLI, `llvm-tools-preview`, or `cargo-llvm-cov` is required to
+pass the CI checks listed above.
 
 ### Commands
 
 ```bash
 cd onchain
-cargo test -p payroll_escrow --verbose
-cargo test -p stello_pay_contract --verbose
-cargo test -p integration_tests --verbose
-cd contracts/stello_pay_contract && stellar contract build --verbose
-cd ../.. && cargo llvm-cov test -p stello_pay_contract -p integration_tests --html
+
+# 1. Formatting — must produce no diff
+cargo fmt --all -- --check
+
+# 2. Build — all workspace crates must compile
+cargo build --workspace --verbose
+
+# 3. Tests — all workspace tests must pass
+cargo test --workspace --verbose
 ```
 
-## Legacy workflow
+All three commands must exit with code `0` for a PR to be mergeable.
 
-`.github/workflows/ci.yml` is limited to **manual** runs (`workflow_dispatch`) so PRs are not duplicated. Use **Contracts CI** for branch protection checks.
+### Fixing common failures
+
+**Formatting failure**
+
+`cargo fmt --all -- --check` exits non-zero when any file would be
+reformatted. Fix by running the formatter without `--check`:
+
+```bash
+cd onchain
+cargo fmt --all
+```
+
+Then commit the result before pushing.
+
+**Build failure**
+
+Resolve compiler errors reported by `cargo build`. The workspace uses
+`edition = "2021"` and the stable Rust channel; ensure your toolchain is
+up to date:
+
+```bash
+rustup update stable
+```
+
+**Test failure**
+
+Test output is printed with `--verbose`. Read the failure message and fix
+the broken test or the code under test.
+
+---
+
+## What CI does not check
+
+The following are **not** part of the automated CI pipeline and are therefore
+not required to pass before merging:
+
+- `cargo clippy` — linting is not enforced by the workflow.
+- Coverage reporting — no `cargo llvm-cov` step exists in the current workflow.
+- WASM contract builds — `stellar contract build` is not run by CI.
+- Per-package test runs — CI uses `--workspace`; there are no per-crate steps.
+- `tools/doc_checker` — the documentation linter (undocumented public
+  functions, undocumented error-enum variants, and orphaned `docs/*.md`
+  files) is a standalone tool contributors can run manually; it is not
+  wired into `.github/workflows/contracts.yml`. See
+  [`tools/doc_checker/README.md`](../tools/doc_checker/README.md) for usage,
+  including its `--strict` flag for promoting warnings to hard failures.
+
+> If any of the above are added to `.github/workflows/contracts.yml` in the
+> future, this section and the **Run locally** section above must both be
+> updated.
+
+---
+
+## auto-assign workflow
+
+**File:** `.github/workflows/auto-assign.yml`  
+**Triggers:** `issue_comment` (created)
+
+This workflow automatically assigns an issue to a contributor when they
+comment with an assignment phrase (e.g. `/assign`, `I'd like to work on this`).
+It is a repository-management workflow only and does **not** perform any code
+quality checks. Contributors do not need to run anything locally to satisfy it.
+
+---
+
+## Disabled tests policy
+
+Tests on `main` must be either active or deleted. Do not leave Rust test files
+with a `.disabled` suffix or similar opt-out extension in contract test
+directories. If a test breaks during SDK or API migration, either update it in
+the same change or delete it when active coverage already supersedes it.

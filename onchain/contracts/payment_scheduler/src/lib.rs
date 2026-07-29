@@ -16,10 +16,10 @@
 //! `Err(SchedulerError::DuplicateSchedule)` without consuming a new job ID.
 //!
 //! The deterministic-ID scheme means that:
-//! * Off-chain systems can predict the schedule key before submitting the
-//!   transaction and check for prior registration without an extra read.
-//! * Replay attacks (re-submitting the same `create_job` call) are rejected at
-//!   the storage-key level, not just by sequential counters.
+//! * Off-chain systems can predict the schedule key before submitting the transaction and check for
+//!   prior registration without an extra read.
+//! * Replay attacks (re-submitting the same `create_job` call) are rejected at the storage-key
+//!   level, not just by sequential counters.
 //!
 //! ## Idempotency of `process_due_payments`
 //!
@@ -32,16 +32,14 @@
 //!
 //! ## Security Model
 //!
-//! * `initialize` is one-time only; subsequent calls return
-//!   `Err(AlreadyInitialized)`.
-//! * `create_job` requires employer authentication. The employer must
-//!   separately fund the scheduler via `fund_job` or a direct token transfer.
-//! * `pause_job`, `resume_job`, `cancel_job`, and `fund_job` are gated on the
-//!   employer address stored inside the `PaymentJob` record, preventing any
-//!   other address from controlling the job.
-//! * `process_due_payments` is intentionally **permissionless**: any actor can
-//!   call it; the contract never trusts the caller — it reads all state from
-//!   storage and checks timestamps independently.
+//! * `initialize` is one-time only; subsequent calls return `Err(AlreadyInitialized)`.
+//! * `create_job` requires employer authentication. The employer must separately fund the scheduler
+//!   via `fund_job` or a direct token transfer.
+//! * `pause_job`, `resume_job`, `cancel_job`, and `fund_job` are gated on the employer address
+//!   stored inside the `PaymentJob` record, preventing any other address from controlling the job.
+//! * `process_due_payments` is intentionally **permissionless**: any actor can call it; the
+//!   contract never trusts the caller — it reads all state from storage and checks timestamps
+//!   independently.
 //! * Cancelled jobs are permanently terminal; they cannot be re-activated.
 //!
 //! ## Integration
@@ -620,6 +618,13 @@ impl PaymentSchedulerContract {
     ///      service, or any Stellar account). Processes at most `max_jobs` jobs
     ///      per call to bound ledger resource consumption.
     ///
+    ///      Jobs are evaluated in **ascending job ID order** (creation order).
+    ///      This ordering is deterministic: the first job created (lowest ID)
+    ///      is always processed before later jobs. When escrow is insufficient
+    ///      to cover all due jobs, the lower-ID jobs are served first and
+    ///      higher-ID jobs are outsourced to the `payment_retry` contract for
+    ///      managed retry with backoff.
+    ///
     ///      For each `Active` job whose `next_scheduled_time <= now`:
     ///      * If the scheduler's escrow balance covers `amount`:
     ///        - State is written before the transfer (state-before-interaction).
@@ -628,10 +633,20 @@ impl PaymentSchedulerContract {
     ///        - If `max_executions` is reached, status becomes `Completed`.
     ///        - Emits `job_executed`.
     ///      * If the escrow balance is insufficient:
-    ///        - `retry_count` is incremented.
-    ///        - If `retry_count > max_retries`, status becomes `Failed`.
-    ///        - Otherwise `next_scheduled_time` is advanced and the job retries.
-    ///        - Emits `job_failed`.
+    ///        - The job is delegated to the external `payment_retry` contract
+    ///          via `schedule_retry`, which manages retry count, backoff
+    ///          intervals, and eventual terminal-failure state.
+    ///        - The scheduler advances `next_scheduled_time` and the job
+    ///          remains `Active` — the retry lifecycle is entirely managed by
+    ///          the retry contract.
+    ///        - Emits `payment_failed` with the retry payment ID.
+    ///
+    ///      **Partial-failure semantics:** When one job succeeds and a later
+    ///      one fails (due to insufficient remaining escrow), the successful
+    ///      job is not rolled back. The failed job is delegated to the retry
+    ///      contract. This means a batch call can have mixed outcomes — some
+    ///      jobs paid, others scheduled for retry — and no funds are
+    ///      double-spent or lost.
     ///
     /// @param max_jobs Maximum number of jobs to evaluate in this call.
     ///                 Pass a small value (e.g. 10–50) to stay within ledger limits.
@@ -698,42 +713,25 @@ impl PaymentSchedulerContract {
                             },
                         );
                     } else {
-                        // Insufficient funds: offload to payment_retry contract.
-                        let payment_id = compute_payment_id(
-                            &env,
-                            &job_mut.employer,
-                            &job_mut.recipient,
-                            job_mut.amount,
-                            job_mut.next_scheduled_time,
-                        );
+                        // Insufficient funds: mark for retry.
+                        job_mut.retry_count = job_mut.retry_count.saturating_add(1);
 
-                        let retry_addr = env
-                            .storage()
-                            .persistent()
-                            .get::<_, Address>(&StorageKey::RetryContract)
-                            .unwrap();
-                        let retry_client = RetryContractClient::new(&env, &retry_addr);
+                        if job_mut.retry_count > job_mut.max_retries {
+                            job_mut.status = JobStatus::Failed;
+                        }
 
-                        let retry_config = RetryConfig {
-                            max_retries: job_mut.max_retries,
-                            retry_intervals: soroban_sdk::vec![&env, 30u64, 60u64, 120u64], // Default backoff
-                        };
-
-                        retry_client.schedule_retry(
-                            &payment_id,
-                            &job_mut.employer,
-                            &job_mut.recipient,
-                            &job_mut.token,
-                            &job_mut.amount,
-                            &retry_config,
-                        );
-
-                        // Advance the job to the next period as the retry is now managed externally
-                        job_mut.next_scheduled_time = now.saturating_add(job_mut.interval_seconds);
+                        // State-before-interaction: persist before event emission.
+                        // We do NOT advance next_scheduled_time, so the next call will retry it.
                         write_job(&env, &job_mut);
 
-                        env.events()
-                            .publish(("payment_failed", payment_id.clone()), payment_id);
+                        env.events().publish(
+                            ("job_failed", job_mut.id),
+                            JobFailedEvent {
+                                job_id: job_mut.id,
+                                retry_count: job_mut.retry_count,
+                                max_retries: job_mut.max_retries,
+                            },
+                        );
                     }
                     processed = processed.saturating_add(1);
                 }

@@ -1,12 +1,11 @@
 #![cfg(test)]
+use slashing_penalty::{
+    Offense, SlashError, SlashStatus, SlashingPenaltyContract, SlashingPenaltyContractClient,
+};
 use soroban_sdk::{
     testutils::{Address as _, Ledger, LedgerInfo},
     token::StellarAssetClient,
     Address, BytesN, Env,
-};
-
-use slashing_penalty::{
-    Offense, SlashError, SlashStatus, SlashingPenaltyContract, SlashingPenaltyContractClient,
 };
 
 // ─── Test Helpers ─────────────────────────────────────────────────────────────
@@ -126,7 +125,8 @@ fn test_initialize_quorum_one_accepted() {
     let admin = Address::generate(&env);
     let token = Address::generate(&env);
 
-    // quorum = 1 is the minimum valid value and must be stored as-is (not raised to DEFAULT_QUORUM).
+    // quorum = 1 is the minimum valid value and must be stored as-is (not raised to
+    // DEFAULT_QUORUM).
     client.initialize(
         &admin, &token, &1u32, &5_000u32, &6_000i128, &9_000i128, &86_400u64,
     );
@@ -897,5 +897,181 @@ fn test_replay_rejection_independent_of_prior_slash_count() {
         &100u32,
         &t.evidence_hash(130),
         &0u64,
+    );
+}
+
+// ─── Double-Execution Guard (issue #938) ──────────────────────────────────────
+//
+// Requirements addressed:
+//   1. A second `execute_slash` call for the same `slash_record_id` (evidence hash)
+//      must be rejected with `SlashError::InvalidState` — it must never apply the
+//      penalty a second time.
+//   2. After a single successful execution, `get_stake_balance` must reflect exactly
+//      one penalty deduction (no double-burn, no partial accounting).
+
+/// Requirement 1 — double-execution is rejected.
+///
+/// Sequence:
+///   1. Slash offender via `slash_with_evidence` (status → Pending, stake debited to escrow).
+///   2. Advance past the appeal deadline.
+///   3. First `execute_slash` call → Ok(()), status → Executed, escrow burned.
+///   4. Second `execute_slash` call for the same hash → Err(InvalidState).
+///
+/// The `InvalidState` error on the second call proves the guard fires before any
+/// state mutation, ensuring the penalty cannot be applied twice.
+#[test]
+fn test_execute_slash_double_execution_is_rejected() {
+    let t = TestEnv::setup();
+    let hash = t.evidence_hash(200);
+
+    // Step 1: initiate the slash.
+    t.client.slash_with_evidence(
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32, // 10% of 10_000 stake = 1_000 slashed
+        &hash,
+        &0u64,
+    );
+
+    // Confirm record is Pending.
+    let record_pending = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(
+        record_pending.status,
+        SlashStatus::Pending,
+        "record must be Pending before execute"
+    );
+
+    // Step 2: advance past the 7-day appeal window.
+    t.advance_time(APPEAL_WINDOW + 1);
+
+    // Step 3: first execute — must succeed.
+    t.client.execute_slash(&hash);
+
+    // Confirm record is now Executed (terminal state).
+    let record_executed = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(
+        record_executed.status,
+        SlashStatus::Executed,
+        "record must be Executed after first execute_slash"
+    );
+
+    // Step 4: second execute — the double-execution guard must fire.
+    let result = t.client.try_execute_slash(&hash);
+    assert_eq!(
+        result,
+        Err(Ok(SlashError::InvalidState)),
+        "second execute_slash must return InvalidState (double-execution guard)"
+    );
+}
+
+/// Requirement 2 — stake balance reflects exactly one penalty deduction.
+///
+/// With a 10% penalty on a 10_000 stake, exactly 1_000 tokens must be moved to
+/// escrow at slash initiation and burned at execution. After a single successful
+/// `execute_slash`, `get_stake_balance` must return 9_000, not 8_000 (two deductions)
+/// or 10_000 (no deduction).
+///
+/// This test also confirms that a second `execute_slash` call does not further
+/// reduce the balance, so the accounting remains correct even when a caller
+/// mistakenly retries.
+#[test]
+fn test_execute_slash_stake_balance_reflects_single_execution() {
+    let t = TestEnv::setup();
+    let hash = t.evidence_hash(201);
+
+    // Capture starting balance (10_000 from TestEnv::setup).
+    let initial_balance = t.client.get_stake_balance(&t.offender);
+    assert_eq!(initial_balance, 10_000i128, "pre-condition: starting stake");
+
+    // Slash at 10% (1_000 bps of 10_000 = 1_000 tokens).
+    t.client.slash_with_evidence(
+        &t.slasher1,
+        &t.offender,
+        &Offense::FraudProof,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+
+    // After slash initiation the escrowed amount is deducted from the stake
+    // and held in escrow — verify the intermediate balance.
+    let balance_after_slash = t.client.get_stake_balance(&t.offender);
+    assert_eq!(
+        balance_after_slash, 9_000i128,
+        "stake must drop by exactly the slashed amount (1_000) after initiation"
+    );
+
+    // Advance past appeal window and execute.
+    t.advance_time(APPEAL_WINDOW + 1);
+    t.client.execute_slash(&hash);
+
+    // After execution the escrowed amount is burned (not returned to stake).
+    // Balance must remain 9_000 — exactly one penalty deduction, no refund.
+    let balance_after_execute = t.client.get_stake_balance(&t.offender);
+    assert_eq!(
+        balance_after_execute,
+        9_000i128,
+        "balance after execute must equal initial minus exactly one penalty (10_000 - 1_000 = 9_000)"
+    );
+
+    // Attempt a second execute — rejected by the guard.
+    let second_result = t.client.try_execute_slash(&hash);
+    assert_eq!(
+        second_result,
+        Err(Ok(SlashError::InvalidState)),
+        "second execute_slash must be rejected"
+    );
+
+    // Balance must be unchanged after the rejected second call — no double-burn.
+    let balance_after_rejected = t.client.get_stake_balance(&t.offender);
+    assert_eq!(
+        balance_after_rejected, 9_000i128,
+        "stake balance must be unchanged after the rejected double-execution attempt"
+    );
+}
+
+/// Edge case — double-execution guard fires for attestation-based slashes too.
+///
+/// Attestation-based slashes go through the same `execute_slash` codepath and
+/// the same `Pending → Executed` transition, so the guard must work identically.
+#[test]
+fn test_attestation_slash_execute_slash_double_execution_is_rejected() {
+    let t = TestEnv::setup();
+    let hash = t.evidence_hash(202);
+
+    // Two attestors meet the quorum of 2.
+    t.client.attest_slash(
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+    t.client.attest_slash(
+        &t.slasher2,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+
+    t.advance_time(APPEAL_WINDOW + 1);
+
+    // First execute — succeeds.
+    t.client.execute_slash(&hash);
+    assert_eq!(
+        t.client.get_slash_record(&hash).unwrap().status,
+        SlashStatus::Executed
+    );
+
+    // Second execute — must be rejected by the double-execution guard.
+    let result = t.client.try_execute_slash(&hash);
+    assert_eq!(
+        result,
+        Err(Ok(SlashError::InvalidState)),
+        "double-execution guard must fire for attestation-based slashes"
     );
 }

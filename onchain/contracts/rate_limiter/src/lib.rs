@@ -4,6 +4,12 @@
 //!
 //! Provides burst-friendly rate limiting with automatic token refills,
 //! global throttling, and admin bypass to ensure security and fairness.
+//!
+//! # Fractional Refill Policy
+//! Soroban ledger timestamps are whole seconds and bucket balances are whole
+//! `u32` tokens. Refill is therefore calculated as
+//! `elapsed_seconds * refill_rate` using integer arithmetic. Calls made inside
+//! the same ledger second receive no partial or fractional refill credit.
 
 use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
 
@@ -32,23 +38,23 @@ enum StorageKey {
     Usage(Address),
 }
 
-/// Usage state for a token bucket
+/// Usage state for a token bucket.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Usage {
-    /// Last timestamp when tokens were refilled
+    /// Last whole-second ledger timestamp when tokens were refilled.
     pub last_update: u64,
-    /// Current number of tokens in the bucket
+    /// Current whole-token balance in the bucket.
     pub tokens: u32,
 }
 
-/// Configuration for a specific rate limit
+/// Configuration for a specific rate limit.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LimitConfig {
     /// Maximum tokens the bucket can hold (burst capacity)
     pub burst: u32,
-    /// Tokens added to the bucket per second (refill rate)
+    /// Whole tokens added to the bucket per whole ledger second.
     pub refill_rate: u32,
 }
 
@@ -111,6 +117,8 @@ impl RateLimiter {
 
     /// Sets a per-address limit override.
     ///
+    /// @notice Per-address overrides take precedence over the initialized
+    ///         default limit for the target address.
     /// @dev Only callable by admin.
     /// @param addr Subject address.
     /// @param burst Max burst capacity for this address.
@@ -131,10 +139,16 @@ impl RateLimiter {
         env.storage().persistent().remove(&StorageKey::Limit(addr));
     }
 
-    /// Checks and consumes one unit from the subject's rate limit.
+    /// Checks and consumes one whole token from the subject's rate limit.
     ///
     /// @notice Implements Token Bucket algorithm for burst handling.
     /// @notice Validates security by allowing admins to bypass if configured.
+    /// @notice Resolves the subject-specific limit as:
+    ///         `set_limit_for(subject, ...)` override first, otherwise the
+    ///         default values established during `initialize(...)`.
+    /// @dev Refill uses whole ledger seconds only: `elapsed_seconds * refill_rate`.
+    ///      Multiple calls in the same ledger second share the same balance and
+    ///      do not accumulate fractional refill credit.
     /// @param subject Address to check and consume quota for (must authenticate).
     /// @return tokens_remaining User's tokens remaining after consumption.
     pub fn check_and_consume(env: Env, subject: Address) -> u32 {
@@ -213,10 +227,10 @@ impl RateLimiter {
     /// No authentication is required.
     ///
     /// # Returns
-    /// - `Some(Usage)` — the current token count and last-update timestamp, with
-    ///   refill applied up to the current ledger time.
-    /// - `None` — if no usage has ever been recorded for this address (the bucket
-    ///   is effectively full at the configured burst capacity).
+    /// - `Some(Usage)` — the current token count and last-update timestamp, with refill applied up
+    ///   to the current ledger time.
+    /// - `None` — if no usage has ever been recorded for this address (the bucket is effectively
+    ///   full at the configured burst capacity).
     pub fn get_usage(env: Env, addr: Address) -> Option<Usage> {
         env.storage()
             .persistent()
@@ -256,7 +270,8 @@ impl RateLimiter {
             tokens: burst,
         });
 
-        // Refill tokens based on time elapsed since last update
+        // Refill is intentionally whole-second and whole-token. Sub-second or
+        // same-ledger-second calls cannot farm fractional token credit.
         let elapsed = now.saturating_sub(usage.last_update);
         if elapsed > 0 {
             let new_tokens = (elapsed as u32).saturating_mul(refill_rate);
@@ -274,6 +289,10 @@ impl RateLimiter {
         usage.tokens
     }
 
+    /// Resolves the effective per-address limit configuration.
+    ///
+    /// @dev Precedence is `StorageKey::Limit(addr)` first, then the default
+    ///      limit configured during `initialize`.
     fn get_limit_config(env: &Env, addr: &Address) -> LimitConfig {
         env.storage()
             .persistent()
