@@ -561,6 +561,12 @@ impl GovernanceContract {
     /// - **Majority**: For any proposal to succeed, `For > Against` (abstain votes do not
     ///   participate)
     ///
+    /// # Re-voting
+    /// Re-voting is **not** allowed. Each address may cast at most one vote per proposal.
+    /// A second `cast_vote` call from the same address on the same proposal is rejected with
+    /// `AlreadyVoted` — the original choice is preserved, the vote counts are not modified,
+    /// and there is no vote-change mechanism. Callers should confirm their choice before submitting.
+    ///
     /// # Parameters
     /// - `env` — Soroban environment
     /// - `voter` — Address casting the vote (must have RBAC Admin or Employer role)
