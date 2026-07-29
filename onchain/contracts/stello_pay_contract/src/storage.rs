@@ -567,6 +567,14 @@ pub enum DataKey {
     /// Key: ExchangeRate(Address, Address)
     /// Value: ExchangeRateInfo { rate: i128, updated_at: u64 }
     ExchangeRate(Address, Address),
+
+    /// Tracks whether the grace period for an agreement has been finalized.
+    ///
+    /// Once set, `finalize_grace_period` becomes a no-op for that agreement,
+    /// preventing duplicate refunds and duplicate event emissions.
+    /// Key: AgreementGracePeriodFinalized(u128)
+    /// Value: ()  (presence = finalized)
+    AgreementGracePeriodFinalized(u128),
 }
 
 impl DataKey {
@@ -769,6 +777,19 @@ impl DataKey {
 // PayrollError discriminant stability test
 // ============================================================================
 
+
+    /// Marks an agreement's grace period as finalized.
+    pub fn set_agreement_grace_period_finalized(env: &Env, agreement_id: u128) {
+        let key = DataKey::AgreementGracePeriodFinalized(agreement_id);
+        env.storage().persistent().set(&key, &());
+    }
+
+    /// Returns `true` if the agreement's grace period has been finalized.
+    pub fn is_agreement_grace_period_finalized(env: &Env, agreement_id: u128) -> bool {
+        let key = DataKey::AgreementGracePeriodFinalized(agreement_id);
+        env.storage().persistent().has(&key)
+    }
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -837,4 +858,5 @@ mod test {
         assert_eq!(PayrollError::MilestoneRejectionReasonEmpty as u32, 49);
         assert_eq!(PayrollError::EmptyMilestoneList as u32, 50);
     }
+        assert_eq!(PayrollError::GracePeriodAlreadyFinalized as u32, 50);
 }
