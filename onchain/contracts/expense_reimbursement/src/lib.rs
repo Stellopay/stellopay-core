@@ -281,6 +281,20 @@ impl ExpenseReimbursementContract {
             .set(&StorageKey::ApproverRole(approver), &true);
     }
 
+    /// Remove an approver from the active approver set.
+    ///
+    /// NatSpec: Removal prevents this address from approving or rejecting any
+    /// pending expense going forward. It does not alter approval decisions
+    /// already recorded on expenses; those decisions remain valid and payable.
+    pub fn remove_approver(env: Env, caller: Address, approver: Address) {
+        require_initialized(&env);
+        require_owner(&env, &caller);
+
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::ApproverRole(approver));
+    }
+
     /// Submit an expense for reimbursement
     pub fn submit_expense(
         env: Env,
