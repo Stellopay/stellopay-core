@@ -43,6 +43,10 @@ Property-based fuzz tests in `onchain/contracts/payroll_escrow/tests/fuzz/test_f
 3. **Release**: The Manager contract calls `release` to send a specific amount to a recipient (e.g., an employee).
 4. **Refund**: If an agreement is cancelled or completed with a surplus, the Manager calls `refund_remaining` to return all leftover funds to the employer.
 
+## Escrow Agreement Creation Validation
+
+Escrow agreements created through `create_escrow_agreement` must use a strictly positive `period_seconds` value. A zero-duration request is rejected at creation time with `PayrollError::ZeroPeriodDuration` before any agreement state is persisted, preventing immediately expired agreements from entering the system. The smallest valid period duration is one second, which is accepted and stored as the agreement's configured period length.
+
 ## Security Considerations
 
 - **Authentication**: All state-changing functions require `require_auth()` for the appropriate caller.

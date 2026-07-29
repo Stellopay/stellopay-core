@@ -658,3 +658,92 @@ fn test_deploy_with_invalid_network_produces_clear_error() {
                 .and(predicate::str::contains("testnet, mainnet")),
         );
 }
+
+// --- Issue #800: `verify` subcommand (WASM hash match / mismatch) ------------
+
+#[test]
+fn test_verify_help_lists_subcommand() {
+    let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
+    cmd.arg("verify").arg("--help");
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Verify").or(predicate::str::contains("deployed")));
+}
+
+#[test]
+fn test_verify_matching_hashes_succeeds() {
+    let temp_dir = TempDir::new().unwrap();
+    let wasm_path = temp_dir.path().join("contract.wasm");
+    std::fs::write(&wasm_path, b"\0asm\x01\x00\x00\x00stellopay-verify-match").unwrap();
+
+    let local_hash = stellopay_cli::utils::compute_wasm_hash(&wasm_path).unwrap();
+
+    let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
+    cmd.arg("verify")
+        .arg("--wasm")
+        .arg(wasm_path.to_str().unwrap())
+        .arg("--deployed-hash")
+        .arg(&local_hash);
+
+    cmd.assert()
+        .success()
+        .stdout(predicate::str::contains("Verification passed").and(
+            predicate::str::contains(&local_hash),
+        ));
+}
+
+#[test]
+fn test_verify_mismatching_hashes_fails_with_both_hashes() {
+    let temp_dir = TempDir::new().unwrap();
+    let wasm_path = temp_dir.path().join("contract.wasm");
+    std::fs::write(&wasm_path, b"\0asm\x01\x00\x00\x00stellopay-verify-mismatch").unwrap();
+
+    let local_hash = stellopay_cli::utils::compute_wasm_hash(&wasm_path).unwrap();
+    let wrong_hash = "ff".repeat(32);
+
+    let mut cmd = Command::cargo_bin("stellopay-cli").unwrap();
+    cmd.arg("verify")
+        .arg("--wasm")
+        .arg(wasm_path.to_str().unwrap())
+        .arg("--deployed-hash")
+        .arg(&wrong_hash);
+
+    let assert = cmd.assert().failure().code(5);
+    let output = assert.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{}{}", stdout, stderr);
+
+    assert!(
+        combined.contains(&local_hash),
+        "mismatch output must include local hash, got: {combined}"
+    );
+    assert!(
+        combined.contains(&wrong_hash),
+        "mismatch output must include deployed hash, got: {combined}"
+    );
+    assert!(
+        combined.to_lowercase().contains("mismatch")
+            || combined.to_lowercase().contains("verification failed"),
+        "mismatch output must clearly indicate failure, got: {combined}"
+    );
+}
+
+#[test]
+fn test_verify_compare_helpers_match_and_mismatch() {
+    use stellopay_cli::utils::{compare_wasm_hashes, format_verify_message, VerifyOutcome};
+
+    let ab = "ab".repeat(32);
+    let ab_upper = "AB".repeat(32);
+    let match_outcome = compare_wasm_hashes(&ab, &ab_upper);
+    assert!(matches!(match_outcome, VerifyOutcome::Match { .. }));
+    assert!(format_verify_message(&match_outcome).contains("passed"));
+
+    let local = "11".repeat(32);
+    let deployed = "22".repeat(32);
+    let mismatch = compare_wasm_hashes(&local, &deployed);
+    let msg = format_verify_message(&mismatch);
+    assert!(msg.contains(&local));
+    assert!(msg.contains(&deployed));
+    assert!(matches!(mismatch, VerifyOutcome::Mismatch { .. }));
+}
