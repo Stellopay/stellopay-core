@@ -150,8 +150,8 @@ impl DepartmentManagerContract {
     /// The new organization ID (starts at 1, increments by 1).
     ///
     /// # Panics
-    /// - `"Organization name already in use"` – `name` already maps to an
-    ///   existing organization via the `OrgByName` reverse index.
+    /// - `"Organization name already in use"` – `name` already maps to an existing organization via
+    ///   the `OrgByName` reverse index.
     /// - `"Contract not initialized"` – `initialize` was not called.
     ///
     /// # Events

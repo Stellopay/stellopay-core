@@ -1621,8 +1621,7 @@ fn early_release_capped_after_prior_claim() {
 /// Contract behavior:
 ///   - `approve_early_release` increments `released_amount` (and transfers to beneficiary).
 ///   - `get_releasable_amount` returns `vested - released_amount`.
-///   - So after an early release of 200 at t=30 (vested=300):
-///       releasable = 300 - 200 = 100
+///   - So after an early release of 200 at t=30 (vested=300): releasable = 300 - 200 = 100
 ///   - The beneficiary can only claim that 100 remaining vested-but-unreleased amount.
 #[test]
 fn early_release_then_claim_transfers_exact_amounts() {

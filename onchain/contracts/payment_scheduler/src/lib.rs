@@ -717,12 +717,10 @@ impl PaymentSchedulerContract {
     ///        - If `max_executions` is reached, status becomes `Completed`.
     ///        - Emits `job_executed`.
     ///      * If the escrow balance is insufficient:
-    ///        - The job is delegated to the external `payment_retry` contract
-    ///          via `schedule_retry`, which manages retry count, backoff
-    ///          intervals, and eventual terminal-failure state.
-    ///        - The scheduler advances `next_scheduled_time` and the job
-    ///          remains `Active` — the retry lifecycle is entirely managed by
-    ///          the retry contract.
+    ///        - The job is delegated to the external `payment_retry` contract via `schedule_retry`,
+    ///          which manages retry count, backoff intervals, and eventual terminal-failure state.
+    ///        - The scheduler advances `next_scheduled_time` and the job remains `Active` — the
+    ///          retry lifecycle is entirely managed by the retry contract.
     ///        - Emits `payment_failed` with the retry payment ID.
     ///
     ///      **Partial-failure semantics:** When one job succeeds and a later

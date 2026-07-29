@@ -2064,11 +2064,11 @@ fn test_flat_report_existing_structured_report_unchanged() {
 //
 // get_report_schema_version() versions the shape of records readable via
 // get_withholding_records / generate_report. These tests prove that:
-//   1. Records written at the current schema version still deserialize
-//      correctly after subsequent writes — i.e., the storage layout is stable
-//      and field values are not silently corrupted across reads.
-//   2. get_report_schema_version() and the schema_version field embedded in
-//      every ComplianceReport agree with each other.
+//   1. Records written at the current schema version still deserialize correctly after subsequent
+//      writes — i.e., the storage layout is stable and field values are not silently corrupted
+//      across reads.
+//   2. get_report_schema_version() and the schema_version field embedded in every ComplianceReport
+//      agree with each other.
 //
 // "Advancing the schema version" in practice means deploying a new contract
 // binary with get_report_schema_version() returning N+1. These tests pin the

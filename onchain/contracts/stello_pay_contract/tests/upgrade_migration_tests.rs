@@ -132,10 +132,10 @@ fn test_migrate_state_rejects_wrong_from_version() {
 // These tests verify that `migrate_state` enforces a monotonic version
 // invariant:
 //   1. Downgrade: calling with `from_version` < `current_version` is rejected.
-//   2. Same-version no-op: a second call at the same `from_version` after a
-//      successful migration is rejected (because `current_version` advanced).
-//   3. Forward migration: `from_version = N → current_version = N+1` succeeds,
-//      and `get_contract_version` reflects the bumped value.
+//   2. Same-version no-op: a second call at the same `from_version` after a successful migration is
+//      rejected (because `current_version` advanced).
+//   3. Forward migration: `from_version = N → current_version = N+1` succeeds, and
+//      `get_contract_version` reflects the bumped value.
 // ============================================================================
 
 /// @notice Calling `migrate_state` with a `from_version` older than the stored
