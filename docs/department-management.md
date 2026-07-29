@@ -98,7 +98,17 @@ Reparents `dept_id` to `new_parent` (or makes it top-level with `None`). `caller
 
 > **Note on subtree moves**: only the moved department's `parent_id` changes. All descendants retain their existing `parent_id` links, so the entire subtree moves atomically.
 
-> **Note on deleting nodes with children**: there is no `delete_department` function. Departments are permanent once created. To "retire" a department, reassign its employees and stop using it.
+```rust
+remove_department(caller: Address, dept_id: u128)
+```
+Removes a department from an organization. `caller` must be the org owner.
+
+**Constraints enforced (Issue #1094):**
+- Department must have **no active employees**. Panics `"Cannot remove department with active employees"`.
+- Department must have **no child departments**. Panics `"Cannot remove department with child departments"`.
+- Properly cleans up storage: removes department record, children list, employees list, and updates parent's children list and org's department list.
+
+> **Note on deleting departments**: To remove a department, first reassign or remove all its employees and ensure it has no child departments. Leaf departments with no employees can be safely removed.
 
 ---
 
@@ -150,6 +160,7 @@ All mutating operations publish events for indexer/integrator consumption:
 | `("org_crtd", org_id)` | `org_id: u128` | Organization created |
 | `("dept_crtd", dept_id)` | `dept_id: u128` | Department created |
 | `("dept_mvd", dept_id)` | `dept_id: u128` | Department reparented |
+| `("dept_rmvd", dept_id)` | `dept_id: u128` | Department removed |
 | `("emp_asgnd", dept_id)` | `employee: Address` | Employee assigned to department |
 | `("emp_rmvd", dept_id)` | `employee: Address` | Employee removed from department |
 
@@ -247,7 +258,7 @@ The following tests in `tests/test_department.rs` verify this invariant end-to-e
 7. **Bounded hierarchy depth**: `create_department` and `update_department` both enforce `MAX_DEPTH = 10`. A department at depth 10 cannot have children. This prevents unbounded storage reads during depth traversal.
 8. **No cycles**: `update_department` walks the ancestor chain of the proposed new parent and rejects the move if `dept_id` appears in that chain. Since `create_department` only appends to an existing tree (no reparenting), cycles can only arise through `update_department`, which is fully guarded.
 9. **Subtree moves are safe**: Moving a department only updates its own `parent_id` and the children lists of the old and new parents. Descendants are unaffected, so the subtree is moved atomically without touching descendant records.
-10. **No department deletion**: Departments cannot be deleted. This avoids dangling `parent_id` references in child departments. To retire a department, reassign its employees and stop using it.
+10. **Department deletion constraints (Issue #1094)**: Departments can only be removed when they have no active employees and no child departments. This prevents stranding employees' organizational references and orphaning the department hierarchy. The function properly cleans up all storage entries and updates parent/organization references.
 11. **Organization name uniqueness (Issue #917)**: Each `name` is globally unique across the entire contract. The `OrgByName(name) -> org_id` reverse index is checked inside `create_organization` **before** any state mutation (counter increment, organization record, empty `OrgDepartments` vec, or reverse-index write). On rejection, Soroban rolls back the entire call, so the original organization's record and its department tree are guaranteed to be unaffected. Because there is no `delete_organization`, a name, once claimed, is permanently reserved for the lifetime of the contract instance. If a future version introduces `delete_organization`, it MUST also clear the corresponding `OrgByName(name)` entry to prevent orphaned reverse-index entries from permanently blocking re-creation under that name.
 
 ---
@@ -306,6 +317,10 @@ Organization (org_id)
 | `update_department` with new parent in different org | `"Parent must be in same org"` |
 | `update_department` that would exceed depth 10 | `"Max hierarchy depth exceeded"` |
 | `update_department` that would create a cycle | `"Cycle detected"` |
+| `remove_department` with active employees | `"Cannot remove department with active employees"` |
+| `remove_department` with child departments | `"Cannot remove department with child departments"` |
+| `remove_department` by non-owner | `"Not organization owner"` |
+| `remove_department` on non-existent dept | `"Department not found"` |
 
 ## Running Tests
 
@@ -342,4 +357,11 @@ The test suite covers:
   - Rejected duplicate-name attempt leaves the original org record and its full department tree (`get_org_departments`) intact
   - Symbol case-sensitivity documented (different case ⇒ different id)
   - Failed attempt does not consume a `NextOrgId` slot (sequential ids remain gap-free after a rejected attempt)
-  - Many distinct names are accepted in sequence; verifies that legitimate creates still get strictly increasing, sequential ids (no gap, no skip)
+  - Many distinct names are accepted in sequence; verifies that legitimate creates still get strictly increasing, sequential ids (no gap, no skip)
+- Department removal (Issue #1094):
+  - Removal with active employees is rejected with `"Cannot remove department with active employees"`
+  - Removal with child departments is rejected with `"Cannot remove department with child departments"`
+  - Removal succeeds after employees are reassigned to another department
+  - Removal succeeds after employees are removed from the org
+  - Removal properly updates parent's children list and org's department list
+  - Access control: non-owner cannot remove departments

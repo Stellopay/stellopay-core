@@ -1724,3 +1724,214 @@ fn test_original_department_excludes_moved_employee() {
         "forward index must still point to dept_a for emp2"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Department removal tests (Issue #1094)
+// ---------------------------------------------------------------------------
+
+/// @notice Removing a department with active employees must be rejected.
+///         This prevents stranding employees' organizational references.
+#[test]
+#[should_panic(expected = "Cannot remove department with active employees")]
+fn test_remove_department_with_active_employees_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+    let emp = Address::generate(&env);
+
+    // Assign an employee to the department
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp);
+
+    // Attempting to remove the department should panic
+    client.remove_department(&owner, &dept_id);
+}
+
+/// @notice Removing a department with child departments must be rejected.
+///         This prevents orphaning the department hierarchy.
+#[test]
+#[should_panic(expected = "Cannot remove department with child departments")]
+fn test_remove_department_with_children_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let parent_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+    let _child_id =
+        client.create_department(&owner, &org_id, &symbol_short!("Backend"), &Some(parent_id));
+
+    // Attempting to remove the parent department should panic
+    client.remove_department(&owner, &parent_id);
+}
+
+/// @notice Removing a department succeeds when it has no employees and no children.
+#[test]
+fn test_remove_department_empty_succeeds() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+
+    // Verify department exists
+    let _dept = client.get_department(&dept_id);
+    assert_eq!(client.get_org_departments(&org_id).len(), 1);
+
+    // Remove the department
+    client.remove_department(&owner, &dept_id);
+
+    // Verify department no longer exists
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.get_department(&dept_id);
+    }));
+    assert!(
+        panic_result.is_err(),
+        "department should not exist after removal"
+    );
+
+    // Verify it's removed from org's department list
+    assert_eq!(client.get_org_departments(&org_id).len(), 0);
+}
+
+/// @notice Removing a department succeeds after all employees are reassigned.
+///         This is the positive case for the active-employee rejection.
+#[test]
+fn test_remove_department_after_employee_reassignment_succeeds() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_a = client.create_department(&owner, &org_id, &symbol_short!("DeptA"), &None);
+    let dept_b = client.create_department(&owner, &org_id, &symbol_short!("DeptB"), &None);
+    let emp = Address::generate(&env);
+
+    // Assign employee to dept_a
+    client.assign_employee_to_department(&owner, &org_id, &dept_a, &emp);
+    assert_eq!(client.get_department_employees(&dept_a).len(), 1);
+
+    // Reassign employee to dept_b
+    client.assign_employee_to_department(&owner, &org_id, &dept_b, &emp);
+    assert_eq!(client.get_department_employees(&dept_a).len(), 0);
+    assert_eq!(client.get_department_employees(&dept_b).len(), 1);
+
+    // Now dept_a can be removed
+    client.remove_department(&owner, &dept_a);
+
+    // Verify dept_a no longer exists
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.get_department(&dept_a);
+    }));
+    assert!(panic_result.is_err());
+
+    // Verify dept_b still exists and has the employee
+    let _dept_b = client.get_department(&dept_b);
+    assert_eq!(client.get_department_employees(&dept_b).len(), 1);
+    assert_eq!(client.get_employee_department(&emp, &org_id), Some(dept_b));
+}
+
+/// @notice Removing a department succeeds after all employees are removed from the org.
+#[test]
+fn test_remove_department_after_employee_removal_succeeds() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+    let emp = Address::generate(&env);
+
+    // Assign employee to the department
+    client.assign_employee_to_department(&owner, &org_id, &dept_id, &emp);
+    assert_eq!(client.get_department_employees(&dept_id).len(), 1);
+
+    // Remove the employee from the org
+    client.remove_employee_from_department(&owner, &org_id, &emp);
+    assert_eq!(client.get_department_employees(&dept_id).len(), 0);
+
+    // Now the department can be removed
+    client.remove_department(&owner, &dept_id);
+
+    // Verify department no longer exists
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.get_department(&dept_id);
+    }));
+    assert!(panic_result.is_err());
+}
+
+/// @notice Non-owner cannot remove a department.
+#[test]
+#[should_panic(expected = "Not organization owner")]
+fn test_remove_department_non_owner_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let other = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+
+    // Non-owner attempts to remove
+    client.remove_department(&other, &dept_id);
+}
+
+/// @notice Removing a non-existent department fails.
+#[test]
+#[should_panic(expected = "Department not found")]
+fn test_remove_department_not_found_fails() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    client.remove_department(&owner, &999u128);
+}
+
+/// @notice Removing a nested department updates the parent's children list.
+#[test]
+fn test_remove_nested_department_updates_parent() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let parent_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+    let child_id =
+        client.create_department(&owner, &org_id, &symbol_short!("Backend"), &Some(parent_id));
+
+    // Verify parent has child
+    assert_eq!(client.get_child_departments(&parent_id).len(), 1);
+    assert_eq!(client.get_child_departments(&parent_id).get(0), Some(child_id));
+
+    // Remove the child department
+    client.remove_department(&owner, &child_id);
+
+    // Verify parent no longer has the child
+    assert_eq!(client.get_child_departments(&parent_id).len(), 0);
+
+    // Verify child no longer exists
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.get_department(&child_id);
+    }));
+    assert!(panic_result.is_err());
+}
+
+/// @notice Removing a department removes it from the organization's department list.
+#[test]
+fn test_remove_department_updates_org_department_list() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept1 = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+    let dept2 = client.create_department(&owner, &org_id, &symbol_short!("Sales"), &None);
+    let dept3 = client.create_department(&owner, &org_id, &symbol_short!("HR"), &None);
+
+    // Verify all three departments are in the org
+    assert_eq!(client.get_org_departments(&org_id).len(), 3);
+
+    // Remove dept2
+    client.remove_department(&owner, &dept2);
+
+    // Verify org now has only 2 departments
+    let org_depts = client.get_org_departments(&org_id);
+    assert_eq!(org_depts.len(), 2);
+    assert!(!org_depts.contains(&dept2));
+    assert!(org_depts.contains(&dept1));
+    assert!(org_depts.contains(&dept3));
+}
