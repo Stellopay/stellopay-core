@@ -1,6 +1,7 @@
 use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use regex::Regex;
 use syn::{Expr, ImplItem, Item, Lit, Meta};
 use walkdir::WalkDir;
 
@@ -31,8 +32,11 @@ pub struct CheckConfig {
     pub check_error_enums: bool,
     /// Flag `docs/*.md` files unreachable from README.md / docs index files.
     pub check_orphaned_docs: bool,
+    /// Flag backtick-quoted function references in docs that do not
+    /// correspond to any public function in the contract tree.
+    pub check_stale_refs: bool,
     /// Severity applied to the newer checks (undocumented fns / error
-    /// variants / orphaned docs).
+    /// variants / orphaned docs / stale refs).
     pub new_check_severity: Severity,
 }
 
@@ -43,6 +47,7 @@ impl Default for CheckConfig {
             check_undocumented_fns: true,
             check_error_enums: true,
             check_orphaned_docs: true,
+            check_stale_refs: true,
             new_check_severity: Severity::Warn,
         }
     }
@@ -466,6 +471,139 @@ pub fn check_orphaned_docs(repo_root: &Path, config: &CheckConfig) -> Vec<Findin
         .collect()
 }
 
+// ============================================================================
+// Stale doc reference check
+// ============================================================================
+//
+// Scans `docs/*.md` for backtick-quoted identifiers (e.g. `` `function_name` ``)
+// that look like function names, then cross-references them against the set of
+// `pub fn` names found in every `*.rs` file under the contracts tree. Any
+// identifier found in the docs that does **not** exist as a public function
+// anywhere in the contracts is reported as a stale reference.
+
+/// Extract backtick-quoted snake_case identifiers from markdown content.
+///
+/// Returns a list of `(identifier, line_number)` tuples. Line numbers are
+/// 1-indexed.
+pub fn extract_backtick_references(content: &str) -> Vec<(String, usize)> {
+    let re = Regex::new(r"`([a-z_][a-z0-9_]*)`").unwrap();
+    let mut results = Vec::new();
+    for (line_idx, line) in content.lines().enumerate() {
+        for cap in re.captures_iter(line) {
+            let ident = cap[1].to_string();
+            // Skip common non-function identifiers that appear in docs
+            if ident == "no_std" || ident.starts_with("cfg_") {
+                continue;
+            }
+            results.push((ident, line_idx + 1));
+        }
+    }
+    results
+}
+
+/// Extract all public function names from a contract source file using regex.
+///
+/// Returns the list of function names found via `pub fn <name>` patterns.
+pub fn extract_contract_functions(content: &str) -> Vec<String> {
+    let re = Regex::new(r"pub\s+fn\s+(\w+)").unwrap();
+    let mut fns = Vec::new();
+    for cap in re.captures_iter(content) {
+        let name = cap[1].to_string();
+        if !fns.contains(&name) {
+            fns.push(name);
+        }
+    }
+    fns
+}
+
+/// Collect all public function names from all `*.rs` files under `contracts_dir`.
+fn collect_contract_fns(contracts_dir: &Path) -> HashSet<String> {
+    let mut all_fns: HashSet<String> = HashSet::new();
+    let Ok(entries) = fs::read_dir(contracts_dir) else {
+        return all_fns;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // Recurse into subdirectory
+            let sub = collect_contract_fns(&path);
+            all_fns.extend(sub);
+        } else if path.extension().map_or(false, |ext| ext == "rs") {
+            if let Ok(content) = fs::read_to_string(&path) {
+                let fns = extract_contract_functions(&content);
+                all_fns.extend(fns);
+            }
+        }
+    }
+    all_fns
+}
+
+/// Find stale backtick-quoted function references in documentation files.
+///
+/// Returns a list of tuples `(md_file_path, function_name, line_number)` for
+/// every backtick reference that does **not** match any public function in the
+/// contract tree.
+pub fn find_stale_references(
+    docs_dir: &Path,
+    contracts_dir: &Path,
+) -> Vec<(PathBuf, String, usize)> {
+    let known_fns = collect_contract_fns(contracts_dir);
+    let mut stale: Vec<(PathBuf, String, usize)> = Vec::new();
+
+    let entries: Vec<_> = WalkDir::new(docs_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "md"))
+        .collect();
+
+    for entry in entries {
+        let path = entry.path().to_path_buf();
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        for (ident, line) in extract_backtick_references(&content) {
+            if !known_fns.contains(&ident) {
+                stale.push((path.clone(), ident, line));
+            }
+        }
+    }
+    stale
+}
+
+/// Produces [`Finding`]s for stale doc references, honoring
+/// `config.check_stale_refs` and `config.new_check_severity`.
+pub fn check_stale_doc_references(repo_root: &Path, config: &CheckConfig) -> Vec<Finding> {
+    if !config.check_stale_refs {
+        return Vec::new();
+    }
+
+    let docs_dir = repo_root.join("docs");
+    let contracts_dir = repo_root.join("contracts");
+
+    if !docs_dir.is_dir() || !contracts_dir.is_dir() {
+        return Vec::new();
+    }
+
+    find_stale_references(&docs_dir, &contracts_dir)
+        .into_iter()
+        .map(|(path, func_name, line)| {
+            let relative = path
+                .strip_prefix(repo_root)
+                .unwrap_or(&path)
+                .display()
+                .to_string()
+                .replace('\\', "/");
+            Finding {
+                severity: config.new_check_severity,
+                message: format!(
+                    "{}:{}: stale doc reference to `{}` – no matching pub fn found in contracts",
+                    relative, line, func_name
+                ),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,6 +683,7 @@ mod tests {
             check_undocumented_fns: true,
             check_error_enums: true,
             check_orphaned_docs: false,
+            check_stale_refs: false,
             new_check_severity: Severity::Warn,
         }
     }
@@ -644,6 +783,7 @@ mod tests {
             check_undocumented_fns: false,
             check_error_enums: false,
             check_orphaned_docs: false,
+            check_stale_refs: false,
             new_check_severity: Severity::Warn,
         };
         let findings = check_docs(code, "test.rs", &cfg);
@@ -701,5 +841,107 @@ mod tests {
         let base = Path::new("/repo/docs");
         assert!(resolve_relative_link(base, "#only-anchor").is_none());
         assert!(resolve_relative_link(base, "").is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // Stale doc reference checks: unit tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_extract_backtick_references_basic() {
+        let md = "Call `initialize` and then `get_status`.";
+        let refs = extract_backtick_references(md);
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0], ("initialize".to_string(), 1));
+        assert_eq!(refs[1], ("get_status".to_string(), 1));
+    }
+
+    #[test]
+    fn test_extract_backtick_references_multiline() {
+        let md = "First, call `initialize`.\nThen call `check_and_consume`.";
+        let refs = extract_backtick_references(md);
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0], ("initialize".to_string(), 1));
+        assert_eq!(refs[1], ("check_and_consume".to_string(), 2));
+    }
+
+    #[test]
+    fn test_extract_backtick_references_skips_no_std() {
+        let md = "Uses `#![no_std]` and `initialize`.";
+        let refs = extract_backtick_references(md);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].0, "initialize");
+    }
+
+    #[test]
+    fn test_extract_backtick_references_empty() {
+        let md = "No code references here.";
+        let refs = extract_backtick_references(md);
+        assert!(refs.is_empty());
+    }
+
+    #[test]
+    fn test_extract_contract_functions_basic() {
+        let code = r#"
+        pub fn initialize(env: Env) {}
+        pub fn get_status(env: Env) -> u32 { 0 }
+        fn internal_helper() {}
+        "#;
+        let fns = extract_contract_functions(code);
+        assert_eq!(fns.len(), 2);
+        assert!(fns.contains(&"initialize".to_string()));
+        assert!(fns.contains(&"get_status".to_string()));
+    }
+
+    #[test]
+    fn test_extract_contract_functions_dedup() {
+        let code = r#"
+        pub fn initialize(env: Env) {}
+        pub fn initialize(env: Env, extra: i128) {}
+        "#;
+        let fns = extract_contract_functions(code);
+        assert_eq!(fns.len(), 1);
+    }
+
+    #[test]
+    fn test_collect_contract_fns_empty_dir() {
+        let dir = Path::new("/nonexistent/path");
+        let fns = collect_contract_fns(dir);
+        assert!(fns.is_empty());
+    }
+
+    #[test]
+    fn test_find_stale_references_empty_docs() {
+        let docs = Path::new("/nonexistent/docs");
+        let contracts = Path::new("/nonexistent/contracts");
+        let stale = find_stale_references(docs, contracts);
+        assert!(stale.is_empty());
+    }
+
+    #[test]
+    fn test_check_stale_doc_references_disabled() {
+        let config = CheckConfig {
+            check_stale_refs: false,
+            ..CheckConfig::default()
+        };
+        let repo_root = Path::new("/tmp");
+        let findings = check_stale_doc_references(repo_root, &config);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn test_check_stale_doc_references_no_docs_dir() {
+        let config = CheckConfig::default();
+        let repo_root = Path::new("/nonexistent");
+        let findings = check_stale_doc_references(repo_root, &config);
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn test_extract_backtick_references_only_snake_case() {
+        let md = "Use `CamelCase` or `snake_case` but only the latter is extracted.";
+        let refs = extract_backtick_references(md);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].0, "snake_case");
     }
 }

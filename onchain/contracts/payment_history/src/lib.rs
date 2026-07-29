@@ -96,8 +96,6 @@ use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
 pub use storage::PaymentRecord;
 use storage::StorageKey;
 
-const ERR_INVALID_RANGE: &str = "InvalidRange: from_ts must be <= to_ts";
-
 /// Maximum number of records returned in a single paginated query.
 ///
 /// Capping page size prevents runaway ledger-entry reads that could exhaust

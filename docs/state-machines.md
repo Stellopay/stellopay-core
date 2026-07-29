@@ -72,6 +72,7 @@ Status is Cancelled
 Grace period has fully elapsed
 Effects:
 Remaining escrow refunded to employer
+If no claims were made, the refund equals the full escrow balance; if earlier claims already paid out some periods, the refund equals the unclaimed remainder only
 Agreement marked logically complete (no further claims expected)
 Active → Completed
 
