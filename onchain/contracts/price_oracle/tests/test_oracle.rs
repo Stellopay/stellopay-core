@@ -531,12 +531,7 @@ fn test_enable_pair_does_not_resurrect_stale_price() {
 
     // Re-enable.
     oracle_client.enable_pair(&oracle_owner, &base, &quote);
-    assert!(
-        oracle_client
-            .get_pair_config(&base, &quote)
-            .unwrap()
-            .enabled
-    );
+    assert!(oracle_client.get_pair_config(&base, &quote).unwrap().enabled);
 
     // get_pair_state still returns an error — the old price was cleared
     // on disable and no fresh push has happened since re-enable.
