@@ -17,31 +17,33 @@
 //! | 8  | Grace period finalization refunds escrow |
 //! | 9  | Active -> Disputed via raise_dispute |
 //! | 10 | Disputed -> Completed via resolve_dispute |
-//! | 11 | Created -> Paused transition (milestone) |
-//! | 12 | Paused -> Active transition (milestone) |
-//! | 13 | Auto-complete on last milestone claim |
-//! | 14 | Activate Active agreement rejected |
-//! | 15 | Activate Paused agreement rejected |
-//! | 16 | Activate Cancelled agreement rejected |
-//! | 17 | Pause Created payroll agreement rejected |
-//! | 18 | Pause already Paused agreement rejected |
-//! | 19 | Pause Cancelled agreement rejected |
-//! | 20 | Resume Active agreement rejected |
-//! | 21 | Resume Created agreement rejected |
-//! | 22 | Cancel Paused agreement rejected |
-//! | 23 | Cancel Disputed agreement rejected |
-//! | 24 | Cancel already Cancelled agreement rejected |
-//! | 25 | Add employee to Active agreement rejected |
-//! | 26 | Finalize before grace period expiry rejected |
-//! | 27 | Duplicate dispute raise returns error |
-//! | 28 | Dispute outside grace window returns error |
-//! | 29 | Activation timestamp persisted correctly |
-//! | 30 | Cancellation timestamp persisted correctly |
-//! | 31 | Pause/resume preserves all agreement fields |
-//! | 32 | Employee list preserved across transitions |
-//! | 33 | State unchanged after failed transition |
-//! | 34 | Multiple pause/resume cycles consistent |
-//! | 35 | Full lifecycle: Created through finalization |
+//! | 11 | Direct claim on Disputed agreement rejected (payroll) |
+//! | 12 | Direct claim on Disputed agreement rejected (escrow/claim_time_based) |
+//! | 13 | Created -> Paused transition (milestone) |
+//! | 14 | Paused -> Active transition (milestone) |
+//! | 15 | Auto-complete on last milestone claim |
+//! | 16 | Activate Active agreement rejected |
+//! | 17 | Activate Paused agreement rejected |
+//! | 18 | Activate Cancelled agreement rejected |
+//! | 19 | Pause Created payroll agreement rejected |
+//! | 20 | Pause already Paused agreement rejected |
+//! | 21 | Pause Cancelled agreement rejected |
+//! | 22 | Resume Active agreement rejected |
+//! | 23 | Resume Created agreement rejected |
+//! | 24 | Cancel Paused agreement rejected |
+//! | 25 | Cancel Disputed agreement rejected |
+//! | 26 | Cancel already Cancelled agreement rejected |
+//! | 27 | Add employee to Active agreement rejected |
+//! | 28 | Finalize before grace period expiry rejected |
+//! | 29 | Duplicate dispute raise returns error |
+//! | 30 | Dispute outside grace window returns error |
+//! | 31 | Activation timestamp persisted correctly |
+//! | 32 | Cancellation timestamp persisted correctly |
+//! | 33 | Pause/resume preserves all agreement fields |
+//! | 34 | Employee list preserved across transitions |
+//! | 35 | State unchanged after failed transition |
+//! | 36 | Multiple pause/resume cycles consistent |
+//! | 37 | Full lifecycle: Created through finalization |
 
 #![cfg(test)]
 #![allow(deprecated)]
@@ -51,8 +53,10 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env,
 };
-use stello_pay_contract::storage::{AgreementStatus, DataKey, DisputeStatus, MilestoneKey};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{AgreementStatus, DataKey, DisputeStatus, MilestoneKey, PayrollError},
+    PayrollContract, PayrollContractClient,
+};
 
 // ============================================================================
 // CONSTANTS
@@ -396,6 +400,94 @@ fn test_disputed_to_completed_via_resolve_dispute() {
     assert_eq!(a.dispute_status, DisputeStatus::Resolved);
 }
 
+/// Verifies that a direct `claim_payroll` on a Disputed agreement is rejected
+/// with a specific state-machine error.  The only valid exit from Disputed is
+/// via `resolve_dispute`, which completes the agreement and distributes funds;
+/// a naked claim attempt must be blocked to prevent bypassing dispute resolution.
+#[test]
+fn test_disputed_direct_claim_payroll_rejected() {
+    let env = create_test_env();
+    let (_cid, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let token = create_address(&env);
+    let employee = create_address(&env);
+
+    let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
+    client.add_employee_to_agreement(&id, &employee, &SALARY);
+    client.activate_agreement(&id);
+
+    // Put the agreement into Disputed state.
+    client.raise_dispute(&employer, &id);
+    assert_eq!(
+        client.get_agreement(&id).unwrap().status,
+        AgreementStatus::Disputed
+    );
+
+    // Attempting a direct payroll claim on a Disputed agreement must fail
+    // with a specific error (the `_ => false` arm in claim_payroll_inner's
+    // status guard returns InvalidData).
+    let result = client.try_claim_payroll(&employee, &id, &0u32);
+    assert_eq!(
+        result,
+        Err(Ok(PayrollError::InvalidData)),
+        "direct claim_payroll on a Disputed agreement must be rejected with InvalidData"
+    );
+
+    // The legitimate Disputed -> Resolved -> Completed path remains unaffected
+    // (already tested in test_disputed_to_completed_via_resolve_dispute).
+    // Verify that state is unchanged after the failed claim.
+    let a = client.get_agreement(&id).unwrap();
+    assert_eq!(a.status, AgreementStatus::Disputed);
+    assert_eq!(a.dispute_status, DisputeStatus::Raised);
+}
+
+/// Verifies that a direct `claim_time_based` on a Disputed escrow agreement is
+/// rejected with a specific state-machine error.  Time-based claims must also
+/// be blocked when the agreement is in Disputed status.
+#[test]
+fn test_disputed_direct_claim_time_based_rejected() {
+    let env = create_test_env();
+    let (cid, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let contributor = create_address(&env);
+    let token = create_token(&env);
+
+    let id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &SALARY, &ONE_DAY, &4u32);
+    client.activate_agreement(&id);
+
+    // Fund the escrow so the claim would otherwise succeed.
+    let total = SALARY * 4;
+    mint(&env, &token, &cid, total);
+    env.as_contract(&cid, || {
+        DataKey::set_agreement_escrow_balance(&env, id, &token, total);
+    });
+
+    // Advance past one period so at least one period is claimable.
+    advance_time(&env, ONE_DAY + 1);
+
+    // Raise a dispute to lock the agreement.
+    client.raise_dispute(&employer, &id);
+    assert_eq!(
+        client.get_agreement(&id).unwrap().status,
+        AgreementStatus::Disputed
+    );
+
+    // Attempting a time-based claim on a Disputed agreement must fail.
+    // The `_ => false` arm in claim_time_based's status guard returns
+    // NotInGracePeriod when the agreement is not Active or Cancelled.
+    let result = client.try_claim_time_based(&id);
+    assert_eq!(
+        result,
+        Err(Ok(PayrollError::NotInGracePeriod)),
+        "direct claim_time_based on a Disputed agreement must be rejected with NotInGracePeriod"
+    );
+
+    // State must remain untouched.
+    let a = client.get_agreement(&id).unwrap();
+    assert_eq!(a.status, AgreementStatus::Disputed);
+}
+
 // ============================================================================
 // 3. MILESTONE LIFECYCLE TRANSITIONS
 // ============================================================================
@@ -555,10 +647,9 @@ fn test_pause_created_payroll_panics() {
     client.pause_agreement(&id);
 }
 
-/// Pausing an already Paused agreement must be rejected.
+/// Pausing an already Paused agreement must return AgreementPaused error.
 #[test]
-#[should_panic]
-fn test_pause_paused_agreement_panics() {
+fn test_pause_paused_agreement_rejected() {
     let env = create_test_env();
     let (_cid, client) = setup_contract(&env);
     let employer = create_address(&env);
@@ -569,13 +660,14 @@ fn test_pause_paused_agreement_panics() {
     client.add_employee_to_agreement(&id, &employee, &SALARY);
     client.activate_agreement(&id);
     client.pause_agreement(&id);
-    client.pause_agreement(&id);
+
+    let result = client.try_pause_agreement(&id);
+    assert!(result.is_err());
 }
 
-/// Pausing a Cancelled agreement must be rejected.
+/// Pausing a Cancelled agreement must be rejected with AgreementPaused error.
 #[test]
-#[should_panic]
-fn test_pause_cancelled_agreement_panics() {
+fn test_pause_cancelled_agreement_rejected() {
     let env = create_test_env();
     let (_cid, client) = setup_contract(&env);
     let employer = create_address(&env);
@@ -586,7 +678,8 @@ fn test_pause_cancelled_agreement_panics() {
     client.add_employee_to_agreement(&id, &employee, &SALARY);
     client.activate_agreement(&id);
     client.cancel_agreement(&id);
-    client.pause_agreement(&id);
+    let result = client.try_pause_agreement(&id);
+    assert!(result.is_err());
 }
 
 /// Resuming an Active agreement must be rejected.
