@@ -546,3 +546,117 @@ See `onchain/integration_tests/tests/test_salary_adjustment_payroll_integration.
 - **One adjustment contract per payroll contract.** The binding is a single address set by the owner. There is no multi-contract aggregation; a single source of truth avoids ambiguity.
 - **No retroactive payout recalculation.** The adjustment affects only future claims. Past claims at the old salary are not retroactively adjusted.
 - **Effective date gating.** `apply_adjustment` enforces `now >= effective_date`. The payroll contract does not re-check the effective date — it trusts the salary adjustment contract's state machine. This is safe because `apply_adjustment` is the only path that writes `EmployeeSalary`.
+
+---
+
+### Rate Limiter + Payment Retry Integration
+
+#### Design Intent: Preventing Double-Counting of Throttled Attempts
+
+The `rate_limiter` and `payment_retry` contracts are designed to operate **independently** while maintaining consistent state. The key invariant is:
+
+> A single throttled payment attempt must increment `payment_retry.retry_count` by **exactly one**, regardless of how many times `rate_limiter` enforces its quota.
+
+#### How the Contracts Interact
+
+The integration is **orchestration-based** (not direct cross-contract calls):
+
+1. An off-chain keeper or service calls `rate_limiter.check_and_consume()` before attempting a payment
+2. If rate limiting occurs, the call panics with "rate limit exceeded" — this is NOT counted as a payment retry attempt
+3. The keeper then calls `payment_retry.process_retry()` for actual payment processing
+4. `payment_retry` increments `retry_count` only when escrow balance is insufficient (`escrowed < amount`)
+
+#### Separation of Concerns
+
+| Contract | What it tracks | When it updates |
+|----------|---------------|-----------------|
+| `rate_limiter` | Token bucket per address | On every `check_and_consume` call |
+| `payment_retry` | Failed payment attempts per `payment_id` | Only when `escrowed < amount` in `process_payment_if_due` |
+
+#### Security Invariants
+
+| Invariant | Enforcement |
+|-----------|-------------|
+| Single-counting | `payment_retry` only increments `retry_count` when escrow is insufficient, not when rate limiting occurs |
+| No double-counting | Rate limiter and payment retry have **separate** storage key namespaces |
+| Idempotency | `process_payment_if_due` checks `next_retry_at` before processing; calls during backoff are no-ops |
+| Terminal state isolation | Once `state ∈ {Success, Failed, Cancelled}`, counter never changes |
+
+#### Integration Test Coverage
+
+`onchain/integration_tests/tests/test_rate_limiter_payment_retry_integration.rs`:
+
+| Test | Scenario | Invariant Verified |
+|------|----------|-------------------|
+| `test_throttled_attempt_counts_as_one` | Basic throttling → retry_count = 1 | Single-counting |
+| `test_successful_retry_after_throttle_increments_by_one` | Success after throttle → counter stays at failed attempts | No double-increment on success |
+| `test_multiple_throttles_before_funding` | Multiple throttles → counter increments correctly | Counter accuracy under load |
+| `test_rate_limiter_exhaustion_then_refill` | Exhaust + refill → counter continues correctly | State consistency |
+| `test_full_lifecycle_throttle_to_success` | E2E: throttle → partial → success | Complete lifecycle correctness |
+| `test_throttle_during_retry_backoff` | Throttle during backoff window | No early increment |
+| `test_rate_limiter_external_exhaustion_does_not_affect_payment_counter` | External rate limiting | Independent tracking |
+| `test_integrated_rate_limiter_and_payment_retry_flow` | E2E integration flow | End-to-end correctness |
+| `test_batch_process_due_payments_counter_integrity` | Batch processing | Per-payment isolation |
+| `test_zero_max_retries_counter_behavior` | Edge case: max_retries = 0 | Zero max_retries |
+| `test_rapid_successive_calls_counter_integrity` | Rapid calls during backoff | Idempotency |
+| `test_retry_failed_events_emitted_during_throttle` | Event emission | Event correctness |
+
+#### Security Notes
+
+- **Rate limiting does NOT cause retry counting.** A `rate_limiter` panic is separate from `payment_retry` state. Only `process_payment_if_due` increments the counter.
+- **Backoff window protection.** Calls to `process_retry` during `next_retry_at - now > 0` are no-ops and do NOT increment the counter.
+- **Terminal state is absolute.** Once a payment reaches `Success`, `Failed`, or `Cancelled`, the counter is frozen regardless of subsequent calls.
+- **Counter is per-payment, not per-address.** Each `payment_id` has its own `retry_count`, preventing one payment's failures from affecting another.
+
+#### Recommended Integration Pattern
+
+```rust
+// Off-chain keeper pseudocode
+async fn process_payment_with_rate_limiting(
+    rate_limiter: &RateLimiterClient,
+    payment_retry: &PaymentRetryContractClient,
+    payment_id: BytesN<32>,
+    caller: &Address,
+) -> Result<PaymentState, Error> {
+    // Step 1: Check rate limit (non-mutating read)
+    let usage = rate_limiter.get_usage(caller)?;
+    if usage.map(|u| u.tokens).unwrap_or(1) == 0 {
+        return Err(RateLimitExceeded);
+    }
+
+    // Step 2: Consume rate limit token
+    match rate_limiter.try_check_and_consume(caller) {
+        Ok(_) => { /* proceed */ }
+        Err(_) => return Err(RateLimitExceeded),
+    }
+
+    // Step 3: Process the payment
+    payment_retry.process_retry(&payment_id);
+
+    // Step 4: Return current state
+    Ok(payment_retry.get_payment(&payment_id)?.state)
+}
+```
+
+#### Running the Tests
+
+```bash
+# Run all rate limiter + payment retry integration tests
+cargo test -p integration_tests test_rate_limiter_payment_retry
+
+# Run a specific test
+cargo test -p integration_tests test_throttled_attempt_counts_as_one
+
+# Run with verbose output
+cargo test -p integration_tests test_rate_limiter_payment_retry -- --nocapture
+```
+
+#### Test Execution Evidence
+
+Each test in the integration suite verifies:
+1. The counter starts at 0 for new payments
+2. Each failed escrow attempt increments the counter by exactly 1
+3. Successful payments do NOT increment the counter
+4. Terminal states (`Success`, `Failed`) preserve the counter
+5. Rate limiter state changes do not affect the counter
+6. Batch processing maintains per-payment counter isolation
