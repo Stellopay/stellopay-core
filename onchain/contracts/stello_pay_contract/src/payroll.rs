@@ -8,14 +8,14 @@ use crate::{
     events::{
         emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
         emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
-        emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
+        emit_employee_added, emit_exchange_rate_updated, emit_grace_period_extended,
         emit_grace_period_finalized, emit_milestone_expired, emit_milestone_funded,
         emit_milestone_rejected, emit_multisig_config_changed, emit_payment_received,
         emit_payment_sent, emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent,
         AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent,
         AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
         BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
-        ExchangeRateChangedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent,
+        ExchangeRateUpdatedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent,
         MilestoneAdded, MilestoneApproved, MilestoneClaimed, MilestoneExpiredEvent,
         MilestoneFundedEvent, MilestoneRejectedEvent, MultisigConfigChangedEvent,
         PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
@@ -2505,13 +2505,14 @@ pub fn set_exchange_rate(
 
     DataKey::set_exchange_rate(env, &base, &quote, rate);
 
-    emit_exchange_rate_changed(
+    emit_exchange_rate_updated(
         env,
-        ExchangeRateChangedEvent {
+        ExchangeRateUpdatedEvent {
             base,
             quote,
             new_rate: rate,
             prev_rate,
+            updater: caller,
             updated_at: env.ledger().timestamp(),
         },
     );

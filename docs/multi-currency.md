@@ -81,6 +81,8 @@ pub fn set_exchange_rate(
   - `rate > 0`
 - **Storage**:
   - Writes `DataKey::ExchangeRate(base, quote) = rate`.
+- **Event**:
+  - Emits `ExchangeRateUpdated` with `{base, quote, new_rate, prev_rate, updater, updated_at}`.
 
 To support both directions (base→quote and quote→base), callers can set two rates:
 
