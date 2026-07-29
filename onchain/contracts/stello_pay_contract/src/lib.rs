@@ -1252,6 +1252,40 @@ impl PayrollContract {
     }
 
     // ============================================================================
+    // Employer Bulk Pause / Unpause
+    // ============================================================================
+
+    /// Pauses all active agreements belonging to `employer`.
+    ///
+    /// # Arguments
+    /// * `employer` - Address whose agreements should be paused.  Must authenticate.
+    ///
+    /// # Returns
+    /// The number of agreements that were actually paused.
+    ///
+    /// # Access Control
+    /// Requires employer authentication — an employer can only pause their own
+    /// agreements.  Cross-employer pause is rejected.
+    pub fn pause_employer_agreements(env: Env, employer: Address) -> Result<u32, PayrollError> {
+        payroll::pause_employer_agreements(&env, employer)
+    }
+
+    /// Unpauses all paused agreements belonging to `employer`.
+    ///
+    /// # Arguments
+    /// * `employer` - Address whose agreements should be unpaused.  Must authenticate.
+    ///
+    /// # Returns
+    /// The number of agreements that were actually unpaused.
+    ///
+    /// # Access Control
+    /// Requires employer authentication — an employer can only unpause their own
+    /// agreements.  Cross-employer unpause is rejected.
+    pub fn unpause_employer_agreements(env: Env, employer: Address) -> Result<u32, PayrollError> {
+        payroll::unpause_employer_agreements(&env, employer)
+    }
+
+    // ============================================================================
     // Emergency Pause Functions
     // ============================================================================
 
