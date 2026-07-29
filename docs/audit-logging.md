@@ -135,6 +135,19 @@ This invariant is regression-tested by:
 - `test_interleaved_append_and_get_latest_logs_maintains_order`: Verifies that `get_latest_logs` returns entries in strictly increasing order with no gaps when called interleaved with `append_log`
 - `test_interleaved_append_and_read_consistency`: Verifies that `get_log` and `get_latest_logs` return consistent results with no skipped or duplicated entries across interleaved operations
 
+#### Append-Order Invariant (Core Guarantee)
+The audit logger maintains a **strict append-order invariant** that is fundamental to its correctness:
+
+- **Sequential IDs**: Log entries are assigned strictly increasing sequential IDs starting from 1
+- **No Gaps**: Within the retained window (`[FirstLogId, NextLogId)`), IDs have no gaps
+- **Read Consistency**: All read operations (`get_log`, `get_logs`, `get_latest_logs`) return entries in append order
+- **Interleaved Read Consistency**: When read operations are interleaved with `append_log`, each read reflects exactly the entries appended so far, in order, with no skipped or duplicated entries
+- **No Duplicates**: Each entry appears at most once in any single read result
+
+This invariant is tested by:
+- `test_interleaved_append_and_get_latest_logs_maintains_order`: Verifies that `get_latest_logs` returns entries in strictly increasing order with no gaps when called interleaved with `append_log`
+- `test_interleaved_append_and_read_consistency`: Verifies that `get_log` and `get_latest_logs` return consistent results with no skipped or duplicated entries across interleaved operations
+
 #### Tamper Evidence
 - Each entry has a monotonically increasing ID and ledger timestamp
 - IDs are assigned sequentially with no gaps possible within the retained window
