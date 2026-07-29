@@ -31,6 +31,10 @@ pub enum TimelockError {
     /// Delay exceeds `MAX_DELAY_SECONDS` (30 days).
     DelayTooLarge = 4,
     /// Delay is zero (not allowed).
+    ///
+    /// The timelock intentionally does not support a zero-delay configuration
+    /// through either `initialize` or `update_delay`.  A zero delay would remove
+    /// the observation/review window that gives the contract its security value.
     InvalidDelay = 5,
     /// No operation exists with the given id.
     OperationNotFound = 6,
@@ -142,10 +146,12 @@ pub enum StorageKey {
 
 // ─── Private Helpers ──────────────────────────────────────────────────────────
 
-/// Validates a delay value: must be > 0 and ≤ `MAX_DELAY_SECONDS`.
+/// Validates a delay value: must be strictly positive and ≤ `MAX_DELAY_SECONDS`.
 ///
-/// Centralises the two-sided delay guard so both `initialize` and
-/// `update_delay` share identical validation logic.
+/// Zero is explicitly rejected rather than treated as an immediate-execution
+/// mode. This keeps a nonzero observation/review window for every queued
+/// withdrawal/admin change and centralises the two-sided delay guard so both
+/// `initialize` and `update_delay` share identical validation logic.
 fn validate_delay(d: u64) -> Result<(), TimelockError> {
     if d == 0 {
         return Err(TimelockError::InvalidDelay);
@@ -449,6 +455,12 @@ impl WithdrawalTimelock {
     /// @dev Admin-only. The new delay must satisfy the same constraints as at
     ///      initialization (`0 < new_delay <= MAX_DELAY_SECONDS`).
     ///
+    ///      Zero-delay policy: `new_delay == 0` is explicitly rejected with
+    ///      `Err(TimelockError::InvalidDelay)`. The contract does not provide an
+    ///      immediate-execution mode because a nonzero observation/review window
+    ///      is the core security purpose of this timelock. Rejected updates leave
+    ///      the stored delay and all queued operation ETAs unchanged.
+    ///
     ///      IMPORTANT: This change does NOT retroactively alter the `eta` of
     ///      any already-queued operation. Operations queued before this call
     ///      keep their original `eta`, which was frozen at queue time. Only
@@ -457,7 +469,8 @@ impl WithdrawalTimelock {
     ///      Emits: `("timelock_delay_updated", old_delay) → new_delay`.
     /// @param caller     Admin address; must authenticate.
     /// @param new_delay  New minimum delay in seconds.
-    ///                   Must be in range `(0, MAX_DELAY_SECONDS]`.
+    ///                   Must be in range `(0, MAX_DELAY_SECONDS]`; zero is not
+    ///                   accepted.
     /// @return Ok(()) on success.
     pub fn update_delay(env: Env, caller: Address, new_delay: u64) -> Result<(), TimelockError> {
         require_initialized(&env)?;
