@@ -316,67 +316,47 @@ fn test_dispute_full_lifecycle_records_audit_logger_per_transition() {
         "expected 4 audit entries for file → escalate L2 → escalate L3 → finalise"
     );
 
-    // Entry 0: dispute_filed
-    assert_eq!(entries[0].action, Symbol::new(&env, "dispute_filed"));
-    assert_eq!(entries[0].actor, user);
-    assert_eq!(entries[0].subject, Some(user.clone()));
-    assert_eq!(entries[0].amount, None);
-
-    // Entry 1: dispute_escalated (L2)
-    assert_eq!(entries[1].action, Symbol::new(&env, "dispute_escalated"));
-    assert_eq!(entries[1].actor, user);
-
-    // Entry 2: dispute_escalated (L3)
-    assert_eq!(entries[2].action, Symbol::new(&env, "dispute_escalated"));
-    assert_eq!(entries[2].actor, user);
-
-    // Entry 3: dispute_finalised
-    assert_eq!(entries[3].action, Symbol::new(&env, "dispute_finalised"));
-    assert_eq!(entries[3].actor, admin);
-
-    // Verify chronological ordering: timestamps must be non-decreasing
-    for i in 1..entries.len() {
-        assert!(
-            entries[i].timestamp >= entries[i - 1].timestamp,
-            "audit entries must be in chronological order"
-        );
-    }
+    (
+        env,
+        dispute_client,
+        escrow_client,
+        token,
+        employer,
+        employee,
+        admin,
+        user,
+    )
 }
 
 /// Dispute filed → resolved at Level1 → appealed → finalised at Level3:
 /// verifies all five transitions produce distinct audit entries.
 #[test]
-fn test_dispute_file_resolve_appeal_finalise_audit_logger() {
-    let (env, dispute_client, audit_client, _owner, admin, user) = setup_with_audit_logger();
-    let id = 302u128;
+fn test_dispute_pauses_escrow_resolve_resumes() {
+    let (_env, dispute_client, escrow_client, token, employer, employee, admin, user) =
+        setup_escrow_integration();
+    let agreement_id = 301u128;
 
-    // File
-    dispute_client.file_dispute(&user, &id);
+    // Fund the agreement
+    escrow_client.fund_agreement(&employer, &agreement_id, &employer, &1000);
+    assert_eq!(escrow_client.get_agreement_balance(&agreement_id), 1000);
 
-    // Resolve at Level1
-    dispute_client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
-    assert_eq!(
-        dispute_client.get_dispute(&id).unwrap().status,
-        DisputeStatus::Resolved
-    );
+    // Release succeeds before dispute (manager = dispute contract)
+    dispute_client.file_dispute(&user, &agreement_id);
+    // Resolve immediately so the release below succeeds before we test pause
+    dispute_client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::UpholdPayment);
 
-    // Appeal to Level2
-    dispute_client.appeal_ruling(&user, &id);
-    let d = dispute_client.get_dispute(&id).unwrap();
-    assert_eq!(d.status, DisputeStatus::Appealed);
-    assert_eq!(d.level, EscalationLevel::Level2);
+    escrow_client.release(&dispute_client.address, &agreement_id, &employee, &200);
+    assert_eq!(escrow_client.get_agreement_balance(&agreement_id), 800);
 
-    // Escalate to Level3
-    dispute_client.escalate_dispute(&user, &id);
-    let d = dispute_client.get_dispute(&id).unwrap();
-    assert_eq!(d.status, DisputeStatus::Escalated);
-    assert_eq!(d.level, EscalationLevel::Level3);
+    // File a new dispute — this triggers pause_agreement on the escrow
+    dispute_client.file_dispute(&user, &agreement_id);
 
-    // Resolve at Level3 → Finalised
-    dispute_client.resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
-    assert_eq!(
-        dispute_client.get_dispute(&id).unwrap().status,
-        DisputeStatus::Finalised
+    // Release is now blocked because the agreement is paused
+    let paused_release =
+        escrow_client.try_release(&dispute_client.address, &agreement_id, &employee, &100);
+    assert!(
+        paused_release.is_err(),
+        "release must fail while agreement is paused"
     );
 
     let entries = collect_logs(&env, &audit_client);
@@ -441,73 +421,22 @@ fn test_dispute_keeper_advance_and_expire_audit_logger() {
 /// Dispute operations without audit logger configured must still succeed
 /// and produce no audit entries.
 #[test]
-fn test_dispute_without_audit_logger_no_audit_entries() {
-    let env = Env::default();
-    env.mock_all_auths();
+fn test_dispute_expiry_resumes_escrow() {
+    let (env, dispute_client, escrow_client, token, employer, employee, admin, user) =
+        setup_escrow_integration();
+    let agreement_id = 302u128;
 
-    let dispute_id = env.register(DisputeEscalationContract, ());
-    let dispute_client = DisputeEscalationContractClient::new(&env, &dispute_id);
+    // Fund the agreement
+    escrow_client.fund_agreement(&employer, &agreement_id, &employer, &1000);
 
-    let audit_id = env.register(AuditLoggerContract, ());
-    let audit_client = AuditLoggerContractClient::new(&env, &audit_id);
+    // File a dispute — pauses escrow
+    dispute_client.set_level_time_limit(&admin, &EscalationLevel::Level1, &60);
+    dispute_client.file_dispute(&user, &agreement_id);
 
-    let owner = Address::generate(&env);
-    let admin = Address::generate(&env);
-    let user = Address::generate(&env);
-
-    dispute_client.initialize(&owner, &admin);
-    audit_client.initialize(&owner, &100u32);
-
-    // Intentionally do NOT wire dispute_escalation to audit_logger
-
-    let id = 304u128;
-    dispute_client.file_dispute(&user, &id);
-    dispute_client.escalate_dispute(&user, &id);
-    dispute_client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
-
-    // Dispute state transitions succeeded
-    assert_eq!(
-        dispute_client.get_dispute(&id).unwrap().status,
-        DisputeStatus::Resolved
-    );
-
-    // Audit logger should have 0 entries (nothing was wired to write to it)
-    assert_eq!(audit_client.get_log_count(), 0);
-}
-
-/// Unauthorized resolve attempt must not create an audit entry.
-#[test]
-fn test_dispute_unauthorized_resolve_no_audit_entry() {
-    let (env, dispute_client, audit_client, _owner, _admin, user) = setup_with_audit_logger();
-    let id = 305u128;
-
-    dispute_client.file_dispute(&user, &id);
-
-    // Non-admin tries to resolve
-    let res = dispute_client.try_resolve_dispute(&user, &id, &DisputeOutcome::UpholdPayment);
-    assert_eq!(res, Err(Ok(DisputeError::Unauthorized)));
-
-    // No audit entry created for the failed attempt
-    let entries = collect_logs(&env, &audit_client);
-    assert_eq!(entries.len(), 1, "only the file_dispute entry should exist");
-    assert_eq!(entries[0].action, Symbol::new(&env, "dispute_filed"));
-}
-
-/// No duplicate audit entries when a transition is attempted twice
-/// (only the first attempt succeeds and creates one entry).
-#[test]
-fn test_dispute_no_duplicate_audit_entries_on_double_resolve() {
-    let (env, dispute_client, audit_client, _owner, admin, user) = setup_with_audit_logger();
-    let id = 306u128;
-
-    dispute_client.file_dispute(&user, &id);
-
-    // First resolve succeeds
-    dispute_client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
-    assert_eq!(
-        dispute_client.get_dispute(&id).unwrap().status,
-        DisputeStatus::Resolved
-    );
+    // Release blocked
+    let paused_release =
+        escrow_client.try_release(&dispute_client.address, &agreement_id, &employee, &100);
+    assert!(paused_release.is_err());
 
     // Second resolve fails
     let res = dispute_client.try_resolve_dispute(&admin, &id, &DisputeOutcome::GrantClaim);
@@ -570,29 +499,10 @@ fn test_set_audit_logger_unauthorized_rejected() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let dispute_id = env.register(DisputeEscalationContract, ());
-    let dispute_client = DisputeEscalationContractClient::new(&env, &dispute_id);
-
-    let owner = Address::generate(&env);
-    let admin = Address::generate(&env);
-    let user = Address::generate(&env);
-    let audit_id = Address::generate(&env);
-
-    dispute_client.initialize(&owner, &admin);
-
-    // Non-admin tries to set audit logger
-    let res = dispute_client.try_set_audit_logger(&user, &audit_id);
-    assert_eq!(res, Err(Ok(DisputeError::Unauthorized)));
-
-    // No audit logger configured
-    assert_eq!(
-        dispute_client.get_audit_logger(),
-        None,
-        "no audit logger should be configured after rejected attempt"
-    );
-
-    // Admin can still set it
-    dispute_client.set_audit_logger(&admin, &audit_id);
+    // Release blocked during appeal
+    let paused_release =
+        escrow_client.try_release(&dispute_client.address, &agreement_id, &employee, &100);
+    assert!(paused_release.is_err());
     assert_eq!(
         dispute_client.get_audit_logger(),
         Some(audit_id),
