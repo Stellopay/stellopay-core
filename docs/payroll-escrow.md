@@ -43,11 +43,38 @@ Property-based fuzz tests in `onchain/contracts/payroll_escrow/tests/fuzz/test_f
 3. **Release**: The Manager contract calls `release` to send a specific amount to a recipient (e.g., an employee).
 4. **Refund**: If an agreement is cancelled or completed with a surplus, the Manager calls `refund_remaining` to return all leftover funds to the employer.
 
+## Escrow Agreement Creation Validation
+
+Escrow agreements created through `create_escrow_agreement` must use a strictly positive `period_seconds` value. A zero-duration request is rejected at creation time with `PayrollError::ZeroPeriodDuration` before any agreement state is persisted, preventing immediately expired agreements from entering the system. The smallest valid period duration is one second, which is accepted and stored as the agreement's configured period length.
+
 ## Security Considerations
 
 - **Authentication**: All state-changing functions require `require_auth()` for the appropriate caller.
 - **Token Transfers**: The contract uses the standard Soroban Token interface. If a transfer fails (e.g., due to a frozen balance or insufficient contract funds), the entire transaction reverts.
 - **Storage**: Most data is stored in `persistent` storage to ensure it remains available throughout the agreement's lifecycle.
+
+## Storage Key Layout
+
+### AgreementBalance
+
+The contract uses `StorageKey::AgreementBalance(u128)` to store per-agreement escrowed balances in persistent storage.
+
+**Key Derivation:**
+- `AgreementBalance(0)` → unique storage slot for agreement ID 0
+- `AgreementBalance(1)` → unique storage slot for agreement ID 1
+- `AgreementBalance(u128::MAX)` → unique storage slot for maximum agreement ID
+
+**Security Invariant:**
+Two distinct agreement IDs must never resolve to the same storage slot. The Soroban SDK's `#[contracttype]` derive macro ensures that distinct `u128` values always resolve to distinct storage keys, preventing cross-agreement balance collisions.
+
+**Regression Tests:**
+The test suite includes regression tests that verify this invariant for:
+- Adjacent agreement IDs (e.g., 1000, 1001, 1002)
+- Edge values (0, 1, u128::MAX)
+- Structurally similar IDs (e.g., 12345, 12346, 12347)
+- Release and refund operations to ensure one agreement's operations never mutate another's balance
+
+A key-derivation bug here would let one agreement's funding silently overwrite another's, enabling fund theft or loss.
 
 ---
 

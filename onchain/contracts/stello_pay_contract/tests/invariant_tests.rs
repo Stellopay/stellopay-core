@@ -4,10 +4,12 @@ use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env, Vec,
 };
-use stello_pay_contract::storage::{
-    Agreement, AgreementMode, AgreementStatus, DataKey, Milestone, PayrollError, StorageKey,
+use stello_pay_contract::{
+    storage::{
+        Agreement, AgreementMode, AgreementStatus, DataKey, Milestone, PayrollError, StorageKey,
+    },
+    PayrollContract, PayrollContractClient,
 };
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
 fn create_test_env() -> Env {
     let env = Env::default();

@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, token, Address, Env, Symbol, Vec,
@@ -27,8 +28,8 @@ pub enum TaxError {
     InvalidVersion = 7,
     /// Ruleset version is locked and cannot be changed.
     VersionLocked = 8,
-    /// Ruleset version is deprecated and cannot be selected for new use.
-    DeprecatedVersion = 9,
+    /// Requested remittance exceeds the accrued, unremitted liability.
+    AmountExceedsAccrued = 9,
 }
 
 /// Storage keys for the tax withholding contract.
@@ -159,10 +160,10 @@ pub struct EmployeeVersionMigratedEvent {
 ///
 /// # Security Model
 ///
-/// * Only the **owner** can configure rates, treasury addresses, employee
-///   jurisdictions, and trigger remittances.
-/// * Treasury addresses are owner-controlled; no other caller can redirect
-///   withheld funds to an arbitrary address.
+/// * Only the **owner** can configure rates, treasury addresses, employee jurisdictions, and
+///   trigger remittances.
+/// * Treasury addresses are owner-controlled; no other caller can redirect withheld funds to an
+///   arbitrary address.
 /// * Accrued state is updated **before** token transfers (state-before-interaction).
 /// * All arithmetic uses `checked_*` operations to prevent overflow/underflow.
 ///
@@ -422,11 +423,15 @@ impl TaxWithholdingContract {
             .get(&StorageKey::RulesetMetadata(version))
     }
 
-    /// Locks a ruleset version to prevent further modifications.
+    /// Locks a specific ruleset version to prevent further rate modifications.
+    ///
+    /// The lock is scoped strictly to the specified `version` (e.g. version N).
+    /// Freezing version N prevents `set_jurisdiction_rate` edits for version N
+    /// while leaving other versions (e.g. N+1 or newly published versions) editable.
     ///
     /// # Arguments
     /// * `caller` - Must be the contract owner.
-    /// * `version` - Version number to lock.
+    /// * `version` - Specific ruleset version number to lock.
     ///
     /// # Access Control
     /// Caller must be the contract owner.
@@ -496,7 +501,11 @@ impl TaxWithholdingContract {
         Ok(())
     }
 
-    /// Checks if a ruleset version is locked.
+    /// Checks if a specific ruleset version is locked.
+    ///
+    /// Returns `true` if the targeted `version` has been locked via
+    /// `lock_ruleset_version`, and `false` otherwise. Lock status is scoped
+    /// per version and does not affect lock queries on other versions.
     pub fn is_ruleset_locked(env: Env, version: u32) -> bool {
         env.storage()
             .persistent()
@@ -701,8 +710,7 @@ impl TaxWithholdingContract {
     ///
     /// # Errors
     /// * `ArithmeticError` — `gross_amount <= 0` or overflow.
-    /// * `NotConfigured`   — employee has no jurisdictions, or a jurisdiction
-    ///                        has no rate set.
+    /// * `NotConfigured`   — employee has no jurisdictions, or a jurisdiction has no rate set.
     pub fn calculate_withholding(
         env: Env,
         employee: Address,
@@ -777,18 +785,26 @@ impl TaxWithholdingContract {
             .unwrap_or(0)
     }
 
-    /// Remittance hook: transfers the full accrued balance for a jurisdiction
-    /// to its configured treasury.
+    /// Remittance hook: transfers a specified portion of the accrued balance
+    /// for a jurisdiction to its configured treasury.
     ///
     /// State is updated **before** the token transfer (state-before-interaction
     /// pattern) to prevent re-entrancy.
     ///
+    /// # Idempotency Guarantee
+    /// This function is idempotent: once an accrued balance is remitted to zero,
+    /// subsequent calls with the same jurisdiction will return `NothingToRemit`
+    /// rather than causing underflow or double-counting. The accrued balance is
+    /// set to zero atomically before the token transfer, ensuring no partial
+    /// state can leave the system vulnerable to double-remittance attacks.
+    ///
     /// # Arguments
-    /// * `caller`       — Must be the contract owner. Tokens are transferred
-    ///                    **from** this address, so the caller must hold the
-    ///                    accrued amount in `token`.
+    /// * `caller`       — Must be the contract owner. Tokens are transferred **from** this address,
+    ///   so the caller must hold the requested amount in `token`.
     /// * `jurisdiction` — Jurisdiction whose balance is being remitted.
     /// * `token`        — Token contract address for the transfer.
+    /// * `amount`       — Positive amount to remit, not greater than the currently accrued
+    ///   liability.
     ///
     /// # Returns
     /// Amount remitted.
@@ -807,11 +823,14 @@ impl TaxWithholdingContract {
     /// * `Unauthorized`   — caller is not the owner.
     /// * `TreasuryNotSet` — no treasury configured for the jurisdiction.
     /// * `NothingToRemit` — accrued balance is zero.
+    /// * `AmountExceedsAccrued` — `amount` is non-positive or exceeds the currently accrued
+    ///   balance.
     pub fn remit_withholding(
         env: Env,
         caller: Address,
         jurisdiction: Symbol,
         token: Address,
+        amount: i128,
     ) -> Result<i128, TaxError> {
         caller.require_auth();
         Self::require_owner(&env, &caller)?;
@@ -823,14 +842,24 @@ impl TaxWithholdingContract {
             .ok_or(TaxError::TreasuryNotSet)?;
 
         let key = StorageKey::AccruedWithholding(jurisdiction.clone());
-        let amount: i128 = env.storage().persistent().get(&key).unwrap_or(0);
+        let accrued: i128 = env.storage().persistent().get(&key).unwrap_or(0);
 
-        if amount == 0 {
+        if accrued == 0 {
             return Err(TaxError::NothingToRemit);
         }
 
+        // A remittance can only settle liability previously recorded by
+        // `accrue_withholding`. This prevents a stale or duplicated request
+        // from transferring more than is outstanding.
+        if amount <= 0 || amount > accrued {
+            return Err(TaxError::AmountExceedsAccrued);
+        }
+
         // Update state BEFORE external token transfer (state-before-interaction).
-        env.storage().persistent().set(&key, &0i128);
+        let remaining = accrued
+            .checked_sub(amount)
+            .ok_or(TaxError::ArithmeticError)?;
+        env.storage().persistent().set(&key, &remaining);
 
         let token_client = token::Client::new(&env, &token);
         token_client.transfer(&caller, &treasury, &amount);

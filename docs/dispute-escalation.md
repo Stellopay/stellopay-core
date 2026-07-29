@@ -116,6 +116,7 @@ Admin can set the `PendingReview` window with `set_pending_review_time_limit` (d
 | `set_level_time_limit(caller, level, seconds)` | **admin** | Override SLA for a tier (affects future phases) |
 | `set_pending_review_time_limit(caller, seconds)` | **admin** | Override the `PendingReview` window (affects next keeper call) |
 | `get_dispute(agreement_id)` | any | Read full `DisputeDetails` |
+| `get_level_time_limit(level)` | any | Read the configured SLA window for a given escalation level |
 | `get_pending_review_time_limit()` | any | Read configured `PendingReview` window |
 
 ---
@@ -239,7 +240,8 @@ Level1/2 resolution → status = Resolved (3-day appeal window opens)
 |-------|---------|------|
 | `dispute_filed` | `DisputeFiledEvent` | New dispute opened |
 | `dispute_escalated` | `DisputeEscalatedEvent` | Moved to next tier |
-| `dispute_sla_breached` | `DisputeSlaBreachedEvent` | SLA elapsed; keeper advances to `PendingReview` |
+| `dispute_sla_breached` | `DisputeSlaBreachedEvent` | SLA elapsed; keeper advances to `PendingReview` (legacy topic, kept for backward compatibility) |
+| `sla_violation_advanced` | `DisputeSlaViolationAdvancedEvent` | Same moment as `dispute_sla_breached`; forward-looking consumers should prefer this topic |
 | `dispute_resolved` | `DisputeResolvedEvent` | Admin ruling at Level1/2 (appeal window open) |
 | `dispute_finalised` | `DisputeFinalisedEvent` | Admin ruling at Level3 (binding, no appeal) |
 | `dispute_appealed` | `DisputeAppealedEvent` | Ruling appealed to next level |
@@ -267,6 +269,7 @@ Level1/2 resolution → status = Resolved (3-day appeal window opens)
 | `phase_started_at` | `u64` | Ledger timestamp when the current phase began |
 | `phase_deadline` | `u64` | Ledger timestamp at which the current phase expires |
 | `outcome` | `DisputeOutcome` | Binding ruling once resolved; `Unset` while open |
+| `reason` | `DisputeReason` | Why the dispute was raised; immutable after filing |
 
 > `phase_started_at` doubles as the **SLA breach timestamp** when
 > `status == PendingReview`: it records the exact moment the keeper advanced
@@ -283,7 +286,7 @@ Level1/2 resolution → status = Resolved (3-day appeal window opens)
 client.initialize(&owner, &admin);
 
 // 2. Employee files dispute — SLA clock starts immediately
-client.file_dispute(&employee, &agreement_id);
+client.file_dispute(&employee, &agreement_id, &DisputeReason::PaymentDispute);
 
 // 3. Admin resolves at Level1 — 3-day appeal window opens
 client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::UpholdPayment);
@@ -296,7 +299,7 @@ client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::UpholdPayment);
 
 ```rust
 // 1. File
-client.file_dispute(&employee, &agreement_id);
+client.file_dispute(&employee, &agreement_id, &DisputeReason::PaymentDispute);
 
 // 2. Escalate to Level2 (within SLA window)
 client.escalate_dispute(&employee, &agreement_id);
@@ -316,7 +319,7 @@ client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::GrantClaim);
 
 ```rust
 // 1. File dispute
-client.file_dispute(&employee, &agreement_id);
+client.file_dispute(&employee, &agreement_id, &DisputeReason::PaymentDispute);
 // phase_deadline = now + 604_800 (7 days)
 
 // ...7 days pass, admin has not acted...
@@ -346,7 +349,7 @@ client.set_level_time_limit(&admin, &EscalationLevel::Level1, &3600u64);
 // Set a 6-hour pending-review window
 client.set_pending_review_time_limit(&admin, &21_600u64);
 
-client.file_dispute(&user, &agreement_id);
+client.file_dispute(&user, &agreement_id, &DisputeReason::PaymentDispute);
 // phase_deadline = now + 3600
 
 // After 1 hour + 1 second:
@@ -371,8 +374,56 @@ client.keeper_advance_stage(&keeper, &agreement_id);
 | 9 | `DeadlineNotPassed` | Cannot expire or advance a dispute before its current deadline |
 | 10 | `AlreadyTerminal` | Dispute is already in `Expired` state |
 | 11 | `AlreadyPendingReview` | `keeper_advance_stage` already called; repeated call rejected |
+| 12 | `SlaDeadlineOverflow` | SLA deadline computation overflowed; keeper cannot proceed |
+| 13 | `ReasonTooLong` | `Other` text exceeds 256 bytes |
 
 ---
+
+## Audit Logger Integration
+
+Every dispute lifecycle transition can optionally record a compliance entry in
+the shared `audit_logger` contract. Once wired via `set_audit_logger(admin, addr)`:
+
+| Transition | Audit action | Actor |
+|---|---|---|
+| `file_dispute` | `dispute_filed` | Caller |
+| `escalate_dispute` | `dispute_escalated` | Caller |
+| `keeper_advance_stage` | `dispute_sla_breached` | Keeper |
+| `resolve_dispute` (L1/L2) | `dispute_resolved` | Admin |
+| `resolve_dispute` (L3) | `dispute_finalised` | Admin |
+| `appeal_ruling` | `dispute_appealed` | Appellant |
+| `expire_dispute` | `dispute_expired` | Caller |
+
+Unauthorized callers cannot create audit entries — failed transitions return an
+error without recording. When no audit logger is configured, the contract
+operates normally without external audit.
+
+Configuration is admin-gated via `set_audit_logger`; the current logger address
+is visible via `get_audit_logger()`.
+
+---
+
+## Audit Logger Integration
+
+Every dispute lifecycle transition can optionally record a compliance entry in
+the shared `audit_logger` contract. Once wired via `set_audit_logger(admin, addr)`:
+
+| Transition | Audit action | Actor |
+|---|---|---|
+| `file_dispute` | `dispute_filed` | Caller |
+| `escalate_dispute` | `dispute_escalated` | Caller |
+| `keeper_advance_stage` | `dispute_sla_breached` | Keeper |
+| `resolve_dispute` (L1/L2) | `dispute_resolved` | Admin |
+| `resolve_dispute` (L3) | `dispute_finalised` | Admin |
+| `appeal_ruling` | `dispute_appealed` | Appellant |
+| `expire_dispute` | `dispute_expired` | Caller |
+
+Unauthorized callers cannot create audit entries — failed transitions return an
+error without recording. When no audit logger is configured, the contract
+operates normally without external audit.
+
+Configuration is admin-gated via `set_audit_logger`; the current logger address
+is visible via `get_audit_logger()`.
 
 ## Storage Keys
 
@@ -383,6 +434,58 @@ client.keeper_advance_stage(&keeper, &agreement_id);
 | `Dispute(u128)` | `DisputeDetails` | Per-dispute state keyed by `agreement_id` |
 | `LevelTimeLimit(EscalationLevel)` | `u64` | SLA window in seconds per tier |
 | `PendingReviewTimeLimit` | `u64` | Review window in seconds after SLA breach |
+| `AuditLogger` | `Address` | Optional audit logger contract for compliance recording |
 ```
+
+---
+
+## Early-Expiry Rejection
+
+`expire_dispute` is guarded by the strict check `now > phase_deadline`.
+Any call made while `now <= phase_deadline` is rejected with
+`DeadlineNotPassed`, regardless of the dispute's current status.
+
+### Why this matters
+
+Because `expire_dispute` is **permissionless**, without the deadline guard an
+adversary could expire a dispute immediately after filing it — bypassing
+resolution entirely and preventing either party from obtaining a ruling.  The
+guard ensures the SLA window remains inviolable from outside the normal
+resolution flow.
+
+### Boundary semantics for `expire_dispute`
+
+| Timestamp | Status | Result |
+|-----------|--------|--------|
+| `now < phase_deadline` | `Open / Escalated / Appealed` | `DeadlineNotPassed` |
+| `now == phase_deadline` | `Open / Escalated / Appealed` | `DeadlineNotPassed` (equal is still inside the window) |
+| `now > phase_deadline` | `Open / Escalated / Appealed` | succeeds → `Expired` |
+| `now < review_deadline` | `PendingReview` | `DeadlineNotPassed` |
+| `now == review_deadline` | `PendingReview` | `DeadlineNotPassed` |
+| `now > review_deadline` | `PendingReview` | succeeds → `Expired` |
+
+### Test coverage (§16)
+
+The test suite in `onchain/contracts/dispute_escalation/tests/test_escalation.rs`
+covers these scenarios exhaustively in **§16 EARLY-EXPIRY REJECTION TESTS**:
+
+| Test | What it proves |
+|------|---------------|
+| `test_expire_open_dispute_premature_rejected` | Calling `expire_dispute` on an `Open` dispute with no time elapsed is rejected |
+| `test_expire_open_dispute_at_exact_deadline_rejected` | `now == deadline` is still inside the window; expiry rejected |
+| `test_expire_open_dispute_one_second_past_deadline_succeeds` | `now == deadline + 1` is accepted; dispute becomes `Expired` |
+| `test_expire_escalated_dispute_premature_rejected` | Same trio for `Escalated` status (Level2 SLA) |
+| `test_expire_escalated_dispute_at_exact_deadline_rejected` | |
+| `test_expire_escalated_dispute_one_second_past_deadline_succeeds` | |
+| `test_expire_appealed_dispute_premature_rejected` | Same trio for `Appealed` status (after `appeal_ruling`) |
+| `test_expire_appealed_dispute_at_exact_deadline_rejected` | |
+| `test_expire_appealed_dispute_one_second_past_deadline_succeeds` | |
+| `test_expire_pending_review_dispute_premature_rejected` | Immediately after `keeper_advance_stage` — inside review window |
+| `test_expire_pending_review_dispute_at_exact_review_deadline_rejected` | `now == review_deadline` is inside the window |
+| `test_expire_pending_review_dispute_one_second_past_review_deadline_succeeds` | `now == review_deadline + 1` succeeds |
+| `test_expire_premature_leaves_dispute_fully_unchanged` | Failed call makes no state mutation |
+| `test_expire_premature_emits_no_event` | Failed call emits no `dispute_expired` event |
+| `test_expire_premature_by_third_party_rejected_with_deadline_error` | Permissionless callers are still subject to the deadline guard |
+| `test_expire_premature_rejected_across_all_escalation_levels` | Boundary holds at Level1, Level2, and Level3 in a single sweep |
 
 Now let me update the state-machines doc and write the implementation back to lib.rs:

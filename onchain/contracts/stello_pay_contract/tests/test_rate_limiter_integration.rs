@@ -6,8 +6,7 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient as TokenAdminClient},
     Address, Env, Vec,
 };
-use stello_pay_contract::storage::PayrollError;
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{storage::PayrollError, PayrollContract, PayrollContractClient};
 
 fn create_test_env() -> Env {
     let env = Env::default();
@@ -102,7 +101,8 @@ fn test_rate_limited_claim() {
     TokenAdminClient::new(&env, &token).mint(&employer, &10000000);
     TokenClient::new(&env, &token).transfer(&employer, &client.address, &10000000);
 
-    // Advance time by 3 periods (simulate 1 period = 30 days roughly, though period defaults to month if not escrow)
+    // Advance time by 3 periods (simulate 1 period = 30 days roughly, though period defaults to
+    // month if not escrow)
 
     // Wait, payroll agreement periods logic: 30 days is default period if not escrow
     env.ledger()

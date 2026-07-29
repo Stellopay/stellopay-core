@@ -84,7 +84,8 @@ For **evidence-based slashes**, quorum is bypassed — a single slasher with a v
                         │  execute_slash()
                         │     │
                         │     ▼
-                        │  Executed  (funds burned / sent to treasury)
+                        │  [Executed]  ──► second execute_slash() → InvalidState (8)
+                        │               (terminal: funds burned/redistributed)
                         │
                         ▼
                    resolve_appeal()
@@ -92,9 +93,48 @@ For **evidence-based slashes**, quorum is bypassed — a single slasher with a v
                uphold              reject
                   │                   │
                   ▼                   ▼
-              Reversed          AppealRejected
-          (funds returned)    (funds burned)
+              [Reversed]        [AppealRejected]
+          (terminal: funds     (terminal: funds
+            returned)             burned)
 ```
+
+### Terminal States
+
+Once a slash record enters one of the three terminal states below, no further
+state transitions are possible. Any operation that requires `Pending` status
+returns `SlashError::InvalidState (8)`.
+
+| State           | How reached                        | Funds outcome              |
+|-----------------|------------------------------------|----------------------------|
+| `Executed`      | `execute_slash()` after appeal window expires | Escrowed amount burned/redistributed |
+| `Reversed`      | `resolve_appeal(uphold=true)`      | Escrowed amount returned to offender stake |
+| `AppealRejected`| `resolve_appeal(uphold=false)`     | Escrowed amount burned/redistributed |
+
+### Double-Execution Guard (`Executed` state)
+
+The `Executed` terminal state is the primary defence against applying a penalty
+more than once to the same slash record.
+
+**How it works:**
+
+1. `execute_slash` reads the slash record and checks `status == Pending`.
+2. If the check passes, it burns the escrowed amount and atomically writes
+   `status = Executed` to storage.
+3. Any subsequent `execute_slash` call for the same `evidence_hash` finds
+   `status == Executed`, fails the `Pending` check, and returns
+   `SlashError::InvalidState (8)` **before touching any balances**.
+
+```
+Call 1: status == Pending  → burns escrow, sets status = Executed  → Ok(())
+Call 2: status == Executed → returns Err(InvalidState)             ← guard fires
+Call N: status == Executed → returns Err(InvalidState)             ← guard fires
+```
+
+This guarantees the offender's stake is debited by the penalty **exactly once**,
+regardless of how many callers retry `execute_slash` for the same record.
+
+The guard applies equally to evidence-based and attestation-based slashes, since
+both go through the same `execute_slash` entry point.
 
 ---
 
@@ -247,7 +287,7 @@ pub fn get_quorum(env: Env) -> u32
 | 5    | `AppealWindowOpen`    | Cannot execute — appeal window still active        |
 | 6    | `AppealWindowClosed`  | Cannot raise appeal — deadline passed              |
 | 7    | `RecordNotFound`      | No slash record for given evidence hash            |
-| 8    | `InvalidState`        | Operation not valid in current slash status        |
+| 8    | `InvalidState`        | Operation not valid in current slash status. Returned by `execute_slash` when the record is already `Executed`, `Reversed`, or `AppealRejected` — this is the **double-execution guard** |
 | 9    | `QuorumNotMet`        | Not enough attestors have signed                   |
 | 10   | `AlreadyAttested`     | Slasher already countersigned this slash           |
 | 11   | `ZeroPenalty`         | Penalty basis points cannot be zero                |
@@ -256,6 +296,7 @@ pub fn get_quorum(env: Env) -> u32
 | 14   | `PeriodCapExceeded`   | Cumulative slashing exceeds configured period cap   |
 | 15   | `LifetimeCapExceeded` | Cumulative slashing exceeds configured lifetime cap |
 | 16   | `ArithmeticOverflow`  | Overflow/underflow protection triggered             |
+| 17   | `ZeroQuorum`          | Quorum must be > 0; passing 0 is rejected rather than silently raised to the default |
 
 ---
 
@@ -292,6 +333,7 @@ stellar contract invoke \
 The test suite covers:
 
 - Initialisation and double-init protection
+- Zero-quorum rejection (`ZeroQuorum` error, never silently raised to default)
 - Role management (add/remove slasher)
 - Stake deposit and withdrawal including insufficient balance
 - Evidence-based slash: happy path, zero slash, max slash, above-max, duplicate evidence, no stake
@@ -300,6 +342,21 @@ The test suite covers:
 - Appeal resolution: upheld (funds returned), rejected (funds burned), double-resolution rejection
 - Repeated offences with distinct evidence hashes
 - Edge cases: unknown hash, execute non-existent, appeal boundary at exact deadline
+- Replay protection: O(1) keyed lookup, rejection independent of prior slash count
+- **Double-execution guard (issue #938)**:
+  - `test_execute_slash_double_execution_is_rejected` — second `execute_slash` on the same record returns `InvalidState`
+  - `test_execute_slash_stake_balance_reflects_single_execution` — stake is debited by exactly one penalty; the rejected second call does not alter the balance
+  - `test_attestation_slash_execute_slash_double_execution_is_rejected` — guard applies equally to attestation-based slashes
+- **Maximum slash percentage cap**:
+  - `test_slash_at_percentage_cap_succeeds` — slash exactly at a custom per-event bps cap succeeds
+  - `test_slash_above_percentage_cap_fails` — slash 1 bps above a custom cap is rejected with `PenaltyTooHigh`
+  - `test_execute_slash_respects_percentage_cap` — full lifecycle: slash at cap, execute, verify correct amount end-to-end
+  - `test_attestation_slash_at_percentage_cap_succeeds` — attestation-based slash at cap succeeds
+  - `test_attestation_slash_above_percentage_cap_fails` — attestation-based slash above cap fails
+  - `test_zero_per_event_bps_cap_rejected` — zero per-event cap is rejected at init
+  - `test_per_event_bps_cap_exceeds_max_rejected` — cap above `MAX_PENALTY_BPS` (5 000) is rejected
+  - `test_max_bps_boundary_slash_succeeds` — slash at hard `MAX_PENALTY_BPS` through full slash-with-evidence path
+  - `test_update_cap_then_enforce` — lowering the cap via `set_penalty_caps` correctly rejects previously-valid slashes
 
 ---
 

@@ -138,6 +138,210 @@ fn test_org_departments_initially_empty() {
 }
 
 // ---------------------------------------------------------------------------
+// Unique-organization-id guard tests (Issue #917)
+// ---------------------------------------------------------------------------
+//
+// Verifies the contract enforces that each organization `name` is globally
+// unique. Re-creating an organization with a name that is already claimed by
+// an existing organization must be rejected, and the rejected attempt must
+// leave the original organization's department tree untouched.
+//
+// NOTE on test style: this section uses BOTH `#[should_panic]` (for tests
+// that only need to assert the panic) and `std::panic::catch_unwind` (for
+// tests that must continue execution after the panic to verify post-rejection
+// state, like the tree-integrity guarantees). The existing suite uses only
+// `#[should_panic]`; that pattern cannot assert post-panic storage state, so
+// `catch_unwind(safe)` is necessary here.
+/// @notice Duplicate name with the **same owner** is rejected. The guard fires
+///         even when the same caller reuses a name they already own.
+#[test]
+#[should_panic(expected = "Organization name already in use")]
+fn test_create_organization_rejects_duplicate_name_same_owner() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    client.create_organization(&owner, &symbol_short!("Acme"));
+    // Second call with the same name + same owner must panic.
+    client.create_organization(&owner, &symbol_short!("Acme"));
+}
+
+/// @notice Duplicate name with a **different owner** is also rejected. Names
+///         are globally unique across the entire contract, not per-owner.
+#[test]
+#[should_panic(expected = "Organization name already in use")]
+fn test_create_organization_rejects_duplicate_name_different_owner() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner1 = Address::generate(&env);
+    let owner2 = Address::generate(&env);
+    client.create_organization(&owner1, &symbol_short!("Acme"));
+    // Different owner must still be rejected.
+    client.create_organization(&owner2, &symbol_short!("Acme"));
+}
+
+/// @notice A rejected duplicate-create attempt leaves the original
+///         organization's record and its full department tree untouched.
+///         This is the security-critical guarantee from issue #917: re-creating
+///         an organization could otherwise reset or overwrite its tree.
+///
+/// Tree built before the duplicate attempt:
+/// ```text
+///  Acme (root)
+///   ├── Eng (no children, no members)
+///   └── Sales (no children, no members)
+///        └── DirectSales (no children, no members)
+/// ```
+#[test]
+fn test_failed_duplicate_create_leaves_existing_tree_intact() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+
+    // 1. Create the original organization and build a department tree.
+    let acme_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let eng_id = client.create_department(&owner, &acme_id, &symbol_short!("Eng"), &None);
+    let sales_id = client.create_department(&owner, &acme_id, &symbol_short!("Sales"), &None);
+    let direct_id =
+        client.create_department(&owner, &acme_id, &symbol_short!("Dir"), &Some(sales_id));
+    let emp = Address::generate(&env);
+    client.assign_employee_to_department(&owner, &acme_id, &sales_id, &emp);
+
+    // Snapshot the original tree before the attempt.
+    let before_depts = client.get_org_departments(&acme_id);
+    assert_eq!(before_depts.len(), 3, "pre-condition: tree has 3 depts");
+    let before_emp_in_sales = client.get_department_employees(&sales_id);
+    assert_eq!(
+        before_emp_in_sales.len(),
+        1,
+        "pre-condition: one emp in Sales"
+    );
+
+    // 2. Attempt to re-create "Acme" with a different owner — must panic.
+    let stranger = Address::generate(&env);
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.create_organization(&stranger, &symbol_short!("Acme"));
+    }));
+    assert!(
+        panic_result.is_err(),
+        "duplicate organization create must panic"
+    );
+
+    // 3. The original organization's record is unchanged.
+    let acme_after = client.get_organization(&acme_id);
+    assert_eq!(acme_after.id, acme_id);
+    assert_eq!(acme_after.name, symbol_short!("Acme"));
+    assert_eq!(acme_after.owner, owner);
+
+    // 4. The full department tree (from get_org_departments) is unchanged.
+    let after_depts = client.get_org_departments(&acme_id);
+    assert_eq!(
+        after_depts.len(),
+        3,
+        "rejected duplicate must not alter the original org's departments"
+    );
+    assert_eq!(after_depts.get(0), Some(eng_id));
+    assert_eq!(after_depts.get(1), Some(sales_id));
+    assert_eq!(after_depts.get(2), Some(direct_id));
+
+    // 5. Each department record and its relations are still intact.
+    let eng = client.get_department(&eng_id);
+    assert_eq!(eng.parent_id, None);
+    let sales = client.get_department(&sales_id);
+    assert_eq!(sales.parent_id, None);
+    let direct = client.get_department(&direct_id);
+    assert_eq!(direct.parent_id, Some(sales_id));
+
+    // 6. Employee membership and computed report are still intact.
+    assert_eq!(
+        client.get_employee_department(&emp, &acme_id),
+        Some(sales_id)
+    );
+    assert_eq!(client.get_department_employees(&sales_id).len(), 1);
+    let (sales_count, sales_children, _) = client.get_department_report(&sales_id);
+    assert_eq!(sales_count, 1, "Sales still reports its assigned employee");
+    assert_eq!(sales_children.len(), 1);
+    assert_eq!(sales_children.get(0), Some(direct_id));
+}
+
+/// @notice Soroban `Symbol` is case-sensitive, so `"Acme"` and `"acme"` are
+///         distinct identifiers and BOTH may be claimed by different orgs.
+///         This documents the case-sensitivity contract.
+#[test]
+fn test_create_organization_names_are_case_sensitive() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let id_uc = client.create_organization(&owner, &symbol_short!("Acme"));
+    let id_lc = client.create_organization(&owner, &symbol_short!("acme"));
+    assert_ne!(
+        id_uc, id_lc,
+        "case-different names must yield distinct orgs"
+    );
+    let uc = client.get_organization(&id_uc);
+    let lc = client.get_organization(&id_lc);
+    assert_eq!(uc.name, symbol_short!("Acme"));
+    assert_eq!(lc.name, symbol_short!("acme"));
+}
+
+/// @notice After a rejected duplicate-name attempt, the next legitimate
+///         `create_organization` call still succeeds and returns the
+///         sequential id that would have been allocated.
+///
+/// This test FAILS if Soroban's host ever stops rolling back the storage
+/// writes made by a panicked contract function call. Under the standard
+/// Soroban semantics (atomic host-function execution: panic ⇒ revert ALL
+/// writes from that call), the rejected duplicate-name attempt must NOT
+/// consume a counter slot, so the next legitimate create gets id 2.
+#[test]
+fn test_failed_duplicate_does_not_increment_next_org_id() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    let first = client.create_organization(&owner, &symbol_short!("Acme"));
+    assert_eq!(first, 1);
+
+    // Failed attempt must not consume an id.
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.create_organization(&stranger, &symbol_short!("Acme"));
+    }));
+    assert!(panic_result.is_err());
+
+    // Next legitimate create gets id = 2 (sequential, no gaps).
+    let second = client.create_organization(&owner, &symbol_short!("Beta"));
+    assert_eq!(second, 2, "rejected duplicate must not increment NextOrgId");
+}
+
+/// @notice Sanity check: many distinct names are accepted in sequence; the
+///         uniqueness guard never blocks legitimate distinct creations.
+///         This exercises the happy path alongside the rejection paths above.
+///         Because `create_organization` assigns sequential ids in insertion
+///         order, no sort is needed; we just verify the expected range and
+///         the strictly-increasing property directly.
+#[test]
+fn test_create_organization_many_distinct_names_ok() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    // `symbol_short!` is limited to 9 chars; use unique short names.
+    let ids = [
+        client.create_organization(&owner, &symbol_short!("Org01")),
+        client.create_organization(&owner, &symbol_short!("Org02")),
+        client.create_organization(&owner, &symbol_short!("Org03")),
+        client.create_organization(&owner, &symbol_short!("Org04")),
+        client.create_organization(&owner, &symbol_short!("Org05")),
+    ];
+    assert_eq!(ids[0], 1, "first org gets id 1");
+    assert_eq!(ids[4], 5, "fifth org gets id 5");
+    for i in 0..ids.len() - 1 {
+        assert!(
+            ids[i] < ids[i + 1],
+            "ids must be strictly increasing after a sequence of distinct creates"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Department creation tests
 // ---------------------------------------------------------------------------
 
@@ -566,10 +770,13 @@ fn test_multi_level_department_report_aggregation() {
     let root_id = client.create_department(&owner, &org_id, &symbol_short!("Corp"), &None);
     // Level 1: children
     let eng_id = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &Some(root_id));
-    let sales_id = client.create_department(&owner, &org_id, &symbol_short!("Sales"), &Some(root_id));
+    let sales_id =
+        client.create_department(&owner, &org_id, &symbol_short!("Sales"), &Some(root_id));
     // Level 2: grandchildren
-    let frontend_id = client.create_department(&owner, &org_id, &symbol_short!("Front"), &Some(eng_id));
-    let backend_id = client.create_department(&owner, &org_id, &symbol_short!("Back"), &Some(eng_id));
+    let frontend_id =
+        client.create_department(&owner, &org_id, &symbol_short!("Front"), &Some(eng_id));
+    let backend_id =
+        client.create_department(&owner, &org_id, &symbol_short!("Back"), &Some(eng_id));
 
     // Assign employees
     let emp_a = Address::generate(&env);
@@ -1096,6 +1303,128 @@ fn test_paged_zero_limit_uses_max_page_size() {
 }
 
 // ---------------------------------------------------------------------------
+// Cycle-detection tests (Issue #763)
+// ---------------------------------------------------------------------------
+
+/// Verifies that reparenting a department under its own descendant in a 4-level
+/// hierarchy is rejected with a clear error. This is the core correctness guard
+/// against tree corruption and infinite traversal loops.
+///
+/// Builds a 4-level hierarchy:
+/// ```text
+///     Eng (level 0)
+///      └── Backend (level 1)
+///           └── Rust (level 2)
+///                └── Tokio (level 3)
+/// ```
+///
+/// Attempt 1: Reparent `Eng` under `Tokio` (deepest leaf) → must be rejected.
+/// Attempt 2: Reparent `Eng` under `Rust` (mid-level descendant) → must be rejected.
+/// Attempt 3: Reparent `Eng` under `Backend` (direct child) → must be rejected.
+///
+/// After all cycle attempts, verify valid reparenting still works by moving
+/// `Tokio` to be a child of `Backend` (no longer under `Rust`).
+#[test]
+fn test_reparent_4level_cycle_detection_rejected() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+
+    // Build 4-level hierarchy: Eng → Backend → Rust → Tokio
+    let eng = client.create_department(&owner, &org_id, &symbol_short!("Eng"), &None);
+    let backend = client.create_department(&owner, &org_id, &symbol_short!("Backend"), &Some(eng));
+    let rust = client.create_department(&owner, &org_id, &symbol_short!("Rust"), &Some(backend));
+    let tokio = client.create_department(&owner, &org_id, &symbol_short!("Tokio"), &Some(rust));
+
+    // Verify the hierarchy is correct before cycle attempts
+    assert_eq!(client.get_department(&eng).parent_id, None);
+    assert_eq!(client.get_department(&backend).parent_id, Some(eng));
+    assert_eq!(client.get_department(&rust).parent_id, Some(backend));
+    assert_eq!(client.get_department(&tokio).parent_id, Some(rust));
+
+    // Attempt 1: Reparent Eng (root of subtree) under Tokio (deepest leaf)
+    // This would create: Eng → Backend → Rust → Tokio → Eng (cycle)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.update_department(&owner, &eng, &Some(tokio));
+    }));
+    assert!(
+        result.is_err(),
+        "Reparenting Eng under Tokio (its own descendant) must be rejected"
+    );
+
+    // Attempt 2: Reparent Eng under Rust (mid-level descendant)
+    // This would create: Eng → Backend → Rust → Eng (cycle)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.update_department(&owner, &eng, &Some(rust));
+    }));
+    assert!(
+        result.is_err(),
+        "Reparenting Eng under Rust (its own descendant) must be rejected"
+    );
+
+    // Attempt 3: Reparent Eng under Backend (direct child)
+    // This would create: Eng → Backend → Eng (cycle)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.update_department(&owner, &eng, &Some(backend));
+    }));
+    assert!(
+        result.is_err(),
+        "Reparenting Eng under Backend (its own direct child) must be rejected"
+    );
+
+    // Verify hierarchy is unchanged after all cycle attempts
+    assert_eq!(client.get_department(&eng).parent_id, None);
+    assert_eq!(client.get_department(&backend).parent_id, Some(eng));
+    assert_eq!(client.get_department(&rust).parent_id, Some(backend));
+    assert_eq!(client.get_department(&tokio).parent_id, Some(rust));
+
+    // Verify valid reparenting still works: move Tokio from under Rust to under Backend
+    client.update_department(&owner, &tokio, &Some(backend));
+    assert_eq!(client.get_department(&tokio).parent_id, Some(backend));
+    // Rust no longer has Tokio as child
+    assert_eq!(client.get_child_departments(&rust).len(), 0);
+    // Backend now has both Rust and Tokio as children
+    let backend_children = client.get_child_departments(&backend);
+    assert_eq!(backend_children.len(), 2);
+}
+
+/// Verifies that reparenting a leaf department to a non-descendant (valid move)
+/// works correctly while cycle detection is active for other operations.
+#[test]
+fn test_valid_reparent_amid_cycle_guard() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Corp"));
+
+    // Build: Root → [A → A1, B]
+    let root = client.create_department(&owner, &org_id, &symbol_short!("Root"), &None);
+    let a = client.create_department(&owner, &org_id, &symbol_short!("A"), &Some(root));
+    let a1 = client.create_department(&owner, &org_id, &symbol_short!("A1"), &Some(a));
+    let b = client.create_department(&owner, &org_id, &symbol_short!("B"), &Some(root));
+
+    // Valid: move A1 from under A to under B (A1 is not an ancestor of B)
+    client.update_department(&owner, &a1, &Some(b));
+    assert_eq!(client.get_department(&a1).parent_id, Some(b));
+    assert_eq!(client.get_child_departments(&a).len(), 0);
+    assert_eq!(client.get_child_departments(&b).get(0), Some(a1));
+
+    // Valid: move A1 to top-level
+    client.update_department(&owner, &a1, &None);
+    assert_eq!(client.get_department(&a1).parent_id, None);
+
+    // Cycle: try to move Root under A (would create Root → A → Root)
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.update_department(&owner, &root, &Some(a));
+    }));
+    assert!(
+        result.is_err(),
+        "Cycle must still be detected after valid reparents"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // merge_departments tests
 // ---------------------------------------------------------------------------
 
@@ -1116,7 +1445,10 @@ fn test_merge_departments_moves_members() {
     client.merge_departments(&owner, &org_id, &source, &target);
 
     assert_eq!(client.get_department_employees(&target).len(), 1);
-    assert_eq!(client.get_department_employees(&target).get(0), Some(emp.clone()));
+    assert_eq!(
+        client.get_department_employees(&target).get(0),
+        Some(emp.clone())
+    );
     assert_eq!(client.get_employee_department(&emp, &org_id), Some(target));
 }
 
@@ -1230,4 +1562,167 @@ fn test_merge_source_wrong_org_fails() {
     let source = client.create_department(&owner, &org1, &symbol_short!("Src"), &None);
     let target = client.create_department(&owner, &org2, &symbol_short!("Tgt"), &None);
     client.merge_departments(&owner, &org1, &source, &target);
+}
+
+// ---------------------------------------------------------------------------
+// Reverse-index consistency tests
+//
+// These tests prove that the two storage indexes that track employee placement
+// — the *forward* index `EmployeeDepartment(addr, org_id) -> dept_id` and the
+// *reverse* index `DepartmentEmployees(dept_id) -> Vec<Address>` — remain
+// mutually consistent through assign → remove → reassign cycles.
+//
+// Invariant being tested (documented in docs/department-management.md):
+//   After every public operation (assign / remove) the following always holds:
+//   1. `get_employee_department(emp, org)` returns `Some(dept)` iff
+//      `get_department_employees(dept)` contains `emp`.
+//   2. For any department `d` that is NOT the employee's current department,
+//      `get_department_employees(d)` does NOT contain `emp`.
+// ---------------------------------------------------------------------------
+
+/// Verifies the full assign → remove → reassign cycle leaves both indexes in
+/// a consistent state pointing exclusively to the new department.
+///
+/// Sequence:
+/// 1. Assign `emp` to `dept_a`   → forward: dept_a, reverse: dept_a contains emp
+/// 2. Remove `emp` from dept      → forward: None,   reverse: dept_a empty
+/// 3. Reassign `emp` to `dept_b`  → forward: dept_b, reverse: dept_b contains emp dept_a still
+///    empty
+///
+/// This is the primary regression guard: without proper cleanup a stale
+/// `EmployeeDepartment` entry would survive step 2, leaving `get_employee_department`
+/// returning `Some(dept_a)` even after step 3 replaces it.
+#[test]
+fn test_assign_remove_reassign_indexes_are_consistent() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_a = client.create_department(&owner, &org_id, &symbol_short!("DeptA"), &None);
+    let dept_b = client.create_department(&owner, &org_id, &symbol_short!("DeptB"), &None);
+    let emp = Address::generate(&env);
+
+    // Step 1: Assign to dept_a — both indexes must reflect dept_a.
+    client.assign_employee_to_department(&owner, &org_id, &dept_a, &emp);
+    assert_eq!(
+        client.get_employee_department(&emp, &org_id),
+        Some(dept_a),
+        "after assign: forward index must point to dept_a"
+    );
+    assert!(
+        client.get_department_employees(&dept_a).contains(&emp),
+        "after assign: reverse index for dept_a must contain emp"
+    );
+    assert_eq!(
+        client.get_department_employees(&dept_b).len(),
+        0,
+        "after assign: dept_b reverse index must be empty"
+    );
+
+    // Step 2: Remove from org — both indexes must show no assignment.
+    client.remove_employee_from_department(&owner, &org_id, &emp);
+    assert_eq!(
+        client.get_employee_department(&emp, &org_id),
+        None,
+        "after remove: forward index must return None"
+    );
+    assert_eq!(
+        client.get_department_employees(&dept_a).len(),
+        0,
+        "after remove: reverse index for dept_a must be empty"
+    );
+
+    // Step 3: Reassign to dept_b — both indexes must now reflect dept_b only.
+    client.assign_employee_to_department(&owner, &org_id, &dept_b, &emp);
+    assert_eq!(
+        client.get_employee_department(&emp, &org_id),
+        Some(dept_b),
+        "after reassign: forward index must point to dept_b"
+    );
+    assert!(
+        client.get_department_employees(&dept_b).contains(&emp),
+        "after reassign: reverse index for dept_b must contain emp"
+    );
+    assert_eq!(
+        client.get_department_employees(&dept_a).len(),
+        0,
+        "after reassign: dept_a reverse index must remain empty (no stale entry)"
+    );
+}
+
+/// Verifies that after an employee is moved away from their original department,
+/// that department's employee list no longer includes them — even when other
+/// employees remain in it.
+///
+/// Setup:
+///   dept_a: [emp1, emp2]   dept_b: []
+///
+/// After moving emp1 to dept_b:
+///   dept_a: [emp2]         dept_b: [emp1]
+///
+/// This guards against a regression where the reverse index (`DepartmentEmployees`)
+/// retains a stale entry for the departed employee while the forward index
+/// (`EmployeeDepartment`) already points to the new department.
+#[test]
+fn test_original_department_excludes_moved_employee() {
+    let env = create_env();
+    let (_cid, client) = setup_contract(&env);
+    let owner = Address::generate(&env);
+    let org_id = client.create_organization(&owner, &symbol_short!("Acme"));
+    let dept_a = client.create_department(&owner, &org_id, &symbol_short!("DeptA"), &None);
+    let dept_b = client.create_department(&owner, &org_id, &symbol_short!("DeptB"), &None);
+    let emp1 = Address::generate(&env);
+    let emp2 = Address::generate(&env);
+
+    // Assign both employees to dept_a.
+    client.assign_employee_to_department(&owner, &org_id, &dept_a, &emp1);
+    client.assign_employee_to_department(&owner, &org_id, &dept_a, &emp2);
+    assert_eq!(
+        client.get_department_employees(&dept_a).len(),
+        2,
+        "pre-condition: dept_a must have 2 employees"
+    );
+
+    // Move emp1 from dept_a to dept_b via direct reassignment.
+    client.assign_employee_to_department(&owner, &org_id, &dept_b, &emp1);
+
+    // emp1 must no longer appear in dept_a's employee list.
+    let dept_a_employees = client.get_department_employees(&dept_a);
+    assert_eq!(
+        dept_a_employees.len(),
+        1,
+        "dept_a must have exactly 1 employee after emp1 moved out"
+    );
+    assert!(
+        !dept_a_employees.contains(&emp1),
+        "dept_a reverse index must NOT contain emp1 after it was reassigned"
+    );
+    assert!(
+        dept_a_employees.contains(&emp2),
+        "dept_a reverse index must still contain emp2 (not moved)"
+    );
+
+    // emp1 must appear exclusively in dept_b's employee list.
+    let dept_b_employees = client.get_department_employees(&dept_b);
+    assert_eq!(
+        dept_b_employees.len(),
+        1,
+        "dept_b must have exactly 1 employee after emp1 moved in"
+    );
+    assert!(
+        dept_b_employees.contains(&emp1),
+        "dept_b reverse index must contain emp1"
+    );
+
+    // Forward index must agree with the reverse index.
+    assert_eq!(
+        client.get_employee_department(&emp1, &org_id),
+        Some(dept_b),
+        "forward index must point to dept_b for emp1"
+    );
+    assert_eq!(
+        client.get_employee_department(&emp2, &org_id),
+        Some(dept_a),
+        "forward index must still point to dept_a for emp2"
+    );
 }

@@ -50,6 +50,50 @@ pub struct EmergencyPause {
 
 ## Usage
 
+### Employer-Scoped Bulk Pause / Unpause (Self-Service)
+
+Employers can pause or unpause **all of their own agreements** in a single call
+without granting guardian or owner privileges. These entrypoints are designed for
+rapid incident response at the employer level — e.g. a compromised employer key
+or a dispute affecting multiple agreements.
+
+```rust
+// Employer pauses all of their active agreements
+let paused_count = contract.pause_employer_agreements(employer)?;
+// paused_count == number of agreements that were actually paused
+
+// Employer unpauses all of their paused agreements
+let unpaused_count = contract.unpause_employer_agreements(employer)?;
+// unpaused_count == number of agreements that were actually unpaused
+```
+
+**Authorization scoping:**
+
+| Caller | Target | Result |
+|--------|--------|--------|
+| Employer A | `pause_employer_agreements(employer_a)` | Pauses only Employer A's agreements |
+| Employer B | `pause_employer_agreements(employer_b)` | Pauses only Employer B's agreements |
+| Employer A | `pause_employer_agreements(employer_b)` | `require_auth()` fails — cross-employer pause is impossible |
+
+The function iterates the employer's agreement index (`EmployerAgreements`),
+applies the pause/unpause transition to each eligible agreement, and emits
+individual `AgreementPausedEvent` / `AgreementResumedEvent` per agreement
+followed by a single summary `BulkAgreementsPausedEvent` /
+`BulkAgreementsUnpausedEvent`.
+
+Supported agreement types:
+- **Payroll / Escrow** — must be `Active` to pause, `Paused` to unpause.
+- **Milestone** — must be `Active` or `Created` to pause, `Paused` to unpause.
+
+**Events emitted:**
+
+| Event | Fields | When |
+|-------|--------|------|
+| `AgreementPausedEvent` | `agreement_id` | Per agreement that was paused |
+| `BulkAgreementsPausedEvent` | `employer`, `count` | Once after bulk pause (if any) |
+| `AgreementResumedEvent` | `agreement_id` | Per agreement that was unpaused |
+| `BulkAgreementsUnpausedEvent` | `employer`, `count` | Once after bulk unpause (if any) |
+
 ### Setting Up Guardians
 
 ```rust
@@ -212,7 +256,15 @@ Comprehensive test coverage includes:
    - Milestone claims blocked
    - Functionality restored after unpause
 
-5. **Edge Cases:**
+5. **Employer Bulk Pause/Unpause:**
+   - All active agreements for the caller are paused
+   - All paused agreements are unpaused
+   - Cross-employer boundary is respected (employer B cannot touch employer A's agreements)
+   - Cross-employer authorization is rejected (missing auth)
+   - Non-active agreements are skipped gracefully
+   - Milestone agreements are paused/unpaused correctly
+
+6. **Edge Cases:**
    - Invalid guardian attempts
    - Timelock edge cases
    - State consistency
@@ -352,6 +404,26 @@ A: Yes, the owner can modify guardians at any time.
 
 **Q: What if all guardians are unavailable?**  
 A: The owner retains ability to pause immediately. Consider this when selecting guardians.
+
+## Bulk Pause/Unpause Quick Reference
+
+```rust
+// Pause all own agreements (payroll, escrow, and milestone)
+let paused: u32 = contract.pause_employer_agreements(employer)?;
+
+// Unpause all own agreements
+let unpaused: u32 = contract.unpause_employer_agreements(employer)?;
+```
+
+**Guarantees:**
+- Only the employer's own agreements are affected — each call atomically scoped to
+  `EmployerAgreements(employer)`.
+- Individual `AgreementPausedEvent` / `AgreementResumedEvent` are emitted per
+  agreement, enabling fine-grained off-chain indexing.
+- A summary event (`BulkAgreementsPausedEvent` / `BulkAgreementsUnpausedEvent`)
+  provides the total count for monitoring dashboards.
+- The return value `u32` tells callers how many agreements transitioned — useful
+  for idempotent retry.
 
 ## Related Documentation
 

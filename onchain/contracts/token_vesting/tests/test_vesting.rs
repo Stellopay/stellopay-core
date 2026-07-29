@@ -5,7 +5,6 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient},
     vec, Address, Env, IntoVal, Vec,
 };
-
 use token_vesting::{
     ClaimedEvent, CreatedEvent, CustomCheckpoint, EarlyReleaseEvent, RevokedEvent,
     TokenVestingContract, TokenVestingContractClient, VestingKind, VestingStatus,
@@ -414,6 +413,34 @@ fn cliff_full_claim_after_cliff() {
 
     let schedule = client.get_schedule(&sid).unwrap();
     assert_eq!(schedule.status, VestingStatus::Completed);
+}
+
+#[test]
+fn cliff_exact_second_boundary() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_cliff_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &200u64,
+        &false,
+    );
+
+    // One second before cliff: nothing vested
+    set_time(&env, 199);
+    assert_eq!(client.get_vested_amount(&sid), 0);
+
+    // Exactly at cliff: full amount vests
+    set_time(&env, 200);
+    assert_eq!(client.get_vested_amount(&sid), 1_000);
+
+    // One second after cliff: still total (no further linear accrual)
+    set_time(&env, 201);
+    assert_eq!(client.get_vested_amount(&sid), 1_000);
 }
 
 // ===========================================================================
@@ -1532,4 +1559,777 @@ fn linear_vested_never_exceeds_total() {
     // At end, should equal total
     set_time(&env, 100);
     assert_eq!(client.get_vested_amount(&sid), total);
+}
+
+// ===========================================================================
+// N. Early release bounded by releasable amount (issue #884)
+// ===========================================================================
+
+/// Verifies that approve_early_release is capped at the unvested remainder
+/// even when a prior claim has already been made against the schedule.
+///
+/// Regression: without the cap, the owner could approve an early release that
+/// exceeds what get_releasable_amount (plus already-released early portion)
+/// actually allows. The contract's unvested_remaining guard protects against
+/// over-release. This test proves the cap holds after a prior claim.
+#[test]
+fn early_release_capped_after_prior_claim() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // At t=50: 500 vested, 500 unvested → releasable = 500
+    set_time(&env, 50);
+    assert_eq!(client.get_releasable_amount(&sid), 500);
+
+    // Claim the vested 500
+    let claimed = client.claim(&beneficiary, &sid);
+    assert_eq!(claimed, 500);
+
+    // After claim: released=500, vested=500, releasable=0
+    assert_eq!(client.get_releasable_amount(&sid), 0);
+
+    // Request early release for 600 (more than 500 unvested remaining)
+    // Must be capped at 500 (total - vested = 1000 - 500 = 500)
+    let early = client.approve_early_release(&owner, &sid, &600i128);
+    assert_eq!(early, 500);
+
+    // Schedule completed: 500 claimed + 500 early-released = 1000 = total
+    let schedule = client.get_schedule(&sid).unwrap();
+    assert_eq!(schedule.status, VestingStatus::Completed);
+    assert_eq!(schedule.released_amount, 1_000);
+
+    // Beneficiary received exactly 500 (claimed) + 500 (early) = 1000
+    assert_eq!(token.balance(&beneficiary), 1_000);
+}
+
+/// Verifies that a correctly bounded early-release approval followed by a
+/// claim transfers exactly the expected amounts (early portion + vested
+/// remainder), confirming no double-counting or fund leakage.
+///
+/// Contract behavior:
+///   - `approve_early_release` increments `released_amount` (and transfers to beneficiary).
+///   - `get_releasable_amount` returns `vested - released_amount`.
+///   - So after an early release of 200 at t=30 (vested=300): releasable = 300 - 200 = 100
+///   - The beneficiary can only claim that 100 remaining vested-but-unreleased amount.
+#[test]
+fn early_release_then_claim_transfers_exact_amounts() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // At t=30: 300 vested, 700 unvested → releasable = 300
+    set_time(&env, 30);
+    assert_eq!(client.get_vested_amount(&sid), 300);
+    assert_eq!(client.get_releasable_amount(&sid), 300);
+
+    // Approve early release of 200 (within the 700 unvested remainder).
+    // The early release is transferred directly to the beneficiary.
+    let early = client.approve_early_release(&owner, &sid, &200i128);
+    assert_eq!(early, 200);
+
+    // After early release: released_amount=200, vested=300, so releasable = 100.
+    // (releasable = vested - released_amount = 300 - 200 = 100)
+    assert_eq!(client.get_releasable_amount(&sid), 100);
+
+    // Claim the remaining releasable 100
+    let claimed = client.claim(&beneficiary, &sid);
+    assert_eq!(claimed, 100);
+
+    // Total received: 200 (early) + 100 (claim) = 300
+    assert_eq!(token.balance(&beneficiary), 300);
+
+    // Schedule still active: released_amount=300, total=1000
+    let schedule = client.get_schedule(&sid).unwrap();
+    assert_eq!(schedule.status, VestingStatus::Active);
+    assert_eq!(schedule.released_amount, 300);
+}
+
+// ===========================================================================
+// O. Monotonicity property tests (issue #886)
+//
+// Core invariant: for any non-decreasing sequence of timestamps t0 <= t1 <= …
+// the value returned by get_vested_amount (and compute_vested_amount) must
+// also be non-decreasing:
+//
+//   t_i <= t_j  ⟹  vested(t_i) <= vested(t_j)
+//
+// This is a fundamental safety property: a beneficiary's accrued entitlement
+// must never decrease as time advances.  Regression against this invariant
+// would allow, for example, re-claiming already-paid tokens after a ledger
+// rewind scenario or smart-contract logic error.
+//
+// Implementation note:
+//   Soroban's no_std environment does not support `proptest` or `quickcheck`.
+//   We generate deterministic pseudo-random timestamp sequences using a
+//   seeded 64-bit LCG (Numerical Recipes constants) so the test corpus is
+//   reproducible, covers a wide range of timestamp distributions, and
+//   requires no external crates.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// LCG helper — deterministic pseudo-random u64 sequence.
+// Constants from Numerical Recipes (Press et al., 3rd ed.).
+// ---------------------------------------------------------------------------
+
+/// Advances a 64-bit LCG state and returns the new state.
+/// `state` is the full 64-bit register; callers should seed with a non-zero value.
+fn lcg_next(state: u64) -> u64 {
+    state
+        .wrapping_mul(6_364_136_223_846_793_005_u64)
+        .wrapping_add(1_442_695_040_888_963_407_u64)
+}
+
+/// Generates a sorted (non-decreasing), deduplicated sequence of `n` timestamps
+/// sampled from `[lo, hi]` using an LCG seeded with `seed`.
+///
+/// The first element is always `lo` and the last is always `hi` so that edge
+/// boundaries are always exercised.
+fn gen_timestamps(seed: u64, lo: u64, hi: u64, n: usize) -> std::vec::Vec<u64> {
+    assert!(hi >= lo, "hi must be >= lo");
+    assert!(n >= 2, "need at least 2 timestamps");
+
+    let range = hi - lo;
+    let mut state = seed;
+    let mut ts: std::vec::Vec<u64> = std::vec::Vec::with_capacity(n);
+
+    // Always include boundaries so that pre-start, at-start, at-end and
+    // post-end semantics are all exercised.
+    ts.push(lo);
+    ts.push(hi);
+
+    for _ in 2..n {
+        state = lcg_next(state);
+        let offset = if range == 0 { 0 } else { state % (range + 1) };
+        ts.push(lo + offset);
+    }
+
+    ts.sort_unstable();
+    ts
+}
+
+// ---------------------------------------------------------------------------
+// O-1. Linear schedule monotonicity
+// ---------------------------------------------------------------------------
+
+/// Property: vested amount is non-decreasing across a pseudo-random sequence
+/// of 50 timestamps spanning the full lifecycle of a linear schedule (before
+/// start, within the vesting window, and beyond end_time).
+///
+/// Repeats for 10 distinct LCG seeds to widen coverage without blowing up
+/// test runtime.
+#[test]
+fn prop_linear_vested_amount_is_monotonic() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    // Schedule parameters: 1 000 tokens vesting linearly over [100, 500].
+    let total: i128 = 1_000;
+    let start: u64 = 100;
+    let end: u64 = 500;
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &total,
+        &start,
+        &end,
+        &None,
+        &false,
+    );
+
+    // Run the property check for 10 independent seeds.
+    for seed in [
+        0xDEAD_BEEF_u64,
+        0x1234_5678,
+        0xCAFE_BABE,
+        0x0000_0001,
+        0xFFFF_FFFF,
+        0xA5A5_A5A5,
+        0x1111_1111,
+        0x8888_8888,
+        0xFEDC_BA98,
+        0x0102_0304,
+    ] {
+        // Sample from a wider window [0, end + 200] to capture pre/post
+        // boundaries and ensure the "beyond end" cap is exercised.
+        let timestamps = gen_timestamps(seed, 0, end + 200, 50);
+
+        let mut prev_vested: i128 = -1; // sentinel
+        for &ts in &timestamps {
+            set_time(&env, ts);
+            let vested = client.get_vested_amount(&sid);
+
+            if prev_vested >= 0 {
+                assert!(
+                    vested >= prev_vested,
+                    "[Linear monotonicity] seed={:#x} t={}: vested {} < prev {}",
+                    seed,
+                    ts,
+                    vested,
+                    prev_vested,
+                );
+            }
+
+            // Sanity: must always be within [0, total].
+            assert!(
+                vested >= 0 && vested <= total,
+                "[Linear monotonicity] vested {} out of [0, {}] at t={}",
+                vested,
+                total,
+                ts,
+            );
+
+            prev_vested = vested;
+        }
+    }
+}
+
+/// Property: linear schedule WITH a cliff is non-decreasing across timestamps
+/// that deliberately straddle the cliff boundary (timestamps below, at, and
+/// above the cliff are all sampled in the sequence).
+#[test]
+fn prop_linear_with_cliff_vested_amount_is_monotonic() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    // 2 000 tokens, linear [0, 1000], cliff at 400.
+    let total: i128 = 2_000;
+    let start: u64 = 0;
+    let end: u64 = 1_000;
+    let cliff: u64 = 400;
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &total,
+        &start,
+        &end,
+        &Some(cliff),
+        &false,
+    );
+
+    for seed in [
+        0xBEEF_CAFE_u64,
+        0x2345_6789,
+        0x9876_5432,
+        0xAAAA_BBBB,
+        0x5A5A_5A5A,
+    ] {
+        // Sample from [0, end + 100] — ensures cliff straddle and post-end cap.
+        let timestamps = gen_timestamps(seed, 0, end + 100, 60);
+
+        let mut prev_vested: i128 = -1;
+        for &ts in &timestamps {
+            set_time(&env, ts);
+            let vested = client.get_vested_amount(&sid);
+
+            if prev_vested >= 0 {
+                assert!(
+                    vested >= prev_vested,
+                    "[Linear+cliff monotonicity] seed={:#x} t={}: vested {} < prev {}",
+                    seed,
+                    ts,
+                    vested,
+                    prev_vested,
+                );
+            }
+
+            assert!(
+                vested >= 0 && vested <= total,
+                "[Linear+cliff monotonicity] vested {} out of [0, {}] at t={}",
+                vested,
+                total,
+                ts,
+            );
+
+            prev_vested = vested;
+        }
+    }
+}
+
+/// Regression: monotonicity must hold for every individual step in the
+/// timestamp sequence, including single-step transitions from "just below
+/// cliff" to "just at cliff".
+#[test]
+fn prop_linear_cliff_boundary_monotonic() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    // Tight window around the cliff to stress-test the boundary.
+    let total: i128 = 1_000;
+    let start: u64 = 0;
+    let end: u64 = 100;
+    let cliff: u64 = 50;
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &total,
+        &start,
+        &end,
+        &Some(cliff),
+        &false,
+    );
+
+    // Dense sweep ±2 around the cliff boundary (48..52) plus full range.
+    let check_points: std::vec::Vec<u64> = (0u64..=110).collect();
+
+    let mut prev: i128 = -1;
+    for &ts in &check_points {
+        set_time(&env, ts);
+        let vested = client.get_vested_amount(&sid);
+
+        if prev >= 0 {
+            assert!(
+                vested >= prev,
+                "[Linear cliff boundary] t={}: vested {} decreased from {}",
+                ts,
+                vested,
+                prev,
+            );
+        }
+        prev = vested;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// O-2. Cliff schedule monotonicity
+// ---------------------------------------------------------------------------
+
+/// Property: a pure cliff schedule's vested amount is non-decreasing — it is
+/// 0 before `cliff_time` and jumps to `total_amount` at the cliff, never
+/// decreasing afterwards.
+#[test]
+fn prop_cliff_vested_amount_is_monotonic() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    let total: i128 = 500;
+    let cliff_ts: u64 = 200;
+
+    set_time(&env, 0);
+    let sid = client.create_cliff_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &total,
+        &cliff_ts,
+        &false,
+    );
+
+    for seed in [
+        0x1357_2468_u64,
+        0xFADE_D00D,
+        0x0BAD_C0DE,
+        0x1001_0010,
+        0xC0C0_C0C0,
+    ] {
+        // Sample from [0, cliff + 300] — captures pre-cliff, exact-cliff,
+        // and post-cliff regions.
+        let timestamps = gen_timestamps(seed, 0, cliff_ts + 300, 50);
+
+        let mut prev_vested: i128 = -1;
+        for &ts in &timestamps {
+            set_time(&env, ts);
+            let vested = client.get_vested_amount(&sid);
+
+            if prev_vested >= 0 {
+                assert!(
+                    vested >= prev_vested,
+                    "[Cliff monotonicity] seed={:#x} t={}: vested {} < prev {}",
+                    seed,
+                    ts,
+                    vested,
+                    prev_vested,
+                );
+            }
+
+            assert!(
+                vested == 0 || vested == total,
+                "[Cliff monotonicity] vested {} is not 0 or total={} at t={}",
+                vested,
+                total,
+                ts,
+            );
+
+            prev_vested = vested;
+        }
+    }
+}
+
+/// Dense sweep through the one-second transition window around cliff_time to
+/// confirm the step is monotonic (0 → total, never total → 0).
+#[test]
+fn prop_cliff_boundary_step_is_monotonic() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    let total: i128 = 750;
+    let cliff_ts: u64 = 1_000;
+
+    set_time(&env, 0);
+    let sid = client.create_cliff_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &total,
+        &cliff_ts,
+        &false,
+    );
+
+    let mut prev: i128 = -1;
+    // Sweep [995..1005] — straddles the cliff boundary with single-second steps.
+    for ts in 995u64..=1_005 {
+        set_time(&env, ts);
+        let vested = client.get_vested_amount(&sid);
+
+        if prev >= 0 {
+            assert!(
+                vested >= prev,
+                "[Cliff boundary] t={}: vested {} decreased from {}",
+                ts,
+                vested,
+                prev,
+            );
+        }
+        prev = vested;
+    }
+
+    // Verify the exact values at key points.
+    set_time(&env, cliff_ts - 1);
+    assert_eq!(client.get_vested_amount(&sid), 0);
+    set_time(&env, cliff_ts);
+    assert_eq!(client.get_vested_amount(&sid), total);
+}
+
+// ---------------------------------------------------------------------------
+// O-3. Custom schedule monotonicity
+// ---------------------------------------------------------------------------
+
+/// Property: a custom step-function schedule's vested amount is non-decreasing
+/// across pseudo-random timestamps that straddle each checkpoint boundary.
+///
+/// The schedule uses three checkpoints, so the interesting regions are:
+///   [0, cp1.time)  →  0 vested
+///   [cp1.time, cp2.time)  →  cp1.cumulative_amount vested
+///   [cp2.time, cp3.time)  →  cp2.cumulative_amount vested
+///   [cp3.time, ∞)  →  total vested
+#[test]
+fn prop_custom_vested_amount_is_monotonic() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    let total: i128 = 900;
+    let mut checkpoints = soroban_sdk::Vec::new(&env);
+    checkpoints.push_back(CustomCheckpoint {
+        time: 100,
+        cumulative_amount: 300,
+    });
+    checkpoints.push_back(CustomCheckpoint {
+        time: 200,
+        cumulative_amount: 600,
+    });
+    checkpoints.push_back(CustomCheckpoint {
+        time: 300,
+        cumulative_amount: 900,
+    });
+
+    set_time(&env, 0);
+    let sid = client.create_custom_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &total,
+        &checkpoints,
+        &false,
+    );
+
+    for seed in [
+        0xDECA_FBAD_u64,
+        0x1234_ABCD,
+        0x5678_EF01,
+        0xABCD_1234,
+        0x0F0F_0F0F,
+        0xF0F0_F0F0,
+        0x5555_AAAA,
+        0xAAAA_5555,
+    ] {
+        // Sample from [0, 400] — covers all checkpoint regions plus post-end.
+        let timestamps = gen_timestamps(seed, 0, 400, 60);
+
+        let mut prev_vested: i128 = -1;
+        for &ts in &timestamps {
+            set_time(&env, ts);
+            let vested = client.get_vested_amount(&sid);
+
+            if prev_vested >= 0 {
+                assert!(
+                    vested >= prev_vested,
+                    "[Custom monotonicity] seed={:#x} t={}: vested {} < prev {}",
+                    seed,
+                    ts,
+                    vested,
+                    prev_vested,
+                );
+            }
+
+            assert!(
+                vested >= 0 && vested <= total,
+                "[Custom monotonicity] vested {} out of [0, {}] at t={}",
+                vested,
+                total,
+                ts,
+            );
+
+            prev_vested = vested;
+        }
+    }
+}
+
+/// Dense sweep through each checkpoint boundary confirms the step-function
+/// transitions are always non-decreasing (never step downward).
+#[test]
+fn prop_custom_checkpoint_boundaries_monotonic() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    let total: i128 = 600;
+    let mut checkpoints = soroban_sdk::Vec::new(&env);
+    checkpoints.push_back(CustomCheckpoint {
+        time: 50,
+        cumulative_amount: 200,
+    });
+    checkpoints.push_back(CustomCheckpoint {
+        time: 100,
+        cumulative_amount: 400,
+    });
+    checkpoints.push_back(CustomCheckpoint {
+        time: 150,
+        cumulative_amount: 600,
+    });
+
+    set_time(&env, 0);
+    let sid = client.create_custom_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &total,
+        &checkpoints,
+        &false,
+    );
+
+    // Dense sweep [0..200] with single-second steps.
+    let mut prev: i128 = -1;
+    for ts in 0u64..=200 {
+        set_time(&env, ts);
+        let vested = client.get_vested_amount(&sid);
+
+        if prev >= 0 {
+            assert!(
+                vested >= prev,
+                "[Custom boundary] t={}: vested {} decreased from {}",
+                ts,
+                vested,
+                prev,
+            );
+        }
+        prev = vested;
+    }
+
+    // Spot-check expected step values.
+    let cases: &[(u64, i128)] = &[
+        (0, 0),
+        (49, 0),
+        (50, 200),
+        (99, 200),
+        (100, 400),
+        (149, 400),
+        (150, 600),
+        (999, 600),
+    ];
+    for &(ts, expected) in cases {
+        set_time(&env, ts);
+        assert_eq!(
+            client.get_vested_amount(&sid),
+            expected,
+            "[Custom boundary] unexpected vested at t={}",
+            ts,
+        );
+    }
+}
+
+/// Property: a custom schedule with a single checkpoint is monotonic — 0
+/// before the checkpoint, `total_amount` at and after.
+#[test]
+fn prop_custom_single_checkpoint_is_monotonic() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    let total: i128 = 300;
+    let mut checkpoints = soroban_sdk::Vec::new(&env);
+    checkpoints.push_back(CustomCheckpoint {
+        time: 77,
+        cumulative_amount: 300,
+    });
+
+    set_time(&env, 0);
+    let sid = client.create_custom_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &total,
+        &checkpoints,
+        &false,
+    );
+
+    let timestamps = gen_timestamps(0xBAAD_F00D, 0, 200, 40);
+    let mut prev: i128 = -1;
+    for &ts in &timestamps {
+        set_time(&env, ts);
+        let vested = client.get_vested_amount(&sid);
+
+        if prev >= 0 {
+            assert!(
+                vested >= prev,
+                "[Custom single-cp] t={}: vested {} < prev {}",
+                ts,
+                vested,
+                prev,
+            );
+        }
+        prev = vested;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// O-4. Cross-kind monotonicity with large / extreme values
+// ---------------------------------------------------------------------------
+
+/// Property: monotonicity holds for a linear schedule with total near i128::MAX.
+/// The overflow-safe interpolation in compute_vested_amount must not produce a
+/// non-monotonic result at any timestamp.
+#[test]
+fn prop_linear_large_total_is_monotonic() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    let asset_admin = soroban_sdk::token::StellarAssetClient::new(&env, &token.address);
+    let total: i128 = i128::MAX / 4;
+    asset_admin.mint(&employer, &total);
+
+    let start: u64 = 0;
+    let end: u64 = 10_000;
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &total,
+        &start,
+        &end,
+        &None,
+        &false,
+    );
+
+    let timestamps = gen_timestamps(0xFEED_FACE, 0, end + 500, 80);
+    let mut prev: i128 = -1;
+    for &ts in &timestamps {
+        set_time(&env, ts);
+        let vested = client.get_vested_amount(&sid);
+
+        if prev >= 0 {
+            assert!(
+                vested >= prev,
+                "[Linear large-total monotonicity] t={}: vested {} < prev {}",
+                ts,
+                vested,
+                prev,
+            );
+        }
+        assert!(
+            vested >= 0 && vested <= total,
+            "[Linear large-total monotonicity] vested {} out of [0, {}] at t={}",
+            vested,
+            total,
+            ts,
+        );
+        prev = vested;
+    }
+}
+
+/// Property: monotonicity holds for a custom schedule whose checkpoints are
+/// very closely spaced (adjacent timestamps), testing the off-by-one region
+/// around checkpoint transitions.
+#[test]
+fn prop_custom_dense_checkpoints_monotonic() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    // 5 checkpoints one second apart.
+    let total: i128 = 500;
+    let mut checkpoints = soroban_sdk::Vec::new(&env);
+    for i in 1u64..=5 {
+        checkpoints.push_back(CustomCheckpoint {
+            time: i,
+            cumulative_amount: (i as i128) * 100,
+        });
+    }
+
+    set_time(&env, 0);
+    let sid = client.create_custom_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &total,
+        &checkpoints,
+        &false,
+    );
+
+    // Dense sweep [0..10].
+    let mut prev: i128 = -1;
+    for ts in 0u64..=10 {
+        set_time(&env, ts);
+        let vested = client.get_vested_amount(&sid);
+
+        if prev >= 0 {
+            assert!(
+                vested >= prev,
+                "[Custom dense checkpoints] t={}: vested {} < prev {}",
+                ts,
+                vested,
+                prev,
+            );
+        }
+        prev = vested;
+    }
 }

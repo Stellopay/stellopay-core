@@ -9,9 +9,8 @@
 //!
 //! # Role Model
 //! - **Admin**: Deploys and initializes the contract (one-time).
-//! - **Org Owner**: Any authenticated address that creates an organization.
-//!   Only the org owner may create departments within the org and manage
-//!   all employee assignments within that org.
+//! - **Org Owner**: Any authenticated address that creates an organization. Only the org owner may
+//!   create departments within the org and manage all employee assignments within that org.
 //!
 //! # Storage Layout (for integrators)
 //! | Key                                  | Value               | Description                       |
@@ -27,6 +26,7 @@
 //! | `EmployeeInDepartment(dept_id, addr)`| `()`               | Membership flag                   |
 //! | `EmployeeDepartment(addr, org_id)`   | `u128`              | Employee → current dept in org    |
 //! | `DepartmentEmployees(dept_id)`       | `Vec<Address>`      | All employees in a dept           |
+//! | `OrgByName(name)`                    | `u128`              | Reverse index: name → org_id (enforces name uniqueness) |
 
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
 
@@ -63,6 +63,11 @@ enum StorageKey {
     EmployeeDepartment(Address, u128),
     /// List of employee addresses in a department: dept_id -> Vec<Address>
     DepartmentEmployees(u128),
+    /// Reverse index enforcing organization name uniqueness: name -> org_id.
+    /// Presence of this entry under `name` indicates the name is already claimed
+    /// by the org whose ID matches the stored value. Acts as the unique-organization-id
+    /// guard for `create_organization`.
+    OrgByName(soroban_sdk::Symbol),
 }
 
 /// Organization record
@@ -125,18 +130,50 @@ impl DepartmentManagerContract {
 
     /// Creates a new organization. The caller becomes the **org owner**.
     ///
+    /// # Uniqueness Invariant (Issue #917)
+    /// Each `name` is **globally unique** across the entire contract. If `name`
+    /// is already claimed by an existing organization (regardless of owner), the
+    /// call is rejected and **all state mutations are rolled back**, so the
+    /// original organization's record and its `OrgDepartments` tree are left
+    /// fully intact. This guards against a re-creation that would otherwise
+    /// reset or overwrite the org's department tree.
+    ///
+    /// Symbols are case-sensitive in Soroban, so `"Acme"` and `"acme"` are
+    /// distinct identifiers. There is no `delete_organization`, so claiming a
+    /// name locks it permanently for the lifetime of the contract.
+    ///
     /// # Arguments
     /// * `owner` - Caller (must authenticate); becomes org owner.
-    /// * `name`  - Symbol name for the organization.
+    /// * `name`  - Symbol name for the organization (must be unique).
     ///
     /// # Returns
     /// The new organization ID (starts at 1, increments by 1).
+    ///
+    /// # Panics
+    /// - `"Organization name already in use"` – `name` already maps to an existing organization via
+    ///   the `OrgByName` reverse index.
+    /// - `"Contract not initialized"` – `initialize` was not called.
     ///
     /// # Events
     /// Publishes `("org_created", org_id)` on success.
     pub fn create_organization(env: Env, owner: Address, name: soroban_sdk::Symbol) -> u128 {
         owner.require_auth();
         Self::require_initialized(&env);
+
+        // === Unique-organization-id guard ===
+        // Reject BEFORE allocating any state (NextOrgId, Organization record,
+        // OrgDepartments Vec). On panic, Soroban rolls back storage writes from
+        // this call, so the check is also safe if placed later; doing it first
+        // keeps the invariant explicit and prevents wasting an org_id on a
+        // duplicate-name attempt.
+        assert!(
+            env.storage()
+                .persistent()
+                .get::<_, u128>(&StorageKey::OrgByName(name.clone()))
+                .is_none(),
+            "Organization name already in use"
+        );
+
         let next_id: u128 = env
             .storage()
             .persistent()
@@ -147,7 +184,7 @@ impl DepartmentManagerContract {
             .set(&StorageKey::NextOrgId, &(next_id + 1));
         let org = Organization {
             id: next_id,
-            name,
+            name: name.clone(),
             owner: owner.clone(),
             created_at: env.ledger().timestamp(),
         };
@@ -158,6 +195,12 @@ impl DepartmentManagerContract {
         env.storage()
             .persistent()
             .set(&StorageKey::OrgDepartments(next_id), &empty);
+
+        // Register the name in the reverse index so future calls with the same
+        // name are rejected by the guard above.
+        env.storage()
+            .persistent()
+            .set(&StorageKey::OrgByName(name), &next_id);
 
         env.events()
             .publish((symbol_short!("org_crtd"), next_id), next_id);
@@ -493,19 +536,13 @@ impl DepartmentManagerContract {
     ///
     /// # Arguments
     /// * `department_id` - The department ID.
-    pub fn get_department_report(
-        env: Env,
-        department_id: u128,
-    ) -> (u32, Vec<u128>, Vec<Address>) {
+    pub fn get_department_report(env: Env, department_id: u128) -> (u32, Vec<u128>, Vec<Address>) {
         Self::collect_descendant_employees(&env, department_id)
     }
 
     /// Recursively collects all employee addresses from `dept_id` and its
     /// full descendant subtree.  Returns `(count, direct_children, employees)`.
-    fn collect_descendant_employees(
-        env: &Env,
-        dept_id: u128,
-    ) -> (u32, Vec<u128>, Vec<Address>) {
+    fn collect_descendant_employees(env: &Env, dept_id: u128) -> (u32, Vec<u128>, Vec<Address>) {
         let children: Vec<u128> = env
             .storage()
             .persistent()
@@ -524,8 +561,7 @@ impl DepartmentManagerContract {
         }
 
         for child_id in children.iter() {
-            let (_, _, child_employees) =
-                Self::collect_descendant_employees(env, child_id);
+            let (_, _, child_employees) = Self::collect_descendant_employees(env, child_id);
             for emp in child_employees.iter() {
                 all_employees.push_back(emp);
             }
@@ -647,13 +683,7 @@ impl DepartmentManagerContract {
     ///
     /// # Events
     /// Publishes `("dept_merged", source)` with target as data on success.
-    pub fn merge_departments(
-        env: Env,
-        caller: Address,
-        org_id: u128,
-        source: u128,
-        target: u128,
-    ) {
+    pub fn merge_departments(env: Env, caller: Address, org_id: u128, source: u128, target: u128) {
         caller.require_auth();
         Self::require_initialized(&env);
 
@@ -679,10 +709,7 @@ impl DepartmentManagerContract {
         assert!(org.owner == caller, "Not organization owner");
 
         assert!(source != target, "Cannot merge a department into itself");
-        assert!(
-            !Self::has_cycle(&env, source, target),
-            "Cycle detected"
-        );
+        assert!(!Self::has_cycle(&env, source, target), "Cycle detected");
 
         // Move all members from source to target
         let source_employees: Vec<Address> = env
@@ -691,11 +718,10 @@ impl DepartmentManagerContract {
             .get(&StorageKey::DepartmentEmployees(source))
             .unwrap_or_else(|| Vec::new(&env));
         for emp in source_employees.iter() {
-            Self::remove_employee_from_dept_internal(&env, source, emp);
-            env.storage().persistent().set(
-                &StorageKey::EmployeeInDepartment(target, emp.clone()),
-                &(),
-            );
+            Self::remove_employee_from_dept_internal(&env, source, &emp);
+            env.storage()
+                .persistent()
+                .set(&StorageKey::EmployeeInDepartment(target, emp.clone()), &());
             env.storage().persistent().set(
                 &StorageKey::EmployeeDepartment(emp.clone(), org_id),
                 &target,
@@ -721,19 +747,19 @@ impl DepartmentManagerContract {
             let mut child: Department = env
                 .storage()
                 .persistent()
-                .get(&StorageKey::Department(*child_id))
+                .get(&StorageKey::Department(child_id))
                 .expect("Department not found");
             child.parent_id = Some(target);
             env.storage()
                 .persistent()
-                .set(&StorageKey::Department(*child_id), &child);
+                .set(&StorageKey::Department(child_id), &child);
 
             let mut target_children: Vec<u128> = env
                 .storage()
                 .persistent()
                 .get(&StorageKey::DepartmentChildren(target))
                 .unwrap_or_else(|| Vec::new(&env));
-            target_children.push_back(*child_id);
+            target_children.push_back(child_id);
             env.storage()
                 .persistent()
                 .set(&StorageKey::DepartmentChildren(target), &target_children);
@@ -748,7 +774,7 @@ impl DepartmentManagerContract {
                 .unwrap_or_else(|| Vec::new(&env));
             let mut i = 0u32;
             while i < parent_children.len() {
-                if parent_children.get(i) == Some(&source) {
+                if parent_children.get(i) == Some(source) {
                     parent_children.remove(i);
                     break;
                 }
@@ -767,7 +793,7 @@ impl DepartmentManagerContract {
             .unwrap_or_else(|| Vec::new(&env));
         let mut i = 0u32;
         while i < org_depts.len() {
-            if org_depts.get(i) == Some(&source) {
+            if org_depts.get(i) == Some(source) {
                 org_depts.remove(i);
                 break;
             }
@@ -789,7 +815,7 @@ impl DepartmentManagerContract {
             .remove(&StorageKey::DepartmentEmployees(source));
 
         env.events()
-            .publish((symbol_short!("dept_merged", source), source), target);
+            .publish((symbol_short!("dept_mrg"), source), target);
     }
 
     // -------------------------------------------------------------------------
@@ -882,14 +908,14 @@ impl DepartmentManagerContract {
     /// # Arguments
     /// * `department_id` - Department to query
     /// * `start`         - Zero-based index of the first employee to return
-    /// * `limit`         - Maximum number of employees to return; clamped to
-    ///                     [`MAX_PAGE_SIZE`] (50) to bound instruction usage
+    /// * `limit`         - Maximum number of employees to return; clamped to [`MAX_PAGE_SIZE`] (50)
+    ///   to bound instruction usage
     ///
     /// # Returns
     /// A tuple `(page, next_start)` where:
     /// - `page`       – the slice of employee addresses for this page
-    /// - `next_start` – the index to pass as `start` on the next call, or
-    ///                  `None` when the last page has been reached
+    /// - `next_start` – the index to pass as `start` on the next call, or `None` when the last page
+    ///   has been reached
     ///
     /// # Security
     /// Clamping `limit` to `MAX_PAGE_SIZE` prevents unbounded-return DoS.
