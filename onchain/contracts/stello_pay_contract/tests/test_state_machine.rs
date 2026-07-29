@@ -647,10 +647,9 @@ fn test_pause_created_payroll_panics() {
     client.pause_agreement(&id);
 }
 
-/// Pausing an already Paused agreement must be rejected.
+/// Pausing an already Paused agreement must return AgreementPaused error.
 #[test]
-#[should_panic]
-fn test_pause_paused_agreement_panics() {
+fn test_pause_paused_agreement_rejected() {
     let env = create_test_env();
     let (_cid, client) = setup_contract(&env);
     let employer = create_address(&env);
@@ -661,13 +660,14 @@ fn test_pause_paused_agreement_panics() {
     client.add_employee_to_agreement(&id, &employee, &SALARY);
     client.activate_agreement(&id);
     client.pause_agreement(&id);
-    client.pause_agreement(&id);
+
+    let result = client.try_pause_agreement(&id);
+    assert!(result.is_err());
 }
 
-/// Pausing a Cancelled agreement must be rejected.
+/// Pausing a Cancelled agreement must be rejected with AgreementPaused error.
 #[test]
-#[should_panic]
-fn test_pause_cancelled_agreement_panics() {
+fn test_pause_cancelled_agreement_rejected() {
     let env = create_test_env();
     let (_cid, client) = setup_contract(&env);
     let employer = create_address(&env);
@@ -678,7 +678,8 @@ fn test_pause_cancelled_agreement_panics() {
     client.add_employee_to_agreement(&id, &employee, &SALARY);
     client.activate_agreement(&id);
     client.cancel_agreement(&id);
-    client.pause_agreement(&id);
+    let result = client.try_pause_agreement(&id);
+    assert!(result.is_err());
 }
 
 /// Resuming an Active agreement must be rejected.

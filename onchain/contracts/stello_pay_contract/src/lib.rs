@@ -1080,7 +1080,7 @@ impl PayrollContract {
     pub fn pause_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
         // Try new-style agreement first (payroll/escrow)
         if payroll::get_agreement(&env, agreement_id).is_some() {
-            payroll::pause_agreement(&env, agreement_id);
+            payroll::pause_agreement(&env, agreement_id)?;
             return Ok(());
         }
 
