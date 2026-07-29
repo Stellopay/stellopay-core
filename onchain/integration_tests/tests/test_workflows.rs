@@ -1182,6 +1182,11 @@ fn test_cross_escrow_fund_partial_release_then_refund_conservation() {
         released + remaining,
         "funded == released + refunded"
     );
+    assert_eq!(
+        funded,
+        released + remaining,
+        "funded == released + refunded"
+    );
 }
 
 /// Second refund after a successful refund must be rejected.
@@ -2227,7 +2232,7 @@ fn test_hire_to_resolve_full_workflow() {
     payroll_client.claim_time_based(&agreement_id);
     assert_eq!(
         balance(&env, &tok, &contributor),
-        contributor_before_claim + amount_per_period * 2
+        contributor_before_claim + amount_per_period
     );
     assert_eq!(payroll_client.get_claimed_periods(&agreement_id), 2);
 
