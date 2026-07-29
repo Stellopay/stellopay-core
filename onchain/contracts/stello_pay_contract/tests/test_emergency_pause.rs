@@ -378,7 +378,10 @@ fn test_bulk_pause_all_active_agreements() {
     // Confirm all are Active
     for aid in [aid1, aid2, aid3] {
         let a = client.get_agreement(&aid).unwrap();
-        assert_eq!(a.status, stello_pay_contract::storage::AgreementStatus::Active);
+        assert_eq!(
+            a.status,
+            stello_pay_contract::storage::AgreementStatus::Active
+        );
     }
 
     let paused = client.pause_employer_agreements(&employer);
@@ -387,7 +390,10 @@ fn test_bulk_pause_all_active_agreements() {
     // Confirm all are now Paused
     for aid in [aid1, aid2, aid3] {
         let a = client.get_agreement(&aid).unwrap();
-        assert_eq!(a.status, stello_pay_contract::storage::AgreementStatus::Paused);
+        assert_eq!(
+            a.status,
+            stello_pay_contract::storage::AgreementStatus::Paused
+        );
     }
 }
 
@@ -414,7 +420,10 @@ fn test_bulk_unpause_all_paused_agreements() {
     // Confirm all are Active again
     for aid in [aid1, aid2] {
         let a = client.get_agreement(&aid).unwrap();
-        assert_eq!(a.status, stello_pay_contract::storage::AgreementStatus::Active);
+        assert_eq!(
+            a.status,
+            stello_pay_contract::storage::AgreementStatus::Active
+        );
     }
 }
 
@@ -438,11 +447,17 @@ fn test_bulk_pause_respects_employer_boundary() {
 
     // employer_a's agreement is paused
     let a = client.get_agreement(&aid_a).unwrap();
-    assert_eq!(a.status, stello_pay_contract::storage::AgreementStatus::Paused);
+    assert_eq!(
+        a.status,
+        stello_pay_contract::storage::AgreementStatus::Paused
+    );
 
     // employer_b's agreement is still Active
     let b = client.get_agreement(&aid_b).unwrap();
-    assert_eq!(b.status, stello_pay_contract::storage::AgreementStatus::Active);
+    assert_eq!(
+        b.status,
+        stello_pay_contract::storage::AgreementStatus::Active
+    );
 }
 
 #[test]
@@ -518,10 +533,16 @@ fn test_bulk_pause_skips_non_active_agreements() {
 
     // Only the Active one changed
     let a = client.get_agreement(&aid_active).unwrap();
-    assert_eq!(a.status, stello_pay_contract::storage::AgreementStatus::Paused);
+    assert_eq!(
+        a.status,
+        stello_pay_contract::storage::AgreementStatus::Paused
+    );
 
     let c = client.get_agreement(&aid_created).unwrap();
-    assert_eq!(c.status, stello_pay_contract::storage::AgreementStatus::Created);
+    assert_eq!(
+        c.status,
+        stello_pay_contract::storage::AgreementStatus::Created
+    );
 
     let cancelled = client.get_agreement(&aid_cancelled).unwrap();
     assert_eq!(
@@ -555,14 +576,17 @@ fn test_bulk_pause_milestone_agreements() {
     // Both milestone agreements should now be Paused
     use stello_pay_contract::storage::MilestoneKey;
     for aid in [aid1, aid2] {
-        let status: stello_pay_contract::storage::AgreementStatus = env
-            .as_contract(&client.address, || {
+        let status: stello_pay_contract::storage::AgreementStatus =
+            env.as_contract(&client.address, || {
                 env.storage()
                     .persistent()
                     .get(&MilestoneKey::Status(aid))
                     .unwrap()
             });
-        assert_eq!(status, stello_pay_contract::storage::AgreementStatus::Paused);
+        assert_eq!(
+            status,
+            stello_pay_contract::storage::AgreementStatus::Paused
+        );
     }
 }
 
@@ -588,12 +612,15 @@ fn test_bulk_unpause_milestone_agreements() {
 
     // Should be Active now
     use stello_pay_contract::storage::MilestoneKey;
-    let status: stello_pay_contract::storage::AgreementStatus = env
-        .as_contract(&client.address, || {
+    let status: stello_pay_contract::storage::AgreementStatus =
+        env.as_contract(&client.address, || {
             env.storage()
                 .persistent()
                 .get(&MilestoneKey::Status(aid))
                 .unwrap()
         });
-    assert_eq!(status, stello_pay_contract::storage::AgreementStatus::Active);
+    assert_eq!(
+        status,
+        stello_pay_contract::storage::AgreementStatus::Active
+    );
 }

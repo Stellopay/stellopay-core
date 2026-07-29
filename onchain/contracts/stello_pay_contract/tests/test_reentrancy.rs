@@ -12,7 +12,7 @@ use soroban_sdk::{
     Address, Env,
 };
 use stello_pay_contract::{
-    storage::{DataKey, PayrollError, StorageKey},
+    storage::{DataKey, DisputeStatus, PayrollError, StorageKey},
     PayrollContract, PayrollContractClient,
 };
 
@@ -524,5 +524,85 @@ fn test_claim_milestone_reentrant_call_rejected_by_claimed_flag() {
     assert!(
         second.is_err(),
         "reentrant or repeated claim_milestone must be rejected due to MilestoneAlreadyClaimed"
+    );
+}
+
+// ============================================================================
+// DISPUTE RESOLUTION REENTRANCY TEST
+//
+// Verifies that the transient reentrancy guard rejects a dispute-resolution
+// payout while a dispute resolution is already in progress. This mirrors the
+// `test_reentrant_claim_payroll_rejected` test but targets the dispute path
+// (`resolve_dispute`), which is a separately-implemented money-movement path
+// with its own reentrancy gap.
+//
+// We simulate the in-progress state by setting the guard in temporary storage
+// (exactly what `acquire_reentrancy_guard` does at the top of `resolve_dispute`),
+// then assert the entry point fails deterministically with `ReentrancyDetected`
+// and that no state changes occur.
+// ============================================================================
+
+/// @notice A reentrant `resolve_dispute` call (guard pre-set) is rejected with
+/// `ReentrancyDetected` and leaves all state unchanged.
+#[test]
+fn test_reentrant_dispute_resolution_rejected() {
+    let env = create_env();
+    let (contract_id, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let contributor = create_address(&env);
+    let arbiter = create_address(&env);
+    let token = create_token(&env);
+
+    client.set_arbiter(&employer, &arbiter);
+
+    let amount_per_period = 1000i128;
+    let agreement_id = client.create_escrow_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &amount_per_period,
+        &ONE_DAY,
+        &4u32,
+    );
+    client.activate_agreement(&agreement_id);
+
+    // Fund the contract so the dispute resolution *could* succeed (the guard is
+    // checked before any transfer, so the funding is for setup completeness).
+    mint(&env, &token, &employer, 4000);
+    TokenClient::new(&env, &token).transfer(&employer, &contract_id, &4000);
+
+    // Raise a dispute (within the grace period at creation time).
+    client.raise_dispute(&employer, &agreement_id);
+
+    // Verify dispute is raised.
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
+
+    // Simulate an in-progress dispute resolution by pre-setting the transient
+    // guard in temporary storage.
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .temporary()
+            .set(&StorageKey::ReentrancyGuard, &true);
+    });
+
+    // Attempt resolve_dispute — the guard must reject before any state change
+    // or token transfer.
+    let pay_employee = 2000i128;
+    let refund_employer = 2000i128;
+    let res = client.try_resolve_dispute(&arbiter, &agreement_id, &pay_employee, &refund_employer);
+    assert_eq!(
+        res,
+        Err(Ok(PayrollError::ReentrancyDetected)),
+        "reentrant dispute resolution must be rejected"
+    );
+
+    // No state changed: dispute status is still Raised.
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised,
+        "dispute status must remain Raised after rejected reentrant call"
     );
 }

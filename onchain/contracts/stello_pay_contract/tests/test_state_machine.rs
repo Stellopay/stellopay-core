@@ -44,6 +44,8 @@
 //! | 35 | State unchanged after failed transition |
 //! | 36 | Multiple pause/resume cycles consistent |
 //! | 37 | Full lifecycle: Created through finalization |
+//! | 38 | Duplicate dispute raise returns specific error |
+//! | 39 | Fresh dispute can be raised again after prior one resolves |
 
 #![cfg(test)]
 #![allow(deprecated)]
@@ -584,6 +586,45 @@ fn test_disputed_direct_claim_time_based_rejected() {
     assert_eq!(a.status, AgreementStatus::Disputed);
 }
 
+/// A fresh `raise_dispute` can succeed after a prior dispute resolves
+/// (same grace window).  Verifies the `== DisputeStatus::Raised` guard correctly
+/// allows re-filing once the active dispute is resolved.
+#[test]
+fn test_raise_dispute_succeeds_after_resolution() {
+    let env = create_test_env();
+    let (cid, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let token = create_token(&env);
+    let employee = create_address(&env);
+    let arbiter = create_address(&env);
+
+    client.set_arbiter(&employer, &arbiter);
+    mint(&env, &token, &cid, SALARY);
+
+    let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
+    client.add_employee_to_agreement(&id, &employee, &SALARY);
+    client.activate_agreement(&id);
+
+    // --- First dispute life-cycle: raise + resolve ---
+    client.raise_dispute(&employer, &id);
+    let a = client.get_agreement(&id).unwrap();
+    assert_eq!(a.status, AgreementStatus::Disputed);
+    assert_eq!(a.dispute_status, DisputeStatus::Raised);
+
+    let half = SALARY / 2;
+    client.resolve_dispute(&arbiter, &id, &half, &half);
+    let a = client.get_agreement(&id).unwrap();
+    assert_eq!(a.status, AgreementStatus::Completed);
+    assert_eq!(a.dispute_status, DisputeStatus::Resolved);
+
+    // --- Second dispute: must succeed (still within ONE_WEEK grace window) ---
+    client.raise_dispute(&employer, &id);
+    let a = client.get_agreement(&id).unwrap();
+    assert_eq!(a.status, AgreementStatus::Disputed);
+    assert_eq!(a.dispute_status, DisputeStatus::Raised);
+    assert!(a.dispute_raised_at.is_some());
+}
+
 // ============================================================================
 // 3. MILESTONE LIFECYCLE TRANSITIONS
 // ============================================================================
@@ -907,9 +948,10 @@ fn test_finalize_before_grace_expiry_panics() {
     client.finalize_grace_period(&id);
 }
 
-/// Raising a dispute when one is already active must return an error.
+/// Raising a dispute when one is already active must return `DisputeAlreadyRaised`.
+/// Verifies the guard rejects a second `raise_dispute` on an already-Disputed agreement.
 #[test]
-fn test_dispute_already_raised_returns_error() {
+fn test_raise_dispute_rejects_duplicate_on_active_dispute() {
     let env = create_test_env();
     let (_cid, client) = setup_contract(&env);
     let employer = create_address(&env);
@@ -921,9 +963,14 @@ fn test_dispute_already_raised_returns_error() {
     client.activate_agreement(&id);
 
     client.raise_dispute(&employer, &id);
+    assert_eq!(client.get_agreement(&id).unwrap().dispute_status, DisputeStatus::Raised);
 
     let result = client.try_raise_dispute(&employer, &id);
-    assert!(result.is_err());
+    assert_eq!(
+        result,
+        Err(Ok(PayrollError::DisputeAlreadyRaised)),
+        "second raise_dispute on an already-Disputed agreement must be rejected with DisputeAlreadyRaised"
+    );
 }
 
 /// Raising a dispute after the grace window from creation has elapsed

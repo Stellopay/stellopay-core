@@ -109,6 +109,36 @@ Floor division means any sub-unit fractional remainder stays with the employee i
 
 **Example:** 15% of 10_001 = 1500.15 → withheld = 1500, net = 8501.
 
+## Zero-Percent Bracket Safety
+
+The contract safely supports 0% tax rates (tax-exempt jurisdictions) without risk of division-by-zero panics.
+
+### Implementation Safety
+
+The withholding calculation divides by the constant `10_000` (basis points), not by the rate itself:
+
+```rust
+let part = gross_amount
+    .checked_mul(rate_bps as i128)
+    .ok_or(TaxError::ArithmeticError)?
+    .checked_div(10_000)  // Constant divisor, never zero
+    .ok_or(TaxError::ArithmeticError)?;
+```
+
+When `rate_bps = 0`, the calculation becomes `gross_amount * 0 / 10_000 = 0`, which is mathematically correct and safe.
+
+### Use Cases
+
+- **Tax-exempt jurisdictions**: Some regions may have 0% income tax for certain income types
+- **Blended calculations**: Employees can have multiple jurisdictions where some are 0% and others are non-zero
+- **Future-proofing**: The design allows legitimate 0% brackets without special handling
+
+### Test Coverage
+
+The test suite includes:
+- `test_zero_percent_bracket_division_safety`: Verifies 0% bracket returns zero withholding without panic
+- `test_zero_percent_bracket_blended_with_non_zero_brackets`: Verifies correct blended calculation when 0% brackets are mixed with non-zero brackets
+
 ## Security Model
 
 | Invariant | Enforcement |

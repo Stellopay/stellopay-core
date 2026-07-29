@@ -122,6 +122,21 @@ pub enum DisputeStatus {
     Expired,
 }
 
+/// Record of a permissionless keeper-driven SLA advance.
+///
+/// Stored on the dispute record so that a full accountability trail of who
+/// triggered each automatic advance — and when — is queryable later.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct KeeperAdvance {
+    /// Address of the keeper who called [`super::DisputeEscalationContract::keeper_advance_stage`].
+    pub keeper: Address,
+    /// Ledger timestamp at which the advance was triggered.
+    pub advanced_at: u64,
+    /// Escalation level at the time of the advance.
+    pub level: EscalationLevel,
+}
+
 /// Holds all relevant information for an active dispute.
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -142,6 +157,10 @@ pub struct DisputeDetails {
     pub outcome: DisputeOutcome,
     /// The reason the dispute was filed.
     pub reason: DisputeReason,
+    /// Ordered history of every [`KeeperAdvance`] call on this dispute.
+    /// Each entry records which keeper triggered the advance, the timestamp,
+    /// and the escalation level at the time of the advance.
+    pub keeper_advances: Vec<KeeperAdvance>,
 }
 
 /// Storage keys for the dispute escalation contract.
