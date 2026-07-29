@@ -98,6 +98,18 @@ Reparents `dept_id` to `new_parent` (or makes it top-level with `None`). `caller
 
 > **Note on subtree moves**: only the moved department's `parent_id` changes. All descendants retain their existing `parent_id` links, so the entire subtree moves atomically.
 
+```rust
+rename_department(caller: Address, dept_id: u128, new_name: Symbol)
+```
+Renames `dept_id` to `new_name`. `caller` must be the org owner. Updates only the department's name field; all employee associations and hierarchy links remain completely unchanged.
+
+**Employee Association Preservation (Issue #1095):**
+The department name is a metadata field stored independently from employee indexes. Renaming does NOT modify:
+- Forward index: `EmployeeDepartment(emp, org_id) → dept_id`
+- Reverse index: `DepartmentEmployees(dept_id) → Vec<Address>`
+
+Therefore, all employee lookups (`get_employee_department`, `get_department_employees`) continue to work identically before and after rename. Department reports and hierarchical queries remain valid.
+
 > **Note on deleting nodes with children**: there is no `delete_department` function. Departments are permanent once created. To "retire" a department, reassign its employees and stop using it.
 
 ---

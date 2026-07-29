@@ -662,6 +662,65 @@ impl DepartmentManagerContract {
             .publish((symbol_short!("dept_mvd"), dept_id), dept_id);
     }
 
+    /// Renames a department while preserving all employee associations and hierarchy.
+    ///
+    /// This operation updates only the department's name field. All employee
+    /// assignments (forward index `EmployeeDepartment` and reverse index
+    /// `DepartmentEmployees`) remain completely unchanged, ensuring that employee
+    /// department lookups continue to resolve correctly after the rename.
+    ///
+    /// # Arguments
+    /// * `caller`    - Must be the **org owner** (must authenticate).
+    /// * `dept_id`   - Department to rename.
+    /// * `new_name`  - New symbol name for the department.
+    ///
+    /// # Panics
+    /// - `"Organization not found"` – org not found.
+    /// - `"Not organization owner"` – caller is not the org owner.
+    /// - `"Department not found"` – dept_id does not exist.
+    ///
+    /// # Events
+    /// Publishes `("dept_renamed", dept_id)` on success with the new name as data.
+    ///
+    /// # Security & Correctness
+    /// **Employee Association Preservation**: The department name is a metadata field
+    /// stored separately from employee indexes. Renaming does not modify:
+    /// - Forward index: `EmployeeDepartment(emp, org_id) → dept_id`
+    /// - Reverse index: `DepartmentEmployees(dept_id) → Vec<Address>`
+    ///
+    /// Therefore, all employee lookups remain valid after rename.
+    pub fn rename_department(
+        env: Env,
+        caller: Address,
+        dept_id: u128,
+        new_name: soroban_sdk::Symbol,
+    ) {
+        caller.require_auth();
+        Self::require_initialized(&env);
+
+        let mut dept: Department = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Department(dept_id))
+            .expect("Department not found");
+
+        let org: Organization = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Organization(dept.org_id))
+            .expect("Organization not found");
+        assert!(org.owner == caller, "Not organization owner");
+
+        // Update the department name
+        dept.name = new_name.clone();
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Department(dept_id), &dept);
+
+        env.events()
+            .publish((symbol_short!("dpt_rn"), dept_id), new_name);
+    }
+
     /// Merges two departments within the same organization.
     ///
     /// Moves all members and child departments from `source` into `target`,
