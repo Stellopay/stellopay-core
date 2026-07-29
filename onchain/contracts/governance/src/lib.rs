@@ -158,14 +158,17 @@ pub struct Proposal {
 
 /// Paginated proposal listing result.
 ///
-/// Contains a slice of proposals and a cursor for fetching the next page.
-/// The cursor is the next proposal ID to start from, or `None` if no more proposals exist.
+/// Contains a slice of proposals and a resume cursor for fetching the next page.
+/// The cursor equals the last proposal ID returned in the page; pass it back as
+/// the exclusive `start` parameter to continue. `None` indicates there are no
+/// more proposals to fetch.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProposalPage {
     /// The proposals in this page.
     pub proposals: Vec<Proposal>,
-    /// The next proposal ID to use as the start cursor for the next page.
+    /// The last proposal ID returned in this page.
+    /// Pass it back as the exclusive `start` cursor for the next page.
     /// `None` indicates there are no more proposals to fetch.
     pub next_cursor: Option<u128>,
 }
@@ -928,9 +931,11 @@ impl GovernanceContract {
     ///
     /// # Cursor-based pagination
     ///
-    /// The returned `next_cursor` contains the last proposal ID fetched. Use this value
-    /// as the `start` parameter for the next page to continue fetching. When `next_cursor`
-    /// is `None`, there are no more proposals to fetch.
+    /// The returned `next_cursor` contains the last proposal ID returned in the page.
+    /// Use this value as the exclusive `start` parameter for the next page to continue
+    /// fetching. When `next_cursor` is `None`, there are no more proposals to fetch.
+    /// This pagination is not snapshot-isolated: proposals created after an earlier page
+    /// may appear on later pages if their IDs are greater than the returned cursor.
     ///
     /// # Status filtering
     ///
@@ -977,7 +982,7 @@ impl GovernanceContract {
         // Clamp limit to MAX_PAGE_SIZE to prevent excessive gas consumption
         let limit = limit.min(MAX_PAGE_SIZE);
 
-        // Get the total number of proposals created to bound the cursor
+        // Get the highest proposal ID created so far to bound the cursor
         let max_id = env
             .storage()
             .persistent()
@@ -1020,10 +1025,8 @@ impl GovernanceContract {
         // Set next_cursor to the last fetched proposal ID if there are more proposals to fetch
         // The caller should use this value as the next start cursor (exclusive)
         if let Some(last_id) = last_fetched_id {
-            // Only set cursor if there are more proposal IDs to check after the last fetched one
-            // Since proposal IDs are 1-indexed and max_id is the next ID to assign,
-            // we have more proposals if last_id + 1 < max_id
-            if last_id + 1 < max_id {
+            // Only set cursor if there are more proposal IDs to check after the last fetched one.
+            if last_id < max_id {
                 next_cursor = Some(last_id);
             }
         }

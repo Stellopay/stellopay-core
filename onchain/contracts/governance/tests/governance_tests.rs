@@ -661,6 +661,77 @@ fn list_proposals_cursor_resume_across_pages() {
 }
 
 #[test]
+fn list_proposals_cursor_resume_after_mid_pagination_creation() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    for _ in 0..4 {
+        setup.governance.create_proposal(
+            &setup.owner,
+            &ProposalKind::ArbiterChange(Address::generate(&env)),
+        );
+    }
+
+    let page1: ProposalPage = setup.governance.list_proposals(&0, &2, &None);
+    assert_eq!(page1.proposals.len(), 2);
+    assert_eq!(page1.proposals.get(0).unwrap().id, 1);
+    assert_eq!(page1.proposals.get(1).unwrap().id, 2);
+    assert_eq!(page1.next_cursor, Some(2));
+
+    let appended_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+    assert_eq!(appended_id, 5);
+
+    let page2: ProposalPage =
+        setup
+            .governance
+            .list_proposals(&page1.next_cursor.unwrap(), &2, &None);
+    assert_eq!(page2.proposals.len(), 2);
+    assert_eq!(page2.proposals.get(0).unwrap().id, 3);
+    assert_eq!(page2.proposals.get(1).unwrap().id, 4);
+    assert_eq!(page2.next_cursor, Some(4));
+
+    let page3: ProposalPage =
+        setup
+            .governance
+            .list_proposals(&page2.next_cursor.unwrap(), &2, &None);
+    assert_eq!(page3.proposals.len(), 1);
+    assert_eq!(page3.proposals.get(0).unwrap().id, appended_id);
+    assert!(page3.next_cursor.is_none());
+}
+
+#[test]
+fn list_proposals_paginated_traversal_returns_each_proposal_exactly_once() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    for _ in 0..5 {
+        setup.governance.create_proposal(
+            &setup.owner,
+            &ProposalKind::ArbiterChange(Address::generate(&env)),
+        );
+    }
+
+    let mut all_ids = Vec::new(&env);
+    let mut cursor = Some(0u128);
+
+    while let Some(start) = cursor {
+        let page: ProposalPage = setup.governance.list_proposals(&start, &2, &None);
+        for i in 0..page.proposals.len() {
+            all_ids.push_back(page.proposals.get(i).unwrap().id);
+        }
+        cursor = page.next_cursor;
+    }
+
+    assert_eq!(all_ids.len(), 5);
+    for i in 0..5 {
+        assert_eq!(all_ids.get(i).unwrap(), (i + 1) as u128);
+    }
+}
+
+#[test]
 fn list_proposals_start_beyond_max_id() {
     let env = create_env();
     let setup = setup(&env);
@@ -1255,7 +1326,7 @@ fn non_proposer_cannot_cancel_proposal() {
     let res = setup
         .governance
         .try_proposer_cancel_proposal(&setup.owner, &proposal_id);
-    assert_eq!(res, Err(Ok(GovernanceError::ProposalNotActive)));
+    assert_eq!(res, Err(Ok(GovernanceError::NotOwner)));
 }
 
 // ---------------------------------------------------------------------------
