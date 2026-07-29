@@ -1009,3 +1009,107 @@ fn matured_operation_is_never_stuck_in_ambiguous_state() {
     // --- queued_count is consistent: both ops resolved, count is 0 -------------
     assert_eq!(client.get_queued_count(), 0u32);
 }
+
+// ─── Group I: Independent timer after cancel-then-requeue (issue #1100) ──────
+//
+// Security invariant: after cancelling a queued operation, a fresh `queue`
+// call for the same caller/amount must start an entirely new, independent
+// timelock window — the new operation's earliest-execution time must be
+// computed from the *second* `queue` call's timestamp, not the first.
+// Additionally, the cancelled operation must remain unexecutable even after
+// the new operation's window opens.
+
+/// Verifies that after cancel-then-requeue the new operation's eta is based
+/// on the second queue timestamp, and the cancelled first operation stays
+/// unexecutable even after the second operation matures.
+#[test]
+fn independent_timer_after_cancel_then_requeue() {
+    let env = create_env();
+    let (client, admin) = setup(&env); // delay = 60s
+
+    // 1. Capture the first timestamp and queue op1.
+    let t0 = env.ledger().timestamp();
+    let kind = withdrawal_kind(&env);
+    let op_id1 = client.queue(&admin, &kind);
+    let op1: TimelockedOperation = client.get_operation(&op_id1).unwrap();
+
+    // op1.eta must be based on t0.
+    assert_eq!(op1.created_at, t0);
+    assert_eq!(op1.eta, t0 + 60);
+
+    // 2. Advance time by 30 seconds (before op1's eta) and cancel.
+    advance_time(&env, 30);
+    let t_cancel = env.ledger().timestamp();
+    assert_eq!(t_cancel, t0 + 30);
+
+    client.cancel(&admin, &op_id1);
+    let op1_cancelled: TimelockedOperation = client.get_operation(&op_id1).unwrap();
+    assert_eq!(op1_cancelled.status, OperationStatus::Cancelled);
+    assert_eq!(op1_cancelled.cancelled_at, Some(t_cancel));
+
+    // 3. Queue a fresh operation at t_cancel.
+    let op_id2 = client.queue(&admin, &kind);
+    let op2: TimelockedOperation = client.get_operation(&op_id2).unwrap();
+
+    // 4. op2 must have a brand-new timer.
+    //    eta should be t_cancel + 60, NOT t0 + 60 (which would imply the
+    //    cancelled operation's time was reused).
+    assert_eq!(
+        op2.created_at, t_cancel,
+        "New operation must be timestamped from the second queue call"
+    );
+    assert_eq!(
+        op2.eta, t_cancel + 60,
+        "New operation's eta must be computed from the second queue timestamp, not the first"
+    );
+
+    // op2 must also get a new distinct id.
+    assert!(
+        op_id2 > op_id1,
+        "Re-queued operation must receive a new monotone id"
+    );
+
+    // 5. Advance to t0 + 61 — past op1's original eta but before op2's eta.
+    //    op1 is already cancelled — execution must be rejected even though
+    //    its original eta has passed.
+    let now = env.ledger().timestamp();
+    let delta_to_past_op1_eta = (op1.eta + 1).saturating_sub(now);
+    advance_time(&env, delta_to_past_op1_eta);
+    let t_after_op1_eta = env.ledger().timestamp();
+    assert!(
+        t_after_op1_eta >= op1.eta,
+        "Ledger should be past op1's original eta"
+    );
+    assert!(
+        t_after_op1_eta < op2.eta,
+        "Ledger should still be before op2's eta"
+    );
+
+    let res_execute_cancelled = client.try_execute(&admin, &op_id1);
+    assert_eq!(
+        res_execute_cancelled,
+        Err(Ok(TimelockError::AlreadyExecutedOrCancelled)),
+        "Cancelled operation must not be executable even after its original eta passes"
+    );
+
+    // 6. Advance past op2's eta and execute.
+    let now2 = env.ledger().timestamp();
+    let delta_to_past_op2_eta = (op2.eta + 1).saturating_sub(now2);
+    advance_time(&env, delta_to_past_op2_eta);
+    assert!(
+        env.ledger().timestamp() >= op2.eta,
+        "Ledger should be past op2's eta"
+    );
+
+    client.execute(&admin, &op_id2);
+    let op2_executed: TimelockedOperation = client.get_operation(&op_id2).unwrap();
+    assert_eq!(op2_executed.status, OperationStatus::Executed);
+    assert!(op2_executed.executed_at.is_some());
+
+    // 7. queued_count must be 0 — both ops are terminal.
+    assert_eq!(
+        client.get_queued_count(),
+        0u32,
+        "Both operations resolved; queued count must be zero"
+    );
+}
