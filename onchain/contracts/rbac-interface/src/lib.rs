@@ -8,17 +8,15 @@
 //! Every method on [`RbacContractInterface`] is tagged with one of two
 //! classifications that future implementers **must** respect:
 //!
-//! * **`SECURITY-CRITICAL`** — the method encodes an access-control or
-//!   ownership invariant. The default implementation provided by `rbac`
-//!   **must not** be weakened, bypassed, or omitted by an alternative
-//!   implementation. A subtle override here can silently degrade access
-//!   control across every contract that depends on this interface.
+//! * **`SECURITY-CRITICAL`** — the method encodes an access-control or ownership invariant. The
+//!   default implementation provided by `rbac` **must not** be weakened, bypassed, or omitted by an
+//!   alternative implementation. A subtle override here can silently degrade access control across
+//!   every contract that depends on this interface.
 //!
-//! * **`SAFELY-CUSTOMIZABLE`** — the method is informational. The
-//!   implementation may add metadata, paginate, reorder, or otherwise
-//!   reshape the result, **provided** the result remains truthful with
-//!   respect to the underlying state (i.e. it never reports roles that
-//!   have not actually been granted, and never hides roles that have).
+//! * **`SAFELY-CUSTOMIZABLE`** — the method is informational. The implementation may add metadata,
+//!   paginate, reorder, or otherwise reshape the result, **provided** the result remains truthful
+//!   with respect to the underlying state (i.e. it never reports roles that have not actually been
+//!   granted, and never hides roles that have).
 //!
 //! Reviewers must consult `docs/rbac.md` for the full checklist used
 //! when auditing a new implementer's overrides.
@@ -63,8 +61,8 @@ pub trait RbacContractInterface {
     /// @customization-safety SECURITY-CRITICAL
     /// @invariant After `initialize` succeeds:
     ///   1. The contract is permanently marked initialized (cannot be re-initialized).
-    ///   2. The supplied `owner` address holds the `Admin` role and is
-    ///      recorded as the contract owner.
+    ///   2. The supplied `owner` address holds the `Admin` role and is recorded as the contract
+    ///      owner.
     ///   3. No other address holds any role yet.
     /// @risk-if-overridden Skipping the `already initialized` guard allows
     ///   an attacker to overwrite the owner record and seize the contract.
@@ -86,11 +84,9 @@ pub trait RbacContractInterface {
     /// @invariant `has_role(addr, required)` returns `true` **iff** `addr`
     ///   holds a directly-assigned role `r` such that `role_implies(r, required)`.
     ///   Both directions must hold:
-    ///   * `has_role(addr, required) == true` ⇒ `require_role(addr, required)`
-    ///     must NOT panic.
-    ///   * `has_role(addr, required) == false` ⇒ `require_role(addr, required)`
-    ///     MUST panic with `"Missing required role"` (or a stable
-    ///     equivalent used by tests).
+    ///   * `has_role(addr, required) == true` ⇒ `require_role(addr, required)` must NOT panic.
+    ///   * `has_role(addr, required) == false` ⇒ `require_role(addr, required)` MUST panic with
+    ///     `"Missing required role"` (or a stable equivalent used by tests).
     ///   Implementers must keep these two functions in lock-step; any drift
     ///   is a system-wide authorization bypass.
     /// @risk-if-overridden Returning `true` when no implied role is held
@@ -114,11 +110,9 @@ pub trait RbacContractInterface {
     /// @invariant The returned vector MUST contain **exactly** the set of
     ///   roles that have been granted to `addr` and not subsequently
     ///   revoked. Concretely:
-    ///   * `returned ⊇ { r | r is currently stored for addr }` — no
-    ///     omitted roles.
-    ///   * `returned ⊆ { r | r is currently stored for addr }` — no
-    ///     fabricated roles, even if the caller asks for an unrelated
-    ///     role to "appear" in the response.
+    ///   * `returned ⊇ { r | r is currently stored for addr }` — no omitted roles.
+    ///   * `returned ⊆ { r | r is currently stored for addr }` — no fabricated roles, even if the
+    ///     caller asks for an unrelated role to "appear" in the response.
     ///   * `returned` contains no duplicates.
     ///   * Order, pagination, and additional metadata are implementation-defined.
     /// @safe-customizations Implementers MAY add pagination wrappers,
@@ -157,8 +151,8 @@ pub trait RbacContractInterface {
     ///
     /// # Panics
     /// - `"Contract not initialized"` — if `initialize` has not been called.
-    /// - `"Owner not set"` — if no owner has been stored (defensive; should
-    ///   not occur after a successful `initialize`).
+    /// - `"Owner not set"` — if no owner has been stored (defensive; should not occur after a
+    ///   successful `initialize`).
     fn owner(env: Env) -> Address;
 
     /// Grants `role` to `target`.
@@ -178,13 +172,12 @@ pub trait RbacContractInterface {
     ///   any address without consent.
     ///
     /// # Caller authorization
-    /// - `caller` must sign and must hold a role that implies `Admin`
-    ///   (i.e. must have the `Admin` role).
+    /// - `caller` must sign and must hold a role that implies `Admin` (i.e. must have the `Admin`
+    ///   role).
     ///
     /// # Panics
     /// - `"Contract not initialized"` — if `initialize` has not been called.
-    /// - `"Only admin can grant roles"` — if `caller` does not have a role
-    ///   implying `Admin`.
+    /// - `"Only admin can grant roles"` — if `caller` does not have a role implying `Admin`.
     fn grant_role(env: Env, caller: Address, target: Address, role: Role);
 
     /// Revokes `role` from `target`.
@@ -209,10 +202,9 @@ pub trait RbacContractInterface {
     ///
     /// # Panics
     /// - `"Contract not initialized"` — if `initialize` has not been called.
-    /// - `"Only admin can revoke roles"` — if `caller` does not have a role
-    ///   implying `Admin`.
-    /// - `"Cannot revoke Admin from owner"` — if `target` is the contract
-    ///   owner and `role` is `Admin`.
+    /// - `"Only admin can revoke roles"` — if `caller` does not have a role implying `Admin`.
+    /// - `"Cannot revoke Admin from owner"` — if `target` is the contract owner and `role` is
+    ///   `Admin`.
     fn revoke_role(env: Env, caller: Address, target: Address, role: Role);
 
     /// Grants multiple roles to `target` in a single call.
@@ -231,14 +223,12 @@ pub trait RbacContractInterface {
     ///   (modulo duplicates) or none of them are.
     /// @risk-if-overridden Performing the admin check per-element (rather
     ///   than once for the whole batch) opens two real failure modes:
-    ///   1. **Partial application on revert** — if the check happens
-    ///      inside the per-element loop, a revert mid-batch leaves
-    ///      `target` with some roles granted and others not, violating
-    ///      the all-or-nothing invariant and corrupting the role set.
-    ///   2. **Bypass via batch splitting** — an implementer that, for
-    ///      example, only enforces the admin check for `Role::Admin` and
-    ///      forgets it for `Role::Employer`, would let non-admins grant
-    ///      Employer roles by packaging them in a batch.
+    ///   1. **Partial application on revert** — if the check happens inside the per-element loop, a
+    ///      revert mid-batch leaves `target` with some roles granted and others not, violating the
+    ///      all-or-nothing invariant and corrupting the role set.
+    ///   2. **Bypass via batch splitting** — an implementer that, for example, only enforces the
+    ///      admin check for `Role::Admin` and forgets it for `Role::Employer`, would let non-admins
+    ///      grant Employer roles by packaging them in a batch.
     ///   Implementers must run the admin check once, before any element is
     ///   processed, exactly as `grant_role` does.
     ///
@@ -247,8 +237,7 @@ pub trait RbacContractInterface {
     ///
     /// # Panics
     /// - `"Contract not initialized"` — if `initialize` has not been called.
-    /// - `"Only admin can grant roles"` — if `caller` does not have a role
-    ///   implying `Admin`.
+    /// - `"Only admin can grant roles"` — if `caller` does not have a role implying `Admin`.
     fn bulk_grant(env: Env, caller: Address, target: Address, roles: Vec<Role>);
 
     /// Revokes every role from `target`.
@@ -272,10 +261,8 @@ pub trait RbacContractInterface {
     ///
     /// # Panics
     /// - `"Contract not initialized"` — if `initialize` has not been called.
-    /// - `"Only admin can revoke roles"` — if `caller` does not have a role
-    ///   implying `Admin`.
-    /// - `"Cannot revoke all roles from owner"` — if `target` is the contract
-    ///   owner.
+    /// - `"Only admin can revoke roles"` — if `caller` does not have a role implying `Admin`.
+    /// - `"Cannot revoke all roles from owner"` — if `target` is the contract owner.
     fn revoke_all(env: Env, caller: Address, target: Address);
 
     /// Reverts unless `addr` holds a role that implies `required`.
@@ -293,13 +280,11 @@ pub trait RbacContractInterface {
     ///   authorization bypass.
     ///
     /// # Caller authorization
-    /// - `addr` must sign (the address being checked authenticates
-    ///   themselves).
+    /// - `addr` must sign (the address being checked authenticates themselves).
     ///
     /// # Panics
     /// - `"Contract not initialized"` — if `initialize` has not been called.
-    /// - `"Missing required role"` — if `addr` does not hold a role implying
-    ///   `required`.
+    /// - `"Missing required role"` — if `addr` does not hold a role implying `required`.
     fn require_role(env: Env, addr: Address, required: Role);
 
     /// Proposes a new contract owner (two-step transfer, step 1).
@@ -311,9 +296,8 @@ pub trait RbacContractInterface {
     /// @invariant The function reverts unless:
     ///   1. The contract has been initialized.
     ///   2. `caller` authenticates the transaction.
-    ///   3. `caller == owner()` (holding `Admin` is **not** sufficient;
-    ///      ownership and Admin are deliberately separated so an
-    ///      Admin-grant cannot unilaterally transfer ownership).
+    ///   3. `caller == owner()` (holding `Admin` is **not** sufficient; ownership and Admin are
+    ///      deliberately separated so an Admin-grant cannot unilaterally transfer ownership).
     /// On success, `new_owner` is stored as the pending owner but has
     /// no privileges until `accept_ownership` is called.
     /// @risk-if-overridden Allowing non-owners to set the pending owner
@@ -322,13 +306,12 @@ pub trait RbacContractInterface {
     ///   owner disables the two-step guarantee.
     ///
     /// # Caller authorization
-    /// - `caller` must sign and must be the current contract owner.
-    ///   Holding the `Admin` role alone is **not** sufficient.
+    /// - `caller` must sign and must be the current contract owner. Holding the `Admin` role alone
+    ///   is **not** sufficient.
     ///
     /// # Panics
     /// - `"Contract not initialized"` — if `initialize` has not been called.
-    /// - `"Only owner can transfer ownership"` — if `caller` is not the
-    ///   current owner.
+    /// - `"Only owner can transfer ownership"` — if `caller` is not the current owner.
     fn transfer_ownership(env: Env, caller: Address, new_owner: Address);
 
     /// Accepts a pending ownership transfer (two-step transfer, step 2).
@@ -348,8 +331,7 @@ pub trait RbacContractInterface {
     /// On success:
     ///   * The contract owner becomes `caller`.
     ///   * The prior owner's `Admin` role is revoked.
-    ///   * `caller` is granted `Admin` (if not already held; idempotent
-    ///     if already held).
+    ///   * `caller` is granted `Admin` (if not already held; idempotent if already held).
     ///   * The pending-owner slot is cleared (no stale proposal remains).
     /// @risk-if-overridden Skipping the pending-owner check lets any
     ///   address finalize a transfer they were not proposed for. Skipping
@@ -361,14 +343,12 @@ pub trait RbacContractInterface {
     ///   pending owner accept a transfer they were never re-proposed for.
     ///
     /// # Caller authorization
-    /// - `caller` must sign and must be the pending owner set by a prior
-    ///   `transfer_ownership` call.
+    /// - `caller` must sign and must be the pending owner set by a prior `transfer_ownership` call.
     ///
     /// # Panics
     /// - `"Contract not initialized"` — if `initialize` has not been called.
-    /// - `"No pending owner"` — if `transfer_ownership` has not been called
-    ///   first (no pending proposal exists).
-    /// - `"Caller is not pending owner"` — if `caller` does not match the
-    ///   stored pending owner.
+    /// - `"No pending owner"` — if `transfer_ownership` has not been called first (no pending
+    ///   proposal exists).
+    /// - `"Caller is not pending owner"` — if `caller` does not match the stored pending owner.
     fn accept_ownership(env: Env, caller: Address);
 }

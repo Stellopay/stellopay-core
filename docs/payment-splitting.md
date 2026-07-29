@@ -54,6 +54,7 @@ This guarantees:
 - `sum(outputs) == total_amount` for every successful split.
 - No value is lost to truncation.
 - Caller-supplied recipient ordering cannot bias dust allocation.
+- **Idempotent Recomputation**: Repeated calls with an unchanged split configuration and amount will always produce byte-identical share vectors.
 
 ### Dust Bounding and Loop Safety
 Because each floored percentage leaves a remainder strictly less than `10000`, the maximum possible sum of remainders is strictly less than `10000 * recipient_count`. Since `dust = sum(remainders) / 10000`, it follows mathematically that **`dust` is always strictly less than the number of recipients**.
@@ -74,9 +75,39 @@ If splitting **1 stroop** 50/50:
 3. Because the remainders are tied, the extra unit goes to the recipient with the lower canonical address encoding
 **Total: 1**
 
+### Example: Single-Recipient 100 % Split (Degenerate / Edge Case)
+
+A split with exactly one recipient at the full 10 000 bp (100 %) allocation is
+a valid, and deliberately supported, configuration. It is useful as a
+passthrough — routing an entire payment to a single address while still
+benefiting from the contract's validation and event-emission guarantees.
+
+**Percentage mode** (`ShareKind::Percent(10_000)`):
+
+1. `exact_numerator = 10_000 × total_amount`
+2. `floored = total_amount` (divides evenly by 10 000)
+3. `remainder = 0`  ⟹  `dust = 0`
+4. The dust-distribution step is skipped entirely (`dust == 0 < 1 == recipient_count`)
+
+**Fixed mode** (`ShareKind::Fixed(total_amount)`):
+
+The fixed path bypasses rounding arithmetic altogether — the declared amount is
+returned directly.  No remainder or dust concept applies.
+
+**Invariant in both modes**: `sum(outputs) == total_amount` — the entire amount
+is delivered to the sole recipient with nothing lost or created.
+
+Both modes are covered by dedicated tests in
+`onchain/contracts/payment_splitter/tests/test_splitter.rs`:
+
+- `test_single_recipient_percent_100_no_dust` — Percent path over a wide range of amounts.
+- `test_single_recipient_fixed_full_amount_no_dust` — Fixed path over a wide range of amounts.
+- `test_single_recipient_percent_and_fixed_are_equivalent` — Cross-mode semantic equivalence check.
+
 ## Security Considerations
 - **Non-zero Weights**: The contract prevents creating splits with zero-weight percentages or zero-amount fixed shares.
 - **Duplicate Prevention**: Prevents unintentional double-allocation to the same address within one split.
 - **Ordering Resistance**: Dust assignment depends on remainders and canonical address order, not the caller-provided recipient list order.
 - **Fixed Split Integrity**: Fixed splits reject mismatched totals instead of silently shifting the difference onto the final recipient.
+- **Single-Recipient Safety**: A degenerate one-recipient split at 100 % produces zero dust, trivially satisfying the `dust < recipient_count` invariant, and is explicitly tested to confirm no rounding artefacts occur.
 - **Off-chain Integration**: This contract does not handle token movements directly. It provides the logic for other contracts or off-chain systems to perform safe token transfers.

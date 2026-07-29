@@ -942,10 +942,10 @@ fn test_get_owner() {
 //
 // These tests verify that a retroactive adjustment:
 //   1. Updates the salary going forward when applied.
-//   2. Does NOT retroactively alter already-processed payroll periods.
-//      The salary_adjustment contract has no claw-back or top-up mechanism
-//      for past claims. The effective_date is a constraint on when the
-//      adjustment can be applied, not a trigger for retroactive recalculation.
+//   2. Does NOT retroactively alter already-processed payroll periods. The salary_adjustment
+//      contract has no claw-back or top-up mechanism for past claims. The effective_date is a
+//      constraint on when the adjustment can be applied, not a trigger for retroactive
+//      recalculation.
 // ============================================================================
 
 #[test]

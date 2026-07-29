@@ -65,6 +65,7 @@
 //! `PaymentFailedEvent` so indexers can route the alert to the correct employer.
 
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, Vec};
 
@@ -770,26 +771,23 @@ impl PaymentRetryContract {
     ///
     /// * **`retry_count`** (u32):
     ///   - Starts at `0` when the request is created via `schedule_retry`.
-    ///   - Incremented by `1` for each **failed** transfer attempt (insufficient
-    ///     escrow balance).  It is **never** incremented on a successful attempt.
-    ///   - Remains at its latest value after a terminal state (`Success` or
-    ///     `Failed`) is reached.
-    ///   - A successful payment that required zero retries will have
-    ///     `retry_count = 0`.
+    ///   - Incremented by `1` for each **failed** transfer attempt (insufficient escrow balance).
+    ///     It is **never** incremented on a successful attempt.
+    ///   - Remains at its latest value after a terminal state (`Success` or `Failed`) is reached.
+    ///   - A successful payment that required zero retries will have `retry_count = 0`.
     ///
     /// * **`next_retry_at`** (u64):
     ///   - Initialised to `created_at` (the ledger timestamp at scheduling time).
-    ///   - On each failed attempt the contract computes
-    ///     `next_retry_at = now + interval_for_retry(retry_intervals, retry_count)`
-    ///     where the interval is drawn from `retry_intervals` (index clamped to
-    ///     the last element for attempts beyond the list length).
-    ///   - After a terminal state (`Success` or `Failed`) the field retains the
-    ///     value set during the last attempt; callers should gate on `state`
-    ///     rather than this timestamp.
+    ///   - On each failed attempt the contract computes `next_retry_at = now +
+    ///     interval_for_retry(retry_intervals, retry_count)` where the interval is drawn from
+    ///     `retry_intervals` (index clamped to the last element for attempts beyond the list
+    ///     length).
+    ///   - After a terminal state (`Success` or `Failed`) the field retains the value set during
+    ///     the last attempt; callers should gate on `state` rather than this timestamp.
     ///
     /// * **`state`** (RetryState):
-    ///   - Reflects the lifecycle: `Scheduled` → `Retrying` (after ≥1 failure) →
-    ///     `Success` or `Failed`.
+    ///   - Reflects the lifecycle: `Scheduled` → `Retrying` (after ≥1 failure) → `Success` or
+    ///     `Failed`.
     ///
     /// # Arguments
     ///

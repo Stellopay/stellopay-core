@@ -1,5 +1,6 @@
-use crate::types::{DisputeDetails, EscalationLevel, StorageKey};
 use soroban_sdk::{Address, Env};
+
+use crate::types::{DisputeDetails, EscalationLevel, StorageKey};
 
 /// Set the time limit (in seconds) for a specific escalation level
 pub fn set_level_time_limit(env: &Env, level: EscalationLevel, limit_seconds: u64) {
@@ -74,4 +75,19 @@ pub fn is_admin(env: &Env, caller: &Address) -> bool {
         return owner == *caller;
     }
     false
+}
+
+/// Set the configuration for keeper rewards.
+pub fn set_reward_config(env: &Env, token: &Address, pool: &Address, amount: &i128) {
+    env.storage().persistent().set(&StorageKey::RewardToken, token);
+    env.storage().persistent().set(&StorageKey::IncentivePool, pool);
+    env.storage().persistent().set(&StorageKey::KeeperRewardAmount, amount);
+}
+
+/// Get the configuration for keeper rewards (token, pool, amount).
+pub fn get_reward_config(env: &Env) -> Option<(Address, Address, i128)> {
+    let token = env.storage().persistent().get(&StorageKey::RewardToken)?;
+    let pool = env.storage().persistent().get(&StorageKey::IncentivePool)?;
+    let amount = env.storage().persistent().get(&StorageKey::KeeperRewardAmount)?;
+    Some((token, pool, amount))
 }
