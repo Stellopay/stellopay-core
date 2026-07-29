@@ -745,11 +745,8 @@ fn execute_operation_rejects_contract_upgrade_hash_mismatch() {
 
     // S3 calls execute_operation with the WRONG hash.
     // The hash check fires before any approval is recorded → must be rejected.
-    let result_wrong = client.try_execute_operation(
-        &signers.get(2).unwrap(),
-        &op_id,
-        &Some(wrong_hash),
-    );
+    let result_wrong =
+        client.try_execute_operation(&signers.get(2).unwrap(), &op_id, &Some(wrong_hash));
     assert!(
         result_wrong.is_err(),
         "execute_operation must reject a mismatched ContractUpgrade hash"
@@ -770,11 +767,7 @@ fn execute_operation_rejects_contract_upgrade_hash_mismatch() {
     );
 
     // S3 also tries with None → also rejected (absent hash = mismatch).
-    let result_none = client.try_execute_operation(
-        &signers.get(2).unwrap(),
-        &op_id,
-        &None,
-    );
+    let result_none = client.try_execute_operation(&signers.get(2).unwrap(), &op_id, &None);
     assert!(
         result_none.is_err(),
         "execute_operation must reject None as hash for a ContractUpgrade operation"

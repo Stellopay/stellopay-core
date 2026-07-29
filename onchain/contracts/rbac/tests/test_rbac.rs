@@ -1447,7 +1447,11 @@ fn test_override_safety_get_roles_no_duplicates_after_idempotent_grants() {
         client.grant_role(&owner, &user, &Role::Arbiter);
     }
     let roles = client.get_roles(&user);
-    assert_eq!(roles.len(), 1, "duplicate grants must not duplicate storage entries");
+    assert_eq!(
+        roles.len(),
+        1,
+        "duplicate grants must not duplicate storage entries"
+    );
 }
 
 #[test]

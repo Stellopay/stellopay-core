@@ -1115,8 +1115,7 @@ fn test_admin_set_agr_escrow_balance_non_admin_returns_error() {
     let (client, _owner) = setup_admin_contract(&env);
     let token = create_test_address(&env);
     let attacker = create_test_address(&env);
-let result =
-        client.try_admin_set_agr_escrow_balance(&attacker, &1u128, &token, &100i128);
+    let result = client.try_admin_set_agr_escrow_balance(&attacker, &1u128, &token, &100i128);
     assert!(result.is_err(), "non-admin must be rejected");
 }
 
