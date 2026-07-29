@@ -5,5 +5,5 @@
 
 edition = "2021"
 
-# Line width — keep long function signatures readable.
+# Line width - keep long function signatures readable.
 max_width = 100

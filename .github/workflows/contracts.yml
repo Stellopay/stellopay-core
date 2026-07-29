@@ -12,16 +12,12 @@ env:
 jobs:
   contracts:
     runs-on: ubuntu-latest
-    env:
-      LANG: C.UTF-8
-      LC_ALL: C.UTF-8
     steps:
       - uses: actions/checkout@v7
 
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
           components: rustfmt
 
       - name: Check formatting
