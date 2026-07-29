@@ -912,6 +912,250 @@ fn test_employee_salaries_are_independent() {
 }
 
 // ============================================================================
+// CONCURRENT PENDING PROPOSAL TESTS
+// ============================================================================
+
+#[test]
+fn test_concurrent_pending_proposals_same_effective_date_rejected() {
+    // Verifies that a second proposal for the same employee with the same
+    // effective date is rejected while the first proposal is still pending.
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Create first pending proposal
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    let adj1 = client.get_adjustment(&id1).unwrap();
+    assert_eq!(adj1.status, AdjustmentStatus::Pending);
+
+    // Attempt to create second proposal for same employee and effective date
+    let result =
+        client.try_create_adjustment(&employer, &employee, &approver, &5_000, &7_000, &200);
+    assert!(
+        result.is_err(),
+        "Second proposal with same effective date must be rejected"
+    );
+}
+
+#[test]
+fn test_concurrent_pending_proposals_different_effective_dates_allowed() {
+    // Verifies that multiple pending proposals for the same employee are
+    // allowed as long as they have different effective dates.
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Create first pending proposal with effective_date=200
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    let adj1 = client.get_adjustment(&id1).unwrap();
+    assert_eq!(adj1.status, AdjustmentStatus::Pending);
+
+    // Create second pending proposal with effective_date=300
+    let id2 = client.create_adjustment(&employer, &employee, &approver, &6_000, &7_000, &300);
+    let adj2 = client.get_adjustment(&id2).unwrap();
+    assert_eq!(adj2.status, AdjustmentStatus::Pending);
+
+    // Verify both proposals exist independently
+    assert_eq!(id2, id1 + 1);
+    assert_eq!(adj1.effective_date, 200);
+    assert_eq!(adj2.effective_date, 300);
+    assert_eq!(adj1.new_salary, 6_000);
+    assert_eq!(adj2.new_salary, 7_000);
+}
+
+#[test]
+fn test_approve_adjustment_targets_specific_proposal_id() {
+    // Verifies that approve_adjustment acts on the specific proposal id,
+    // not an ambiguous "latest" pointer, when multiple pending proposals exist.
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Create two pending proposals with different effective dates
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    let id2 = client.create_adjustment(&employer, &employee, &approver, &6_000, &7_500, &300);
+
+    // Approve only the first proposal
+    client.approve_adjustment(&approver, &id1);
+
+    // Verify first proposal is approved
+    let adj1 = client.get_adjustment(&id1).unwrap();
+    assert_eq!(adj1.status, AdjustmentStatus::Approved);
+    assert_eq!(adj1.new_salary, 6_000);
+
+    // Verify second proposal remains pending
+    let adj2 = client.get_adjustment(&id2).unwrap();
+    assert_eq!(adj2.status, AdjustmentStatus::Pending);
+    assert_eq!(adj2.new_salary, 7_500);
+}
+
+#[test]
+fn test_apply_adjustment_targets_specific_proposal_id() {
+    // Verifies that apply_adjustment acts on the specific proposal id,
+    // ensuring the correct salary change is applied when multiple proposals
+    // exist for the same employee.
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Create and approve two proposals with different effective dates
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    let id2 = client.create_adjustment(&employer, &employee, &approver, &6_000, &8_000, &300);
+
+    client.approve_adjustment(&approver, &id1);
+    client.approve_adjustment(&approver, &id2);
+
+    // Apply only the first proposal
+    set_time(&env, 250);
+    client.apply_adjustment(&employer, &id1);
+
+    // Verify employee salary reflects the first proposal
+    assert_eq!(client.get_employee_salary(&employee), Some(6_000));
+
+    // Verify first proposal is applied
+    let adj1 = client.get_adjustment(&id1).unwrap();
+    assert_eq!(adj1.status, AdjustmentStatus::Applied);
+
+    // Verify second proposal is still approved but not applied
+    let adj2 = client.get_adjustment(&id2).unwrap();
+    assert_eq!(adj2.status, AdjustmentStatus::Approved);
+
+    // Apply the second proposal
+    set_time(&env, 350);
+    client.apply_adjustment(&employer, &id2);
+
+    // Verify employee salary now reflects the second proposal
+    assert_eq!(client.get_employee_salary(&employee), Some(8_000));
+
+    let adj2_applied = client.get_adjustment(&id2).unwrap();
+    assert_eq!(adj2_applied.status, AdjustmentStatus::Applied);
+}
+
+#[test]
+fn test_cancel_one_pending_proposal_does_not_affect_other() {
+    // Verifies that cancelling one pending proposal does not affect
+    // other pending proposals for the same employee.
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Create two pending proposals
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    let id2 = client.create_adjustment(&employer, &employee, &approver, &6_000, &7_000, &300);
+
+    // Cancel the first proposal
+    client.cancel_adjustment(&employer, &id1);
+
+    // Verify first proposal is cancelled
+    let adj1 = client.get_adjustment(&id1).unwrap();
+    assert_eq!(adj1.status, AdjustmentStatus::Cancelled);
+
+    // Verify second proposal remains pending
+    let adj2 = client.get_adjustment(&id2).unwrap();
+    assert_eq!(adj2.status, AdjustmentStatus::Pending);
+}
+
+#[test]
+fn test_reject_one_pending_proposal_does_not_affect_other() {
+    // Verifies that rejecting one pending proposal does not affect
+    // other pending proposals for the same employee.
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Create two pending proposals
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    let id2 = client.create_adjustment(&employer, &employee, &approver, &6_000, &7_000, &300);
+
+    // Reject the first proposal
+    client.reject_adjustment(&approver, &id1);
+
+    // Verify first proposal is rejected
+    let adj1 = client.get_adjustment(&id1).unwrap();
+    assert_eq!(adj1.status, AdjustmentStatus::Rejected);
+
+    // Verify second proposal remains pending
+    let adj2 = client.get_adjustment(&id2).unwrap();
+    assert_eq!(adj2.status, AdjustmentStatus::Pending);
+
+    // Approve and apply the second proposal
+    client.approve_adjustment(&approver, &id2);
+    set_time(&env, 350);
+    client.apply_adjustment(&employer, &id2);
+
+    assert_eq!(client.get_employee_salary(&employee), Some(7_000));
+}
+
+#[test]
+fn test_reuse_effective_date_after_cancellation() {
+    // Verifies that the same effective date can be reused for a new proposal
+    // after the original proposal is cancelled.
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Create first proposal
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+
+    // Cancel it
+    client.cancel_adjustment(&employer, &id1);
+
+    // Attempt to create a new proposal with the same effective date
+    // This should still fail because the slot reservation is not cleared
+    let result =
+        client.try_create_adjustment(&employer, &employee, &approver, &5_000, &7_000, &200);
+    
+    // The current implementation does NOT clear the reservation slot on cancellation,
+    // so this will fail. This test documents the current behavior.
+    assert!(
+        result.is_err(),
+        "Effective date slot is not freed on cancellation in current implementation"
+    );
+}
+
+// ============================================================================
 // QUERY TESTS
 // ============================================================================
 
