@@ -266,6 +266,21 @@ After the grace period, employer calls finalize_grace_period
 Remaining escrow is refunded and the agreement is effectively completed
 This flow is validated in the test_grace_period.rs suite and underpins all time-based termination behavior for agreements.
 
+Milestone Agreement Creation — Upfront Milestone List
+The `create_milestone_agreement` entrypoint now accepts a `Vec<i128>` of milestone amounts at creation time instead of requiring separate `add_milestone` calls after creation.
+
+Signature:
+```
+create_milestone_agreement(env, employer, contributor, token, milestones) -> u128
+```
+
+Validation rules:
+- `milestones` must be non-empty (at least one milestone). An empty vector is rejected with `PayrollError::EmptyMilestoneList` (discriminant 50).
+- Each milestone amount must be strictly positive (> 0). A non-positive amount is rejected with `PayrollError::MilestoneAmountInvalid` (discriminant 36).
+- On success, each milestone is immediately stored with `approved=false` and `claimed=false`, a `MilestoneAdded` event is emitted per milestone, and the milestone count and total amount are set accordingly.
+
+This prevents the creation of dead, zero-payout agreements that would otherwise occupy storage with no possible payout path. See `test_create_empty_milestone_list_rejected`, `test_create_milestone_agreement_zero_amount_rejected`, and `test_create_single_milestone_success` in `test_milestones.rs`.
+
 Milestone-Interface Conformance
 The milestone query functions (get_milestone, get_milestone_count, and the on_milestone_expired hook) are declared as a shared trait in onchain/contracts/milestone-interface/src/lib.rs. Any contract can depend on this crate (rlib) and use the generated MilestoneContractClient to call milestone queries on any deployed stello_pay_contract.
 

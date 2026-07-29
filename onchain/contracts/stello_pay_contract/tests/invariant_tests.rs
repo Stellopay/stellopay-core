@@ -90,7 +90,12 @@ fn test_invariant_milestone_balance_insufficient() {
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token_id);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token_id,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &1000i128);
     client.add_milestone(&agreement_id, &2000i128);
 
@@ -110,7 +115,12 @@ fn test_invariant_milestone_balance_sufficient() {
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token_id);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token_id,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &1000i128);
 
     // Fund contract
@@ -131,7 +141,12 @@ fn test_invariant_milestone_claim_insufficient_balance() {
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token_id);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token_id,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &1000i128);
 
     // Fund contract

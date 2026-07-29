@@ -117,7 +117,12 @@ fn bench_create_milestone_agreement() {
     let token = Address::generate(&env);
 
     env.cost_estimate().budget().reset_default();
-    client.create_milestone_agreement(&employer, &contributor, &token);
+    client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     println!(
         "create_milestone_agreement: cpu_insns={}",
         env.cost_estimate().budget().cpu_instruction_cost()
@@ -190,9 +195,7 @@ fn bench_claim_payroll_in_token() {
 
     // ── Token setup ──────────────────────────────────────────────────────────
     let base_admin = Address::generate(&env);
-    let base_token = env
-        .register_stellar_asset_contract_v2(base_admin)
-        .address();
+    let base_token = env.register_stellar_asset_contract_v2(base_admin).address();
     let payout_admin = Address::generate(&env);
     let payout_token = env
         .register_stellar_asset_contract_v2(payout_admin)

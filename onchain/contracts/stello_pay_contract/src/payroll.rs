@@ -243,8 +243,13 @@ pub fn create_milestone_agreement(
     employer: Address,
     contributor: Address,
     token: Address,
+    milestones: Vec<i128>,
 ) -> u128 {
     employer.require_auth();
+
+    if milestones.is_empty() {
+        panic_with_error!(&env, PayrollError::EmptyMilestoneList);
+    }
 
     let mut counter: u128 = env
         .storage()
@@ -275,12 +280,43 @@ pub fn create_milestone_agreement(
         &MilestoneKey::Status(agreement_id),
         &AgreementStatus::Created,
     );
+
+    let milestone_count: u32 = milestones.len() as u32;
+    let mut total: i128 = 0;
+    for (i, amount) in milestones.iter().enumerate() {
+        if amount <= 0 {
+            panic_with_error!(&env, PayrollError::MilestoneAmountInvalid);
+        }
+        let milestone_id: u32 = (i as u32) + 1;
+        env.storage().persistent().set(
+            &MilestoneKey::MilestoneAmount(agreement_id, milestone_id),
+            &amount,
+        );
+        env.storage().persistent().set(
+            &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
+            &false,
+        );
+        env.storage().persistent().set(
+            &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
+            &false,
+        );
+        total += amount;
+
+        MilestoneAdded {
+            agreement_id,
+            milestone_id,
+            amount,
+        }
+        .publish(&env);
+    }
+
+    env.storage().persistent().set(
+        &MilestoneKey::MilestoneCount(agreement_id),
+        &milestone_count,
+    );
     env.storage()
         .persistent()
-        .set(&MilestoneKey::TotalAmount(agreement_id), &0i128);
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::MilestoneCount(agreement_id), &0u32);
+        .set(&MilestoneKey::TotalAmount(agreement_id), &total);
 
     agreement_id
 }

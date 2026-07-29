@@ -347,28 +347,36 @@ impl PayrollContract {
         payroll::batch_create_escrow_agreements(&env, employer, items)
     }
 
-    /// Creates a milestone-based payment agreement.
+    /// Creates a milestone-based payment agreement with an upfront set of
+    /// milestones.
     ///
     /// # Arguments
-    /// * `employer` - Address of the employer who will approve milestones
-    /// * `contributor` - Address of the contributor who will complete work
-    /// * `token` - Token address for payments
+    /// * `employer`    - Address of the employer who will approve milestones.
+    /// * `contributor` - Address of the contributor who will complete work.
+    /// * `token`       - Token address for payments.
+    /// * `milestones`  - Non-empty list of strictly-positive milestone amounts.
+    ///                    Each amount must be > 0. The empty vector is rejected.
     ///
     /// # Returns
-    /// New agreement ID
+    /// New agreement ID.
+    ///
+    /// # Panics
+    /// * `EmptyMilestoneList` — `milestones` is empty.
+    /// * `MilestoneAmountInvalid` — any element ≤ 0.
     ///
     /// # State Transition
-    /// None -> Created
+    /// None → Created
     ///
     /// # Access Control
-    /// Requires employer authentication
+    /// Requires employer authentication.
     pub fn create_milestone_agreement(
         env: Env,
         employer: Address,
         contributor: Address,
         token: Address,
+        milestones: Vec<i128>,
     ) -> u128 {
-        payroll::create_milestone_agreement(env, employer, contributor, token)
+        payroll::create_milestone_agreement(env, employer, contributor, token, milestones)
     }
 
     /// Deposits tokens from `from` into the contract to fund a milestone agreement.

@@ -200,7 +200,12 @@ fn test_paused_blocks_milestone_claims() {
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token.address);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token.address,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &1000);
 
     // Fund the accounted escrow so the approve_milestone invariant passes.
@@ -230,7 +235,12 @@ fn test_unpause_restores_functionality() {
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token.address);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token.address,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &1000);
 
     // Fund the accounted escrow so the approve_milestone invariant passes.

@@ -14,7 +14,13 @@ Smart contracts managing financial value must maintain strict internal consisten
 **Assertion**: `claimed_periods <= num_periods`
 **Security Benefit**: Prevents vulnerabilities where a contributor could claim more funds than the agreement allows, even if high-level logic contains arithmetic errors.
 
-### 2. Milestone Balance Invariant
+### 2. Non-Empty Milestone List Invariant
+**Location**: `create_milestone_agreement`
+**Assertion**: `milestones.len() > 0`
+**Error**: `PayrollError::EmptyMilestoneList`
+**Security Benefit**: Prevents creation of milestone agreements with zero milestones, which would have no possible payout path and waste storage.
+
+### 3. Milestone Balance Invariant
 **Location**: `approve_milestone`, `claim_milestone`
 **Assertion**: `escrow_balance >= sum(unclaimed_milestones)`
 **Security Benefit**: Ensures that the contract always has sufficient funds to fulfill all pending milestone obligations. This prevents a "first-come, first-served" failure mode if the escrow balance is somehow depleted or mismanaged.

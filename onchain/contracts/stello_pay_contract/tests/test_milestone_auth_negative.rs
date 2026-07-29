@@ -37,7 +37,12 @@ fn create_funded_agreement(
     contributor: &Address,
     token: &Address,
 ) -> u128 {
-    let id = client.create_milestone_agreement(employer, contributor, token);
+    let id = client.create_milestone_agreement(
+        employer,
+        contributor,
+        token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.fund_milestone_agreement(&id, employer, &100_000i128);
     client.add_milestone(&id, &10_000i128);
     id
@@ -82,7 +87,12 @@ fn test_approve_non_existent_agreement_fails() {
 #[test]
 fn test_claim_non_existent_milestone_fails() {
     let (env, employer, contributor, token, client) = create_env();
-    let id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     let result = client.try_claim_milestone(&id, &999u32);
     assert!(result.is_err(), "Claim on non-existent milestone must fail");
 }
@@ -117,7 +127,12 @@ fn test_state_machine_approve_then_claim() {
 #[test]
 fn test_batch_claim_second_milestone_after_first_claimed() {
     let (env, employer, contributor, token, client) = create_env();
-    let id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.fund_milestone_agreement(&id, &employer, &100_000i128);
     client.add_milestone(&id, &10_000i128);
     client.add_milestone(&id, &20_000i128);

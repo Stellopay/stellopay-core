@@ -479,6 +479,10 @@ pub enum PayrollError {
     /// justification so that off-chain indexers and dispute reviewers
     /// can reconstruct the audit trail.
     MilestoneRejectionReasonEmpty = 49,
+    /// Milestone agreement must have at least one milestone. Creating an
+    /// agreement without milestones leaves storage waste with no possible
+    /// payout path, so the operation is rejected at creation time.
+    EmptyMilestoneList = 50,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.
@@ -831,5 +835,6 @@ mod test {
         assert_eq!(PayrollError::MilestoneAlreadyClaimedCannotReject as u32, 47);
         assert_eq!(PayrollError::MilestoneAlreadyExpired as u32, 48);
         assert_eq!(PayrollError::MilestoneRejectionReasonEmpty as u32, 49);
+        assert_eq!(PayrollError::EmptyMilestoneList as u32, 50);
     }
 }

@@ -172,7 +172,12 @@ fn setup_funded_milestone(
     let amount: i128 = 1_000;
     let count: u32 = 10;
 
-    let agreement_id = client.create_milestone_agreement(employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     for _ in 0..count {
         client.add_milestone(&agreement_id, &amount);
     }

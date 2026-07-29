@@ -295,7 +295,12 @@ fn setup_milestone_agreement(
     let token = create_token(env);
 
     // Create and fund a milestone agreement.
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     let milestone_amount = 1000i128;
     client.add_milestone(&agreement_id, &milestone_amount);
     client.fund_milestone_agreement(&agreement_id, &employer, &milestone_amount);
@@ -354,14 +359,20 @@ fn test_claim_milestone_state_committed_before_transfer() {
 
     // Verify pre-claim state: milestone is not claimed.
     let before = client.get_milestone(&agreement_id, &1u32).unwrap();
-    assert!(!before.claimed, "milestone must not be claimed before claim_milestone");
+    assert!(
+        !before.claimed,
+        "milestone must not be claimed before claim_milestone"
+    );
 
     // Execute the claim.
     client.claim_milestone(&agreement_id, &1u32);
 
     // Verify post-claim state: milestone is marked claimed in persistent storage.
     let after = client.get_milestone(&agreement_id, &1u32).unwrap();
-    assert!(after.claimed, "milestone must be marked claimed after successful claim_milestone");
+    assert!(
+        after.claimed,
+        "milestone must be marked claimed after successful claim_milestone"
+    );
 }
 
 /// @notice `expire_milestone` persists the `MilestoneExpired` flag BEFORE
@@ -383,7 +394,10 @@ fn test_expire_milestone_cei_blocks_subsequent_claim() {
 
     // Expire the milestone WITHOUT approving it.
     let expire_result = client.try_expire_milestone(&agreement_id, &1u32);
-    assert!(expire_result.is_ok(), "expire_milestone must succeed for an unapproved milestone");
+    assert!(
+        expire_result.is_ok(),
+        "expire_milestone must succeed for an unapproved milestone"
+    );
 
     // A claim attempt on an expired, unapproved milestone must fail.
     let claim_result = client.try_claim_milestone(&agreement_id, &1u32);
@@ -418,8 +432,12 @@ fn test_expire_milestone_hook_fires_and_milestone_remains_expired() {
     let contributor2 = create_address(&env);
     let token2 = create_token(&env);
     let fresh_token_amount = 500i128;
-    let fresh_agreement_id =
-        fresh_client.create_milestone_agreement(&employer2, &contributor2, &token2);
+    let fresh_agreement_id = fresh_client.create_milestone_agreement(
+        &employer2,
+        &contributor2,
+        &token2,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     fresh_client.add_milestone(&fresh_agreement_id, &fresh_token_amount);
     fresh_client.fund_milestone_agreement(&fresh_agreement_id, &employer2, &fresh_token_amount);
     mint(&env, &token2, &fresh_contract_id, fresh_token_amount);
