@@ -1194,6 +1194,7 @@ version = "0.0.0"
 dependencies = [
  "audit_logger",
  "bonus_system",
+ "compliance_checker",
  "department_manager",
  "dispute_escalation",
  "employee_roles",

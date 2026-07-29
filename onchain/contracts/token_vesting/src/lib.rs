@@ -101,6 +101,14 @@ pub struct EarlyReleaseEvent {
     pub amount: i128,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BeneficiaryAssignedEvent {
+    pub id: u128,
+    pub old_beneficiary: Address,
+    pub new_beneficiary: Address,
+}
+
 fn require_initialized(env: &Env) {
     let initialized = env
         .storage()
@@ -178,14 +186,13 @@ fn write_schedule(env: &Env, schedule: &VestingSchedule) {
 ///
 /// This invariant holds for all three schedule kinds:
 ///
-/// - **Linear** (with or without cliff): the result grows proportionally with
-///   time after `start_time` (and after `cliff_time` when set), reaching
-///   `total_amount` at `end_time` and remaining capped there forever.
-/// - **Cliff**: the result is 0 until `cliff_time` and `total_amount` at or
-///   after `cliff_time`. The step is upward only.
-/// - **Custom**: checkpoints are validated at creation to be sorted by `time`
-///   with non-decreasing `cumulative_amount`, so the step function can only
-///   stay flat or increase as time advances.
+/// - **Linear** (with or without cliff): the result grows proportionally with time after
+///   `start_time` (and after `cliff_time` when set), reaching `total_amount` at `end_time` and
+///   remaining capped there forever.
+/// - **Cliff**: the result is 0 until `cliff_time` and `total_amount` at or after `cliff_time`. The
+///   step is upward only.
+/// - **Custom**: checkpoints are validated at creation to be sorted by `time` with non-decreasing
+///   `cumulative_amount`, so the step function can only stay flat or increase as time advances.
 ///
 /// For revoked schedules the effective timestamp is frozen at `revoked_at`,
 /// so the vested amount is constant for all `now >= revoked_at` and the
@@ -649,9 +656,26 @@ impl TokenVestingContract {
 
     /// @notice Revokes a revocable schedule for a terminated employee.
     /// @dev Employer recovers unvested tokens; vested portion remains claimable.
+    ///
+    /// Fully-vested schedules: if `get_vested_amount` already equals
+    /// `total_amount` (nothing left to claw back), this is a **safe no-op**
+    /// with respect to funds — no transfer is made and `refunded_amount` is
+    /// `0`. The schedule's `status` still transitions to `Revoked` and
+    /// `revoked_at` is still recorded (revocation is a real, one-time event
+    /// on the schedule even when there's nothing to reclaim), but this has
+    /// no effect on `get_vested_amount` or `get_releasable_amount`: both are
+    /// computed from `revoked_at`, which is only ever set once vesting has
+    /// already reached `total_amount` in this case, so they continue to
+    /// report the same values as before the call. Already-vested tokens
+    /// remain fully claimable via `claim` after this no-op revoke.
+    ///
+    /// A second `revoke` call on an already-revoked schedule is rejected
+    /// (`"Schedule not active"`) rather than treated as another no-op.
+    ///
     /// @param employer Employer that created the schedule; must authenticate.
     /// @param schedule_id Vesting schedule identifier.
-    /// @return refunded_amount Amount of unvested tokens refunded to employer.
+    /// @return refunded_amount Amount of unvested tokens refunded to employer
+    ///         (`0` when the schedule was already fully vested).
     pub fn revoke(env: Env, employer: Address, schedule_id: u128) -> i128 {
         require_initialized(&env);
         employer.require_auth();
@@ -689,6 +713,59 @@ impl TokenVestingContract {
         );
 
         unvested
+    }
+
+    /// @notice Reassigns the beneficiary of an unvested schedule.
+    /// @dev Only the contract owner (admin) or the current beneficiary may call this.
+    ///      The schedule must be Active and must have unclaimed tokens remaining
+    ///      (i.e., not fully released). Already-vested-but-unclaimed amounts remain
+    ///      claimable by the new beneficiary after reassignment.
+    ///      Emits event `("vesting_beneficiary_assigned", schedule_id)` with
+    ///      `(old_beneficiary, new_beneficiary)`.
+    /// @param caller         Address requesting the change; must authenticate and
+    ///                       be either the owner or the current beneficiary.
+    /// @param schedule_id    Vesting schedule identifier.
+    /// @param new_beneficiary Address to transfer the schedule to.
+    pub fn assign_beneficiary(
+        env: Env,
+        caller: Address,
+        schedule_id: u128,
+        new_beneficiary: Address,
+    ) {
+        require_initialized(&env);
+        caller.require_auth();
+
+        let mut schedule = read_schedule(&env, schedule_id);
+
+        // Only owner or current beneficiary can reassign.
+        let owner = read_owner(&env);
+        assert!(
+            caller == owner || caller == schedule.beneficiary,
+            "Only owner or current beneficiary can assign"
+        );
+
+        assert!(
+            schedule.status == VestingStatus::Active,
+            "Schedule is not active"
+        );
+
+        assert!(
+            schedule.released_amount < schedule.total_amount,
+            "Schedule fully claimed or released"
+        );
+
+        let old_beneficiary = schedule.beneficiary.clone();
+        schedule.beneficiary = new_beneficiary.clone();
+        write_schedule(&env, &schedule);
+
+        env.events().publish(
+            ("vesting_beneficiary_assigned", schedule_id),
+            BeneficiaryAssignedEvent {
+                id: schedule_id,
+                old_beneficiary,
+                new_beneficiary,
+            },
+        );
     }
 
     /// @notice Reads a vesting schedule by id.
