@@ -1,8 +1,8 @@
 #![no_std]
-
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 pub use rbac_interface::Role;
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -297,6 +297,37 @@ impl RbacContract {
         write_roles(&env, &target, &Vec::new(&env));
     }
 
+    /// @notice Allows a role holder to voluntarily renounce (self-revoke) a role.
+    /// @dev The caller must authenticate and must currently hold the specified role.
+    ///      Cannot renounce a role the caller does not hold.
+    ///      Emits event `("RBAC", "renounce")` with `(caller, role)`.
+    /// @param caller Address renouncing the role; must authenticate.
+    /// @param role   Role to renounce.
+    pub fn renounce_role(env: Env, caller: Address, role: Role) {
+        require_initialized(&env);
+        caller.require_auth();
+
+        let mut roles = read_roles(&env, &caller);
+        let mut found = false;
+        let mut i = 0u32;
+        while i < roles.len() {
+            if roles.get(i).as_ref().map(|r| r == &role).unwrap_or(false) {
+                roles.remove(i);
+                found = true;
+                break;
+            }
+            i += 1;
+        }
+        assert!(found, "Caller does not hold the specified role");
+
+        write_roles(&env, &caller, &roles);
+
+        env.events().publish(
+            (symbol_short!("RBAC"), symbol_short!("renounce")),
+            (&caller, &role),
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Queries
     // -----------------------------------------------------------------------
@@ -373,7 +404,7 @@ impl RbacContract {
     ///      1. Admin role is granted to the new owner.
     ///      2. Admin role is revoked from the old owner.
     ///      3. Ownership record is updated.
-    ///      Emits event `("RBAC", "owner")` with the new owner address.
+    ///      Emits event `("RBAC", "owner")` with `(previous_owner, new_owner)`.
     /// @param caller Must be the pending owner; must authenticate.
     pub fn accept_ownership(env: Env, caller: Address) {
         require_initialized(&env);
@@ -417,6 +448,6 @@ impl RbacContract {
         env.storage().persistent().remove(&StorageKey::PendingOwner);
 
         env.events()
-            .publish((symbol_short!("RBAC"), symbol_short!("owner")), &caller);
+            .publish((symbol_short!("RBAC"), symbol_short!("owner")), (&old_owner, &caller));
     }
 }

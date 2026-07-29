@@ -28,6 +28,7 @@ The Expense Reimbursement Contract provides a secure, auditable system for manag
 
 - **Owner Controls**: Only owner can add/remove approvers.
 - **Approver Authorization**: Only designated approvers can approve/reject specific expenses. Approvers cannot approve their own expenses.
+- **Approver Removal Semantics**: Removing an approver immediately prevents that address from approving or rejecting pending expenses, including expenses for which it was previously designated. Approval decisions already recorded before removal persist in the expense state and remain payable; role changes never retroactively discount or revoke them.
 - **Submitter Rights**: Only submitters can cancel their pending expenses.
 - **Refund Assurances**: Escrows naturally return to the `payer` recorded upon funding, avoiding owner confiscation.
 - **Authentication**: All sensitive operations require strict caller authentication via Soroban `require_auth`.
@@ -40,7 +41,24 @@ The Expense Reimbursement Contract provides a secure, auditable system for manag
 4. **Approver reviews** and validates `SHA256(retrieved_document) == stored_hash`.
 5. **Approver triggers approval** using `approve_expense`. (Can approve partially). Status enters `Approved`.
 6. **Optional audit linkage**: if `audit_logger` is configured, approval writes `append_log(actor=approver, action="expense_approved", subject=submitter, amount=approved_amount)` and stores returned `audit_log_id`.
-7. **Payment released** via `pay_expense`. Employee gets their portion, Employer is refunded any unapproved surplus automatically. Status enters `Paid` — this is a **terminal state**: the expense status transitions to `Paid` and `escrow_amount` is zeroed **before** any token transfer occurs (checks-effects-interactions). Any subsequent `pay_expense` call for the same expense id is rejected, guaranteeing the expense cannot be paid more than once.
+7. **Payment released** via `pay_expense`. The contract validates that the `receipt_hash` stored on the expense still matches the original binding in `ReceiptHash` storage, ensuring the payout is bound to the original submitted receipt. Employee gets their portion, Employer is refunded any unapproved surplus automatically. Status enters `Paid` — this is a **terminal state**: the expense status transitions to `Paid` and `escrow_amount` is zeroed **before** any token transfer occurs (checks-effects-interactions). Any subsequent `pay_expense` call for the same expense id is rejected, guaranteeing the expense cannot be paid more than once.
+
+## Settlement Currency Model
+
+Each expense carries its **own** token, chosen by the submitter at
+`submit_expense` time and stored on the `Expense` record. Every later step
+operates on that same stored token:
+
+- `fund_expense` escrows the expense's `token`.
+- `pay_expense` pays the employee, and refunds any unapproved surplus to the
+  payer, in the expense's `token`.
+
+There is no global or per-agreement "settlement currency" that an expense is
+validated against; the contract is intentionally multi-token, with each expense
+fully self-contained in a single currency. Because no step ever references a
+second token, a paid-out expense can never mis-convert an amount or transfer a
+different token than the one submitted, and distinct expenses in distinct tokens
+cannot interfere with one another.
 
 ## Audit Logging
 
@@ -93,6 +111,14 @@ See `onchain/contracts/expense_reimbursement/tests/test_expense.rs` for the comp
 - Replay protection: each `receipt_hash` is unique globally in contract storage (`ReceiptHash(hash) -> expense_id`)
 
 This prevents reimbursing the same receipt payload twice, even when submitted by different users or in separate requests.
+
+### Receipt-Hash Attestation Guarantee
+
+The `receipt_hash` captured at `submit_expense` time is bound to the expense for its entire lifecycle. When `pay_expense` is called, it validates that the `receipt_hash` stored on the expense still matches the original binding recorded in the `ReceiptHash` global storage entry (`ReceiptHash(hash) -> expense_id`). This means:
+
+- The receipt hash cannot be mutated after submission without invalidating the payout.
+- Any code path that attempts to alter the stored `receipt_hash` will cause `pay_expense` to reject the payout with a `"Receipt hash binding invalid"` error.
+- The attestation guarantee is enforced on-chain, providing cryptographic assurance that the payout corresponds to the original submitted receipt.
 
 ## Privacy and Security Notes
 

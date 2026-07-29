@@ -5,10 +5,10 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env, Vec,
 };
-
-use stello_pay_contract::storage::ExchangeRateInfo;
-use stello_pay_contract::storage::{DataKey, PayrollError};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{DataKey, ExchangeRateInfo, PayrollError},
+    PayrollContract, PayrollContractClient,
+};
 
 /// Create a fresh test environment with a deployed payroll contract, owner,
 /// arbiter and employer. Returns `(env, owner, employer, arbiter, client)`.

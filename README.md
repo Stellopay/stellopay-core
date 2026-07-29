@@ -124,7 +124,18 @@ See [Building on Windows](docs/windows-build.md) for the full Windows guidance.
 
 ## CI
 
-The on-chain workspace uses GitHub Actions to build and test Soroban contracts on pull requests and pushes to the main branches. See [`onchain/README.md`](onchain/README.md) for the CI overview and local setup notes.
+The on-chain workspace uses GitHub Actions ([`.github/workflows/contracts.yml`](.github/workflows/contracts.yml)) to format-check, build, and test all Soroban contracts on every push and pull request targeting `main`.
+
+Run the same checks locally before opening a PR:
+
+```sh
+cd onchain
+cargo fmt --all -- --check   # formatting
+cargo build --workspace      # build
+cargo test --workspace       # tests
+```
+
+See [`docs/ci.md`](docs/ci.md) for the full local-run guide, prerequisite setup, and details on what CI does and does not check.
 
 ## Contributing and security
 
@@ -149,3 +160,86 @@ For upgrade and migration planning, start with [Migrations](docs/migrations.md) 
 
 This project is licensed under the MIT License. See [`onchain/README.md`](onchain/README.md#license) for the existing license note.
 
+
+## Frontend — Landing Page
+
+The `frontend/` directory contains a Next.js 15 (App Router) landing page for Stellopay.
+
+### Quick start
+
+```sh
+cd frontend
+npm install
+npm run dev   # http://localhost:3000
+```
+
+Run tests:
+
+```sh
+cd frontend
+npm test
+```
+
+### Structured data (JSON-LD)
+
+The landing page emits two [schema.org](https://schema.org) schemas as a server-rendered
+`<script type="application/ld+json">` tag, enabling Google to build a knowledge-panel entry
+and a Sitelinks Searchbox:
+
+| Schema | Purpose |
+|---|---|
+| `Organization` | Registers name, logo, URL, and `sameAs` social profiles with search engines |
+| `WebSite` | Declares a `SearchAction` for the Sitelinks Searchbox feature |
+
+Both schemas share a single `@context` declaration via the JSON-LD `@graph` pattern.
+
+#### Source files
+
+| File | Role |
+|---|---|
+| `frontend/app/metadata-constants.ts` | Single source of truth — all string constants (URL, name, logo, description) and the `buildJsonLdGraph()` factory |
+| `frontend/app/components/JsonLd.tsx` | React Server Component that renders the `<script>` tag |
+| `frontend/app/layout.tsx` | Root layout — exports Next.js `Metadata` (Open Graph, Twitter) using the same constants |
+| `frontend/app/page.tsx` | Landing page — renders `<JsonLd graph={buildJsonLdGraph()} />` |
+
+#### Updating the payload
+
+All JSON-LD values come from `metadata-constants.ts`. To change the site URL, name, logo,
+or social links, edit that file only — both the Metadata API tags and the JSON-LD output
+update automatically.
+
+```ts
+// frontend/app/metadata-constants.ts
+export const SITE_URL  = "https://stellopay.xyz";
+export const SITE_NAME = "Stellopay";
+export const LOGO_URL  = `${SITE_URL}/logo.png`;
+```
+
+#### Validation
+
+Paste the production URL into [Google's Rich Results Test](https://search.google.com/test/rich-results)
+to verify the structured data is recognised.  The expected output is:
+
+- **Organization** — detected with name, logo, and sameAs links
+- **WebSite** — detected with potentialAction SearchAction
+
+#### Accessibility
+
+- `<script type="application/ld+json">` is invisible to assistive technology; no ARIA
+  attributes are required.
+- The landing page uses semantic HTML5 landmarks (`<header>`, `<main>`, `<nav>`, `<footer>`).
+- A skip-navigation link (`Skip to main content`) is provided for keyboard users
+  (WCAG 2.1 SC 2.4.1).
+- Text contrast meets WCAG 2.1 AA (≥ 4.5:1 for normal text, ≥ 3:1 for large text).
+- Responsive grid layout tested at sm 640, md 768, lg 1024, xl 1280 breakpoints.
+
+#### Tests
+
+```sh
+cd frontend && npm test
+# 34 tests covering:
+#   - constant shape and non-empty values
+#   - buildJsonLdGraph() schema fields for Organization and WebSite
+#   - JSON serialization round-trip and idempotency
+#   - <JsonLd> component rendering
+```

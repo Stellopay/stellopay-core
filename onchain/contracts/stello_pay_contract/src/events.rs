@@ -1,5 +1,6 @@
-use crate::storage::AgreementMode;
 use soroban_sdk::{contractevent, Address, Env};
+
+use crate::storage::AgreementMode;
 
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -258,20 +259,23 @@ pub fn emit_milestone_funded(env: &Env, event: MilestoneFundedEvent) {
 }
 
 /// Event: Exchange rate set via `set_exchange_rate` or `set_exchange_rate_admin`.
-/// Emitted whenever a rate is updated so off-chain indexers can track FX history.
+/// Emitted whenever a rate is updated so off-chain indexers can track FX history
+/// and monitor who performed the update.
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct ExchangeRateChangedEvent {
+pub struct ExchangeRateUpdatedEvent {
     pub base: Address,
     pub quote: Address,
     pub new_rate: i128,
     /// Previous rate, or 0 if this is the first time the pair is set.
     pub prev_rate: i128,
+    /// Address that called `set_exchange_rate`.
+    pub updater: Address,
     /// Ledger timestamp when this event was emitted.
     pub updated_at: u64,
 }
 
-pub fn emit_exchange_rate_changed(env: &Env, event: ExchangeRateChangedEvent) {
+pub fn emit_exchange_rate_updated(env: &Env, event: ExchangeRateUpdatedEvent) {
     event.publish(env);
 }
 
@@ -298,9 +302,10 @@ pub fn emit_multisig_config_changed(env: &Env, event: MultisigConfigChangedEvent
 ///
 /// Emitted when an employer explicitly rejects a submitted milestone via
 /// `reject_milestone`. The `rejected_by` field records the employer address
-/// at the time of rejection and `reason` is the optional human-readable
-/// rationale supplied by the caller. Off-chain indexers can use this event
-/// to update milestone status, notify contributors, and track rejection history.
+/// at the time of rejection and `reason` is the mandatory human-readable
+/// justification supplied by the caller (must be non-empty). Off-chain
+/// indexers can use this event to update milestone status, notify
+/// contributors, and track rejection history.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct MilestoneRejectedEvent {
@@ -310,7 +315,8 @@ pub struct MilestoneRejectedEvent {
     pub milestone_id: u32,
     /// The employer address that performed the rejection.
     pub rejected_by: Address,
-    /// Optional free-text reason provided by the employer.
+    /// Mandatory free-text justification provided by the employer (must be
+    /// non-empty and contain at least one non-whitespace character).
     pub reason: soroban_sdk::String,
 }
 
@@ -343,5 +349,31 @@ pub struct MilestoneExpiredEvent {
 
 /// Emits a [`MilestoneExpiredEvent`] for the given expiry.
 pub fn emit_milestone_expired(env: &Env, event: MilestoneExpiredEvent) {
+    event.publish(env);
+}
+
+/// Event: Bulk pause of all agreements for an employer.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BulkAgreementsPausedEvent {
+    pub employer: Address,
+    pub count: u32,
+}
+
+/// Emits a [`BulkAgreementsPausedEvent`] for the given bulk pause.
+pub fn emit_bulk_agreements_paused(env: &Env, event: BulkAgreementsPausedEvent) {
+    event.publish(env);
+}
+
+/// Event: Bulk unpause of all agreements for an employer.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BulkAgreementsUnpausedEvent {
+    pub employer: Address,
+    pub count: u32,
+}
+
+/// Emits a [`BulkAgreementsUnpausedEvent`] for the given bulk unpause.
+pub fn emit_bulk_agreements_unpaused(env: &Env, event: BulkAgreementsUnpausedEvent) {
     event.publish(env);
 }

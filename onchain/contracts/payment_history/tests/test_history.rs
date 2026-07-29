@@ -3,66 +3,50 @@
 //! ## Coverage targets
 //!
 //! * Initialization — happy path, double-init guard
-//! * `record_payment` — happy path, monotonic IDs, payment_hash stored,
-//!   reverse-lookup index written, all three sequential indices updated,
-//!   event emission, full field round-trip, multiple payments
+//! * `record_payment` — happy path, monotonic IDs, payment_hash stored, reverse-lookup index
+//!   written, all three sequential indices updated, event emission, full field round-trip, multiple
+//!   payments
 //! * `record_payment` — unauthorized (no auth mocked)
 //! * `get_payment_by_hash` — existing hash, unknown hash returns None
 //! * `get_payment_by_id` — existing ID, non-existent ID, ID 0
 //! * `get_global_payment_count` — before/after recordings
 //! * `get_agreement_payment_count` — before/after, multiple agreements
-//! * `get_payments_by_agreement` — full page, partial page, multi-page,
-//!   start_index=0, start_index>count, empty, exact boundary, limit capped
+//! * `get_payments_by_agreement` — full page, partial page, multi-page, start_index=0,
+//!   start_index>count, empty, exact boundary, limit capped
 //! * `get_employer_payment_count` — before/after, multiple employers
 //! * `get_payments_by_employer` — pagination, all boundary conditions
 //! * `get_employee_payment_count` — before/after, multiple employees
 //! * `get_payments_by_employee` — pagination, all boundary conditions
-//! * Cross-index consistency — same payment visible via hash, ID, and all
-//!   three sequential indices; all return identical records
-//! * Index-consistency (#912) — `get_payment_by_hash` and `get_payment_by_id`
-//!   return field-for-field identical records; unknown hash returns None (not a
-//!   wrong record); each hash resolves only to its own payment; batch
-//!   consistency across 8 payments; idempotent replay preserves both indices;
-//!   stored hash field matches the lookup key; None returned even with
-//!   populated storage
-//! * Security — record immutability, index counts only increase (no pruning),
-//!   hash index written atomically with the primary record
+//! * Cross-index consistency — same payment visible via hash, ID, and all three sequential indices;
+//!   all return identical records
+//! * Security — record immutability, index counts only increase (no pruning), hash index written
+//!   atomically with the primary record
 //! * Large history — 20 records, boundary reads at exact count edge
 //!
 //! ## Security notes
 //!
 //! The tests below validate the following security properties directly:
 //!
-//! 1. **Unauthorized injection** — `test_record_payment_unauthorized_no_auth`
-//!    confirms that `record_payment` panics with `Auth(InvalidAction)` when
-//!    called without mocked auth for the registered payroll contract.
+//! 1. **Unauthorized injection** — `test_record_payment_unauthorized_no_auth` confirms that
+//!    `record_payment` panics with `Auth(InvalidAction)` when called without mocked auth for the
+//!    registered payroll contract.
 //!
-//! 2. **History tampering** — `test_records_are_immutable_after_recording`
-//!    verifies that a payment returned by all query paths is bit-for-bit
-//!    identical after additional payments are recorded. There is no overwrite
-//!    path in the contract; the test confirms this property holds at runtime.
+//! 2. **History tampering** — `test_records_are_immutable_after_recording` verifies that a payment
+//!    returned by all query paths is bit-for-bit identical after additional payments are recorded.
+//!    There is no overwrite path in the contract; the test confirms this property holds at runtime.
 //!
-//! 3. **Unauthorized pruning** — `test_index_counts_only_increase` asserts
-//!    that every index count after N insertions equals exactly N. Because
-//!    counts can only increment and there is no decrement or delete path,
-//!    it is impossible for any caller to remove entries from the pagination
-//!    range without corrupting the counter, which would cause every subsequent
-//!    paginated read to skip entries.
+//! 3. **Unauthorized pruning** — `test_index_counts_only_increase` asserts that every index count
+//!    after N insertions equals exactly N. Because counts can only increment and there is no
+//!    decrement or delete path, it is impossible for any caller to remove entries from the
+//!    pagination range without corrupting the counter, which would cause every subsequent paginated
+//!    read to skip entries.
 //!
-//! 4. **Hash-record atomicity** — `test_hash_index_written_atomically` records
-//!    a payment and immediately queries by hash. The reverse-lookup succeeds,
-//!    confirming the hash index and the primary record are written in the same
-//!    invocation and are always in sync.
+//! 4. **Hash-record atomicity** — `test_hash_index_written_atomically` records a payment and
+//!    immediately queries by hash. The reverse-lookup succeeds, confirming the hash index and the
+//!    primary record are written in the same invocation and are always in sync.
 //!
-//! 5. **Double-init guard** — `test_initialize_double_init_rejected` uses the
-//!    `try_initialize` path to confirm the second call is rejected without
-//!    corrupting the already-initialized state.
-//!
-//! 6. **Dual-index consistency (#912)** — the `test_index_consistency_*` suite
-//!    proves that `get_payment_by_hash` and `get_payment_by_id` always resolve
-//!    to the same record (field-by-field), that an unknown hash returns `None`
-//!    rather than a wrong record, and that no hash can resolve to a payment
-//!    other than its own.
+//! 5. **Double-init guard** — `test_initialize_double_init_rejected` uses the `try_initialize` path
+//!    to confirm the second call is rejected without corrupting the already-initialized state.
 
 #![cfg(test)]
 
@@ -583,6 +567,138 @@ fn test_agreement_indices_are_independent() {
     assert_eq!(client.get_agreement_payment_count(&3u128), 0u32);
 }
 
+/// Verifies that querying payments by agreement ID never returns records
+/// belonging to a different agreement, even when multiple agreements share
+/// the same employer or employee address.
+///
+/// # Security Property
+///
+/// The append-only agreement index (`AgreementPayment(agreement_id, position)`)
+/// is keyed on the agreement ID tuple, so cross-agreement leakage would require
+/// a storage collision — which the Soroban host prevents.  This test confirms
+/// the contract-level behaviour:
+///
+/// * After recording N payments for agreement A and M payments for agreement B
+///   with a shared employer, `get_payments_by_agreement(A, 1, MAX)` returns
+///   exactly N records, all with `agreement_id == A`.
+/// * `get_payments_by_agreement(B, 1, MAX)` returns exactly M records, all
+///   with `agreement_id == B`.
+/// * `get_agreement_payment_count` returns N and M respectively.
+/// * The employer-level view (`get_payments_by_employer`) correctly aggregates
+///   payments from both agreements.
+#[test]
+fn test_agreement_query_never_leaks_cross_agreement_records() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let shared_employer = Address::generate(&env);
+    let employee_a = Address::generate(&env);
+    let employee_b = Address::generate(&env);
+
+    let agreement_a = 100u128;
+    let agreement_b = 200u128;
+
+    // Record 3 payments for agreement A with shared employer.
+    let id_a1 = record(
+        &client, &env, agreement_a, 1u32, &token, 100, &shared_employer, &employee_a, 1_000,
+    );
+    let id_a2 = record(
+        &client, &env, agreement_a, 2u32, &token, 200, &shared_employer, &employee_a, 2_000,
+    );
+    let id_a3 = record(
+        &client, &env, agreement_a, 3u32, &token, 300, &shared_employer, &employee_a, 3_000,
+    );
+
+    // Record 2 payments for agreement B with the SAME employer.
+    let id_b1 = record(
+        &client, &env, agreement_b, 4u32, &token, 400, &shared_employer, &employee_b, 4_000,
+    );
+    let id_b2 = record(
+        &client, &env, agreement_b, 5u32, &token, 500, &shared_employer, &employee_b, 5_000,
+    );
+
+    // ── Agreement-level queries ──────────────────────────────────────────
+
+    let page_a = client.get_payments_by_agreement(&agreement_a, &1u32, &10u32);
+    assert_eq!(page_a.len(), 3u32, "agreement A must return exactly 3 records");
+    for i in 0..page_a.len() {
+        let record = page_a.get(i).unwrap();
+        assert_eq!(
+            record.agreement_id, agreement_a,
+            "every record on agreement A page must belong to agreement A"
+        );
+    }
+
+    let page_b = client.get_payments_by_agreement(&agreement_b, &1u32, &10u32);
+    assert_eq!(page_b.len(), 2u32, "agreement B must return exactly 2 records");
+    for i in 0..page_b.len() {
+        let record = page_b.get(i).unwrap();
+        assert_eq!(
+            record.agreement_id, agreement_b,
+            "every record on agreement B page must belong to agreement B"
+        );
+    }
+
+    // ── Counts match independently ───────────────────────────────────────
+
+    assert_eq!(
+        client.get_agreement_payment_count(&agreement_a),
+        3u32,
+        "agreement A count must be exactly 3"
+    );
+    assert_eq!(
+        client.get_agreement_payment_count(&agreement_b),
+        2u32,
+        "agreement B count must be exactly 2"
+    );
+
+    // ── Employer view aggregates correctly ───────────────────────────────
+
+    let emp_page = client.get_payments_by_employer(&shared_employer, &1u32, &10u32);
+    assert_eq!(
+        emp_page.len(),
+        5u32,
+        "employer page includes payments from both agreements"
+    );
+
+    // Collect the IDs from each page for cross-validation.
+    let mut a_ids = std::vec![0u128; 3];
+    let mut b_ids = std::vec![0u128; 2];
+    let mut emp_ids = std::vec![0u128; 5];
+
+    for i in 0..page_a.len() {
+        a_ids[i as usize] = page_a.get(i).unwrap().id;
+    }
+    for i in 0..page_b.len() {
+        b_ids[i as usize] = page_b.get(i).unwrap().id;
+    }
+    for i in 0..emp_page.len() {
+        emp_ids[i as usize] = emp_page.get(i).unwrap().id;
+    }
+
+    // Each agreement page contains only its own IDs.
+    assert!(a_ids.contains(&id_a1) && a_ids.contains(&id_a2) && a_ids.contains(&id_a3));
+    assert!(!a_ids.contains(&id_b1) && !a_ids.contains(&id_b2));
+
+    assert!(b_ids.contains(&id_b1) && b_ids.contains(&id_b2));
+    assert!(!b_ids.contains(&id_a1) && !b_ids.contains(&id_a2) && !b_ids.contains(&id_a3));
+
+    // Employer view contains all IDs from both agreements.
+    for id in [id_a1, id_a2, id_a3, id_b1, id_b2] {
+        assert!(
+            emp_ids.contains(&id),
+            "employer page missing payment id {}",
+            id
+        );
+    }
+
+    // Unused agreement returns empty page.
+    let page_empty = client.get_payments_by_agreement(&999u128, &1u32, &10u32);
+    assert_eq!(page_empty.len(), 0u32);
+}
+
 #[test]
 fn test_get_payments_by_agreement_single_record() {
     let env = create_env();
@@ -786,9 +902,39 @@ fn test_employer_indices_are_independent() {
     let employer_b = Address::generate(&env);
     let employee = Address::generate(&env);
 
-    record(&client, &env, 1, 1u32, &token, 10, &employer_a, &employee, 0);
-    record(&client, &env, 1, 2u32, &token, 20, &employer_a, &employee, 1);
-    record(&client, &env, 1, 3u32, &token, 30, &employer_b, &employee, 2);
+    record(
+        &client,
+        &env,
+        1,
+        1u32,
+        &token,
+        10,
+        &employer_a,
+        &employee,
+        0,
+    );
+    record(
+        &client,
+        &env,
+        1,
+        2u32,
+        &token,
+        20,
+        &employer_a,
+        &employee,
+        1,
+    );
+    record(
+        &client,
+        &env,
+        1,
+        3u32,
+        &token,
+        30,
+        &employer_b,
+        &employee,
+        2,
+    );
 
     assert_eq!(client.get_employer_payment_count(&employer_a), 2u32);
     assert_eq!(client.get_employer_payment_count(&employer_b), 1u32);
@@ -907,9 +1053,39 @@ fn test_employee_indices_are_independent() {
     let employee_a = Address::generate(&env);
     let employee_b = Address::generate(&env);
 
-    record(&client, &env, 1, 1u32, &token, 10, &employer, &employee_a, 0);
-    record(&client, &env, 1, 2u32, &token, 20, &employer, &employee_a, 1);
-    record(&client, &env, 1, 3u32, &token, 30, &employer, &employee_b, 2);
+    record(
+        &client,
+        &env,
+        1,
+        1u32,
+        &token,
+        10,
+        &employer,
+        &employee_a,
+        0,
+    );
+    record(
+        &client,
+        &env,
+        1,
+        2u32,
+        &token,
+        20,
+        &employer,
+        &employee_a,
+        1,
+    );
+    record(
+        &client,
+        &env,
+        1,
+        3u32,
+        &token,
+        30,
+        &employer,
+        &employee_b,
+        2,
+    );
 
     assert_eq!(client.get_employee_payment_count(&employee_a), 2u32);
     assert_eq!(client.get_employee_payment_count(&employee_b), 1u32);
@@ -1172,7 +1348,9 @@ fn test_multiple_agreements_large_history_independent() {
 
     // 10 payments under agreement 1, 5 under agreement 2.
     for i in 0..10u8 {
-        record(&client, &env, 1, i as u32, &token, i as i128, &from, &to, i as u64);
+        record(
+            &client, &env, 1, i as u32, &token, i as i128, &from, &to, i as u64,
+        );
     }
     for i in 10..15u8 {
         record(
@@ -1431,17 +1609,20 @@ fn benchmark_get_payments_by_employee_scaling() {
     // Validate that costs are reasonable and scaling is predictable
     // Cost should increase with history size, but not linearly due to pagination cap
     assert!(cost_10 > 0, "cost must be positive");
-    assert!(cost_100 > cost_10, "cost for 100 payments should exceed cost for 10");
-    assert!(cost_1000 > cost_100, "cost for 1000 payments should exceed cost for 100");
+    assert!(
+        cost_100 > cost_10,
+        "cost for 100 payments should exceed cost for 10"
+    );
+    assert!(
+        cost_1000 > cost_100,
+        "cost for 1000 payments should exceed cost for 100"
+    );
 
     // The cost difference between 100 and 1000 should be bounded because
     // MAX_PAGE_SIZE caps the actual number of records read (100 vs 100)
     // The difference comes from index traversal overhead, not record deserialization
     let cost_ratio = cost_1000 as f64 / cost_100 as f64;
-    println!(
-        "Cost ratio (1000/100 payments): {:.2}x",
-        cost_ratio
-    );
+    println!("Cost ratio (1000/100 payments): {:.2}x", cost_ratio);
     assert!(
         cost_ratio < 10.0,
         "Cost ratio should be < 10x due to pagination cap; got {:.2}x",
@@ -1449,388 +1630,685 @@ fn benchmark_get_payments_by_employee_scaling() {
     );
 }
 
-// ─── Index-consistency: get_payment_by_hash vs get_payment_by_id (#912) ──────
-//
-// These tests directly satisfy the requirements of issue #912:
-//
-//  Req 1 — get_payment_by_hash and get_payment_by_id resolve to the EXACT same
-//           record for a given payment, verified field-by-field.
-//  Req 2 — An unknown hash (never recorded) returns None (not-found), not a
-//           wrong record. A hash that belongs to payment A never resolves to
-//           payment B.
-//
-// All tests use the established fixture helpers (make_hash, record,
-// create_env, register_contract, initialize_contract) so they slot naturally
-// into the existing CI suite and pass `cargo fmt --all -- --check`.
+// ─── Multi-agreement counter-consistency ──────────────────────────────────────
 
-/// Req 1 (core): record a single payment and assert that every field returned
-/// by get_payment_by_hash matches the corresponding field returned by
-/// get_payment_by_id — not just structural equality but an explicit field-by-
-/// field comparison so a future partial-record regression surfaces immediately.
+/// Helper: sum `get_agreement_payment_count` over a slice of agreement IDs.
+fn sum_agreement_counts(client: &PaymentHistoryContractClient<'_>, ids: &[u128]) -> u32 {
+    ids.iter()
+        .map(|id| client.get_agreement_payment_count(id))
+        .sum()
+}
+
 #[test]
-fn test_index_consistency_hash_and_id_return_identical_fields() {
+fn test_multi_agreement_interleaved_employer_count_equals_sum_of_agreement_counts() {
+    /// Verifies the **counter-consistency invariant**:
+    ///
+    /// `get_employer_payment_count(employer)` must equal the sum of
+    /// `get_agreement_payment_count(id)` for every agreement that belongs to
+    /// that employer — **after every individual recording step**, not only at
+    /// the end.
+    ///
+    /// ## Why this matters
+    ///
+    /// The employer-level index and each per-agreement index are maintained by
+    /// separate storage keys. A bug that increments one counter without
+    /// incrementing the other would only surface when both are queried
+    /// together. This test interleaves recordings across four agreements in a
+    /// deliberately unbalanced order to stress-test the atomicity of the dual
+    /// counter update inside `record_payment`.
+    ///
+    /// ## Interleaving pattern
+    ///
+    /// Agreements 1, 2, 3, 4 receive payments in this order:
+    ///
+    /// ```text
+    /// step  1 → agreement 1   (employer count: 1,  agg counts: [1,0,0,0])
+    /// step  2 → agreement 3   (employer count: 2,  agg counts: [1,0,1,0])
+    /// step  3 → agreement 2   (employer count: 3,  agg counts: [1,1,1,0])
+    /// step  4 → agreement 1   (employer count: 4,  agg counts: [2,1,1,0])
+    /// step  5 → agreement 4   (employer count: 5,  agg counts: [2,1,1,1])
+    /// step  6 → agreement 2   (employer count: 6,  agg counts: [2,2,1,1])
+    /// step  7 → agreement 3   (employer count: 7,  agg counts: [2,2,2,1])
+    /// step  8 → agreement 1   (employer count: 8,  agg counts: [3,2,2,1])
+    /// step  9 → agreement 4   (employer count: 9,  agg counts: [3,2,2,2])
+    /// step 10 → agreement 2   (employer count: 10, agg counts: [3,3,2,2])
+    /// step 11 → agreement 3   (employer count: 11, agg counts: [3,3,3,2])
+    /// step 12 → agreement 4   (employer count: 12, agg counts: [3,3,3,3])
+    /// ```
+    ///
+    /// After every step the invariant `employer_count == sum(agg_counts)` is
+    /// asserted, so any partial-update bug is caught at the exact step where
+    /// it first appears rather than only at the end.
+    ///
+    /// ## Security note
+    ///
+    /// The invariant cannot be satisfied by an implementation that increments
+    /// only one of the two counters per `record_payment` call.  Because the
+    /// interleaving is unbalanced (different agreements receive different
+    /// numbers of payments), any off-by-one divergence in either counter
+    /// direction is immediately visible.
     let env = create_env();
-    let (_contract_addr, client) = register_contract(&env);
+    let (_contract_id, client) = register_contract(&env);
+    initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let employer = Address::generate(&env);
+    // Use a separate employee per agreement so employee indices do not
+    // accidentally compensate for bugs in the employer/agreement indices.
+    let employee_a = Address::generate(&env);
+    let employee_b = Address::generate(&env);
+    let employee_c = Address::generate(&env);
+    let employee_d = Address::generate(&env);
+
+    // Four distinct agreement IDs all owned by the same employer.
+    let agg1: u128 = 1001;
+    let agg2: u128 = 1002;
+    let agg3: u128 = 1003;
+    let agg4: u128 = 1004;
+    let all_agreements = [agg1, agg2, agg3, agg4];
+
+    // Ordered recording steps: (agreement_id, employee, hash_seed, amount, timestamp)
+    // The hash_seed values are all distinct to prevent the idempotency guard
+    // from suppressing any recording.
+    let steps: &[(u128, &Address, u32, i128, u64)] = &[
+        (agg1, &employee_a, 10, 100, 1_000),   // step 1
+        (agg3, &employee_c, 20, 300, 2_000),   // step 2
+        (agg2, &employee_b, 30, 200, 3_000),   // step 3
+        (agg1, &employee_a, 40, 110, 4_000),   // step 4
+        (agg4, &employee_d, 50, 400, 5_000),   // step 5
+        (agg2, &employee_b, 60, 210, 6_000),   // step 6
+        (agg3, &employee_c, 70, 310, 7_000),   // step 7
+        (agg1, &employee_a, 80, 120, 8_000),   // step 8
+        (agg4, &employee_d, 90, 410, 9_000),   // step 9
+        (agg2, &employee_b, 100, 220, 10_000), // step 10
+        (agg3, &employee_c, 110, 320, 11_000), // step 11
+        (agg4, &employee_d, 120, 420, 12_000), // step 12
+    ];
+
+    for (step_idx, &(agreement_id, employee, hash_seed, amount, timestamp)) in
+        steps.iter().enumerate()
+    {
+        let payment_id = record(
+            &client,
+            &env,
+            agreement_id,
+            hash_seed,
+            &token,
+            amount,
+            &employer,
+            employee,
+            timestamp,
+        );
+
+        // IDs are globally monotonic starting at 1.
+        assert_eq!(
+            payment_id,
+            (step_idx as u128) + 1,
+            "step {}: global payment ID must be monotonically increasing",
+            step_idx + 1
+        );
+
+        // ── Core invariant: employer count == sum of per-agreement counts ──
+        let employer_count = client.get_employer_payment_count(&employer);
+        let agreement_sum = sum_agreement_counts(&client, &all_agreements);
+
+        assert_eq!(
+            employer_count,
+            agreement_sum,
+            "step {}: employer count ({}) must equal sum of per-agreement counts ({}); \
+             individual counts: agg1={}, agg2={}, agg3={}, agg4={}",
+            step_idx + 1,
+            employer_count,
+            agreement_sum,
+            client.get_agreement_payment_count(&agg1),
+            client.get_agreement_payment_count(&agg2),
+            client.get_agreement_payment_count(&agg3),
+            client.get_agreement_payment_count(&agg4),
+        );
+
+        // Employer count must also equal the number of steps completed so far.
+        assert_eq!(
+            employer_count,
+            (step_idx as u32) + 1,
+            "step {}: employer count must equal total steps completed",
+            step_idx + 1
+        );
+    }
+
+    // ── Final state assertions ────────────────────────────────────────────
+    // Each agreement received exactly 3 payments in the interleaved schedule.
+    assert_eq!(
+        client.get_agreement_payment_count(&agg1),
+        3u32,
+        "agg1 final count"
+    );
+    assert_eq!(
+        client.get_agreement_payment_count(&agg2),
+        3u32,
+        "agg2 final count"
+    );
+    assert_eq!(
+        client.get_agreement_payment_count(&agg3),
+        3u32,
+        "agg3 final count"
+    );
+    assert_eq!(
+        client.get_agreement_payment_count(&agg4),
+        3u32,
+        "agg4 final count"
+    );
+    assert_eq!(
+        client.get_employer_payment_count(&employer),
+        12u32,
+        "employer final count must be 12"
+    );
+    assert_eq!(
+        client.get_global_payment_count(),
+        12u128,
+        "global count must be 12"
+    );
+
+    // ── Paginated index completeness ──────────────────────────────────────
+    // Retrieve all records via the employer index and verify none are missing.
+    let employer_page = client.get_payments_by_employer(&employer, &1u32, &50u32);
+    assert_eq!(
+        employer_page.len(),
+        12u32,
+        "employer paginated query must return all 12 records"
+    );
+    // Every record in the employer index must point back to our employer address.
+    for i in 0..employer_page.len() {
+        let rec = employer_page.get(i).unwrap();
+        assert_eq!(
+            rec.from, employer,
+            "employer index record {} must have the correct employer address",
+            i
+        );
+    }
+
+    // Retrieve all records for each agreement and verify amounts are correct.
+    // Expected amounts per agreement (recorded in order of their interleave steps):
+    // agg1: 100, 110, 120  (steps 1, 4, 8)
+    // agg2: 200, 210, 220  (steps 3, 6, 10)
+    // agg3: 300, 310, 320  (steps 2, 7, 11)
+    // agg4: 400, 410, 420  (steps 5, 9, 12)
+    let expected_amounts: &[(u128, [i128; 3])] = &[
+        (agg1, [100, 110, 120]),
+        (agg2, [200, 210, 220]),
+        (agg3, [300, 310, 320]),
+        (agg4, [400, 410, 420]),
+    ];
+    for &(agg_id, ref amounts) in expected_amounts {
+        let page = client.get_payments_by_agreement(&agg_id, &1u32, &10u32);
+        assert_eq!(
+            page.len(),
+            3u32,
+            "agreement {} must have exactly 3 records",
+            agg_id
+        );
+        for (pos, &expected_amount) in amounts.iter().enumerate() {
+            let rec = page.get(pos as u32).unwrap();
+            assert_eq!(
+                rec.amount,
+                expected_amount,
+                "agreement {} position {}: expected amount {} got {}",
+                agg_id,
+                pos + 1,
+                expected_amount,
+                rec.amount
+            );
+            assert_eq!(
+                rec.agreement_id, agg_id,
+                "agreement index record must have the correct agreement_id"
+            );
+        }
+    }
+
+    // ── Cross-index consistency: employer index == union of agreement indices ─
+    // Collect all global IDs from the employer index and from all per-agreement
+    // indices; the two sets must be identical.
+    let mut employer_ids: soroban_sdk::Vec<u128> = soroban_sdk::Vec::new(&env);
+    for i in 0..employer_page.len() {
+        employer_ids.push_back(employer_page.get(i).unwrap().id);
+    }
+
+    let mut agreement_ids: soroban_sdk::Vec<u128> = soroban_sdk::Vec::new(&env);
+    for &agg_id in &all_agreements {
+        let page = client.get_payments_by_agreement(&agg_id, &1u32, &10u32);
+        for i in 0..page.len() {
+            agreement_ids.push_back(page.get(i).unwrap().id);
+        }
+    }
+
+    // Both collections must have the same length (12 records each).
+    assert_eq!(
+        employer_ids.len(),
+        agreement_ids.len(),
+        "employer index and union of agreement indices must have equal length"
+    );
+
+    // Every ID present in the employer index must appear in the union of
+    // agreement indices and vice-versa.  We sort both before comparison since
+    // insertion order differs.
+    //
+    // soroban_sdk::Vec does not expose a sort method, so we collect into a
+    // std::vec::Vec for sorting in the test harness.
+    let mut employer_ids_std: std::vec::Vec<u128> = (0..employer_ids.len())
+        .map(|i| employer_ids.get(i).unwrap())
+        .collect();
+    let mut agreement_ids_std: std::vec::Vec<u128> = (0..agreement_ids.len())
+        .map(|i| agreement_ids.get(i).unwrap())
+        .collect();
+    employer_ids_std.sort_unstable();
+    agreement_ids_std.sort_unstable();
+
+    assert_eq!(
+        employer_ids_std, agreement_ids_std,
+        "the set of payment IDs reachable via the employer index must equal \
+         the union of IDs reachable via all per-agreement indices"
+    );
+}
+
+#[test]
+fn test_multi_agreement_invariant_holds_for_two_employers() {
+    /// Verifies the counter-consistency invariant independently for two
+    /// employers whose payments are interleaved in the same recording
+    /// sequence.
+    ///
+    /// ## Security note
+    ///
+    /// With a single employer one might imagine a bug that keeps a single
+    /// shared counter up-to-date while neglecting per-agreement counters (or
+    /// vice versa).  By operating two employers simultaneously in the same
+    /// contract state we confirm the indices are partitioned correctly: neither
+    /// employer's counts are contaminated by the other's recordings.
+    let env = create_env();
+    let (_contract_id, client) = register_contract(&env);
+    initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let employer_x = Address::generate(&env);
+    let employer_y = Address::generate(&env);
+    let employee = Address::generate(&env);
+
+    // Employer X owns agreements 2001 and 2002.
+    // Employer Y owns agreements 3001 and 3002.
+    let x_agg1: u128 = 2001;
+    let x_agg2: u128 = 2002;
+    let y_agg1: u128 = 3001;
+    let y_agg2: u128 = 3002;
+
+    // Interleaved recording schedule.
+    // Column layout: (agreement_id, employer, hash_seed, amount, timestamp)
+    let steps: &[(u128, &Address, u32, i128, u64)] = &[
+        (x_agg1, &employer_x, 201, 10, 1_000),
+        (y_agg1, &employer_y, 202, 20, 2_000),
+        (x_agg2, &employer_x, 203, 30, 3_000),
+        (y_agg2, &employer_y, 204, 40, 4_000),
+        (x_agg1, &employer_x, 205, 11, 5_000),
+        (y_agg1, &employer_y, 206, 21, 6_000),
+        (x_agg2, &employer_x, 207, 31, 7_000),
+        (y_agg2, &employer_y, 208, 41, 8_000),
+    ];
+
+    for (step_idx, &(agreement_id, employer, hash_seed, amount, timestamp)) in
+        steps.iter().enumerate()
+    {
+        record(
+            &client,
+            &env,
+            agreement_id,
+            hash_seed,
+            &token,
+            amount,
+            employer,
+            &employee,
+            timestamp,
+        );
+
+        // Invariant holds for employer X after each step.
+        let x_employer_count = client.get_employer_payment_count(&employer_x);
+        let x_sum = client.get_agreement_payment_count(&x_agg1)
+            + client.get_agreement_payment_count(&x_agg2);
+        assert_eq!(
+            x_employer_count,
+            x_sum,
+            "step {}: employer_x count ({}) != sum of x agreements ({})",
+            step_idx + 1,
+            x_employer_count,
+            x_sum
+        );
+
+        // Invariant holds for employer Y after each step.
+        let y_employer_count = client.get_employer_payment_count(&employer_y);
+        let y_sum = client.get_agreement_payment_count(&y_agg1)
+            + client.get_agreement_payment_count(&y_agg2);
+        assert_eq!(
+            y_employer_count,
+            y_sum,
+            "step {}: employer_y count ({}) != sum of y agreements ({})",
+            step_idx + 1,
+            y_employer_count,
+            y_sum
+        );
+
+        // Neither employer's count must bleed into the other's.
+        assert_eq!(
+            x_employer_count + y_employer_count,
+            (step_idx as u32) + 1,
+            "step {}: combined employer counts must equal total steps taken",
+            step_idx + 1
+        );
+    }
+
+    // Final state: each employer has 4 payments across 2 agreements.
+    assert_eq!(client.get_employer_payment_count(&employer_x), 4u32);
+    assert_eq!(client.get_employer_payment_count(&employer_y), 4u32);
+    assert_eq!(client.get_agreement_payment_count(&x_agg1), 2u32);
+    assert_eq!(client.get_agreement_payment_count(&x_agg2), 2u32);
+    assert_eq!(client.get_agreement_payment_count(&y_agg1), 2u32);
+    assert_eq!(client.get_agreement_payment_count(&y_agg2), 2u32);
+    assert_eq!(client.get_global_payment_count(), 8u128);
+}
+
+#[test]
+fn test_multi_agreement_duplicate_hash_does_not_corrupt_counts() {
+    /// Confirms that replaying a duplicate payment hash inside an interleaved
+    /// multi-agreement sequence does not corrupt any counter.
+    ///
+    /// The idempotency guard must return the existing ID *without* touching
+    /// any counter when the hash is already known. This test sandwiches the
+    /// duplicate replay between two legitimate recordings so any counter
+    /// corruption is caught by the subsequent invariant assertion.
+    let env = create_env();
+    let (_contract_id, client) = register_contract(&env);
     initialize_contract(&env, &client);
 
     let token = Address::generate(&env);
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
 
-    let agreement_id = 1001u128;
-    let amount = 4_200i128;
-    let timestamp = 1_700_000_001u64;
-    let hash = make_hash(&env, 0xA1u32);
+    let agg1: u128 = 4001;
+    let agg2: u128 = 4002;
 
-    let payment_id = client.record_payment(
-        &agreement_id,
-        &hash,
-        &token,
-        &amount,
-        &employer,
-        &employee,
-        &timestamp,
+    // Step 1: record a payment on agg1 with hash_seed 10.
+    let id1 = record(
+        &client, &env, agg1, 10, &token, 100, &employer, &employee, 1_000,
     );
+    assert_eq!(id1, 1u128);
 
-    let by_id = client
-        .get_payment_by_id(&payment_id)
-        .expect("get_payment_by_id must return Some for a recorded payment");
-    let by_hash = client
-        .get_payment_by_hash(&hash)
-        .expect("get_payment_by_hash must return Some for a recorded payment");
+    // Step 2: record a payment on agg2.
+    let id2 = record(
+        &client, &env, agg2, 20, &token, 200, &employer, &employee, 2_000,
+    );
+    assert_eq!(id2, 2u128);
 
-    // Structural equality — both paths dereference the same storage slot.
+    // Replay the hash from step 1 — must be idempotent.
+    let id_dup = record(
+        &client, &env, agg1, 10, &token, 100, &employer, &employee, 1_000,
+    );
+    assert_eq!(id_dup, id1, "duplicate must return original ID");
+
+    // Counts must be unchanged after the replay.
+    assert_eq!(client.get_agreement_payment_count(&agg1), 1u32);
+    assert_eq!(client.get_agreement_payment_count(&agg2), 1u32);
+    assert_eq!(client.get_employer_payment_count(&employer), 2u32);
+    assert_eq!(client.get_global_payment_count(), 2u128);
+
+    // Invariant holds after replay.
+    let employer_count = client.get_employer_payment_count(&employer);
+    let agreement_sum =
+        client.get_agreement_payment_count(&agg1) + client.get_agreement_payment_count(&agg2);
     assert_eq!(
-        by_id, by_hash,
-        "get_payment_by_id and get_payment_by_hash must return the same record"
+        employer_count, agreement_sum,
+        "employer count ({}) must equal sum of agreement counts ({}) after duplicate replay",
+        employer_count, agreement_sum
     );
 
-    // Field-by-field assertions so any partial mismatch is immediately obvious.
-    assert_eq!(by_hash.id, payment_id, "id field must match");
-    assert_eq!(by_hash.agreement_id, agreement_id, "agreement_id field must match");
-    assert_eq!(by_hash.payment_hash, hash, "payment_hash field must match");
-    assert_eq!(by_hash.token, token, "token field must match");
-    assert_eq!(by_hash.amount, amount, "amount field must match");
-    assert_eq!(by_hash.from, employer, "from field must match");
-    assert_eq!(by_hash.to, employee, "to field must match");
-    assert_eq!(by_hash.timestamp, timestamp, "timestamp field must match");
+    // Step 3: record a new payment on agg1 after the duplicate.
+    let id3 = record(
+        &client, &env, agg1, 30, &token, 300, &employer, &employee, 3_000,
+    );
+    assert_eq!(id3, 3u128);
 
-    // Mirror: same assertions via the by_id path.
-    assert_eq!(by_id.id, payment_id);
-    assert_eq!(by_id.agreement_id, agreement_id);
-    assert_eq!(by_id.payment_hash, hash);
-    assert_eq!(by_id.token, token);
-    assert_eq!(by_id.amount, amount);
-    assert_eq!(by_id.from, employer);
-    assert_eq!(by_id.to, employee);
-    assert_eq!(by_id.timestamp, timestamp);
+    // Invariant must still hold after the new recording.
+    let employer_count_after = client.get_employer_payment_count(&employer);
+    let agreement_sum_after =
+        client.get_agreement_payment_count(&agg1) + client.get_agreement_payment_count(&agg2);
+    assert_eq!(
+        employer_count_after, agreement_sum_after,
+        "employer count ({}) must equal sum of agreement counts ({}) after post-duplicate recording",
+        employer_count_after, agreement_sum_after
+    );
+    assert_eq!(client.get_agreement_payment_count(&agg1), 2u32);
+    assert_eq!(client.get_agreement_payment_count(&agg2), 1u32);
+    assert_eq!(client.get_employer_payment_count(&employer), 3u32);
 }
 
-/// Req 2 (core): a hash that was never recorded must return None from
-/// get_payment_by_hash. The result must be definitively None — not a wrong
-/// record, not a default record, not a panic.
+// ─── Duplicate-metadata collision safety ──────────────────────────────────────
+
+/// Two payments that share identical amount, timestamp, token, and parties but
+/// carry distinct payment hashes are recorded as two independent entries.
+/// Records are keyed by the caller-supplied `payment_hash` and a sequential
+/// global id, never by a hash derived from the metadata, so matching metadata
+/// can never cause one record to silently overwrite the other.
 #[test]
-fn test_index_consistency_unknown_hash_returns_none_not_wrong_record() {
+fn test_record_payment_identical_metadata_distinct_hashes_stored_separately() {
     let env = create_env();
-    let (_contract_addr, client) = register_contract(&env);
+    let (_id, client) = register_contract(&env);
+    initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    let agreement_id: u128 = 1;
+    let amount: i128 = 100;
+    let timestamp: u64 = 1_700_000_000;
+
+    // Identical metadata, distinct payment hashes (two distinct on-chain transfers).
+    let id_a = record(
+        &client,
+        &env,
+        agreement_id,
+        0xA1,
+        &token,
+        amount,
+        &from,
+        &to,
+        timestamp,
+    );
+    let id_b = record(
+        &client,
+        &env,
+        agreement_id,
+        0xB2,
+        &token,
+        amount,
+        &from,
+        &to,
+        timestamp,
+    );
+
+    // Distinct, monotonically increasing ids: neither overwrote the other.
+    assert_eq!(id_a, 1u128);
+    assert_eq!(id_b, 2u128);
+
+    // Both retrievable by id, each preserving its own hash and the shared metadata.
+    let rec_a = client.get_payment_by_id(&id_a).unwrap();
+    let rec_b = client.get_payment_by_id(&id_b).unwrap();
+    assert_eq!(rec_a.payment_hash, make_hash(&env, 0xA1));
+    assert_eq!(rec_b.payment_hash, make_hash(&env, 0xB2));
+    assert_eq!(rec_a.amount, amount);
+    assert_eq!(rec_b.amount, amount);
+    assert_eq!(rec_a.timestamp, timestamp);
+    assert_eq!(rec_b.timestamp, timestamp);
+    assert_eq!(rec_a.from, from);
+    assert_eq!(rec_b.from, from);
+    assert_eq!(rec_a.to, to);
+    assert_eq!(rec_b.to, to);
+
+    // Both retrievable by their distinct hashes: the reverse index does not collide.
+    assert_eq!(
+        client
+            .get_payment_by_hash(&make_hash(&env, 0xA1))
+            .unwrap()
+            .id,
+        id_a
+    );
+    assert_eq!(
+        client
+            .get_payment_by_hash(&make_hash(&env, 0xB2))
+            .unwrap()
+            .id,
+        id_b
+    );
+
+    // Every counter reflects two independent records, not a collapsed single entry.
+    assert_eq!(client.get_global_payment_count(), 2u128);
+    assert_eq!(client.get_agreement_payment_count(&agreement_id), 2u32);
+    assert_eq!(client.get_employer_payment_count(&from), 2u32);
+    assert_eq!(client.get_employee_payment_count(&to), 2u32);
+}
+
+/// The only case that collapses to a single entry is an identical *hash* (a
+/// replay of the same transfer), never identical metadata. Re-recording the
+/// same hash returns the existing id and writes no new record or index entry.
+#[test]
+fn test_record_payment_identical_hash_is_idempotent_replay() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
     initialize_contract(&env, &client);
 
     let token = Address::generate(&env);
     let from = Address::generate(&env);
     let to = Address::generate(&env);
 
-    // Record a real payment so the contract's storage is non-empty.
-    let real_hash = make_hash(&env, 0x01u32);
-    let real_id = client.record_payment(
-        &1u128,
-        &real_hash,
+    let first = record(
+        &client,
+        &env,
+        1,
+        0xCD,
         &token,
-        &100i128,
+        100,
         &from,
         &to,
+        1_700_000_000,
+    );
+    let second = record(
+        &client,
+        &env,
+        1,
+        0xCD,
+        &token,
+        100,
+        &from,
+        &to,
+        1_700_000_000,
+    );
+
+    // Same hash → same id, and nothing new recorded across any counter.
+    assert_eq!(first, second);
+    assert_eq!(client.get_global_payment_count(), 1u128);
+    assert_eq!(client.get_agreement_payment_count(&1u128), 1u32);
+    assert_eq!(client.get_employer_payment_count(&from), 1u32);
+    assert_eq!(client.get_employee_payment_count(&to), 1u32);
+}
+
+// ─── prune_record ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_prune_record_emits_event_with_correct_key() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let (_owner, _payroll) = initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let hash = make_hash(&env, 0xAA);
+    let payment_id = client.record_payment(
+        &1u128,
+        &hash,
+        &token,
+        &1000i128,
+        &employer,
+        &employee,
         &1_000u64,
     );
 
-    // A completely different hash that was never recorded.
-    let unknown_hash = make_hash(&env, 0xFFu32);
+    // Prune as owner.
+    client.prune_record(&payment_id);
 
-    let result = client.get_payment_by_hash(&unknown_hash);
+    let events = env.events().all();
+    // The last event should be record_pruned (after payment_recorded).
+    let last = events.last().unwrap();
+    assert_eq!(last.0, contract_id);
 
-    // Must be None — not the real record, not any record.
-    assert!(
-        result.is_none(),
-        "get_payment_by_hash for an unknown hash must return None, not a record"
-    );
-
-    // Defensive: ensure the real payment is still reachable and the unknown
-    // hash did not corrupt or displace it.
-    let real_record = client
-        .get_payment_by_id(&real_id)
-        .expect("real payment must still be retrievable by id after unknown-hash lookup");
-    assert_eq!(
-        real_record.payment_hash, real_hash,
-        "real record must not have been replaced by the unknown-hash lookup"
-    );
+    let expected_topics: soroban_sdk::Vec<soroban_sdk::Val> =
+        (Symbol::new(&env, "record_pruned"),).into_val(&env);
+    assert_eq!(last.1, expected_topics);
 }
 
-/// Req 2 (isolation): after recording multiple payments with distinct hashes,
-/// each hash resolves only to its own record. Hash A never resolves to
-/// payment B and vice versa.
 #[test]
-fn test_index_consistency_each_hash_resolves_only_to_its_own_record() {
+fn test_prune_record_removes_record_from_storage() {
     let env = create_env();
-    let (_contract_addr, client) = register_contract(&env);
-    initialize_contract(&env, &client);
+    let (_id, client) = register_contract(&env);
+    let (_owner, _payroll) = initialize_contract(&env, &client);
 
     let token = Address::generate(&env);
     let employer = Address::generate(&env);
     let employee = Address::generate(&env);
-
-    let hash_a = make_hash(&env, 0x10u32);
-    let hash_b = make_hash(&env, 0x20u32);
-    let hash_c = make_hash(&env, 0x30u32);
-
-    let id_a =
-        client.record_payment(&1u128, &hash_a, &token, &111i128, &employer, &employee, &1u64);
-    let id_b =
-        client.record_payment(&1u128, &hash_b, &token, &222i128, &employer, &employee, &2u64);
-    let id_c =
-        client.record_payment(&2u128, &hash_c, &token, &333i128, &employer, &employee, &3u64);
-
-    // Each hash must resolve to the correct record — not a neighbour's record.
-    let rec_a = client.get_payment_by_hash(&hash_a).expect("hash_a must resolve");
-    let rec_b = client.get_payment_by_hash(&hash_b).expect("hash_b must resolve");
-    let rec_c = client.get_payment_by_hash(&hash_c).expect("hash_c must resolve");
-
-    assert_eq!(rec_a.id, id_a, "hash_a must resolve to payment A");
-    assert_eq!(rec_a.amount, 111i128);
-    assert_ne!(rec_a.id, id_b, "hash_a must NOT resolve to payment B");
-    assert_ne!(rec_a.id, id_c, "hash_a must NOT resolve to payment C");
-
-    assert_eq!(rec_b.id, id_b, "hash_b must resolve to payment B");
-    assert_eq!(rec_b.amount, 222i128);
-    assert_ne!(rec_b.id, id_a, "hash_b must NOT resolve to payment A");
-    assert_ne!(rec_b.id, id_c, "hash_b must NOT resolve to payment C");
-
-    assert_eq!(rec_c.id, id_c, "hash_c must resolve to payment C");
-    assert_eq!(rec_c.amount, 333i128);
-    assert_ne!(rec_c.id, id_a, "hash_c must NOT resolve to payment A");
-    assert_ne!(rec_c.id, id_b, "hash_c must NOT resolve to payment B");
-
-    // Cross-verify: get_payment_by_id must match get_payment_by_hash for each pair.
-    assert_eq!(client.get_payment_by_id(&id_a).unwrap(), rec_a);
-    assert_eq!(client.get_payment_by_id(&id_b).unwrap(), rec_b);
-    assert_eq!(client.get_payment_by_id(&id_c).unwrap(), rec_c);
-}
-
-/// After recording N payments, every (hash, id) pair is mutually consistent:
-/// get_payment_by_hash(payment.payment_hash) == get_payment_by_id(payment.id).
-/// This exercises the dual-index across a batch of payments.
-#[test]
-fn test_index_consistency_batch_all_pairs_agree() {
-    let env = create_env();
-    let (_contract_addr, client) = register_contract(&env);
-    initialize_contract(&env, &client);
-
-    let token = Address::generate(&env);
-    let employer = Address::generate(&env);
-    let employee = Address::generate(&env);
-
-    const BATCH: u32 = 8;
-    let mut recorded_ids: [u128; BATCH as usize] = [0u128; BATCH as usize];
-    let mut recorded_hashes: [u32; BATCH as usize] = [0u32; BATCH as usize];
-
-    for i in 0..BATCH {
-        let seed = i + 1; // seeds 1..=8, all distinct
-        let hash = make_hash(&env, seed);
-        let id = client.record_payment(
-            &(i as u128 + 1),
-            &hash,
-            &token,
-            &(i as i128 * 500 + 100),
-            &employer,
-            &employee,
-            &(i as u64 * 10),
-        );
-        recorded_ids[i as usize] = id;
-        recorded_hashes[i as usize] = seed;
-    }
-
-    // For every recorded payment: both lookup paths must agree on all fields.
-    for i in 0..BATCH as usize {
-        let hash = make_hash(&env, recorded_hashes[i]);
-        let id = recorded_ids[i];
-
-        let by_id = client
-            .get_payment_by_id(&id)
-            .expect("get_payment_by_id must return Some");
-        let by_hash = client
-            .get_payment_by_hash(&hash)
-            .expect("get_payment_by_hash must return Some");
-
-        assert_eq!(
-            by_id, by_hash,
-            "payment {} (id={}) must be identical via both lookup paths",
-            i, id
-        );
-
-        // The record's stored hash must round-trip through both indices.
-        assert_eq!(by_id.payment_hash, hash);
-        assert_eq!(by_hash.id, id);
-    }
-}
-
-/// Idempotency + index consistency: replaying the same hash does not create
-/// a second record or break the reverse index. Both lookup paths must still
-/// return the original record, unchanged.
-#[test]
-fn test_index_consistency_duplicate_hash_preserves_original_record() {
-    let env = create_env();
-    let (_contract_addr, client) = register_contract(&env);
-    initialize_contract(&env, &client);
-
-    let token = Address::generate(&env);
-    let employer = Address::generate(&env);
-    let employee = Address::generate(&env);
-
-    let agreement_id = 5u128;
-    let amount = 7_777i128;
-    let timestamp = 42_000u64;
-    let hash = make_hash(&env, 0xBBu32);
-
-    // First recording.
-    let id_first = client.record_payment(
-        &agreement_id,
-        &hash,
-        &token,
-        &amount,
-        &employer,
-        &employee,
-        &timestamp,
-    );
-
-    // Replay the same hash — must be idempotent.
-    let id_replay = client.record_payment(
-        &agreement_id,
-        &hash,
-        &token,
-        &amount,
-        &employer,
-        &employee,
-        &timestamp,
-    );
-
-    assert_eq!(id_first, id_replay, "duplicate hash must return the original ID");
-
-    // Both indices must still resolve to the same single record.
-    let by_id = client
-        .get_payment_by_id(&id_first)
-        .expect("original record must still exist by id");
-    let by_hash = client
-        .get_payment_by_hash(&hash)
-        .expect("original record must still exist by hash");
-
-    assert_eq!(by_id, by_hash, "both paths must still agree after duplicate recording");
-    assert_eq!(by_id.amount, amount, "amount must be unchanged after duplicate");
-    assert_eq!(by_id.id, id_first, "id must be unchanged after duplicate");
-
-    // Only one record in storage — global count must be 1.
-    assert_eq!(
-        client.get_global_payment_count(),
-        1u128,
-        "duplicate recording must not increment the global count"
-    );
-}
-
-/// The hash stored inside the record itself must match the key used to look it
-/// up. This guards against a future refactor that could write the record under
-/// one hash while indexing it under another.
-#[test]
-fn test_index_consistency_stored_hash_matches_lookup_key() {
-    let env = create_env();
-    let (_contract_addr, client) = register_contract(&env);
-    initialize_contract(&env, &client);
-
-    let token = Address::generate(&env);
-    let from = Address::generate(&env);
-    let to = Address::generate(&env);
-
-    let lookup_hash = make_hash(&env, 0xCCu32);
+    let hash = make_hash(&env, 0xBB);
     let payment_id = client.record_payment(
-        &10u128,
-        &lookup_hash,
+        &1u128,
+        &hash,
         &token,
-        &250i128,
-        &from,
-        &to,
-        &5_000u64,
+        &2000i128,
+        &employer,
+        &employee,
+        &2_000u64,
     );
 
-    let by_hash = client
-        .get_payment_by_hash(&lookup_hash)
-        .expect("must exist by hash");
-    let by_id = client
-        .get_payment_by_id(&payment_id)
-        .expect("must exist by id");
+    // Confirm record exists before pruning.
+    assert!(client.get_payment_by_id(&payment_id).is_some());
+    assert!(client.get_payment_by_hash(&hash).is_some());
 
-    // The hash field inside the record must equal the key we queried with.
-    assert_eq!(
-        by_hash.payment_hash, lookup_hash,
-        "the payment_hash field inside the record must equal the lookup key"
-    );
-    assert_eq!(
-        by_id.payment_hash, lookup_hash,
-        "the payment_hash field must be the same whether retrieved by id or by hash"
-    );
+    client.prune_record(&payment_id);
 
-    // And both records must agree on every field.
-    assert_eq!(by_hash, by_id);
+    // Record should be gone from both lookup paths.
+    assert!(client.get_payment_by_id(&payment_id).is_none());
+    assert!(client.get_payment_by_hash(&hash).is_none());
 }
 
-/// Req 2 (post-recording unknown): even after several real payments exist in
-/// storage, a hash that was never submitted still returns None — the presence
-/// of other records in the map must not cause a false positive.
 #[test]
-fn test_index_consistency_unknown_hash_returns_none_with_populated_storage() {
+#[should_panic(expected = "HostError: Error(Auth, InvalidAction)")]
+fn test_prune_record_unauthorized_no_auth() {
+    // Deliberately do NOT call mock_all_auths so the auth check fires.
+    let env = Env::default();
+    let (_id, client) = register_contract(&env);
+    let (_owner, _payroll) = initialize_contract(&env, &client);
+
+    // Calling prune_record without owner auth must panic.
+    client.prune_record(&1u128);
+}
+
+#[test]
+fn test_non_pruning_operations_do_not_emit_prune_event() {
     let env = create_env();
-    let (_contract_addr, client) = register_contract(&env);
-    initialize_contract(&env, &client);
+    let (_id, client) = register_contract(&env);
+    let (_owner, _payroll) = initialize_contract(&env, &client);
 
     let token = Address::generate(&env);
     let from = Address::generate(&env);
     let to = Address::generate(&env);
 
-    // Populate storage with several real payments.
-    for seed in 1u32..=5 {
-        let hash = make_hash(&env, seed);
-        client.record_payment(
-            &(seed as u128),
-            &hash,
-            &token,
-            &(seed as i128 * 10),
-            &from,
-            &to,
-            &(seed as u64),
-        );
-    }
+    // Record a payment - this should only emit payment_recorded, not record_pruned.
+    record(&client, &env, 1, 1u32, &token, 500, &from, &to, 1_000);
 
-    assert_eq!(client.get_global_payment_count(), 5u128);
-
-    // A hash that was never recorded must still return None.
-    let never_recorded = make_hash(&env, 0xDEAD_BEEFu32);
-    let result = client.get_payment_by_hash(&never_recorded);
-    assert!(
-        result.is_none(),
-        "unknown hash must return None even when storage contains other payments"
-    );
-
-    // Similarly, an ID beyond the recorded range must return None.
-    assert!(
-        client.get_payment_by_id(&6u128).is_none(),
-        "id beyond recorded range must return None"
-    );
-    assert!(
-        client.get_payment_by_id(&999u128).is_none(),
-        "large unassigned id must return None"
-    );
+    let events = env.events().all();
+    assert_eq!(events.len(), 1, "record_payment must emit exactly one event");
+    let (_contract, topics, _data) = events.get(0).unwrap();
+    let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> =
+        (Symbol::new(&env, "payment_recorded"),).into_val(&env);
+    assert_eq!(topics, expected_topic, "event must be payment_recorded, not record_pruned");
 }

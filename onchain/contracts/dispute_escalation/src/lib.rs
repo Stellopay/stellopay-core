@@ -64,6 +64,7 @@
 //! |-----------|-------------|
 //! | Only admin resolves | `is_admin` check at the top of `resolve_dispute` |
 //! | Cannot double-resolve | `AlreadyResolved` / `AlreadyFinalised` guard every resolve path |
+//! | No duplicate active disputes | `file_dispute` returns `DisputeDuplicateFiling` when a non-terminal dispute already exists for the same `agreement_id`; re-filing is allowed after `Finalised` or `Expired` |
 //! | No funds stuck | `expire_dispute` (callable by anyone) closes abandoned disputes |
 //! | No re-entry into terminal states | `assert_not_terminal` rejects all transitions on `Finalised`/`Expired` |
 //! | Deadlines enforced on-chain | All time comparisons use `env.ledger().timestamp()` |
@@ -77,14 +78,16 @@
 //! act on the `outcome` field to release or redirect funds.
 
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 pub mod storage;
 pub mod types;
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, IntoVal, Symbol, Val, Vec};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 use types::{
-    DisputeDetails, DisputeError, DisputeOutcome, DisputeStatus, EscalationLevel, StorageKey,
+    DisputeDetails, DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel,
+    KeeperAdvance, StorageKey, MAX_OTHER_REASON_LEN,
 };
 
 // ─── Events ──────────────────────────────────────────────────────────────────
@@ -97,6 +100,7 @@ pub struct DisputeFiledEvent {
     pub initiator: Address,
     pub level: EscalationLevel,
     pub phase_deadline: u64,
+    pub reason: DisputeReason,
 }
 
 /// Emitted when a dispute is escalated to a higher tier.
@@ -154,16 +158,89 @@ pub struct DisputeExpiredEvent {
 /// # Fields
 /// * `agreement_id`   — identifies the dispute.
 /// * `level`          — escalation level at which the SLA was breached.
+/// * `keeper`         — address of the keeper who triggered the advance.
 /// * `breached_at`    — ledger timestamp at which the advance was triggered.
 /// * `review_deadline`— timestamp by which the admin must act before the
 ///   dispute can be expired via `expire_dispute`.
+///
+/// > **Backward-compatibility note:** this event is retained alongside
+/// > [`DisputeSlaViolationAdvancedEvent`].  Both carry identical data; new
+/// > integrations should prefer `sla_violation_advanced`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DisputeSlaBreachedEvent {
     pub agreement_id: u128,
     pub level: EscalationLevel,
+    pub keeper: Address,
     pub breached_at: u64,
     pub review_deadline: u64,
+}
+
+/// New-style SLA violation event emitted alongside [`DisputeSlaBreachedEvent`]
+/// for forward-looking consumers.  Both events are emitted from a single
+/// `keeper_advance_stage` call so that existing indexers remain unaffected
+/// while new integrations can subscribe to the more descriptive topic.
+///
+/// # Fields
+/// * `agreement_id`    — identifies the dispute.
+/// * `level`           — escalation level at which the SLA was breached.
+/// * `keeper`          — address of the keeper who triggered the advance.
+/// * `breached_at`     — ledger timestamp at which the advance was triggered.
+/// * `review_deadline` — timestamp by which the admin must act before the
+///   dispute can be expired via `expire_dispute`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeSlaViolationAdvancedEvent {
+    pub agreement_id: u128,
+    pub level: EscalationLevel,
+    pub keeper: Address,
+    pub breached_at: u64,
+    pub review_deadline: u64,
+}
+
+/// Emitted alongside [`DisputeSlaBreachedEvent`] when a keeper calls
+/// `keeper_advance_stage` after an SLA deadline has elapsed.
+///
+/// This event carries the same data under a more descriptive topic
+/// (`sla_violation_advanced`).  Downstream indexers and payroll contracts
+/// should prefer this event; `dispute_sla_breached` is retained for
+/// backward compatibility with existing integrations.
+///
+/// # Fields
+/// * `agreement_id`   — identifies the dispute.
+/// * `level`          — escalation level at which the SLA was breached.
+/// * `breached_at`    — ledger timestamp at which the advance was triggered.
+/// * `review_deadline`— timestamp by which the admin must act before the
+///   dispute can be expired via `expire_dispute`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DisputeSlaViolationAdvancedEvent {
+    pub agreement_id: u128,
+    pub level: EscalationLevel,
+    pub breached_at: u64,
+    pub review_deadline: u64,
+}
+
+// ─── Audit Logger Helper ──────────────────────────────────────────────────────
+
+/// Calls `append_log` on the configured audit logger contract, if one is set.
+/// Returns the assigned log id, or `None` when no logger is configured.
+fn append_audit_log(
+    env: &Env,
+    actor: &Address,
+    action: &Symbol,
+    subject: Option<Address>,
+    amount: Option<i128>,
+) -> Option<u64> {
+    let logger: Option<Address> = storage::get_audit_logger(env);
+    logger.map(|addr| {
+        let mut args = Vec::<Val>::new(env);
+        args.push_back(actor.clone().into_val(env));
+        args.push_back(action.clone().into_val(env));
+        args.push_back(subject.into_val(env));
+        args.push_back(amount.into_val(env));
+        env.invoke_contract::<u64>(&addr, &Symbol::new(env, "append_log"), args)
+    })
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -206,16 +283,63 @@ impl DisputeEscalationContract {
     ///
     /// The SLA clock starts immediately: `phase_deadline = now + level_time_limit(Level1)`.
     ///
+    /// # Duplicate-filing guard
+    ///
+    /// Only one **active** (non-terminal) dispute may exist per `agreement_id`
+    /// at any time.  If a prior dispute record exists in any of the open states
+    /// (`Open`, `Escalated`, `Appealed`, `PendingReview`, or `Resolved`), this
+    /// function returns `DisputeDuplicateFiling`.  Allowing a second filing
+    /// while the first is unresolved would produce two conflicting SLA timers
+    /// for the same underlying claim.
+    ///
+    /// Re-filing is explicitly **permitted** once the prior dispute reaches a
+    /// terminal state (`Finalised` or `Expired`).  The new dispute starts a
+    /// fresh Level1 SLA window and is stored under the same `agreement_id` key,
+    /// overwriting the terminal record.
+    ///
+    /// # Arguments
+    /// * `caller`       — party filing the dispute; must authenticate.
+    /// * `agreement_id` — ID of the agreement under dispute.
+    /// * `reason`       — structured reason for the dispute. `Other(text)` is capped at
+    ///   [`MAX_OTHER_REASON_LEN`] bytes; longer text returns `ReasonTooLong`.
+    ///
     /// # State transition
     /// `(none)` → `Open @ Level1`
     ///
     /// # Errors
-    /// * `InvalidTransition` — a dispute for this agreement already exists.
-    pub fn file_dispute(env: Env, caller: Address, agreement_id: u128) -> Result<(), DisputeError> {
+    /// * `DisputeDuplicateFiling` — a non-terminal dispute already exists for
+    ///   this `agreement_id`.  The caller must wait for the prior dispute to
+    ///   reach `Finalised` or `Expired` before re-filing.
+    /// * `ReasonTooLong`          — `Other` text exceeds the maximum allowed length.
+    pub fn file_dispute(
+        env: Env,
+        caller: Address,
+        agreement_id: u128,
+        reason: DisputeReason,
+    ) -> Result<(), DisputeError> {
         caller.require_auth();
 
-        if storage::get_dispute(&env, agreement_id).is_some() {
-            return Err(DisputeError::InvalidTransition);
+        // Validate the free-text cap before touching storage.
+        if let DisputeReason::Other(ref text) = reason {
+            if text.len() > MAX_OTHER_REASON_LEN {
+                return Err(DisputeError::ReasonTooLong);
+            }
+        }
+
+        // Duplicate-filing guard: reject a new filing when an active
+        // (non-terminal) dispute already exists for this agreement_id.
+        //
+        // Terminal states (Finalised, Expired) allow re-filing because the
+        // prior dispute has been fully concluded.  All other states indicate
+        // an open dispute whose SLA timer is still running; a second filing
+        // would introduce a conflicting parallel timer for the same claim.
+        if let Some(existing) = storage::get_dispute(&env, agreement_id) {
+            match existing.status {
+                // Terminal: prior dispute fully concluded — re-filing is allowed.
+                DisputeStatus::Finalised | DisputeStatus::Expired => {}
+                // Any open / unresolved state: reject with a dedicated error.
+                _ => return Err(DisputeError::DisputeDuplicateFiling),
+            }
         }
 
         let time_limit = storage::get_level_time_limit(&env, EscalationLevel::Level1);
@@ -230,6 +354,8 @@ impl DisputeEscalationContract {
             phase_started_at: now,
             phase_deadline: deadline,
             outcome: DisputeOutcome::Unset,
+            reason: reason.clone(),
+            keeper_advances: Vec::new(&env),
         };
 
         storage::set_dispute(&env, agreement_id, &dispute);
@@ -238,30 +364,29 @@ impl DisputeEscalationContract {
             ("dispute_filed",),
             DisputeFiledEvent {
                 agreement_id,
-                initiator: caller,
+                initiator: caller.clone(),
                 level: EscalationLevel::Level1,
                 phase_deadline: deadline,
+                reason,
             },
+        );
+
+        append_audit_log(
+            &env,
+            &caller,
+            &Symbol::new(&env, "dispute_filed"),
+            Some(caller.clone()),
+            None,
         );
 
         Ok(())
     }
 
-    /// Escalates an open or previously escalated dispute to the **next** tier.
+    /// Escalates an open or previously escalated dispute to the next tier.
     ///
     /// This is a **permissionless** call — any caller may trigger it, provided
     /// the SLA window has not yet elapsed.  The new phase SLA starts from the
     /// current ledger timestamp.
-    ///
-    /// # Invariant: single-tier step
-    /// `escalate_dispute` accepts **only** `agreement_id`; there is no
-    /// caller-supplied target tier.  The destination level is computed purely
-    /// from the current level via the closed `next_level` mapping
-    /// (`Level1 → Level2`, `Level2 → Level3`, `Level3 → MaxEscalationReached`).
-    /// As a consequence, this function **cannot** jump two tiers in a single
-    /// call — Level1 → Level3 in one transaction is structurally impossible.
-    /// The corresponding regression tests live in
-    /// `tests/test_escalation.rs` (see §13 and the new tests added for #890).
     ///
     /// # State transitions
     /// `Open @ LevelN`      (now ≤ deadline) → `Escalated @ Level(N+1)`
@@ -272,9 +397,10 @@ impl DisputeEscalationContract {
     /// * `AlreadyResolved`       — dispute is already in `Resolved` state.
     /// * `AlreadyFinalised`      — dispute is in terminal `Finalised` state.
     /// * `AlreadyTerminal`       — dispute is in terminal `Expired` state.
-    /// * `InvalidTransition`     — dispute is in `PendingReview` (SLA already breached; escalation window has passed).
+    /// * `InvalidTransition`     — dispute is in `PendingReview` (SLA already breached; escalation
+    ///   window has passed).
     /// * `TimeLimitExpired`      — escalation window has passed.
-    /// * `MaxEscalationReached`  — already at Level3 (no higher tier exists).
+    /// * `MaxEscalationReached`  — already at Level3.
     pub fn escalate_dispute(
         env: Env,
         caller: Address,
@@ -322,6 +448,14 @@ impl DisputeEscalationContract {
             },
         );
 
+        append_audit_log(
+            &env,
+            &caller,
+            &Symbol::new(&env, "dispute_escalated"),
+            Some(caller.clone()),
+            None,
+        );
+
         Ok(())
     }
 
@@ -347,8 +481,10 @@ impl DisputeEscalationContract {
     /// * `DisputeNotFound`       — no dispute for this agreement.
     /// * `AlreadyFinalised`      — dispute is in terminal `Finalised` state.
     /// * `AlreadyTerminal`       — dispute is in terminal `Expired` state.
-    /// * `AlreadyResolved`       — dispute is in `Resolved` state (appeal window manages its own deadline).
-    /// * `AlreadyPendingReview`  — `keeper_advance_stage` was already called; idempotent call rejected.
+    /// * `AlreadyResolved`       — dispute is in `Resolved` state (appeal window manages its own
+    ///   deadline).
+    /// * `AlreadyPendingReview`  — `keeper_advance_stage` was already called; idempotent call
+    ///   rejected.
     /// * `DeadlineNotPassed`     — SLA deadline has not yet elapsed; too early to advance.
     pub fn keeper_advance_stage(
         env: Env,
@@ -386,6 +522,15 @@ impl DisputeEscalationContract {
             .checked_add(review_limit)
             .ok_or(DisputeError::SlaDeadlineOverflow)?;
 
+        // Record the keeper's identity and the advance timestamp on the
+        // dispute record for full accountability — queryable later via
+        // `get_dispute`.
+        dispute.keeper_advances.push_back(KeeperAdvance {
+            keeper: caller.clone(),
+            advanced_at: now,
+            level: dispute.level.clone(),
+        });
+
         // `phase_started_at` records exactly when the SLA breach was observed.
         dispute.status = DisputeStatus::PendingReview;
         dispute.phase_started_at = now;
@@ -393,15 +538,43 @@ impl DisputeEscalationContract {
 
         storage::set_dispute(&env, agreement_id, &dispute);
 
+        // Emit the legacy event for backward compatibility with existing integrations.
         env.events().publish(
             ("dispute_sla_breached",),
             DisputeSlaBreachedEvent {
                 agreement_id,
-                level: dispute.level,
+                level: dispute.level.clone(),
                 breached_at: now,
                 review_deadline,
             },
         );
+
+        // Emit the canonical SLA-violation event preferred by new integrations.
+        env.events().publish(
+            ("sla_violation_advanced",),
+            DisputeSlaViolationAdvancedEvent {
+                agreement_id,
+                level: dispute.level,
+                keeper: caller,
+                breached_at: now,
+                review_deadline,
+            },
+        );
+
+        append_audit_log(
+            &env,
+            &caller,
+            &Symbol::new(&env, "dispute_sla_breached"),
+            Some(caller.clone()),
+            None,
+        );
+
+        // Deduct reward from the designated incentive pool and pay the keeper
+        if let Some((token_addr, pool_addr, amount)) = storage::get_reward_config(&env) {
+            let token_client = token::Client::new(&env, &token_addr);
+            // The contract must be authorized by the incentive pool (e.g. via allowance or being the admin of the pool)
+            token_client.transfer(&pool_addr, &caller, &amount);
+        }
 
         Ok(())
     }
@@ -419,8 +592,8 @@ impl DisputeEscalationContract {
     /// `* @ L3` → `Finalised @ L3` (terminal — no further appeal)
     ///
     /// # Security
-    /// * Cannot double-resolve: `AlreadyResolved` / `AlreadyFinalised` returned
-    ///   if the dispute is already in a terminal or resolved state.
+    /// * Cannot double-resolve: `AlreadyResolved` / `AlreadyFinalised` returned if the dispute is
+    ///   already in a terminal or resolved state.
     /// * `Unset` is not a valid outcome — returns `InvalidTransition`.
     ///
     /// # Access Control
@@ -473,8 +646,16 @@ impl DisputeEscalationContract {
                 ("dispute_finalised",),
                 DisputeFinalisedEvent {
                     agreement_id,
-                    outcome,
+                    outcome: outcome.clone(),
                 },
+            );
+
+            append_audit_log(
+                &env,
+                &caller,
+                &Symbol::new(&env, "dispute_finalised"),
+                Some(caller.clone()),
+                None,
             );
         } else {
             // Level1/2: open a 3-day appeal window.
@@ -492,6 +673,14 @@ impl DisputeEscalationContract {
                     outcome,
                     appeal_deadline,
                 },
+            );
+
+            append_audit_log(
+                &env,
+                &caller,
+                &Symbol::new(&env, "dispute_resolved"),
+                Some(caller.clone()),
+                None,
             );
         }
 
@@ -555,10 +744,18 @@ impl DisputeEscalationContract {
             ("dispute_appealed",),
             DisputeAppealedEvent {
                 agreement_id,
-                appellant: caller,
+                appellant: caller.clone(),
                 new_level: next_level,
                 phase_deadline: deadline,
             },
+        );
+
+        append_audit_log(
+            &env,
+            &caller,
+            &Symbol::new(&env, "dispute_appealed"),
+            Some(caller.clone()),
+            None,
         );
 
         Ok(())
@@ -584,8 +781,8 @@ impl DisputeEscalationContract {
     /// * `DisputeNotFound`    — no dispute for this agreement.
     /// * `AlreadyFinalised`   — cannot expire a finalised dispute.
     /// * `AlreadyTerminal`    — already `Expired`.
-    /// * `AlreadyResolved`    — `Resolved` disputes have an appeal window; use
-    ///                          `appeal_ruling` or let it become de-facto binding.
+    /// * `AlreadyResolved`    — `Resolved` disputes have an appeal window; use `appeal_ruling` or
+    ///   let it become de-facto binding.
     /// * `DeadlineNotPassed`  — deadline has not yet passed.
     pub fn expire_dispute(
         env: Env,
@@ -614,10 +811,43 @@ impl DisputeEscalationContract {
         env.events()
             .publish(("dispute_expired",), DisputeExpiredEvent { agreement_id });
 
+        append_audit_log(
+            &env,
+            &caller,
+            &Symbol::new(&env, "dispute_expired"),
+            Some(caller.clone()),
+            None,
+        );
+
         Ok(())
     }
 
     // ─── Admin Configuration ──────────────────────────────────────────────
+
+    /// Configure the keeper incentive payout.
+    ///
+    /// # Arguments
+    /// * `caller` - The admin address.
+    /// * `token` - The token used for rewards.
+    /// * `pool` - The incentive pool from which rewards are drawn.
+    /// * `amount` - The amount of tokens paid per genuine timeout advance.
+    ///
+    /// # Errors
+    /// * `Unauthorized` - caller is not the admin.
+    pub fn configure_keeper_reward(
+        env: Env,
+        caller: Address,
+        token: Address,
+        pool: Address,
+        amount: i128,
+    ) -> Result<(), DisputeError> {
+        caller.require_auth();
+        if !storage::is_admin(&env, &caller) {
+            return Err(DisputeError::Unauthorized);
+        }
+        storage::set_reward_config(&env, &token, &pool, &amount);
+        Ok(())
+    }
 
     /// Admin configuration: adjust the SLA time limit for a given escalation level.
     ///
@@ -677,10 +907,43 @@ impl DisputeEscalationContract {
         storage::get_dispute(&env, agreement_id)
     }
 
+    /// Returns the configured SLA time limit in seconds for the given
+    /// escalation level.  Defaults to 604 800 s (7 days) if never explicitly
+    /// set via [`set_level_time_limit`].
+    pub fn get_level_time_limit(env: Env, level: EscalationLevel) -> u64 {
+        storage::get_level_time_limit(&env, level)
+    }
+
+    /// Configure the optional external audit logger contract for dispute
+    /// lifecycle compliance recording.
+    ///
+    /// # Access Control
+    /// Caller must be the admin.
+    ///
+    /// # Errors
+    /// * `Unauthorized` — caller is not the admin.
+    pub fn set_audit_logger(
+        env: Env,
+        caller: Address,
+        audit_logger: Address,
+    ) -> Result<(), DisputeError> {
+        caller.require_auth();
+        if !storage::is_admin(&env, &caller) {
+            return Err(DisputeError::Unauthorized);
+        }
+        storage::set_audit_logger(&env, &audit_logger);
+        Ok(())
+    }
+
     /// Returns the configured pending-review time limit in seconds.
     /// Defaults to 259 200 s (3 days) if never explicitly set.
     pub fn get_pending_review_time_limit(env: Env) -> u64 {
         storage::get_pending_review_time_limit(&env)
+    }
+
+    /// Return the currently configured audit logger contract address, if any.
+    pub fn get_audit_logger(env: Env) -> Option<Address> {
+        storage::get_audit_logger(&env)
     }
 
     // ─── Private helpers ──────────────────────────────────────────────────
@@ -697,17 +960,6 @@ impl DisputeEscalationContract {
 
     /// Returns the next escalation level, or `Err(MaxEscalationReached)` if
     /// already at `Level3`.
-    ///
-    /// # Invariant: closed one-step mapping
-    /// This helper is the **sole** authority on what the next escalation tier
-    /// is.  The mapping is deliberately closed: there is exactly one
-    /// successor to `Level1` and to `Level2`, and `Level3` has no successor.
-    /// The explicit `match` below has **no** `_ =>` wildcard arm — *do not
-    /// add one*.  A wildcard arm would silently absorb any future variant of
-    /// `EscalationLevel` and quietly break the closed-mapping invariant.
-    /// When a new level variant is introduced, extend this `match`
-    /// arm-by-arm explicitly and decide each transition on its own merits;
-    /// never relax the no-wildcard rule.
     fn next_level(level: &EscalationLevel) -> Result<EscalationLevel, DisputeError> {
         match level {
             EscalationLevel::Level1 => Ok(EscalationLevel::Level2),
