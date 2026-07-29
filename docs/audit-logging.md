@@ -135,6 +135,19 @@ This invariant is regression-tested by:
 - `test_interleaved_append_and_get_latest_logs_maintains_order`: Verifies that `get_latest_logs` returns entries in strictly increasing order with no gaps when called interleaved with `append_log`
 - `test_interleaved_append_and_read_consistency`: Verifies that `get_log` and `get_latest_logs` return consistent results with no skipped or duplicated entries across interleaved operations
 
+#### Append-Order Invariant (Core Guarantee)
+The audit logger maintains a **strict append-order invariant** that is fundamental to its correctness:
+
+- **Sequential IDs**: Log entries are assigned strictly increasing sequential IDs starting from 1
+- **No Gaps**: Within the retained window (`[FirstLogId, NextLogId)`), IDs have no gaps
+- **Read Consistency**: All read operations (`get_log`, `get_logs`, `get_latest_logs`) return entries in append order
+- **Interleaved Read Consistency**: When read operations are interleaved with `append_log`, each read reflects exactly the entries appended so far, in order, with no skipped or duplicated entries
+- **No Duplicates**: Each entry appears at most once in any single read result
+
+This invariant is tested by:
+- `test_interleaved_append_and_get_latest_logs_maintains_order`: Verifies that `get_latest_logs` returns entries in strictly increasing order with no gaps when called interleaved with `append_log`
+- `test_interleaved_append_and_read_consistency`: Verifies that `get_log` and `get_latest_logs` return consistent results with no skipped or duplicated entries across interleaved operations
+
 #### Tamper Evidence
 - Each entry has a monotonically increasing ID and ledger timestamp
 - IDs are assigned sequentially with no gaps possible within the retained window
@@ -147,6 +160,24 @@ This invariant is regression-tested by:
 
 #### Retention as Pruning
 Old logs age out of the queryable window when retention is exceeded. Underlying storage entries remain but are logically invisible. This prevents unbounded storage growth while maintaining tamper evidence within the window.
+
+#### Storage-Growth Risk (retention_limit = 0)
+
+When `retention_limit` is set to `0` (unlimited), every `append_log` call
+writes a new `LogEntry(id)` key to persistent storage. Storage on Stellar
+ledger is not free — each entry occupies rent-paying ledger space, and a
+contract instance with a very large log count will accumulate proportionally
+higher ledger rent obligations.
+
+**Recommended mitigation:** Set a non-zero `retention_limit` at initialization
+that matches the operational history window needed (e.g. `500` for ~500 recent
+events). If a higher initial ceiling was used and the contract is approaching
+practical limits, the owner can call `set_retention_limit(n)` with a lower `n`
+to immediately prune the oldest entries down to `n`.
+
+**Effect of lowering the limit:** Pruning is irreversible. Always export
+historical entries via `get_logs()` or `get_latest_logs()` before lowering
+the limit if the full history is needed off-chain.
 
 #### Log Injection Prevention
 Since `actor.require_auth()` is enforced, a malicious contract cannot impersonate another address to inject false log entries. Each entry is cryptographically attributed to the authenticating signer.

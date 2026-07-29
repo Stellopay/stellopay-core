@@ -3732,15 +3732,14 @@ fn convert_amount(
 /// - Paused agreements cannot have claims processed
 /// - Agreement state is preserved
 /// - Can be resumed later or cancelled
-pub fn pause_agreement(env: &Env, agreement_id: u128) {
-    let mut agreement = get_agreement(env, agreement_id).expect("Agreement not found");
+pub fn pause_agreement(env: &Env, agreement_id: u128) -> Result<(), PayrollError> {
+    let mut agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     agreement.employer.require_auth();
 
-    assert!(
-        agreement.status == AgreementStatus::Active,
-        "Can only pause Active agreements"
-    );
+    if agreement.status != AgreementStatus::Active {
+        return Err(PayrollError::AgreementPaused);
+    }
 
     agreement.status = AgreementStatus::Paused;
 
@@ -3749,6 +3748,8 @@ pub fn pause_agreement(env: &Env, agreement_id: u128) {
         .set(&StorageKey::Agreement(agreement_id), &agreement);
 
     emit_agreement_paused(env, AgreementPausedEvent { agreement_id });
+
+    Ok(())
 }
 
 /// Resumes a paused agreement, allowing claims again
