@@ -41,7 +41,7 @@ The Expense Reimbursement Contract provides a secure, auditable system for manag
 4. **Approver reviews** and validates `SHA256(retrieved_document) == stored_hash`.
 5. **Approver triggers approval** using `approve_expense`. (Can approve partially). Status enters `Approved`.
 6. **Optional audit linkage**: if `audit_logger` is configured, approval writes `append_log(actor=approver, action="expense_approved", subject=submitter, amount=approved_amount)` and stores returned `audit_log_id`.
-7. **Payment released** via `pay_expense`. Employee gets their portion, Employer is refunded any unapproved surplus automatically. Status enters `Paid` — this is a **terminal state**: the expense status transitions to `Paid` and `escrow_amount` is zeroed **before** any token transfer occurs (checks-effects-interactions). Any subsequent `pay_expense` call for the same expense id is rejected, guaranteeing the expense cannot be paid more than once.
+7. **Payment released** via `pay_expense`. The contract validates that the `receipt_hash` stored on the expense still matches the original binding in `ReceiptHash` storage, ensuring the payout is bound to the original submitted receipt. Employee gets their portion, Employer is refunded any unapproved surplus automatically. Status enters `Paid` — this is a **terminal state**: the expense status transitions to `Paid` and `escrow_amount` is zeroed **before** any token transfer occurs (checks-effects-interactions). Any subsequent `pay_expense` call for the same expense id is rejected, guaranteeing the expense cannot be paid more than once.
 
 ## Receipt Hashing Scheme
 
@@ -52,6 +52,14 @@ The Expense Reimbursement Contract provides a secure, auditable system for manag
 - Replay protection: each `receipt_hash` is unique globally in contract storage (`ReceiptHash(hash) -> expense_id`)
 
 This prevents reimbursing the same receipt payload twice, even when submitted by different users or in separate requests.
+
+### Receipt-Hash Attestation Guarantee
+
+The `receipt_hash` captured at `submit_expense` time is bound to the expense for its entire lifecycle. When `pay_expense` is called, it validates that the `receipt_hash` stored on the expense still matches the original binding recorded in the `ReceiptHash` global storage entry (`ReceiptHash(hash) -> expense_id`). This means:
+
+- The receipt hash cannot be mutated after submission without invalidating the payout.
+- Any code path that attempts to alter the stored `receipt_hash` will cause `pay_expense` to reject the payout with a `"Receipt hash binding invalid"` error.
+- The attestation guarantee is enforced on-chain, providing cryptographic assurance that the payout corresponds to the original submitted receipt.
 
 ## Privacy and Security Notes
 

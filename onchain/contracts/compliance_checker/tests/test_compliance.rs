@@ -334,6 +334,63 @@ fn test_deny_traces_include_rule_and_reason() {
 }
 
 #[test]
+fn test_ruleset_upgrade_emergency_pause_affects_new_evaluations_only() {
+    let env = create_env();
+    let (_cid, client, admin) = setup(&env);
+    let actor = Address::generate(&env);
+
+    // 1. Evaluation under initial rules (emergency pause OFF)
+    let decision_before = client.check_action(
+        &actor,
+        &actor,
+        &PayrollAction::ActivateAgreement,
+        &AgreementStatus::Created,
+        &AgreementStatus::Active,
+        &false,
+    );
+    assert_eq!(decision_before.decision, Decision::Allow);
+    assert_eq!(decision_before.reason, ReasonCode::Allowed);
+
+    // 2. Admin upgrades rule set: enable emergency pause
+    client.set_emergency_pause(&admin, &true);
+
+    // 3. New evaluation must reflect the updated rules
+    let decision_after = client.check_action(
+        &actor,
+        &actor,
+        &PayrollAction::ActivateAgreement,
+        &AgreementStatus::Created,
+        &AgreementStatus::Active,
+        &false,
+    );
+    assert_eq!(decision_after.decision, Decision::Deny);
+    assert_eq!(decision_after.reason, ReasonCode::EmergencyPaused);
+
+    // 4. The original decision struct is a plain value type and is unchanged
+    assert_eq!(decision_before.decision, Decision::Allow);
+    assert_eq!(decision_before.reason, ReasonCode::Allowed);
+
+    // 5. Admin downgrades: disable emergency pause
+    client.set_emergency_pause(&admin, &false);
+
+    // 6. New evaluation returns to Allow
+    let decision_restored = client.check_action(
+        &actor,
+        &actor,
+        &PayrollAction::ActivateAgreement,
+        &AgreementStatus::Created,
+        &AgreementStatus::Active,
+        &false,
+    );
+    assert_eq!(decision_restored.decision, Decision::Allow);
+    assert_eq!(decision_restored.reason, ReasonCode::Allowed);
+
+    // 7. Previously captured deny decision remains unchanged
+    assert_eq!(decision_after.decision, Decision::Deny);
+    assert_eq!(decision_after.reason, ReasonCode::EmergencyPaused);
+}
+
+#[test]
 fn test_allow_path_traces_have_none_reasons() {
     let env = create_env();
     let (_cid, client, _admin) = setup(&env);

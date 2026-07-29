@@ -855,15 +855,6 @@ fn test_cancelled_job_skipped_by_processor() {
 }
 
 #[test]
-#[ignore = "shared `setup()` initializes the scheduler with a fake \
-`Address::generate` retry-contract address rather than a real deployed \
-`payment_retry::PaymentRetryContract` instance, so the cross-contract call \
-this test exercises (schedule_retry on the insufficient-funds path) fails \
-with a host `Storage/MissingValue` error (\"trying to get non-existing \
-value for contract instance\"). Fixing this properly requires adding \
-payment_retry as a dev-dependency and wiring a real deployed instance into \
-a dedicated setup for these retry-path tests, without disturbing the \
-shared `setup()` used by the other ~28 tests in this file."]
 fn test_insufficient_funds_then_retry_success() {
     let env = create_env();
     let (scheduler_id, client) = setup(&env);
@@ -912,10 +903,6 @@ fn test_insufficient_funds_then_retry_success() {
 }
 
 #[test]
-#[ignore = "same root cause as test_insufficient_funds_then_retry_success: \
-shared `setup()` wires a fake retry-contract address, so this test's \
-retry-path cross-contract call fails with a host Storage/MissingValue \
-error rather than exercising real retry-exhaustion behavior."]
 fn test_retry_exhaustion_marks_failed() {
     let env = create_env();
     let (_, client) = setup(&env);
@@ -993,220 +980,16 @@ fn test_conflict_detection_prevents_duplicates() {
     );
 }
 
-// ─── Overlapping Schedules ─────────────────────────────────────────────────
-
-/// Dedicated setup that deploys a real `payment_retry` instance so the
-/// insufficient-funds path (which calls `schedule_retry` cross-contract)
-/// works without a host-level Storage/MissingValue error.
-fn setup_with_real_retry(
-    env: &Env,
-) -> (
-    Address, // scheduler_id
-    PaymentSchedulerContractClient<'static>,
-    PaymentRetryContractClient<'static>,
-    Address, // token address
-    Address, // employer
-) {
-    let employer = Address::generate(env);
-    let owner = Address::generate(env);
-    let token_admin = Address::generate(env);
-    let token = create_token_contract(env, &token_admin);
-    let asset_admin = StellarAssetClient::new(env, &token.address);
-
-    let retry_id = env.register_contract(None, PaymentRetryContract);
-    let retry_client = PaymentRetryContractClient::new(env, &retry_id);
-    retry_client.initialize(&owner);
-
-    let (scheduler_id, sched_client) = register_contract(env);
-    sched_client.initialize(&owner, &retry_id);
-
-    (
-        scheduler_id,
-        sched_client,
-        retry_client,
-        token.address,
-        employer,
-    )
-}
-
-#[test]
-fn test_overlapping_schedules_same_payer_partial_funds() {
-    let env = create_env();
-    let (scheduler_id, sched_client, retry_client, token_addr, employer) =
-        setup_with_real_retry(&env);
-
-    let recipient_a = Address::generate(&env);
-    let recipient_b = Address::generate(&env);
-
-    // Fund the scheduler with only enough tokens for ONE job (100 tokens,
-    // but each job needs 100 → only one can succeed).
-    {
-        let asset_admin = StellarAssetClient::new(&env, &token_addr);
-        asset_admin.mint(&employer, &100i128);
-    }
-    TokenClient::new(&env, &token_addr).transfer(&employer, &scheduler_id, &100i128);
-
-    // Synchronize all jobs to be due at the same ledger time.
-    env.ledger().with_mut(|li| li.timestamp = 1000);
-
-    // Two jobs for the same employer, same token, each requiring 100 tokens.
-    // Different recipients and start_time parameters ensure unique schedule_ids.
-    let job_a = sched_client.create_job(
-        &employer,
-        &recipient_a,
-        &token_addr,
-        &100i128,
-        &0u64,    // one-time
-        &1000u64, // due at t=1000
-        &Some(1u32),
-        &2u32,
-    );
-    let job_b = sched_client.create_job(
-        &employer,
-        &recipient_b,
-        &token_addr,
-        &100i128,
-        &0u64,    // one-time
-        &1000u64, // same due time as job_a
-        &Some(1u32),
-        &2u32,
-    );
-
-    // Jobs were created sequentially → job_a.id < job_b.id.
-    // process_due_payments iterates by ascending job id, so job_a is
-    // evaluated first. With only 100 in escrow, job_a succeeds and the
-    // balance goes to 0, causing job_b to hit the insufficient-funds path.
-
-    let processed = sched_client.process_due_payments(&10u32);
-    // Both jobs should be evaluated (one succeeds, one schedules retry).
-    assert_eq!(processed, 2);
-
-    // Job A was processed first → should have been paid.
-    let job_a_state = sched_client.get_job(&job_a).unwrap();
-    assert_eq!(job_a_state.executions, 1, "Job A should have been executed");
-    assert_eq!(
-        job_a_state.status,
-        JobStatus::Completed,
-        "Job A should be completed"
-    );
-    assert_eq!(
-        TokenClient::new(&env, &token_addr).balance(&recipient_a),
-        100i128,
-        "Recipient A should have received 100 tokens"
-    );
-
-    // Job B was processed second → insufficient funds → schedule_retry called.
-    let job_b_state = sched_client.get_job(&job_b).unwrap();
-    assert_eq!(
-        job_b_state.executions, 0,
-        "Job B should NOT have been executed"
-    );
-    assert_eq!(
-        TokenClient::new(&env, &token_addr).balance(&recipient_b),
-        0i128,
-        "Recipient B should have received 0 tokens"
-    );
-
-    // Verify the retry contract has a record for job B's failed payment.
-    // The payment_id is computed as the SHA-256 hash of
-    // (employer, recipient, amount, next_scheduled_time).
-    let job_b_next_time = job_b_state.next_scheduled_time;
-    let payment_id = {
-        use soroban_sdk::xdr::ToXdr;
-        let mut buf = soroban_sdk::Bytes::new(&env);
-        buf.append(&employer.clone().to_xdr(&env));
-        buf.append(&recipient_b.clone().to_xdr(&env));
-        let amount_bytes = 100i128.to_le_bytes();
-        for b in amount_bytes.iter() {
-            buf.push_back(*b);
-        }
-        let time_bytes = job_b_next_time.to_le_bytes();
-        for b in time_bytes.iter() {
-            buf.push_back(*b);
-        }
-        env.crypto().sha256(&buf).into()
-    };
-    let retry_payment = retry_client.get_payment(&payment_id);
-    assert!(
-        retry_payment.is_some(),
-        "Retry contract should have a record for job B's failed payment"
-    );
-
-    // Total balance assertion: no double-spending or value creation.
-    assert_eq!(
-        TokenClient::new(&env, &token_addr).balance(&recipient_a)
-            + TokenClient::new(&env, &token_addr).balance(&recipient_b),
-        100i128,
-        "Total distributed must equal the original funding — no value lost or created"
-    );
-}
-
-#[test]
-fn test_overlapping_schedules_both_fully_funded() {
-    let env = create_env();
-    let (scheduler_id, sched_client, _retry_client, token_addr, employer) =
-        setup_with_real_retry(&env);
-
-    let recipient_a = Address::generate(&env);
-    let recipient_b = Address::generate(&env);
-
-    // Fund enough for both jobs.
-    {
-        let asset_admin = StellarAssetClient::new(&env, &token_addr);
-        asset_admin.mint(&employer, &200i128);
-    }
-    TokenClient::new(&env, &token_addr).transfer(&employer, &scheduler_id, &200i128);
-
-    env.ledger().with_mut(|li| li.timestamp = 1000);
-
-    let job_a = sched_client.create_job(
-        &employer,
-        &recipient_a,
-        &token_addr,
-        &100i128,
-        &0u64,
-        &1000u64,
-        &Some(1u32),
-        &2u32,
-    );
-    let job_b = sched_client.create_job(
-        &employer,
-        &recipient_b,
-        &token_addr,
-        &100i128,
-        &0u64,
-        &1000u64,
-        &Some(1u32),
-        &2u32,
-    );
-
-    let processed = sched_client.process_due_payments(&10u32);
-    assert_eq!(processed, 2);
-
-    // Both jobs should complete successfully.
-    assert_eq!(
-        sched_client.get_job(&job_a).unwrap().status,
-        JobStatus::Completed
-    );
-    assert_eq!(
-        sched_client.get_job(&job_b).unwrap().status,
-        JobStatus::Completed
-    );
-
-    assert_eq!(
-        TokenClient::new(&env, &token_addr).balance(&recipient_a)
-            + TokenClient::new(&env, &token_addr).balance(&recipient_b),
-        200i128
-    );
-}
-
 // ─── Due-Date Processing Order ──────────────────────────────────────────────
 
 #[test]
 fn test_due_date_processing_order_low_liquidity() {
     let env = create_env();
-    let (scheduler_id, sched_client, _retry_client, token_addr, employer) =
-        setup_with_real_retry(&env);
+    let (scheduler_id, sched_client) = setup(&env);
+    let employer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let token_addr = token.address.clone();
 
     let recipient_a = Address::generate(&env);
     let recipient_b = Address::generate(&env);

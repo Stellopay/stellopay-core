@@ -689,6 +689,48 @@ fn test_no_dust_lost_or_created_fixed_splits() {
 }
 
 #[test]
+fn test_compute_split_is_deterministic_idempotent() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+
+    let mut recipients = Vec::new(&env);
+    // 3333 + 3333 + 3334 = 10000 with a complex rounding case
+    recipients.push_back(RecipientShare {
+        recipient: a.clone(),
+        kind: ShareKind::Percent(3333),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b.clone(),
+        kind: ShareKind::Percent(3333),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: c.clone(),
+        kind: ShareKind::Percent(3334),
+    });
+
+    let id = client.create_split(&creator, &recipients);
+
+    // Call compute_split multiple times with the exact same inputs
+    let first_out = client.compute_split(&id, &100);
+    let second_out = client.compute_split(&id, &100);
+    let third_out = client.compute_split(&id, &100);
+
+    // Verify share vectors are byte-identical across repeated calls
+    assert_eq!(first_out, second_out, "Second call output differs from first");
+    assert_eq!(first_out, third_out, "Third call output differs from first");
+
+    // Verify stable rounding allocation (the specific amounts)
+    assert_eq!(first_out.get(0).unwrap().1, 33);
+    assert_eq!(first_out.get(1).unwrap().1, 33);
+    assert_eq!(first_out.get(2).unwrap().1, 34);
+}
+
+#[test]
 #[should_panic(expected = "Already initialized")]
 fn test_reinitialize_fails() {
     let env = create_env();

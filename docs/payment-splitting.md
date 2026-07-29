@@ -54,6 +54,7 @@ This guarantees:
 - `sum(outputs) == total_amount` for every successful split.
 - No value is lost to truncation.
 - Caller-supplied recipient ordering cannot bias dust allocation.
+- **Idempotent Recomputation**: Repeated calls with an unchanged split configuration and amount will always produce byte-identical share vectors.
 
 ### Dust Bounding and Loop Safety
 Because each floored percentage leaves a remainder strictly less than `10000`, the maximum possible sum of remainders is strictly less than `10000 * recipient_count`. Since `dust = sum(remainders) / 10000`, it follows mathematically that **`dust` is always strictly less than the number of recipients**.
