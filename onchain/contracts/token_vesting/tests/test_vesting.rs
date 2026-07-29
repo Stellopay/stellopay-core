@@ -1782,7 +1782,7 @@ fn test_assign_beneficiary_revoked_schedule_fails() {
 }
 
 #[test]
-#[should_panic(expected = "Schedule fully claimed or released")]
+#[should_panic(expected = "Schedule is not active")]
 fn test_assign_beneficiary_completed_schedule_fails() {
     let env = create_env();
     let (client, owner, employer, beneficiary, token) = full_setup(&env);
@@ -1890,7 +1890,7 @@ fn test_assign_beneficiary_event_emitted() {
 }
 
 #[test]
-#[should_panic(expected = "Schedule fully claimed or released")]
+#[should_panic(expected = "Schedule is not active")]
 fn test_assign_beneficiary_fully_early_released_fails() {
     let env = create_env();
     let (client, owner, employer, beneficiary, token) = full_setup(&env);
