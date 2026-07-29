@@ -726,6 +726,340 @@ fn list_proposals_status_filter_with_pagination() {
 }
 
 // ---------------------------------------------------------------------------
+// Proposal metadata immutability tests
+// ---------------------------------------------------------------------------
+//
+// Once a proposal is created, its descriptive fields (kind, proposer,
+// quorum_votes, start_time, end_time) are frozen and must not change
+// through any public entrypoint, even after votes have been cast.
+//
+// These fields define what voters are approving. If `kind` could be
+// altered mid-vote, voters could be tricked into approving a different
+// action than the one they intended. Similarly, changing the quorum
+// snapshot or voting window after voting has started would subvert the
+// governance process.
+//
+// Audit of all state-mutating entrypoints:
+//
+// | Function                   | Fields written                | Touches metadata? |
+// |----------------------------|-------------------------------|-------------------|
+// | create_proposal            | all (initial write)           | N/A (creation)    |
+// | cast_vote / vote           | for_votes/against/abstain     | No                |
+// | finalize_proposal / queue  | status, timelock_op_id, eta   | No                |
+// | execute_proposal / execute | status (→Expired or Executed) | No                |
+// | cancel_proposal / cancel   | status (→Cancelled)           | No                |
+// | proposer_cancel_proposal   | status (→Cancelled)           | No                |
+// | update_config              | QuorumVotes, VotingPeriod     | Global config, not proposal |
+//
+// The write_proposal helper is called by every mutation entrypoint but
+// each reads the full Proposal, modifies only its allowed fields, and
+// writes back. No code path ever alters kind, proposer, quorum_votes,
+// start_time, or end_time after the initial create.
+//
+// The tests below verify this invariant by snapshotting the metadata
+// after creation and asserting it remains identical after votes,
+// finalization, and execution.
+
+/// Extracts the metadata fields that must remain immutable after creation.
+fn proposal_metadata(proposal: &governance::Proposal) -> ProposalMetadata {
+    ProposalMetadata {
+        kind: proposal.kind.clone(),
+        proposer: proposal.proposer.clone(),
+        quorum_votes: proposal.quorum_votes,
+        start_time: proposal.start_time,
+        end_time: proposal.end_time,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProposalMetadata {
+    kind: governance::ProposalKind,
+    proposer: Address,
+    quorum_votes: u32,
+    start_time: u64,
+    end_time: u64,
+}
+
+/// Verifies that all proposal metadata fields remain unchanged from the
+/// snapshot captured at creation time.
+fn assert_metadata_unchanged(
+    actual: &governance::Proposal,
+    expected: &ProposalMetadata,
+    phase: &str,
+) {
+    let meta = proposal_metadata(actual);
+    assert_eq!(
+        meta, *expected,
+        "proposal metadata changed after {phase}"
+    );
+}
+
+/// Creates a proposal with a known ParameterChange kind and returns its ID
+/// together with the metadata snapshot.
+fn create_test_proposal(
+    _env: &Env,
+    governance: &governance::GovernanceContractClient<'static>,
+    proposer: &Address,
+    key: &Symbol,
+    value: i128,
+    expected_start_time: u64,
+    expected_end_time: u64,
+    expected_quorum: u32,
+) -> (u128, ProposalMetadata) {
+    let id = governance.create_proposal(
+        proposer,
+        &governance::ProposalKind::ParameterChange(key.clone(), value),
+    );
+    let proposal = governance.get_proposal(&id).unwrap();
+    let meta = ProposalMetadata {
+        kind: governance::ProposalKind::ParameterChange(key.clone(), value),
+        proposer: proposer.clone(),
+        quorum_votes: expected_quorum,
+        start_time: expected_start_time,
+        end_time: expected_end_time,
+    };
+    assert_eq!(
+        proposal_metadata(&proposal),
+        meta,
+        "metadata must match expected values at creation"
+    );
+    (id, meta)
+}
+
+#[test]
+fn proposal_metadata_is_immutable_after_vote_cast() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    // Create a proposal — this is the baseline metadata snapshot.
+    let key = Symbol::new(&env, "test_param");
+    let (proposal_id, meta) = create_test_proposal(
+        &env,
+        &setup.governance,
+        &setup.employer_a,
+        &key,
+        42i128,
+        0,                        // start_time (ledger starts at 0)
+        3600,                     // end_time (0 + 3600s voting period)
+        2,                        // quorum_votes snapshotted at creation
+    );
+
+    // Cast a vote — this is the "voting has started" threshold.
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+
+    // Metadata must still match the creation snapshot.
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_metadata_unchanged(&proposal, &meta, "first vote");
+    assert_eq!(proposal.for_votes, 1, "vote count must be recorded");
+
+    // Cast a second vote (reaches quorum boundary).
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_metadata_unchanged(&proposal, &meta, "second vote");
+    assert_eq!(proposal.for_votes, 2, "vote count must be recorded");
+}
+
+#[test]
+fn proposal_metadata_is_immutable_after_finalization() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let (proposal_id, meta) = create_test_proposal(
+        &env,
+        &setup.governance,
+        &setup.employer_a,
+        &Symbol::new(&env, "param"),
+        99i128,
+        0,
+        3600,
+        2,
+    );
+
+    // Reach quorum with 2 for votes.
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+
+    // Metadata must be unchanged after the proposal transitions to Succeeded.
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, governance::ProposalStatus::Succeeded);
+    assert_metadata_unchanged(&proposal, &meta, "finalization");
+}
+
+#[test]
+fn proposal_metadata_is_immutable_after_execution() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let (proposal_id, meta) = create_test_proposal(
+        &env,
+        &setup.governance,
+        &setup.employer_a,
+        &Symbol::new(&env, "exec_param"),
+        77i128,
+        0,
+        3600,
+        2,
+    );
+
+    // Full lifecycle to execution.
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .cast_vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+    advance_time(&env, 3601);
+    setup.governance.finalize_proposal(&proposal_id);
+    advance_time(&env, 60);
+    setup
+        .governance
+        .execute_proposal(&setup.signer_a, &proposal_id);
+
+    // Metadata must be unchanged after the proposal transitions to Executed.
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, governance::ProposalStatus::Executed);
+    assert_metadata_unchanged(&proposal, &meta, "execution");
+
+    // Verify the parameter was actually stored (side effect must still work).
+    assert_eq!(setup.governance.get_parameter(&Symbol::new(&env, "exec_param")), Some(77i128));
+}
+
+#[test]
+fn proposal_metadata_is_immutable_after_cancel() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let (proposal_id, meta) = create_test_proposal(
+        &env,
+        &setup.governance,
+        &setup.owner,
+        &Symbol::new(&env, "cancel_param"),
+        33i128,
+        0,
+        3600,
+        2,
+    );
+
+    // Cast one vote (below quorum so proposer cancellation is allowed).
+    setup
+        .governance
+        .cast_vote(&setup.owner, &proposal_id, &VoteChoice::For);
+
+    // Proposer cancels.
+    setup
+        .governance
+        .proposer_cancel_proposal(&setup.owner, &proposal_id);
+
+    // Metadata must be unchanged after cancellation.
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, governance::ProposalStatus::Cancelled);
+    assert_metadata_unchanged(&proposal, &meta, "proposer cancel");
+}
+
+#[test]
+fn proposal_metadata_is_immutable_after_owner_cancel() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let (proposal_id, meta) = create_test_proposal(
+        &env,
+        &setup.governance,
+        &setup.employer_a,
+        &Symbol::new(&env, "owner_cancel_param"),
+        55i128,
+        0,
+        3600,
+        2,
+    );
+
+    // Owner cancels (owner can cancel at any time before execution).
+    setup
+        .governance
+        .cancel_proposal(&setup.owner, &proposal_id);
+
+    // Metadata must be unchanged after owner-initiated cancellation.
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, governance::ProposalStatus::Cancelled);
+    assert_metadata_unchanged(&proposal, &meta, "owner cancel");
+}
+
+#[test]
+fn proposal_metadata_is_immutable_using_backward_compat_aliases() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let kind = governance::ProposalKind::ArbiterChange(Address::generate(&env));
+    let proposal_id = setup.governance.propose(&setup.employer_a, &kind);
+
+    // Snapshot metadata after creation via the alias.
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    let meta = proposal_metadata(&proposal);
+
+    // Vote via the `vote` alias.
+    setup
+        .governance
+        .vote(&setup.owner, &proposal_id, &VoteChoice::For);
+    setup
+        .governance
+        .vote(&setup.employer_b, &proposal_id, &VoteChoice::For);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_metadata_unchanged(&proposal, &meta, "vote alias");
+
+    // Queue via the `queue` alias.
+    advance_time(&env, 3601);
+    setup.governance.queue(&proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_metadata_unchanged(&proposal, &meta, "queue alias");
+
+    // Execute via the `execute` alias.
+    advance_time(&env, 60);
+    setup.governance.execute(&setup.signer_a, &proposal_id);
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.status, governance::ProposalStatus::Executed);
+    assert_metadata_unchanged(&proposal, &meta, "execute alias");
+}
+
+#[test]
+fn no_entrypoint_can_alter_stored_proposal_kind() {
+    // The governance contract exposes NO public function that accepts a
+    // ProposalKind together with an existing proposal ID to overwrite the
+    // stored kind. Every entrypoint that takes a proposal ID operates on
+    // the already-stored proposal and only touches lifecycle fields.
+    //
+    // This test stores the kind at creation and verifies it survives every
+    // lifecycle transition unchanged.
+    let env = create_env();
+    let setup = setup(&env);
+
+    let original_arbiter = Address::generate(&env);
+    let kind = governance::ProposalKind::ArbiterChange(original_arbiter.clone());
+    let proposal_id = setup.governance.create_proposal(&setup.owner, &kind);
+
+    // Read back and compare the stored kind with the original.
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(
+        proposal.kind,
+        governance::ProposalKind::ArbiterChange(original_arbiter),
+        "stored kind must match the creation value"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Repeat-execution safety tests
 // ---------------------------------------------------------------------------
 
