@@ -82,6 +82,7 @@ This fingerprint is stored under `StorageKey::ScheduleId(schedule_id)`, mapping 
 - **`process_due_payments`** — **permissionless**. The contract reads all state from persistent storage and validates timestamps independently. Caller identity is irrelevant.
 - **State-before-interaction** — in `process_due_payments`, job state (status, counters, timestamp) is written to storage *before* the `token::Client::transfer` call to mitigate reentrancy.
 - **No overflow** — job IDs use `checked_add`; counters use `saturating_add`.
+- **`set_compliance_checker`** — owner-gated (`owner.require_auth()` plus an exact match against the stored owner). Wires an optional shared emergency-pause gate into `process_due_payments` (see below).
 
 ### Threat Model Notes
 
@@ -93,6 +94,26 @@ This fingerprint is stored under `StorageKey::ScheduleId(schedule_id)`, mapping 
 | Infinite retry fund-lock | `max_retries` cap; `Failed` terminal state |
 | Mass-drain via `process_due_payments` | Bounded by `max_jobs` parameter |
 | Double-processing (reentrancy) | State written before token transfer |
+
+### Compliance Checker Emergency-Pause Integration (Optional)
+
+`process_due_payments` can be gated by a shared, cross-contract emergency
+pause: if the owner has called `set_compliance_checker` with a deployed
+`compliance_checker` address, `process_due_payments` calls that contract's
+permissionless `is_emergency_paused()` view before evaluating any job in the
+batch. If it returns `true`, the call returns `0` immediately — no job is
+read, transferred, or advanced.
+
+This is opt-in and fully backward compatible: a scheduler that never calls
+`set_compliance_checker` is unaffected by any `compliance_checker`
+deployment's pause state, paused or not. See
+[docs/integration-examples.md](integration-examples.md#compliance-checker-emergency-pause-halting-the-payment-scheduler)
+for the full workflow, and
+`onchain/integration_tests/tests/test_compliance_pause_scheduler_integration.rs`
+for the test suite verifying a pause taking effect **mid-batch** — after
+some due jobs have already settled but before the rest have been reached —
+correctly halts only the remaining, unprocessed jobs and resumes cleanly
+once lifted.
 
 ---
 
@@ -194,6 +215,26 @@ This fingerprint is stored under `StorageKey::ScheduleId(schedule_id)`, mapping 
 
 ---
 
+### `set_compliance_checker(env, owner, compliance_checker) → Result<(), SchedulerError>`
+
+> @notice Configures an optional `compliance_checker` contract consulted by `process_due_payments` for a shared emergency-pause signal.  
+> @dev Owner-only. When unset (the default), no compliance check is performed.  
+> @param owner Must authenticate and match the stored owner.  
+> @param compliance_checker Address of a deployed contract exposing a permissionless `is_emergency_paused() -> bool` view.  
+> @security Called dynamically via `env.invoke_contract` (no compile-time crate dependency), mirroring the existing `payment_retry` integration pattern.
+
+**Error cases:**
+- `NotInitialized` — called before `initialize`
+- `Unauthorized` — `owner` does not match the stored owner
+
+---
+
+### `get_compliance_checker(env) → Option<Address>`
+
+> @notice Returns the configured `compliance_checker` address, if any.
+
+---
+
 ## Data Model
 
 ### `PaymentJob`
@@ -229,6 +270,7 @@ This fingerprint is stored under `StorageKey::ScheduleId(schedule_id)`, mapping 
 | 9 | `DuplicateSchedule` | Fingerprint already registered |
 | 10 | `AlreadyCancelled` | Job already cancelled |
 | 11 | `JobNotCancellable` | Terminal state prevents cancellation |
+| 12 | `Unauthorized` | Caller does not match the stored contract owner |
 
 ---
 

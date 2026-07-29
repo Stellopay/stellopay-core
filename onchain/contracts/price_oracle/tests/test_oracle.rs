@@ -531,7 +531,12 @@ fn test_enable_pair_does_not_resurrect_stale_price() {
 
     // Re-enable.
     oracle_client.enable_pair(&oracle_owner, &base, &quote);
-    assert!(oracle_client.get_pair_config(&base, &quote).unwrap().enabled);
+    assert!(
+        oracle_client
+            .get_pair_config(&base, &quote)
+            .unwrap()
+            .enabled
+    );
 
     // get_pair_state still returns an error — the old price was cleared
     // on disable and no fresh push has happened since re-enable.
@@ -1755,7 +1760,8 @@ fn test_get_pair_state_fresh_price_succeeds() {
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
-    // 60 seconds later — price is 60s old, max_age = 600s -> fresh (full_setup configures max_staleness=600)
+    // 60 seconds later — price is 60s old, max_age = 600s -> fresh (full_setup configures
+    // max_staleness=600)
     env.ledger().with_mut(|li| li.timestamp = 1_060);
     let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_000_000);

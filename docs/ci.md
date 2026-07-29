@@ -57,6 +57,14 @@ cargo build --workspace --verbose
 cargo test --workspace --verbose
 ```
 
+For CLI-specific regression coverage around the verify subcommand, also run:
+
+```bash
+cargo test --manifest-path tools/cli/Cargo.toml
+```
+
+This explicitly exercises the tampered-WASM and matching-WASM verification paths so the CLI remains secure even when a rebuilt artifact is mutated by a single byte.
+
 All three commands must exit with code `0` for a PR to be mergeable.
 
 ### Fixing common failures

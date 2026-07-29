@@ -262,7 +262,8 @@ fn test_escrow_zero_period_seconds_rejected() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let result = client.try_create_escrow_agreement(&employer, &contributor, &token, &100i128, &0u64, &4u32);
+    let result =
+        client.try_create_escrow_agreement(&employer, &contributor, &token, &100i128, &0u64, &4u32);
     assert_eq!(result, Err(Ok(PayrollError::ZeroPeriodDuration)));
 }
 
@@ -880,9 +881,8 @@ fn test_get_milestone_count_nonexistent_agreement_returns_zero() {
 // These tests verify that:
 //   1. A non-admin caller is rejected by every admin-only setter.
 //   2. The legitimate admin can perform maintenance writes successfully.
-//   3. Validation guards (negative amounts, zero duration) are enforced
-//      even for the admin, ensuring the admin cannot corrupt invariants
-//      with obviously invalid data.
+//   3. Validation guards (negative amounts, zero duration) are enforced even for the admin,
+//      ensuring the admin cannot corrupt invariants with obviously invalid data.
 // ============================================================================
 
 /// Helper: deploys a stello_pay_contract and returns (client, owner).

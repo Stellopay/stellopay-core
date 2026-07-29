@@ -10,6 +10,7 @@ doctest = false
 [dependencies]
 soroban-sdk = { workspace = true, features = ["alloc"] }
 stello_pay_contract = { path = "../contracts/stello_pay_contract" }
+compliance_checker = { path = "../contracts/compliance_checker" }
 token_vesting = { path = "../contracts/token_vesting" }
 payroll_escrow = { path = "../contracts/payroll_escrow" }
 bonus_system = { path = "../contracts/bonus_system" }
