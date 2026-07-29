@@ -798,13 +798,12 @@ impl TaxWithholdingContract {
     /// state can leave the system vulnerable to double-remittance attacks.
     ///
     /// # Arguments
-    /// * `caller`       — Must be the contract owner. Tokens are transferred
-    ///                    **from** this address, so the caller must hold the
-    ///                    requested amount in `token`.
+    /// * `caller`       — Must be the contract owner. Tokens are transferred **from** this address,
+    ///   so the caller must hold the requested amount in `token`.
     /// * `jurisdiction` — Jurisdiction whose balance is being remitted.
     /// * `token`        — Token contract address for the transfer.
-    /// * `amount`       — Positive amount to remit, not greater than the
-    ///                    currently accrued liability.
+    /// * `amount`       — Positive amount to remit, not greater than the currently accrued
+    ///   liability.
     ///
     /// # Returns
     /// Amount remitted.
@@ -823,8 +822,8 @@ impl TaxWithholdingContract {
     /// * `Unauthorized`   — caller is not the owner.
     /// * `TreasuryNotSet` — no treasury configured for the jurisdiction.
     /// * `NothingToRemit` — accrued balance is zero.
-    /// * `AmountExceedsAccrued` — `amount` is non-positive or exceeds the
-    ///                             currently accrued balance.
+    /// * `AmountExceedsAccrued` — `amount` is non-positive or exceeds the currently accrued
+    ///   balance.
     pub fn remit_withholding(
         env: Env,
         caller: Address,

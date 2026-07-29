@@ -559,8 +559,8 @@ fn test_set_emergency_pause_immediate_effect() {
     // 2. Pause with immediate effect.
     client.set_emergency_pause(&admin, &true);
 
-    // 3. The very next check_action call must see the paused state —
-    //    no stale-read window or delayed propagation.
+    // 3. The very next check_action call must see the paused state — no stale-read window or
+    //    delayed propagation.
     let after = client.check_action(
         &actor,
         &actor,

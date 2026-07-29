@@ -673,9 +673,9 @@ impl PriceOracleContract {
             .get(&DataKey::PairConfig(base, quote))
     }
 
-    /// @notice Returns the last accepted state for a `(base, quote)` pair, if configured and not stale.
-    /// @dev Rejects the state with `PriceTooOld` if `ledger.timestamp() - last_updated_ts > max_staleness_seconds`.
-    /// @param base Base token address.
+    /// @notice Returns the last accepted state for a `(base, quote)` pair, if configured and not
+    /// stale. @dev Rejects the state with `PriceTooOld` if `ledger.timestamp() -
+    /// last_updated_ts > max_staleness_seconds`. @param base Base token address.
     /// @param quote Quote token address.
     pub fn get_pair_state(
         env: Env,

@@ -1,22 +1,24 @@
 //! Integration tests for the encrypted backup restore dry-run feature (Issue #786).
 //!
 //! Verifies:
-//! * `admin_restore_dry_run` reports a valid backup as valid and surfaces the
-//!   correct `agreement_id` without writing state.
+//! * `admin_restore_dry_run` reports a valid backup as valid and surfaces the correct
+//!   `agreement_id` without writing state.
 //! * A corrupted/tampered envelope is detected and reported as invalid.
 //! * A wrong passphrase is detected and reported as invalid.
-//! * The real restore path is unaffected — storage state is unchanged after
-//!   a dry-run even on a valid backup.
-//! * The shared `validate_backup` helper (used by both dry-run and real
-//!   restore) is exercised directly for full unit coverage.
+//! * The real restore path is unaffected — storage state is unchanged after a dry-run even on a
+//!   valid backup.
+//! * The shared `validate_backup` helper (used by both dry-run and real restore) is exercised
+//!   directly for full unit coverage.
 
 #![cfg(test)]
 #![allow(deprecated)]
 
 use soroban_sdk::{testutils::Address as _, Address, Bytes, Env};
-use stello_pay_contract::backup::{backup_agreement, validate_backup, NONCE_LEN, SALT_LEN};
-use stello_pay_contract::storage::{Agreement, AgreementMode, AgreementStatus, DisputeStatus};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    backup::{backup_agreement, validate_backup, NONCE_LEN, SALT_LEN},
+    storage::{Agreement, AgreementMode, AgreementStatus, DisputeStatus},
+    PayrollContract, PayrollContractClient,
+};
 
 // ─── Fixtures ────────────────────────────────────────────────────────────────
 

@@ -27,7 +27,8 @@ pub const MIN_VOTING_PERIOD_SECONDS: u64 = 3_600;
 /// governance. Values above this bound are rejected.
 pub const MAX_VOTING_PERIOD_SECONDS: u64 = 30 * 24 * 60 * 60;
 
-/// Execution window in seconds (14 days) after the timelock eta during which a proposal can be executed.
+/// Execution window in seconds (14 days) after the timelock eta during which a proposal can be
+/// executed.
 ///
 /// If a proposal is not executed within this window, it expires and can no longer be executed.
 pub const PROPOSAL_EXECUTION_WINDOW_SECONDS: u64 = 14 * 24 * 60 * 60;
@@ -481,12 +482,14 @@ impl GovernanceContract {
     /// Creates a proposal and returns its ID.
     ///
     /// # Eligibility
-    /// The proposer must have the RBAC `Admin` or `Employer` role, checked at proposal creation time.
+    /// The proposer must have the RBAC `Admin` or `Employer` role, checked at proposal creation
+    /// time.
     ///
     /// # Quorum Snapshot
     /// Each proposal captures the configured `quorum_votes` value at creation time. This snapshot
-    /// is immutable and cannot be changed by later configuration updates or RBAC changes. The proposal
-    /// will be evaluated against this stored threshold when finalized, not against the live config.
+    /// is immutable and cannot be changed by later configuration updates or RBAC changes. The
+    /// proposal will be evaluated against this stored threshold when finalized, not against the
+    /// live config.
     ///
     /// # Parameters
     /// - `env` — Soroban environment
@@ -502,7 +505,8 @@ impl GovernanceContract {
     /// - `GovernanceError::InvalidVotingPeriod` — internal arithmetic overflow (extremely rare)
     ///
     /// # Security
-    /// - Eligibility is evaluated live from RBAC; role changes affect future proposals, not active ones
+    /// - Eligibility is evaluated live from RBAC; role changes affect future proposals, not active
+    ///   ones
     /// - Quorum is snapshotted to prevent governance rule changes from altering active proposals
     pub fn create_proposal(
         env: Env,
@@ -542,8 +546,8 @@ impl GovernanceContract {
     ///
     /// # Eligibility
     /// Only addresses with the RBAC `Admin` or `Employer` role may vote. Eligibility is checked
-    /// live against the linked RBAC contract, so role revocation prevents future votes on any proposal.
-    /// Previously cast votes are never removed if a role is later revoked.
+    /// live against the linked RBAC contract, so role revocation prevents future votes on any
+    /// proposal. Previously cast votes are never removed if a role is later revoked.
     ///
     /// # Vote Choices
     /// - `For` — counted toward both quorum and majority (as yes votes)
@@ -553,7 +557,8 @@ impl GovernanceContract {
     /// # Quorum and Majority
     /// - **Quorum**: Total participation (For + Against + Abstain) must reach the proposal's
     ///   snapshotted `quorum_votes` threshold
-    /// - **Majority**: For any proposal to succeed, `For > Against` (abstain votes do not participate)
+    /// - **Majority**: For any proposal to succeed, `For > Against` (abstain votes do not
+    ///   participate)
     ///
     /// # Parameters
     /// - `env` — Soroban environment
@@ -613,9 +618,9 @@ impl GovernanceContract {
         Ok(())
     }
 
-    /// @notice Finalizes a proposal after voting closes and queues timelocked execution if it passed.
-    /// @dev A proposal passes when total participation reaches quorum and `for_votes > against_votes`.
-    /// @param env Contract environment.
+    /// @notice Finalizes a proposal after voting closes and queues timelocked execution if it
+    /// passed. @dev A proposal passes when total participation reaches quorum and `for_votes >
+    /// against_votes`. @param env Contract environment.
     /// @param proposal_id Proposal identifier.
     pub fn finalize_proposal(env: Env, proposal_id: u128) -> Result<(), GovernanceError> {
         require_initialized(&env)?;
@@ -682,7 +687,8 @@ impl GovernanceContract {
     /// - `GovernanceError::ProposalNotFound` — proposal ID does not exist
     /// - `GovernanceError::ProposalNotSucceeded` — proposal is not in Succeeded status
     /// - `GovernanceError::TimelockNotReady` — timelock operation's ETA has not been reached
-    /// - `GovernanceError::TimelockExecutionFailed` — timelock operation does not exist or is not in Queued status
+    /// - `GovernanceError::TimelockExecutionFailed` — timelock operation does not exist or is not
+    ///   in Queued status
     ///
     /// # Security
     /// - Only proposals passing both quorum and majority checks can reach Succeeded status
@@ -862,7 +868,8 @@ impl GovernanceContract {
     }
 
     /// @notice Returns the current governance configuration.
-    /// @return owner, rbac_contract, multisig_contract, timelock_contract, quorum_votes, voting_period_seconds.
+    /// @return owner, rbac_contract, multisig_contract, timelock_contract, quorum_votes,
+    /// voting_period_seconds.
     pub fn get_config(
         env: Env,
     ) -> Result<(Address, Address, Address, Address, u32, u64), GovernanceError> {
@@ -1043,8 +1050,8 @@ impl GovernanceContract {
     /// # Security
     /// - Approved upgrade hashes are immutable once written; they represent governance consensus
     /// - An upgrade hash only exists if the governance proposal passed both quorum and majority
-    ///   (enforced by `finalize_proposal`) and was executed by a multisig signer
-    ///   (enforced by `execute_proposal`)
+    ///   (enforced by `finalize_proposal`) and was executed by a multisig signer (enforced by
+    ///   `execute_proposal`)
     pub fn get_approved_upgrade(env: Env, target: Address) -> Option<BytesN<32>> {
         env.storage()
             .persistent()
