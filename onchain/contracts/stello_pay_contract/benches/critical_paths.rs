@@ -117,7 +117,12 @@ fn bench_create_milestone_agreement() {
     let token = Address::generate(&env);
 
     env.cost_estimate().budget().reset_default();
-    client.create_milestone_agreement(&employer, &contributor, &token);
+    client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     println!(
         "create_milestone_agreement: cpu_insns={}",
         env.cost_estimate().budget().cpu_instruction_cost()

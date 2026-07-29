@@ -150,7 +150,12 @@ fn funded_milestone(
     contributor: &Address,
     token: &Address,
 ) -> (u128, u32) {
-    let agreement_id = client.create_milestone_agreement(employer, contributor, token);
+    let agreement_id = client.create_milestone_agreement(
+        employer,
+        contributor,
+        token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.fund_milestone_agreement(&agreement_id, employer, &50_000i128);
     client.add_milestone(&agreement_id, &1_000i128);
     (agreement_id, 1u32)
@@ -197,7 +202,12 @@ fn test_expire_milestone_emits_event() {
 fn test_expire_milestone_escrow_unchanged() {
     let (_env, _owner, employer, contributor, token, client) = setup();
     let fund_amount = 50_000i128;
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.fund_milestone_agreement(&agreement_id, &employer, &fund_amount);
     client.add_milestone(&agreement_id, &1_000i128);
 
@@ -217,7 +227,12 @@ fn test_expire_milestone_escrow_unchanged() {
 #[test]
 fn test_expire_one_milestone_does_not_affect_siblings() {
     let (_env, _owner, employer, contributor, token, client) = setup();
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.fund_milestone_agreement(&agreement_id, &employer, &50_000i128);
     client.add_milestone(&agreement_id, &1_000i128); // id=1
     client.add_milestone(&agreement_id, &2_000i128); // id=2
@@ -285,7 +300,12 @@ fn test_expire_approved_milestone_returns_error() {
 #[test]
 fn test_expire_claimed_milestone_returns_error() {
     let (_env, _owner, employer, contributor, token, client) = setup();
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.fund_milestone_agreement(&agreement_id, &employer, &50_000i128);
     client.add_milestone(&agreement_id, &1_000i128); // id=1 — will be claimed
     client.add_milestone(&agreement_id, &1_000i128); // id=2 — keeps agreement alive

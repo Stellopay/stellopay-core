@@ -340,8 +340,8 @@ fn is_external_or_anchor_link(target: &str) -> bool {
 }
 
 /// Resolves a markdown link target relative to `base_dir`, stripping any
-/// `#fragment` suffix. Returns `None` for empty targets.
-fn resolve_relative_link(base_dir: &Path, target: &str) -> Option<PathBuf> {
+/// #fragment` suffix. Returns `None` for empty targets.
+pub fn resolve_relative_link(base_dir: &Path, target: &str) -> Option<PathBuf> {
     let without_fragment = target.split('#').next().unwrap_or("").trim();
     if without_fragment.is_empty() {
         return None;
@@ -353,7 +353,7 @@ fn resolve_relative_link(base_dir: &Path, target: &str) -> Option<PathBuf> {
 /// when the target does not exist. A non-existent path can never match a
 /// real `docs/*.md` file's canonical form, so this fallback cannot cause a
 /// false "reachable" result — it only affects display/dedup of dead links.
-fn normalize_path(path: &Path) -> PathBuf {
+pub fn normalize_path(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
