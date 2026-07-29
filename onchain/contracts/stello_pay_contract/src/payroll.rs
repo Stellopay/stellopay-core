@@ -2208,6 +2208,19 @@ pub fn resolve_dispute(
     pay_employee: i128,
     refund_employer: i128,
 ) -> Result<(), PayrollError> {
+    acquire_reentrancy_guard(&env)?;
+    let result = resolve_dispute_inner(env, caller, agreement_id, pay_employee, refund_employer);
+    release_reentrancy_guard(&env);
+    result
+}
+
+fn resolve_dispute_inner(
+    env: Env,
+    caller: Address,
+    agreement_id: u128,
+    pay_employee: i128,
+    refund_employer: i128,
+) -> Result<(), PayrollError> {
     // If a DisputeResolution threshold is configured and the total payout meets
     // it, reject and require the caller to use resolve_dispute_multisig instead.
     let total_payout = pay_employee + refund_employer;
@@ -2235,6 +2248,27 @@ pub fn resolve_dispute(
 /// # Access Control
 /// Requires arbiter authentication and a valid Executed multisig operation.
 pub fn resolve_dispute_multisig(
+    env: Env,
+    caller: Address,
+    agreement_id: u128,
+    pay_employee: i128,
+    refund_employer: i128,
+    multisig_operation_id: u128,
+) -> Result<(), PayrollError> {
+    acquire_reentrancy_guard(&env)?;
+    let result = resolve_dispute_multisig_inner(
+        env,
+        caller,
+        agreement_id,
+        pay_employee,
+        refund_employer,
+        multisig_operation_id,
+    );
+    release_reentrancy_guard(&env);
+    result
+}
+
+fn resolve_dispute_multisig_inner(
     env: Env,
     caller: Address,
     agreement_id: u128,
