@@ -228,17 +228,19 @@ fn read_period_spent(env: &Env, employee: &Address, period: u64) -> i128 {
 /// Adds an amount to the employee's cumulative period spending.
 fn add_period_spent(env: &Env, employee: &Address, period: u64, amount: i128) {
     let current = read_period_spent(env, employee, period);
-    env.storage()
-        .persistent()
-        .set(&StorageKey::PeriodSpent(employee.clone(), period), &(current + amount));
+    env.storage().persistent().set(
+        &StorageKey::PeriodSpent(employee.clone(), period),
+        &(current + amount),
+    );
 }
 
 /// Subtracts an amount from the employee's cumulative period spending.
 fn sub_period_spent(env: &Env, employee: &Address, period: u64, amount: i128) {
     let current = read_period_spent(env, employee, period);
-    env.storage()
-        .persistent()
-        .set(&StorageKey::PeriodSpent(employee.clone(), period), &(current - amount));
+    env.storage().persistent().set(
+        &StorageKey::PeriodSpent(employee.clone(), period),
+        &(current - amount),
+    );
 }
 
 #[contractimpl]
@@ -276,27 +278,6 @@ impl ExpenseReimbursementContract {
         env.storage()
             .persistent()
             .set(&StorageKey::ApproverRole(approver), &true);
-    }
-
-    /// Remove an approver from the active approver set.
-    ///
-    /// NatSpec: Removal prevents this address from approving or rejecting any
-    /// pending expense going forward. It does not alter approval decisions
-    /// already recorded on expenses; those decisions remain valid and payable.
-    pub fn remove_approver(env: Env, approver: Address) {
-    /// Remove an approver.
-    ///
-    /// # Authorization
-    /// Authorizes the live `caller`: it requires `caller`'s signature via
-    /// `require_auth` and asserts that `caller` is the contract owner. Any
-    /// non-owner caller is rejected, so only the owner can mutate the approver set.
-    pub fn remove_approver(env: Env, caller: Address, approver: Address) {
-        require_initialized(&env);
-        require_owner(&env, &caller);
-
-        env.storage()
-            .persistent()
-            .remove(&StorageKey::ApproverRole(approver));
     }
 
     /// Submit an expense for reimbursement

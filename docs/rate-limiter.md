@@ -129,6 +129,7 @@ StorageKey::DefaultBurst + StorageKey::DefaultRefillRate  ──► use default 
 5. **Override Isolation**: A per-address override changes only that caller's
    effective limit configuration. It does not mutate the initialized default
    values, and callers without overrides remain governed by the default bucket.
+5. **Burst Capacity Capping**: After any idle gap (even extremely long ones), the bucket refills to exactly the configured `burst` capacity. The contract explicitly caps token accumulation at `burst` in the `consume_bucket` function, preventing attackers from "farming" tokens by waiting extended periods between calls. This is verified by the `test_long_idle_gap_refill_is_capped_at_burst_capacity` test.
 
 ## Integration
 
