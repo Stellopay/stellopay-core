@@ -115,6 +115,10 @@ pub enum RetryState {
     Retrying,
     Success,
     Failed,
+    /// Payer explicitly revoked the request in the `payment_retry` contract.
+    /// Terminal — mirrors `payment_retry::RetryState::Cancelled` so XDR decoded
+    /// from that contract round-trips through this local mirror type.
+    Cancelled,
 }
 
 #[contracttype]
@@ -821,3 +825,4 @@ impl PaymentSchedulerContract {
             .get(&StorageKey::ScheduleId(schedule_id))
     }
 }
+                     
