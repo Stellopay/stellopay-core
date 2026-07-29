@@ -1021,6 +1021,52 @@ fn test_milestone_view_fields_stable() {
     );
 }
 
+// ── Module-level helper contracts for trait surface and hook tests ────────────
+// Soroban's #[contract] macro requires types to be defined at module scope,
+// not inside function bodies.
+
+/// Minimal contract used by `test_trait_method_surface_compiles` to verify
+/// that all three `MilestoneContractInterface` method signatures are present
+/// and callable via `MilestoneContractClient`.
+#[soroban_sdk::contract]
+struct ProbeContract;
+
+#[soroban_sdk::contractimpl]
+impl ProbeContract {
+    pub fn get_milestone(
+        _env: Env,
+        _agreement_id: u128,
+        _milestone_id: u32,
+    ) -> Option<MilestoneView> {
+        None
+    }
+    pub fn get_milestone_count(_env: Env, _agreement_id: u128) -> u32 {
+        0
+    }
+    pub fn on_milestone_expired(_env: Env, _agreement_id: u128, _milestone_id: u32) {}
+}
+
+/// Minimal implementor that does NOT override `on_milestone_expired`,
+/// used by `test_default_hook_is_noop_and_additive` to prove the additive
+/// default-body guarantee.
+#[soroban_sdk::contract]
+struct AdditiveImpl;
+
+#[soroban_sdk::contractimpl]
+impl AdditiveImpl {
+    pub fn get_milestone(
+        _env: Env,
+        _agreement_id: u128,
+        _milestone_id: u32,
+    ) -> Option<MilestoneView> {
+        None
+    }
+    pub fn get_milestone_count(_env: Env, _agreement_id: u128) -> u32 {
+        0
+    }
+    pub fn on_milestone_expired(_env: Env, _agreement_id: u128, _milestone_id: u32) {}
+}
+
 // ── 4. Trait method surface — compile-time proof ──────────────────────────────
 
 /// Confirms that `MilestoneContractClient` exposes `get_milestone`,
@@ -1047,28 +1093,7 @@ fn test_trait_method_surface_compiles() {
     let _: u32 = via.get_milestone_count(&0u128);
 
     // on_milestone_expired — (u128, u32) -> ()
-    // Called via PayrollContractClient because stello_pay_contract exposes the
-    // hook; here we confirm the MilestoneContractClient method signature exists.
-    // (The hook is not callable directly from MilestoneContractClient in the
-    // test harness without a registered implementing contract, so we verify the
-    // method is present via a type-level call on a minimal implementation.)
-    #[soroban_sdk::contract]
-    struct ProbeContract;
-    #[soroban_sdk::contractimpl]
-    impl ProbeContract {
-        pub fn get_milestone(
-            _env: Env,
-            _agreement_id: u128,
-            _milestone_id: u32,
-        ) -> Option<MilestoneView> {
-            None
-        }
-        pub fn get_milestone_count(_env: Env, _agreement_id: u128) -> u32 {
-            0
-        }
-        pub fn on_milestone_expired(_env: Env, _agreement_id: u128, _milestone_id: u32) {}
-    }
-
+    // Verified via ProbeContract (defined at module scope above).
     #[allow(deprecated)]
     let probe_id = env.register_contract(None, ProbeContract);
     let probe_client = MilestoneContractClient::new(&env, &probe_id);
@@ -1095,29 +1120,7 @@ fn test_default_hook_is_noop_and_additive() {
 
     /// Minimal implementor — does not override `on_milestone_expired`.
     /// If the trait required it without a default this would fail to compile.
-    #[soroban_sdk::contract]
-    struct AdditiveImpl;
-
-    #[soroban_sdk::contractimpl]
-    impl AdditiveImpl {
-        /// Returns `None` unconditionally — minimal conformant implementation.
-        pub fn get_milestone(
-            _env: Env,
-            _agreement_id: u128,
-            _milestone_id: u32,
-        ) -> Option<MilestoneView> {
-            None
-        }
-        /// Returns `0` unconditionally — minimal conformant implementation.
-        pub fn get_milestone_count(_env: Env, _agreement_id: u128) -> u32 {
-            0
-        }
-        /// Explicit no-op that mirrors the default body in the trait.
-        /// Provided here only to prove it compiles; the interface default is
-        /// inherited even when this body is omitted.
-        pub fn on_milestone_expired(_env: Env, _agreement_id: u128, _milestone_id: u32) {}
-    }
-
+    /// (Defined at module scope as `AdditiveImpl`.)
     #[allow(deprecated)]
     let id = env.register_contract(None, AdditiveImpl);
     let client = MilestoneContractClient::new(&env, &id);
@@ -1219,7 +1222,7 @@ fn test_v1_method_parity_across_lifecycle() {
         direct.get_milestone_count(&aid),
         via.get_milestone_count(&aid)
     );
-    assert_eq!(direct.get_milestone(&aid, &1), via.get_milestone(&aid, &1));
+    assert_milestone_eq(&direct.get_milestone(&aid, &1), &via.get_milestone(&aid, &1));
 
     // Add two milestones.
     direct.add_milestone(&aid, &1_000i128);
@@ -1228,21 +1231,21 @@ fn test_v1_method_parity_across_lifecycle() {
         direct.get_milestone_count(&aid),
         via.get_milestone_count(&aid)
     );
-    assert_eq!(direct.get_milestone(&aid, &1), via.get_milestone(&aid, &1));
-    assert_eq!(direct.get_milestone(&aid, &2), via.get_milestone(&aid, &2));
+    assert_milestone_eq(&direct.get_milestone(&aid, &1), &via.get_milestone(&aid, &1));
+    assert_milestone_eq(&direct.get_milestone(&aid, &2), &via.get_milestone(&aid, &2));
 
     // Approve milestone 1.
     direct.approve_milestone(&aid, &1);
-    assert_eq!(direct.get_milestone(&aid, &1), via.get_milestone(&aid, &1));
+    assert_milestone_eq(&direct.get_milestone(&aid, &1), &via.get_milestone(&aid, &1));
 
     // Claim milestone 1.
     direct.claim_milestone(&aid, &1);
-    assert_eq!(direct.get_milestone(&aid, &1), via.get_milestone(&aid, &1));
+    assert_milestone_eq(&direct.get_milestone(&aid, &1), &via.get_milestone(&aid, &1));
 
     // Reject milestone 2.
     let reason = soroban_sdk::String::from_str(&env, "out of scope");
     direct.reject_milestone(&aid, &2, &reason);
-    assert_eq!(direct.get_milestone(&aid, &2), via.get_milestone(&aid, &2));
+    assert_milestone_eq(&direct.get_milestone(&aid, &2), &via.get_milestone(&aid, &2));
 
     // Count unchanged after reject.
     assert_eq!(

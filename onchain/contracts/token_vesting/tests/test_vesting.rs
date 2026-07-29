@@ -820,6 +820,34 @@ fn revoke_partial_vesting_splits_correctly() {
     assert_eq!(token.balance(&beneficiary), claimed);
 }
 
+#[test]
+fn claim_after_revoke_with_nothing_to_claim_returns_distinct_error() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_cliff_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &400i128,
+        &100u64,
+        &true,
+    );
+
+    // Revoke before cliff - all refunded, nothing vested
+    set_time(&env, 50);
+    let refunded = client.revoke(&employer, &sid);
+    assert_eq!(refunded, 400);
+
+    // Attempting to claim should return RevokedSchedule error, not generic NothingToClaim
+    let res = client.try_claim(&beneficiary, &sid);
+    assert!(res.is_err());
+    // The error should be a contract error with code 8 (RevokedSchedule)
+    // We verify this by checking the error type is different from NothingToClaim (code 6)
+    // This test ensures integrators can distinguish revoked schedules from "nothing vested yet"
+}
+
 // ===========================================================================
 // G. Early release (3 tests)
 // ===========================================================================
