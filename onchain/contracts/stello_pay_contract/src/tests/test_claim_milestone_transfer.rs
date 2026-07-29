@@ -56,7 +56,7 @@ fn balance(env: &Env, token: &Address, who: &Address) -> i128 {
 fn test_claim_milestone_transfers_to_contributor() {
     let (env, employer, contributor, token, client) = setup();
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token, &soroban_sdk::vec![&env, 1i128]);
 
     // Employer funds the escrow with 1000 tokens.
     client.fund_milestone_agreement(&agreement_id, &employer, &1_000i128);
@@ -81,7 +81,7 @@ fn test_claim_milestone_reduces_contract_escrow() {
     let (env, employer, contributor, token, client) = setup();
 
     let contract_id = env.current_contract_address();
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token, &soroban_sdk::vec![&env, 1i128]);
     client.fund_milestone_agreement(&agreement_id, &employer, &500i128);
     client.add_milestone(&agreement_id, &200i128).unwrap();
     client.approve_milestone(&agreement_id, &1u32).unwrap();
@@ -103,7 +103,7 @@ fn test_claim_milestone_reduces_contract_escrow() {
 fn test_batch_claim_milestones_transfers_all() {
     let (env, employer, contributor, token, client) = setup();
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token, &soroban_sdk::vec![&env, 1i128]);
     client.fund_milestone_agreement(&agreement_id, &employer, &3_000i128);
 
     // Add and approve 3 milestones.
@@ -130,7 +130,7 @@ fn test_batch_claim_milestones_transfers_all() {
 fn test_batch_claim_partial_success_transfers_approved_only() {
     let (env, employer, contributor, token, client) = setup();
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token, &soroban_sdk::vec![&env, 1i128]);
     client.fund_milestone_agreement(&agreement_id, &employer, &2_000i128);
 
     // Add 2 milestones but only approve the first.
