@@ -95,6 +95,19 @@ Storage keys:
 creation. There is no "promise to pay"; the contract always holds sufficient
 balance for active schedules.
 
+**Error codes:**
+
+| Error Code | Name | Description |
+|---|---|---|
+| 1 | ContractNotInitialized | Contract has not been initialized yet |
+| 2 | AlreadyInitialized | Contract has already been initialized |
+| 3 | Unauthorized | Caller is not authorized to perform this action |
+| 4 | InvalidInput | Invalid input parameter provided |
+| 5 | ScheduleNotFound | Vesting schedule with given ID does not exist |
+| 6 | NothingToClaim | No vested tokens are currently claimable |
+| 7 | ScheduleCompleted | Schedule has already been fully claimed and marked as completed |
+| 8 | RevokedSchedule | Schedule has been revoked and has no releasable amount |
+
 **Authentication model:**
 
 | Action | Authorized caller |
@@ -223,9 +236,15 @@ All tests use only Soroban SDK primitives (no external `proptest` or
   ignored `cliff_time`, allowing tokens to vest linearly before the cliff was
   reached. A cliff guard was added so that `compute_vested_amount` returns 0
   when `now < cliff_time`, matching the documented behavior for cliff schedules.
+- **RevokedSchedule distinct error** (issue #885): Added a dedicated `RevokedSchedule`
+  error variant returned by `claim` when attempting to claim against a revoked
+  schedule with no releasable amount. This distinguishes "nothing vested yet"
+  from "this schedule was revoked and will never pay out", helping integrators
+  handle the two cases differently.
 
 ### Testing Focus
 
+The test suite contains **43 tests** across 10 categories:
 The test suite contains **55 tests** across 15 categories:
 
 | Category | Count | What it covers |
@@ -235,7 +254,7 @@ The test suite contains **55 tests** across 15 categories:
 | C. Cliff | 5 | 1 s before cliff (=0), exact cliff (=total), 1 s after cliff (still total — no linear accrual), full claim, revoke-before-cliff refund |
 | D. Custom | 4 | Before first checkpoint, between checkpoints, at final checkpoint, early release |
 | E. Claim Security | 5 | Non-beneficiary rejected, double-claim fails, completed schedule rejected, released_amount accumulates, token balance verification |
-| F. Revocation | 4 | Non-revocable rejected, non-employer rejected, double-revoke rejected, partial-vesting split (employer refund + beneficiary claim remainder) |
+| F. Revocation | 5 | Non-revocable rejected, non-employer rejected, double-revoke rejected, partial-vesting split (employer refund + beneficiary claim remainder), claim after revoke with nothing to claim returns distinct error |
 | G. Early Release | 3 | Non-owner rejected, amount capped at unvested, revoked schedule rejected |
 | H. State Consistency | 2 | Claim after revoke gets frozen vested remainder, schedule IDs are sequential |
 | I. Input Validation | 5 | Zero amount, end < start, cliff outside range, empty checkpoints, unsorted checkpoints |
