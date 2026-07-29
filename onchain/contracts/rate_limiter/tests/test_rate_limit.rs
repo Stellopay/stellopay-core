@@ -130,6 +130,71 @@ fn test_per_address_overrides() {
 }
 
 #[test]
+fn test_per_caller_override_stricter_than_default_is_enforced() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    // Default bucket is generous: 5 immediate calls, no refill.
+    client.initialize(&admin, &5u32, &0u32, &false);
+
+    // Override is stricter and must fully replace the default for this caller.
+    client.set_limit_for(&user, &2u32, &0u32);
+
+    assert_eq!(client.check_and_consume(&user), 1);
+    assert_eq!(client.check_and_consume(&user), 0);
+    assert!(
+        client.try_check_and_consume(&user).is_err(),
+        "per-caller override must stop the third call even though the default burst is 5"
+    );
+}
+
+#[test]
+fn test_per_caller_override_looser_than_default_is_honored() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    // Default bucket is strict: only 2 immediate calls, no refill.
+    client.initialize(&admin, &2u32, &0u32, &false);
+
+    // Override is looser and must be honored instead of the default.
+    client.set_limit_for(&user, &4u32, &0u32);
+
+    assert_eq!(client.check_and_consume(&user), 3);
+    assert_eq!(client.check_and_consume(&user), 2);
+    assert_eq!(client.check_and_consume(&user), 1);
+    assert_eq!(client.check_and_consume(&user), 0);
+    assert!(
+        client.try_check_and_consume(&user).is_err(),
+        "per-caller override must allow four calls before exhaustion"
+    );
+}
+
+#[test]
+fn test_caller_without_override_uses_default_limit() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let override_user = Address::generate(&env);
+
+    client.initialize(&admin, &3u32, &0u32, &false);
+    client.set_limit_for(&override_user, &10u32, &0u32);
+
+    // A different address with no override must still use the default values.
+    assert_eq!(client.check_and_consume(&user), 2);
+    assert_eq!(client.check_and_consume(&user), 1);
+    assert_eq!(client.check_and_consume(&user), 0);
+    assert!(
+        client.try_check_and_consume(&user).is_err(),
+        "addresses without overrides must continue to be governed by the default burst"
+    );
+}
+
+#[test]
 fn test_admin_usage_reset() {
     let env = create_env();
     let (_id, client) = register_contract(&env);
