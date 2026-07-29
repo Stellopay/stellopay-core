@@ -648,9 +648,26 @@ impl TokenVestingContract {
 
     /// @notice Revokes a revocable schedule for a terminated employee.
     /// @dev Employer recovers unvested tokens; vested portion remains claimable.
+    ///
+    /// Fully-vested schedules: if `get_vested_amount` already equals
+    /// `total_amount` (nothing left to claw back), this is a **safe no-op**
+    /// with respect to funds — no transfer is made and `refunded_amount` is
+    /// `0`. The schedule's `status` still transitions to `Revoked` and
+    /// `revoked_at` is still recorded (revocation is a real, one-time event
+    /// on the schedule even when there's nothing to reclaim), but this has
+    /// no effect on `get_vested_amount` or `get_releasable_amount`: both are
+    /// computed from `revoked_at`, which is only ever set once vesting has
+    /// already reached `total_amount` in this case, so they continue to
+    /// report the same values as before the call. Already-vested tokens
+    /// remain fully claimable via `claim` after this no-op revoke.
+    ///
+    /// A second `revoke` call on an already-revoked schedule is rejected
+    /// (`"Schedule not active"`) rather than treated as another no-op.
+    ///
     /// @param employer Employer that created the schedule; must authenticate.
     /// @param schedule_id Vesting schedule identifier.
-    /// @return refunded_amount Amount of unvested tokens refunded to employer.
+    /// @return refunded_amount Amount of unvested tokens refunded to employer
+    ///         (`0` when the schedule was already fully vested).
     pub fn revoke(env: Env, employer: Address, schedule_id: u128) -> i128 {
         require_initialized(&env);
         employer.require_auth();
