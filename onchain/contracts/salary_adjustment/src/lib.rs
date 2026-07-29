@@ -487,6 +487,10 @@ impl SalaryAdjustmentContract {
     /// @dev Determines increase or decrease from salary comparison.
     ///      Rejects retroactive effective dates (before current ledger time).
     ///      Rejects new_salary exceeding the configured salary cap.
+    ///      Rejects concurrent proposals for the same employee with the same effective date.
+    ///      Multiple pending proposals for the same employee are allowed if they have
+    ///      different effective dates. Each proposal is identified by its unique id and
+    ///      must be approved/rejected/applied independently.
     ///
     /// @param employer Employer submitting the adjustment; must authenticate.
     /// @param employee Employee whose salary is being adjusted.
@@ -503,6 +507,7 @@ impl SalaryAdjustmentContract {
     /// * `"New salary must differ from current salary"`
     /// * `"New salary exceeds salary cap"`
     /// * `"Effective date cannot be in the past"`
+    /// * `"Conflicting adjustment exists"` (same employee + effective_date)
     ///
     /// # Events
     /// Emits `("adjustment_created", adjustment_id)` with an `AdjustmentCreatedEvent`.

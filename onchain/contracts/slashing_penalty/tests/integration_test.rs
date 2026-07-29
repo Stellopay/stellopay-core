@@ -1114,7 +1114,14 @@ impl CustomCapEnv {
         );
         client.add_slasher(&slasher);
         client.stake(&offender, &100_000i128);
-        CustomCapEnv { env, client, admin, slasher, offender, token }
+        CustomCapEnv {
+            env,
+            client,
+            admin,
+            slasher,
+            offender,
+            token,
+        }
     }
 
     fn evidence_hash(&self, seed: u8) -> BytesN<32> {
@@ -1261,7 +1268,13 @@ fn test_zero_per_event_bps_cap_rejected() {
     let token = Address::generate(&env);
 
     let result = client.try_initialize(
-        &admin, &token, &2u32, &0u32, &10_000i128, &50_000i128, &86_400u64,
+        &admin,
+        &token,
+        &2u32,
+        &0u32,
+        &10_000i128,
+        &50_000i128,
+        &86_400u64,
     );
     assert_eq!(result, Err(Ok(SlashError::InvalidConfig)));
 }
@@ -1432,7 +1445,13 @@ fn test_per_event_bps_cap_exceeds_max_rejected() {
     let token = Address::generate(&env);
 
     let result = client.try_initialize(
-        &admin, &token, &2u32, &5_001u32, &10_000i128, &50_000i128, &86_400u64,
+        &admin,
+        &token,
+        &2u32,
+        &5_001u32,
+        &10_000i128,
+        &50_000i128,
+        &86_400u64,
     );
     assert_eq!(result, Err(Ok(SlashError::InvalidConfig)));
 }
@@ -1478,7 +1497,13 @@ fn test_update_cap_then_enforce() {
 
     // Initialize with 40% cap.
     client.initialize(
-        &admin, &token, &2u32, &4_000u32, &1_000_000i128, &10_000_000i128, &86_400u64,
+        &admin,
+        &token,
+        &2u32,
+        &4_000u32,
+        &1_000_000i128,
+        &10_000_000i128,
+        &86_400u64,
     );
     client.add_slasher(&slasher);
     client.stake(&offender, &100_000i128);

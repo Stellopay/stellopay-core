@@ -707,14 +707,8 @@ fn test_contract_limit_blocks_address_rotation() {
     client.initialize(&admin, &10u32, &0u32, &false);
     client.set_limit_for_contract(&contract, &2u32, &0u32);
 
-    assert_eq!(
-        client.check_and_consume_for_contract(&user1, &contract),
-        9
-    );
-    assert_eq!(
-        client.check_and_consume_for_contract(&user2, &contract),
-        9
-    );
+    assert_eq!(client.check_and_consume_for_contract(&user1, &contract), 9);
+    assert_eq!(client.check_and_consume_for_contract(&user2, &contract), 9);
 
     // Contract bucket exhausted — rotation to user3 must fail.
     assert!(client
@@ -749,10 +743,7 @@ fn test_address_limit_still_enforced_alongside_contract_limit() {
 
     // Another subject can still consume against the remaining contract budget.
     let other = Address::generate(&env);
-    assert_eq!(
-        client.check_and_consume_for_contract(&other, &contract),
-        9
-    );
+    assert_eq!(client.check_and_consume_for_contract(&other, &contract), 9);
 }
 
 /// # Either limit being hit rejects the call
@@ -774,10 +765,7 @@ fn test_either_contract_or_address_limit_rejects() {
     client.set_limit_for(&user_a, &1u32, &0u32);
 
     // user_a: address burst 1 — first call ok, second fails on address limit
-    assert_eq!(
-        client.check_and_consume_for_contract(&user_a, &contract),
-        0
-    );
+    assert_eq!(client.check_and_consume_for_contract(&user_a, &contract), 0);
     assert!(
         client
             .try_check_and_consume_for_contract(&user_a, &contract)
@@ -786,10 +774,7 @@ fn test_either_contract_or_address_limit_rejects() {
     );
 
     // user_b consumes the last contract token
-    assert_eq!(
-        client.check_and_consume_for_contract(&user_b, &contract),
-        4
-    );
+    assert_eq!(client.check_and_consume_for_contract(&user_b, &contract), 4);
 
     // Contract empty: a third subject with full address quota is still rejected
     let user_c = Address::generate(&env);
@@ -834,14 +819,8 @@ fn test_check_and_consume_for_contract_without_budget_is_address_only() {
     client.initialize(&admin, &2u32, &0u32, &false);
 
     assert_eq!(client.get_limit_for_contract(&contract), None);
-    assert_eq!(
-        client.check_and_consume_for_contract(&user, &contract),
-        1
-    );
-    assert_eq!(
-        client.check_and_consume_for_contract(&user, &contract),
-        0
-    );
+    assert_eq!(client.check_and_consume_for_contract(&user, &contract), 1);
+    assert_eq!(client.check_and_consume_for_contract(&user, &contract), 0);
     assert!(client
         .try_check_and_consume_for_contract(&user, &contract)
         .is_err());
@@ -866,8 +845,5 @@ fn test_reset_contract_usage() {
         .is_err());
 
     client.reset_contract_usage(&contract);
-    assert_eq!(
-        client.check_and_consume_for_contract(&user, &contract),
-        8
-    );
+    assert_eq!(client.check_and_consume_for_contract(&user, &contract), 8);
 }

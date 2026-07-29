@@ -721,7 +721,10 @@ fn test_compute_split_is_deterministic_idempotent() {
     let third_out = client.compute_split(&id, &100);
 
     // Verify share vectors are byte-identical across repeated calls
-    assert_eq!(first_out, second_out, "Second call output differs from first");
+    assert_eq!(
+        first_out, second_out,
+        "Second call output differs from first"
+    );
     assert_eq!(first_out, third_out, "Third call output differs from first");
 
     // Verify stable rounding allocation (the specific amounts)
@@ -792,7 +795,16 @@ fn test_single_recipient_percent_100_no_dust() {
     );
 
     // Test a diverse set of amounts: minimum (1), powers-of-ten, prime, large.
-    let test_amounts: [i128; 8] = [1, 7, 100, 999, 10_000, 100_003, 1_000_000, i128::MAX / 10_000];
+    let test_amounts: [i128; 8] = [
+        1,
+        7,
+        100,
+        999,
+        10_000,
+        100_003,
+        1_000_000,
+        i128::MAX / 10_000,
+    ];
 
     for &amount in &test_amounts {
         let out = client.compute_split(&split_id, &amount);
@@ -862,7 +874,10 @@ fn test_single_recipient_fixed_full_amount_no_dust() {
         // Definition sanity checks.
         let def = client.get_split(&split_id);
         assert_eq!(def.recipients.len(), 1, "Expected exactly 1 recipient");
-        assert!(!def.is_percent, "Split should NOT be marked as percentage-based");
+        assert!(
+            !def.is_percent,
+            "Split should NOT be marked as percentage-based"
+        );
 
         // `validate_split_for_amount` must be true only when total == fixed.
         assert!(

@@ -227,10 +227,7 @@ impl EmployeeRolesContract {
 
         for grant in grants.iter() {
             if grant.role == role {
-                updated_grants.push_back(RoleGrant {
-                    role,
-                    expires_at,
-                });
+                updated_grants.push_back(RoleGrant { role, expires_at });
                 found = true;
             } else {
                 updated_grants.push_back(grant);
@@ -238,10 +235,7 @@ impl EmployeeRolesContract {
         }
 
         if !found {
-            updated_grants.push_back(RoleGrant {
-                role,
-                expires_at,
-            });
+            updated_grants.push_back(RoleGrant { role, expires_at });
         }
 
         env.storage()
@@ -341,7 +335,10 @@ impl EmployeeRolesContract {
         let grants = Self::get_grants(&env, &employee);
         let current_ts = env.ledger().timestamp();
 
-        if grants.iter().any(|g| g.role == role && g.is_active(current_ts)) {
+        if grants
+            .iter()
+            .any(|g| g.role == role && g.is_active(current_ts))
+        {
             return true;
         }
 
