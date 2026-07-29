@@ -252,9 +252,9 @@ fn test_escrow_i128_max_amount_per_period_overflow() {
 /// returns `Err(PayrollError::ZeroPeriodDuration)`.
 ///
 /// A zero-duration period is undefined and would cause division-by-zero
-/// during claim calculations.
+/// during claim calculations. The error must be surfaced at creation time
+/// before any agreement state is persisted.
 #[test]
-#[should_panic]
 fn test_escrow_zero_period_seconds_rejected() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -262,7 +262,30 @@ fn test_escrow_zero_period_seconds_rejected() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let _ = client.create_escrow_agreement(&employer, &contributor, &token, &100i128, &0u64, &4u32);
+    let result =
+        client.try_create_escrow_agreement(&employer, &contributor, &token, &100i128, &0u64, &4u32);
+    assert_eq!(result, Err(Ok(PayrollError::ZeroPeriodDuration)));
+}
+
+/// Verifies that creating an escrow agreement with a one-second period
+/// duration succeeds.
+///
+/// A duration of exactly one second is the smallest valid unit and should be
+/// accepted without introducing any boundary-condition bugs.
+#[test]
+fn test_escrow_minimum_valid_period_duration_succeeds() {
+    let env = create_test_env();
+    let (_contract_id, client) = setup_contract(&env);
+    let employer = create_test_address(&env);
+    let contributor = create_test_address(&env);
+    let token = create_test_address(&env);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100i128, &1u64, &4u32);
+
+    let agreement = client.get_agreement(&agreement_id).unwrap();
+    assert_eq!(agreement.period_seconds, Some(1));
+    assert_eq!(agreement.grace_period_seconds, 4);
 }
 
 /// Verifies that creating an escrow agreement with zero num_periods
@@ -858,9 +881,8 @@ fn test_get_milestone_count_nonexistent_agreement_returns_zero() {
 // These tests verify that:
 //   1. A non-admin caller is rejected by every admin-only setter.
 //   2. The legitimate admin can perform maintenance writes successfully.
-//   3. Validation guards (negative amounts, zero duration) are enforced
-//      even for the admin, ensuring the admin cannot corrupt invariants
-//      with obviously invalid data.
+//   3. Validation guards (negative amounts, zero duration) are enforced even for the admin,
+//      ensuring the admin cannot corrupt invariants with obviously invalid data.
 // ============================================================================
 
 /// Helper: deploys a stello_pay_contract and returns (client, owner).
@@ -1075,8 +1097,7 @@ fn test_admin_set_agr_escrow_balance_non_admin_returns_error() {
     let (client, _owner) = setup_admin_contract(&env);
     let token = create_test_address(&env);
     let attacker = create_test_address(&env);
-let result =
-        client.try_admin_set_agr_escrow_balance(&attacker, &1u128, &token, &100i128);
+    let result = client.try_admin_set_agr_escrow_balance(&attacker, &1u128, &token, &100i128);
     assert!(result.is_err(), "non-admin must be rejected");
 }
 

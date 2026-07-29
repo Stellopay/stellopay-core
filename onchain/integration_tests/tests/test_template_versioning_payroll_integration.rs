@@ -17,7 +17,6 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient},
     Address, BytesN, Env, String,
 };
-
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 use template_versioning::{TemplateVersioning, TemplateVersioningClient};
 
@@ -85,8 +84,8 @@ fn schema_hash(env: &Env, seed: u8) -> BytesN<32> {
 /// 3. Create a template_versioning agreement pinned to v1
 /// 4. Create the corresponding payroll agreement
 /// 5. Publish v2 with different schema_hash
-/// 6. Assert the pinned agreement still references v1 and the payroll
-///    agreement exists with the expected parameters
+/// 6. Assert the pinned agreement still references v1 and the payroll agreement exists with the
+///    expected parameters
 #[test]
 fn test_template_versioning_wired_to_payroll_agreement() {
     let env = env();

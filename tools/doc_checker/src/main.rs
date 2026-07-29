@@ -1,4 +1,4 @@
-use doc_checker::{check_docs, check_orphaned_docs, CheckConfig, Severity};
+use doc_checker::{check_docs, check_orphaned_docs, check_stale_doc_references, CheckConfig, Severity};
 use std::fs;
 use std::path::Path;
 use walkdir::WalkDir;
@@ -19,6 +19,9 @@ fn main() {
     if args.iter().any(|arg| arg == "--no-orphaned-docs") {
         config.check_orphaned_docs = false;
     }
+    if args.iter().any(|arg| arg == "--no-stale-refs") {
+        config.check_stale_refs = false;
+    }
 
     let mut warnings = 0;
     let mut failures = 0;
@@ -37,6 +40,10 @@ fn main() {
 
     let repo_root = Path::new("../..");
     for finding in check_orphaned_docs(repo_root, &config) {
+        report(&finding, &mut warnings, &mut failures);
+    }
+
+    for finding in check_stale_doc_references(repo_root, &config) {
         report(&finding, &mut warnings, &mut failures);
     }
 

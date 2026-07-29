@@ -277,7 +277,11 @@ The governance test suite covers:
 
 - initialization and dependency wiring
 - RBAC-gated proposal creation and voting
-- double-vote prevention
+- double-vote prevention (rejection with `AlreadyVoted`)
+- get_vote preserves original choice after rejected double-vote
+- double-vote does not double-count vote tallies
+- get_vote returns `None` for uncast voters
+- same-choice double-vote also rejected and tallies unchanged
 - quorum failure and rejection paths
 - timelock queueing and early-execution rejection
 - multisig signer enforcement

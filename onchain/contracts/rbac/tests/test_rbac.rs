@@ -621,6 +621,113 @@ fn test_revoke_all_forbidden_for_non_admin() {
 }
 
 // ===========================================================================
+// 7b. renounce_role (self-revocation)
+// ===========================================================================
+
+#[test]
+fn test_renounce_role_self_revoke_success() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &user, &Role::Employee);
+    assert!(client.has_role(&user, &Role::Employee));
+
+    client.renounce_role(&user, &Role::Employee);
+    assert!(!client.has_role(&user, &Role::Employee));
+    assert_eq!(client.get_roles(&user).len(), 0);
+}
+
+#[test]
+fn test_renounce_role_after_renounce_require_role_fails() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &user, &Role::Arbiter);
+    client.renounce_role(&user, &Role::Arbiter);
+
+    // After renouncing, require_role must fail
+    let res = client.try_require_role(&user, &Role::Arbiter);
+    assert!(res.is_err());
+}
+
+#[test]
+#[should_panic(expected = "Caller does not hold the specified role")]
+fn test_renounce_role_not_held_fails() {
+    let env = create_env();
+    let (_cid, client, _admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    // user has no roles, renouncing should fail
+    client.renounce_role(&user, &Role::Employee);
+}
+
+#[test]
+#[should_panic(expected = "Caller does not hold the specified role")]
+fn test_renounce_role_wrong_role_fails() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let user = Address::generate(&env);
+
+    client.grant_role(&admin, &user, &Role::Employer);
+    // user holds Employer but tries to renounce Employee
+    client.renounce_role(&user, &Role::Employee);
+}
+
+#[test]
+fn test_renounce_role_only_affects_caller() {
+    let env = create_env();
+    let (_cid, client, admin) = setup_contract(&env);
+    let alice = Address::generate(&env);
+    let bob = Address::generate(&env);
+
+    client.grant_role(&admin, &alice, &Role::Employee);
+    client.grant_role(&admin, &bob, &Role::Employer);
+
+    // Alice renounces her own role
+    client.renounce_role(&alice, &Role::Employee);
+    assert!(!client.has_role(&alice, &Role::Employee));
+
+    // Bob still has his role
+    assert!(client.has_role(&bob, &Role::Employer));
+}
+
+#[test]
+fn test_renounce_role_admin_delegate_not_protected() {
+    // Unlike revoke_role which protects the owner's Admin, renounce_role
+    // is a voluntary self-revocation — the caller can renounce any of
+    // their own roles including Admin (unless they are the owner,
+    // in which case revoke_role already blocks it). This is intentional:
+    // renounce is for voluntary self-revocation by non-owner role holders.
+    let env = create_env();
+    let (_cid, client, owner) = setup_contract(&env);
+    let delegate = Address::generate(&env);
+
+    client.grant_role(&owner, &delegate, &Role::Admin);
+
+    // Delegate can renounce their own Admin
+    client.renounce_role(&delegate, &Role::Admin);
+    assert!(!client.has_role(&delegate, &Role::Admin));
+
+    // delegate can no longer grant roles
+    let user = Address::generate(&env);
+    let res = client.try_grant_role(&delegate, &user, &Role::Employee);
+    assert!(res.is_err());
+}
+
+#[test]
+#[should_panic(expected = "Contract not initialized")]
+fn test_renounce_role_before_init_fails() {
+    let env = create_env();
+    let contract_id = env.register_contract(None, RbacContract);
+    let client = RbacContractClient::new(&env, &contract_id);
+    let a = Address::generate(&env);
+
+    client.renounce_role(&a, &Role::Employee);
+}
+
+// ===========================================================================
 // 8. Ownership transfer (two-step)
 // ===========================================================================
 
@@ -1501,7 +1608,11 @@ fn test_override_safety_get_roles_no_duplicates_after_idempotent_grants() {
         client.grant_role(&owner, &user, &Role::Arbiter);
     }
     let roles = client.get_roles(&user);
-    assert_eq!(roles.len(), 1, "duplicate grants must not duplicate storage entries");
+    assert_eq!(
+        roles.len(),
+        1,
+        "duplicate grants must not duplicate storage entries"
+    );
 }
 
 #[test]

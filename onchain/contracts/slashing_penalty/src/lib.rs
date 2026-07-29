@@ -27,6 +27,7 @@
 //! - Admin cannot slash; roles are separated (admin ≠ slasher).
 
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
@@ -449,6 +450,27 @@ impl SlashingPenaltyContract {
     /// The first caller creates the slash record (Pending). Subsequent slashers
     /// countersign. Once `quorum_threshold` unique slashers have attested,
     /// the slash enters the appeal window automatically.
+    ///
+    /// # Point-in-time authorisation model
+    ///
+    /// Authorisation is evaluated **at the ledger in which `attest_slash` is
+    /// invoked**, not at the ledger in which the slash was first proposed.
+    ///
+    /// - If `attestor` is in [`get_slashers`] *at call time* → the call proceeds.
+    /// - If `attestor` has been removed via [`remove_slasher`] before this call →
+    ///   the call is rejected with [`SlashError::Unauthorized`], even when:
+    ///     - `attestor` submitted an earlier attestation for the same `evidence_hash`, or
+    ///     - the slash record is still in [`SlashStatus::Pending`].
+    ///
+    /// Removal is **forward-only**: it blocks future attestations from the removed
+    /// address but does **not** retroactively invalidate attestations that were
+    /// accepted while the address was authorised.  Those prior attestations remain
+    /// in `record.attestors` and continue to count toward the quorum required by
+    /// [`execute_slash`].
+    ///
+    /// This design keeps the invariant simple: every entry in `record.attestors` was
+    /// valid at the time it was recorded; re-checking historical authorisation at
+    /// execution time is unnecessary and is intentionally not performed.
     pub fn attest_slash(
         env: Env,
         attestor: Address,
@@ -604,8 +626,8 @@ impl SlashingPenaltyContract {
     ///
     /// # Errors
     /// * `RecordNotFound`     — No slash record exists for the given hash.
-    /// * `InvalidState (8)`   — Record is not `Pending` (already `Executed`, `Reversed`,
-    ///                          or `AppealRejected`). **This is the double-execution guard.**
+    /// * `InvalidState (8)`   — Record is not `Pending` (already `Executed`, `Reversed`, or
+    ///   `AppealRejected`). **This is the double-execution guard.**
     /// * `QuorumNotMet`       — Attestation-based slash does not yet have enough signatures.
     /// * `AppealWindowOpen`   — Appeal deadline has not yet passed.
     pub fn execute_slash(env: Env, evidence_hash: BytesN<32>) -> Result<(), SlashError> {

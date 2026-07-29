@@ -1,11 +1,12 @@
 #![cfg(test)]
 
+use std::collections::HashSet;
+
 use audit_logger::{AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env, Symbol,
 };
-use std::collections::HashSet;
 
 use audit_logger::{AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
 
@@ -162,7 +163,7 @@ fn test_get_latest_logs_oversized_limit_clamped() {
     // Request far more than MAX_PAGE_SIZE.
     let latest = client.get_latest_logs(&u32::MAX);
     assert!(
-        latest.len() <= MAX_PAGE_SIZE,
+        latest.len() as u32 <= MAX_PAGE_SIZE,
         "get_latest_logs must clamp to MAX_PAGE_SIZE"
     );
 }
@@ -343,17 +344,17 @@ fn test_interleaved_append_and_get_latest_logs_maintains_order() {
     for i in 1..=10u64 {
         let label = format!("action_{}", i);
         let action = Symbol::new(&env, label.as_str());
-        
+
         // Append a new log entry.
         let id = client.append_log(&actor, &action, &None, &Some(i as i128));
         assert_eq!(id, i, "append_log should return sequential ID {}", i);
-        
+
         expected_ids.push(i);
         env.ledger().with_mut(|li| li.timestamp += 1);
 
         // Read all latest logs after this append.
         let latest = client.get_latest_logs(&10u32);
-        
+
         // Verify the count matches expected.
         assert_eq!(
             latest.len(),
@@ -367,12 +368,9 @@ fn test_interleaved_append_and_get_latest_logs_maintains_order() {
         for (idx, entry) in latest.iter().enumerate() {
             let expected_id = expected_ids[idx];
             assert_eq!(
-                entry.id,
-                expected_id,
+                entry.id, expected_id,
                 "Entry at index {} should have ID {} after {} appends",
-                idx,
-                expected_id,
-                i
+                idx, expected_id, i
             );
             assert_eq!(
                 entry.action,
@@ -396,7 +394,7 @@ fn test_interleaved_append_and_get_latest_logs_maintains_order() {
     // Final verification: get_latest_logs with limit=10 should return all 10 entries.
     let final_latest = client.get_latest_logs(&10u32);
     assert_eq!(final_latest.len(), 10, "Should return all 10 entries");
-    
+
     // Verify strict ordering one more time.
     for (idx, entry) in final_latest.iter().enumerate() {
         assert_eq!(
@@ -424,7 +422,7 @@ fn test_interleaved_append_and_read_consistency() {
     for i in 1..=5u64 {
         let label = format!("event_{}", i);
         let action = Symbol::new(&env, label.as_str());
-        
+
         let id = client.append_log(&actor, &action, &None, &Some(i as i128));
         appended_ids.push(id);
         env.ledger().with_mut(|li| li.timestamp += 1);
@@ -441,11 +439,9 @@ fn test_interleaved_append_and_read_consistency() {
         // Verify each appended ID is present in get_latest_logs.
         for (idx, entry) in latest.iter().enumerate() {
             assert_eq!(
-                entry.id,
-                appended_ids[idx],
+                entry.id, appended_ids[idx],
                 "get_latest_logs entry {} should match appended ID {}",
-                idx,
-                appended_ids[idx]
+                idx, appended_ids[idx]
             );
         }
 
@@ -510,7 +506,9 @@ fn test_audit_logger_append_only_invariant_regression_guard() {
     assert_eq!(target_id, 1u64, "First log entry must be assigned ID 1");
 
     // Capture exact snapshot of original record.
-    let original_record = client.get_log(&target_id).expect("Target record must exist");
+    let original_record = client
+        .get_log(&target_id)
+        .expect("Target record must exist");
     assert_eq!(original_record.id, 1u64);
     assert_eq!(original_record.timestamp, 1_000_000);
     assert_eq!(original_record.actor, actor);
@@ -557,7 +555,8 @@ fn test_audit_logger_append_only_invariant_regression_guard() {
         "Record 1 mutated after setting retention limit to 0 (unlimited)"
     );
 
-    // Plausible Mutation Path 4: Lower retention limit down to 5 (target_id=1 remains retained since log count=2 <= 5).
+    // Plausible Mutation Path 4: Lower retention limit down to 5 (target_id=1 remains retained
+    // since log count=2 <= 5).
     client.set_retention_limit(&owner, &5u32);
     assert_eq!(client.get_retention_limit(), 5u32);
 
@@ -584,7 +583,8 @@ fn test_audit_logger_append_only_invariant_regression_guard() {
         "Record 1 in get_latest_logs query mutated"
     );
 
-    // Plausible Mutation Path 6: Append further records to fill the retention window up to limit without pruning target_id.
+    // Plausible Mutation Path 6: Append further records to fill the retention window up to limit
+    // without pruning target_id.
     for i in 3..=5 {
         env.ledger().with_mut(|li| li.timestamp += 10);
         let fill_action = Symbol::new(&env, format!("fill_evt_{}", i).as_str());
@@ -608,4 +608,3 @@ fn test_audit_logger_append_only_invariant_regression_guard() {
     assert_eq!(final_record.amount, amount);
     assert_eq!(final_record, original_record);
 }
-
