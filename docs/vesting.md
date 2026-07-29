@@ -215,13 +215,13 @@ All tests use only Soroban SDK primitives (no external `proptest` or
 
 ### Testing Focus
 
-The test suite contains **54 tests** across 15 categories:
+The test suite contains **55 tests** across 15 categories:
 
 | Category | Count | What it covers |
 |---|---|---|
 | A. Initialization | 4 | `initialize` idempotency, pre-init guards, missing schedule, owner before init |
 | B. Linear | 7 | Exact start/end boundaries, past-end cap, cliff gate (before/at/after), full claim flow |
-| C. Cliff | 4 | 1 s before cliff (=0), exact cliff (=total), full claim, revoke-before-cliff refund |
+| C. Cliff | 5 | 1 s before cliff (=0), exact cliff (=total), 1 s after cliff (still total — no linear accrual), full claim, revoke-before-cliff refund |
 | D. Custom | 4 | Before first checkpoint, between checkpoints, at final checkpoint, early release |
 | E. Claim Security | 5 | Non-beneficiary rejected, double-claim fails, completed schedule rejected, released_amount accumulates, token balance verification |
 | F. Revocation | 4 | Non-revocable rejected, non-employer rejected, double-revoke rejected, partial-vesting split (employer refund + beneficiary claim remainder) |
@@ -246,6 +246,7 @@ The test suite contains **54 tests** across 15 categories:
 | `now == cliff_time` (Linear w/ cliff) | Linear | proportional from `start_time` |
 | `now == cliff_time - 1` | Cliff | 0 |
 | `now == cliff_time` | Cliff | `total_amount` |
+| `now == cliff_time + 1` | Cliff | `total_amount` (no further linear accrual) |
 | Before first checkpoint | Custom | 0 |
 | Between checkpoints | Custom | last passed `cumulative_amount` |
 | After revocation (`now > revoked_at`) | Any | vested amount frozen at `revoked_at` |
