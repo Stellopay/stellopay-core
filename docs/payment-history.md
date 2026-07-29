@@ -192,6 +192,29 @@ intended replay-protection behavior above.
 
 ---
 
+## Admin Operations
+
+### prune_record
+
+Removes a payment record from storage by its global payment ID. Only callable
+by the contract owner.
+
+Removes the primary record (`Payment(id)`) and its hash reverse-lookup entry
+(`PaymentByHash(hash)`). Sequential index entries (agreement, employer,
+employee) are **not** removed — paginated queries gracefully skip pruned
+records.
+
+```rust
+fn prune_record(env: Env, payment_id: u128)
+```
+
+After pruning:
+- `get_payment_by_id(id)` returns `None`
+- `get_payment_by_hash(hash)` returns `None`
+- A `record_pruned` event is emitted with the `payment_id` and `payment_hash`
+
+---
+
 ## Security Model
 
 | Property | Enforcement |
@@ -203,6 +226,7 @@ intended replay-protection behavior above.
 | Page size is bounded | `limit` silently capped at `MAX_PAGE_SIZE = 100` |
 | Duplicate hashes are idempotent | Existing ID returned; no new storage written |
 | Invalid date range is rejected | `from_ts > to_ts` panics; no silent swap |
+| Only the owner may prune records | `owner.require_auth()` before `prune_record` |
 
 ---
 
@@ -230,13 +254,29 @@ EmployeePayment(employee, pos)       → u128   (global_id at 1-based pos)
 
 ## Events
 
-`record_payment` emits a `payment_recorded` event on every new (non-duplicate)
-payment.
+### payment_recorded
+
+Emitted by `record_payment` on every new (non-duplicate) payment.
 
 ```
 topic:  Symbol("payment_recorded")
 data:   payment_id, payment_hash, agreement_id, token, amount, from, to, timestamp
 ```
+
+### record_pruned
+
+Emitted by `prune_record` when the owner removes a payment record from
+storage.
+
+```
+topic:  Symbol("record_pruned")
+data:   payment_id, payment_hash
+```
+
+After this event fires, `get_payment_by_id` and `get_payment_by_hash` return
+`None` for the pruned record's keys. Sequential index entries (agreement,
+employer, employee) are not cleaned up — paginated queries gracefully skip
+pruned records whose primary storage has been removed.
 
 ---
 

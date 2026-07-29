@@ -382,6 +382,105 @@ The full lifecycle described above is exercised in:
 
 ---
 
+### Compliance Checker Emergency Pause Halting the Payment Scheduler
+
+#### Design intent: opt-in, loosely-coupled cross-contract gate
+
+`compliance_checker` and `payment_scheduler` are normally independent contracts,
+but `payment_scheduler` can optionally be pointed at a deployed
+`compliance_checker` instance so that a single, shared emergency-pause
+authority can halt scheduled disbursements without the scheduler needing a
+separate pause mechanism of its own.
+
+The link is:
+
+- **Opt-in**: a scheduler that never calls `set_compliance_checker` behaves
+  exactly as it always has — no compliance check is performed, and an
+  unrelated `compliance_checker` deployment being paused has zero effect on
+  it.
+- **Owner-gated**: only the scheduler's own `owner` (set at `initialize`) may
+  call `set_compliance_checker`; a mismatched caller address is rejected with
+  `SchedulerError::Unauthorized`.
+- **Loosely coupled**: `payment_scheduler` does not take a compile-time Cargo
+  dependency on the `compliance_checker` crate. It calls
+  `compliance_checker::is_emergency_paused() -> bool` dynamically via
+  `env.invoke_contract`, the same pattern already used for the
+  `payment_retry` integration (`RetryContractClient`). The two contracts only
+  need to agree on a function name and return type.
+
+#### What `process_due_payments` does when paused
+
+`compliance_checker::is_emergency_paused()` is a permissionless, read-only
+view mirroring the same `EmergencyPause` flag consulted internally by
+`check_action`. When a `compliance_checker` is configured and reports an
+active pause, `process_due_payments` returns immediately, before evaluating,
+transferring for, or advancing **any** job:
+
+| State | Effect |
+|---|---|
+| Jobs already settled by an earlier, unpaused call | Untouched — remain `Completed`/paid. |
+| Jobs not yet reached when the pause takes effect | Untouched — remain exactly as they were (`Active`, unpaid, same `next_scheduled_time`, `executions`, `retry_count`). |
+| Return value of a paused call | `0` — no job was evaluated. |
+
+Because a real keeper drains due jobs by calling `process_due_payments`
+repeatedly (see the contract's own module docs), pausing `compliance_checker`
+*between* two such calls is sufficient to halt a batch mid-flight: the next
+call is a complete no-op, and once the pause is lifted, the following call
+resumes and correctly settles exactly the jobs that were left pending.
+
+#### Recommended workflow
+
+```
+1. employer/owner: payment_scheduler::set_compliance_checker(owner, compliance_checker_id)
+      → One-time wiring; owner-gated.
+
+2. keeper (any address, repeatedly): payment_scheduler::process_due_payments(max_jobs)
+      → Normal operation: due jobs settle or get delegated to payment_retry.
+
+3. compliance admin: compliance_checker::set_emergency_pause(admin, true)
+      → Shared halt signal flips on.
+
+4. keeper: payment_scheduler::process_due_payments(max_jobs)
+      → Returns 0; every remaining due job is left untouched.
+
+5. compliance admin: compliance_checker::set_emergency_pause(admin, false)
+      → Halt signal flips off.
+
+6. keeper: payment_scheduler::process_due_payments(max_jobs)
+      → Resumes exactly where it left off.
+```
+
+#### Integration test coverage
+
+`onchain/integration_tests/tests/test_compliance_pause_scheduler_integration.rs`:
+
+| Test | Scenario |
+|---|---|
+| `test_emergency_pause_halts_remaining_jobs_mid_batch` | **Core**: process 2 of 5 due jobs, pause mid-batch, verify 0 jobs evaluated and the remaining 3 are byte-for-byte untouched, unpause, verify all 3 settle correctly and no job is ever double-paid |
+| `test_pause_before_any_processing_evaluates_zero_jobs` | Pause active before the very first call — no partial progress is possible |
+| `test_repeated_pause_unpause_cycles_do_not_corrupt_state` | Multiple pause/unpause cycles interleaved with partial processing do not lose progress or double-process a job |
+| `test_scheduler_without_compliance_checker_configured_is_unaffected_by_pause` | Backward compatibility: an unconfigured scheduler ignores an unrelated, paused `compliance_checker` |
+| `test_set_compliance_checker_rejects_non_owner` | Only the scheduler's owner may wire up (or repoint) the compliance checker link |
+
+#### Security notes
+
+- **No auth needed for the read.** `is_emergency_paused` requires no
+  `require_auth`, by design — any caller of the permissionless
+  `process_due_payments` entrypoint must observe the same halt behavior, not
+  just the scheduler's owner.
+- **Only the compliance admin can flip the flag.** `set_emergency_pause`
+  requires the `compliance_checker` admin's signature; a scheduler consulting
+  it inherits that same trust boundary rather than introducing a new one.
+- **Only the scheduler owner can (re)point the link.** `set_compliance_checker`
+  requires `owner.require_auth()` plus an exact match against the stored
+  owner, preventing any other address from redirecting the scheduler's pause
+  signal to a malicious contract that always reports "not paused".
+- **Fully backward compatible.** The `ComplianceChecker` storage key is
+  optional and absent by default; existing deployments and existing tests are
+  unaffected unless `set_compliance_checker` is explicitly called.
+
+---
+
 ### Salary Adjustment + Payroll Claim Integration
 
 `salary_adjustment` and `stello_pay_contract` are linked at the contract level via `set_salary_adjustment_contract`. When configured, `claim_payroll` reads the employee's current salary from the salary adjustment contract and uses it as an override.

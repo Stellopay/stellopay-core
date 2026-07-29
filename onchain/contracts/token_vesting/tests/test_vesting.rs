@@ -6,8 +6,9 @@ use soroban_sdk::{
     vec, Address, Env, IntoVal, Vec,
 };
 use token_vesting::{
-    ClaimedEvent, CreatedEvent, CustomCheckpoint, EarlyReleaseEvent, RevokedEvent,
-    TokenVestingContract, TokenVestingContractClient, VestingKind, VestingStatus,
+    BeneficiaryAssignedEvent, ClaimedEvent, CreatedEvent, CustomCheckpoint,
+    EarlyReleaseEvent, RevokedEvent, TokenVestingContract, TokenVestingContractClient,
+    VestingKind, VestingStatus,
 };
 
 // ---------------------------------------------------------------------------
@@ -1621,8 +1622,7 @@ fn early_release_capped_after_prior_claim() {
 /// Contract behavior:
 ///   - `approve_early_release` increments `released_amount` (and transfers to beneficiary).
 ///   - `get_releasable_amount` returns `vested - released_amount`.
-///   - So after an early release of 200 at t=30 (vested=300):
-///       releasable = 300 - 200 = 100
+///   - So after an early release of 200 at t=30 (vested=300): releasable = 300 - 200 = 100
 ///   - The beneficiary can only claim that 100 remaining vested-but-unreleased amount.
 #[test]
 fn early_release_then_claim_transfers_exact_amounts() {
@@ -1666,6 +1666,256 @@ fn early_release_then_claim_transfers_exact_amounts() {
     let schedule = client.get_schedule(&sid).unwrap();
     assert_eq!(schedule.status, VestingStatus::Active);
     assert_eq!(schedule.released_amount, 300);
+}
+
+// ===========================================================================
+// P. assign_beneficiary (issue #1067)
+// ===========================================================================
+
+#[test]
+fn test_assign_beneficiary_by_owner() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // Owner reassigns to new beneficiary
+    client.assign_beneficiary(&owner, &sid, &new_beneficiary);
+
+    let schedule = client.get_schedule(&sid).unwrap();
+    assert_eq!(schedule.beneficiary, new_beneficiary);
+}
+
+#[test]
+fn test_assign_beneficiary_by_current_beneficiary() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // Current beneficiary reassigns to new address (wallet migration)
+    client.assign_beneficiary(&beneficiary, &sid, &new_beneficiary);
+
+    let schedule = client.get_schedule(&sid).unwrap();
+    assert_eq!(schedule.beneficiary, new_beneficiary);
+}
+
+#[test]
+fn test_assign_beneficiary_vested_remainder_claimable_by_new_beneficiary() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // At t=30: 300 vested, 700 unvested
+    set_time(&env, 30);
+    assert_eq!(client.get_vested_amount(&sid), 300);
+
+    // Beneficiary reassigns to new address
+    client.assign_beneficiary(&owner, &sid, &new_beneficiary);
+
+    // New beneficiary should be able to claim the 300 vested (not yet claimed)
+    let claimed = client.claim(&new_beneficiary, &sid);
+    assert_eq!(claimed, 300);
+
+    assert_eq!(token.balance(&new_beneficiary), 300);
+}
+
+#[test]
+#[should_panic(expected = "Schedule is not active")]
+fn test_assign_beneficiary_revoked_schedule_fails() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &true, // revocable
+    );
+
+    set_time(&env, 50);
+    client.revoke(&employer, &sid);
+
+    // Revoked schedule cannot be reassigned
+    client.assign_beneficiary(&owner, &sid, &new_beneficiary);
+}
+
+#[test]
+#[should_panic(expected = "Schedule is not active")]
+fn test_assign_beneficiary_completed_schedule_fails() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_cliff_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &500i128,
+        &10u64,
+        &false,
+    );
+
+    set_time(&env, 10);
+    client.claim(&beneficiary, &sid);
+
+    // Completed schedule cannot be reassigned
+    client.assign_beneficiary(&owner, &sid, &new_beneficiary);
+}
+
+#[test]
+#[should_panic(expected = "Only owner or current beneficiary can assign")]
+fn test_assign_beneficiary_stranger_fails() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+    let stranger = Address::generate(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // Stranger cannot reassign
+    client.assign_beneficiary(&stranger, &sid, &new_beneficiary);
+}
+
+#[test]
+#[should_panic(expected = "Only owner or current beneficiary can assign")]
+fn test_assign_beneficiary_employer_not_authorized() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // Employer is not owner and not beneficiary, so fails
+    client.assign_beneficiary(&employer, &sid, &new_beneficiary);
+}
+
+#[test]
+fn test_assign_beneficiary_event_emitted() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    client.assign_beneficiary(&owner, &sid, &new_beneficiary);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+
+    assert_eq!(
+        last_event.1,
+        vec![
+            &env,
+            soroban_sdk::String::from_str(&env, "vesting_beneficiary_assigned").into_val(&env),
+            sid.into_val(&env),
+        ]
+    );
+    let event: BeneficiaryAssignedEvent = last_event.2.into_val(&env);
+    assert_eq!(event.id, sid);
+    assert_eq!(event.old_beneficiary, beneficiary);
+    assert_eq!(event.new_beneficiary, new_beneficiary);
+}
+
+#[test]
+#[should_panic(expected = "Schedule is not active")]
+fn test_assign_beneficiary_fully_early_released_fails() {
+    let env = create_env();
+    let (client, owner, employer, beneficiary, token) = full_setup(&env);
+    let new_beneficiary = Address::generate(&env);
+
+    // Large mint so we don't run out
+    let asset_admin = soroban_sdk::token::StellarAssetClient::new(&env, &token.address);
+    asset_admin.mint(&employer, &10_000i128);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &500i128,
+        &0u64,
+        &100u64,
+        &None,
+        &false,
+    );
+
+    // Early release all unvested tokens (total is 500, vested at t=0 is 0, so 500 unvested)
+    client.approve_early_release(&owner, &sid, &500i128);
+
+    // Schedule is now fully released
+    client.assign_beneficiary(&owner, &sid, &new_beneficiary);
 }
 
 // ===========================================================================
@@ -2333,4 +2583,155 @@ fn prop_custom_dense_checkpoints_monotonic() {
         }
         prev = vested;
     }
+}
+
+// ===========================================================================
+// Fully-vested revoke: safe no-op (issue #1066)
+// ===========================================================================
+//
+// Once `get_vested_amount` reaches `total_amount`, there is nothing left to
+// claw back. `revoke` must not transfer a spurious zero-amount payment, must
+// not corrupt schedule bookkeeping, and must leave `get_releasable_amount`
+// unaffected for whatever the beneficiary has not yet claimed.
+
+#[test]
+fn test_revoke_after_fully_vested_is_safe_noop() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &true, // revocable
+    );
+
+    // Advance past the end of the schedule: fully vested, nothing claimed yet.
+    set_time(&env, 200);
+    assert_eq!(client.get_vested_amount(&sid), 1_000);
+    let releasable_before = client.get_releasable_amount(&sid);
+    assert_eq!(releasable_before, 1_000);
+
+    let employer_balance_before = token.balance(&employer);
+    let contract_balance_before = token.balance(&client.address);
+
+    let refunded = client.revoke(&employer, &sid);
+
+    // No tokens moved: nothing was unvested to claw back.
+    assert_eq!(refunded, 0);
+    assert_eq!(token.balance(&employer), employer_balance_before);
+    assert_eq!(token.balance(&client.address), contract_balance_before);
+
+    // Schedule bookkeeping stays consistent: still fully vested, and the
+    // beneficiary's already-vested (but unclaimed) balance is unaffected.
+    let schedule = client.get_schedule(&sid).unwrap();
+    assert_eq!(schedule.status, VestingStatus::Revoked);
+    assert_eq!(schedule.total_amount, 1_000);
+    assert_eq!(schedule.released_amount, 0);
+    assert_eq!(client.get_vested_amount(&sid), 1_000);
+    assert_eq!(client.get_releasable_amount(&sid), releasable_before);
+
+    // The beneficiary can still claim their fully-vested tokens after the
+    // no-op revoke — revoke must not lock funds that were already earned.
+    let claimed = client.claim(&beneficiary, &sid);
+    assert_eq!(claimed, 1_000);
+    assert_eq!(token.balance(&beneficiary), 1_000);
+}
+
+#[test]
+fn test_revoke_after_fully_vested_with_partial_claim_is_safe_noop() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &true,
+    );
+
+    // Beneficiary claims partway through vesting.
+    set_time(&env, 50);
+    let first_claim = client.claim(&beneficiary, &sid);
+    assert_eq!(first_claim, 500);
+
+    // Advance to fully vested, then revoke without claiming the rest first.
+    set_time(&env, 100);
+    assert_eq!(client.get_vested_amount(&sid), 1_000);
+    let releasable_before = client.get_releasable_amount(&sid); // 500 unclaimed
+
+    let contract_balance_before = token.balance(&client.address);
+    let refunded = client.revoke(&employer, &sid);
+
+    assert_eq!(refunded, 0);
+    assert_eq!(token.balance(&client.address), contract_balance_before);
+
+    let schedule = client.get_schedule(&sid).unwrap();
+    assert_eq!(schedule.status, VestingStatus::Revoked);
+    assert_eq!(schedule.released_amount, 500);
+    assert_eq!(client.get_releasable_amount(&sid), releasable_before);
+
+    // The remaining already-vested balance is still claimable post-revoke.
+    let second_claim = client.claim(&beneficiary, &sid);
+    assert_eq!(second_claim, 500);
+    assert_eq!(token.balance(&beneficiary), 1_000);
+}
+
+#[test]
+fn test_revoke_fully_vested_does_not_emit_a_spurious_transfer() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_cliff_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &400i128,
+        &100u64,
+        &true,
+    );
+
+    set_time(&env, 500); // well past the cliff/end
+    client.revoke(&employer, &sid);
+
+    let events = env.events().all();
+    let last_event = events.last().unwrap();
+    let event: RevokedEvent = last_event.2.into_val(&env);
+    assert_eq!(event.refunded, 0);
+}
+
+#[test]
+#[should_panic(expected = "Schedule not active")]
+fn test_revoke_twice_after_fully_vested_fails() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_linear_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &0u64,
+        &100u64,
+        &None,
+        &true,
+    );
+
+    set_time(&env, 200);
+    client.revoke(&employer, &sid);
+    // Second revoke on an already-revoked (still fully-vested) schedule must
+    // be rejected explicitly, not silently accepted as another no-op.
+    client.revoke(&employer, &sid);
 }

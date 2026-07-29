@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern; contractevent migration is a separate concern
 
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
 
@@ -23,6 +24,21 @@ pub struct Badge {
     pub metadata_uri: soroban_sdk::String,
     /// Ledger timestamp at which the badge was minted.
     pub issued_at: u64,
+    /// Badge tenure tier. Tiers form a strict progression:
+    /// Bronze → Silver → Gold. Once set, a badge's tier must never decrease.
+    pub tier: Tier,
+}
+
+/// Badge tenure tier.
+///
+/// Tiers form a strict progression: `Bronze → Silver → Gold`.
+/// A badge's tier is a monotonically non-decreasing record of tenure.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub enum Tier {
+    Bronze,
+    Silver,
+    Gold,
 }
 
 /// Emitted when an admin updates an existing badge's metadata URI.
@@ -45,6 +61,22 @@ pub struct BadgeBurned {
     pub token_id: u64,
     /// Address the badge was revoked from.
     pub owner: Address,
+}
+
+/// Emitted when a badge's tier is upgraded.
+///
+/// Tier changes are monotonic non-decreasing: Bronze → Silver → Gold.
+/// Downgrades (Gold → Silver, Silver → Bronze, etc.) are rejected at the
+/// contract level and never produce this event.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TierUpgraded {
+    /// Badge whose tier changed.
+    pub token_id: u64,
+    /// Tier value before the upgrade.
+    pub old_tier: Tier,
+    /// Tier value after the upgrade.
+    pub new_tier: Tier,
 }
 
 /// Result returned by [`NftPayrollBadgeContract::badges_of_paged`].
@@ -198,6 +230,7 @@ impl NftPayrollBadgeContract {
         recipient: Address,
         name: soroban_sdk::String,
         metadata_uri: soroban_sdk::String,
+        tier: Tier,
     ) -> u64 {
         require_initialized(&env);
         require_owner(&env, &caller);
@@ -209,6 +242,7 @@ impl NftPayrollBadgeContract {
             name,
             metadata_uri,
             issued_at: env.ledger().timestamp(),
+            tier,
         };
 
         env.storage()
@@ -350,6 +384,43 @@ impl NftPayrollBadgeContract {
     pub fn badge_count(env: Env, owner: Address) -> u32 {
         require_initialized(&env);
         owner_badge_count(&env, &owner)
+    }
+
+    /// Upgrades an existing badge to a higher tier.
+    ///
+    /// Only allows strictly higher tiers (Bronze → Silver, Silver → Gold, Bronze → Gold).
+    /// Downgrades and no-op calls (same tier) are rejected with a panic.
+    ///
+    /// Only the contract owner may upgrade tiers.
+    ///
+    /// # Panics
+    /// - If `token_id` does not exist.
+    /// - If `new_tier` is not strictly greater than the badge's current tier.
+    pub fn upgrade_tier(env: Env, caller: Address, token_id: u64, new_tier: Tier) {
+        require_initialized(&env);
+        require_owner(&env, &caller);
+
+        let key = StorageKey::Badge(token_id);
+        let mut badge: Badge = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .expect("Badge not found");
+
+        let old_tier = badge.tier;
+        assert!(new_tier > old_tier, "Tier downgrade or no-op rejected");
+
+        badge.tier = new_tier;
+        env.storage().persistent().set(&key, &badge);
+
+        env.events().publish(
+            (symbol_short!("tier_up"), token_id),
+            TierUpgraded {
+                token_id,
+                old_tier,
+                new_tier,
+            },
+        );
     }
 
     /// Returns the contract owner address.
