@@ -447,9 +447,7 @@ impl RbacContract {
         env.storage().persistent().set(&StorageKey::Owner, &caller);
         env.storage().persistent().remove(&StorageKey::PendingOwner);
 
-        env.events().publish(
-            (symbol_short!("RBAC"), symbol_short!("owner")),
-            (&old_owner, &caller),
-        );
+        env.events()
+            .publish((symbol_short!("RBAC"), symbol_short!("owner")), (&old_owner, &caller));
     }
 }

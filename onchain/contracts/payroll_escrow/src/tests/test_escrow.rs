@@ -986,7 +986,8 @@ fn test_double_refund_preserves_accounting() {
     // First refund succeeds — all accounting must be consistent
     client.refund_remaining(&manager, &agreement_id);
 
-    let after_refund = AccountingSnapshot::take(&env, &token, &client, agreement_id, &recipient);
+    let after_refund =
+        AccountingSnapshot::take(&env, &token, &client, agreement_id, &recipient);
     assert_eq!(after_refund.internal_balance, 0);
     assert_eq!(after_refund.contract_token_balance, 0);
     assert_eq!(

@@ -113,28 +113,58 @@ This means a passed and matured proposal still cannot be executed by an
 arbitrary account. Only configured multisig signers can trigger the final
 state transition.
 
-### Voting Semantics
+### Proposal Metadata Immutability
 
-Each eligible address may cast at most **one vote per proposal**. The contract
-enforces this at the storage level by recording `Vote(proposal_id, voter) → choice`
-when `cast_vote` succeeds, and checking for an existing entry before counting a
-new vote.
+Once a proposal is created, its descriptive fields are **immutable for the
+lifetime of the proposal**. No public entrypoint can alter:
 
-**Re-voting is rejected.** A second `cast_vote` call from the same address on the
-same `proposal_id` — regardless of whether the choice is the same or different —
-returns `GovernanceError::AlreadyVoted`. The proposal's `for_votes`, `against_votes`,
-and `abstain_votes` counters are **not** modified by the rejected call, and
-`get_vote` continues to return the original choice.
+| Field        | Contents                                    |
+|--------------|---------------------------------------------|
+| `kind`       | The governance action voters are approving  |
+| `proposer`   | Address that created the proposal           |
+| `quorum_votes` | Participation threshold at creation time |
+| `start_time` | Timestamp when voting opened                |
+| `end_time`   | Timestamp when voting closes                |
 
-This design has three security properties:
+#### Why This Matters
 
-1. **No double-counting** — a voter cannot inflate participation toward quorum by
-   calling `cast_vote` multiple times.
-2. **No vote changing** — a voter cannot retroactively alter their recorded
-   preference after seeing early results. Voters should confirm their choice
-   before submitting.
-3. **Deterministic records** — `get_vote` always returns exactly one choice per
-   (proposal_id, voter) pair, with no ambiguity between first and last vote.
+If `kind` could be altered mid-vote, a proposer or admin could swap out the
+action being voted on — for example, replacing a benign parameter change with
+an arbiter change or upgrade — after votes have accumulated, tricking voters
+into approving something they did not intend.
+
+Similarly, changing `quorum_votes` or the voting window after voting has
+started would let an admin subvert the governance process.
+
+#### Audit of All State-Mutating Entrypoints
+
+| Function                   | Fields written                | Touches metadata? |
+|----------------------------|-------------------------------|-------------------|
+| `create_proposal`          | all (initial write)           | N/A (creation)    |
+| `cast_vote` / `vote`      | for_votes/against/abstain     | No                |
+| `finalize_proposal` / `queue` | status, timelock_op_id, eta | No              |
+| `execute_proposal` / `execute` | status (→Expired/Executed) | No              |
+| `cancel_proposal` / `cancel` | status (→Cancelled)         | No                |
+| `proposer_cancel_proposal` | status (→Cancelled)           | No                |
+| `update_config`            | QuorumVotes, VotingPeriod     | Global config, not proposal |
+
+No code path ever writes to `kind`, `proposer`, `quorum_votes`, `start_time`,
+or `end_time` after the initial `create_proposal` call.
+
+#### Test Coverage
+
+Six dedicated tests verify this invariant:
+
+1. `proposal_metadata_is_immutable_after_vote_cast()` — metadata unchanged after voting
+2. `proposal_metadata_is_immutable_after_finalization()` — metadata unchanged after a proposal passes
+3. `proposal_metadata_is_immutable_after_execution()` — metadata unchanged after execution
+4. `proposal_metadata_is_immutable_after_cancel()` — metadata unchanged after proposer cancellation
+5. `proposal_metadata_is_immutable_after_owner_cancel()` — metadata unchanged after owner cancellation
+6. `proposal_metadata_is_immutable_using_backward_compat_aliases()` — metadata unchanged through `propose`/`vote`/`queue`/`execute` aliases
+7. `no_entrypoint_can_alter_stored_proposal_kind()` — confirms contract API has no mutation path for `kind`
+
+Each test snapshots the five metadata fields at creation and asserts they
+remain identical after every lifecycle transition.
 
 ### Security Notes
 
@@ -155,6 +185,10 @@ This design has three security properties:
   changing the rules of an active proposal. This avoids both last-minute quorum
   inflation that blocks a proposal and last-minute quorum reduction that makes
   an under-participated proposal pass.
+- **Proposal metadata immutability** ensures the `kind`, `proposer`,
+  `quorum_votes`, `start_time`, and `end_time` fields are frozen at creation
+  and cannot be altered by any public entrypoint, preventing bait-and-switch
+  attacks on voters.
 
 ### get_approved_upgrade() — Quorum and Majority Gating
 
@@ -259,6 +293,7 @@ The governance test suite covers:
 - proposal-time quorum snapshots when configuration and voting power change
   during an active vote
 - **quorum and majority gating for get_approved_upgrade** (11 dedicated tests)
+- **proposal metadata immutability** (7 dedicated tests covering all lifecycle transitions)
 
 Run locally with:
 
