@@ -704,6 +704,14 @@ impl TaxWithholdingContract {
     /// Does not modify state. Use `accrue_withholding` to record an actual
     /// pay period and update the running liability balances.
     ///
+    /// @notice Calculates tax withholding for an employee without modifying state
+    /// @dev Uses the employee's configured jurisdictions and their rates to compute withholding
+    /// @dev The calculation divides by the constant 10_000 (basis points), not by the rate itself,
+    ///      so zero-rate jurisdictions (tax-exempt brackets) are safe and will not cause division-by-zero
+    /// @param employee Address of the employee whose jurisdictions determine the tax calculation
+    /// @param gross_amount Gross payment amount before withholding (must be positive)
+    /// @return TaxComputation containing gross amount, total tax, net amount, per-jurisdiction shares, and ruleset version
+    ///
     /// # Arguments
     /// * `employee`     — Employee address whose jurisdictions are used.
     /// * `gross_amount` — Gross payment amount before withholding.

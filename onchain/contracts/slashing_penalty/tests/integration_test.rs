@@ -1116,7 +1116,14 @@ impl CustomCapEnv {
         );
         client.add_slasher(&slasher);
         client.stake(&offender, &100_000i128);
-        CustomCapEnv { env, client, admin, slasher, offender, token }
+        CustomCapEnv {
+            env,
+            client,
+            admin,
+            slasher,
+            offender,
+            token,
+        }
     }
 
     fn evidence_hash(&self, seed: u8) -> BytesN<32> {
@@ -1263,9 +1270,170 @@ fn test_zero_per_event_bps_cap_rejected() {
     let token = Address::generate(&env);
 
     let result = client.try_initialize(
-        &admin, &token, &2u32, &0u32, &10_000i128, &50_000i128, &86_400u64,
+        &admin,
+        &token,
+        &2u32,
+        &0u32,
+        &10_000i128,
+        &50_000i128,
+        &86_400u64,
     );
     assert_eq!(result, Err(Ok(SlashError::InvalidConfig)));
+}
+
+// ─── Removed-Slasher Attestation Rejection (point-in-time authorisation) ─────
+//
+// Security requirement: `attest_slash` must gate authorisation against the
+// *current* slasher set at the moment the call is made, not at the moment the
+// slash was first proposed.  Once `remove_slasher` is called, that address is
+// no longer in the authorised set and every subsequent `attest_slash` from that
+// address must be rejected with `SlashError::Unauthorized`, even when:
+//
+//   a) The address was a legitimate slasher when it submitted an earlier
+//      attestation for the same evidence hash.
+//   b) The evidence hash is still in a `Pending` state.
+//
+// At the same time, attestations that were accepted *before* removal must
+// remain counted in `record.attestors` and must contribute toward the quorum
+// required by `execute_slash`.
+//
+// Point-in-time model
+// -------------------
+// An attestation is accepted or rejected based on whether the attestor is in
+// `get_slashers()` **at the ledger in which `attest_slash` is invoked**.
+// Removal is retroactive in the sense that it prevents future attestations;
+// it is *not* retroactive in the sense of invalidating already-recorded ones.
+
+/// A slasher removed via `remove_slasher` must be rejected by `attest_slash`
+/// even when it was a legitimate slasher at slash-creation time.
+///
+/// Sequence:
+///   1. slasher1 creates the slash record (first attestation).
+///   2. Admin removes slasher1 via `remove_slasher`.
+///   3. slasher1 tries to countersign a *different* evidence hash — must fail with
+///      `Unauthorized` (slasher1 is no longer in the authorised set).
+///   4. slasher1 tries to attest the *original* hash (as a countersign) — also
+///      must fail with `Unauthorized`.
+#[test]
+fn test_removed_slasher_attestation_rejected() {
+    let t = TestEnv::setup();
+
+    // Step 1: slasher1 creates the slash record.
+    let hash = t.evidence_hash(230);
+    t.client.attest_slash(
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+    // Confirm slasher1's attestation was recorded.
+    let record_after_first = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(record_after_first.attestors.len(), 1u32, "one attestor recorded");
+
+    // Step 2: admin removes slasher1.
+    t.client.remove_slasher(&t.slasher1);
+    assert!(
+        !t.client.get_slashers().contains(&t.slasher1),
+        "slasher1 must no longer be in the authorised set"
+    );
+
+    // Step 3: slasher1 attempts to create a new slash (first attestor on a fresh hash)
+    //         — must be rejected because it is no longer a slasher.
+    let hash_new = t.evidence_hash(231);
+    let result_new = t.client.try_attest_slash(
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash_new,
+        &0u64,
+    );
+    assert_eq!(
+        result_new,
+        Err(Ok(SlashError::Unauthorized)),
+        "removed slasher must not be able to create a new attestation"
+    );
+
+    // Step 4: slasher1 attempts to countersign the original hash — also rejected.
+    let result_countersign = t.client.try_attest_slash(
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+    assert_eq!(
+        result_countersign,
+        Err(Ok(SlashError::Unauthorized)),
+        "removed slasher must not be able to countersign an existing pending record"
+    );
+}
+
+/// Attestations made *before* removal must remain valid toward `execute_slash` quorum.
+///
+/// This confirms the point-in-time model: removal prevents *future* attestations
+/// but does not retroactively invalidate ones that were accepted while the slasher
+/// was authorised.
+///
+/// Sequence:
+///   1. slasher1 and slasher2 each attest (quorum = 2 → satisfied).
+///   2. Admin removes slasher1.
+///   3. Advance past the appeal window.
+///   4. `execute_slash` must succeed because the two pre-removal attestations
+///      still count — quorum is already recorded in `record.attestors`.
+#[test]
+fn test_pre_removal_attestations_count_toward_quorum() {
+    let t = TestEnv::setup();
+    let hash = t.evidence_hash(232);
+
+    // Step 1: two slashers attest — meets quorum of 2.
+    t.client.attest_slash(
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+    t.client.attest_slash(
+        &t.slasher2,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+    let record_before_removal = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(
+        record_before_removal.attestors.len(),
+        2u32,
+        "both pre-removal attestations must be recorded"
+    );
+
+    // Step 2: admin removes slasher1 after the attestations are in.
+    t.client.remove_slasher(&t.slasher1);
+
+    // Step 3: advance past the appeal deadline.
+    t.advance_time(APPEAL_WINDOW + 1);
+
+    // Step 4: execute_slash must succeed — quorum is met by the recorded attestors
+    //         regardless of their current role status.
+    t.client.execute_slash(&hash);
+    let record_executed = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(
+        record_executed.status,
+        SlashStatus::Executed,
+        "slash must execute successfully when quorum was met before slasher removal"
+    );
+    // Stake balance must reflect exactly one penalty deduction (10% of 10_000 = 1_000).
+    assert_eq!(
+        t.client.get_stake_balance(&t.offender),
+        9_000i128,
+        "stake balance must reflect the single penalty, not be affected by the removal"
+    );
 }
 
 /// per_event_bps_cap above MAX_PENALTY_BPS must be rejected.
@@ -1279,7 +1447,13 @@ fn test_per_event_bps_cap_exceeds_max_rejected() {
     let token = Address::generate(&env);
 
     let result = client.try_initialize(
-        &admin, &token, &2u32, &5_001u32, &10_000i128, &50_000i128, &86_400u64,
+        &admin,
+        &token,
+        &2u32,
+        &5_001u32,
+        &10_000i128,
+        &50_000i128,
+        &86_400u64,
     );
     assert_eq!(result, Err(Ok(SlashError::InvalidConfig)));
 }
@@ -1325,7 +1499,13 @@ fn test_update_cap_then_enforce() {
 
     // Initialize with 40% cap.
     client.initialize(
-        &admin, &token, &2u32, &4_000u32, &1_000_000i128, &10_000_000i128, &86_400u64,
+        &admin,
+        &token,
+        &2u32,
+        &4_000u32,
+        &1_000_000i128,
+        &10_000_000i128,
+        &86_400u64,
     );
     client.add_slasher(&slasher);
     client.stake(&offender, &100_000i128);
