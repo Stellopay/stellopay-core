@@ -342,6 +342,102 @@ fn test_finalize_grace_period_refunds_escrow() {
     );
 }
 
+/// Verifies that finalizing a cancelled escrow agreement refunds exactly the
+/// unclaimed remainder after one period has already been paid out.
+#[test]
+fn test_finalize_grace_period_refunds_unclaimed_remainder_after_partial_claim() {
+    let env = create_test_env();
+    let (cid, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let contributor = create_address(&env);
+    let token = create_token(&env);
+    let grace = ONE_WEEK;
+    let amount_per_period = SALARY;
+    let num_periods = 4u32;
+    let total = amount_per_period * (num_periods as i128);
+
+    let id = client.create_escrow_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &amount_per_period,
+        &ONE_DAY,
+        &num_periods,
+    );
+    client.activate_agreement(&id);
+
+    mint(&env, &token, &cid, total);
+    env.as_contract(&cid, || {
+        DataKey::set_agreement_escrow_balance(&env, id, &token, total);
+    });
+
+    advance_time(&env, ONE_DAY + 1);
+    client.claim_time_based(&id);
+
+    let token_client = StellarAssetClient::new(&env, &token);
+    let employer_balance_before = token_client.balance(&employer);
+
+    client.cancel_agreement(&id);
+    advance_time(&env, grace + 1);
+    client.finalize_grace_period(&id);
+
+    let employer_balance_after = token_client.balance(&employer);
+    assert_eq!(
+        employer_balance_after - employer_balance_before,
+        total - amount_per_period
+    );
+
+    env.as_contract(&cid, || {
+        let balance = DataKey::get_agreement_escrow_balance(&env, id, &token);
+        assert_eq!(balance, 0);
+    });
+}
+
+/// Verifies that finalizing a cancelled escrow agreement refunds the full
+/// escrow balance when no claims were made before cancellation.
+#[test]
+fn test_finalize_grace_period_refunds_full_escrow_when_no_claims_were_made() {
+    let env = create_test_env();
+    let (cid, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let contributor = create_address(&env);
+    let token = create_token(&env);
+    let grace = ONE_WEEK;
+    let amount_per_period = SALARY;
+    let num_periods = 4u32;
+    let total = amount_per_period * (num_periods as i128);
+
+    let id = client.create_escrow_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &amount_per_period,
+        &ONE_DAY,
+        &num_periods,
+    );
+    client.activate_agreement(&id);
+
+    mint(&env, &token, &cid, total);
+    env.as_contract(&cid, || {
+        DataKey::set_agreement_escrow_balance(&env, id, &token, total);
+    });
+
+    let token_client = StellarAssetClient::new(&env, &token);
+    let employer_balance_before = token_client.balance(&employer);
+
+    client.cancel_agreement(&id);
+    advance_time(&env, grace + 1);
+    client.finalize_grace_period(&id);
+
+    let employer_balance_after = token_client.balance(&employer);
+    assert_eq!(employer_balance_after - employer_balance_before, total);
+
+    env.as_contract(&cid, || {
+        let balance = DataKey::get_agreement_escrow_balance(&env, id, &token);
+        assert_eq!(balance, 0);
+    });
+}
+
 // ============================================================================
 // 2. DISPUTE LIFECYCLE TRANSITIONS
 // ============================================================================
