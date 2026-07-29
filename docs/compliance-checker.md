@@ -418,3 +418,38 @@ contract that interleaves evaluations and rule mutations inside a single
 transaction. Because all invocations in a transaction share the same ledger
 state, this is the strongest available reproduction of an action that is in
 flight while the rule set changes underneath it.
+
+
+# Compliance Checker: Compound Rule Evaluation
+
+`check_transition` evaluates a `RuleGroup` against a proposed state
+transition. Groups combine child rules/sub-groups using `RuleLogic::And`
+or `RuleLogic::Or`, and groups may nest arbitrarily.
+
+## Evaluation semantics
+
+- **AND**: all direct children (rules and sub-groups) must evaluate to
+  `true`. Evaluation short-circuits on the first `false` child.
+- **OR**: at least one direct child must evaluate to `true`. Evaluation
+  short-circuits on the first `true` child.
+- **Nesting**: a group's children may themselves be groups, allowing
+  compound expressions like `AND(OR(a, b), OR(c, d))`. Precedence follows
+  the tree structure explicitly — there is no implicit left-to-right flat
+  scan across leaf rules.
+
+## Example
+
+```rust
+// Require KYC AND (large-transfer approval OR whitelisted counterparty)
+let group = RuleGroup {
+    logic: RuleLogic::And,
+    rules: vec![kyc_rule],
+    groups: vec![RuleGroup {
+        logic: RuleLogic::Or,
+        rules: vec![large_transfer_approval_rule, whitelisted_counterparty_rule],
+        groups: vec![],
+    }],
+};
+```
+
+See `tests/test_compliance.rs` for verified AND/OR/nested precedence cases.
