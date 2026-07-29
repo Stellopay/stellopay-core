@@ -450,15 +450,14 @@ fn test_get_payment_retry_count_increments_per_attempt() {
             intervals: &[30, 60, 120],
         },
     );
+    assert_eq!(pay.next_retry_at, 40, "next_retry_at = 10 + 30");
+    assert_eq!(pay.state, RetryState::Retrying);
 
     // --- Attempt 1 ---
     env.ledger().with_mut(|li| li.timestamp = 10);
     client.process_retry(&id);
     let pay = client.get_payment(&id).unwrap();
-    assert_eq!(
-        pay.retry_count, 1,
-        "retry_count should be 1 after first failure"
-    );
+    assert_eq!(pay.retry_count, 1, "retry_count should be 1 after first failure");
     assert_eq!(pay.next_retry_at, 40, "next_retry_at = 10 + 30");
     assert_eq!(pay.state, RetryState::Retrying);
 
@@ -466,10 +465,7 @@ fn test_get_payment_retry_count_increments_per_attempt() {
     env.ledger().with_mut(|li| li.timestamp = 40);
     client.process_retry(&id);
     let pay = client.get_payment(&id).unwrap();
-    assert_eq!(
-        pay.retry_count, 2,
-        "retry_count should be 2 after second failure"
-    );
+    assert_eq!(pay.retry_count, 2, "retry_count should be 2 after second failure");
     assert_eq!(pay.next_retry_at, 100, "next_retry_at = 40 + 60");
     assert_eq!(pay.state, RetryState::Retrying);
 
@@ -477,29 +473,16 @@ fn test_get_payment_retry_count_increments_per_attempt() {
     env.ledger().with_mut(|li| li.timestamp = 100);
     client.process_retry(&id);
     let pay = client.get_payment(&id).unwrap();
-    assert_eq!(
-        pay.retry_count, 3,
-        "retry_count should be 3 after third failure"
-    );
-    assert_eq!(
-        pay.next_retry_at, 220,
-        "next_retry_at = 100 + 120 (last interval reused)"
-    );
+    assert_eq!(pay.retry_count, 3, "retry_count should be 3 after third failure");
+    assert_eq!(pay.next_retry_at, 220, "next_retry_at = 100 + 120 (last interval reused)");
     assert_eq!(pay.state, RetryState::Retrying);
 
     // --- Attempt 4 (terminal) ---
     env.ledger().with_mut(|li| li.timestamp = 220);
     client.process_retry(&id);
     let pay = client.get_payment(&id).unwrap();
-    assert_eq!(
-        pay.retry_count, 4,
-        "retry_count should be 4 after terminal failure"
-    );
-    assert_eq!(
-        pay.state,
-        RetryState::Failed,
-        "request should be Failed after max_retries exhausted"
-    );
+    assert_eq!(pay.retry_count, 4, "retry_count should be 4 after terminal failure");
+    assert_eq!(pay.state, RetryState::Failed, "request should be Failed after max_retries exhausted");
 }
 
 #[test]
@@ -533,10 +516,7 @@ fn test_get_payment_successful_retry_leaves_count_unchanged() {
     // First attempt fails (no funds)
     client.process_retry(&id);
     let pay = client.get_payment(&id).unwrap();
-    assert_eq!(
-        pay.retry_count, 1,
-        "retry_count should be 1 after first failure"
-    );
+    assert_eq!(pay.retry_count, 1, "retry_count should be 1 after first failure");
     assert_eq!(pay.state, RetryState::Retrying);
 
     // Fund escrow so the next attempt succeeds

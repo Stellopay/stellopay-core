@@ -819,42 +819,25 @@ impl PaymentSchedulerContract {
                             },
                         );
                     } else {
-                        // Insufficient funds: offload to payment_retry contract.
-                        let payment_id = compute_payment_id(
-                            &env,
-                            &job_mut.employer,
-                            &job_mut.recipient,
-                            job_mut.amount,
-                            job_mut.next_scheduled_time,
-                        );
+                        // Insufficient funds: mark for retry.
+                        job_mut.retry_count = job_mut.retry_count.saturating_add(1);
 
-                        let retry_addr = env
-                            .storage()
-                            .persistent()
-                            .get::<_, Address>(&StorageKey::RetryContract)
-                            .unwrap();
-                        let retry_client = RetryContractClient::new(&env, &retry_addr);
+                        if job_mut.retry_count > job_mut.max_retries {
+                            job_mut.status = JobStatus::Failed;
+                        }
 
-                        let retry_config = RetryConfig {
-                            max_retries: job_mut.max_retries,
-                            retry_intervals: soroban_sdk::vec![&env, 30u64, 60u64, 120u64], /* Default backoff */
-                        };
-
-                        retry_client.schedule_retry(
-                            &payment_id,
-                            &job_mut.employer,
-                            &job_mut.recipient,
-                            &job_mut.token,
-                            &job_mut.amount,
-                            &retry_config,
-                        );
-
-                        // Advance the job to the next period as the retry is now managed externally
-                        job_mut.next_scheduled_time = now.saturating_add(job_mut.interval_seconds);
+                        // State-before-interaction: persist before event emission.
+                        // We do NOT advance next_scheduled_time, so the next call will retry it.
                         write_job(&env, &job_mut);
 
-                        env.events()
-                            .publish(("payment_failed", payment_id.clone()), payment_id);
+                        env.events().publish(
+                            ("job_failed", job_mut.id),
+                            JobFailedEvent {
+                                job_id: job_mut.id,
+                                retry_count: job_mut.retry_count,
+                                max_retries: job_mut.max_retries,
+                            },
+                        );
                     }
                     processed = processed.saturating_add(1);
                 }

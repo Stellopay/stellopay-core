@@ -35,8 +35,8 @@ Keeper / Anyone
        │
        ├─ For each due Active job:
        │    ├─ balance >= amount?  ──► transfer tokens, advance schedule, emit job_executed
-       │    └─ balance < amount?   ──► compute payment_id, call payment_retry::schedule_retry(...)
-       │         └─ emit payment_failed
+       │    └─ balance < amount?   ──► increment retry_count, emit job_failed
+       │         └─ set status: Failed if retry_count > max_retries
        └─ return count processed
 ```
 
@@ -124,7 +124,7 @@ once lifted.
 > @notice Initializes the payment scheduler contract.  
 > @dev One-time call. Requires `owner` authentication.  
 > @param owner Admin/owner address.  
-> @param retry_contract Address of the `payment_retry` contract for handling failures.
+> @param retry_contract Address of the `payment_retry` contract (currently deprecated/unused).
 > @return `Err(AlreadyInitialized)` if called more than once.
 
 ---
@@ -283,7 +283,7 @@ once lifted.
 | `("job_funded", job_id)` | `JobFundedEvent { job_id, from, amount }` | On successful deposit |
 | `("job_failed", job_id)` | `JobFailedEvent { job_id, retry_count, max_retries }` | On insufficient-funds attempt |
 | `("job_cancelled", job_id)` | `JobCancelledEvent { job_id, employer }` | On `cancel_job` success |
-| `("payment_failed", payment_id)` | `BytesN<32>` | On insufficient-funds; offloaded to retry contract |
+
 
 
 ---

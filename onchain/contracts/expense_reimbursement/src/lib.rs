@@ -163,7 +163,7 @@ fn is_approver(env: &Env, addr: &Address) -> bool {
 const RECEIPT_HASH_DOMAIN: &[u8] = b"stello.expense.receipt.v1";
 const MAX_RECEIPT_PAYLOAD_BYTES: u32 = 4096;
 
-fn compute_receipt_hash(env: &Env, receipt_payload: &String) -> BytesN<32> {
+pub(crate) fn compute_receipt_hash(env: &Env, receipt_payload: &String) -> BytesN<32> {
     let payload_len = receipt_payload.len();
     assert!(payload_len > 0, "Receipt payload cannot be empty");
     assert!(
@@ -553,18 +553,34 @@ impl ExpenseReimbursementContract {
 
     /// Pay an approved expense to the employee. Any surplus escrow goes back to the payer.
     ///
+    /// # Receipt Hash Binding Guarantee
+    ///
+    /// This function validates that the `receipt_hash` stored on the expense
+    /// matches the original binding recorded at `submit_expense` time. It reads
+    /// the `receipt_hash` from the expense and verifies that the global
+    /// `ReceiptHash` storage entry still maps this hash to the same `expense_id`.
+    /// This prevents a payout from being finalized if the stored receipt reference
+    /// has been mutated after submission through any code path.
+    ///
     /// # Double-Payment Guard
     ///
     /// This function implements a checks-effects-interactions pattern to prevent
     /// double-payment of the same expense:
-    /// 1. **Checks**: Verifies the expense is in `Approved` status.
-    /// 2. **Effects**: Atomically transitions the expense to `Paid` and zeroes `escrow_amount`
-    ///    **before** any token transfer occurs.
-    /// 3. **Interactions**: Only after the terminal state is committed does the function perform
-    ///    token transfers (payout to submitter, surplus refund to payer).
+    /// 1. **Checks**: Verifies the expense is in `Approved` status and that the
+    ///    receipt hash binding is valid.
+    /// 2. **Effects**: Atomically transitions the expense to `Paid` and zeroes
+    ///    `escrow_amount` **before** any token transfer occurs.
+    /// 3. **Interactions**: Only after the terminal state is committed does the
+    ///    function perform token transfers (payout to submitter, surplus refund
+    ///    to payer).
     ///
     /// Once `Paid`, any subsequent call will fail the status check at step 1,
     /// guaranteeing the expense cannot be paid more than once.
+    ///
+    /// # Authorization
+    /// Any caller can execute `pay_expense`. The function does not require
+    /// specific role-based authorization; it only requires that the expense is
+    /// in the `Approved` state and that the receipt hash binding is intact.
     pub fn pay_expense(env: Env, expense_id: u128) {
         require_initialized(&env);
 
@@ -577,6 +593,20 @@ impl ExpenseReimbursementContract {
             .expect("Expense not found");
 
         assert!(expense.status == ExpenseStatus::Approved, "Not approved");
+
+        // Verify receipt hash binding: the stored receipt_hash must still map
+        // to this expense_id in the global ReceiptHash storage. This ensures
+        // that no code path can mutate the receipt reference after submission
+        // without invalidating the payout.
+        let bound_expense_id: Option<u128> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::ReceiptHash(expense.receipt_hash.clone()));
+        assert!(
+            bound_expense_id == Some(expense_id),
+            "Receipt hash binding invalid"
+        );
+
         let amount_to_pay = expense.approved_amount.unwrap();
         let escrow_before = expense.escrow_amount;
 
@@ -747,5 +777,25 @@ impl ExpenseReimbursementContract {
         require_initialized(&env);
         let period = current_period(&env);
         read_period_spent(&env, &employee, period)
+    }
+}
+
+#[cfg(test)]
+mod test_helpers {
+    use super::*;
+
+    /// Directly mutates the receipt_hash field of an expense in storage.
+    /// This simulates an attacker modifying the stored receipt reference
+    /// after submission, to verify that pay_expense rejects the payout.
+    pub fn mutate_receipt_hash(env: &Env, expense_id: u128, new_hash: BytesN<32>) {
+        let mut expense: Expense = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Expense(expense_id))
+            .expect("Expense not found");
+        expense.receipt_hash = new_hash;
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Expense(expense_id), &expense);
     }
 }

@@ -245,7 +245,40 @@ cargo test -p compliance_checker
 
 1. Copy the test code into `onchain/contracts/compliance_checker/tests/test_compliance.rs` at the end of the file (before the final `}`).
 
-2. Replace the entire content of `docs/compliance-checker.md` with the new content.
+## Ruleset Versioning and Mid-flight Upgrades
+
+The compliance checker is a **stateless rules engine** with respect to compliance decisions. It does not persist evaluation results, track in-progress checks, or maintain a history of previous decisions. Every `check_action` call reads the current admin-configurable settings from storage and produces a fresh, deterministic decision.
+
+### What changes immediately
+
+Admin-configurable settings take effect on the very next `check_action` call:
+
+- `set_emergency_pause` — toggling pause state changes the result of the highest-precedence rule for subsequent evaluations.
+- `set_auxiliary_allowed` — adding or removing an allowlisted auxiliary address immediately affects auxiliary-path checks.
+
+### What is NOT stored
+
+- **No decision history**: The contract does not store any `ComplianceDecision` values. Historical decisions must be persisted by callers (e.g., the payroll contract).
+- **No in-progress evaluation state**: Each `check_action` invocation is self-contained; there is no concept of a multi-step evaluation lifecycle.
+- **No rule-set version identifier**: There is no on-chain version counter. Integrators who need to detect rule-set changes should track the admin settings they rely on and re-evaluate when those settings change.
+
+### Security guarantee: no silent reinterpretation
+
+Because this contract never stores decisions, it **cannot retroactively reinterpret** past evaluations under new rules. A `ComplianceDecision` returned from `check_action` is a plain value type; once returned, the contract has no reference to it. The caller alone decides whether to trust a cached decision or re-query after a policy change.
+
+**Important for integrators**: Callers that cache decisions (e.g., to authorize a multi-step payroll workflow) **must** re-query the compliance checker after any admin-configurable setting change. This contract provides no caching or versioning — that responsibility belongs to the integration layer.
+
+### Recommended pattern
+
+```text
+1. Caller performs check_action(...) → receives ComplianceDecision{Allow, ...}
+2. Caller proceeds with the authorized action (e.g., state transition).
+3. If the compliance admin changes settings mid-flight:
+   a. The caller SHOULD re-query check_action for any subsequent action.
+   b. Decisions obtained before the change remain valid only at the caller's discretion.
+```
+
+## Testing Strategy
 
 3. Run the tests:
 ```bash
@@ -257,9 +290,4 @@ cargo test -p compliance_checker
 - invalid current-state matrix for each action;
 - invalid target-state denial;
 - grace-period denial for cancelled claims;
-- **`test_set_emergency_pause_rejects_non_admin`** — verifies that a non-admin
-  caller is rejected before the pause flag is toggled;
-- **`test_set_emergency_pause_immediate_effect`** — verifies that the very next
-  `check_action` call after `set_emergency_pause(true)` returns
-  `Deny/EmergencyPaused` with the correct trace entry, confirming zero-latency
-  propagation.
+- ruleset upgrade semantics (mid-flight admin setting changes affect only new evaluations).

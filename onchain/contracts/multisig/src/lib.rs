@@ -1,6 +1,9 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, panic_with_error, token, Address, BytesN, Env, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, BytesN,
+    Env, Vec,
+};
 
 /// Errors emitted by the multisig contract.
 ///
@@ -415,9 +418,10 @@ impl MultisigContract {
         ] {
             if let Some(override_val) = read_threshold_override(&env, &op_type) {
                 if override_val > signer_count as u32 {
-                    env.storage()
-                        .persistent()
-                        .set(&StorageKey::ThresholdOverride(op_type), &signer_count);
+                    env.storage().persistent().set(
+                        &StorageKey::ThresholdOverride(op_type),
+                        &signer_count,
+                    );
                 }
             }
         }
