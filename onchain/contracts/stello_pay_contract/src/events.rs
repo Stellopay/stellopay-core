@@ -345,3 +345,29 @@ pub struct MilestoneExpiredEvent {
 pub fn emit_milestone_expired(env: &Env, event: MilestoneExpiredEvent) {
     event.publish(env);
 }
+
+/// Event: Bulk pause of all agreements for an employer.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BulkAgreementsPausedEvent {
+    pub employer: Address,
+    pub count: u32,
+}
+
+/// Emits a [`BulkAgreementsPausedEvent`] for the given bulk pause.
+pub fn emit_bulk_agreements_paused(env: &Env, event: BulkAgreementsPausedEvent) {
+    event.publish(env);
+}
+
+/// Event: Bulk unpause of all agreements for an employer.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BulkAgreementsUnpausedEvent {
+    pub employer: Address,
+    pub count: u32,
+}
+
+/// Emits a [`BulkAgreementsUnpausedEvent`] for the given bulk unpause.
+pub fn emit_bulk_agreements_unpaused(env: &Env, event: BulkAgreementsUnpausedEvent) {
+    event.publish(env);
+}
