@@ -4,6 +4,15 @@ Three-tier dispute ladder with configurable per-level SLA deadlines, a
 keeper-triggered `PendingReview` stage, binding outcome records, and
 finality rules integrated with payroll state.
 
+> **⚠ Breaking change (vNEXT):** The `DisputeSlaBreachedEvent` and
+> `DisputeSlaViolationAdvancedEvent` events now include a `keeper` field
+> recording the address of the keeper who triggered the advance.  Indexers
+> that deserialize these events will need to update their schemas to include
+> the new field.  `DisputeDetails` now includes a `keeper_advances` field;
+> existing disputes migrated from prior contract versions will require a
+> migration path (resolve/expire before upgrade, or implement a storage
+> migration).
+
 ---
 
 ## State Machine
@@ -253,6 +262,7 @@ Level1/2 resolution → status = Resolved (3-day appeal window opens)
 |-------|------|-------------|
 | `agreement_id` | `u128` | Identifies the dispute |
 | `level` | `EscalationLevel` | Level at which the SLA was breached |
+| `keeper` | `Address` | Address of the keeper who triggered the advance |
 | `breached_at` | `u64` | Ledger timestamp when `keeper_advance_stage` was called |
 | `review_deadline` | `u64` | Timestamp by which admin must act before `expire_dispute` is valid |
 
@@ -270,6 +280,28 @@ Level1/2 resolution → status = Resolved (3-day appeal window opens)
 | `phase_deadline` | `u64` | Ledger timestamp at which the current phase expires |
 | `outcome` | `DisputeOutcome` | Binding ruling once resolved; `Unset` while open |
 | `reason` | `DisputeReason` | Why the dispute was raised; immutable after filing |
+| `keeper_advances` | `Vec<KeeperAdvance>` | Ordered history of every `keeper_advance_stage` call — records which keeper triggered each automatic advance, the timestamp, and the escalation level at the time |
+
+> `phase_started_at` doubles as the **SLA breach timestamp** when
+> `status == PendingReview`: it records the exact moment the keeper advanced
+> the stage.
+
+### Keeper Accountability
+
+Each `KeeperAdvance` entry stored in `DisputeDetails.keeper_advances` provides
+a full accountability trail of who triggered each automatic SLA-driven stage
+advance and when:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `keeper` | `Address` | Address of the keeper who called `keeper_advance_stage` |
+| `advanced_at` | `u64` | Ledger timestamp at which the advance was triggered |
+| `level` | `EscalationLevel` | Escalation level at the time of the advance |
+
+The `keeper` field is also included in both `DisputeSlaBreachedEvent` and
+`DisputeSlaViolationAdvancedEvent` so that off-chain indexers and monitoring
+systems can track which keeper triggered each advance without reading the
+full dispute record.
 
 > `phase_started_at` doubles as the **SLA breach timestamp** when
 > `status == PendingReview`: it records the exact moment the keeper advanced
