@@ -17,6 +17,11 @@ enum StorageKey {
     Admin,
     EmergencyPause,
     AuxiliaryAllowed(Address),
+    /// Presence of this key means a registered rule blocks `PayrollAction`.
+    /// Absence means no such rule is registered. Removal deletes the key
+    /// outright rather than writing `false`, so a removed rule leaves nothing
+    /// behind that a later read could mistake for an active rule.
+    BlockedAction(PayrollAction),
 }
 
 /// Payroll agreement lifecycle statuses mirrored from main payroll flows.
@@ -67,6 +72,7 @@ pub enum ReasonCode {
     InvalidCurrentState,
     InvalidTargetState,
     GracePeriodRequired,
+    ActionBlocked,
 }
 
 /// Canonical identifiers for each evaluated rule in the compliance engine.
@@ -79,6 +85,7 @@ pub enum TraceRule {
     InvalidCurrentState,
     InvalidTargetState,
     GracePeriodRequired,
+    ActionBlocked,
 }
 
 /// Trace entry for a single rule evaluation.
@@ -165,15 +172,62 @@ impl ComplianceCheckerContract {
             .unwrap_or(false)
     }
 
+    /// @notice Registers a compliance rule that blocks a specific payroll action.
+    /// @dev Only the admin may call this. Registering an already-registered rule
+    ///      is idempotent. The rule is stored in persistent storage and read by
+    ///      `check_action` on every invocation, so it takes effect immediately.
+    /// @param action The payroll action the rule denies.
+    pub fn register_rule(env: Env, caller: Address, action: PayrollAction) {
+        Self::require_initialized(&env);
+        Self::require_admin(&env, &caller);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::BlockedAction(action), &true);
+    }
+
+    /// @notice Removes a previously registered action-blocking rule.
+    /// @dev Only the admin may call this. Removing a rule that was never
+    ///      registered is a no-op rather than an error, so removal is idempotent.
+    ///
+    ///      The storage entry is *deleted*, not set to `false`. `check_action`
+    ///      re-reads storage on every invocation and holds no cached or
+    ///      snapshotted copy of the rule set, so enforcement of the removed rule
+    ///      stops on the very next evaluation — including one that occurs later
+    ///      in the same transaction as this removal.
+    /// @param action The payroll action whose blocking rule is removed.
+    pub fn remove_rule(env: Env, caller: Address, action: PayrollAction) {
+        Self::require_initialized(&env);
+        Self::require_admin(&env, &caller);
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::BlockedAction(action));
+    }
+
+    /// @notice Returns whether a blocking rule is currently registered for an action.
+    /// @dev Reads live persistent storage; returns false once the rule is removed.
+    pub fn is_rule_registered(env: Env, action: PayrollAction) -> bool {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::BlockedAction(action))
+            .unwrap_or(false)
+    }
+
     /// @notice Validates a payroll action transition.
     /// @dev Rule precedence (highest -> lowest):
     ///      1. Emergency pause deny.
-    ///      2. Auxiliary allowlist deny (when `executor != actor`).
-    ///      3. Terminal-state deny.
-    ///      4. Action/current-state compatibility deny.
-    ///      5. Target-state compatibility deny.
-    ///      6. Grace-period requirement deny for cancelled claims.
-    ///      7. Allow.
+    ///      2. Registered action-blocking rule deny (when a rule is registered
+    ///         for `action`).
+    ///      3. Auxiliary allowlist deny (when `executor != actor`).
+    ///      4. Terminal-state deny.
+    ///      5. Action/current-state compatibility deny.
+    ///      6. Target-state compatibility deny.
+    ///      7. Grace-period requirement deny for cancelled claims.
+    ///      8. Allow.
+    ///
+    ///      Every rule reads its inputs from persistent storage at evaluation
+    ///      time; no rule state is cached across invocations or snapshotted at
+    ///      transaction start. Registering or removing a rule therefore changes
+    ///      the outcome of the very next evaluation.
     ///
     ///      Security assumption: callers must pass the real execution context:
     ///      `actor` is the principal authorizing the action, and `executor` is
@@ -223,7 +277,29 @@ impl ComplianceCheckerContract {
             return Self::make_decision(Decision::Deny, ReasonCode::EmergencyPaused, traces);
         }
 
-        // 2. Auxiliary Not Allowed check
+        // 2. Registered action-blocking rule check.
+        //
+        // Read fresh from persistent storage on every evaluation. A trace entry
+        // is emitted only when a rule is actually registered for this action —
+        // consistent with the auxiliary and grace-period rules, which likewise
+        // trace only when they apply. Once `remove_rule` deletes the entry this
+        // read returns false and the rule stops contributing to the decision.
+        let is_blocked = env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&StorageKey::BlockedAction(action))
+            .unwrap_or(false);
+
+        if is_blocked {
+            traces.push_back(TraceEntry {
+                rule: TraceRule::ActionBlocked,
+                result: Decision::Deny,
+                reason: ReasonCode::ActionBlocked,
+            });
+            return Self::make_decision(Decision::Deny, ReasonCode::ActionBlocked, traces);
+        }
+
+        // 3. Auxiliary Not Allowed check
         if executor != actor {
             let is_allowed = Self::is_auxiliary_allowed(env.clone(), executor);
             let aux_result = if is_allowed {
@@ -249,7 +325,7 @@ impl ComplianceCheckerContract {
             }
         }
 
-        // 3. Terminal State check
+        // 4. Terminal State check
         let is_terminal = current_state == AgreementStatus::Completed;
         let terminal_result = if is_terminal {
             Decision::Deny
@@ -269,7 +345,7 @@ impl ComplianceCheckerContract {
             return Self::make_decision(Decision::Deny, ReasonCode::TerminalState, traces);
         }
 
-        // 4. Invalid Current State check
+        // 5. Invalid Current State check
         let is_current_valid = Self::is_action_allowed_from_state(action, current_state);
         let current_valid_result = if is_current_valid {
             Decision::Allow
@@ -289,7 +365,7 @@ impl ComplianceCheckerContract {
             return Self::make_decision(Decision::Deny, ReasonCode::InvalidCurrentState, traces);
         }
 
-        // 5. Invalid Target State check
+        // 6. Invalid Target State check
         let expected_target = Self::expected_target_state(action, current_state);
         let is_target_valid = target_state == expected_target;
         let target_valid_result = if is_target_valid {
@@ -310,7 +386,7 @@ impl ComplianceCheckerContract {
             return Self::make_decision(Decision::Deny, ReasonCode::InvalidTargetState, traces);
         }
 
-        // 6. Grace Period Required check
+        // 7. Grace Period Required check
         let is_claim_action = action == PayrollAction::ClaimPayroll
             || action == PayrollAction::ClaimTimeBased
             || action == PayrollAction::ClaimMilestone;
