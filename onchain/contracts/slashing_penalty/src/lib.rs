@@ -27,6 +27,7 @@
 //! - Admin cannot slash; roles are separated (admin ≠ slasher).
 
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
@@ -604,8 +605,8 @@ impl SlashingPenaltyContract {
     ///
     /// # Errors
     /// * `RecordNotFound`     — No slash record exists for the given hash.
-    /// * `InvalidState (8)`   — Record is not `Pending` (already `Executed`, `Reversed`,
-    ///                          or `AppealRejected`). **This is the double-execution guard.**
+    /// * `InvalidState (8)`   — Record is not `Pending` (already `Executed`, `Reversed`, or
+    ///   `AppealRejected`). **This is the double-execution guard.**
     /// * `QuorumNotMet`       — Attestation-based slash does not yet have enough signatures.
     /// * `AppealWindowOpen`   — Appeal deadline has not yet passed.
     pub fn execute_slash(env: Env, evidence_hash: BytesN<32>) -> Result<(), SlashError> {

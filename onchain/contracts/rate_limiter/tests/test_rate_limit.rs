@@ -464,18 +464,18 @@ fn test_long_window_rounding_drift_never_exceeds_theoretical_capacity() {
 /// — rather than leaving the address with no limit at all or a stale override.
 ///
 /// Scenario:
-/// 1. Initialize with `default_burst = 3, default_refill_rate = 0` (no refill,
-///    so any over-consumption is detectable immediately).
+/// 1. Initialize with `default_burst = 3, default_refill_rate = 0` (no refill, so any
+///    over-consumption is detectable immediately).
 /// 2. Set a generous per-address override (`burst = 10`) for the subject.
 /// 3. Consume 3 tokens through the override to prove it is active.
 /// 4. Clear the override via `clear_limit_for`.
 /// 5. Assert `get_limit_for` now returns the default config.
-/// 6. Reset the address's *usage* so the bucket starts fresh at the default
-///    burst capacity (the usage state is orthogonal to the limit config).
-/// 7. Consume exactly `default_burst` (3) tokens through `check_and_consume`.
-///    Each call must succeed — proving fallback to the default limit is live.
-/// 8. Assert the very next call is rejected — proving the default burst cap
-///    (not the old override cap) is being enforced.
+/// 6. Reset the address's *usage* so the bucket starts fresh at the default burst capacity (the
+///    usage state is orthogonal to the limit config).
+/// 7. Consume exactly `default_burst` (3) tokens through `check_and_consume`. Each call must
+///    succeed — proving fallback to the default limit is live.
+/// 8. Assert the very next call is rejected — proving the default burst cap (not the old override
+///    cap) is being enforced.
 #[test]
 fn test_clear_limit_falls_back_to_default_and_check_and_consume_works() {
     let env = create_env();
@@ -545,10 +545,10 @@ fn test_clear_limit_falls_back_to_default_and_check_and_consume_works() {
 /// Scenario:
 /// 1. Initialize with `default_burst = 2, default_refill_rate = 0`.
 /// 2. Call `clear_limit_for` on a fresh address that has no override.
-/// 3. Assert `get_limit_for` still returns the default config — the clear
-///    must not zero-out or corrupt the default.
-/// 4. Assert `check_and_consume` succeeds for exactly `default_burst` calls
-///    — proving the address is still governed by the default limit.
+/// 3. Assert `get_limit_for` still returns the default config — the clear must not zero-out or
+///    corrupt the default.
+/// 4. Assert `check_and_consume` succeeds for exactly `default_burst` calls — proving the address
+///    is still governed by the default limit.
 /// 5. Assert the next call fails — the cap is still enforced.
 #[test]
 fn test_clear_limit_for_address_with_no_override_is_safe_noop() {

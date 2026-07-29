@@ -1755,7 +1755,8 @@ fn test_get_pair_state_fresh_price_succeeds() {
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
-    // 60 seconds later — price is 60s old, max_age = 600s -> fresh (full_setup configures max_staleness=600)
+    // 60 seconds later — price is 60s old, max_age = 600s -> fresh (full_setup configures
+    // max_staleness=600)
     env.ledger().with_mut(|li| li.timestamp = 1_060);
     let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_000_000);

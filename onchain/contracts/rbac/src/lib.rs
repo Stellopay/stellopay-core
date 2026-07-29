@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 pub use rbac_interface::Role;
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};

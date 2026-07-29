@@ -1586,8 +1586,8 @@ fn test_merge_source_wrong_org_fails() {
 /// Sequence:
 /// 1. Assign `emp` to `dept_a`   → forward: dept_a, reverse: dept_a contains emp
 /// 2. Remove `emp` from dept      → forward: None,   reverse: dept_a empty
-/// 3. Reassign `emp` to `dept_b`  → forward: dept_b, reverse: dept_b contains emp
-///                                                             dept_a still empty
+/// 3. Reassign `emp` to `dept_b`  → forward: dept_b, reverse: dept_b contains emp dept_a still
+///    empty
 ///
 /// This is the primary regression guard: without proper cleanup a stale
 /// `EmployeeDepartment` entry would survive step 2, leaving `get_employee_department`

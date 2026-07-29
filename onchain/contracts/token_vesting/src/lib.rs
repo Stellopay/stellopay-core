@@ -178,14 +178,13 @@ fn write_schedule(env: &Env, schedule: &VestingSchedule) {
 ///
 /// This invariant holds for all three schedule kinds:
 ///
-/// - **Linear** (with or without cliff): the result grows proportionally with
-///   time after `start_time` (and after `cliff_time` when set), reaching
-///   `total_amount` at `end_time` and remaining capped there forever.
-/// - **Cliff**: the result is 0 until `cliff_time` and `total_amount` at or
-///   after `cliff_time`. The step is upward only.
-/// - **Custom**: checkpoints are validated at creation to be sorted by `time`
-///   with non-decreasing `cumulative_amount`, so the step function can only
-///   stay flat or increase as time advances.
+/// - **Linear** (with or without cliff): the result grows proportionally with time after
+///   `start_time` (and after `cliff_time` when set), reaching `total_amount` at `end_time` and
+///   remaining capped there forever.
+/// - **Cliff**: the result is 0 until `cliff_time` and `total_amount` at or after `cliff_time`. The
+///   step is upward only.
+/// - **Custom**: checkpoints are validated at creation to be sorted by `time` with non-decreasing
+///   `cumulative_amount`, so the step function can only stay flat or increase as time advances.
 ///
 /// For revoked schedules the effective timestamp is frozen at `revoked_at`,
 /// so the vested amount is constant for all `now >= revoked_at` and the
