@@ -45,17 +45,16 @@ pub fn set_dispute(env: &Env, agreement_id: u128, details: &DisputeDetails) {
     env.storage().persistent().set(&key, details);
 }
 
-/// Set the payroll escrow contract address that will be paused/resumed on
-/// dispute lifecycle events.
-pub fn set_payroll_escrow(env: &Env, addr: &Address) {
-    let key = StorageKey::PayrollEscrow;
-    env.storage().persistent().set(&key, addr);
+/// Set the audit logger contract address for compliance recording.
+pub fn set_audit_logger(env: &Env, addr: &Address) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::AuditLogger, addr);
 }
 
-/// Get the payroll escrow contract address, if configured.
-pub fn get_payroll_escrow(env: &Env) -> Option<Address> {
-    let key = StorageKey::PayrollEscrow;
-    env.storage().persistent().get(&key)
+/// Get the configured audit logger contract address, if any.
+pub fn get_audit_logger(env: &Env) -> Option<Address> {
+    env.storage().persistent().get(&StorageKey::AuditLogger)
 }
 
 /// Check if a given address is the contract administrator
@@ -76,4 +75,19 @@ pub fn is_admin(env: &Env, caller: &Address) -> bool {
         return owner == *caller;
     }
     false
+}
+
+/// Set the configuration for keeper rewards.
+pub fn set_reward_config(env: &Env, token: &Address, pool: &Address, amount: &i128) {
+    env.storage().persistent().set(&StorageKey::RewardToken, token);
+    env.storage().persistent().set(&StorageKey::IncentivePool, pool);
+    env.storage().persistent().set(&StorageKey::KeeperRewardAmount, amount);
+}
+
+/// Get the configuration for keeper rewards (token, pool, amount).
+pub fn get_reward_config(env: &Env) -> Option<(Address, Address, i128)> {
+    let token = env.storage().persistent().get(&StorageKey::RewardToken)?;
+    let pool = env.storage().persistent().get(&StorageKey::IncentivePool)?;
+    let amount = env.storage().persistent().get(&StorageKey::KeeperRewardAmount)?;
+    Some((token, pool, amount))
 }

@@ -1,9 +1,18 @@
 #![no_std]
 
-//! Per-address and global rate limiting contract using Token Bucket algorithm.
+//! Per-address, per-contract, and global rate limiting using Token Bucket.
 //!
 //! Provides burst-friendly rate limiting with automatic token refills,
-//! global throttling, and admin bypass to ensure security and fairness.
+//! global throttling, per-contract throughput caps, and admin bypass to
+//! ensure security and fairness.
+//!
+//! # Per-contract vs per-address budgets
+//! [`RateLimiter::set_limit_for`] configures a bucket for one subject address.
+//! [`RateLimiter::set_limit_for_contract`] configures a separate bucket for an
+//! integrating (calling) contract. When consuming via
+//! [`RateLimiter::check_and_consume_for_contract`], **both** buckets are
+//! checked: exhausting either one rejects the call. Address rotation inside
+//! the same contract therefore cannot bypass the contract-scoped budget.
 //!
 //! # Fractional Refill Policy
 //! Soroban ledger timestamps are whole seconds and bucket balances are whole
@@ -36,6 +45,10 @@ enum StorageKey {
     Limit(Address),
     /// Per-address usage: address -> Usage
     Usage(Address),
+    /// Per-contract override: calling contract -> LimitConfig
+    ContractLimit(Address),
+    /// Per-contract usage: calling contract -> Usage
+    ContractUsage(Address),
 }
 
 /// Usage state for a token bucket.
@@ -117,6 +130,8 @@ impl RateLimiter {
 
     /// Sets a per-address limit override.
     ///
+    /// @notice Per-address overrides take precedence over the initialized
+    ///         default limit for the target address.
     /// @dev Only callable by admin.
     /// @param addr Subject address.
     /// @param burst Max burst capacity for this address.
@@ -137,17 +152,159 @@ impl RateLimiter {
         env.storage().persistent().remove(&StorageKey::Limit(addr));
     }
 
+    /// Sets a per-contract throughput budget.
+    ///
+    /// @notice Caps total consumption across all subject addresses that call
+    ///         through this integrating contract. Distinct from
+    ///         [`Self::set_limit_for`]: both budgets are enforced together by
+    ///         [`Self::check_and_consume_for_contract`].
+    /// @dev Only callable by admin.
+    /// @param contract Calling / integrating contract address.
+    /// @param burst Max burst capacity shared by all subjects via this contract.
+    /// @param refill_rate Tokens added per second to the contract bucket.
+    pub fn set_limit_for_contract(env: Env, contract: Address, burst: u32, refill_rate: u32) {
+        Self::require_admin_auth(&env);
+        env.storage().persistent().set(
+            &StorageKey::ContractLimit(contract),
+            &LimitConfig { burst, refill_rate },
+        );
+    }
+
+    /// Removes a per-contract throughput budget.
+    ///
+    /// @notice Does not reset contract usage; call [`Self::reset_contract_usage`]
+    ///         if a fresh bucket is needed.
+    /// @dev Only callable by admin. Safe no-op when no budget was configured.
+    pub fn clear_limit_for_contract(env: Env, contract: Address) {
+        Self::require_admin_auth(&env);
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::ContractLimit(contract));
+    }
+
     /// Checks and consumes one whole token from the subject's rate limit.
     ///
     /// @notice Implements Token Bucket algorithm for burst handling.
     /// @notice Validates security by allowing admins to bypass if configured.
+    /// @notice Resolves the subject-specific limit as:
+    ///         `set_limit_for(subject, ...)` override first, otherwise the
+    ///         default values established during `initialize(...)`.
     /// @dev Refill uses whole ledger seconds only: `elapsed_seconds * refill_rate`.
     ///      Multiple calls in the same ledger second share the same balance and
     ///      do not accumulate fractional refill credit.
     /// @param subject Address to check and consume quota for (must authenticate).
     /// @return tokens_remaining User's tokens remaining after consumption.
     pub fn check_and_consume(env: Env, subject: Address) -> u32 {
-        Self::require_initialized(&env);
+        Self::check_and_consume_inner(&env, subject, None)
+    }
+
+    /// Checks and consumes subject and (when configured) contract budgets.
+    ///
+    /// @notice Enforces the per-address budget and, if
+    ///         [`Self::set_limit_for_contract`] was called for `contract`, the
+    ///         shared per-contract budget. Either bucket being exhausted rejects
+    ///         the call, so rotating subject addresses within the same contract
+    ///         cannot exceed the contract-scoped cap.
+    /// @param subject Address whose per-address quota is consumed.
+    /// @param contract Integrating contract whose shared quota is consumed when set.
+    /// @return tokens_remaining Subject's tokens remaining after consumption.
+    pub fn check_and_consume_for_contract(env: Env, subject: Address, contract: Address) -> u32 {
+        Self::check_and_consume_inner(&env, subject, Some(contract))
+    }
+
+    /// Explicitly resets usage for an address.
+    ///
+    /// @dev Only callable by admin.
+    pub fn reset_usage(env: Env, addr: Address) {
+        Self::require_admin_auth(&env);
+        env.storage().persistent().remove(&StorageKey::Usage(addr));
+    }
+
+    /// Explicitly resets usage for a contract-scoped bucket.
+    ///
+    /// @dev Only callable by admin.
+    pub fn reset_contract_usage(env: Env, contract: Address) {
+        Self::require_admin_auth(&env);
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::ContractUsage(contract));
+    }
+
+    /// Transfers admin rights to a new address.
+    ///
+    /// @dev Only callable by current admin.
+    pub fn transfer_admin(env: Env, new_admin: Address) {
+        Self::require_admin_auth(&env);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Admin, &new_admin);
+    }
+
+    /// Gets current config for an address.
+    pub fn get_limit_for(env: Env, addr: Address) -> LimitConfig {
+        Self::get_limit_config(&env, &addr)
+    }
+
+    /// Gets the configured per-contract budget, if any.
+    ///
+    /// @return `None` when no contract-scoped budget has been set (contract
+    ///         bucket is not enforced until [`Self::set_limit_for_contract`]).
+    pub fn get_limit_for_contract(env: Env, contract: Address) -> Option<LimitConfig> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ContractLimit(contract))
+    }
+
+    /// Returns the current usage state for an address without consuming tokens.
+    ///
+    /// # Read-Only Semantics
+    /// This is a purely observational query. It computes the token refill based on
+    /// elapsed time since the last update but does **not** mutate any state.
+    /// No authentication is required.
+    ///
+    /// # Returns
+    /// - `Some(Usage)` — the current token count and last-update timestamp, with refill applied up
+    ///   to the current ledger time.
+    /// - `None` — if no usage has ever been recorded for this address (the bucket is effectively
+    ///   full at the configured burst capacity).
+    pub fn get_usage(env: Env, addr: Address) -> Option<Usage> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::Usage(addr.clone()))
+            .map(|usage: Usage| {
+                let now = env.ledger().timestamp();
+                let config = Self::get_limit_config(&env, &addr);
+                Self::preview_refill(usage, now, config.burst, config.refill_rate)
+            })
+    }
+
+    /// Returns the current contract-scoped usage without consuming tokens.
+    ///
+    /// @return `None` if no contract usage has been recorded yet, or if no
+    ///         contract budget is configured (nothing to preview against).
+    pub fn get_contract_usage(env: Env, contract: Address) -> Option<Usage> {
+        let config: LimitConfig = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::ContractLimit(contract.clone()))?;
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ContractUsage(contract))
+            .map(|usage: Usage| {
+                let now = env.ledger().timestamp();
+                Self::preview_refill(usage, now, config.burst, config.refill_rate)
+            })
+    }
+
+    /// Gets effective admin address.
+    pub fn get_admin(env: Env) -> Option<Address> {
+        env.storage().persistent().get(&StorageKey::Admin)
+    }
+
+    // Internal helpers
+
+    fn check_and_consume_inner(env: &Env, subject: Address, contract: Option<Address>) -> u32 {
+        Self::require_initialized(env);
 
         let admin: Address = env.storage().persistent().get(&StorageKey::Admin).unwrap();
         let bypass: bool = env
@@ -178,110 +335,68 @@ impl RateLimiter {
                 .persistent()
                 .get(&StorageKey::GlobalRefillRate)
                 .unwrap_or(0);
-            Self::consume_bucket(&env, StorageKey::GlobalUsage, g_burst, g_refill);
+            Self::consume_bucket(env, StorageKey::GlobalUsage, g_burst, g_refill);
         }
 
-        // 2. Check Per-Address Limit
-        let limit = Self::get_limit_config(&env, &subject);
-        Self::consume_bucket(
-            &env,
-            StorageKey::Usage(subject.clone()),
-            limit.burst,
-            limit.refill_rate,
-        )
+        // 2–3. Per-contract (when configured) and per-address budgets.
+        // Both are checked before either is debited so a rejection on one
+        // cannot silently drain the other (e.g. address rotation vs contract cap).
+        let addr_limit = Self::get_limit_config(env, &subject);
+        let addr_key = StorageKey::Usage(subject);
+
+        if let Some(contract_addr) = contract {
+            let c_limit: Option<LimitConfig> = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::ContractLimit(contract_addr.clone()));
+            if let Some(c_limit) = c_limit {
+                let c_key = StorageKey::ContractUsage(contract_addr);
+                let c_usage = Self::bucket_after_refill(env, &c_key, c_limit.burst, c_limit.refill_rate);
+                let a_usage =
+                    Self::bucket_after_refill(env, &addr_key, addr_limit.burst, addr_limit.refill_rate);
+                assert!(c_usage.tokens >= 1, "rate limit exceeded");
+                assert!(a_usage.tokens >= 1, "rate limit exceeded");
+                Self::debit_bucket(env, &c_key, c_usage);
+                return Self::debit_bucket(env, &addr_key, a_usage);
+            }
+        }
+
+        Self::consume_bucket(env, addr_key, addr_limit.burst, addr_limit.refill_rate)
     }
 
-    /// Explicitly resets usage for an address.
-    ///
-    /// @dev Only callable by admin.
-    pub fn reset_usage(env: Env, addr: Address) {
-        Self::require_admin_auth(&env);
-        env.storage().persistent().remove(&StorageKey::Usage(addr));
-    }
-
-    /// Transfers admin rights to a new address.
-    ///
-    /// @dev Only callable by current admin.
-    pub fn transfer_admin(env: Env, new_admin: Address) {
-        Self::require_admin_auth(&env);
-        env.storage()
-            .persistent()
-            .set(&StorageKey::Admin, &new_admin);
-    }
-
-    /// Gets current config for an address.
-    pub fn get_limit_for(env: Env, addr: Address) -> LimitConfig {
-        Self::get_limit_config(&env, &addr)
-    }
-
-    /// Returns the current usage state for an address without consuming tokens.
-    ///
-    /// # Read-Only Semantics
-    /// This is a purely observational query. It computes the token refill based on
-    /// elapsed time since the last update but does **not** mutate any state.
-    /// No authentication is required.
-    ///
-    /// # Returns
-    /// - `Some(Usage)` — the current token count and last-update timestamp, with refill applied up
-    ///   to the current ledger time.
-    /// - `None` — if no usage has ever been recorded for this address (the bucket is effectively
-    ///   full at the configured burst capacity).
-    pub fn get_usage(env: Env, addr: Address) -> Option<Usage> {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::Usage(addr.clone()))
-            .map(|usage: Usage| {
-                let now = env.ledger().timestamp();
-                let config = Self::get_limit_config(&env, &addr);
-                let elapsed = now.saturating_sub(usage.last_update);
-                if elapsed > 0 {
-                    let new_tokens = (elapsed as u32).saturating_mul(config.refill_rate);
-                    let tokens = usage.tokens.saturating_add(new_tokens);
-                    Usage {
-                        last_update: now,
-                        tokens: if tokens > config.burst {
-                            config.burst
-                        } else {
-                            tokens
-                        },
-                    }
-                } else {
-                    usage
-                }
-            })
-    }
-
-    /// Gets effective admin address.
-    pub fn get_admin(env: Env) -> Option<Address> {
-        env.storage().persistent().get(&StorageKey::Admin)
-    }
-
-    // Internal helpers
-
-    fn consume_bucket(env: &Env, key: StorageKey, burst: u32, refill_rate: u32) -> u32 {
-        let now = env.ledger().timestamp();
-        let mut usage: Usage = env.storage().persistent().get(&key).unwrap_or(Usage {
-            last_update: now,
-            tokens: burst,
-        });
-
-        // Refill is intentionally whole-second and whole-token. Sub-second or
-        // same-ledger-second calls cannot farm fractional token credit.
+    fn preview_refill(usage: Usage, now: u64, burst: u32, refill_rate: u32) -> Usage {
         let elapsed = now.saturating_sub(usage.last_update);
         if elapsed > 0 {
             let new_tokens = (elapsed as u32).saturating_mul(refill_rate);
-            usage.tokens = usage.tokens.saturating_add(new_tokens);
-            if usage.tokens > burst {
-                usage.tokens = burst;
+            let tokens = usage.tokens.saturating_add(new_tokens);
+            Usage {
+                last_update: now,
+                tokens: if tokens > burst { burst } else { tokens },
             }
-            usage.last_update = now;
+        } else {
+            usage
         }
+    }
 
+    fn bucket_after_refill(env: &Env, key: &StorageKey, burst: u32, refill_rate: u32) -> Usage {
+        let now = env.ledger().timestamp();
+        let usage: Usage = env.storage().persistent().get(key).unwrap_or(Usage {
+            last_update: now,
+            tokens: burst,
+        });
+        Self::preview_refill(usage, now, burst, refill_rate)
+    }
+
+    fn debit_bucket(env: &Env, key: &StorageKey, mut usage: Usage) -> u32 {
         assert!(usage.tokens >= 1, "rate limit exceeded");
         usage.tokens -= 1;
-
-        env.storage().persistent().set(&key, &usage);
+        env.storage().persistent().set(key, &usage);
         usage.tokens
+    }
+
+    fn consume_bucket(env: &Env, key: StorageKey, burst: u32, refill_rate: u32) -> u32 {
+        let usage = Self::bucket_after_refill(env, &key, burst, refill_rate);
+        Self::debit_bucket(env, &key, usage)
     }
 
     fn get_limit_config(env: &Env, addr: &Address) -> LimitConfig {

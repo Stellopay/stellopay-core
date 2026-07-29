@@ -35,16 +35,17 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
+use department_manager::{DepartmentManagerContract, DepartmentManagerContractClient};
 use soroban_sdk::{
     symbol_short,
     testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, TryFromVal,
 };
-
-use department_manager::{DepartmentManagerContract, DepartmentManagerContractClient};
-use stello_pay_contract::storage::{AgreementStatus, DataKey};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{AgreementStatus, DataKey},
+    PayrollContract, PayrollContractClient,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared constants
@@ -244,9 +245,9 @@ fn setup<'a>(e: &'a Env) -> Setup<'a> {
     let org_id = dept
         .client
         .create_organization(&employer, &symbol_short!("Acme"));
-    let dept_id =
-        dept.client
-            .create_department(&employer, &org_id, &symbol_short!("Eng"), &None);
+    let dept_id = dept
+        .client
+        .create_department(&employer, &org_id, &symbol_short!("Eng"), &None);
     dept.client
         .assign_employee_to_department(&employer, &org_id, &dept_id, &employee);
 
@@ -297,9 +298,7 @@ fn claim_succeeds_before_any_department_assignment() {
     advance(&e, ONE_DAY * 3);
 
     // employee has no department — should still claim successfully
-    payroll
-        .client
-        .claim_payroll(&employee, &agreement_id, &0);
+    payroll.client.claim_payroll(&employee, &agreement_id, &0);
 
     assert_eq!(
         payroll
@@ -328,7 +327,9 @@ fn claim_succeeds_after_department_assignment() {
 
     // employee is already assigned to s.dept_id by setup()
     assert_eq!(
-        s.dept.client.get_employee_department(&s.employee, &s.org_id),
+        s.dept
+            .client
+            .get_employee_department(&s.employee, &s.org_id),
         Some(s.dept_id),
         "employee should be in dept after setup"
     );
@@ -383,11 +384,9 @@ fn claim_still_succeeds_after_department_removal() {
     );
 
     // ── Offboarding: remove from department ──────────────────────────────────
-    s.dept.client.remove_employee_from_department(
-        &s.employer,
-        &s.org_id,
-        &s.employee,
-    );
+    s.dept
+        .client
+        .remove_employee_from_department(&s.employer, &s.org_id, &s.employee);
 
     // Verify the department record reflects the removal.
     assert_eq!(
@@ -460,11 +459,9 @@ fn sequential_claim_after_removal_accumulates_correctly() {
     );
 
     // Remove from department
-    s.dept.client.remove_employee_from_department(
-        &s.employer,
-        &s.org_id,
-        &s.employee,
-    );
+    s.dept
+        .client
+        .remove_employee_from_department(&s.employer, &s.org_id, &s.employee);
 
     // Round 2: 3 more days pass while no dept membership
     advance(&e, ONE_DAY * 3);
@@ -544,9 +541,9 @@ fn multiple_employees_removal_of_one_does_not_affect_other() {
     let org_id = dept
         .client
         .create_organization(&employer, &symbol_short!("Corp"));
-    let dept_id =
-        dept.client
-            .create_department(&employer, &org_id, &symbol_short!("HR"), &None);
+    let dept_id = dept
+        .client
+        .create_department(&employer, &org_id, &symbol_short!("HR"), &None);
     dept.client
         .assign_employee_to_department(&employer, &org_id, &dept_id, &employee_a);
     dept.client
@@ -559,9 +556,7 @@ fn multiple_employees_removal_of_one_does_not_affect_other() {
         .remove_employee_from_department(&employer, &org_id, &employee_a);
 
     // Employee A: removed from dept but can still claim
-    payroll
-        .client
-        .claim_payroll(&employee_a, &agreement_id, &0);
+    payroll.client.claim_payroll(&employee_a, &agreement_id, &0);
     assert_eq!(
         payroll
             .client
@@ -576,9 +571,7 @@ fn multiple_employees_removal_of_one_does_not_affect_other() {
         Some(dept_id),
         "employee B should still be in dept"
     );
-    payroll
-        .client
-        .claim_payroll(&employee_b, &agreement_id, &1);
+    payroll.client.claim_payroll(&employee_b, &agreement_id, &1);
     assert_eq!(
         payroll
             .client
@@ -608,12 +601,9 @@ fn stranger_cannot_claim_regardless_of_dept_membership() {
 
     // Assign a stranger to the *same* department as the employee.
     let stranger = addr(&e);
-    s.dept.client.assign_employee_to_department(
-        &s.employer,
-        &s.org_id,
-        &s.dept_id,
-        &stranger,
-    );
+    s.dept
+        .client
+        .assign_employee_to_department(&s.employer, &s.org_id, &s.dept_id, &stranger);
 
     advance(&e, ONE_DAY * 3);
 
@@ -674,11 +664,9 @@ fn claim_during_grace_period_after_dept_removal() {
     );
 
     // Step 2 — remove from department
-    s.dept.client.remove_employee_from_department(
-        &s.employer,
-        &s.org_id,
-        &s.employee,
-    );
+    s.dept
+        .client
+        .remove_employee_from_department(&s.employer, &s.org_id, &s.employee);
     assert_eq!(
         s.dept
             .client
@@ -746,12 +734,10 @@ fn employee_reassigned_to_new_dept_can_still_claim() {
     let s = setup(&e);
 
     // Create a second department in the same org
-    let dept_b = s.dept.client.create_department(
-        &s.employer,
-        &s.org_id,
-        &symbol_short!("Ops"),
-        &None,
-    );
+    let dept_b =
+        s.dept
+            .client
+            .create_department(&s.employer, &s.org_id, &symbol_short!("Ops"), &None);
 
     // Claim 2 periods before reassignment
     advance(&e, ONE_DAY * 2);
@@ -766,12 +752,9 @@ fn employee_reassigned_to_new_dept_can_still_claim() {
     );
 
     // Reassign employee to dept_b (dept_manager moves them automatically)
-    s.dept.client.assign_employee_to_department(
-        &s.employer,
-        &s.org_id,
-        &dept_b,
-        &s.employee,
-    );
+    s.dept
+        .client
+        .assign_employee_to_department(&s.employer, &s.org_id, &dept_b, &s.employee);
     assert_eq!(
         s.dept
             .client
@@ -812,11 +795,7 @@ fn dept_removal_event_is_emitted_payroll_state_unchanged() {
     advance(&e, ONE_DAY * 2);
 
     // Snapshot payroll state before removal
-    let agreement_before = s
-        .payroll
-        .client
-        .get_agreement(&s.agreement_id)
-        .unwrap();
+    let agreement_before = s.payroll.client.get_agreement(&s.agreement_id).unwrap();
     let employee_addr_before = e.as_contract(&s.payroll.id, || {
         DataKey::get_employee(&e, s.agreement_id, 0)
     });
@@ -826,11 +805,9 @@ fn dept_removal_event_is_emitted_payroll_state_unchanged() {
         .get_employee_claimed_periods(&s.agreement_id, &0);
 
     // Remove from department
-    s.dept.client.remove_employee_from_department(
-        &s.employer,
-        &s.org_id,
-        &s.employee,
-    );
+    s.dept
+        .client
+        .remove_employee_from_department(&s.employer, &s.org_id, &s.employee);
 
     // ── Assert `emp_rmvd` event was emitted ───────────────────────────────────
     let all_events = e.events().all();
@@ -852,11 +829,7 @@ fn dept_removal_event_is_emitted_payroll_state_unchanged() {
     );
 
     // ── Assert payroll state is identical after removal ───────────────────────
-    let agreement_after = s
-        .payroll
-        .client
-        .get_agreement(&s.agreement_id)
-        .unwrap();
+    let agreement_after = s.payroll.client.get_agreement(&s.agreement_id).unwrap();
     let employee_addr_after = e.as_contract(&s.payroll.id, || {
         DataKey::get_employee(&e, s.agreement_id, 0)
     });
@@ -905,11 +878,9 @@ fn fully_removed_employee_loses_dept_membership_only() {
     advance(&e, ONE_DAY * 4);
 
     // Remove from department
-    s.dept.client.remove_employee_from_department(
-        &s.employer,
-        &s.org_id,
-        &s.employee,
-    );
+    s.dept
+        .client
+        .remove_employee_from_department(&s.employer, &s.org_id, &s.employee);
 
     // Department state: no membership
     assert_eq!(

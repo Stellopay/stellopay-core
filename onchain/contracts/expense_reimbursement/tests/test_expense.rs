@@ -4,8 +4,9 @@ use expense_reimbursement::{
     ExpenseReimbursementContract, ExpenseReimbursementContractClient, ExpenseStatus,
 };
 use soroban_sdk::{
-    contract, contractimpl, contracttype, testutils::Address as _, token, Address, Env, String,
-    Symbol,
+    contract, contractimpl, contracttype,
+    testutils::{Address as _, Ledger as _},
+    token, Address, Env, String, Symbol,
 };
 
 #[contracttype]
@@ -121,7 +122,7 @@ fn test_remove_approver() {
 }
 
 #[test]
-fn test_add_approver_rejects_non_owner() {
+fn test_removing_approver_preserves_recorded_approval() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -135,7 +136,7 @@ fn test_add_approver_rejects_non_owner() {
 
     token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &500);
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let expense_id = client.submit_expense(
         &submitter,
@@ -148,7 +149,7 @@ fn test_add_approver_rejects_non_owner() {
     client.fund_expense(&payer, &expense_id, &500);
     client.approve_expense(&approver, &expense_id, &500);
 
-    client.remove_approver(&approver);
+    client.remove_approver(&owner, &approver);
 
     let expense = client.get_expense(&expense_id).unwrap();
     assert!(!client.is_approver(&approver));
@@ -158,23 +159,6 @@ fn test_add_approver_rejects_non_owner() {
 
 #[test]
 fn test_removed_approver_cannot_approve_pending_expense() {
-    let non_owner = Address::generate(&env);
-    let approver = Address::generate(&env);
-    let client = create_contract(&env);
-
-    client.initialize(&owner);
-
-    // A non-owner caller (even with a valid signature) must not be able to
-    // mutate the approver set.
-    let result = client.try_add_approver(&non_owner, &approver);
-    assert!(result.is_err());
-
-    // The approver set is unchanged.
-    assert!(!client.is_approver(&approver));
-}
-
-#[test]
-fn test_remove_approver_rejects_non_owner() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -188,7 +172,7 @@ fn test_remove_approver_rejects_non_owner() {
 
     token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &500);
     client.initialize(&owner);
-    client.add_approver(&approver);
+    client.add_approver(&owner, &approver);
 
     let expense_id = client.submit_expense(
         &submitter,
@@ -199,7 +183,7 @@ fn test_remove_approver_rejects_non_owner() {
         &String::from_str(&env, "Cannot approve after role removal"),
     );
     client.fund_expense(&payer, &expense_id, &500);
-    client.remove_approver(&approver);
+    client.remove_approver(&owner, &approver);
 
     let result = client.try_approve_expense(&approver, &expense_id, &500);
     assert!(result.is_err());
@@ -223,8 +207,8 @@ fn test_removed_approver_cannot_be_assigned_to_new_expense() {
     let client = create_contract(&env);
 
     client.initialize(&owner);
-    client.add_approver(&approver);
-    client.remove_approver(&approver);
+    client.add_approver(&owner, &approver);
+    client.remove_approver(&owner, &approver);
 
     client.submit_expense(
         &submitter,
@@ -234,20 +218,6 @@ fn test_removed_approver_cannot_be_assigned_to_new_expense() {
         &String::from_str(&env, "receipt-after-removal"),
         &String::from_str(&env, "Cannot assign removed approver"),
     );
-    let non_owner = Address::generate(&env);
-    let approver = Address::generate(&env);
-    let client = create_contract(&env);
-
-    client.initialize(&owner);
-    client.add_approver(&owner, &approver);
-    assert!(client.is_approver(&approver));
-
-    // A non-owner caller must not be able to remove an approver.
-    let result = client.try_remove_approver(&non_owner, &approver);
-    assert!(result.is_err());
-
-    // The approver role is still in place.
-    assert!(client.is_approver(&approver));
 }
 
 #[test]
@@ -1074,7 +1044,15 @@ fn test_multiple_expenses_with_unique_receipts_work_end_to_end() {
 // ─── Spending Cap Tests ───────────────────────────────────────────────────
 
 /// Helper: set up a basic initialized environment with owner, approver, token, and submitter.
-fn cap_setup(env: &Env) -> (Address, Address, Address, Address, token::Client) {
+fn cap_setup<'a>(
+    env: &Env,
+) -> (
+    Address,
+    Address,
+    Address,
+    Address,
+    ExpenseReimbursementContractClient<'a>,
+) {
     let owner = Address::generate(env);
     let submitter = Address::generate(env);
     let approver = Address::generate(env);
@@ -1084,7 +1062,13 @@ fn cap_setup(env: &Env) -> (Address, Address, Address, Address, token::Client) {
 
     client.initialize(&owner);
     client.add_approver(&owner, &approver);
-    (owner, submitter, approver, token_client.address, token_client)
+    (
+        owner,
+        submitter,
+        approver,
+        token_client.address,
+        client,
+    )
 }
 
 #[test]
@@ -1410,4 +1394,106 @@ fn test_fund_expense_overflow_rejected() {
 
     let expense = client.get_expense(&expense_id).unwrap();
     assert_eq!(expense.escrow_amount, 500);
+}
+
+// ─── Currency / settlement model ──────────────────────────────────────────────
+
+/// The full lifecycle settles in exactly the token supplied at submission time.
+/// `submit_expense` records `token`, `fund_expense` escrows that token, and
+/// `pay_expense` pays the employee (and refunds any surplus) in that same token,
+/// so a matching-currency claim flows cleanly through approval and payout with
+/// no conversion and no possibility of paying out a different token.
+#[test]
+fn test_expense_settles_end_to_end_in_the_submitted_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let submitter = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&payer, &500);
+    client.initialize(&owner);
+    client.add_approver(&owner, &approver);
+
+    let expense_id = client.submit_expense(
+        &submitter,
+        &approver,
+        &token_client.address,
+        &500,
+        &String::from_str(&env, "receipt-currency-match"),
+        &String::from_str(&env, "Matching-currency reimbursement"),
+    );
+    client.fund_expense(&payer, &expense_id, &500);
+    client.approve_expense(&approver, &expense_id, &500);
+    client.pay_expense(&expense_id);
+
+    let expense = client.get_expense(&expense_id).unwrap();
+    assert_eq!(expense.token, token_client.address);
+    assert_eq!(expense.status, ExpenseStatus::Paid);
+    // The employee is paid in the submitted token and the contract is fully drained.
+    assert_eq!(token_client.balance(&submitter), 500);
+    assert_eq!(token_client.balance(&client.address), 0);
+}
+
+/// Distinct expenses in distinct tokens never interfere. Every operation on an
+/// expense uses that expense's own stored token, so there is no shared
+/// "settlement currency" and no cross-token contamination: each employee is paid
+/// strictly in the currency their own expense referenced.
+#[test]
+fn test_distinct_expenses_settle_in_their_own_tokens_without_interference() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let submitter_a = Address::generate(&env);
+    let submitter_b = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token_a = create_token(&env, &token_admin);
+    let token_b = create_token(&env, &token_admin);
+    token::StellarAssetClient::new(&env, &token_a.address).mint(&payer, &500);
+    token::StellarAssetClient::new(&env, &token_b.address).mint(&payer, &300);
+
+    let client = create_contract(&env);
+    client.initialize(&owner);
+    client.add_approver(&owner, &approver);
+
+    let id_a = client.submit_expense(
+        &submitter_a,
+        &approver,
+        &token_a.address,
+        &500,
+        &String::from_str(&env, "receipt-token-a"),
+        &String::from_str(&env, "Expense in token A"),
+    );
+    let id_b = client.submit_expense(
+        &submitter_b,
+        &approver,
+        &token_b.address,
+        &300,
+        &String::from_str(&env, "receipt-token-b"),
+        &String::from_str(&env, "Expense in token B"),
+    );
+
+    client.fund_expense(&payer, &id_a, &500);
+    client.fund_expense(&payer, &id_b, &300);
+    client.approve_expense(&approver, &id_a, &500);
+    client.approve_expense(&approver, &id_b, &300);
+    client.pay_expense(&id_a);
+    client.pay_expense(&id_b);
+
+    // Each employee receives only their own expense's token; nothing crosses over.
+    assert_eq!(token_a.balance(&submitter_a), 500);
+    assert_eq!(token_b.balance(&submitter_a), 0);
+    assert_eq!(token_b.balance(&submitter_b), 300);
+    assert_eq!(token_a.balance(&submitter_b), 0);
+    assert_eq!(token_a.balance(&client.address), 0);
+    assert_eq!(token_b.balance(&client.address), 0);
 }

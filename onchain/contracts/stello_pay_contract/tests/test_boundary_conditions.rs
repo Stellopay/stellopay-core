@@ -252,9 +252,9 @@ fn test_escrow_i128_max_amount_per_period_overflow() {
 /// returns `Err(PayrollError::ZeroPeriodDuration)`.
 ///
 /// A zero-duration period is undefined and would cause division-by-zero
-/// during claim calculations.
+/// during claim calculations. The error must be surfaced at creation time
+/// before any agreement state is persisted.
 #[test]
-#[should_panic]
 fn test_escrow_zero_period_seconds_rejected() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -262,7 +262,29 @@ fn test_escrow_zero_period_seconds_rejected() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let _ = client.create_escrow_agreement(&employer, &contributor, &token, &100i128, &0u64, &4u32);
+    let result = client.try_create_escrow_agreement(&employer, &contributor, &token, &100i128, &0u64, &4u32);
+    assert_eq!(result, Err(Ok(PayrollError::ZeroPeriodDuration)));
+}
+
+/// Verifies that creating an escrow agreement with a one-second period
+/// duration succeeds.
+///
+/// A duration of exactly one second is the smallest valid unit and should be
+/// accepted without introducing any boundary-condition bugs.
+#[test]
+fn test_escrow_minimum_valid_period_duration_succeeds() {
+    let env = create_test_env();
+    let (_contract_id, client) = setup_contract(&env);
+    let employer = create_test_address(&env);
+    let contributor = create_test_address(&env);
+    let token = create_test_address(&env);
+
+    let agreement_id =
+        client.create_escrow_agreement(&employer, &contributor, &token, &100i128, &1u64, &4u32);
+
+    let agreement = client.get_agreement(&agreement_id).unwrap();
+    assert_eq!(agreement.period_seconds, Some(1));
+    assert_eq!(agreement.grace_period_seconds, 4);
 }
 
 /// Verifies that creating an escrow agreement with zero num_periods
@@ -858,9 +880,8 @@ fn test_get_milestone_count_nonexistent_agreement_returns_zero() {
 // These tests verify that:
 //   1. A non-admin caller is rejected by every admin-only setter.
 //   2. The legitimate admin can perform maintenance writes successfully.
-//   3. Validation guards (negative amounts, zero duration) are enforced
-//      even for the admin, ensuring the admin cannot corrupt invariants
-//      with obviously invalid data.
+//   3. Validation guards (negative amounts, zero duration) are enforced even for the admin,
+//      ensuring the admin cannot corrupt invariants with obviously invalid data.
 // ============================================================================
 
 /// Helper: deploys a stello_pay_contract and returns (client, owner).
@@ -918,21 +939,21 @@ fn test_admin_set_agreement_paid_amount_negative_panics() {
 }
 
 // ---------------------------------------------------------------------------
-// admin_set_agreement_escrow_balance
+// admin_set_agr_escrow_balance
 // ---------------------------------------------------------------------------
 
-/// @notice Non-admin caller must be rejected by `admin_set_agreement_escrow_balance`.
+/// @notice Non-admin caller must be rejected by `admin_set_agr_escrow_balance`.
 ///
 /// Only the contract owner (or RBAC Admin) may correct the accounted escrow
 /// balance. A random address attempting this must be rejected.
 #[test]
 #[should_panic]
-fn test_admin_set_agreement_escrow_balance_rejects_non_admin() {
+fn test_admin_set_agr_escrow_balance_rejects_non_admin() {
     let env = create_test_env();
     let (client, _owner) = setup_admin_contract(&env);
     let token = create_test_address(&env);
     let attacker = create_test_address(&env);
-    client.admin_set_agreement_escrow_balance(&attacker, &1u128, &token, &9999i128);
+    client.admin_set_agr_escrow_balance(&attacker, &1u128, &token, &9999i128);
 }
 
 /// @notice Admin can set the accounted escrow balance to a valid non-negative value.
@@ -940,12 +961,12 @@ fn test_admin_set_agreement_escrow_balance_rejects_non_admin() {
 /// Verifies the authorized write path: zero and positive balances are accepted
 /// without error when the caller is the contract owner.
 #[test]
-fn test_admin_set_agreement_escrow_balance_admin_succeeds() {
+fn test_admin_set_agr_escrow_balance_admin_succeeds() {
     let env = create_test_env();
     let (client, owner) = setup_admin_contract(&env);
     let token = create_test_address(&env);
-    client.admin_set_agreement_escrow_balance(&owner, &1u128, &token, &0i128);
-    client.admin_set_agreement_escrow_balance(&owner, &1u128, &token, &10_000i128);
+    client.admin_set_agr_escrow_balance(&owner, &1u128, &token, &0i128);
+    client.admin_set_agr_escrow_balance(&owner, &1u128, &token, &10_000i128);
 }
 
 /// @notice A negative escrow balance must be rejected even for admin.
@@ -954,11 +975,11 @@ fn test_admin_set_agreement_escrow_balance_admin_succeeds() {
 /// exceed the actual on-chain token holdings of the contract.
 #[test]
 #[should_panic(expected = "InvalidAmount")]
-fn test_admin_set_agreement_escrow_balance_negative_panics() {
+fn test_admin_set_agr_escrow_balance_negative_panics() {
     let env = create_test_env();
     let (client, owner) = setup_admin_contract(&env);
     let token = create_test_address(&env);
-    client.admin_set_agreement_escrow_balance(&owner, &1u128, &token, &-500i128);
+    client.admin_set_agr_escrow_balance(&owner, &1u128, &token, &-500i128);
 }
 
 // ---------------------------------------------------------------------------
@@ -995,20 +1016,20 @@ fn test_admin_set_agreement_token_admin_succeeds() {
 }
 
 // ---------------------------------------------------------------------------
-// admin_set_agreement_activation_time
+// admin_set_agr_activation_time
 // ---------------------------------------------------------------------------
 
-/// @notice Non-admin caller must be rejected by `admin_set_agreement_activation_time`.
+/// @notice Non-admin caller must be rejected by `admin_set_agr_activation_time`.
 ///
 /// Altering the activation timestamp can shift all period boundaries and must
 /// not be accessible to unauthorized callers.
 #[test]
 #[should_panic]
-fn test_admin_set_agreement_activation_time_rejects_non_admin() {
+fn test_admin_set_agr_activation_time_rejects_non_admin() {
     let env = create_test_env();
     let (client, _owner) = setup_admin_contract(&env);
     let attacker = create_test_address(&env);
-    client.admin_set_agreement_activation_time(&attacker, &1u128, &0u64);
+    client.admin_set_agr_activation_time(&attacker, &1u128, &0u64);
 }
 
 /// @notice Admin can overwrite the activation timestamp with any u64 value.
@@ -1017,28 +1038,28 @@ fn test_admin_set_agreement_activation_time_rejects_non_admin() {
 /// tooling; large values represent far-future timestamps. Both must be
 /// accepted by the admin path.
 #[test]
-fn test_admin_set_agreement_activation_time_admin_succeeds() {
+fn test_admin_set_agr_activation_time_admin_succeeds() {
     let env = create_test_env();
     let (client, owner) = setup_admin_contract(&env);
-    client.admin_set_agreement_activation_time(&owner, &1u128, &0u64);
-    client.admin_set_agreement_activation_time(&owner, &1u128, &1_700_000_000u64);
+    client.admin_set_agr_activation_time(&owner, &1u128, &0u64);
+    client.admin_set_agr_activation_time(&owner, &1u128, &1_700_000_000u64);
 }
 
 // ---------------------------------------------------------------------------
-// admin_set_agreement_period_duration
+// admin_set_agr_period_duration
 // ---------------------------------------------------------------------------
 
-/// @notice Non-admin caller must be rejected by `admin_set_agreement_period_duration`.
+/// @notice Non-admin caller must be rejected by `admin_set_agr_period_duration`.
 ///
 /// The period duration controls how fast periods elapse and therefore how
 /// quickly escrow is consumed. Unauthorized writes must be denied.
 #[test]
 #[should_panic]
-fn test_admin_set_agreement_period_duration_rejects_non_admin() {
+fn test_admin_set_agr_period_duration_rejects_non_admin() {
     let env = create_test_env();
     let (client, _owner) = setup_admin_contract(&env);
     let attacker = create_test_address(&env);
-    client.admin_set_agreement_period_duration(&attacker, &1u128, &86400u64);
+    client.admin_set_agr_period_duration(&attacker, &1u128, &86400u64);
 }
 
 /// @notice Admin can update the period duration to any positive value.
@@ -1046,36 +1067,36 @@ fn test_admin_set_agreement_period_duration_rejects_non_admin() {
 /// Both small (1 second) and large (~1 year) durations are valid; the admin
 /// callable must accept them without error.
 #[test]
-fn test_admin_set_agreement_period_duration_admin_succeeds() {
+fn test_admin_set_agr_period_duration_admin_succeeds() {
     let env = create_test_env();
     let (client, owner) = setup_admin_contract(&env);
-    client.admin_set_agreement_period_duration(&owner, &1u128, &1u64);
-    client.admin_set_agreement_period_duration(&owner, &1u128, &31_536_000u64);
+    client.admin_set_agr_period_duration(&owner, &1u128, &1u64);
+    client.admin_set_agr_period_duration(&owner, &1u128, &31_536_000u64);
 }
 
-/// @notice Admin calling `admin_set_agreement_period_duration` with zero must panic.
+/// @notice Admin calling `admin_set_agr_period_duration` with zero must panic.
 ///
 /// A period duration of zero would cause division-by-zero in elapsed-period
 /// arithmetic and must be rejected at the entrypoint boundary.
 #[test]
 #[should_panic(expected = "InvalidDuration")]
-fn test_admin_set_agreement_period_duration_zero_panics() {
+fn test_admin_set_agr_period_duration_zero_panics() {
     let env = create_test_env();
     let (client, owner) = setup_admin_contract(&env);
-    client.admin_set_agreement_period_duration(&owner, &1u128, &0u64);
+    client.admin_set_agr_period_duration(&owner, &1u128, &0u64);
 }
 
-/// @notice Non-admin caller is rejected by `admin_set_agreement_escrow_balance` (try_ variant).
+/// @notice Non-admin caller is rejected by `admin_set_agr_escrow_balance` (try_ variant).
 ///
 /// Confirms the error path using the `try_` SDK variant which returns a
 /// `Result` instead of panicking, letting us assert the rejection cleanly.
 #[test]
-fn test_admin_set_agreement_escrow_balance_non_admin_returns_error() {
+fn test_admin_set_agr_escrow_balance_non_admin_returns_error() {
     let env = create_test_env();
     let (client, _owner) = setup_admin_contract(&env);
     let token = create_test_address(&env);
     let attacker = create_test_address(&env);
-    let result = client.try_admin_set_agreement_escrow_balance(&attacker, &1u128, &token, &100i128);
+    let result = client.try_admin_set_agr_escrow_balance(&attacker, &1u128, &token, &100i128);
     assert!(result.is_err(), "non-admin must be rejected");
 }
 
@@ -1090,23 +1111,23 @@ fn test_admin_set_agreement_token_non_admin_returns_error() {
     assert!(result.is_err(), "non-admin must be rejected");
 }
 
-/// @notice Non-admin caller is rejected by `admin_set_agreement_activation_time` (try_ variant).
+/// @notice Non-admin caller is rejected by `admin_set_agr_activation_time` (try_ variant).
 #[test]
-fn test_admin_set_agreement_activation_time_non_admin_returns_error() {
+fn test_admin_set_agr_activation_time_non_admin_returns_error() {
     let env = create_test_env();
     let (client, _owner) = setup_admin_contract(&env);
     let attacker = create_test_address(&env);
-    let result = client.try_admin_set_agreement_activation_time(&attacker, &1u128, &0u64);
+    let result = client.try_admin_set_agr_activation_time(&attacker, &1u128, &0u64);
     assert!(result.is_err(), "non-admin must be rejected");
 }
 
-/// @notice Non-admin caller is rejected by `admin_set_agreement_period_duration` (try_ variant).
+/// @notice Non-admin caller is rejected by `admin_set_agr_period_duration` (try_ variant).
 #[test]
-fn test_admin_set_agreement_period_duration_non_admin_returns_error() {
+fn test_admin_set_agr_period_duration_non_admin_returns_error() {
     let env = create_test_env();
     let (client, _owner) = setup_admin_contract(&env);
     let attacker = create_test_address(&env);
-    let result = client.try_admin_set_agreement_period_duration(&attacker, &1u128, &86400u64);
+    let result = client.try_admin_set_agr_period_duration(&attacker, &1u128, &86400u64);
     assert!(result.is_err(), "non-admin must be rejected");
 }
 

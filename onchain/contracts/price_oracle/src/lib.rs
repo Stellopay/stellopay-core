@@ -1,4 +1,5 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Vec,
@@ -432,6 +433,9 @@ impl PriceOracleContract {
         env.storage()
             .temporary()
             .remove(&DataKey::PendingBucket(base.clone(), quote.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey::PairState(base.clone(), quote.clone()));
 
         env.events().publish(
             (symbol_short!("oracle"), symbol_short!("disable")),
@@ -670,9 +674,9 @@ impl PriceOracleContract {
             .get(&DataKey::PairConfig(base, quote))
     }
 
-    /// @notice Returns the last accepted state for a `(base, quote)` pair, if configured and not stale.
-    /// @dev Rejects the state with `PriceTooOld` if `ledger.timestamp() - last_updated_ts > max_staleness_seconds`.
-    /// @param base Base token address.
+    /// @notice Returns the last accepted state for a `(base, quote)` pair, if configured and not
+    /// stale. @dev Rejects the state with `PriceTooOld` if `ledger.timestamp() -
+    /// last_updated_ts > max_staleness_seconds`. @param base Base token address.
     /// @param quote Quote token address.
     pub fn get_pair_state(
         env: Env,
@@ -690,6 +694,10 @@ impl PriceOracleContract {
             .instance()
             .get::<_, PairConfig>(&DataKey::PairConfig(base, quote))
             .ok_or(OracleError::PairNotConfigured)?;
+
+        if !cfg.enabled {
+            return Err(OracleError::PairNotConfigured);
+        }
 
         let now = env.ledger().timestamp();
         let age = now.saturating_sub(state.last_updated_ts);

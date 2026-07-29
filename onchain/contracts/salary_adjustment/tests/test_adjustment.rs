@@ -942,10 +942,10 @@ fn test_get_owner() {
 //
 // These tests verify that a retroactive adjustment:
 //   1. Updates the salary going forward when applied.
-//   2. Does NOT retroactively alter already-processed payroll periods.
-//      The salary_adjustment contract has no claw-back or top-up mechanism
-//      for past claims. The effective_date is a constraint on when the
-//      adjustment can be applied, not a trigger for retroactive recalculation.
+//   2. Does NOT retroactively alter already-processed payroll periods. The salary_adjustment
+//      contract has no claw-back or top-up mechanism for past claims. The effective_date is a
+//      constraint on when the adjustment can be applied, not a trigger for retroactive
+//      recalculation.
 // ============================================================================
 
 #[test]
@@ -1049,8 +1049,13 @@ fn test_retroactive_adjustment_does_not_affect_prior_normal_adjustment() {
     // with effective_date=200 (way before the first adjustment).
     set_time(&env, 3000);
     let id2 = client.create_retroactive_adjustment(
-        &owner, &employer, &employee, &approver,
-        &8_000, &10_000, &200,
+        &owner,
+        &employer,
+        &employee,
+        &approver,
+        &8_000,
+        &10_000,
+        &200,
         &reason_hash(&env, 99),
     );
     client.approve_adjustment(&approver, &id2);

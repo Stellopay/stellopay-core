@@ -200,14 +200,9 @@ fn test_failed_duplicate_create_leaves_existing_tree_intact() {
     // 1. Create the original organization and build a department tree.
     let acme_id = client.create_organization(&owner, &symbol_short!("Acme"));
     let eng_id = client.create_department(&owner, &acme_id, &symbol_short!("Eng"), &None);
-    let sales_id =
-        client.create_department(&owner, &acme_id, &symbol_short!("Sales"), &None);
-    let direct_id = client.create_department(
-        &owner,
-        &acme_id,
-        &symbol_short!("Dir"),
-        &Some(sales_id),
-    );
+    let sales_id = client.create_department(&owner, &acme_id, &symbol_short!("Sales"), &None);
+    let direct_id =
+        client.create_department(&owner, &acme_id, &symbol_short!("Dir"), &Some(sales_id));
     let emp = Address::generate(&env);
     client.assign_employee_to_department(&owner, &acme_id, &sales_id, &emp);
 
@@ -215,7 +210,11 @@ fn test_failed_duplicate_create_leaves_existing_tree_intact() {
     let before_depts = client.get_org_departments(&acme_id);
     assert_eq!(before_depts.len(), 3, "pre-condition: tree has 3 depts");
     let before_emp_in_sales = client.get_department_employees(&sales_id);
-    assert_eq!(before_emp_in_sales.len(), 1, "pre-condition: one emp in Sales");
+    assert_eq!(
+        before_emp_in_sales.len(),
+        1,
+        "pre-condition: one emp in Sales"
+    );
 
     // 2. Attempt to re-create "Acme" with a different owner — must panic.
     let stranger = Address::generate(&env);
@@ -253,7 +252,10 @@ fn test_failed_duplicate_create_leaves_existing_tree_intact() {
     assert_eq!(direct.parent_id, Some(sales_id));
 
     // 6. Employee membership and computed report are still intact.
-    assert_eq!(client.get_employee_department(&emp, &acme_id), Some(sales_id));
+    assert_eq!(
+        client.get_employee_department(&emp, &acme_id),
+        Some(sales_id)
+    );
     assert_eq!(client.get_department_employees(&sales_id).len(), 1);
     let (sales_count, sales_children, _) = client.get_department_report(&sales_id);
     assert_eq!(sales_count, 1, "Sales still reports its assigned employee");
@@ -271,7 +273,10 @@ fn test_create_organization_names_are_case_sensitive() {
     let owner = Address::generate(&env);
     let id_uc = client.create_organization(&owner, &symbol_short!("Acme"));
     let id_lc = client.create_organization(&owner, &symbol_short!("acme"));
-    assert_ne!(id_uc, id_lc, "case-different names must yield distinct orgs");
+    assert_ne!(
+        id_uc, id_lc,
+        "case-different names must yield distinct orgs"
+    );
     let uc = client.get_organization(&id_uc);
     let lc = client.get_organization(&id_lc);
     assert_eq!(uc.name, symbol_short!("Acme"));
@@ -304,10 +309,7 @@ fn test_failed_duplicate_does_not_increment_next_org_id() {
 
     // Next legitimate create gets id = 2 (sequential, no gaps).
     let second = client.create_organization(&owner, &symbol_short!("Beta"));
-    assert_eq!(
-        second, 2,
-        "rejected duplicate must not increment NextOrgId"
-    );
+    assert_eq!(second, 2, "rejected duplicate must not increment NextOrgId");
 }
 
 /// @notice Sanity check: many distinct names are accepted in sequence; the
@@ -1584,8 +1586,8 @@ fn test_merge_source_wrong_org_fails() {
 /// Sequence:
 /// 1. Assign `emp` to `dept_a`   → forward: dept_a, reverse: dept_a contains emp
 /// 2. Remove `emp` from dept      → forward: None,   reverse: dept_a empty
-/// 3. Reassign `emp` to `dept_b`  → forward: dept_b, reverse: dept_b contains emp
-///                                                             dept_a still empty
+/// 3. Reassign `emp` to `dept_b`  → forward: dept_b, reverse: dept_b contains emp dept_a still
+///    empty
 ///
 /// This is the primary regression guard: without proper cleanup a stale
 /// `EmployeeDepartment` entry would survive step 2, leaving `get_employee_department`

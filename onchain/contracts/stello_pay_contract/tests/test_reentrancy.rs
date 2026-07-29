@@ -262,23 +262,22 @@ fn test_claim_time_based_state_updated_prevents_double_claim() {
 // These tests verify the Checks-Effects-Interactions (CEI) ordering invariant
 // for milestone-related operations:
 //
-//   1. `claim_milestone` marks the milestone as CLAIMED in persistent storage
-//      BEFORE executing the token transfer, so any reentrant `claim_milestone`
-//      call on the same milestone fails with `MilestoneAlreadyClaimed`.
+//   1. `claim_milestone` marks the milestone as CLAIMED in persistent storage BEFORE executing the
+//      token transfer, so any reentrant `claim_milestone` call on the same milestone fails with
+//      `MilestoneAlreadyClaimed`.
 //
-//   2. `expire_milestone` records the expiry flag BEFORE calling the
-//      `on_milestone_expired` hook, so even a hook that tries to call
-//      `claim_milestone` on an expired milestone fails with
+//   2. `expire_milestone` records the expiry flag BEFORE calling the `on_milestone_expired` hook,
+//      so even a hook that tries to call `claim_milestone` on an expired milestone fails with
 //      `MilestoneNotApproved` (an expired milestone was never approved).
 //
-//   3. The `MaliciousMilestoneHook` mock correctly fires its callback, proving
-//      the hook integration path works end-to-end.
+//   3. The `MaliciousMilestoneHook` mock correctly fires its callback, proving the hook integration
+//      path works end-to-end.
 //
 // Checks-Effects-Interactions (CEI) ordering in the payroll contract:
 //   - Effect: `MilestoneClaimed` flag written before `TokenClient::transfer`.
 //   - Effect: `MilestoneExpired` flag written before hook callback.
-//   - This means any reentrant call during or after the transfer/hook will see
-//     the milestone's terminal state and be rejected.
+//   - This means any reentrant call during or after the transfer/hook will see the milestone's
+//     terminal state and be rejected.
 // ============================================================================
 
 /// Import the mock hook contract so we can register it in tests.
@@ -310,11 +309,11 @@ fn setup_milestone_agreement(
 ///
 /// # CEI Invariant Tested
 /// 1. Milestone approved.
-/// 2. `claim_milestone` called — internally: set `MilestoneClaimed = true`,
-///    decrement escrow balance, THEN transfer tokens.
-/// 3. Subsequent `claim_milestone` call returns `MilestoneAlreadyClaimed`
-///    (the state was committed before the transfer, so no double-claim can
-///    succeed even if a hook or token callback triggers it during the transfer).
+/// 2. `claim_milestone` called — internally: set `MilestoneClaimed = true`, decrement escrow
+///    balance, THEN transfer tokens.
+/// 3. Subsequent `claim_milestone` call returns `MilestoneAlreadyClaimed` (the state was committed
+///    before the transfer, so no double-claim can succeed even if a hook or token callback triggers
+///    it during the transfer).
 #[test]
 fn test_claim_milestone_cei_prevents_double_claim() {
     let env = create_env();
@@ -354,14 +353,20 @@ fn test_claim_milestone_state_committed_before_transfer() {
 
     // Verify pre-claim state: milestone is not claimed.
     let before = client.get_milestone(&agreement_id, &1u32).unwrap();
-    assert!(!before.claimed, "milestone must not be claimed before claim_milestone");
+    assert!(
+        !before.claimed,
+        "milestone must not be claimed before claim_milestone"
+    );
 
     // Execute the claim.
     client.claim_milestone(&agreement_id, &1u32);
 
     // Verify post-claim state: milestone is marked claimed in persistent storage.
     let after = client.get_milestone(&agreement_id, &1u32).unwrap();
-    assert!(after.claimed, "milestone must be marked claimed after successful claim_milestone");
+    assert!(
+        after.claimed,
+        "milestone must be marked claimed after successful claim_milestone"
+    );
 }
 
 /// @notice `expire_milestone` persists the `MilestoneExpired` flag BEFORE
@@ -383,7 +388,10 @@ fn test_expire_milestone_cei_blocks_subsequent_claim() {
 
     // Expire the milestone WITHOUT approving it.
     let expire_result = client.try_expire_milestone(&agreement_id, &1u32);
-    assert!(expire_result.is_ok(), "expire_milestone must succeed for an unapproved milestone");
+    assert!(
+        expire_result.is_ok(),
+        "expire_milestone must succeed for an unapproved milestone"
+    );
 
     // A claim attempt on an expired, unapproved milestone must fail.
     let claim_result = client.try_claim_milestone(&agreement_id, &1u32);

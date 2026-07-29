@@ -347,6 +347,16 @@ The test suite covers:
   - `test_execute_slash_double_execution_is_rejected` — second `execute_slash` on the same record returns `InvalidState`
   - `test_execute_slash_stake_balance_reflects_single_execution` — stake is debited by exactly one penalty; the rejected second call does not alter the balance
   - `test_attestation_slash_execute_slash_double_execution_is_rejected` — guard applies equally to attestation-based slashes
+- **Maximum slash percentage cap**:
+  - `test_slash_at_percentage_cap_succeeds` — slash exactly at a custom per-event bps cap succeeds
+  - `test_slash_above_percentage_cap_fails` — slash 1 bps above a custom cap is rejected with `PenaltyTooHigh`
+  - `test_execute_slash_respects_percentage_cap` — full lifecycle: slash at cap, execute, verify correct amount end-to-end
+  - `test_attestation_slash_at_percentage_cap_succeeds` — attestation-based slash at cap succeeds
+  - `test_attestation_slash_above_percentage_cap_fails` — attestation-based slash above cap fails
+  - `test_zero_per_event_bps_cap_rejected` — zero per-event cap is rejected at init
+  - `test_per_event_bps_cap_exceeds_max_rejected` — cap above `MAX_PENALTY_BPS` (5 000) is rejected
+  - `test_max_bps_boundary_slash_succeeds` — slash at hard `MAX_PENALTY_BPS` through full slash-with-evidence path
+  - `test_update_cap_then_enforce` — lowering the cap via `set_penalty_caps` correctly rejects previously-valid slashes
 
 ---
 

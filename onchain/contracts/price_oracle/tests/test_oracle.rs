@@ -437,6 +437,120 @@ fn test_non_owner_cannot_disable_pair() {
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 }
 
+/// Disabling a pair clears the stored PairState, making get_pair_state
+/// return PairNotConfigured and push_price reject new submissions.
+#[test]
+fn test_disable_pair_clears_state_and_blocks_reads() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source, base, quote) = full_setup(&env);
+
+    // Push a fresh price.
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+    let state = oracle_client.get_pair_state(&base, &quote);
+    assert_eq!(state.rate, 2_000_000);
+
+    // Disable the pair.
+    oracle_client.disable_pair(&oracle_owner, &base, &quote);
+    let cfg = oracle_client.get_pair_config(&base, &quote).unwrap();
+    assert!(!cfg.enabled);
+
+    // get_pair_state must NOT return the old cached state — pair is disabled.
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
+
+    // push_price must also be rejected for a disabled pair.
+    assert_eq!(
+        oracle_client.try_push_price(&source, &base, &quote, &3_000_000i128, &1_000u64),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
+}
+
+/// A disabled pair that still holds a fresh (non-stale) cached price is
+/// clearly distinguishable from an enabled pair with a fresh price.
+/// get_pair_state returns PairNotConfigured for the disabled pair even
+/// though the cached rate has not yet aged past max_staleness_seconds.
+#[test]
+fn test_disabled_pair_get_pair_state_distinguishable_from_fresh() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source, base, quote) = full_setup(&env);
+
+    // Push a fresh price.
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // Configure and push a fresh price to a second (reference) pair.
+    let base2 = Address::generate(&env);
+    let quote2 = Address::generate(&env);
+    oracle_client.configure_pair(
+        &oracle_owner,
+        &base2,
+        &quote2,
+        &500_000i128,
+        &5_000_000i128,
+        &600u64,
+        &1u32,
+        &DEFAULT_TOLERANCE_BPS,
+        &DEFAULT_QUORUM_WINDOW_SECONDS,
+        &0u64,
+    );
+    let source2 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+    oracle_client.push_price(&source2, &base2, &quote2, &2_500_000i128, &1_000u64);
+
+    // Disable the first pair while both are still fresh.
+    oracle_client.disable_pair(&oracle_owner, &base, &quote);
+
+    // Enabled reference pair: succeeds, returns the fresh state.
+    let state = oracle_client.get_pair_state(&base2, &quote2);
+    assert_eq!(state.rate, 2_500_000);
+    assert_eq!(state.last_updated_ts, 1_000);
+
+    // Disabled pair: returns PairNotConfigured even though its cached
+    // price is equally fresh (age is the same).
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
+}
+
+/// Re-enabling a previously disabled pair does NOT resurrect the old
+/// pre-disable price.  A caller must push a new price before
+/// get_pair_state will succeed again.
+#[test]
+fn test_enable_pair_does_not_resurrect_stale_price() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source, base, quote) = full_setup(&env);
+
+    // Push a price, then disable the pair immediately.
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+    oracle_client.disable_pair(&oracle_owner, &base, &quote);
+
+    // Re-enable.
+    oracle_client.enable_pair(&oracle_owner, &base, &quote);
+    assert!(oracle_client.get_pair_config(&base, &quote).unwrap().enabled);
+
+    // get_pair_state still returns an error — the old price was cleared
+    // on disable and no fresh push has happened since re-enable.
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
+
+    // Push a brand-new price after re-enable.
+    env.ledger().with_mut(|li| li.timestamp = 2_000);
+    oracle_client.push_price(&source, &base, &quote, &3_000_000i128, &2_000u64);
+
+    // Now get_pair_state succeeds with the NEW price.
+    let state = oracle_client.get_pair_state(&base, &quote);
+    assert_eq!(state.rate, 3_000_000);
+    assert_eq!(state.last_updated_ts, 2_000);
+    assert_eq!(state.last_source, source);
+}
+
 // ===========================================================================
 // 5. Push price – happy path
 // ===========================================================================
@@ -1359,6 +1473,110 @@ fn test_quorum_rejection_on_zero_quorum() {
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
 
+/// A publisher submission that diverges from the current quorum-cluster
+/// beyond the configured tolerance band is excluded from aggregation.
+/// The outlier does not skew the accepted price or the supporting-vote
+/// cluster.
+#[test]
+fn test_multi_source_quorum_outlier_beyond_tolerance_excluded() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source1, base, quote) = full_setup(&env);
+
+    let source2 = Address::generate(&env);
+    let source3 = Address::generate(&env);
+    let source4 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+    oracle_client.add_source(&oracle_owner, &source3);
+    oracle_client.add_source(&oracle_owner, &source4);
+
+    // quorum=3, tolerance=25bps (0.25 %).
+    configure_pair_with_settings(
+        &oracle_client,
+        &oracle_owner,
+        &base,
+        &quote,
+        500_000i128,
+        5_000_000i128,
+        600u64,
+        3u32,
+        25u32,
+        60u64,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+
+    // source1 — cluster anchor.
+    oracle_client.push_price(&source1, &base, &quote, &1_000_000i128, &1_000u64);
+
+    // source2 — OUTLIER, far outside 25 bps tolerance (~100 % diff).
+    oracle_client.push_price(&source2, &base, &quote, &1_999_999i128, &1_000u64);
+
+    // source3 — within 25 bps of source1 (~0.05 % = 5 bps diff).
+    oracle_client.push_price(&source3, &base, &quote, &1_000_500i128, &1_000u64);
+
+    // Quorum not yet reached — only 2 matching votes (source1 + source3).
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
+
+    // source4 — within 25 bps of the cluster (~0.1 % = 10 bps from source1).
+    // Completes quorum: {source1, source3, source4} all within tolerance.
+    oracle_client.push_price(&source4, &base, &quote, &1_001_000i128, &1_000u64);
+
+    let state = oracle_client.get_pair_state(&base, &quote);
+    // Accepted rate is source4's (the completing vote), NOT the outlier.
+    assert_eq!(state.rate, 1_001_000);
+    assert_ne!(state.rate, 1_999_999);
+    assert_eq!(state.last_source, source4);
+}
+
+/// All publisher submissions within the configured tolerance band are
+/// accepted — each vote contributes to quorum and the price is correctly
+/// aggregated at the completing vote's rate.
+#[test]
+fn test_multi_source_quorum_within_tolerance_accepted() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source1, base, quote) = full_setup(&env);
+
+    let source2 = Address::generate(&env);
+    let source3 = Address::generate(&env);
+    oracle_client.add_source(&oracle_owner, &source2);
+    oracle_client.add_source(&oracle_owner, &source3);
+
+    // quorum=3, tolerance=30bps (0.3 %) — all three rates fit comfortably.
+    configure_pair_with_settings(
+        &oracle_client,
+        &oracle_owner,
+        &base,
+        &quote,
+        500_000i128,
+        5_000_000i128,
+        600u64,
+        3u32,
+        30u32,
+        60u64,
+    );
+
+    env.ledger().with_mut(|li| li.timestamp = 2_000);
+
+    oracle_client.push_price(&source1, &base, &quote, &2_000_000i128, &2_000u64);
+    oracle_client.push_price(&source2, &base, &quote, &2_005_000i128, &2_000u64);
+
+    // Only 2 supporting votes so far — quorum=3 not yet met.
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
+
+    // source3 completes the cluster — all three rates within 30 bps.
+    oracle_client.push_price(&source3, &base, &quote, &2_006_000i128, &2_000u64);
+
+    let state = oracle_client.get_pair_state(&base, &quote);
+    assert_eq!(state.rate, 2_006_000);
+    assert_eq!(state.last_source, source3);
+}
+
 // ===========================================================================
 
 // ===========================================================================
@@ -1537,7 +1755,8 @@ fn test_get_pair_state_fresh_price_succeeds() {
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
-    // 60 seconds later — price is 60s old, max_age = 600s -> fresh (full_setup configures max_staleness=600)
+    // 60 seconds later — price is 60s old, max_age = 600s -> fresh (full_setup configures
+    // max_staleness=600)
     env.ledger().with_mut(|li| li.timestamp = 1_060);
     let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_000_000);

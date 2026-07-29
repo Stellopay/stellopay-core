@@ -415,6 +415,34 @@ fn cliff_full_claim_after_cliff() {
     assert_eq!(schedule.status, VestingStatus::Completed);
 }
 
+#[test]
+fn cliff_exact_second_boundary() {
+    let env = create_env();
+    let (client, _owner, employer, beneficiary, token) = full_setup(&env);
+
+    set_time(&env, 0);
+    let sid = client.create_cliff_schedule(
+        &employer,
+        &beneficiary,
+        &token.address,
+        &1_000i128,
+        &200u64,
+        &false,
+    );
+
+    // One second before cliff: nothing vested
+    set_time(&env, 199);
+    assert_eq!(client.get_vested_amount(&sid), 0);
+
+    // Exactly at cliff: full amount vests
+    set_time(&env, 200);
+    assert_eq!(client.get_vested_amount(&sid), 1_000);
+
+    // One second after cliff: still total (no further linear accrual)
+    set_time(&env, 201);
+    assert_eq!(client.get_vested_amount(&sid), 1_000);
+}
+
 // ===========================================================================
 // D. Custom schedule (3 tests)
 // ===========================================================================
@@ -1593,8 +1621,7 @@ fn early_release_capped_after_prior_claim() {
 /// Contract behavior:
 ///   - `approve_early_release` increments `released_amount` (and transfers to beneficiary).
 ///   - `get_releasable_amount` returns `vested - released_amount`.
-///   - So after an early release of 200 at t=30 (vested=300):
-///       releasable = 300 - 200 = 100
+///   - So after an early release of 200 at t=30 (vested=300): releasable = 300 - 200 = 100
 ///   - The beneficiary can only claim that 100 remaining vested-but-unreleased amount.
 #[test]
 fn early_release_then_claim_transfers_exact_amounts() {
