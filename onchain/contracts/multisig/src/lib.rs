@@ -1,6 +1,19 @@
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, panic_with_error, token, Address, BytesN, Env, Vec};
+
+/// Errors emitted by the multisig contract.
+///
+/// Uses `#[contracterror]` so that `panic_with_error!` can convert values of
+/// this type into the host's `soroban_sdk::Error` representation.
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum MultisigError {
+    /// The WASM hash presented at execution time does not match the hash that
+    /// was approved and stored in the original `ContractUpgrade` proposal.
+    ContractUpgradeHashMismatch = 1,
+}
 
 #[contract]
 pub struct MultisigContract;
@@ -374,7 +387,7 @@ impl MultisigContract {
         assert!(signer_count > 0, "At least one signer required");
         assert!(
             new_threshold > 0 && new_threshold <= signer_count,
-            "Invalid threshold"
+            "New threshold must be between 1 and the number of signers"
         );
 
         // Ensure signer list has no duplicates.
@@ -588,5 +601,100 @@ impl MultisigContract {
     /// @dev Requires caller authentication
     pub fn get_approvals(env: Env, operation_id: u128) -> Vec<Address> {
         read_approvals(&env, operation_id)
+    }
+
+    /// @notice Records the caller's approval for an operation and, once the
+    ///         effective threshold is met, executes it — with mandatory WASM
+    ///         hash re-validation for `ContractUpgrade` operations.
+    ///
+    /// @dev This function is an explicit, hash-gated alternative to
+    ///      `approve_operation` for the final approval that triggers execution.
+    ///      It is the **required** path when a signer wants to assert that the
+    ///      WASM hash that will be deployed matches exactly what was voted on
+    ///      at proposal time.
+    ///
+    ///      Execution flow:
+    ///      1. Caller authenticates and must be a configured signer.
+    ///      2. For `ContractUpgrade` operations, `expected_hash` is validated
+    ///         against the hash stored in the proposal *before* the approval is
+    ///         recorded. If the hashes differ, the call is rejected with
+    ///         `ContractUpgradeHashMismatch` and no state is modified.
+    ///      3. The caller's approval is recorded (idempotent if already given).
+    ///      4. If the resulting approval count meets the effective threshold,
+    ///         `perform_execute` is called and the operation is marked Executed.
+    ///
+    ///      This design lets the final signing party use `execute_operation`
+    ///      instead of `approve_operation` to enforce that they confirm the
+    ///      correct hash at the moment of execution, closing the window between
+    ///      proposal approval and on-chain execution.
+    ///
+    /// @param caller          A configured signer who is approving and
+    ///                        triggering execution.
+    /// @param operation_id    The ID of the pending operation.
+    /// @param expected_hash   For `ContractUpgrade` operations: the WASM hash
+    ///                        the caller attests to. Must match the hash stored
+    ///                        in the approved proposal exactly.
+    ///                        Pass `None` for non-upgrade operation kinds (it
+    ///                        is ignored for those kinds).
+    ///
+    /// @custom:error ContractUpgradeHashMismatch  Raised when `expected_hash`
+    ///               is absent or does not equal the hash stored in the
+    ///               `ContractUpgrade` proposal. No state is modified.
+    pub fn execute_operation(
+        env: Env,
+        caller: Address,
+        operation_id: u128,
+        expected_hash: Option<BytesN<32>>,
+    ) {
+        require_initialized(&env);
+        caller.require_auth();
+        assert!(is_signer(&env, &caller), "Only signers can execute");
+
+        let op = read_operation(&env, operation_id);
+        assert!(
+            op.status == OperationStatus::Pending,
+            "Operation not pending"
+        );
+
+        // For ContractUpgrade operations, re-validate the WASM hash against
+        // the hash that was approved by signers at proposal time.
+        // Crucially, this check happens BEFORE recording the approval so that
+        // a mismatched hash never results in a partially-modified state.
+        if let OperationKind::ContractUpgrade(_, stored_hash) = &op.kind {
+            match &expected_hash {
+                Some(h) if h == stored_hash => {
+                    // Hash confirmed — safe to proceed.
+                }
+                _ => {
+                    // Either no hash was provided or the supplied hash does
+                    // not match what signers approved. Reject execution and
+                    // leave all state unchanged.
+                    panic_with_error!(&env, MultisigError::ContractUpgradeHashMismatch);
+                }
+            }
+        }
+
+        // Record the caller's approval (idempotent: ignored if already given).
+        if !has_approved(&env, operation_id, &caller) {
+            let mut approvals = read_approvals(&env, operation_id);
+            approvals.push_back(caller.clone());
+            let count = approvals.len();
+            let threshold = read_effective_threshold(&env, &operation_type(&op.kind));
+
+            write_approvals(&env, operation_id, &approvals);
+
+            env.events().publish(
+                ("operation_approved", operation_id),
+                OperationApprovedEvent {
+                    operation_id,
+                    signer: caller,
+                    approvals: count,
+                    threshold,
+                },
+            );
+        }
+
+        // Execute if threshold is now met.
+        execute_if_threshold_met(&env, operation_id);
     }
 }
