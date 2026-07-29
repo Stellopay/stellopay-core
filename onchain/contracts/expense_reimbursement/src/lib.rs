@@ -286,6 +286,11 @@ impl ExpenseReimbursementContract {
     /// NatSpec: Removal prevents this address from approving or rejecting any
     /// pending expense going forward. It does not alter approval decisions
     /// already recorded on expenses; those decisions remain valid and payable.
+    ///
+    /// # Authorization
+    /// Authorizes the live `caller`: it requires `caller`'s signature via
+    /// `require_auth` and asserts that `caller` is the contract owner. Any
+    /// non-owner caller is rejected, so only the owner can mutate the approver set.
     pub fn remove_approver(env: Env, caller: Address, approver: Address) {
         require_initialized(&env);
         require_owner(&env, &caller);
@@ -444,6 +449,21 @@ impl ExpenseReimbursementContract {
 
     /// Approve an expense, with support for partial approval.
     ///
+    /// # Audit Entry Schema
+    /// When an audit logger is configured via `set_audit_logger`, this function
+    /// appends a single audit log entry with the following schema:
+    ///
+    /// - **action**: `"expense_approved"` (Symbol)
+    /// - **actor**: The approver's address (Address)
+    /// - **subject**: The submitter's address (Option<Address>)
+    /// - **amount**: The approved amount (Option<i128>)
+    ///
+    /// The returned audit log ID is stored in `expense.audit_log_id` for traceability.
+    ///
+    /// # Audit Invariants
+    /// - Exactly one audit entry is appended per approval
+    /// - No audit entries are created for submit, fund, reject, cancel, or pay operations
+    /// - The audit entry amount reflects the approved amount (which may be less than requested)
     /// NatSpec: The approver must both be the expense's designated approver and
     /// currently hold the approver role. Once recorded, this approval is part of
     /// the expense's immutable lifecycle state and is not invalidated if the
@@ -716,6 +736,14 @@ impl ExpenseReimbursementContract {
     }
 
     /// Configure the optional external audit logger contract for approval traceability.
+    ///
+    /// # Audit Logger Integration
+    /// When configured, the contract will append audit log entries for approval actions.
+    /// See `approve_expense` for the audit entry schema.
+    ///
+    /// # Arguments
+    /// * `owner` - Contract owner (must be authenticated)
+    /// * `audit_logger` - Address of the audit logger contract
     pub fn set_audit_logger(env: Env, owner: Address, audit_logger: Address) {
         require_initialized(&env);
         require_owner(&env, &owner);

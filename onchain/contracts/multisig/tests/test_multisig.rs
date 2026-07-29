@@ -193,29 +193,21 @@ fn operation_type_override_takes_effect_without_changing_default() {
 }
 
 #[test]
-fn emergency_guardian_can_execute_without_threshold() {
+fn emergency_guardian_can_execute_dispute_resolution_without_threshold() {
     let env = create_env();
-    let (multisig_id, client, _owner, signers, guardian) = setup_initialized(&env);
+    let (_id, client, _owner, signers, guardian) = setup_initialized(&env);
 
-    // fund multisig
-    let admin = Address::generate(&env);
-    let token = create_token_contract(&env, &admin);
-    let token_admin_client = StellarAssetClient::new(&env, &token.address);
-    token_admin_client.mint(&multisig_id, &1_000i128);
-
-    let recipient = Address::generate(&env);
-
+    // DisputeResolution is emergency-eligible
     let op_id = client.propose_operation(
         &signers.get(0).unwrap(),
-        &OperationKind::LargePayment(token.address.clone(), recipient.clone(), 200i128),
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
     );
 
-    // Guardian executes directly
+    // Guardian executes directly (skipping the second approval)
     client.emergency_execute(&guardian, &op_id);
 
     let op = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Executed);
-    assert_eq!(token.balance(&recipient), 200i128);
 }
 
 #[test]

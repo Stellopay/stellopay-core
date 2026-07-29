@@ -4,6 +4,15 @@ Three-tier dispute ladder with configurable per-level SLA deadlines, a
 keeper-triggered `PendingReview` stage, binding outcome records, and
 finality rules integrated with payroll state.
 
+> **⚠ Breaking change (vNEXT):** The `DisputeSlaBreachedEvent` and
+> `DisputeSlaViolationAdvancedEvent` events now include a `keeper` field
+> recording the address of the keeper who triggered the advance.  Indexers
+> that deserialize these events will need to update their schemas to include
+> the new field.  `DisputeDetails` now includes a `keeper_advances` field;
+> existing disputes migrated from prior contract versions will require a
+> migration path (resolve/expire before upgrade, or implement a storage
+> migration).
+
 ---
 
 ## State Machine
@@ -32,6 +41,68 @@ file_dispute → Open @ Level1
 
 **Terminal states:** `Finalised`, `Expired`.  
 All further transitions are rejected with `AlreadyFinalised` or `AlreadyTerminal`.
+
+---
+
+## Duplicate-Filing Guard
+
+Only one **active** (non-terminal) dispute may exist per `agreement_id` at any
+time. If a caller invokes `file_dispute` while an existing dispute for the same
+`agreement_id` is in any non-terminal state, the call is rejected immediately
+with `DisputeDuplicateFiling` (error code 14).
+
+### Why this matters
+
+Allowing a second filing while the first is still in-flight would produce **two
+independent SLA timers** for the same underlying claim. Downstream payroll and
+escrow contracts listen for `dispute_resolved` / `dispute_finalised` /
+`dispute_expired` events to decide how to release funds; two competing records
+would leave them in an undefined state.
+
+### Non-terminal states that block re-filing
+
+| Status | Blocked? |
+|--------|----------|
+| `Open` | ✓ `DisputeDuplicateFiling` |
+| `Escalated` | ✓ `DisputeDuplicateFiling` |
+| `Appealed` | ✓ `DisputeDuplicateFiling` |
+| `PendingReview` | ✓ `DisputeDuplicateFiling` |
+| `Resolved` | ✓ `DisputeDuplicateFiling` (appeal window still open) |
+
+### Terminal states that allow re-filing
+
+| Status | Allowed? |
+|--------|----------|
+| `Finalised` | ✓ Re-filing permitted |
+| `Expired` | ✓ Re-filing permitted |
+
+When re-filing is permitted the new dispute **overwrites** the terminal record
+in storage (same `StorageKey::Dispute(agreement_id)`) and starts a completely
+fresh Level1 SLA window from the current ledger timestamp.
+
+### Example: re-file after Finalised
+
+```rust
+// Prior dispute fully adjudicated at Level3
+client.resolve_dispute(&admin, &agreement_id, &DisputeOutcome::GrantClaim);
+// → status = Finalised
+
+// New claim on the same agreement — re-filing now allowed
+client.file_dispute(&employee, &agreement_id, &DisputeReason::QualityIssue);
+// → status = Open @ Level1, fresh SLA clock
+```
+
+### Example: re-file after Expired
+
+```rust
+// Prior dispute never resolved — expired after deadline
+client.expire_dispute(&anyone, &agreement_id);
+// → status = Expired
+
+// Re-file for the same agreement
+client.file_dispute(&employee, &agreement_id, &DisputeReason::NonDelivery);
+// → status = Open @ Level1, fresh SLA clock
+```
 
 ---
 
@@ -224,6 +295,7 @@ Level1/2 resolution → status = Resolved (3-day appeal window opens)
 |-----------|-------------|
 | Only admin resolves | `is_admin` check at the top of `resolve_dispute` |
 | Cannot double-resolve | `AlreadyResolved` / `AlreadyFinalised` on every resolve path |
+| No duplicate active disputes | `file_dispute` returns `DisputeDuplicateFiling` when a non-terminal dispute already exists for the same `agreement_id`; re-filing allowed after `Finalised` or `Expired` |
 | No funds stuck | `expire_dispute` (anyone) closes abandoned disputes |
 | No re-entry into terminal states | `assert_not_terminal` rejects all transitions on `Finalised`/`Expired` |
 | Deadlines enforced on-chain | All time comparisons use `env.ledger().timestamp()` |
@@ -253,6 +325,7 @@ Level1/2 resolution → status = Resolved (3-day appeal window opens)
 |-------|------|-------------|
 | `agreement_id` | `u128` | Identifies the dispute |
 | `level` | `EscalationLevel` | Level at which the SLA was breached |
+| `keeper` | `Address` | Address of the keeper who triggered the advance |
 | `breached_at` | `u64` | Ledger timestamp when `keeper_advance_stage` was called |
 | `review_deadline` | `u64` | Timestamp by which admin must act before `expire_dispute` is valid |
 
@@ -270,6 +343,28 @@ Level1/2 resolution → status = Resolved (3-day appeal window opens)
 | `phase_deadline` | `u64` | Ledger timestamp at which the current phase expires |
 | `outcome` | `DisputeOutcome` | Binding ruling once resolved; `Unset` while open |
 | `reason` | `DisputeReason` | Why the dispute was raised; immutable after filing |
+| `keeper_advances` | `Vec<KeeperAdvance>` | Ordered history of every `keeper_advance_stage` call — records which keeper triggered each automatic advance, the timestamp, and the escalation level at the time |
+
+> `phase_started_at` doubles as the **SLA breach timestamp** when
+> `status == PendingReview`: it records the exact moment the keeper advanced
+> the stage.
+
+### Keeper Accountability
+
+Each `KeeperAdvance` entry stored in `DisputeDetails.keeper_advances` provides
+a full accountability trail of who triggered each automatic SLA-driven stage
+advance and when:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `keeper` | `Address` | Address of the keeper who called `keeper_advance_stage` |
+| `advanced_at` | `u64` | Ledger timestamp at which the advance was triggered |
+| `level` | `EscalationLevel` | Escalation level at the time of the advance |
+
+The `keeper` field is also included in both `DisputeSlaBreachedEvent` and
+`DisputeSlaViolationAdvancedEvent` so that off-chain indexers and monitoring
+systems can track which keeper triggered each advance without reading the
+full dispute record.
 
 > `phase_started_at` doubles as the **SLA breach timestamp** when
 > `status == PendingReview`: it records the exact moment the keeper advanced
@@ -376,6 +471,7 @@ client.keeper_advance_stage(&keeper, &agreement_id);
 | 11 | `AlreadyPendingReview` | `keeper_advance_stage` already called; repeated call rejected |
 | 12 | `SlaDeadlineOverflow` | SLA deadline computation overflowed; keeper cannot proceed |
 | 13 | `ReasonTooLong` | `Other` text exceeds 256 bytes |
+| 14 | `DisputeDuplicateFiling` | A non-terminal dispute already exists for this `agreement_id`; re-filing allowed after `Finalised` or `Expired` |
 
 ---
 
@@ -488,4 +584,35 @@ covers these scenarios exhaustively in **§16 EARLY-EXPIRY REJECTION TESTS**:
 | `test_expire_premature_by_third_party_rejected_with_deadline_error` | Permissionless callers are still subject to the deadline guard |
 | `test_expire_premature_rejected_across_all_escalation_levels` | Boundary holds at Level1, Level2, and Level3 in a single sweep |
 
-Now let me update the state-machines doc and write the implementation back to lib.rs:
+## Payroll Contract: Dispute Re-filing Guard
+
+The `payroll.rs` `raise_dispute` function includes a guard that prevents raising a
+dispute when the agreement already has an **active** dispute
+(`dispute_status == DisputeStatus::Raised`).  This prevents:
+
+- Resetting downstream dispute timers on an already-Disputed agreement.
+- Producing a confusing duplicate record in the dispute escalation contract.
+
+Once the active dispute is **resolved** via `resolve_dispute` (or
+`resolve_dispute_multisig`), `dispute_status` transitions to `Resolved` and the
+guard permits a fresh dispute to be raised — the `== DisputeStatus::Raised` check
+is more permissive than the original `!= DisputeStatus::None` check.
+
+### Lifecycle
+
+```text
+                    raise_dispute              resolve_dispute
+None / Resolved ──────────────────► Raised ──────────────────────► Resolved
+     │                                                                │
+     └───────── raise_dispute succeeds ───────────────────────────────┘
+                     (re-filing allowed)
+
+Raised ────── raise_dispute ──────► DisputeAlreadyRaised (rejected)
+```
+
+### Tests
+
+| Test | Scenario |
+|------|----------|
+| `test_raise_dispute_rejects_duplicate_on_active_dispute` | Second `raise_dispute` on an agreement with `dispute_status == Raised` is rejected with `DisputeAlreadyRaised` |
+| `test_raise_dispute_succeeds_after_resolution` | After `resolve_dispute` sets `dispute_status` to `Resolved`, a fresh `raise_dispute` succeeds (within the same grace window) |

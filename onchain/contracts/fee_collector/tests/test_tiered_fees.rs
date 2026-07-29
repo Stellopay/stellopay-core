@@ -112,6 +112,52 @@ fn test_tiered_fee_selection() {
     assert_eq!(fee, 100); // 1% of 10000
 }
 
+/// Verifies that exact tier-boundary amounts resolve to the matching tier
+/// and that one unit below/above each threshold moves to the adjacent tier.
+#[test]
+fn test_tiered_fee_threshold_boundaries_use_inclusive_lower_bound() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let client = FeeCollectorContractClient::new(&env, &env.register(FeeCollectorContract, ()));
+
+    client.initialize(&admin, &treasury, &0, &0, &FeeMode::Percentage);
+
+    let mut schedule = Vec::new(&env);
+    schedule.push_back(FeeTier {
+        limit: 1_000,
+        fee_bps: 500,
+    });
+    schedule.push_back(FeeTier {
+        limit: 5_000,
+        fee_bps: 250,
+    });
+    schedule.push_back(FeeTier {
+        limit: i128::MAX,
+        fee_bps: 100,
+    });
+
+    client.update_tiered_schedule(&admin, &schedule);
+    client.update_fee_config(&admin, &0u32, &0i128, &FeeMode::Tiered);
+
+    let boundary_cases = [
+        (999, 49),
+        (1_000, 50),
+        (1_001, 25),
+        (4_999, 124),
+        (5_000, 125),
+        (5_001, 50),
+    ];
+
+    for (gross, expected_fee) in boundary_cases {
+        let (_, fee) = client.calculate_fee(&gross);
+        assert_eq!(fee, expected_fee, "boundary fee mismatch for gross={gross}");
+        assert_eq!(expected_tiered_fee(gross), expected_fee);
+    }
+}
+
 #[test]
 fn test_rounding_invariant() {
     let env = Env::default();

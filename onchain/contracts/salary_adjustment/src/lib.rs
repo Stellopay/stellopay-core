@@ -23,6 +23,17 @@ pub enum AdjustmentKind {
     Decrease,
 }
 
+/// How a typed salary proposal expresses its delta.
+///
+/// * [`AdjustmentType::Percentage`] — `value` is in basis points (`10_000` = 100%).
+/// * [`AdjustmentType::FixedAmount`] — `value` is an absolute delta in stroops.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AdjustmentType {
+    Percentage,
+    FixedAmount,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdjustmentStatus {
@@ -161,6 +172,10 @@ pub struct AdjustmentAuditEvent {
 /// Default maximum allowable salary (1 trillion stroops) used when no
 /// explicit cap has been configured by the owner.
 pub const DEFAULT_MAX_SALARY: i128 = 1_000_000_000_000;
+
+/// Basis-points denominator used by [`AdjustmentType::Percentage`] proposals
+/// (`10_000` bps = 100%).
+pub const BPS_DENOMINATOR: i128 = 10_000;
 
 const RETRO_REASON_DOMAIN: &[u8] = b"salary_adjustment:retroactive:v1";
 
@@ -342,6 +357,65 @@ fn append_audit(
     audit_id
 }
 
+/// Resolves a typed proposal (`percentage` or `fixed-amount`) into an absolute
+/// `new_salary`, rejecting out-of-range inputs before any storage write.
+///
+/// # Panics
+/// * `"Percentage must be positive"` — percentage `value <= 0`
+/// * `"Fixed amount must be positive"` — fixed-amount `value <= 0`
+/// * `"Adjustment would result in non-positive salary"` — decrease drives salary ≤ 0
+/// * Overflow / underflow on checked arithmetic
+fn compute_proposed_salary(
+    current_salary: i128,
+    adjustment_type: &AdjustmentType,
+    value: i128,
+    kind: &AdjustmentKind,
+) -> i128 {
+    match adjustment_type {
+        AdjustmentType::Percentage => {
+            assert!(value > 0, "Percentage must be positive");
+            let delta = current_salary
+                .checked_mul(value)
+                .expect("Percentage multiplication overflow")
+                .checked_div(BPS_DENOMINATOR)
+                .expect("Percentage division failed");
+            match kind {
+                AdjustmentKind::Increase => current_salary
+                    .checked_add(delta)
+                    .expect("Salary increase overflow"),
+                AdjustmentKind::Decrease => {
+                    let new_salary = current_salary
+                        .checked_sub(delta)
+                        .expect("Salary decrease underflow");
+                    assert!(
+                        new_salary > 0,
+                        "Adjustment would result in non-positive salary"
+                    );
+                    new_salary
+                }
+            }
+        }
+        AdjustmentType::FixedAmount => {
+            assert!(value > 0, "Fixed amount must be positive");
+            match kind {
+                AdjustmentKind::Increase => current_salary
+                    .checked_add(value)
+                    .expect("Salary increase overflow"),
+                AdjustmentKind::Decrease => {
+                    let new_salary = current_salary
+                        .checked_sub(value)
+                        .expect("Salary decrease underflow");
+                    assert!(
+                        new_salary > 0,
+                        "Adjustment would result in non-positive salary"
+                    );
+                    new_salary
+                }
+            }
+        }
+    }
+}
+
 fn create_adjustment_internal(
     env: &Env,
     employer: Address,
@@ -487,6 +561,10 @@ impl SalaryAdjustmentContract {
     /// @dev Determines increase or decrease from salary comparison.
     ///      Rejects retroactive effective dates (before current ledger time).
     ///      Rejects new_salary exceeding the configured salary cap.
+    ///      Rejects concurrent proposals for the same employee with the same effective date.
+    ///      Multiple pending proposals for the same employee are allowed if they have
+    ///      different effective dates. Each proposal is identified by its unique id and
+    ///      must be approved/rejected/applied independently.
     ///
     /// @param employer Employer submitting the adjustment; must authenticate.
     /// @param employee Employee whose salary is being adjusted.
@@ -503,6 +581,7 @@ impl SalaryAdjustmentContract {
     /// * `"New salary must differ from current salary"`
     /// * `"New salary exceeds salary cap"`
     /// * `"Effective date cannot be in the past"`
+    /// * `"Conflicting adjustment exists"` (same employee + effective_date)
     ///
     /// # Events
     /// Emits `("adjustment_created", adjustment_id)` with an `AdjustmentCreatedEvent`.
@@ -517,6 +596,70 @@ impl SalaryAdjustmentContract {
     ) -> u128 {
         require_initialized(&env);
         employer.require_auth();
+        create_adjustment_internal(
+            &env,
+            employer,
+            employee,
+            approver,
+            current_salary,
+            new_salary,
+            effective_date,
+            None,
+            None,
+        )
+    }
+
+    /// @notice Proposes a salary adjustment using a percentage or fixed-amount delta.
+    /// @dev Computes the absolute `new_salary` from `adjustment_type` + `value` + `kind`,
+    ///      then follows the same pending → approve → apply workflow as `create_adjustment`.
+    ///
+    /// * [`AdjustmentType::Percentage`] — `value` is basis points (`10_000` = 100%).
+    ///   Example: `current=10_000`, `value=1_000` (10%), `kind=Increase` → `new_salary=11_000`.
+    /// * [`AdjustmentType::FixedAmount`] — `value` is an absolute stroop delta.
+    ///   Example: `current=10_000`, `value=2_000`, `kind=Increase` → `new_salary=12_000`.
+    ///
+    /// # Panics
+    /// * `"Percentage must be positive"` — percentage `value <= 0` (rejects negative %)
+    /// * `"Fixed amount must be positive"` — fixed-amount `value <= 0`
+    /// * `"Adjustment would result in non-positive salary"` — decrease drives salary ≤ 0
+    /// * All standard `create_adjustment` validation panics after the absolute salary is computed
+    ///
+    /// # Events
+    /// Emits `("adjustment_created", adjustment_id)` with an `AdjustmentCreatedEvent`.
+    pub fn propose_adjustment(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        approver: Address,
+        current_salary: i128,
+        adjustment_type: AdjustmentType,
+        value: i128,
+        kind: AdjustmentKind,
+        effective_date: u64,
+    ) -> u128 {
+        require_initialized(&env);
+        employer.require_auth();
+
+        let new_salary =
+            compute_proposed_salary(current_salary, &adjustment_type, value, &kind);
+
+        // Kind is caller-declared; enforce it matches the computed direction so a
+        // mismatched (type, kind) pair cannot silently invert the intended change.
+        match kind {
+            AdjustmentKind::Increase => {
+                assert!(
+                    new_salary > current_salary,
+                    "Increase kind requires a higher resulting salary"
+                );
+            }
+            AdjustmentKind::Decrease => {
+                assert!(
+                    new_salary < current_salary,
+                    "Decrease kind requires a lower resulting salary"
+                );
+            }
+        }
+
         create_adjustment_internal(
             &env,
             employer,

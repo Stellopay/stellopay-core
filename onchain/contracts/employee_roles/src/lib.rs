@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Vec};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 
@@ -102,6 +102,22 @@ pub enum StorageKey {
     RbacAddress,
     /// Mapping: BuiltInRole -> Vec<BuiltInRole>
     RoleImplies(BuiltInRole),
+}
+
+/// Event emitted when an employee's role changes (assigned or revoked).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleChangedEvent {
+    /// Previous role value, or None if a new role was assigned.
+    pub old_role: Option<BuiltInRole>,
+    /// New role value, or None if a role was revoked.
+    pub new_role: Option<BuiltInRole>,
+    /// Address that authorized the change (authenticated via require_auth).
+    pub changed_by: Address,
+    /// Employee whose role was changed.
+    pub employee: Address,
+    /// Ledger timestamp of the change.
+    pub timestamp: u64,
 }
 
 /// Employee Roles Contract
@@ -215,33 +231,29 @@ impl EmployeeRolesContract {
             return Err(RoleError::Unauthorized);
         }
 
-        if let Some(exp) = expires_at {
-            if exp <= env.ledger().timestamp() {
-                return Err(RoleError::InvalidExpiration);
-            }
-        }
+        let mut roles: Vec<BuiltInRole> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::EmployeeRoles(employee.clone()))
+            .unwrap_or(Vec::new(&env));
 
-        let grants = Self::get_grants(&env, &employee);
-        let mut found = false;
-        let mut updated_grants = Vec::new(&env);
+        if !roles.iter().any(|r| r == role) {
+            roles.push_back(role);
+            env.storage()
+                .persistent()
+                .set(&StorageKey::EmployeeRoles(employee.clone()), &roles);
 
-        for grant in grants.iter() {
-            if grant.role == role {
-                updated_grants.push_back(RoleGrant {
-                    role,
-                    expires_at,
-                });
-                found = true;
-            } else {
-                updated_grants.push_back(grant);
-            }
-        }
-
-        if !found {
-            updated_grants.push_back(RoleGrant {
-                role,
-                expires_at,
-            });
+            let event = RoleChangedEvent {
+                old_role: None,
+                new_role: Some(role),
+                changed_by: caller,
+                employee: employee,
+                timestamp: env.ledger().timestamp(),
+            };
+            env.events().publish(
+                (symbol_short!("ROLE"), symbol_short!("chng")),
+                &event,
+            );
         }
 
         env.storage()
@@ -280,7 +292,14 @@ impl EmployeeRolesContract {
             return Err(RoleError::Unauthorized);
         }
 
-        let grants = Self::get_grants(&env, &employee);
+        let roles: Vec<BuiltInRole> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::EmployeeRoles(employee.clone()))
+            .unwrap_or(Vec::new(&env));
+
+        let had_role = roles.iter().any(|r| r == role);
+
         let mut filtered = Vec::new(&env);
         for g in grants.iter() {
             if g.role != role {
@@ -290,7 +309,21 @@ impl EmployeeRolesContract {
 
         env.storage()
             .persistent()
-            .set(&StorageKey::EmployeeRoles(employee), &filtered);
+            .set(&StorageKey::EmployeeRoles(employee.clone()), &filtered);
+
+        if had_role {
+            let event = RoleChangedEvent {
+                old_role: Some(role),
+                new_role: None,
+                changed_by: caller,
+                employee: employee,
+                timestamp: env.ledger().timestamp(),
+            };
+            env.events().publish(
+                (symbol_short!("ROLE"), symbol_short!("chng")),
+                &event,
+            );
+        }
 
         Ok(())
     }
@@ -341,7 +374,10 @@ impl EmployeeRolesContract {
         let grants = Self::get_grants(&env, &employee);
         let current_ts = env.ledger().timestamp();
 
-        if grants.iter().any(|g| g.role == role && g.is_active(current_ts)) {
+        if grants
+            .iter()
+            .any(|g| g.role == role && g.is_active(current_ts))
+        {
             return true;
         }
 

@@ -252,6 +252,26 @@ fn is_emergency_guardian(env: &Env, addr: &Address) -> bool {
     }
 }
 
+/// Returns whether an operation kind is eligible for emergency execution.
+///
+/// Only time-sensitive, break-glass operations are eligible. Routine
+/// operations (e.g. `LargePayment`) and governance changes
+/// (e.g. `ContractUpgrade`, `SetThresholdOverride`) are intentionally
+/// excluded so that the emergency guardian cannot bypass the normal
+/// multi-signer approval process for operations that are not urgent.
+///
+/// ## Eligible kinds
+///
+/// | OperationKind       | Eligible | Rationale                          |
+/// |---------------------|----------|------------------------------------|
+/// | DisputeResolution   | Yes      | Prevents fund lockup; time-critical|
+/// | ContractUpgrade     | No       | Governance change; needs consensus |
+/// | LargePayment        | No       | Routine operation; use approvals   |
+/// | SetThresholdOverride| No       | Already blocked in `perform_execute`|
+fn is_emergency_eligible(kind: &OperationKind) -> bool {
+    matches!(kind, OperationKind::DisputeResolution(_, _, _, _))
+}
+
 fn execute_if_threshold_met(env: &Env, operation_id: u128) {
     let op = read_operation(env, operation_id);
     let threshold = read_effective_threshold(env, &operation_type(&op.kind));
@@ -419,10 +439,9 @@ impl MultisigContract {
         ] {
             if let Some(override_val) = read_threshold_override(&env, &op_type) {
                 if override_val > signer_count as u32 {
-                    env.storage().persistent().set(
-                        &StorageKey::ThresholdOverride(op_type),
-                        &signer_count,
-                    );
+                    env.storage()
+                        .persistent()
+                        .set(&StorageKey::ThresholdOverride(op_type), &signer_count);
                 }
             }
         }
@@ -545,8 +564,14 @@ impl MultisigContract {
     }
 
     /// @notice Executes a pending operation via the emergency guardian.
-    /// @dev Guardian can bypass threshold checks for operational actions, but
-    ///      not for signer threshold override changes.
+    /// @dev Guardian can bypass threshold checks **only** for operations
+    ///      explicitly flagged as emergency-eligible (currently only
+    ///      `DisputeResolution`). Routine operations (`LargePayment`),
+    ///      governance changes (`ContractUpgrade`), and threshold overrides
+    ///      (`SetThresholdOverride`) are rejected even when called by the
+    ///      configured guardian. This prevents the break-glass mechanism
+    ///      from being used to circumvent the normal multi-signer approval
+    ///      process for non-urgent operations.
     /// @param guardian Configured guardian address.
     /// @param operation_id Operation identifier.
     pub fn emergency_execute(env: Env, guardian: Address, operation_id: u128) {
@@ -561,6 +586,11 @@ impl MultisigContract {
         assert!(
             op.status == OperationStatus::Pending,
             "Operation not pending"
+        );
+
+        assert!(
+            is_emergency_eligible(&op.kind),
+            "Operation kind not eligible for emergency execution"
         );
 
         perform_execute(&env, operation_id);

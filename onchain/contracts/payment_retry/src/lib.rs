@@ -41,6 +41,13 @@
 //! * An optional `alternate_payout` address can be specified at creation time. When set, successful
 //!   transfers are routed there instead of `recipient`, providing a fallback destination (e.g. a
 //!   cold wallet) without requiring cancellation and re-creation.
+//! * **Cancellation is permanent and beats an already-armed backoff.** `cancel_payment` writes the
+//!   terminal [`RetryState::Cancelled`] state, un-tracks the id from the pending batch index, marks
+//!   the id processed, and refunds escrow — all before returning. Because
+//!   `process_payment_if_due` evaluates terminality *before* the `now >= next_retry_at` due check
+//!   and before any token interaction, a keeper call arriving after the ledger crosses the
+//!   originally-scheduled `next_retry_at` can never execute a cancelled retry. This closes the
+//!   late-keeper / slow-processing race.
 //!
 //! ## Idempotency
 //!
@@ -77,6 +84,20 @@ pub struct PaymentRetryContract;
 // ---------------------------------------------------------------------------
 
 /// Lifecycle state of a retry process.
+///
+/// `Success`, `Failed` and `Cancelled` are **terminal**: once a request enters
+/// one of them the contract will never attempt another transfer for it, no
+/// matter how far the ledger timestamp advances past `next_retry_at`.
+///
+/// * `Pending`   — reserved; a record that exists but has not been scheduled yet.
+/// * `Scheduled` — created, awaiting its first attempt.
+/// * `Retrying`  — at least one attempt failed; a backoff window is armed.
+/// * `Success`   — the transfer settled (terminal).
+/// * `Failed`    — `retry_count` exceeded `max_retry_attempts` (terminal).
+/// * `Cancelled` — the payer explicitly revoked the request via
+///   [`PaymentRetryContract::cancel_payment`] (terminal). Distinct from `Failed`
+///   so indexers can tell "the protocol gave up" apart from "the payer opted
+///   out"; both equally block further processing.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RetryState {
@@ -85,6 +106,23 @@ pub enum RetryState {
     Retrying,
     Success,
     Failed,
+    Cancelled,
+}
+
+impl RetryState {
+    /// Returns `true` when no further retry processing may ever occur for a
+    /// record in this state.
+    ///
+    /// This is the single source of truth for terminality. Every guard in the
+    /// contract (`process_payment_if_due`, `fund_payment`, `cancel_payment`)
+    /// routes through it, so a new terminal variant can never be accidentally
+    /// omitted from one of the checks.
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            RetryState::Success | RetryState::Failed | RetryState::Cancelled
+        )
+    }
 }
 
 #[contracttype]
@@ -373,6 +411,16 @@ fn interval_for_retry(retry_intervals: &Vec<u64>, retry_count: u32) -> u64 {
 /// Attempts one due payment and returns whether the record was actually
 /// evaluated in this call. Not-due, already-processed, and terminal records
 /// return `false` so batch callers can report an accurate processed count.
+///
+/// # Ordering invariant (cancel-beats-backoff)
+///
+/// The terminal-state guard below is evaluated **before** the
+/// `now < next_retry_at` due-time check and before any token interaction. A
+/// record's stale `next_retry_at` therefore has no authority once the record is
+/// terminal: a payment cancelled *during* its backoff window can never fire,
+/// even if a keeper's call lands after the ledger timestamp has crossed the
+/// already-scheduled `next_retry_at`. This closes the late-keeper race in which
+/// an in-flight/slow-processing call might otherwise execute a cancelled retry.
 fn process_payment_if_due(env: &Env, payment_id: BytesN<32>) -> bool {
     if already_processed(env, payment_id.clone()) {
         untrack_pending_payment(env, payment_id);
@@ -381,7 +429,9 @@ fn process_payment_if_due(env: &Env, payment_id: BytesN<32>) -> bool {
 
     let mut payment = read_payment(env, payment_id.clone());
 
-    if payment.state == RetryState::Success || payment.state == RetryState::Failed {
+    // Terminal states (Success / Failed / Cancelled) are checked first and are
+    // absolute — see the "cancel-beats-backoff" note above.
+    if payment.state.is_terminal() {
         untrack_pending_payment(env, payment_id);
         return false;
     }
@@ -638,10 +688,9 @@ impl PaymentRetryContract {
 
         let payment = read_payment(&env, payment_id.clone());
         assert!(payment.payer == payer, "Only payer can fund payment");
-        assert!(
-            payment.state != RetryState::Success && payment.state != RetryState::Failed,
-            "Payment is already terminal"
-        );
+        // A cancelled request is terminal: re-funding it must not be able to
+        // resurrect it into a payable state.
+        assert!(!payment.state.is_terminal(), "Payment is already terminal");
 
         let token_client = token::Client::new(&env, &payment.token);
         token_client.transfer(&payer, env.current_contract_address(), &amount);
@@ -703,15 +752,36 @@ impl PaymentRetryContract {
         processed
     }
 
-    /// Cancels a non-terminal payment request, preventing any future processing
-    /// and atomically refunding the payer's escrow deposit.
+    /// Cancels a non-terminal payment request, **permanently** preventing any
+    /// future processing and atomically refunding the payer's escrow deposit.
     ///
     /// Both effects happen together in one call: the request transitions to the
-    /// terminal `Failed` state and is removed from the pending index, and the
-    /// exact amount the payer funded via `fund_payment` (tracked per request) is
-    /// transferred back to them. Cancelling an unfunded request refunds nothing.
-    /// A request can only be cancelled from a non-terminal state, so a deposit
-    /// that was already paid out on success can never also be refunded here.
+    /// terminal [`RetryState::Cancelled`] state and is removed from the pending
+    /// index, and the exact amount the payer funded via `fund_payment` (tracked
+    /// per request) is transferred back to them. Cancelling an unfunded request
+    /// refunds nothing. A request can only be cancelled from a non-terminal
+    /// state, so a deposit that was already paid out on success can never also
+    /// be refunded here.
+    ///
+    /// # Permanence guarantee (cancel beats an armed backoff)
+    ///
+    /// Cancellation takes effect immediately and unconditionally, **including
+    /// mid-backoff**. If the record was in `Retrying` with a future
+    /// `next_retry_at` computed from `retry_intervals`, that timestamp becomes
+    /// inert: [`PaymentRetryContract::process_due_payments`] and
+    /// [`PaymentRetryContract::process_retry`] both consult the terminal state
+    /// *before* the due-time comparison and before any token transfer. So a
+    /// keeper call that lands after the ledger has advanced past the original
+    /// `next_retry_at` skips the record and moves no funds. Three independent
+    /// barriers enforce this:
+    ///
+    /// 1. the id is removed from the `PendingPayments` batch index;
+    /// 2. the id is written to the `Processed` set (first short-circuit in
+    ///    `process_payment_if_due`);
+    /// 3. the persisted `state` is terminal, which is the authoritative check.
+    ///
+    /// Escrow is zeroed on refund, so even a hypothetical bypass of (1)–(3)
+    /// would find no balance to pay out.
     ///
     /// # Arguments
     ///
@@ -722,7 +792,13 @@ impl PaymentRetryContract {
     /// # Panics
     ///
     /// * `"Only payer can cancel payment"` — if `payer` does not match.
-    /// * `"Payment is not pending"` — if the request is already terminal.
+    /// * `"Payment is already terminal"` — if the request is already `Success`,
+    ///   `Failed` or `Cancelled` (double-cancel is rejected).
+    ///
+    /// # Events
+    ///
+    /// Emits `("payment_cancelled", payment_id)` carrying a
+    /// [`PaymentCancelledEvent`] with the refunded amount.
     ///
     /// # Access Control
     ///
@@ -733,16 +809,26 @@ impl PaymentRetryContract {
 
         let mut payment = read_payment(&env, payment_id.clone());
         assert!(payment.payer == payer, "Only payer can cancel payment");
-        assert!(
-            payment.state != RetryState::Success && payment.state != RetryState::Failed,
-            "Payment is already terminal"
-        );
+        // Double-cancel and cancel-after-settlement are both rejected here.
+        assert!(!payment.state.is_terminal(), "Payment is already terminal");
 
         // CEI: write the terminal state and drop the request from the pending
         // index before moving any tokens.
-        payment.state = RetryState::Failed; // Treat cancellation as a terminal failure state
+        //
+        // Cancellation is *permanent and immediate*: `next_retry_at` is
+        // deliberately left untouched (it stays a historical record of the
+        // backoff that was armed), because `process_payment_if_due` gates on
+        // the terminal state before it ever consults the timestamp. Advancing
+        // the ledger past the old `next_retry_at` therefore cannot revive the
+        // request.
+        payment.state = RetryState::Cancelled;
         write_payment(&env, &payment);
         untrack_pending_payment(&env, payment_id.clone());
+
+        // Belt-and-braces: mark the id in the processed set so that even the
+        // very first branch of `process_payment_if_due` (which short-circuits
+        // before the record is read) rejects a late keeper call for this id.
+        mark_processed(&env, payment_id.clone());
 
         // Refund the payer's escrow deposit for this request, if any.
         let escrowed = read_escrow(&env, payment_id.clone());
@@ -786,8 +872,14 @@ impl PaymentRetryContract {
     ///     the last attempt; callers should gate on `state` rather than this timestamp.
     ///
     /// * **`state`** (RetryState):
-    ///   - Reflects the lifecycle: `Scheduled` → `Retrying` (after ≥1 failure) → `Success` or
-    ///     `Failed`.
+    ///   - Reflects the lifecycle: `Scheduled` → `Retrying` (after ≥1 failure) →
+    ///     `Success` or `Failed`; a payer may branch to `Cancelled` from any
+    ///     non-terminal state via `cancel_payment`.
+    ///   - `Success`, `Failed` and `Cancelled` are terminal
+    ///     ([`RetryState::is_terminal`]). A terminal record is **never**
+    ///     re-processed, regardless of how the ledger timestamp compares to the
+    ///     stale `next_retry_at` left over from its last armed backoff.
+    ///     Off-chain consumers must gate on `state`, never on `next_retry_at`.
     ///
     /// # Arguments
     ///
