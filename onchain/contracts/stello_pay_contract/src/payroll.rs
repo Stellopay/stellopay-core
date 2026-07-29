@@ -1536,7 +1536,7 @@ pub fn batch_create_payroll_agreements(
 /// * `contributor` - Address of the contributor
 /// * `token` - Token address for payments
 /// * `amount_per_period` - Payment amount per period
-/// * `period_seconds` - Duration of each period
+/// * `period_seconds` - Duration of each period; must be strictly positive or the call returns `ZeroPeriodDuration`
 /// * `num_periods` - Number of periods
 ///
 /// # Returns
