@@ -2,8 +2,8 @@
 #![allow(deprecated)]
 
 use salary_adjustment::{
-    AdjustmentKind, AdjustmentStatus, SalaryAdjustmentContract, SalaryAdjustmentContractClient,
-    DEFAULT_MAX_SALARY,
+    AdjustmentKind, AdjustmentStatus, AdjustmentType, SalaryAdjustmentContract,
+    SalaryAdjustmentContractClient, DEFAULT_MAX_SALARY,
 };
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
@@ -912,6 +912,250 @@ fn test_employee_salaries_are_independent() {
 }
 
 // ============================================================================
+// CONCURRENT PENDING PROPOSAL TESTS
+// ============================================================================
+
+#[test]
+fn test_concurrent_pending_proposals_same_effective_date_rejected() {
+    // Verifies that a second proposal for the same employee with the same
+    // effective date is rejected while the first proposal is still pending.
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Create first pending proposal
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    let adj1 = client.get_adjustment(&id1).unwrap();
+    assert_eq!(adj1.status, AdjustmentStatus::Pending);
+
+    // Attempt to create second proposal for same employee and effective date
+    let result =
+        client.try_create_adjustment(&employer, &employee, &approver, &5_000, &7_000, &200);
+    assert!(
+        result.is_err(),
+        "Second proposal with same effective date must be rejected"
+    );
+}
+
+#[test]
+fn test_concurrent_pending_proposals_different_effective_dates_allowed() {
+    // Verifies that multiple pending proposals for the same employee are
+    // allowed as long as they have different effective dates.
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Create first pending proposal with effective_date=200
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    let adj1 = client.get_adjustment(&id1).unwrap();
+    assert_eq!(adj1.status, AdjustmentStatus::Pending);
+
+    // Create second pending proposal with effective_date=300
+    let id2 = client.create_adjustment(&employer, &employee, &approver, &6_000, &7_000, &300);
+    let adj2 = client.get_adjustment(&id2).unwrap();
+    assert_eq!(adj2.status, AdjustmentStatus::Pending);
+
+    // Verify both proposals exist independently
+    assert_eq!(id2, id1 + 1);
+    assert_eq!(adj1.effective_date, 200);
+    assert_eq!(adj2.effective_date, 300);
+    assert_eq!(adj1.new_salary, 6_000);
+    assert_eq!(adj2.new_salary, 7_000);
+}
+
+#[test]
+fn test_approve_adjustment_targets_specific_proposal_id() {
+    // Verifies that approve_adjustment acts on the specific proposal id,
+    // not an ambiguous "latest" pointer, when multiple pending proposals exist.
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Create two pending proposals with different effective dates
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    let id2 = client.create_adjustment(&employer, &employee, &approver, &6_000, &7_500, &300);
+
+    // Approve only the first proposal
+    client.approve_adjustment(&approver, &id1);
+
+    // Verify first proposal is approved
+    let adj1 = client.get_adjustment(&id1).unwrap();
+    assert_eq!(adj1.status, AdjustmentStatus::Approved);
+    assert_eq!(adj1.new_salary, 6_000);
+
+    // Verify second proposal remains pending
+    let adj2 = client.get_adjustment(&id2).unwrap();
+    assert_eq!(adj2.status, AdjustmentStatus::Pending);
+    assert_eq!(adj2.new_salary, 7_500);
+}
+
+#[test]
+fn test_apply_adjustment_targets_specific_proposal_id() {
+    // Verifies that apply_adjustment acts on the specific proposal id,
+    // ensuring the correct salary change is applied when multiple proposals
+    // exist for the same employee.
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Create and approve two proposals with different effective dates
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    let id2 = client.create_adjustment(&employer, &employee, &approver, &6_000, &8_000, &300);
+
+    client.approve_adjustment(&approver, &id1);
+    client.approve_adjustment(&approver, &id2);
+
+    // Apply only the first proposal
+    set_time(&env, 250);
+    client.apply_adjustment(&employer, &id1);
+
+    // Verify employee salary reflects the first proposal
+    assert_eq!(client.get_employee_salary(&employee), Some(6_000));
+
+    // Verify first proposal is applied
+    let adj1 = client.get_adjustment(&id1).unwrap();
+    assert_eq!(adj1.status, AdjustmentStatus::Applied);
+
+    // Verify second proposal is still approved but not applied
+    let adj2 = client.get_adjustment(&id2).unwrap();
+    assert_eq!(adj2.status, AdjustmentStatus::Approved);
+
+    // Apply the second proposal
+    set_time(&env, 350);
+    client.apply_adjustment(&employer, &id2);
+
+    // Verify employee salary now reflects the second proposal
+    assert_eq!(client.get_employee_salary(&employee), Some(8_000));
+
+    let adj2_applied = client.get_adjustment(&id2).unwrap();
+    assert_eq!(adj2_applied.status, AdjustmentStatus::Applied);
+}
+
+#[test]
+fn test_cancel_one_pending_proposal_does_not_affect_other() {
+    // Verifies that cancelling one pending proposal does not affect
+    // other pending proposals for the same employee.
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Create two pending proposals
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    let id2 = client.create_adjustment(&employer, &employee, &approver, &6_000, &7_000, &300);
+
+    // Cancel the first proposal
+    client.cancel_adjustment(&employer, &id1);
+
+    // Verify first proposal is cancelled
+    let adj1 = client.get_adjustment(&id1).unwrap();
+    assert_eq!(adj1.status, AdjustmentStatus::Cancelled);
+
+    // Verify second proposal remains pending
+    let adj2 = client.get_adjustment(&id2).unwrap();
+    assert_eq!(adj2.status, AdjustmentStatus::Pending);
+}
+
+#[test]
+fn test_reject_one_pending_proposal_does_not_affect_other() {
+    // Verifies that rejecting one pending proposal does not affect
+    // other pending proposals for the same employee.
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Create two pending proposals
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+    let id2 = client.create_adjustment(&employer, &employee, &approver, &6_000, &7_000, &300);
+
+    // Reject the first proposal
+    client.reject_adjustment(&approver, &id1);
+
+    // Verify first proposal is rejected
+    let adj1 = client.get_adjustment(&id1).unwrap();
+    assert_eq!(adj1.status, AdjustmentStatus::Rejected);
+
+    // Verify second proposal remains pending
+    let adj2 = client.get_adjustment(&id2).unwrap();
+    assert_eq!(adj2.status, AdjustmentStatus::Pending);
+
+    // Approve and apply the second proposal
+    client.approve_adjustment(&approver, &id2);
+    set_time(&env, 350);
+    client.apply_adjustment(&employer, &id2);
+
+    assert_eq!(client.get_employee_salary(&employee), Some(7_000));
+}
+
+#[test]
+fn test_reuse_effective_date_after_cancellation() {
+    // Verifies that the same effective date can be reused for a new proposal
+    // after the original proposal is cancelled.
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Create first proposal
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &200);
+
+    // Cancel it
+    client.cancel_adjustment(&employer, &id1);
+
+    // Attempt to create a new proposal with the same effective date
+    // This should still fail because the slot reservation is not cleared
+    let result =
+        client.try_create_adjustment(&employer, &employee, &approver, &5_000, &7_000, &200);
+
+    // The current implementation does NOT clear the reservation slot on cancellation,
+    // so this will fail. This test documents the current behavior.
+    assert!(
+        result.is_err(),
+        "Effective date slot is not freed on cancellation in current implementation"
+    );
+}
+
+// ============================================================================
 // QUERY TESTS
 // ============================================================================
 
@@ -942,10 +1186,10 @@ fn test_get_owner() {
 //
 // These tests verify that a retroactive adjustment:
 //   1. Updates the salary going forward when applied.
-//   2. Does NOT retroactively alter already-processed payroll periods.
-//      The salary_adjustment contract has no claw-back or top-up mechanism
-//      for past claims. The effective_date is a constraint on when the
-//      adjustment can be applied, not a trigger for retroactive recalculation.
+//   2. Does NOT retroactively alter already-processed payroll periods. The salary_adjustment
+//      contract has no claw-back or top-up mechanism for past claims. The effective_date is a
+//      constraint on when the adjustment can be applied, not a trigger for retroactive
+//      recalculation.
 // ============================================================================
 
 #[test]
@@ -1068,4 +1312,413 @@ fn test_retroactive_adjustment_does_not_affect_prior_normal_adjustment() {
     let audit_count = client.get_audit_log_count();
     let audit = client.get_audit_log(&audit_count).unwrap();
     assert_eq!(audit.action, Symbol::new(&env, "adjustment_applied"));
+}
+
+// ============================================================================
+// PROPOSE_ADJUSTMENT — PERCENTAGE VS FIXED-AMOUNT TYPE VALIDATION
+//
+// `propose_adjustment` accepts either a percentage (basis points) or a fixed
+// stroop delta, computes the absolute new salary, and then follows the same
+// approve → apply path as `create_adjustment`. These tests lock in correct
+// math for both modes and reject out-of-range inputs.
+// ============================================================================
+
+#[test]
+fn test_propose_percentage_increase_applies_correct_salary() {
+    // 10% increase: 10_000 + floor(10_000 * 1_000 / 10_000) = 11_000
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let current_salary: i128 = 10_000;
+    let percentage_bps: i128 = 1_000; // 10%
+    let expected_new_salary = current_salary
+        + (current_salary * percentage_bps) / salary_adjustment::BPS_DENOMINATOR;
+    assert_eq!(expected_new_salary, 11_000);
+
+    let id = client.propose_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &current_salary,
+        &AdjustmentType::Percentage,
+        &percentage_bps,
+        &AdjustmentKind::Increase,
+        &200,
+    );
+
+    let stored = client.get_adjustment(&id).unwrap();
+    assert_eq!(stored.kind, AdjustmentKind::Increase);
+    assert_eq!(stored.status, AdjustmentStatus::Pending);
+    assert_eq!(stored.current_salary, current_salary);
+    assert_eq!(stored.new_salary, expected_new_salary);
+
+    client.approve_adjustment(&approver, &id);
+    set_time(&env, 250);
+    client.apply_adjustment(&employer, &id);
+
+    let applied = client.get_adjustment(&id).unwrap();
+    assert_eq!(applied.status, AdjustmentStatus::Applied);
+    assert_eq!(applied.new_salary, expected_new_salary);
+    assert_eq!(
+        client.get_employee_salary(&employee),
+        Some(expected_new_salary),
+        "apply_adjustment must persist the mathematically correct percentage result"
+    );
+}
+
+#[test]
+fn test_propose_fixed_amount_increase_applies_correct_salary() {
+    // Fixed +2_500 on 10_000 → 12_500
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let current_salary: i128 = 10_000;
+    let fixed_delta: i128 = 2_500;
+    let expected_new_salary = current_salary + fixed_delta;
+
+    let id = client.propose_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &current_salary,
+        &AdjustmentType::FixedAmount,
+        &fixed_delta,
+        &AdjustmentKind::Increase,
+        &200,
+    );
+
+    let stored = client.get_adjustment(&id).unwrap();
+    assert_eq!(stored.kind, AdjustmentKind::Increase);
+    assert_eq!(stored.current_salary, current_salary);
+    assert_eq!(stored.new_salary, expected_new_salary);
+
+    client.approve_adjustment(&approver, &id);
+    set_time(&env, 250);
+    client.apply_adjustment(&employer, &id);
+
+    assert_eq!(
+        client.get_employee_salary(&employee),
+        Some(expected_new_salary),
+        "apply_adjustment must persist the absolute fixed-amount result"
+    );
+    let applied = client.get_adjustment(&id).unwrap();
+    assert_eq!(applied.status, AdjustmentStatus::Applied);
+    assert_eq!(applied.new_salary, 12_500);
+}
+
+#[test]
+fn test_propose_fixed_amount_decrease_applies_correct_salary() {
+    // Fixed -1_500 on 10_000 → 8_500
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let id = client.propose_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &10_000,
+        &AdjustmentType::FixedAmount,
+        &1_500,
+        &AdjustmentKind::Decrease,
+        &200,
+    );
+
+    let stored = client.get_adjustment(&id).unwrap();
+    assert_eq!(stored.kind, AdjustmentKind::Decrease);
+    assert_eq!(stored.new_salary, 8_500);
+
+    client.approve_adjustment(&approver, &id);
+    set_time(&env, 250);
+    client.apply_adjustment(&employer, &id);
+
+    assert_eq!(client.get_employee_salary(&employee), Some(8_500));
+}
+
+#[test]
+fn test_propose_percentage_decrease_applies_correct_salary() {
+    // 25% decrease: 8_000 - floor(8_000 * 2_500 / 10_000) = 6_000
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let id = client.propose_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &8_000,
+        &AdjustmentType::Percentage,
+        &2_500,
+        &AdjustmentKind::Decrease,
+        &200,
+    );
+
+    let stored = client.get_adjustment(&id).unwrap();
+    assert_eq!(stored.kind, AdjustmentKind::Decrease);
+    assert_eq!(stored.new_salary, 6_000);
+
+    client.approve_adjustment(&approver, &id);
+    set_time(&env, 250);
+    client.apply_adjustment(&employer, &id);
+
+    assert_eq!(client.get_employee_salary(&employee), Some(6_000));
+}
+
+#[test]
+#[should_panic(expected = "Percentage must be positive")]
+fn test_propose_negative_percentage_rejected() {
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    client.propose_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &10_000,
+        &AdjustmentType::Percentage,
+        &-500, // negative percentage must be rejected
+        &AdjustmentKind::Increase,
+        &200,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Percentage must be positive")]
+fn test_propose_zero_percentage_rejected() {
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    client.propose_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &10_000,
+        &AdjustmentType::Percentage,
+        &0,
+        &AdjustmentKind::Increase,
+        &200,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Fixed amount must be positive")]
+fn test_propose_negative_fixed_amount_rejected() {
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    client.propose_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &10_000,
+        &AdjustmentType::FixedAmount,
+        &-1_000, // fixed amount below zero must be rejected
+        &AdjustmentKind::Increase,
+        &200,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Fixed amount must be positive")]
+fn test_propose_zero_fixed_amount_rejected() {
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    client.propose_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &10_000,
+        &AdjustmentType::FixedAmount,
+        &0,
+        &AdjustmentKind::Decrease,
+        &200,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Adjustment would result in non-positive salary")]
+fn test_propose_fixed_amount_driving_salary_below_zero_rejected() {
+    // current 5_000, decrease by 5_000 → 0 (non-positive) must be rejected
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    client.propose_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &5_000,
+        &AdjustmentType::FixedAmount,
+        &5_000,
+        &AdjustmentKind::Decrease,
+        &200,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Adjustment would result in non-positive salary")]
+fn test_propose_fixed_amount_exceeding_current_salary_rejected() {
+    // current 5_000, decrease by 6_000 → underflow / non-positive
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    client.propose_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &5_000,
+        &AdjustmentType::FixedAmount,
+        &6_000,
+        &AdjustmentKind::Decrease,
+        &200,
+    );
+}
+
+#[test]
+#[should_panic(expected = "Adjustment would result in non-positive salary")]
+fn test_propose_percentage_decrease_to_zero_rejected() {
+    // 100% decrease → salary 0 must be rejected
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    client.propose_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &10_000,
+        &AdjustmentType::Percentage,
+        &10_000, // 100%
+        &AdjustmentKind::Decrease,
+        &200,
+    );
+}
+
+#[test]
+fn test_propose_negative_percentage_try_path_leaves_no_state() {
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let result = client.try_propose_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &10_000,
+        &AdjustmentType::Percentage,
+        &-100,
+        &AdjustmentKind::Increase,
+        &200,
+    );
+    assert!(result.is_err());
+    assert!(client.get_adjustment(&1).is_none());
+    assert_eq!(client.get_audit_log_count(), 0);
+}
+
+#[test]
+fn test_propose_fixed_amount_below_zero_salary_try_path_leaves_no_state() {
+    let env = create_env();
+    set_time(&env, 100);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let result = client.try_propose_adjustment(
+        &employer,
+        &employee,
+        &approver,
+        &5_000,
+        &AdjustmentType::FixedAmount,
+        &5_500,
+        &AdjustmentKind::Decrease,
+        &200,
+    );
+    assert!(result.is_err());
+    assert!(client.get_adjustment(&1).is_none());
+    assert_eq!(client.get_employee_salary(&employee), None);
+    assert_eq!(client.get_audit_log_count(), 0);
 }

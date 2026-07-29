@@ -542,11 +542,13 @@ impl PayrollEscrowContract {
             .expect("Token not set");
 
         let token_client = soroban_sdk::token::Client::new(&env, &token);
-        token_client.transfer(&env.current_contract_address(), &employer, &balance);
 
+        // Zero balance before transfer (CEI: effects before interactions)
         env.storage()
             .persistent()
             .set(&StorageKey::AgreementBalance(agreement_id), &0i128);
+
+        token_client.transfer(&env.current_contract_address(), &employer, &balance);
 
         // Emit event
         env.events().publish(

@@ -720,11 +720,11 @@ pub fn validate_backup(env: &Env, envelope: &[u8], passphrase: &[u8]) -> DryRunR
 /// * `passphrase` – Decryption passphrase as `Bytes`; never stored on-chain.
 ///
 /// # Returns
-/// * `Ok((valid, agreement_id_or_zero))` on success — `valid` is `true` when
-///   the backup decrypts and deserialises without error; the second element is
-///   the `agreement_id` from the payload (0 when validation failed).
-/// * `Err(PayrollError::InvalidData)` only when the envelope is structurally
-///   unreadable even before decryption (e.g. empty slice).
+/// * `Ok((valid, agreement_id_or_zero))` on success — `valid` is `true` when the backup decrypts
+///   and deserialises without error; the second element is the `agreement_id` from the payload (0
+///   when validation failed).
+/// * `Err(PayrollError::InvalidData)` only when the envelope is structurally unreadable even before
+///   decryption (e.g. empty slice).
 ///
 /// # Access Control
 /// No authentication required — this is a pure read.  However, a passphrase

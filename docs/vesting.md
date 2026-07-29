@@ -95,6 +95,19 @@ Storage keys:
 creation. There is no "promise to pay"; the contract always holds sufficient
 balance for active schedules.
 
+**Error codes:**
+
+| Error Code | Name | Description |
+|---|---|---|
+| 1 | ContractNotInitialized | Contract has not been initialized yet |
+| 2 | AlreadyInitialized | Contract has already been initialized |
+| 3 | Unauthorized | Caller is not authorized to perform this action |
+| 4 | InvalidInput | Invalid input parameter provided |
+| 5 | ScheduleNotFound | Vesting schedule with given ID does not exist |
+| 6 | NothingToClaim | No vested tokens are currently claimable |
+| 7 | ScheduleCompleted | Schedule has already been fully claimed and marked as completed |
+| 8 | RevokedSchedule | Schedule has been revoked and has no releasable amount |
+
 **Authentication model:**
 
 | Action | Authorized caller |
@@ -114,6 +127,17 @@ balance for active schedules.
   "Nothing to claim".
 - Revocation freezes the vesting clock at `revoked_at`; the beneficiary can
   still claim the already-vested portion, but no further tokens accrue.
+- **Fully-vested revoke is a safe no-op**: if `get_vested_amount` already
+  equals `total_amount` when `revoke` is called, no tokens are transferred
+  (`refunded_amount` is `0`), and schedule bookkeeping is unaffected —
+  `get_vested_amount` and `get_releasable_amount` return the same values
+  before and after the call, since `revoked_at` is only ever set at or after
+  the point vesting had already completed. The schedule's `status` still
+  moves to `Revoked` (revocation is recorded as a real event even when there
+  is nothing left to claw back), and a second `revoke` call is rejected
+  (`"Schedule not active"`) rather than accepted as another no-op. See
+  `test_revoke_after_fully_vested_is_safe_noop` and related tests in
+  `tests/test_vesting.rs` (issue #1066).
 - `approve_early_release` caps the released amount at the unvested remainder
   (`total_amount - vested`), so the admin cannot over-release even when a
   prior `claim` has already consumed part of the vested portion. The cap
@@ -212,19 +236,25 @@ All tests use only Soroban SDK primitives (no external `proptest` or
   ignored `cliff_time`, allowing tokens to vest linearly before the cliff was
   reached. A cliff guard was added so that `compute_vested_amount` returns 0
   when `now < cliff_time`, matching the documented behavior for cliff schedules.
+- **RevokedSchedule distinct error** (issue #885): Added a dedicated `RevokedSchedule`
+  error variant returned by `claim` when attempting to claim against a revoked
+  schedule with no releasable amount. This distinguishes "nothing vested yet"
+  from "this schedule was revoked and will never pay out", helping integrators
+  handle the two cases differently.
 
 ### Testing Focus
 
-The test suite contains **54 tests** across 15 categories:
+The test suite contains **43 tests** across 10 categories:
+The test suite contains **55 tests** across 15 categories:
 
 | Category | Count | What it covers |
 |---|---|---|
 | A. Initialization | 4 | `initialize` idempotency, pre-init guards, missing schedule, owner before init |
 | B. Linear | 7 | Exact start/end boundaries, past-end cap, cliff gate (before/at/after), full claim flow |
-| C. Cliff | 4 | 1 s before cliff (=0), exact cliff (=total), full claim, revoke-before-cliff refund |
+| C. Cliff | 5 | 1 s before cliff (=0), exact cliff (=total), 1 s after cliff (still total — no linear accrual), full claim, revoke-before-cliff refund |
 | D. Custom | 4 | Before first checkpoint, between checkpoints, at final checkpoint, early release |
 | E. Claim Security | 5 | Non-beneficiary rejected, double-claim fails, completed schedule rejected, released_amount accumulates, token balance verification |
-| F. Revocation | 4 | Non-revocable rejected, non-employer rejected, double-revoke rejected, partial-vesting split (employer refund + beneficiary claim remainder) |
+| F. Revocation | 5 | Non-revocable rejected, non-employer rejected, double-revoke rejected, partial-vesting split (employer refund + beneficiary claim remainder), claim after revoke with nothing to claim returns distinct error |
 | G. Early Release | 3 | Non-owner rejected, amount capped at unvested, revoked schedule rejected |
 | H. State Consistency | 2 | Claim after revoke gets frozen vested remainder, schedule IDs are sequential |
 | I. Input Validation | 5 | Zero amount, end < start, cliff outside range, empty checkpoints, unsorted checkpoints |
@@ -246,9 +276,12 @@ The test suite contains **54 tests** across 15 categories:
 | `now == cliff_time` (Linear w/ cliff) | Linear | proportional from `start_time` |
 | `now == cliff_time - 1` | Cliff | 0 |
 | `now == cliff_time` | Cliff | `total_amount` |
+| `now == cliff_time + 1` | Cliff | `total_amount` (no further linear accrual) |
 | Before first checkpoint | Custom | 0 |
 | Between checkpoints | Custom | last passed `cumulative_amount` |
 | After revocation (`now > revoked_at`) | Any | vested amount frozen at `revoked_at` |
+| `revoke` called once fully vested | Any | safe no-op: `refunded_amount == 0`, no transfer, `status` → `Revoked`, vested/releasable amounts unchanged |
+| `revoke` called twice (second call after fully-vested revoke) | Any | panics `"Schedule not active"` — not treated as a further no-op |
 
 ### Soroban Events
 

@@ -689,10 +689,283 @@ fn test_no_dust_lost_or_created_fixed_splits() {
 }
 
 #[test]
+fn test_compute_split_is_deterministic_idempotent() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    let c = Address::generate(&env);
+
+    let mut recipients = Vec::new(&env);
+    // 3333 + 3333 + 3334 = 10000 with a complex rounding case
+    recipients.push_back(RecipientShare {
+        recipient: a.clone(),
+        kind: ShareKind::Percent(3333),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: b.clone(),
+        kind: ShareKind::Percent(3333),
+    });
+    recipients.push_back(RecipientShare {
+        recipient: c.clone(),
+        kind: ShareKind::Percent(3334),
+    });
+
+    let id = client.create_split(&creator, &recipients);
+
+    // Call compute_split multiple times with the exact same inputs
+    let first_out = client.compute_split(&id, &100);
+    let second_out = client.compute_split(&id, &100);
+    let third_out = client.compute_split(&id, &100);
+
+    // Verify share vectors are byte-identical across repeated calls
+    assert_eq!(
+        first_out, second_out,
+        "Second call output differs from first"
+    );
+    assert_eq!(first_out, third_out, "Third call output differs from first");
+
+    // Verify stable rounding allocation (the specific amounts)
+    assert_eq!(first_out.get(0).unwrap().1, 33);
+    assert_eq!(first_out.get(1).unwrap().1, 33);
+    assert_eq!(first_out.get(2).unwrap().1, 34);
+}
+
+#[test]
 #[should_panic(expected = "Already initialized")]
 fn test_reinitialize_fails() {
     let env = create_env();
     let (_, client) = setup(&env);
     let admin2 = Address::generate(&env);
     client.initialize(&admin2);
+}
+
+// ── Single-recipient edge-case tests ─────────────────────────────────────────
+//
+// A degenerate split with exactly one recipient at the full 10 000 bp
+// (100 %) allocation is a valid configuration. The contract should round-trip
+// the entire input amount to that single recipient without triggering any of
+// the remainder-distribution logic that is only meaningful for multi-recipient
+// splits.
+//
+// Security note: Because `(10000 * total_amount) % 10000 == 0` for every
+// integer `total_amount`, the fractional remainder is always zero. This means
+// `dust == 0`, which trivially satisfies the `dust < recipient_count` (0 < 1)
+// invariant without entering the dust-distribution loop. No value is created
+// or destroyed — the entire input amount passes through unchanged.
+
+/// Verify that `create_split` accepts a single recipient at the full 10 000 bp
+/// (100 %) allocation and that `compute_split` returns the entire input amount
+/// to that recipient with zero remainder for several representative amounts.
+///
+/// This covers the degenerate percentage-mode path: `bps = 10_000`, so
+/// `exact_numerator = 10_000 * total_amount`, `floored = total_amount`,
+/// `remainder = 0`, `dust = 0`. No dust-distribution step is entered.
+#[test]
+fn test_single_recipient_percent_100_no_dust() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+    let sole = Address::generate(&env);
+
+    // Build a single-recipient split at 100 % (10 000 bps).
+    let mut recipients = Vec::new(&env);
+    recipients.push_back(RecipientShare {
+        recipient: sole.clone(),
+        kind: ShareKind::Percent(10000),
+    });
+
+    let split_id = client.create_split(&creator, &recipients);
+
+    // Confirm the definition was stored correctly.
+    let def = client.get_split(&split_id);
+    assert_eq!(def.recipients.len(), 1, "Expected exactly 1 recipient");
+    assert!(def.is_percent, "Split should be marked as percentage-based");
+
+    // `validate_split_for_amount` must return true for any positive amount.
+    assert!(
+        client.validate_split_for_amount(&split_id, &1),
+        "validate_split_for_amount should return true for percent splits"
+    );
+    assert!(
+        client.validate_split_for_amount(&split_id, &(i128::MAX / 10000)),
+        "validate_split_for_amount should return true for large percent splits"
+    );
+
+    // Test a diverse set of amounts: minimum (1), powers-of-ten, prime, large.
+    let test_amounts: [i128; 8] = [
+        1,
+        7,
+        100,
+        999,
+        10_000,
+        100_003,
+        1_000_000,
+        i128::MAX / 10_000,
+    ];
+
+    for &amount in &test_amounts {
+        let out = client.compute_split(&split_id, &amount);
+
+        // Exactly one output entry.
+        assert_eq!(
+            out.len(),
+            1,
+            "Expected 1 output entry for amount {}",
+            amount
+        );
+
+        let (addr, allocated) = out.get(0).unwrap();
+
+        // The single output must map to the sole recipient.
+        assert_eq!(
+            addr, sole,
+            "Output recipient mismatch for amount {}",
+            amount
+        );
+
+        // The entire amount must be returned — no dust lost or created.
+        assert_eq!(
+            allocated, amount,
+            "Single-recipient 100 % split: expected full amount {} but got {}",
+            amount, allocated
+        );
+
+        // Explicit conservation check (sum of all outputs == input).
+        let total_out: i128 = out.iter().map(|e| e.1).sum();
+        assert_eq!(
+            total_out, amount,
+            "Conservation invariant failed for amount {}",
+            amount
+        );
+    }
+}
+
+/// Verify that a single-recipient `Fixed` split also round-trips the full
+/// amount without loss or remainder distribution.
+///
+/// Fixed splits bypass the dust-distribution path entirely — each recipient
+/// receives exactly their pre-declared fixed amount. For a single recipient
+/// whose fixed amount equals `total_amount` this is a strict identity: no
+/// arithmetic is performed beyond verifying `fixed_sum == total_amount`.
+#[test]
+fn test_single_recipient_fixed_full_amount_no_dust() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+    let sole = Address::generate(&env);
+
+    // Representative amounts to test.
+    let test_amounts: [i128; 6] = [1, 50, 1_000, 99_999, 10_000_000, 999_999_999_999];
+
+    for &amount in &test_amounts {
+        // Each iteration creates a fresh Fixed split whose declared amount
+        // exactly matches the total we will supply to `compute_split`.
+        let mut recipients = Vec::new(&env);
+        recipients.push_back(RecipientShare {
+            recipient: sole.clone(),
+            kind: ShareKind::Fixed(amount),
+        });
+
+        let split_id = client.create_split(&creator, &recipients);
+
+        // Definition sanity checks.
+        let def = client.get_split(&split_id);
+        assert_eq!(def.recipients.len(), 1, "Expected exactly 1 recipient");
+        assert!(
+            !def.is_percent,
+            "Split should NOT be marked as percentage-based"
+        );
+
+        // `validate_split_for_amount` must be true only when total == fixed.
+        assert!(
+            client.validate_split_for_amount(&split_id, &amount),
+            "validate_split_for_amount should be true when total matches fixed amount"
+        );
+
+        let out = client.compute_split(&split_id, &amount);
+
+        assert_eq!(
+            out.len(),
+            1,
+            "Expected 1 output entry for fixed amount {}",
+            amount
+        );
+
+        let (addr, allocated) = out.get(0).unwrap();
+
+        assert_eq!(
+            addr, sole,
+            "Output recipient mismatch for fixed amount {}",
+            amount
+        );
+        assert_eq!(
+            allocated, amount,
+            "Single-recipient Fixed split: expected full amount {} but got {}",
+            amount, allocated
+        );
+
+        // Conservation check.
+        let total_out: i128 = out.iter().map(|e| e.1).sum();
+        assert_eq!(
+            total_out, amount,
+            "Conservation invariant failed for fixed amount {}",
+            amount
+        );
+    }
+}
+
+/// Assert that both split modes (Percent 10 000 bp and Fixed) behave
+/// *identically* for the same input amount: both must deliver the entire
+/// amount to the sole recipient, confirming the two code paths are
+/// semantically equivalent in the degenerate single-recipient case.
+#[test]
+fn test_single_recipient_percent_and_fixed_are_equivalent() {
+    let env = create_env();
+    let (_, client) = setup(&env);
+    let creator = Address::generate(&env);
+    let sole = Address::generate(&env);
+
+    let amount: i128 = 42_000;
+
+    // --- Percent path ---
+    let mut pct_recipients = Vec::new(&env);
+    pct_recipients.push_back(RecipientShare {
+        recipient: sole.clone(),
+        kind: ShareKind::Percent(10000),
+    });
+    let pct_id = client.create_split(&creator, &pct_recipients);
+    let pct_out = client.compute_split(&pct_id, &amount);
+
+    // --- Fixed path ---
+    let mut fix_recipients = Vec::new(&env);
+    fix_recipients.push_back(RecipientShare {
+        recipient: sole.clone(),
+        kind: ShareKind::Fixed(amount),
+    });
+    let fix_id = client.create_split(&creator, &fix_recipients);
+    let fix_out = client.compute_split(&fix_id, &amount);
+
+    // Both must return exactly one entry.
+    assert_eq!(pct_out.len(), 1);
+    assert_eq!(fix_out.len(), 1);
+
+    let (pct_addr, pct_allocated) = pct_out.get(0).unwrap();
+    let (fix_addr, fix_allocated) = fix_out.get(0).unwrap();
+
+    // Recipients must be the same.
+    assert_eq!(pct_addr, sole);
+    assert_eq!(fix_addr, sole);
+
+    // Both must deliver the entire amount.
+    assert_eq!(pct_allocated, amount);
+    assert_eq!(fix_allocated, amount);
+
+    // Semantic equivalence: the allocated amounts are identical.
+    assert_eq!(
+        pct_allocated, fix_allocated,
+        "Percent and Fixed single-recipient splits must return identical amounts"
+    );
 }

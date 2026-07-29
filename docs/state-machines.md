@@ -54,6 +54,7 @@ Paused → Active
 Trigger: resume_agreement
 Conditions: caller is employer; status is Paused
 Effects: status = Active
+Invalid transitions: resume_agreement panics if called when status is Created, Active, Cancelled, Completed, or Disputed. This precondition is enforced by an explicit `assert!` in the contract implementation and is covered by regression tests (see `test_resume_rejects_all_non_paused_statuses` and individual `test_resume_*_agreement_panics` tests in `test_state_machine.rs`).
 Created/Active → Cancelled
 
 Trigger: cancel_agreement
@@ -72,6 +73,7 @@ Status is Cancelled
 Grace period has fully elapsed
 Effects:
 Remaining escrow refunded to employer
+If no claims were made, the refund equals the full escrow balance; if earlier claims already paid out some periods, the refund equals the unclaimed remainder only
 Agreement marked logically complete (no further claims expected)
 Active → Completed
 
@@ -276,6 +278,52 @@ Function-level parity — every call through MilestoneContractClient returns the
 Edge-case parity — out-of-range IDs, zero IDs, and non-existent agreements return None through both clients.
 Count accuracy — get_milestone_count is consistent after every lifecycle transition.
 Field fidelity — all MilestoneView scalar fields (id, amount, approved, claimed) match their Milestone counterparts bit-for-bit.
+Adding the MilestoneContractClient to the test harness is a single import:
+
+Rust
+
+use milestone_interface::{MilestoneContractClient, MilestoneView};
+Future milestone-capable contracts should add a similar conformance test to confirm they satisfy the trait contract.
+
+Unauthorized-approval invariant
+The most security-critical conformance rule is:
+
+> An approve_milestone call whose invoker is not the recorded employer for that agreement must be rejected.
+
+This invariant must hold for every contract that implements MilestoneContractInterface.  Integrators depend on a single, stable error behaviour across all milestone-capable contracts so they can write uniform error-handling code.
+
+Error behaviour
+The reference implementation (stello_pay_contract) enforces this by calling employer.require_auth() at the top of approve_milestone before any write.  This produces a host-level auth failure (ScError::Auth / InvokeContractError) rather than a typed PayrollError variant.
+
+Callers using the try_approve_milestone variant will receive Err(Err(InvokeContractError)).  Conformance tests therefore assert result.is_err() rather than matching a specific PayrollError discriminant, which keeps the tests valid even if the rejection mechanism is changed to a structured error in a future upgrade.
+
+Conformance tests
+Three test functions collectively verify this invariant end-to-end:
+
+| Test function | File | What it checks |
+|---|---|---|
+| test_approve_unauthorized_fails | tests/test_milestones.rs | Legacy #[should_panic] guard — baseline regression |
+| test_milestone_interface_unauthorized_approval_conformance | tests/test_milestones.rs | Canonical fixture: try_ variant, error assertion, no partial-write |
+| test_milestone_interface_wrong_caller_approval_conformance | tests/test_milestones.rs | Identity-based check: a stranger with valid Soroban auth is still rejected |
+| test_mock_unauthorized_approval_conformance | milestone-interface/tests/mock_contract.rs | Same invariant on the minimal in-crate mock implementer |
+| test_mock_state_unchanged_after_unauthorized_approval | milestone-interface/tests/mock_contract.rs | State idempotency after multiple failed attempts |
+
+The canonical fixture (test_milestone_interface_unauthorized_approval_conformance) is the reference implementation for future implementers.  Its structure must be reproduced for any new contract that implements MilestoneContractInterface:
+
+1. Create a milestone agreement and add at least one milestone.
+2. Clear the auth context (env.mock_auths(&[])).
+3. Call try_approve_milestone from the cleared-auth context.
+4. Assert result.is_err().
+5. Assert the milestone's approved flag is still false.
+
+Security assumptions validated
+* Caller identity, not just auth context — employer.require_auth() checks that the specific employer address stored in the agreement has signed the transaction, not just any address.
+* No partial-write on failure — because require_auth() is called before any persistent write, a failed auth cannot leave the agreement in a partially mutated state.
+* Discriminant stability — PayrollError::Unauthorized has discriminant 11 and must never be renumbered.  The conformance tests are deliberately agnostic to this value (they use is_err()) so they remain valid across upgrades.
+
+Mock implementer
+onchain/contracts/milestone-interface/tests/mock_contract.rs contains a minimal in-crate mock (MockMilestoneContract) that implements MilestoneContractInterface and carries the full set of conformance tests.  Running cargo test -p milestone-interface exercises these tests without depending on stello_pay_contract.
+
 Adding the MilestoneContractClient to the test harness is a single import:
 
 Rust
@@ -513,6 +561,7 @@ Third-party contracts that implement `MilestoneContractInterface` should:
 | Trait definition and inline policy | [`onchain/contracts/milestone-interface/src/lib.rs`](../onchain/contracts/milestone-interface/src/lib.rs) |
 | Milestone workflow and data structures | [`onchain/contracts/stello_pay_contract/MILESTONE_DOCS.md`](../onchain/contracts/stello_pay_contract/MILESTONE_DOCS.md) |
 | Conformance and versioning tests | [`onchain/contracts/stello_pay_contract/tests/test_milestones.rs`](../onchain/contracts/stello_pay_contract/tests/test_milestones.rs) |
+| Mock implementer and conformance tests | [`onchain/contracts/milestone-interface/tests/mock_contract.rs`](../onchain/contracts/milestone-interface/tests/mock_contract.rs) |
 | `PayrollError` discriminant stability convention | [`onchain/contracts/stello_pay_contract/src/storage.rs`](../onchain/contracts/stello_pay_contract/src/storage.rs) |
 | Hook integration tests (`on_milestone_expired`) | [`onchain/contracts/stello_pay_contract/tests/test_expire_milestone.rs`](../onchain/contracts/stello_pay_contract/tests/test_expire_milestone.rs) |
 
@@ -523,3 +572,4 @@ Third-party contracts that implement `MilestoneContractInterface` should:
 | Version | Date | Change summary |
 |---------|------|----------------|
 | 1 | 2026-07-28 | Initial stable release. Defines `get_milestone` (`@stable`), `get_milestone_count` (`@stable`), and `on_milestone_expired` hook (`@stable-default`, no-op default). Exports `INTERFACE_VERSION = 1`, `MilestoneView`, `MilestoneAgreementView`, `MilestoneAgreementStatus`. |
+| 1 | 2026-07-29 | Unauthorized-approval conformance tests added. Added `test_milestone_interface_unauthorized_approval_conformance` (canonical `try_` fixture), `test_milestone_interface_wrong_caller_approval_conformance` (identity-based check), and matching mock tests (`test_mock_unauthorized_approval_conformance`, `test_mock_state_unchanged_after_unauthorized_approval`) in `milestone-interface/tests/mock_contract.rs`. State-machine docs updated with the full conformance test table and path corrections. No interface version bump — tests are additive. |
