@@ -2102,6 +2102,12 @@ pub fn extend_grace_period(
 
 /// Raise a dispute during the grace period (escrow or payroll agreement).
 ///
+/// # Re-filing guard
+/// Rejects the call with `DisputeAlreadyRaised` if the agreement already has an
+/// **active** dispute (`dispute_status == Raised`).  Once the active dispute is
+/// resolved (`dispute_status` transitions to `Resolved`), a fresh dispute may be
+/// raised again within the same grace window.
+///
 /// # Arguments
 /// * `env` - Contract environment
 /// * `agreement_id` - Agreement ID to dispute
@@ -2125,7 +2131,7 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
         return Err(PayrollError::NotParty);
     }
 
-    if agreement.dispute_status != DisputeStatus::None {
+    if agreement.dispute_status == DisputeStatus::Raised {
         return Err(PayrollError::DisputeAlreadyRaised);
     }
 

@@ -488,4 +488,35 @@ covers these scenarios exhaustively in **§16 EARLY-EXPIRY REJECTION TESTS**:
 | `test_expire_premature_by_third_party_rejected_with_deadline_error` | Permissionless callers are still subject to the deadline guard |
 | `test_expire_premature_rejected_across_all_escalation_levels` | Boundary holds at Level1, Level2, and Level3 in a single sweep |
 
-Now let me update the state-machines doc and write the implementation back to lib.rs:
+## Payroll Contract: Dispute Re-filing Guard
+
+The `payroll.rs` `raise_dispute` function includes a guard that prevents raising a
+dispute when the agreement already has an **active** dispute
+(`dispute_status == DisputeStatus::Raised`).  This prevents:
+
+- Resetting downstream dispute timers on an already-Disputed agreement.
+- Producing a confusing duplicate record in the dispute escalation contract.
+
+Once the active dispute is **resolved** via `resolve_dispute` (or
+`resolve_dispute_multisig`), `dispute_status` transitions to `Resolved` and the
+guard permits a fresh dispute to be raised — the `== DisputeStatus::Raised` check
+is more permissive than the original `!= DisputeStatus::None` check.
+
+### Lifecycle
+
+```text
+                    raise_dispute              resolve_dispute
+None / Resolved ──────────────────► Raised ──────────────────────► Resolved
+     │                                                                │
+     └───────── raise_dispute succeeds ───────────────────────────────┘
+                     (re-filing allowed)
+
+Raised ────── raise_dispute ──────► DisputeAlreadyRaised (rejected)
+```
+
+### Tests
+
+| Test | Scenario |
+|------|----------|
+| `test_raise_dispute_rejects_duplicate_on_active_dispute` | Second `raise_dispute` on an agreement with `dispute_status == Raised` is rejected with `DisputeAlreadyRaised` |
+| `test_raise_dispute_succeeds_after_resolution` | After `resolve_dispute` sets `dispute_status` to `Resolved`, a fresh `raise_dispute` succeeds (within the same grace window) |
