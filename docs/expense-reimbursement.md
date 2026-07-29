@@ -60,6 +60,48 @@ second token, a paid-out expense can never mis-convert an amount or transfer a
 different token than the one submitted, and distinct expenses in distinct tokens
 cannot interfere with one another.
 
+## Audit Logging
+
+The expense reimbursement contract supports optional audit logging via integration with an external audit logger contract. This provides traceability for approval decisions while maintaining privacy for other operations.
+
+### Audit Logger Configuration
+
+The contract owner can configure an audit logger using `set_audit_logger(owner, audit_logger_address)`. Once configured:
+
+- Only the `approve_expense` operation creates audit log entries
+- Submit, fund, reject, cancel, and pay operations do not create audit entries
+- The audit log ID is stored in `expense.audit_log_id` for traceability
+
+### Audit Entry Schema
+
+When an expense is approved, the contract appends a single audit log entry with the following schema:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `action` | Symbol | `"expense_approved"` |
+| `actor` | Address | The approver's address who performed the approval |
+| `subject` | Option\<Address\> | The submitter's address (the expense beneficiary) |
+| `amount` | Option\<i128\> | The approved amount (may be less than the requested amount for partial approvals) |
+
+### Audit Invariants
+
+- **Exactly one entry per approval**: Each call to `approve_expense` appends exactly one audit log entry
+- **No duplicate entries**: The audit log ID is stored in the expense and cannot be modified
+- **Amount accuracy**: The audit entry amount reflects the approved amount, not the original requested amount
+- **Sequential IDs**: Multiple approvals generate audit entries with sequential IDs
+- **No entries for other operations**: Submit, fund, reject, cancel, and pay operations do not create audit entries
+
+### Audit-Linkage Completeness
+
+The contract includes comprehensive tests to verify audit log completeness across the full expense lifecycle:
+
+- **Submit → Approve → Pay**: Verifies exactly one audit entry is created for approval, with correct actor, subject, and amount
+- **Submit → Reject**: Verifies no audit entries are created for the rejection lifecycle
+- **Partial Approval**: Verifies the audit entry contains the approved amount (not the requested amount)
+- **Multiple Expenses**: Verifies each approval generates a unique audit entry with sequential IDs
+
+See `onchain/contracts/expense_reimbursement/tests/test_expense.rs` for the complete test suite.
+
 ## Receipt Hashing Scheme
 
 - Hash function: `SHA-256`
