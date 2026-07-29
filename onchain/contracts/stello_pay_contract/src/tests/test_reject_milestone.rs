@@ -69,7 +69,7 @@ fn funded_milestone(
     fund_amount: i128,
     milestone_amount: i128,
 ) -> (u128, u32) {
-    let agreement_id = client.create_milestone_agreement(employer, contributor, token);
+    let agreement_id = client.create_milestone_agreement(employer, contributor, token, &soroban_sdk::vec![&env, 1i128]);
     client.fund_milestone_agreement(&agreement_id, employer, &fund_amount);
     client
         .add_milestone(&agreement_id, &milestone_amount)
@@ -383,7 +383,7 @@ fn test_reject_milestone_does_not_change_escrow_balance() {
 #[test]
 fn test_reject_one_milestone_does_not_affect_others() {
     let (env, employer, contributor, token, client) = setup();
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token, &soroban_sdk::vec![&env, 1i128]);
     client.fund_milestone_agreement(&agreement_id, &employer, &3_000i128);
 
     // Add three milestones.

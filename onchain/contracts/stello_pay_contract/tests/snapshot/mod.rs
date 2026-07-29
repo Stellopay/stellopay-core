@@ -545,7 +545,7 @@ fn snapshot_emergency_pause_blocks_and_unblocks_operations() {
     });
 
     // Setup milestone agreement
-    let ms_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let ms_id = client.create_milestone_agreement(&employer, &contributor, &token, &soroban_sdk::vec![&env, 1i128]);
     client.add_milestone(&ms_id, &MILESTONE_AMOUNT);
     client.approve_milestone(&ms_id, &1u32);
     fund(&env, &token, &contract_id, MILESTONE_AMOUNT);
@@ -623,7 +623,7 @@ fn snapshot_milestone_completion_all_claimed() {
     const M1: i128 = 1_000;
     const M2: i128 = 2_000;
 
-    let id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let id = client.create_milestone_agreement(&employer, &contributor, &token, &soroban_sdk::vec![&env, 1i128]);
     client.add_milestone(&id, &M1);
     client.add_milestone(&id, &M2);
     client.approve_milestone(&id, &1u32);

@@ -1160,63 +1160,63 @@ fn test_retry_failed_events_emitted_during_throttle() {
 // Documentation Reference
 // ---------------------------------------------------------------------------
 
-//! ## Security Analysis
-//!
-//! ### Double-Counting Prevention
-//!
-//! The integration between `rate_limiter` and `payment_retry` is designed to
-//! prevent double-counting through the following mechanisms:
-//!
-//! 1. **Separate State Spaces**: `rate_limiter` tracks token consumption in
-//!    separate buckets keyed by address. `payment_retry` tracks attempt counts
-//!    keyed by payment ID. These are independent state spaces.
-//!
-//! 2. **Attempt Counting Semantics**: `payment_retry` only increments
-//!    `retry_count` when `escrowed < amount` (insufficient funds), not when
-//!    rate limiting occurs. This ensures that rate limiting does not directly
-//!    cause counter increments.
-//!
-//! 3. **Idempotent Processing**: `payment_retry` checks `next_retry_at` before
-//!    processing, ensuring that calls during a backoff window are no-ops.
-//!
-//! ### Attack Vectors Considered
-//!
-//! 1. **Rate Limit Exhaustion + Retry Manipulation**: An attacker exhausts
-//!    rate limits to prevent payment processing. Counter still increments for
-//!    legitimate escrow failures.
-//!
-//! 2. **Counter Inflation**: A caller attempts to increment the counter without
-//!    a real attempt. `payment_retry` ensures counter only increments after
-//!    escrow check.
-//!
-//! 3. **Backoff Window Manipulation**: An attacker attempts to bypass backoff
-//!    by changing ledger time. `process_payment_if_due` uses `env.ledger().timestamp()`.
-//!
-//! ## Test Coverage Summary
-//!
-//! | Test | Coverage Area | Invariant Verified |
-//! |------|--------------|-------------------|
-//! | `test_throttled_attempt_counts_as_one` | Basic throttling | Single-counting |
-//! | `test_successful_retry_after_throttle_increments_by_one` | Success path | No double-increment |
-//! | `test_multiple_throttles_before_funding` | Edge case | Counter accuracy |
-//! | `test_rate_limiter_exhaustion_then_refill` | Refill behavior | State consistency |
-//! | `test_full_lifecycle_throttle_to_success` | E2E flow | Complete lifecycle |
-//! | `test_throttle_during_retry_backoff` | Backoff window | No early increment |
-//! | `test_rate_limiter_external_exhaustion_does_not_affect_payment_counter` | Isolation | Independent tracking |
-//! | `test_integrated_rate_limiter_and_payment_retry_flow` | Integration | E2E correctness |
-//! | `test_batch_process_due_payments_counter_integrity` | Batch processing | Per-payment isolation |
-//! | `test_zero_max_retries_counter_behavior` | Edge case | Zero max_retries |
-//! | `test_rapid_successive_calls_counter_integrity` | Concurrency | Idempotency |
-//! | `test_retry_failed_events_emitted_during_throttle` | Events | Event correctness |
-//!
-//! ## Integration Test Execution
-//!
-//! Run all tests:
-//! ```bash
-//! cargo test -p integration_tests test_rate_limiter_payment_retry
-//! ```
-//!
-//! Run with coverage:
-//! ```bash
-//! cargo test -p integration_tests --test test_rate_limiter_payment_retry_integration -- --include-ignored
-//! ```
+// ## Security Analysis
+//
+// ### Double-Counting Prevention
+//
+// The integration between `rate_limiter` and `payment_retry` is designed to
+// prevent double-counting through the following mechanisms:
+//
+// 1. **Separate State Spaces**: `rate_limiter` tracks token consumption in
+//    separate buckets keyed by address. `payment_retry` tracks attempt counts
+//    keyed by payment ID. These are independent state spaces.
+//
+// 2. **Attempt Counting Semantics**: `payment_retry` only increments
+//    `retry_count` when `escrowed < amount` (insufficient funds), not when
+//    rate limiting occurs. This ensures that rate limiting does not directly
+//    cause counter increments.
+//
+// 3. **Idempotent Processing**: `payment_retry` checks `next_retry_at` before
+//    processing, ensuring that calls during a backoff window are no-ops.
+//
+// ### Attack Vectors Considered
+//
+// 1. **Rate Limit Exhaustion + Retry Manipulation**: An attacker exhausts
+//    rate limits to prevent payment processing. Counter still increments for
+//    legitimate escrow failures.
+//
+// 2. **Counter Inflation**: A caller attempts to increment the counter without
+//    a real attempt. `payment_retry` ensures counter only increments after
+//    escrow check.
+//
+// 3. **Backoff Window Manipulation**: An attacker attempts to bypass backoff
+//    by changing ledger time. `process_payment_if_due` uses `env.ledger().timestamp()`.
+//
+// ## Test Coverage Summary
+//
+// | Test | Coverage Area | Invariant Verified |
+// |------|--------------|-------------------|
+// | `test_throttled_attempt_counts_as_one` | Basic throttling | Single-counting |
+// | `test_successful_retry_after_throttle_increments_by_one` | Success path | No double-increment |
+// | `test_multiple_throttles_before_funding` | Edge case | Counter accuracy |
+// | `test_rate_limiter_exhaustion_then_refill` | Refill behavior | State consistency |
+// | `test_full_lifecycle_throttle_to_success` | E2E flow | Complete lifecycle |
+// | `test_throttle_during_retry_backoff` | Backoff window | No early increment |
+// | `test_rate_limiter_external_exhaustion_does_not_affect_payment_counter` | Isolation | Independent tracking |
+// | `test_integrated_rate_limiter_and_payment_retry_flow` | Integration | E2E correctness |
+// | `test_batch_process_due_payments_counter_integrity` | Batch processing | Per-payment isolation |
+// | `test_zero_max_retries_counter_behavior` | Edge case | Zero max_retries |
+// | `test_rapid_successive_calls_counter_integrity` | Concurrency | Idempotency |
+// | `test_retry_failed_events_emitted_during_throttle` | Events | Event correctness |
+//
+// ## Integration Test Execution
+//
+// Run all tests:
+// ```bash
+// cargo test -p integration_tests test_rate_limiter_payment_retry
+// ```
+//
+// Run with coverage:
+// ```bash
+// cargo test -p integration_tests --test test_rate_limiter_payment_retry_integration -- --include-ignored
+// ```

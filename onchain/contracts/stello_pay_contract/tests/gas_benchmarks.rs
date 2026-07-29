@@ -291,7 +291,12 @@ fn setup_funded_milestones(
     let token = make_token(env);
     let amount: i128 = 1_000;
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
 
     for _ in 0..n {
         client.add_milestone(&agreement_id, &amount);
@@ -549,7 +554,12 @@ fn gas_benchmark_edge_empty_milestone_batch() {
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
     let token = make_token(&env);
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     let ids = soroban_sdk::Vec::<u32>::new(&env);
     let err = client
         .try_batch_claim_milestones(&agreement_id, &ids)

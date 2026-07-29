@@ -12,8 +12,10 @@
 **File:** `.github/workflows/contracts.yml`  
 **Triggers:** push and pull_request to `main`
 
-The workflow runs a single job (`contracts`) on `ubuntu-latest` with the
-following steps, in order:
+The workflow runs two parallel/independent jobs on `ubuntu-latest`:
+
+### Job: `contracts`
+This job runs a smoke check on formatting, building, and testing the onchain contracts tree.
 
 | Step | Command | Working directory |
 |---|---|---|
@@ -26,11 +28,21 @@ following steps, in order:
 Steps 1–2 are handled automatically by GitHub Actions and have no equivalent
 local command. Steps 3–5 are the checks contributors must pass.
 
+### Job: `doc-checker`
+This job builds and runs `tools/doc_checker` against the full `docs/` and `onchain/contracts/` tree.
+It runs with the `--strict` and `--events` flags to promote any documentation gaps into hard failures.
+
+| Step | Command | Working directory |
+|---|---|---|
+| 1. Install Rust | _managed by `dtolnay/rust-toolchain@stable`_ | — |
+| 2. Cache Cargo registry | _managed by `Swatinem/rust-cache@v2`_ | — |
+| 3. Run doc_checker | `./tools/doc_checker/run_ci.py` | — |
+
 ---
 
 ## Run Locally
 
-Run the same three checks CI executes, in the same order, before opening a PR.
+Run the same checks CI executes before opening a PR.
 
 ### Prerequisites
 
@@ -44,16 +56,18 @@ pass the CI checks listed above.
 
 ### Commands
 
+**1. Contract checks (formatting, build, test)**
+
 ```bash
 cd onchain
 
-# 1. Formatting — must produce no diff
+# Formatting — must produce no diff
 cargo fmt --all -- --check
 
-# 2. Build — all workspace crates must compile
+# Build — all workspace crates must compile
 cargo build --workspace --verbose
 
-# 3. Tests — all workspace tests must pass
+# Tests — all workspace tests must pass
 cargo test --workspace --verbose
 ```
 
@@ -65,7 +79,16 @@ cargo test --manifest-path tools/cli/Cargo.toml
 
 This explicitly exercises the tampered-WASM and matching-WASM verification paths so the CLI remains secure even when a rebuilt artifact is mutated by a single byte.
 
-All three commands must exit with code `0` for a PR to be mergeable.
+**2. Documentation checks (run doc_checker)**
+
+```bash
+cd tools/doc_checker
+
+# Run linter strictly with events enabled - must produce no findings/warnings
+cargo run -- --strict --events
+```
+
+All commands must exit with code `0` for a PR to be mergeable.
 
 ### Fixing common failures
 
@@ -107,12 +130,6 @@ not required to pass before merging:
 - Coverage reporting — no `cargo llvm-cov` step exists in the current workflow.
 - WASM contract builds — `stellar contract build` is not run by CI.
 - Per-package test runs — CI uses `--workspace`; there are no per-crate steps.
-- `tools/doc_checker` — the documentation linter (undocumented public
-  functions, undocumented error-enum variants, and orphaned `docs/*.md`
-  files) is a standalone tool contributors can run manually; it is not
-  wired into `.github/workflows/contracts.yml`. See
-  [`tools/doc_checker/README.md`](../tools/doc_checker/README.md) for usage,
-  including its `--strict` flag for promoting warnings to hard failures.
 
 > If any of the above are added to `.github/workflows/contracts.yml` in the
 > future, this section and the **Run locally** section above must both be
