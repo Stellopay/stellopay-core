@@ -76,6 +76,39 @@ Integrators must provide real execution context:
 
 Under this model, non-allowlisted auxiliary contracts cannot bypass transition checks.
 
+## Ruleset Versioning and Mid-flight Upgrades
+
+The compliance checker is a **stateless rules engine** with respect to compliance decisions. It does not persist evaluation results, track in-progress checks, or maintain a history of previous decisions. Every `check_action` call reads the current admin-configurable settings from storage and produces a fresh, deterministic decision.
+
+### What changes immediately
+
+Admin-configurable settings take effect on the very next `check_action` call:
+
+- `set_emergency_pause` — toggling pause state changes the result of the highest-precedence rule for subsequent evaluations.
+- `set_auxiliary_allowed` — adding or removing an allowlisted auxiliary address immediately affects auxiliary-path checks.
+
+### What is NOT stored
+
+- **No decision history**: The contract does not store any `ComplianceDecision` values. Historical decisions must be persisted by callers (e.g., the payroll contract).
+- **No in-progress evaluation state**: Each `check_action` invocation is self-contained; there is no concept of a multi-step evaluation lifecycle.
+- **No rule-set version identifier**: There is no on-chain version counter. Integrators who need to detect rule-set changes should track the admin settings they rely on and re-evaluate when those settings change.
+
+### Security guarantee: no silent reinterpretation
+
+Because this contract never stores decisions, it **cannot retroactively reinterpret** past evaluations under new rules. A `ComplianceDecision` returned from `check_action` is a plain value type; once returned, the contract has no reference to it. The caller alone decides whether to trust a cached decision or re-query after a policy change.
+
+**Important for integrators**: Callers that cache decisions (e.g., to authorize a multi-step payroll workflow) **must** re-query the compliance checker after any admin-configurable setting change. This contract provides no caching or versioning — that responsibility belongs to the integration layer.
+
+### Recommended pattern
+
+```text
+1. Caller performs check_action(...) → receives ComplianceDecision{Allow, ...}
+2. Caller proceeds with the authorized action (e.g., state transition).
+3. If the compliance admin changes settings mid-flight:
+   a. The caller SHOULD re-query check_action for any subsequent action.
+   b. Decisions obtained before the change remain valid only at the caller's discretion.
+```
+
 ## Testing Strategy
 
 Negative coverage is concentrated in `onchain/contracts/compliance_checker/tests/test_compliance.rs` and includes:
@@ -85,4 +118,5 @@ Negative coverage is concentrated in `onchain/contracts/compliance_checker/tests
 - terminal-state denial across all actions;
 - invalid current-state matrix for each action;
 - invalid target-state denial;
-- grace-period denial for cancelled claims.
+- grace-period denial for cancelled claims;
+- ruleset upgrade semantics (mid-flight admin setting changes affect only new evaluations).
