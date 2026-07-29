@@ -82,7 +82,29 @@ Evidence-based slashes bypass this check (`attestors` is empty, so the
 
 ---
 
-## Point-in-Time Authorisation for Attestations
+### Evidence-Hash-Mismatch Guard
+
+The contract **re-validates** the evidence hash against the originally attested reference at both execution time (`execute_slash`) and countersign time (`attest_slash`):
+
+- **`execute_slash`**: After looking up the `SlashRecord` by the submitted `evidence_hash` (map key), the contract explicitly checks that `record.evidence_hash == evidence_hash`. Under normal operation these always match (the record is stored with the same hash as its key), so this is a **defense-in-depth** check that guards against storage-corruption edge cases.
+- **`attest_slash` (countersign path)**: When a slasher countersigns an existing record, the same check is applied: `record.evidence_hash == evidence_hash`. This ensures the slasher's submitted evidence hash matches the one recorded at initial attestation.
+
+If either check fails, the contract returns `SlashError::EvidenceHashMismatch (18)` **before** performing any state mutation.
+
+```
+Create:  attest_slash(H1)  → store record with key=H1, record.evidence_hash=H1
+Execute: execute_slash(H1) → lookup by H1, check H1 == record.evidence_hash → ✓
+Corrupt: (direct storage edit) → record.evidence_hash ← H2
+Execute: execute_slash(H1) → lookup by H1, check H1 == record.evidence_hash → ✗ (EvidenceHashMismatch)
+```
+
+**Why it matters:** The evidence hash serves as both the record identifier (map key) and a field within the record. While these are always consistent under normal contract operation, this explicit validation protects against:
+- Storage corruption from low-level bugs in Soroban host functions.
+- Abnormal state transitions from edge-case reentrancy or interrupted writes.
+
+---
+
+## Security Assumptions
 
 **Principle:** authorisation for `attest_slash` is evaluated at the ledger in
 which the call is made, not at the ledger in which the slash was first proposed.
@@ -161,25 +183,26 @@ once**.
 
 ## Error Reference
 
-| Code | Name | Meaning |
-|------|------|---------|
-| 1 | `Unauthorized` | Caller is not an authorised slasher (or admin for admin-only calls). |
-| 2 | `DuplicateEvidence` | `evidence_hash` has already been used. |
-| 3 | `PenaltyTooHigh` | `penalty_bps` exceeds the cap or `MAX_PENALTY_BPS`. |
-| 4 | `InsufficientStake` | Offender has no stake or insufficient stake to cover the penalty. |
-| 5 | `AppealWindowOpen` | `execute_slash` called before the appeal deadline. |
-| 6 | `AppealWindowClosed` | `raise_appeal` called after the deadline. |
-| 7 | `RecordNotFound` | No slash record for the given `evidence_hash`. |
-| 8 | `InvalidState` | Operation not valid in the record's current state (double-execution guard). |
-| 9 | `QuorumNotMet` | Attestation count is below `quorum_threshold`. |
-| 10 | `AlreadyAttested` | Slasher has already attested to this slash. |
-| 11 | `ZeroPenalty` | `penalty_bps` is zero, or computed slash amount rounds to zero. |
-| 12 | `AlreadyInitialized` | `initialize` called more than once. |
-| 13 | `InvalidConfig` | Penalty cap configuration is invalid. |
-| 14 | `PeriodCapExceeded` | Slash would exceed the rolling period cap for this offender. |
-| 15 | `LifetimeCapExceeded` | Slash would exceed the lifetime cap for this offender. |
-| 16 | `ArithmeticOverflow` | An intermediate calculation overflowed. |
-| 17 | `ZeroQuorum` | `quorum` argument to `initialize` was zero. |
+| Code | Name                  | Cause                                              |
+|------|-----------------------|----------------------------------------------------|
+| 1    | `Unauthorized`        | Caller does not hold the required role             |
+| 2    | `DuplicateEvidence`   | Evidence hash already used                         |
+| 3    | `PenaltyTooHigh`      | Penalty exceeds configured/event maximum bps       |
+| 4    | `InsufficientStake`   | Offender has no stake or stake < slash amount      |
+| 5    | `AppealWindowOpen`    | Cannot execute — appeal window still active        |
+| 6    | `AppealWindowClosed`  | Cannot raise appeal — deadline passed              |
+| 7    | `RecordNotFound`      | No slash record for given evidence hash            |
+| 8    | `InvalidState`        | Operation not valid in current slash status. Returned by `execute_slash` when the record is already `Executed`, `Reversed`, or `AppealRejected` — this is the **double-execution guard** |
+| 9    | `QuorumNotMet`        | Not enough attestors have signed                   |
+| 10   | `AlreadyAttested`     | Slasher already countersigned this slash           |
+| 11   | `ZeroPenalty`         | Penalty basis points cannot be zero                |
+| 12   | `AlreadyInitialized`  | Contract has already been initialised              |
+| 13   | `InvalidConfig`       | Invalid cap config (zero/negative/inconsistent)    |
+| 14   | `PeriodCapExceeded`   | Cumulative slashing exceeds configured period cap   |
+| 15   | `LifetimeCapExceeded` | Cumulative slashing exceeds configured lifetime cap |
+| 16   | `ArithmeticOverflow`  | Overflow/underflow protection triggered             |
+| 17   | `ZeroQuorum`          | Quorum must be > 0; passing 0 is rejected rather than silently raised to the default |
+| 18   | `EvidenceHashMismatch`| The evidence hash submitted at execution does not match the reference recorded at attestation time. Defense-in-depth check that guards against storage-corruption edge cases where the map key and stored `evidence_hash` could diverge |
 
 ---
 
@@ -190,11 +213,70 @@ All behavioural requirements are covered in
 
 Key test groups:
 
-| Test name | What it proves |
-|-----------|----------------|
-| `test_removed_slasher_attestation_rejected` | A slasher removed via `remove_slasher` cannot submit new attestations or countersign existing pending records. |
-| `test_pre_removal_attestations_count_toward_quorum` | Attestations accepted before removal remain counted and allow `execute_slash` to succeed once quorum was met. |
-| `test_attestation_requires_quorum_before_execute` | `execute_slash` fails with `QuorumNotMet` when attestor count is below the threshold. |
-| `test_attestation_quorum_met_allows_execute` | `execute_slash` succeeds once quorum is met and the appeal window has closed. |
-| `test_double_attestation_by_same_slasher_fails` | A slasher cannot countersign the same slash twice. |
-| `test_execute_slash_double_execution_is_rejected` | The double-execution guard fires on a second `execute_slash` call. |
+# Deploy to Stellar testnet
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/slashing_penalty.wasm \
+  --source <deployer-keypair> \
+  --network testnet
+
+# Initialise
+stellar contract invoke \
+  --id <contract-id> \
+  --source <admin-keypair> \
+  --network testnet \
+  -- initialize \
+  --admin <admin-address> \
+  --token <token-address> \
+  --quorum 2
+```
+
+---
+
+## Test Coverage
+
+The test suite covers:
+
+- Initialisation and double-init protection
+- Zero-quorum rejection (`ZeroQuorum` error, never silently raised to default)
+- Role management (add/remove slasher)
+- Stake deposit and withdrawal including insufficient balance
+- Evidence-based slash: happy path, zero slash, max slash, above-max, duplicate evidence, no stake
+- Attestation-based slash: quorum enforcement, double attestation rejection, quorum-met execute
+- Appeal window: execute before/after deadline, raise appeal in/out of window
+- Appeal resolution: upheld (funds returned), rejected (funds burned), double-resolution rejection
+- Repeated offences with distinct evidence hashes
+- Edge cases: unknown hash, execute non-existent, appeal boundary at exact deadline
+- Replay protection: O(1) keyed lookup, rejection independent of prior slash count
+- **Double-execution guard (issue #938)**:
+  - `test_execute_slash_double_execution_is_rejected` — second `execute_slash` on the same record returns `InvalidState`
+  - `test_execute_slash_stake_balance_reflects_single_execution` — stake is debited by exactly one penalty; the rejected second call does not alter the balance
+  - `test_attestation_slash_execute_slash_double_execution_is_rejected` — guard applies equally to attestation-based slashes
+- **Maximum slash percentage cap**:
+  - `test_slash_at_percentage_cap_succeeds` — slash exactly at a custom per-event bps cap succeeds
+  - `test_slash_above_percentage_cap_fails` — slash 1 bps above a custom cap is rejected with `PenaltyTooHigh`
+  - `test_execute_slash_respects_percentage_cap` — full lifecycle: slash at cap, execute, verify correct amount end-to-end
+  - `test_attestation_slash_at_percentage_cap_succeeds` — attestation-based slash at cap succeeds
+  - `test_attestation_slash_above_percentage_cap_fails` — attestation-based slash above cap fails
+  - `test_zero_per_event_bps_cap_rejected` — zero per-event cap is rejected at init
+  - `test_per_event_bps_cap_exceeds_max_rejected` — cap above `MAX_PENALTY_BPS` (5 000) is rejected
+  - `test_max_bps_boundary_slash_succeeds` — slash at hard `MAX_PENALTY_BPS` through full slash-with-evidence path
+  - `test_update_cap_then_enforce` — lowering the cap via `set_penalty_caps` correctly rejects previously-valid slashes
+- **Evidence-hash-mismatch rejection (issue reference)**:
+  - `test_execute_slash_matching_evidence_hash_succeeds` — evidence-based slash executes when the hash matches the recorded reference
+  - `test_execute_slash_attestation_matching_evidence_hash_succeeds` — attestation-based slash executes when the hash matches
+  - `test_execute_slash_wrong_hash_key_returns_record_not_found` — submitting a different (unused) hash at execute time returns `RecordNotFound`
+  - `test_execute_slash_rejects_storage_corrupted_evidence_hash` — defense-in-depth: storage corruption that diverges the stored `evidence_hash` from the map key triggers `EvidenceHashMismatch`
+  - `test_attest_slash_countersign_rejects_mismatched_evidence_hash` — countersign path rejects a corrupted record whose stored `evidence_hash` diverges from the submitted hash
+  - `test_attest_slash_countersign_matching_hash_succeeds` — countersign with matching hash succeeds under normal operation
+
+---
+
+## Notes for Auditors
+
+1. **Escrow isolation**: Each slash's escrowed amount is keyed by `evidence_hash`. Concurrent slashes against the same offender are independent and cannot interfere.
+2. **Token transfer**: The `stake()` call triggers a real token transfer into the contract. Ensure the token contract is trusted and non-reentrant.
+3. **Burn address**: The current `burn_escrow()` implementation retains funds in the contract as a treasury. For production, replace with a transfer to a designated burn address or distribution logic.
+4. **Ledger timestamp**: All time comparisons use `env.ledger().timestamp()`. Validators control block timestamps within bounds — consider adding a tolerance margin for `offense_timestamp` validation.
+5. **Quorum replay**: A slasher removed from the role list after attesting still counts toward quorum for that slash record. Consider snapshotting the slasher list per slash if this is a concern.
+6. **Cap tuning**: Keep `per_period_amount_cap <= lifetime_amount_cap` and size caps below expected concentration risk to bound repeated-slash abuse.
+7. **Threat model**: Period/lifetime checks are applied at slash creation, so repeated events (including burst submissions in one ledger window) saturate and reject once caps are reached.
