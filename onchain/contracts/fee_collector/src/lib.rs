@@ -457,10 +457,11 @@ impl FeeCollectorContract {
     /// # Tier Selection Algorithm
     ///
     /// For a given `gross_amount` the contract walks the schedule in order and
-    /// selects the **first** tier whose `limit ≥ gross_amount`. If no tier
-    /// matches (i.e., `gross_amount` exceeds every listed limit), the last
-    /// tier's `fee_bps` is used as a catch-all. Use `limit: i128::MAX` as the
-    /// final tier to make the catch-all explicit.
+    /// selects the **first** tier whose `limit ≥ gross_amount`. Amounts equal
+    /// to a tier limit resolve to that tier (inclusive lower-bound behavior),
+    /// and if no tier matches (i.e., `gross_amount` exceeds every listed
+    /// limit), the last tier's `fee_bps` is used as a catch-all. Use
+    /// `limit: i128::MAX` as the final tier to make the catch-all explicit.
     ///
     /// # Running Total Continuity
     ///
