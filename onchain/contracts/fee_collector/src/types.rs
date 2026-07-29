@@ -76,6 +76,22 @@ pub enum FeeSplit {
     Split(Address, Address, u32, u32),
 }
 
+/// Snapshot of a fee quote computed for a specific gross amount.
+///
+/// `calculate_fee` writes the latest quote for a gross amount for later reuse by
+/// `collect_fee`. This makes a previously shown quote settle consistently even if
+/// the active config changes before collection.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeQuote {
+    /// Gross amount that was used to compute the fee.
+    pub gross_amount: i128,
+    /// Fee amount computed at the time of the quote.
+    pub fee_amount: i128,
+    /// Net amount that would be transferred at the time of the quote.
+    pub net_amount: i128,
+}
+
 /// Read-only snapshot of the current fee configuration.
 ///
 /// Returned by [`crate::FeeCollectorContract::get_config`].

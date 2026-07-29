@@ -14,16 +14,14 @@
 //  - Agreement not found returns AgreementNotFound.
 //  - Agreement in invalid status (Completed/Paused) returns MilestoneAgreementInvalidStatus.
 //  - Rejection with a non-empty reason string is recorded in the event.
-//  - Rejection with an empty reason string is accepted.
+//  - Rejection with an empty or whitespace-only reason string is rejected with
+//    MilestoneRejectionReasonEmpty.
 
-use crate::{
-    storage::PayrollError,
-    PayrollContract, PayrollContractClient,
-};
+use crate::{storage::PayrollError, PayrollContract, PayrollContractClient};
 use soroban_sdk::{
     testutils::Address as _,
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env, String,
+    Address, Env, Map, String, Symbol, TryFromVal, TryIntoVal, Vec,
 };
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -32,7 +30,13 @@ use soroban_sdk::{
 /// - A deployed PayrollContract
 /// - An owner, employer, contributor
 /// - A real Stellar Asset Contract funded for the employer (10 000 tokens)
-fn setup() -> (Env, Address, Address, Address, PayrollContractClient<'static>) {
+fn setup() -> (
+    Env,
+    Address,
+    Address,
+    Address,
+    PayrollContractClient<'static>,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -67,7 +71,9 @@ fn funded_milestone(
 ) -> (u128, u32) {
     let agreement_id = client.create_milestone_agreement(employer, contributor, token);
     client.fund_milestone_agreement(&agreement_id, employer, &fund_amount);
-    client.add_milestone(&agreement_id, &milestone_amount).unwrap();
+    client
+        .add_milestone(&agreement_id, &milestone_amount)
+        .unwrap();
     (agreement_id, 1u32)
 }
 
@@ -76,20 +82,28 @@ fn funded_milestone(
 #[test]
 fn test_reject_milestone_succeeds() {
     let (env, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 500);
+    let (agreement_id, milestone_id) =
+        funded_milestone(&client, &employer, &contributor, &token, 1_000, 500);
 
     let reason = String::from_str(&env, "Work does not meet spec");
     let result = client.reject_milestone(&agreement_id, &milestone_id, &reason);
-    assert!(result.is_ok(), "reject_milestone should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "reject_milestone should succeed: {:?}",
+        result
+    );
 }
 
 #[test]
 fn test_reject_milestone_emits_event() {
     let (env, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 500);
+    let (agreement_id, milestone_id) =
+        funded_milestone(&client, &employer, &contributor, &token, 1_000, 500);
 
     let reason = String::from_str(&env, "Deadline missed");
-    client.reject_milestone(&agreement_id, &milestone_id, &reason).unwrap();
+    client
+        .reject_milestone(&agreement_id, &milestone_id, &reason)
+        .unwrap();
 
     // Verify the event was published.  Soroban's `env.events()` returns all
     // events emitted in the current transaction as a Vec of (topics, data).
@@ -104,13 +118,61 @@ fn test_reject_milestone_emits_event() {
 }
 
 #[test]
-fn test_reject_milestone_empty_reason_is_accepted() {
+fn test_reject_milestone_reason_propagated_to_event() {
     let (env, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 300);
+    let (agreement_id, milestone_id) =
+        funded_milestone(&client, &employer, &contributor, &token, 1_000, 500);
+
+    let expected_reason = "Incomplete deliverables — not approved";
+    let reason = String::from_str(&env, expected_reason);
+    client
+        .reject_milestone(&agreement_id, &milestone_id, &reason)
+        .unwrap();
+
+    use soroban_sdk::testutils::Events;
+
+    let all_events = env.events().all();
+    let milestone_rejected_events: Vec<_> = all_events
+        .iter()
+        .filter(|e| {
+            e.1.len() > 0
+                && Symbol::new(&env, "milestone_rejected_event")
+                    == Symbol::try_from_val(&env, &e.1.get(0).unwrap()).unwrap_or(Symbol::new(&env, ""))
+        })
+        .collect();
+
+    assert!(
+        !milestone_rejected_events.is_empty(),
+        "Expected at least one milestone_rejected event"
+    );
+
+    let event_data = &milestone_rejected_events.get(0).unwrap().2;
+    let map: Map<Symbol, soroban_sdk::Val> = event_data.try_into_val(&env).unwrap();
+    let reason_field: soroban_sdk::String = map
+        .get(Symbol::new(&env, "reason"))
+        .expect("reason field should be present in milestone_rejected event")
+        .try_into_val(&env)
+        .unwrap();
+    assert_eq!(
+        reason_field.to_string(),
+        expected_reason,
+        "The reason in the event should match the one passed to reject_milestone"
+    );
+}
+
+#[test]
+fn test_reject_milestone_empty_reason_rejected() {
+    let (env, employer, contributor, token, client) = setup();
+    let (agreement_id, milestone_id) =
+        funded_milestone(&client, &employer, &contributor, &token, 1_000, 300);
 
     let empty_reason = String::from_str(&env, "");
     let result = client.reject_milestone(&agreement_id, &milestone_id, &empty_reason);
-    assert!(result.is_ok(), "empty reason should be accepted: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "empty reason should be accepted: {:?}",
+        result
+    );
 }
 
 // ── state-machine guards ──────────────────────────────────────────────────────
@@ -118,10 +180,13 @@ fn test_reject_milestone_empty_reason_is_accepted() {
 #[test]
 fn test_rejected_milestone_cannot_be_approved() {
     let (env, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
+    let (agreement_id, milestone_id) =
+        funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
 
     let reason = String::from_str(&env, "rejected");
-    client.reject_milestone(&agreement_id, &milestone_id, &reason).unwrap();
+    client
+        .reject_milestone(&agreement_id, &milestone_id, &reason)
+        .unwrap();
 
     let result = client.approve_milestone(&agreement_id, &milestone_id);
     assert_eq!(
@@ -134,14 +199,17 @@ fn test_rejected_milestone_cannot_be_approved() {
 #[test]
 fn test_rejected_milestone_cannot_be_claimed() {
     let (env, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
+    let (agreement_id, milestone_id) =
+        funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
 
     // First approve so the milestone is approvable state, then reject it.
     // Actually: we test the case where rejection happens before approval,
     // so claim fails because milestone is not approved (MilestoneNotApproved).
     // The important thing is the milestone cannot be claimed after rejection.
     let reason = String::from_str(&env, "not accepted");
-    client.reject_milestone(&agreement_id, &milestone_id, &reason).unwrap();
+    client
+        .reject_milestone(&agreement_id, &milestone_id, &reason)
+        .unwrap();
 
     // Try to claim the rejected, unapproved milestone.
     let result = client.claim_milestone(&agreement_id, &milestone_id);
@@ -155,10 +223,13 @@ fn test_rejected_milestone_cannot_be_claimed() {
 #[test]
 fn test_reject_already_rejected_milestone_returns_error() {
     let (env, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
+    let (agreement_id, milestone_id) =
+        funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
 
     let reason = String::from_str(&env, "first rejection");
-    client.reject_milestone(&agreement_id, &milestone_id, &reason).unwrap();
+    client
+        .reject_milestone(&agreement_id, &milestone_id, &reason)
+        .unwrap();
 
     let second_reason = String::from_str(&env, "second rejection attempt");
     let result = client.reject_milestone(&agreement_id, &milestone_id, &second_reason);
@@ -172,9 +243,12 @@ fn test_reject_already_rejected_milestone_returns_error() {
 #[test]
 fn test_reject_already_approved_milestone_returns_error() {
     let (env, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
+    let (agreement_id, milestone_id) =
+        funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
 
-    client.approve_milestone(&agreement_id, &milestone_id).unwrap();
+    client
+        .approve_milestone(&agreement_id, &milestone_id)
+        .unwrap();
 
     let reason = String::from_str(&env, "too late");
     let result = client.reject_milestone(&agreement_id, &milestone_id, &reason);
@@ -188,10 +262,15 @@ fn test_reject_already_approved_milestone_returns_error() {
 #[test]
 fn test_reject_already_claimed_milestone_returns_error() {
     let (env, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
+    let (agreement_id, milestone_id) =
+        funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
 
-    client.approve_milestone(&agreement_id, &milestone_id).unwrap();
-    client.claim_milestone(&agreement_id, &milestone_id).unwrap();
+    client
+        .approve_milestone(&agreement_id, &milestone_id)
+        .unwrap();
+    client
+        .claim_milestone(&agreement_id, &milestone_id)
+        .unwrap();
 
     let reason = String::from_str(&env, "already paid");
     let result = client.reject_milestone(&agreement_id, &milestone_id, &reason);
@@ -214,26 +293,26 @@ fn test_reject_milestone_non_employer_panics() {
     // Disable the blanket mock so that only explicit auths are satisfied.
     let stranger = Address::generate(&env);
     env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &stranger,
-        invoke: &soroban_sdk::testutils::MockAuthInvoke {
-            contract: &client.address,
-            fn_name: "reject_milestone",
-            args: soroban_sdk::vec![
-                &env,
-                soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(&agreement_id, &env),
-                soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(&milestone_id, &env),
-                soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(
-                    &String::from_str(&env, ""),
+            address: &stranger,
+            invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "reject_milestone",
+                args: soroban_sdk::vec![
                     &env,
-                ),
-            ],
-            sub_invokes: &[],
-        },
-    }]);
+                    soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(&agreement_id, &env),
+                    soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(&milestone_id, &env),
+                    soroban_sdk::IntoVal::<Env, soroban_sdk::Val>::into_val(
+                        &String::from_str(&env, "unauthorized rejection"),
+                        &env,
+                    ),
+                ],
+                sub_invokes: &[],
+            },
+        }]);
 
     // This should panic because stranger is not the employer.
     client
-        .reject_milestone(&agreement_id, &milestone_id, &String::from_str(&env, ""))
+        .reject_milestone(&agreement_id, &milestone_id, &String::from_str(&env, "unauthorized rejection"))
         .unwrap();
 }
 
@@ -244,7 +323,7 @@ fn test_reject_milestone_id_zero_returns_not_found() {
     let (env, employer, contributor, token, client) = setup();
     let (agreement_id, _) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
 
-    let result = client.reject_milestone(&agreement_id, &0u32, &String::from_str(&env, ""));
+    let result = client.reject_milestone(&agreement_id, &0u32, &String::from_str(&env, "valid reason"));
     assert_eq!(
         result,
         Err(PayrollError::MilestoneNotFound),
@@ -257,7 +336,7 @@ fn test_reject_milestone_out_of_range_returns_not_found() {
     let (env, employer, contributor, token, client) = setup();
     let (agreement_id, _) = funded_milestone(&client, &employer, &contributor, &token, 1_000, 400);
     // Only milestone 1 exists; 99 is out of range.
-    let result = client.reject_milestone(&agreement_id, &99u32, &String::from_str(&env, ""));
+    let result = client.reject_milestone(&agreement_id, &99u32, &String::from_str(&env, "valid reason"));
     assert_eq!(
         result,
         Err(PayrollError::MilestoneNotFound),
@@ -288,7 +367,9 @@ fn test_reject_milestone_does_not_change_escrow_balance() {
 
     let before = TokenClient::new(&env, &token).balance(&contract_id);
     let reason = String::from_str(&env, "rejected; escrow untouched");
-    client.reject_milestone(&agreement_id, &milestone_id, &reason).unwrap();
+    client
+        .reject_milestone(&agreement_id, &milestone_id, &reason)
+        .unwrap();
     let after = TokenClient::new(&env, &token).balance(&contract_id);
 
     assert_eq!(
@@ -312,7 +393,9 @@ fn test_reject_one_milestone_does_not_affect_others() {
 
     // Reject only milestone 2.
     let reason = String::from_str(&env, "milestone 2 rejected");
-    client.reject_milestone(&agreement_id, &2u32, &reason).unwrap();
+    client
+        .reject_milestone(&agreement_id, &2u32, &reason)
+        .unwrap();
 
     // Milestones 1 and 3 should still be approvable and claimable.
     client.approve_milestone(&agreement_id, &1u32).unwrap();

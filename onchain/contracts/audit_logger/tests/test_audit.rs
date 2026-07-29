@@ -7,6 +7,8 @@ use soroban_sdk::{
 };
 use std::collections::HashSet;
 
+use audit_logger::{AuditLoggerContract, AuditLoggerContractClient, MAX_PAGE_SIZE};
+
 fn setup() -> (Env, Address, AuditLoggerContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
@@ -160,7 +162,7 @@ fn test_get_latest_logs_oversized_limit_clamped() {
     // Request far more than MAX_PAGE_SIZE.
     let latest = client.get_latest_logs(&u32::MAX);
     assert!(
-        latest.len() <= MAX_PAGE_SIZE as usize,
+        latest.len() <= MAX_PAGE_SIZE,
         "get_latest_logs must clamp to MAX_PAGE_SIZE"
     );
 }

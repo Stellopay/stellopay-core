@@ -432,6 +432,9 @@ impl PriceOracleContract {
         env.storage()
             .temporary()
             .remove(&DataKey::PendingBucket(base.clone(), quote.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey::PairState(base.clone(), quote.clone()));
 
         env.events().publish(
             (symbol_short!("oracle"), symbol_short!("disable")),
@@ -674,16 +677,26 @@ impl PriceOracleContract {
     /// @dev Rejects the state with `PriceTooOld` if `ledger.timestamp() - last_updated_ts > max_staleness_seconds`.
     /// @param base Base token address.
     /// @param quote Quote token address.
-    pub fn get_pair_state(env: Env, base: Address, quote: Address) -> Result<PairState, OracleError> {
-        let state = env.storage()
+    pub fn get_pair_state(
+        env: Env,
+        base: Address,
+        quote: Address,
+    ) -> Result<PairState, OracleError> {
+        let state = env
+            .storage()
             .instance()
             .get::<_, PairState>(&DataKey::PairState(base.clone(), quote.clone()))
             .ok_or(OracleError::PairNotConfigured)?;
 
-        let cfg = env.storage()
+        let cfg = env
+            .storage()
             .instance()
             .get::<_, PairConfig>(&DataKey::PairConfig(base, quote))
             .ok_or(OracleError::PairNotConfigured)?;
+
+        if !cfg.enabled {
+            return Err(OracleError::PairNotConfigured);
+        }
 
         let now = env.ledger().timestamp();
         let age = now.saturating_sub(state.last_updated_ts);

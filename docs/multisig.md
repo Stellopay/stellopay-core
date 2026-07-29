@@ -69,6 +69,7 @@ Storage keys:
 - `approve_operation(signer, operation_id)`
 - `cancel_operation(caller, operation_id)`
 - `emergency_execute(guardian, operation_id)`
+- `execute_operation(caller, operation_id, expected_hash)`
 - `get_operation(operation_id) -> Option<Operation>`
 - `get_signers() -> Vec<Address>`
 - `get_threshold() -> u32`
@@ -84,10 +85,79 @@ Storage keys:
 4. When `approvals >= threshold`, the contract:
    - executes `LargePayment` operations by transferring tokens from its balance
    - marks `ContractUpgrade` and `DisputeResolution` operations as executed for off-chain tooling to act on
-5. Creator or owner can cancel a pending operation via `cancel_operation`.
-6. The emergency guardian can call `emergency_execute` to force execution of a
+5. Alternatively, for `ContractUpgrade` operations, the final signing party can call
+   `execute_operation(caller, operation_id, expected_hash)` instead of `approve_operation`.
+   This records their approval, re-validates the WASM hash, and triggers execution only if
+   the hash matches and the resulting approval count meets the threshold (see
+   [ContractUpgrade Hash Validation](#contractupgrade-hash-validation)).
+6. Creator or owner can cancel a pending operation via `cancel_operation`.
+7. The emergency guardian can call `emergency_execute` to force execution of a
    pending operational action in break-glass scenarios. Threshold-override
    changes are excluded from this bypass.
+
+### ContractUpgrade Hash Validation
+
+`ContractUpgrade` operations carry a WASM hash (`BytesN<32>`) that is embedded
+in the proposal at creation time and co-signed by all approving signers. Because
+the off-chain orchestrator that actually deploys the new WASM consumes the
+on-chain execution event, it is critical that the hash confirmed on-chain
+matches the WASM binary that will be deployed.
+
+#### The problem
+
+The standard `approve_operation` path auto-executes as soon as the approval
+count reaches the threshold. This means the final signer's `approve_operation`
+call triggers execution without any opportunity to re-assert the intended WASM
+hash at execution time.
+
+#### The solution: `execute_operation`
+
+`execute_operation(caller, operation_id, expected_hash)` is a hash-gated
+alternative to `approve_operation` for the final approval that triggers
+execution:
+
+1. **Hash check first** — for `ContractUpgrade` operations, `expected_hash` is
+   validated against the hash stored in the proposal *before* any approval is
+   recorded. If the hashes differ (or `expected_hash` is `None`), the call
+   panics with `MultisigError::ContractUpgradeHashMismatch` and no state is
+   modified.
+2. **Approval recorded** — if the hash check passes, the caller's approval is
+   written to storage (idempotent if already approved).
+3. **Threshold check** — `execute_if_threshold_met` is called. If the approval
+   count now meets the effective threshold, `perform_execute` marks the
+   operation as `Executed`.
+
+#### Security properties
+
+- The hash check fires before any state write. A mismatch leaves the operation
+  in its current `Pending` state, approval count unchanged.
+- `expected_hash` must be a `Some(BytesN<32>)` containing a value that equals
+  the stored hash exactly. Passing `None` is treated as a mismatch and rejected.
+- For non-`ContractUpgrade` operation kinds, `expected_hash` is ignored. Callers
+  may pass `None` for those kinds.
+- The function requires `caller` to be a configured signer and to authenticate
+  via `require_auth()`.
+- An operation that is not `Pending` (already `Executed` or `Cancelled`) is
+  rejected by the standard `"Operation not pending"` assertion before the hash
+  check.
+
+#### Error type
+
+| Error | Value | Meaning |
+|-------|-------|---------|
+| `MultisigError::ContractUpgradeHashMismatch` | `1` | `expected_hash` is absent or does not equal the hash stored in the `ContractUpgrade` proposal. |
+
+#### Usage pattern
+
+```
+// S1 proposes; S2 approves normally (N-1 approvals).
+// S3 (final signer) calls execute_operation to confirm the hash and trigger execution:
+multisig.execute_operation(
+    &s3,
+    &operation_id,
+    &Some(expected_wasm_hash),  // must match the hash from the proposal
+);
+```
 
 ### Per-operation Threshold Overrides
 
@@ -182,7 +252,7 @@ The test suite covers:
 - Duplicate approval prevention
 - Non-signer rejection (propose and approve)
 - Already-executed rejection (approve and cancel)
-- Cancel by creator and owner
+- Cancel by creator or owner (signers who are neither the proposer nor the owner cannot cancel)
 - Cancelled operation replay protection:
   - approve against cancelled operation is rejected (panic)
   - cancel against already-cancelled operation is rejected
@@ -196,6 +266,28 @@ The test suite covers:
 - Per-operation override enforcement and default fallback
 - Adversarial threshold lowering and guardian-bypass prevention
 - Override removal and invalid override rejection
+- **ContractUpgrade hash validation via `execute_operation`**:
+  - Negative: `execute_operation` with a mismatched hash is rejected; operation stays
+    `Pending` and approval count is unchanged
+  - Negative: `execute_operation` with `None` hash is rejected for `ContractUpgrade`
+    operations
+  - Positive: `execute_operation` with the correct hash records the approval and
+    transitions the operation to `Executed` once threshold is reached
+
+#### Below-Minimum-Threshold Signer Removal Rejection Tests (issue #1082)
+
+The test suite ensures the contract cannot be left with fewer signers than the
+configured threshold:
+
+- `test_reject_signer_reduction_below_threshold` — Verifies that removing
+  signers down to 1 while keeping the threshold at 2 is rejected, because the
+  new threshold (2) would exceed the number of signers (1).
+- `test_reject_update_signers_threshold_exceeding_count` — Verifies that
+  calling `update_signers` with a new signer count of 2 and a threshold of 3
+  is rejected, because 3 > 2.
+- `test_signer_reduction_with_threshold_adjustment_succeeds` — Verifies that
+  reducing from 3-of-3 to 2-of-2 (the intended recovery path) succeeds and
+  the reduced signer set can still reach quorum and execute operations.
 
 #### Integration Test Coverage for claim_payroll_multisig (issue #853)
 

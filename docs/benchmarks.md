@@ -19,6 +19,25 @@ cargo bench --bench critical_paths
 
 The bench prints **CPU instruction** totals after each isolated operation (`initialize`, `create_payroll_agreement`, `create_escrow_agreement`, `get_agreement`, `create_milestone_agreement`, `get_arbiter`). It also runs a marginal-cost scaling benchmark for `batch_create_payroll_agreements` at 1, 5, 10, and 20 (MAX_BATCH_SIZE) agreements, printing per-batch totals and the marginal cost per additional agreement. It uses `env.cost_estimate().budget().reset_default()` before each timed call.
 
+## Multi-Currency `claim_payroll_in_token` Benchmark
+
+### `claim_payroll_in_token` (1 period, FX rate = 2.0)
+
+The `critical_paths` bench now includes a case for `claim_payroll_in_token` with an active currency conversion. The setup follows the `test_multi_currency.rs` test pattern: the agreement is denominated in a `base_token`, an FX rate of 1 base = 2 payout is configured, escrow is funded in `payout_token`, one period is advanced, and the multi-currency claim is measured.
+
+**Result (test host, Soroban SDK current):**
+
+| Operation | CPU Instructions | Notes |
+|-----------|------------------|-------|
+| `claim_payroll_in_token` (multi-currency, 1 period) | 586,364 | Includes exchange-rate lookup, conversion math, escrow check, and payout-token transfer |
+
+This benchmark can be re-run with:
+
+```bash
+cd onchain/contracts/stello_pay_contract
+cargo bench --bench critical_paths
+```
+
 ## Payment History Scaling Benchmarks
 
 ### `get_payments_by_employee` Scaling

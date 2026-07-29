@@ -936,3 +936,136 @@ fn test_get_owner() {
 
     assert_eq!(client.get_owner(), Some(owner));
 }
+
+// ============================================================================
+// RETROACTIVE ADJUSTMENT AFTER CLAIMED PERIODS
+//
+// These tests verify that a retroactive adjustment:
+//   1. Updates the salary going forward when applied.
+//   2. Does NOT retroactively alter already-processed payroll periods.
+//      The salary_adjustment contract has no claw-back or top-up mechanism
+//      for past claims. The effective_date is a constraint on when the
+//      adjustment can be applied, not a trigger for retroactive recalculation.
+// ============================================================================
+
+#[test]
+fn test_retroactive_adjustment_updates_salary_going_forward() {
+    let env = create_env();
+    set_time(&env, 1000);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Step 1: Create and apply a normal forward adjustment at T=1000.
+    //         This simulates the initial salary being updated to 8_000.
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &8_000, &1000);
+    client.approve_adjustment(&approver, &id1);
+    client.apply_adjustment(&employer, &id1);
+    assert_eq!(client.get_employee_salary(&employee), Some(8_000));
+
+    // Step 2: Time passes. In a real system, payroll periods are claimed at
+    //         salary 8_000 during this interval. The salary_adjustment contract
+    //         does not track individual claims — it only stores the latest
+    //         applied salary for future visibility.
+    set_time(&env, 2000);
+
+    // Step 3: Create a retroactive adjustment with effective_date=500,
+    //         which is before the first adjustment was applied. The owner
+    //         must authorize retroactive adjustments explicitly.
+    let id2 = client.create_retroactive_adjustment(
+        &owner,
+        &employer,
+        &employee,
+        &approver,
+        &8_000,
+        &10_000,
+        &500,
+        &reason_hash(&env, 42),
+    );
+    let adj = client.get_adjustment(&id2).unwrap();
+    assert!(adj.retroactive, "adjustment must be marked retroactive");
+
+    client.approve_adjustment(&approver, &id2);
+    client.apply_adjustment(&employer, &id2);
+
+    // Step 4: The salary is updated going forward. The new salary takes
+    //         effect from the time `apply_adjustment` was called (T=2000).
+    assert_eq!(
+        client.get_employee_salary(&employee),
+        Some(10_000),
+        "salary must reflect the new value after apply"
+    );
+
+    // Step 5: Verify the retroactive adjustment is correctly recorded.
+    let applied = client.get_adjustment(&id2).unwrap();
+    assert_eq!(applied.status, AdjustmentStatus::Applied);
+    assert_eq!(applied.effective_date, 500);
+    assert_eq!(applied.current_salary, 8_000);
+    assert_eq!(applied.new_salary, 10_000);
+    assert_eq!(
+        applied.retroactive_approved_by,
+        Some(owner.clone()),
+        "retroactive approval must be recorded"
+    );
+
+    // Step 6: The earlier salary (8_000) is no longer directly accessible
+    //         via get_employee_salary — only the latest applied salary is
+    //         stored. This is the expected forward-only behavior. If a
+    //         period was already claimed at 8_000, it is NOT retroactively
+    //         topped up to 10_000 by this contract.
+    assert_eq!(
+        client.get_employee_salary(&employee),
+        Some(10_000),
+        "only the latest salary is visible; no retroactive recalculation"
+    );
+}
+
+#[test]
+fn test_retroactive_adjustment_does_not_affect_prior_normal_adjustment() {
+    // Verifies that a retroactive adjustment with effective_date before an
+    // earlier normal adjustment does not retroactively change the salary
+    // that was in effect when the earlier adjustment was applied.
+    let env = create_env();
+    set_time(&env, 1000);
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    // Apply normal adjustment at T=1000: 5_000 -> 8_000
+    let id1 = client.create_adjustment(&employer, &employee, &approver, &5_000, &8_000, &1000);
+    client.approve_adjustment(&approver, &id1);
+    client.apply_adjustment(&employer, &id1);
+    assert_eq!(client.get_employee_salary(&employee), Some(8_000));
+
+    // Time passes, then create a retroactive adjustment to 10_000
+    // with effective_date=200 (way before the first adjustment).
+    set_time(&env, 3000);
+    let id2 = client.create_retroactive_adjustment(
+        &owner,
+        &employer,
+        &employee,
+        &approver,
+        &8_000,
+        &10_000,
+        &200,
+        &reason_hash(&env, 99),
+    );
+    client.approve_adjustment(&approver, &id2);
+    client.apply_adjustment(&employer, &id2);
+
+    // The retroactive adjustment's new salary is visible going forward.
+    assert_eq!(client.get_employee_salary(&employee), Some(10_000));
+
+    // The audit trail records the retroactive nature of the adjustment.
+    let audit_count = client.get_audit_log_count();
+    let audit = client.get_audit_log(&audit_count).unwrap();
+    assert_eq!(audit.action, Symbol::new(&env, "adjustment_applied"));
+}

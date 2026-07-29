@@ -516,3 +516,84 @@ fn test_paused_status_round_trip() {
     let recovered = restore_agreement(&env, &envelope, passphrase).unwrap();
     assert_eq!(recovered.status, AgreementStatus::Paused);
 }
+
+// ---------------------------------------------------------------------------
+// 8. Key rotation regression tests
+// ---------------------------------------------------------------------------
+
+/// Regression test for key rotation: a backup encrypted with the old key
+/// must fail to decrypt with the new key after rotation.
+#[test]
+fn test_key_rotation_old_backup_fails_with_new_key() {
+    let env = create_env();
+    let agreement = make_agreement(&env);
+
+    // Key rotation scenario: old passphrase (key A) -> new passphrase (key B)
+    let old_passphrase = b"old-backup-key-2024";
+    let new_passphrase = b"new-backup-key-2025";
+
+    // Create backup under old key
+    let old_backup = backup_agreement(&env, &agreement, old_passphrase, &TEST_SALT, &TEST_NONCE);
+
+    // Attempt to decrypt old backup with new key (should fail)
+    let err = restore_agreement(&env, &old_backup, new_passphrase).unwrap_err();
+    assert_eq!(
+        err,
+        BackupError::DecryptionFailed,
+        "backup encrypted with old key must fail to decrypt with new key"
+    );
+}
+
+/// Regression test for key rotation: the correct key must still decrypt
+/// its matching backup after rotation. This ensures that:
+/// - Old key can still decrypt old backups (for recovery of historical data)
+/// - New key can decrypt new backups created after rotation
+#[test]
+fn test_key_rotation_correct_keys_decrypt_matching_backups() {
+    let env = create_env();
+    let agreement = make_agreement(&env);
+
+    let old_passphrase = b"old-backup-key-2024";
+    let new_passphrase = b"new-backup-key-2025";
+
+    // Create backup under old key (pre-rotation)
+    let old_backup = backup_agreement(&env, &agreement, old_passphrase, &TEST_SALT, &TEST_NONCE);
+
+    // Simulate key rotation: operator switches to new passphrase
+    // Create backup under new key (post-rotation)
+    let new_backup = backup_agreement(
+        &env,
+        &agreement,
+        new_passphrase,
+        &TEST_SALT_2,
+        &TEST_NONCE_2,
+    );
+
+    // Old key must still decrypt old backup
+    let recovered_old = restore_agreement(&env, &old_backup, old_passphrase)
+        .expect("old key must decrypt old backup");
+    assert_eq!(recovered_old.id, agreement.id);
+    assert_eq!(recovered_old.total_amount, agreement.total_amount);
+
+    // New key must decrypt new backup
+    let recovered_new = restore_agreement(&env, &new_backup, new_passphrase)
+        .expect("new key must decrypt new backup");
+    assert_eq!(recovered_new.id, agreement.id);
+    assert_eq!(recovered_new.total_amount, agreement.total_amount);
+
+    // Cross-check: new key should NOT decrypt old backup
+    let cross_err = restore_agreement(&env, &old_backup, new_passphrase).unwrap_err();
+    assert_eq!(
+        cross_err,
+        BackupError::DecryptionFailed,
+        "new key must not decrypt old backup"
+    );
+
+    // Cross-check: old key should NOT decrypt new backup
+    let cross_err_reverse = restore_agreement(&env, &new_backup, old_passphrase).unwrap_err();
+    assert_eq!(
+        cross_err_reverse,
+        BackupError::DecryptionFailed,
+        "old key must not decrypt new backup"
+    );
+}
