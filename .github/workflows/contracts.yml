@@ -16,3 +16,22 @@ jobs:
       - uses: actions/checkout@v4
       - name: CI green
         run: echo "CI temporarily scoped to smoke check while build/test failures are triaged."
+
+  doc-checker:
+    name: Run doc_checker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            tools/doc_checker
+
+      - name: Run doc_checker GHA wrapper
+        run: ./tools/doc_checker/run_ci.py
