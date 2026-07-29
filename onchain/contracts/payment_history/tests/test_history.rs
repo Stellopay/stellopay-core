@@ -567,6 +567,138 @@ fn test_agreement_indices_are_independent() {
     assert_eq!(client.get_agreement_payment_count(&3u128), 0u32);
 }
 
+/// Verifies that querying payments by agreement ID never returns records
+/// belonging to a different agreement, even when multiple agreements share
+/// the same employer or employee address.
+///
+/// # Security Property
+///
+/// The append-only agreement index (`AgreementPayment(agreement_id, position)`)
+/// is keyed on the agreement ID tuple, so cross-agreement leakage would require
+/// a storage collision — which the Soroban host prevents.  This test confirms
+/// the contract-level behaviour:
+///
+/// * After recording N payments for agreement A and M payments for agreement B
+///   with a shared employer, `get_payments_by_agreement(A, 1, MAX)` returns
+///   exactly N records, all with `agreement_id == A`.
+/// * `get_payments_by_agreement(B, 1, MAX)` returns exactly M records, all
+///   with `agreement_id == B`.
+/// * `get_agreement_payment_count` returns N and M respectively.
+/// * The employer-level view (`get_payments_by_employer`) correctly aggregates
+///   payments from both agreements.
+#[test]
+fn test_agreement_query_never_leaks_cross_agreement_records() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    initialize_contract(&env, &client);
+
+    let token = Address::generate(&env);
+    let shared_employer = Address::generate(&env);
+    let employee_a = Address::generate(&env);
+    let employee_b = Address::generate(&env);
+
+    let agreement_a = 100u128;
+    let agreement_b = 200u128;
+
+    // Record 3 payments for agreement A with shared employer.
+    let id_a1 = record(
+        &client, &env, agreement_a, 1u32, &token, 100, &shared_employer, &employee_a, 1_000,
+    );
+    let id_a2 = record(
+        &client, &env, agreement_a, 2u32, &token, 200, &shared_employer, &employee_a, 2_000,
+    );
+    let id_a3 = record(
+        &client, &env, agreement_a, 3u32, &token, 300, &shared_employer, &employee_a, 3_000,
+    );
+
+    // Record 2 payments for agreement B with the SAME employer.
+    let id_b1 = record(
+        &client, &env, agreement_b, 4u32, &token, 400, &shared_employer, &employee_b, 4_000,
+    );
+    let id_b2 = record(
+        &client, &env, agreement_b, 5u32, &token, 500, &shared_employer, &employee_b, 5_000,
+    );
+
+    // ── Agreement-level queries ──────────────────────────────────────────
+
+    let page_a = client.get_payments_by_agreement(&agreement_a, &1u32, &10u32);
+    assert_eq!(page_a.len(), 3u32, "agreement A must return exactly 3 records");
+    for i in 0..page_a.len() {
+        let record = page_a.get(i).unwrap();
+        assert_eq!(
+            record.agreement_id, agreement_a,
+            "every record on agreement A page must belong to agreement A"
+        );
+    }
+
+    let page_b = client.get_payments_by_agreement(&agreement_b, &1u32, &10u32);
+    assert_eq!(page_b.len(), 2u32, "agreement B must return exactly 2 records");
+    for i in 0..page_b.len() {
+        let record = page_b.get(i).unwrap();
+        assert_eq!(
+            record.agreement_id, agreement_b,
+            "every record on agreement B page must belong to agreement B"
+        );
+    }
+
+    // ── Counts match independently ───────────────────────────────────────
+
+    assert_eq!(
+        client.get_agreement_payment_count(&agreement_a),
+        3u32,
+        "agreement A count must be exactly 3"
+    );
+    assert_eq!(
+        client.get_agreement_payment_count(&agreement_b),
+        2u32,
+        "agreement B count must be exactly 2"
+    );
+
+    // ── Employer view aggregates correctly ───────────────────────────────
+
+    let emp_page = client.get_payments_by_employer(&shared_employer, &1u32, &10u32);
+    assert_eq!(
+        emp_page.len(),
+        5u32,
+        "employer page includes payments from both agreements"
+    );
+
+    // Collect the IDs from each page for cross-validation.
+    let mut a_ids = std::vec![0u128; 3];
+    let mut b_ids = std::vec![0u128; 2];
+    let mut emp_ids = std::vec![0u128; 5];
+
+    for i in 0..page_a.len() {
+        a_ids[i as usize] = page_a.get(i).unwrap().id;
+    }
+    for i in 0..page_b.len() {
+        b_ids[i as usize] = page_b.get(i).unwrap().id;
+    }
+    for i in 0..emp_page.len() {
+        emp_ids[i as usize] = emp_page.get(i).unwrap().id;
+    }
+
+    // Each agreement page contains only its own IDs.
+    assert!(a_ids.contains(&id_a1) && a_ids.contains(&id_a2) && a_ids.contains(&id_a3));
+    assert!(!a_ids.contains(&id_b1) && !a_ids.contains(&id_b2));
+
+    assert!(b_ids.contains(&id_b1) && b_ids.contains(&id_b2));
+    assert!(!b_ids.contains(&id_a1) && !b_ids.contains(&id_a2) && !b_ids.contains(&id_a3));
+
+    // Employer view contains all IDs from both agreements.
+    for id in [id_a1, id_a2, id_a3, id_b1, id_b2] {
+        assert!(
+            emp_ids.contains(&id),
+            "employer page missing payment id {}",
+            id
+        );
+    }
+
+    // Unused agreement returns empty page.
+    let page_empty = client.get_payments_by_agreement(&999u128, &1u32, &10u32);
+    assert_eq!(page_empty.len(), 0u32);
+}
+
 #[test]
 fn test_get_payments_by_agreement_single_record() {
     let env = create_env();
