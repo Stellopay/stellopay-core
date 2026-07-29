@@ -246,16 +246,12 @@ fn test_unrelated_party_escrow_unaffected_by_slash() {
         &evidence_hash,
         &env.ledger().timestamp(),
     );
-    
+
     advance(&env, 700_000);
     slashing_client.execute_slash(&evidence_hash);
 
     let orchestrator = MockOrchestrator::new(&env, &slashing_id, &escrow_id, orchestrator_addr);
-    orchestrator.sync_slash_to_escrow(
-        evidence_hash.clone(),
-        agreement_id_1,
-        &treasury,
-    );
+    orchestrator.sync_slash_to_escrow(evidence_hash.clone(), agreement_id_1, &treasury);
 
     // Assert employee1's balance is reduced
     let record = slashing_client.get_slash_record(&evidence_hash).unwrap();
@@ -265,5 +261,8 @@ fn test_unrelated_party_escrow_unaffected_by_slash() {
     );
 
     // Assert unrelated party (employee2) is unaffected
-    assert_eq!(escrow_client.get_agreement_balance(&agreement_id_2), ESCROW_FUND);
+    assert_eq!(
+        escrow_client.get_agreement_balance(&agreement_id_2),
+        ESCROW_FUND
+    );
 }
