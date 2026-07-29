@@ -116,6 +116,7 @@ Generates an aggregated report for a given employer and time window.
 - Iterates backwards (newest-first) through the employer's records.
 - Stops early when a record's timestamp falls below `start_date`, saving instruction budget.
 - `limit` must be between 1 and 100 (inclusive).
+- `generate_report` uses the same on-chain aggregation path as `get_withholding_records`; it does not silently truncate a long employer history. For very large histories, callers should use paginated follow-up queries or off-chain indexed snapshots.
 - Errors: `NotInitialized`, `InvalidDateRange`, `QueryLimitExceeded`
 
 ## Events

@@ -1,13 +1,14 @@
 #![cfg(test)]
 
 use dispute_escalation::{
-    types::{DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel},
+    types::{DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel,
+           KeeperAdvance},
     DisputeEscalatedEvent, DisputeEscalationContract, DisputeEscalationContractClient,
-    DisputeSlaViolationAdvancedEvent,
+    DisputeSlaBreachedEvent, DisputeSlaViolationAdvancedEvent,
 };
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
-    token, Address, Env, IntoVal, String as SorobanString, Val, Vec,
+    Address, Env, FromVal, IntoVal, String as SorobanString, Val, Vec,
 };
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -58,11 +59,11 @@ fn event_topic_matches(env: &Env, topic: &Vec<Val>, event_name: &str) -> bool {
         return false;
     }
 
-    let Ok(symbol) = Symbol::try_from_val(env, &topic.get(0).unwrap()) else {
-        return false;
-    };
-
-    symbol.to_string() == event_name
+    // Events published via the deprecated `env.events().publish(("topic",), data)` API
+    // store topics as `ScString`, not `ScSymbol`. Convert accordingly.
+    let topic_val = topic.get(0).unwrap();
+    let topic_str = SorobanString::from_val(env, &topic_val);
+    topic_str == SorobanString::from_str(env, event_name)
 }
 
 /// Return true if any emitted event has the requested first topic symbol.
@@ -532,7 +533,7 @@ fn test_normal_escalation_emits_only_dispute_escalated_event() {
     assert!(!has_event(&env, "sla_violation_advanced"));
 
     let event = last_event(&env, "dispute_escalated").expect("dispute_escalated event");
-    let payload = DisputeEscalatedEvent::try_from_val(&env, &event.2).unwrap();
+    let payload = DisputeEscalatedEvent::from_val(&env, &event.2);
     assert_eq!(payload.agreement_id, id);
     assert_eq!(payload.new_level, EscalationLevel::Level2);
     assert_eq!(payload.phase_deadline, now(&env) + DEFAULT_LEVEL_LIMIT);
@@ -553,9 +554,10 @@ fn test_keeper_timeout_emits_sla_violation_advanced_event_only() {
     assert!(!has_event(&env, "dispute_escalated"));
 
     let event = last_event(&env, "sla_violation_advanced").expect("sla_violation_advanced event");
-    let payload = DisputeSlaViolationAdvancedEvent::try_from_val(&env, &event.2).unwrap();
+    let payload = DisputeSlaViolationAdvancedEvent::from_val(&env, &event.2);
     assert_eq!(payload.agreement_id, id);
     assert_eq!(payload.level, EscalationLevel::Level1);
+    assert_eq!(payload.keeper, user);
     assert_eq!(payload.breached_at, breached_at);
     assert_eq!(payload.review_deadline, breached_at + PENDING_REVIEW_WINDOW);
 }
@@ -2374,4 +2376,660 @@ fn test_length_cap_boundary_257_fails() {
     let text = SorobanString::from_str(&env, &"z".repeat(257));
     let res = client.try_file_dispute(&user, &1510u128, &DisputeReason::Other(text));
     assert_eq!(res, Err(Ok(DisputeError::ReasonTooLong)));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §16  EARLY-EXPIRY REJECTION TESTS
+//
+//      expire_dispute is guarded by a strict `now > phase_deadline` check.
+//      Any call made while `now <= phase_deadline` must be rejected with
+//      `DeadlineNotPassed` — regardless of which status the dispute is in
+//      (Open, Escalated, Appealed, PendingReview).
+//
+//      These tests are structured in three groups per status:
+//        A. Premature call (well before deadline)      → DeadlineNotPassed
+//        B. Call at the exact deadline timestamp       → DeadlineNotPassed
+//        C. Call one second past the deadline          → succeeds, Expired
+//
+//      Security note: the `now <= deadline` guard prevents any caller from
+//      forcing a dispute into the `Expired` terminal state while the SLA
+//      window is still open.  Because `expire_dispute` is permissionless,
+//      without this guard an adversary could expire a dispute immediately after
+//      filing it, bypassing dispute resolution entirely and preventing the
+//      employee or employer from obtaining a ruling.  All timestamp comparisons
+//      use `env.ledger().timestamp()` — the Stellar consensus timestamp, which
+//      is manipulation-resistant and fully deterministic across validators.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── Group A: Open status ────────────────────────────────────────────────────
+
+/// Premature `expire_dispute` on an `Open` dispute (time has not advanced at
+/// all) must be rejected with `DeadlineNotPassed`.
+#[test]
+fn test_expire_open_dispute_premature_rejected() {
+    let (_env, client, _owner, _admin, user) = setup();
+    let id = 1600u128;
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    // No time advance — we are still at t=0, well inside the 7-day SLA window.
+
+    let res = client.try_expire_dispute(&user, &id);
+    assert_eq!(
+        res,
+        Err(Ok(DisputeError::DeadlineNotPassed)),
+        "expire_dispute must be rejected before the SLA deadline has elapsed"
+    );
+
+    // Dispute must remain Open — no state mutation on failure.
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Open);
+}
+
+/// `expire_dispute` on an `Open` dispute at the **exact** `phase_deadline`
+/// timestamp must still be rejected (`now == deadline` is still within the
+/// window: the guard is `now > deadline`, not `now >= deadline`).
+#[test]
+fn test_expire_open_dispute_at_exact_deadline_rejected() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1601u128;
+
+    const SLA: u64 = 200;
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    let deadline = client.get_dispute(&id).unwrap().phase_deadline;
+    let start = now(&env);
+    advance(&env, deadline - start); // advance to exactly the deadline
+    assert_eq!(now(&env), deadline, "ledger must be at the exact deadline");
+
+    let res = client.try_expire_dispute(&user, &id);
+    assert_eq!(
+        res,
+        Err(Ok(DisputeError::DeadlineNotPassed)),
+        "expire_dispute at exactly the deadline must still be rejected (now == deadline is inside the window)"
+    );
+
+    // Dispute must remain Open.
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Open);
+}
+
+/// `expire_dispute` one second past the `phase_deadline` of an `Open` dispute
+/// must succeed and transition the dispute to `Expired`.
+#[test]
+fn test_expire_open_dispute_one_second_past_deadline_succeeds() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1602u128;
+
+    const SLA: u64 = 200;
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    let deadline = client.get_dispute(&id).unwrap().phase_deadline;
+    let start = now(&env);
+    advance(&env, deadline - start + 1); // one second past the deadline
+    assert_eq!(now(&env), deadline + 1);
+
+    client.expire_dispute(&user, &id);
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(
+        d.status,
+        DisputeStatus::Expired,
+        "dispute must be Expired once the deadline has elapsed"
+    );
+}
+
+// ─── Group B: Escalated status ───────────────────────────────────────────────
+
+/// Premature `expire_dispute` on an `Escalated` dispute must be rejected.
+/// The SLA window for the new level has just started — no time has passed.
+#[test]
+fn test_expire_escalated_dispute_premature_rejected() {
+    let (_env, client, _owner, _admin, user) = setup();
+    let id = 1603u128;
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.escalate_dispute(&user, &id); // → Escalated @ Level2 with fresh deadline
+
+    // No time advance — we are at the start of the Level2 SLA window.
+    let res = client.try_expire_dispute(&user, &id);
+    assert_eq!(
+        res,
+        Err(Ok(DisputeError::DeadlineNotPassed)),
+        "expire_dispute must be rejected immediately after escalation"
+    );
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Escalated);
+}
+
+/// `expire_dispute` on an `Escalated` dispute at the exact Level2
+/// `phase_deadline` must be rejected.
+#[test]
+fn test_expire_escalated_dispute_at_exact_deadline_rejected() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1604u128;
+
+    const SLA: u64 = 150;
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &SLA);
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.escalate_dispute(&user, &id); // → Escalated @ Level2
+
+    let deadline = client.get_dispute(&id).unwrap().phase_deadline;
+    let start = now(&env);
+    advance(&env, deadline - start);
+    assert_eq!(now(&env), deadline);
+
+    let res = client.try_expire_dispute(&user, &id);
+    assert_eq!(
+        res,
+        Err(Ok(DisputeError::DeadlineNotPassed)),
+        "expire_dispute at exactly the Level2 deadline must be rejected"
+    );
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Escalated);
+}
+
+/// `expire_dispute` one second past the Level2 `phase_deadline` of an
+/// `Escalated` dispute must succeed.
+#[test]
+fn test_expire_escalated_dispute_one_second_past_deadline_succeeds() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1605u128;
+
+    const SLA: u64 = 150;
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &SLA);
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.escalate_dispute(&user, &id);
+
+    let deadline = client.get_dispute(&id).unwrap().phase_deadline;
+    let start = now(&env);
+    advance(&env, deadline - start + 1);
+    assert_eq!(now(&env), deadline + 1);
+
+    client.expire_dispute(&user, &id);
+
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Expired
+    );
+}
+
+// ─── Group C: Appealed status ────────────────────────────────────────────────
+
+/// Premature `expire_dispute` on an `Appealed` dispute (fresh deadline just
+/// set by `appeal_ruling`) must be rejected.
+#[test]
+fn test_expire_appealed_dispute_premature_rejected() {
+    let (_env, client, _owner, admin, user) = setup();
+    let id = 1606u128;
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    client.appeal_ruling(&user, &id); // → Appealed @ Level2, fresh SLA deadline
+
+    let res = client.try_expire_dispute(&user, &id);
+    assert_eq!(
+        res,
+        Err(Ok(DisputeError::DeadlineNotPassed)),
+        "expire_dispute must be rejected immediately after appeal"
+    );
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Appealed);
+}
+
+/// `expire_dispute` on an `Appealed` dispute at the exact Level2 deadline
+/// must be rejected.
+#[test]
+fn test_expire_appealed_dispute_at_exact_deadline_rejected() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1607u128;
+
+    const SLA: u64 = 120;
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &SLA);
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    client.appeal_ruling(&user, &id); // → Appealed @ Level2
+
+    let deadline = client.get_dispute(&id).unwrap().phase_deadline;
+    let start = now(&env);
+    advance(&env, deadline - start);
+    assert_eq!(now(&env), deadline);
+
+    let res = client.try_expire_dispute(&user, &id);
+    assert_eq!(
+        res,
+        Err(Ok(DisputeError::DeadlineNotPassed)),
+        "expire_dispute at exactly the appeal deadline must be rejected"
+    );
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Appealed);
+}
+
+/// `expire_dispute` one second past the Level2 `phase_deadline` of an
+/// `Appealed` dispute must succeed.
+#[test]
+fn test_expire_appealed_dispute_one_second_past_deadline_succeeds() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1608u128;
+
+    const SLA: u64 = 120;
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &SLA);
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    client.appeal_ruling(&user, &id);
+
+    let deadline = client.get_dispute(&id).unwrap().phase_deadline;
+    let start = now(&env);
+    advance(&env, deadline - start + 1);
+    assert_eq!(now(&env), deadline + 1);
+
+    client.expire_dispute(&user, &id);
+
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Expired
+    );
+}
+
+// ─── Group D: PendingReview status ───────────────────────────────────────────
+
+/// Premature `expire_dispute` on a `PendingReview` dispute (the keeper just
+/// advanced it, no time has passed in the review window) must be rejected.
+#[test]
+fn test_expire_pending_review_dispute_premature_rejected() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1609u128;
+
+    const SLA: u64 = 50;
+    const REVIEW: u64 = 200;
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
+    client.set_pending_review_time_limit(&admin, &REVIEW);
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    advance(&env, SLA + 1); // SLA elapsed — keeper can advance
+    client.keeper_advance_stage(&user, &id);
+
+    // We are still at the very start of the review window.
+    // No additional time has passed since keeper_advance_stage.
+    let res = client.try_expire_dispute(&user, &id);
+    assert_eq!(
+        res,
+        Err(Ok(DisputeError::DeadlineNotPassed)),
+        "expire_dispute must be rejected immediately after keeper advances to PendingReview"
+    );
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+}
+
+/// `expire_dispute` on a `PendingReview` dispute at the exact review deadline
+/// must be rejected (`now == review_deadline` is still within the window).
+#[test]
+fn test_expire_pending_review_dispute_at_exact_review_deadline_rejected() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1610u128;
+
+    const SLA: u64 = 50;
+    const REVIEW: u64 = 100;
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
+    client.set_pending_review_time_limit(&admin, &REVIEW);
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    advance(&env, SLA + 1);
+    client.keeper_advance_stage(&user, &id);
+
+    let review_deadline = client.get_dispute(&id).unwrap().phase_deadline;
+    let current = now(&env);
+    advance(&env, review_deadline - current); // advance to exactly the review deadline
+    assert_eq!(now(&env), review_deadline);
+
+    let res = client.try_expire_dispute(&user, &id);
+    assert_eq!(
+        res,
+        Err(Ok(DisputeError::DeadlineNotPassed)),
+        "expire_dispute at exactly the review deadline must be rejected (now == deadline is inside the window)"
+    );
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+}
+
+/// `expire_dispute` one second past the review deadline of a `PendingReview`
+/// dispute must succeed and produce `Expired`.
+#[test]
+fn test_expire_pending_review_dispute_one_second_past_review_deadline_succeeds() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1611u128;
+
+    const SLA: u64 = 50;
+    const REVIEW: u64 = 100;
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
+    client.set_pending_review_time_limit(&admin, &REVIEW);
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    advance(&env, SLA + 1);
+    client.keeper_advance_stage(&user, &id);
+
+    let review_deadline = client.get_dispute(&id).unwrap().phase_deadline;
+    let current = now(&env);
+    advance(&env, review_deadline - current + 1); // one second past review deadline
+    assert_eq!(now(&env), review_deadline + 1);
+
+    client.expire_dispute(&user, &id);
+
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Expired
+    );
+}
+
+// ─── Group E: Cross-cutting — state must not change on rejection ──────────────
+
+/// A failed `expire_dispute` call (before deadline) must not mutate any field
+/// of the dispute — the entire call is reverted.
+#[test]
+fn test_expire_premature_leaves_dispute_fully_unchanged() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1612u128;
+
+    const SLA: u64 = 300;
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    // Capture the full dispute state before the rejected call.
+    let before = client.get_dispute(&id).unwrap();
+
+    // Advance partway but not past the deadline.
+    advance(&env, SLA / 2);
+
+    let res = client.try_expire_dispute(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::DeadlineNotPassed)));
+
+    // Every field must be identical to the pre-call snapshot.
+    let after = client.get_dispute(&id).unwrap();
+    assert_eq!(after.status, before.status);
+    assert_eq!(after.level, before.level);
+    assert_eq!(after.outcome, before.outcome);
+    assert_eq!(after.phase_started_at, before.phase_started_at);
+    assert_eq!(after.phase_deadline, before.phase_deadline);
+}
+
+/// A failed `expire_dispute` call must not emit any event.
+#[test]
+fn test_expire_premature_emits_no_event() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1613u128;
+
+    const SLA: u64 = 300;
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    // Advance partway but stay inside the window.
+    advance(&env, SLA - 1);
+
+    let contract_id = client.address.clone();
+    let res = client.try_expire_dispute(&user, &id);
+    assert_eq!(res, Err(Ok(DisputeError::DeadlineNotPassed)));
+
+    // No `dispute_expired` event should have been emitted.
+    assert_no_event(&env, &contract_id, "dispute_expired");
+}
+
+/// `expire_dispute` is permissionless — a third party (not admin, not the
+/// original filer) calling it before the deadline must still be rejected with
+/// `DeadlineNotPassed` rather than `Unauthorized`.
+#[test]
+fn test_expire_premature_by_third_party_rejected_with_deadline_error() {
+    let (env, client, _owner, admin, user) = setup();
+    let third_party = Address::generate(&env);
+    let id = 1614u128;
+
+    const SLA: u64 = 200;
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &SLA);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    // No time advance — inside the window.
+    let res = client.try_expire_dispute(&third_party, &id);
+    assert_eq!(
+        res,
+        Err(Ok(DisputeError::DeadlineNotPassed)),
+        "a permissionless caller is still subject to the deadline guard"
+    );
+
+    // Verify the third party CAN expire once the deadline passes.
+    advance(&env, SLA + 1);
+    client.expire_dispute(&third_party, &id);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Expired
+    );
+}
+
+// ─── Group F: Multi-level boundary sweep ─────────────────────────────────────
+
+/// Exhaustive boundary sweep across all three escalation levels via the
+/// `Escalated` path.  Verifies that after each `escalate_dispute` call the
+/// new level's SLA window is honoured and a premature `expire_dispute` is
+/// still rejected.
+#[test]
+fn test_expire_premature_rejected_across_all_escalation_levels() {
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1615u128;
+
+    const L1_SLA: u64 = 100;
+    const L2_SLA: u64 = 200;
+    const L3_SLA: u64 = 300;
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &L1_SLA);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &L2_SLA);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level3, &L3_SLA);
+
+    // ── Level1 ──────────────────────────────────────────────────────────────
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level1
+    );
+
+    // Premature at L1.
+    assert_eq!(
+        client.try_expire_dispute(&user, &id),
+        Err(Ok(DisputeError::DeadlineNotPassed))
+    );
+
+    // ── Level2 ──────────────────────────────────────────────────────────────
+    client.escalate_dispute(&user, &id); // still within L1 window
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level2
+    );
+
+    // Premature at L2 (no additional time has passed since escalation).
+    assert_eq!(
+        client.try_expire_dispute(&user, &id),
+        Err(Ok(DisputeError::DeadlineNotPassed))
+    );
+
+    // ── Level3 ──────────────────────────────────────────────────────────────
+    client.escalate_dispute(&user, &id); // still within L2 window
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level3
+    );
+
+    // Premature at L3 (fresh L3 deadline just set).
+    assert_eq!(
+        client.try_expire_dispute(&user, &id),
+        Err(Ok(DisputeError::DeadlineNotPassed))
+    );
+
+    // Confirm expiry works once L3 deadline passes.
+    let l3_deadline = client.get_dispute(&id).unwrap().phase_deadline;
+    let current = now(&env);
+    advance(&env, l3_deadline - current + 1);
+
+    client.expire_dispute(&user, &id);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Expired
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// §17  KEEPER ACCOUNTABILITY TESTS
+//      Verify that the keeper's address and the advance timestamp are
+//      persisted on the dispute record for a full accountability trail.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_keeper_advance_records_keeper_address_and_timestamp() {
+    // Verifies that a single keeper_advance_stage call persists the calling
+    // keeper's address and the advance timestamp on the dispute record
+    // (queryable via get_dispute).
+    let (env, client, _owner, admin, user) = setup();
+    let id = 1u128;
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+
+    advance(&env, 51); // SLA elapsed
+    let t_advance = now(&env);
+
+    client.keeper_advance_stage(&user, &id);
+
+    // Read the persisted dispute record — keeper identity and timestamp must
+    // be stored in the keeper_advances history.
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.keeper_advances.len(), 1);
+
+    let record = d.keeper_advances.get(0).unwrap();
+    assert_eq!(record.keeper, user);
+    assert_eq!(record.advanced_at, t_advance);
+    assert_eq!(record.level, EscalationLevel::Level1);
+
+    // The SLA breach event must also include the keeper address.
+    let sla_event = last_event(&env, "sla_violation_advanced")
+        .expect("sla_violation_advanced event");
+    let payload = DisputeSlaViolationAdvancedEvent::from_val(&env, &sla_event.2);
+    assert_eq!(payload.keeper, user);
+
+    // The legacy event topic also carries the keeper.
+    let legacy_event = last_event(&env, "dispute_sla_breached")
+        .expect("dispute_sla_breached event");
+    let legacy_payload = DisputeSlaBreachedEvent::from_val(&env, &legacy_event.2);
+    assert_eq!(legacy_payload.keeper, user);
+}
+
+#[test]
+fn test_two_sequential_keeper_advances_retain_distinct_records() {
+    // Two sequential keeper-driven advances across two SLA tiers must retain
+    // both keeper addresses and timestamps distinctly so that a full
+    // accountability trail is queryable after the dispute lifecycle completes.
+    let (env, client, _owner, admin, user) = setup();
+    let id = 2u128;
+    let keeper1 = Address::generate(&env);
+    let keeper2 = Address::generate(&env);
+
+    client.set_level_time_limit(&admin, &EscalationLevel::Level1, &50u64);
+    client.set_level_time_limit(&admin, &EscalationLevel::Level2, &50u64);
+    client.set_pending_review_time_limit(&admin, &200u64);
+
+    // — Phase 1: Level1 SLA elapses; keeper1 advances —
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    advance(&env, 51);
+    let t_advance_1 = now(&env);
+
+    client.keeper_advance_stage(&keeper1, &id);
+
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.level, EscalationLevel::Level1);
+    assert_eq!(d.keeper_advances.len(), 1);
+    assert_eq!(d.keeper_advances.get(0).unwrap().keeper, keeper1);
+    assert_eq!(d.keeper_advances.get(0).unwrap().advanced_at, t_advance_1);
+    assert_eq!(
+        d.keeper_advances.get(0).unwrap().level,
+        EscalationLevel::Level1
+    );
+
+    // — Phase 2: Admin resolves, user appeals to Level2, SLA elapses;
+    //   keeper2 advances —
+    client.resolve_dispute(&admin, &id, &DisputeOutcome::UpholdPayment);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Resolved
+    );
+
+    client.appeal_ruling(&user, &id);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().status,
+        DisputeStatus::Appealed
+    );
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level2
+    );
+
+    advance(&env, 51); // Level2 SLA elapsed
+    let t_advance_2 = now(&env);
+
+    client.keeper_advance_stage(&keeper2, &id);
+
+    // — Verify the record retains BOTH advances distinctly —
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::PendingReview);
+    assert_eq!(d.level, EscalationLevel::Level2);
+    assert_eq!(d.keeper_advances.len(), 2);
+
+    // First advance (keeper1 at Level1).
+    let r1 = d.keeper_advances.get(0).unwrap();
+    assert_eq!(r1.keeper, keeper1);
+    assert_eq!(r1.advanced_at, t_advance_1);
+    assert_eq!(r1.level, EscalationLevel::Level1);
+
+    // Second advance (keeper2 at Level2).
+    let r2 = d.keeper_advances.get(1).unwrap();
+    assert_eq!(r2.keeper, keeper2);
+    assert_eq!(r2.advanced_at, t_advance_2);
+    assert_eq!(r2.level, EscalationLevel::Level2);
+
+    // The keepers and timestamps must be distinct.
+    assert_ne!(r1.keeper, r2.keeper);
+    assert_ne!(r1.advanced_at, r2.advanced_at);
+    assert_ne!(r1.level, r2.level);
+
+    // Events from the second advance carry keeper2.
+    let sla_event = last_event(&env, "sla_violation_advanced")
+        .expect("sla_violation_advanced event");
+    let payload = DisputeSlaViolationAdvancedEvent::from_val(&env, &sla_event.2);
+    assert_eq!(payload.keeper, keeper2);
+}
+
+#[test]
+fn test_fresh_dispute_has_empty_keeper_advances() {
+    // A freshly filed dispute (before any keeper call) must have an empty
+    // keeper_advances vector — guarding against accidental pre-population.
+    let (_env, client, _owner, _admin, user) = setup();
+    let id = 3u128;
+
+    client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
+    let d = client.get_dispute(&id).unwrap();
+    assert_eq!(d.status, DisputeStatus::Open);
+    assert_eq!(d.keeper_advances.len(), 0);
 }

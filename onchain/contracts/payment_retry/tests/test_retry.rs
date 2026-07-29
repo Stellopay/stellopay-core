@@ -5,9 +5,11 @@
 
 #![cfg(test)]
 
-use payment_retry::{PaymentRetryContract, PaymentRetryContractClient, RetryConfig, RetryState};
+use payment_retry::{
+    PaymentRetryContract, PaymentRetryContractClient, RetryConfig, RetryState,
+};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, BytesN, Env, Vec,
 };

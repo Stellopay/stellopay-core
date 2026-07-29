@@ -43,6 +43,11 @@ The Stellopay contract uses the Soroban Event system to broadcast state changes.
 | `PaymentSent` | Token transfer out | `agreement_id`, `from`, `to`, `amount`, `token` |
 | `PaymentReceived` | Token transfer in | `agreement_id`, `to`, `amount`, `token` |
 
+### Exchange Rates
+| Event | Trigger | Payload Summary |
+|---|---|---|
+| `ExchangeRateUpdated` | `set_exchange_rate` | `base`, `quote`, `new_rate`, `prev_rate`, `updater`, `updated_at` |
+
 ### Disputes
 | Event | Trigger | Payload Summary |
 |---|---|---|

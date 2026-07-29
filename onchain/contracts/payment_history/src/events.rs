@@ -1,5 +1,32 @@
 use soroban_sdk::{contractevent, Address, BytesN, Env};
 
+/// Event emitted every time a payment record is pruned (removed) from the
+/// contract by the owner.
+///
+/// @notice Off-chain indexers should subscribe to this event to learn when a
+/// record they previously indexed is no longer available on-chain. After this
+/// event fires, `get_payment_by_id` and `get_payment_by_hash` will return
+/// `None` for the pruned record's keys.
+///
+/// @dev Topics: `Symbol("record_pruned")`
+/// Data: all fields below, in declaration order.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct RecordPruned {
+    /// Global payment ID of the pruned record.
+    pub payment_id: u128,
+
+    /// 32-byte reference hash of the pruned record.
+    /// Included so indexers can correlate the pruning event with their
+    /// hash-keyed tables without a separate lookup.
+    pub payment_hash: BytesN<32>,
+}
+
+/// Publish a `record_pruned` event to the current ledger's event log.
+pub fn emit_record_pruned(e: &Env, event: RecordPruned) {
+    event.publish(e);
+}
+
 /// Event emitted every time a payment is successfully recorded.
 ///
 /// @notice Off-chain indexers should subscribe to this event to maintain a

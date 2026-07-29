@@ -90,6 +90,8 @@ pub enum SchedulerError {
     AlreadyCancelled = 10,
     /// The job is not in a cancellable state (must be `Active` or `Paused`).
     JobNotCancellable = 11,
+    /// `start_time` must not be earlier than the current ledger timestamp.
+    StartTimeInPast = 12,
 }
 
 // ─── Domain Types ─────────────────────────────────────────────────────────────
@@ -441,6 +443,11 @@ impl PaymentSchedulerContract {
     ///      For one-time payments (`max_executions == Some(1)`) `interval_seconds`
     ///      may be zero. For all other jobs it must be > 0.
     ///
+    ///      `start_time` must be >= the current ledger timestamp. A past-due
+    ///      `start_time` is rejected with `Err(StartTimeInPast)` to prevent
+    ///      a backlog of instantly-due payments the first time
+    ///      `process_due_payments` runs.
+    ///
     /// @param employer  Employer funding the job. Must authenticate.
     /// @param recipient Payment destination address.
     /// @param token     Token contract used for transfers.
@@ -474,6 +481,12 @@ impl PaymentSchedulerContract {
         // One-time payments (max_executions == Some(1)) may have a zero interval.
         if max_executions != Some(1) && interval_seconds == 0 {
             return Err(SchedulerError::IntervalRequired);
+        }
+
+        // Reject start_time already in the past to avoid an instant backlog.
+        let now = env.ledger().timestamp();
+        if start_time < now {
+            return Err(SchedulerError::StartTimeInPast);
         }
 
         // Derive and check the deterministic idempotency key.
@@ -637,12 +650,10 @@ impl PaymentSchedulerContract {
     ///        - If `max_executions` is reached, status becomes `Completed`.
     ///        - Emits `job_executed`.
     ///      * If the escrow balance is insufficient:
-    ///        - The job is delegated to the external `payment_retry` contract
-    ///          via `schedule_retry`, which manages retry count, backoff
-    ///          intervals, and eventual terminal-failure state.
-    ///        - The scheduler advances `next_scheduled_time` and the job
-    ///          remains `Active` — the retry lifecycle is entirely managed by
-    ///          the retry contract.
+    ///        - The job is delegated to the external `payment_retry` contract via `schedule_retry`,
+    ///          which manages retry count, backoff intervals, and eventual terminal-failure state.
+    ///        - The scheduler advances `next_scheduled_time` and the job remains `Active` — the
+    ///          retry lifecycle is entirely managed by the retry contract.
     ///        - Emits `payment_failed` with the retry payment ID.
     ///
     ///      **Partial-failure semantics:** When one job succeeds and a later
