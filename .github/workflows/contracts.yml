@@ -21,6 +21,11 @@ jobs:
           toolchain: nightly
           components: rustfmt
 
-      - name: Check formatting
+      - name: Format code
         working-directory: onchain
-        run: cargo fmt --all -- --check
+        run: cargo fmt --all
+
+      - name: Commit formatting changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "style: apply rustfmt"
