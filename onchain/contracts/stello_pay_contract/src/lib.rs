@@ -385,8 +385,8 @@ impl PayrollContract {
     /// * `employer`    - Address of the employer who will approve milestones.
     /// * `contributor` - Address of the contributor who will complete work.
     /// * `token`       - Token address for payments.
-    /// * `milestones`  - Non-empty list of strictly-positive milestone amounts. Each amount must be
-    ///   > 0. The empty vector is rejected.
+    /// * `milestones`  - Non-empty list of strictly-positive milestone amounts.
+    ///                    Each amount must be > 0. The empty vector is rejected.
     ///
     /// # Returns
     /// New agreement ID.
