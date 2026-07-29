@@ -908,6 +908,113 @@ fn test_clawback_works_on_terminated_employee() {
 // ============================================
 
 #[test]
+fn test_partial_clawback_percentage_arithmetic() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&employer, &5_000);
+
+    client.initialize(&owner);
+
+    // Create recurring incentive: 5 payouts of 200 each = total 1000
+    let incentive_id = client.create_recurring_incentive(
+        &employer,
+        &employee,
+        &approver,
+        &token_client.address,
+        &200,
+        &5,
+        &1000,
+        &10,
+    );
+
+    client.approve_incentive(&approver, &incentive_id);
+
+    // Jump to time 1020: 3 payouts vested (1000, 1010, 1020) = 600 claimed
+    set_time(&env, 1020);
+    let claimed = client.claim_incentive(&employee, &incentive_id);
+    assert_eq!(claimed, 600);
+
+    let employer_start_balance = token_client.balance(&employer);
+
+    // Claw back exactly 40% of the claimed amount: 600 * 40% = 240
+    let clawed = client.execute_clawback(&owner, &employee, &incentive_id, &240, &42u128);
+    assert_eq!(clawed, 240);
+
+    // Employer received exactly 240
+    assert_eq!(token_client.balance(&employer), employer_start_balance + 240);
+
+    // Remaining tracked clawback total = 240
+    assert_eq!(client.get_clawback_total(&incentive_id), 240);
+
+    // Remaining claimable: 600 claimed - 240 clawed = 360 = 60% of 600
+    let incentive = client.get_incentive(&incentive_id).unwrap();
+    let claimed_amount = incentive.claimed_payouts as i128 * incentive.amount_per_payout as i128;
+    let clawback_total = client.get_clawback_total(&incentive_id);
+    let remaining_claimable = claimed_amount - clawback_total;
+    assert_eq!(remaining_claimable, 360);
+
+    // Second clawback of the remaining 360 (the other 60%)
+    let clawed2 = client.execute_clawback(&owner, &employee, &incentive_id, &360, &43u128);
+    assert_eq!(clawed2, 360);
+    assert_eq!(client.get_clawback_total(&incentive_id), 600);
+
+    // No more claimable balance: clawback should fail
+    let result = client.try_execute_clawback(&owner, &employee, &incentive_id, &1, &44u128);
+    assert!(result.is_err(), "Should fail: nothing left to claw back");
+}
+
+#[test]
+fn test_partial_clawback_rejects_excess_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token_client = create_token(&env, &token_admin);
+    let client = create_contract(&env);
+
+    token::StellarAssetClient::new(&env, &token_client.address).mint(&employer, &2_000);
+
+    client.initialize(&owner);
+
+    // Create one-time bonus of 500
+    let incentive_id = client.create_one_time_bonus(
+        &employer,
+        &employee,
+        &approver,
+        &token_client.address,
+        &500,
+        &100,
+    );
+
+    client.approve_incentive(&approver, &incentive_id);
+    set_time(&env, 200);
+    client.claim_incentive(&employee, &incentive_id);
+
+    // Try to claw back 600 but only 500 was claimed
+    let result = client.try_execute_clawback(&owner, &employee, &incentive_id, &600, &99u128);
+    assert!(
+        result.is_err(),
+        "Should fail: clawback amount exceeds claimed amount"
+    );
+
+    // The clawback total should remain 0 since the clawback was rejected
+    assert_eq!(client.get_clawback_total(&incentive_id), 0);
+}
+
+#[test]
 fn test_partial_claim_then_clawback() {
     let env = Env::default();
     env.mock_all_auths();

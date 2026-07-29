@@ -1116,3 +1116,157 @@ fn test_quorum_override_recalculation_after_signer_removal() {
         2
     );
 }
+
+// ==================== Emergency Execute Eligibility (issue #898) ====================
+
+/// Verifies that `emergency_execute` rejects a `LargePayment` operation
+/// (not emergency-eligible) with a panic, even when called by the configured
+/// guardian. Large payments are routine operations that must go through the
+/// standard multi-signer approval process.
+#[test]
+fn emergency_execute_rejects_large_payment() {
+    let env = create_env();
+    let (multisig_id, client, _owner, signers, guardian) = setup_2of3(&env);
+
+    let admin = Address::generate(&env);
+    let token = create_token_contract(&env, &admin);
+    let token_admin_client = StellarAssetClient::new(&env, &token.address);
+    token_admin_client.mint(&multisig_id, &1_000i128);
+
+    let recipient = Address::generate(&env);
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::LargePayment(token.address.clone(), recipient.clone(), 200i128),
+    );
+
+    // Guardian attempts emergency execute on a LargePayment → must be rejected
+    let result = client.try_emergency_execute(&guardian, &op_id);
+    assert!(result.is_err(), "LargePayment must not be emergency-eligible");
+
+    // Operation must remain Pending — no state change on rejection
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Pending);
+    assert_eq!(token.balance(&recipient), 0i128);
+}
+
+/// Verifies that `emergency_execute` rejects a `ContractUpgrade` operation
+/// (not emergency-eligible) with a panic, even when called by the configured
+/// guardian. Contract upgrades are governance changes that require full
+/// multi-signer consensus.
+#[test]
+fn emergency_execute_rejects_contract_upgrade() {
+    let env = create_env();
+    let (_id, client, _owner, signers, guardian) = setup_2of3(&env);
+
+    let target = Address::generate(&env);
+    let hash: BytesN<32> = BytesN::from_array(&env, &[0xDD; 32]);
+
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::ContractUpgrade(target.clone(), hash),
+    );
+
+    // Guardian attempts emergency execute on a ContractUpgrade → must be rejected
+    let result = client.try_emergency_execute(&guardian, &op_id);
+    assert!(
+        result.is_err(),
+        "ContractUpgrade must not be emergency-eligible"
+    );
+
+    // Operation must remain Pending
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Pending);
+}
+
+/// Verifies that `emergency_execute` rejects a `SetThresholdOverride`
+/// operation (not emergency-eligible) with a panic, even when called by the
+/// configured guardian. Threshold changes are governance operations that must
+/// go through the standard multi-signer approval process (and are additionally
+/// protected inside `perform_execute`).
+#[test]
+fn emergency_execute_rejects_set_threshold_override() {
+    let env = create_env();
+    let (_id, client, _owner, signers, guardian) = setup_2of3(&env);
+
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::SetThresholdOverride(OperationType::LargePayment, Some(1)),
+    );
+
+    // Guardian attempts emergency execute on a SetThresholdOverride → must be rejected
+    let result = client.try_emergency_execute(&guardian, &op_id);
+    assert!(
+        result.is_err(),
+        "SetThresholdOverride must not be emergency-eligible"
+    );
+
+    // Operation must remain Pending and the override must NOT be applied
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Pending);
+    assert_eq!(
+        client.get_threshold_override(&OperationType::LargePayment),
+        None
+    );
+}
+
+/// Verifies that `emergency_execute` succeeds for a `DisputeResolution`
+/// operation (the only currently emergency-eligible kind) when called by the
+/// configured guardian, bypassing the normal threshold.
+#[test]
+fn emergency_execute_succeeds_for_dispute_resolution() {
+    let env = create_env();
+    let (_id, client, _owner, signers, guardian) = setup_2of3(&env);
+
+    let payroll_contract = Address::generate(&env);
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(payroll_contract, 42u128, 500, 200),
+    );
+
+    // Guardian executes the emergency-eligible DisputeResolution → must succeed
+    client.emergency_execute(&guardian, &op_id);
+
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Executed);
+    assert!(
+        op.executed_at.is_some(),
+        "executed_at must be set on emergency execution"
+    );
+}
+
+/// Verifies that emergency-eligible operations still require the guardian's
+/// authentication — they do NOT allow zero-approval execution by arbitrary
+/// callers. This ensures the "guardian quorum" (i.e., the guardian's signature)
+/// is always required.
+#[test]
+fn emergency_eligible_op_still_requires_guardian_quorum() {
+    let env = create_env();
+    let (_id, client, _owner, signers, guardian) = setup_2of3(&env);
+
+    let payroll_contract = Address::generate(&env);
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(payroll_contract, 42u128, 500, 200),
+    );
+
+    // A non-guardian signer tries emergency execute → must be rejected
+    let non_guardian = signers.get(0).unwrap();
+    assert_ne!(non_guardian, guardian);
+    let result = client.try_emergency_execute(&non_guardian, &op_id);
+    assert!(
+        result.is_err(),
+        "Non-guardian must be rejected even for emergency-eligible operations"
+    );
+
+    // A random address tries emergency execute → must be rejected
+    let random = Address::generate(&env);
+    let result = client.try_emergency_execute(&random, &op_id);
+    assert!(
+        result.is_err(),
+        "Random address must be rejected even for emergency-eligible operations"
+    );
+
+    // Operation must remain Pending — no state change
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Pending);
+}

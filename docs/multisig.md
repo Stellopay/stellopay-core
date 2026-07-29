@@ -10,7 +10,7 @@ The multisig contract acts as a governance and safety layer in front of critical
 - large outbound token payments from a shared wallet
 - approvals for dispute resolution flows
 
-The contract focuses on **threshold-based approvals**, clear **event logs** for off-chain automation, and a **break-glass emergency guardian**.
+The contract focuses on **threshold-based approvals**, clear **event logs** for off-chain automation, and a **break-glass emergency guardian** restricted to explicitly emergency-eligible operation kinds.
 
 ### Contract Location
 
@@ -92,8 +92,10 @@ Storage keys:
    [ContractUpgrade Hash Validation](#contractupgrade-hash-validation)).
 6. Creator or owner can cancel a pending operation via `cancel_operation`.
 7. The emergency guardian can call `emergency_execute` to force execution of a
-   pending operational action in break-glass scenarios. Threshold-override
-   changes are excluded from this bypass.
+   pending emergency-eligible operation (currently only `DisputeResolution`) in
+   break-glass scenarios. Routine operations (`LargePayment`), governance changes
+   (`ContractUpgrade`), and threshold-override changes (`SetThresholdOverride`) are
+   rejected even when called by the guardian.
 
 ### ContractUpgrade Hash Validation
 
@@ -222,6 +224,24 @@ All state-changing functions require `require_auth()` on the caller. The Soroban
 - Guardian actions are logged via events for audit trails
 - Guardian cannot execute already-executed or cancelled operations
 - Guardian cannot bypass the active threshold for an override change
+- Guardian is **restricted to emergency-eligible operation kinds only**
+  (see [Emergency Eligibility](#emergency-eligibility))
+
+### Emergency Eligibility
+
+Not all operation kinds can be executed via `emergency_execute`. Only
+time-sensitive, break-glass operations are eligible:
+
+| OperationKind | Emergency-Eligible | Rationale |
+|---|---|---|
+| `DisputeResolution` | Yes | Prevents fund lockup during disputes; time-critical |
+| `ContractUpgrade` | No | Governance change; requires full multi-signer consensus |
+| `LargePayment` | No | Routine operation; must use standard approval flow |
+| `SetThresholdOverride` | No | Already blocked in `perform_execute`; governance change |
+
+The `is_emergency_eligible` function in the contract enforces this restriction.
+Any attempt to call `emergency_execute` with a non-eligible operation kind is
+rejected with `"Operation kind not eligible for emergency execution"`.
 
 ### Events
 
@@ -273,6 +293,13 @@ The test suite covers:
     operations
   - Positive: `execute_operation` with the correct hash records the approval and
     transitions the operation to `Executed` once threshold is reached
+- **Emergency execute eligibility (issue #898)**:
+  - `emergency_execute` rejects `LargePayment` (routine; not emergency-eligible)
+  - `emergency_execute` rejects `ContractUpgrade` (governance; not emergency-eligible)
+  - `emergency_execute` rejects `SetThresholdOverride` (governance; not emergency-eligible)
+  - `emergency_execute` succeeds for `DisputeResolution` (emergency-eligible)
+  - Emergency-eligible operations still require the guardian's authentication
+    (not zero approvals)
 
 #### Below-Minimum-Threshold Signer Removal Rejection Tests (issue #1082)
 
