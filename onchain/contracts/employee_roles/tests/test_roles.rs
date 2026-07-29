@@ -1,9 +1,13 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Events, Ledger},
+    Address, Env, Map, Symbol, TryIntoVal, Val,
+};
 
 use employee_roles::{
     BuiltInRole, EmployeeRolesContract, EmployeeRolesContractClient, PayrollAction,
+    RoleChangedEvent,
 };
 
 fn setup() -> (Env, Address, EmployeeRolesContractClient<'static>) {
@@ -368,6 +372,137 @@ fn test_require_capability_allows_admin_action() {
 
     let result = client.try_require_capability(&adm, &PayrollAction::AssignRoles);
     assert!(result.is_ok());
+}
+
+// --- Event emission tests ---
+
+/// Helper: count RoleChanged events in the current event buffer.
+fn count_role_events(env: &Env) -> usize {
+    let all = env.events().all();
+    let role_sym: Val = Symbol::new(env, "ROLE").into();
+    all.iter()
+        .filter(|e| e.1.len() >= 2 && e.1.get(0) == role_sym)
+        .count()
+}
+
+/// Helper: extract a field from a RoleChangedEvent data map.
+fn event_field<T: TryIntoVal<Env, Val>>(env: &Env, data: &Val, name: &str) -> T {
+    let map: Map<Symbol, Val> = data.clone().try_into_val(env).unwrap();
+    map.get(Symbol::new(env, name))
+        .unwrap()
+        .try_into_val(env)
+        .unwrap()
+}
+
+/// Helper: return the n-th RoleChanged event (0‑based from oldest) and its data Val.
+fn nth_role_event(env: &Env, n: usize) -> Option<(Address, Vec<Val>, Val)> {
+    let all = env.events().all();
+    let role_sym: Val = Symbol::new(env, "ROLE").into();
+    all.iter()
+        .filter(|e| e.1.len() >= 2 && e.1.get(0) == role_sym)
+        .nth(n)
+        .map(|e| (e.0.clone(), e.1.clone(), e.2.clone()))
+}
+
+#[test]
+fn test_role_changed_event_on_assign() {
+    let (env, owner, client) = setup();
+
+    let employee = Address::generate(&env);
+    env.ledger().with_mut(|l| l.timestamp = 42_000);
+
+    client.assign_role(&owner, &employee, &BuiltInRole::Manager);
+
+    assert_eq!(count_role_events(&env), 1, "Expected exactly one RoleChanged event");
+
+    let (_contract, _topics, data) = nth_role_event(&env, 0).unwrap();
+
+    let old_role: Option<BuiltInRole> = event_field(&env, &data, "old_role");
+    let new_role: BuiltInRole = event_field(&env, &data, "new_role");
+    let changed_by: Address = event_field(&env, &data, "changed_by");
+    let emp: Address = event_field(&env, &data, "employee");
+    let ts: u64 = event_field(&env, &data, "timestamp");
+
+    assert_eq!(old_role, None);
+    assert_eq!(new_role, BuiltInRole::Manager);
+    assert_eq!(changed_by, owner);
+    assert_eq!(emp, employee);
+    assert_eq!(ts, 42_000);
+}
+
+#[test]
+fn test_role_changed_event_on_revoke() {
+    let (env, owner, client) = setup();
+    let employee = Address::generate(&env);
+
+    // Give the employee a role first
+    client.assign_role(&owner, &employee, &BuiltInRole::Employee);
+
+    env.ledger().with_mut(|l| l.timestamp = 99_999);
+
+    client.revoke_role(&owner, &employee, &BuiltInRole::Employee);
+
+    // We now have two RoleChanged events: assign (idx 0) and revoke (idx 1).
+    assert_eq!(count_role_events(&env), 2);
+
+    let (_contract, _topics, data) = nth_role_event(&env, 1).unwrap();
+
+    let old_role: BuiltInRole = event_field(&env, &data, "old_role");
+    let new_role: Option<BuiltInRole> = event_field(&env, &data, "new_role");
+    let changed_by: Address = event_field(&env, &data, "changed_by");
+    let emp_field: Address = event_field(&env, &data, "employee");
+    let ts: u64 = event_field(&env, &data, "timestamp");
+
+    assert_eq!(old_role, BuiltInRole::Employee);
+    assert_eq!(new_role, None);
+    assert_eq!(changed_by, owner);
+    assert_eq!(emp_field, employee);
+    assert_eq!(ts, 99_999);
+}
+
+#[test]
+fn test_no_event_on_duplicate_assign() {
+    let (env, owner, client) = setup();
+    let employee = Address::generate(&env);
+
+    client.assign_role(&owner, &employee, &BuiltInRole::Employee);
+    assert_eq!(count_role_events(&env), 1, "First assign must emit one event");
+
+    // Second assign of the same role is a no-op → no new event.
+    client.assign_role(&owner, &employee, &BuiltInRole::Employee);
+    assert_eq!(count_role_events(&env), 1, "Duplicate assign must not emit RoleChanged event");
+}
+
+#[test]
+fn test_no_event_on_revoke_nonexistent() {
+    let (env, owner, client) = setup();
+    let stranger = Address::generate(&env);
+
+    let _ = client.try_revoke_role(&owner, &stranger, &BuiltInRole::Manager);
+
+    assert_eq!(count_role_events(&env), 0, "Revoke of non‑existent role must not emit event");
+}
+
+#[test]
+fn test_full_payload_roundtrip() {
+    let (env, owner, client) = setup();
+    let employee = Address::generate(&env);
+
+    env.ledger().with_mut(|l| l.timestamp = 7_000);
+
+    client.assign_role(&owner, &employee, &BuiltInRole::Admin);
+
+    assert_eq!(count_role_events(&env), 1);
+
+    let (_contract, _topics, data) = nth_role_event(&env, 0).unwrap();
+
+    // Deserialize the full event and verify every field matches.
+    let event: RoleChangedEvent = data.clone().try_into_val(&env).unwrap();
+    assert_eq!(event.old_role, None);
+    assert_eq!(event.new_role, Some(BuiltInRole::Admin));
+    assert_eq!(event.changed_by, owner);
+    assert_eq!(event.employee, employee);
+    assert_eq!(event.timestamp, 7_000);
 }
 
 // --- Initialization safeguard ---

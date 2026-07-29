@@ -1,6 +1,6 @@
 #![no_std]
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Vec};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 
@@ -77,6 +77,22 @@ pub enum StorageKey {
     EmployeeRoles(Address),
     /// Linked RBAC contract address.
     RbacAddress,
+}
+
+/// Event emitted when an employee's role changes (assigned or revoked).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleChangedEvent {
+    /// Previous role value, or None if a new role was assigned.
+    pub old_role: Option<BuiltInRole>,
+    /// New role value, or None if a role was revoked.
+    pub new_role: Option<BuiltInRole>,
+    /// Address that authorized the change (authenticated via require_auth).
+    pub changed_by: Address,
+    /// Employee whose role was changed.
+    pub employee: Address,
+    /// Ledger timestamp of the change.
+    pub timestamp: u64,
 }
 
 /// Employee Roles Contract
@@ -165,7 +181,19 @@ impl EmployeeRolesContract {
             roles.push_back(role);
             env.storage()
                 .persistent()
-                .set(&StorageKey::EmployeeRoles(employee), &roles);
+                .set(&StorageKey::EmployeeRoles(employee.clone()), &roles);
+
+            let event = RoleChangedEvent {
+                old_role: None,
+                new_role: Some(role),
+                changed_by: caller,
+                employee: employee,
+                timestamp: env.ledger().timestamp(),
+            };
+            env.events().publish(
+                (symbol_short!("ROLE"), symbol_short!("chng")),
+                &event,
+            );
         }
 
         Ok(())
@@ -206,6 +234,8 @@ impl EmployeeRolesContract {
             .get(&StorageKey::EmployeeRoles(employee.clone()))
             .unwrap_or(Vec::new(&env));
 
+        let had_role = roles.iter().any(|r| r == role);
+
         let mut filtered = Vec::new(&env);
         for r in roles.iter() {
             if r != role {
@@ -215,7 +245,21 @@ impl EmployeeRolesContract {
 
         env.storage()
             .persistent()
-            .set(&StorageKey::EmployeeRoles(employee), &filtered);
+            .set(&StorageKey::EmployeeRoles(employee.clone()), &filtered);
+
+        if had_role {
+            let event = RoleChangedEvent {
+                old_role: Some(role),
+                new_role: None,
+                changed_by: caller,
+                employee: employee,
+                timestamp: env.ledger().timestamp(),
+            };
+            env.events().publish(
+                (symbol_short!("ROLE"), symbol_short!("chng")),
+                &event,
+            );
+        }
 
         Ok(())
     }
