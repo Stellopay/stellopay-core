@@ -17,6 +17,22 @@ pub enum MultisigError {
     /// The WASM hash presented at execution time does not match the hash that
     /// was approved and stored in the original `ContractUpgrade` proposal.
     ContractUpgradeHashMismatch = 1,
+
+    /// A `LargePayment` was proposed with a non-positive amount.
+    ///
+    /// Amounts must be strictly positive (`amount > 0`).  A zero or negative
+    /// value indicates a misconfigured payload and is rejected at proposal
+    /// time before any signer can accumulate approvals for it.
+    InvalidAmount = 2,
+
+    /// A `LargePayment` or `ContractUpgrade` payload names the multisig
+    /// contract itself as the recipient or upgrade target.
+    ///
+    /// Using the contract's own address as the destination is almost certainly
+    /// a configuration error (sending tokens to yourself, or upgrading yourself
+    /// through the same contract instance).  These payloads are rejected at
+    /// proposal time.
+    SelfReferentialRecipient = 3,
 }
 
 #[contract]
@@ -167,6 +183,39 @@ fn validate_threshold_override(env: &Env, threshold: &Option<u32>) {
             *threshold > 0 && *threshold <= signer_count,
             "Invalid threshold override"
         );
+    }
+}
+
+/// Validates the payload of an `OperationKind` at proposal time.
+///
+/// Rules enforced before any signer approval is recorded:
+///
+/// | Kind              | Rule                                                          | Error                  |
+/// |-------------------|---------------------------------------------------------------|------------------------|
+/// | `LargePayment`    | `amount` must be strictly positive (`amount > 0`)            | `InvalidAmount`        |
+/// | `LargePayment`    | `to` must not be the multisig contract itself                 | `SelfReferentialRecipient` |
+/// | `ContractUpgrade` | `target` must not be the multisig contract itself            | `SelfReferentialRecipient` |
+///
+/// All other `OperationKind` variants have no payload constraints at proposal
+/// time and pass through unconditionally.
+fn validate_operation_kind(env: &Env, kind: &OperationKind) {
+    match kind {
+        OperationKind::LargePayment(_token, to, amount) => {
+            if *amount <= 0 {
+                panic_with_error!(env, MultisigError::InvalidAmount);
+            }
+            if to == &env.current_contract_address() {
+                panic_with_error!(env, MultisigError::SelfReferentialRecipient);
+            }
+        }
+        OperationKind::ContractUpgrade(target, _hash) => {
+            if target == &env.current_contract_address() {
+                panic_with_error!(env, MultisigError::SelfReferentialRecipient);
+            }
+        }
+        // DisputeResolution and SetThresholdOverride have no payload
+        // constraints enforced at proposal time.
+        OperationKind::DisputeResolution(_, _, _, _) | OperationKind::SetThresholdOverride(_, _) => {}
     }
 }
 
@@ -459,6 +508,7 @@ impl MultisigContract {
         if let OperationKind::SetThresholdOverride(_, threshold) = &kind {
             validate_threshold_override(&env, threshold);
         }
+        validate_operation_kind(&env, &kind);
 
         let id = next_operation_id(&env);
         let op = Operation {
