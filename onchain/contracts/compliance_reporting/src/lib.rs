@@ -482,9 +482,13 @@ impl ComplianceReportingContract {
     // -----------------------------------------------------------------------
 
     /// @notice Pauses or unpauses the contract.
-    /// @dev When paused, `log_record` is blocked. Reads (`generate_report`,
-    ///      `get_record`, `get_record_count`) remain available so indexers can
-    ///      continue to reconstruct history.
+    /// @dev READ/WRITE ASYMMETRY: When paused, `log_record` is blocked
+    ///      (writes). Reads (`generate_report`, `get_withholding_records`,
+    ///      `get_record`, `get_record_count`) are NOT blocked so indexers
+    ///      can continue to reconstruct history. This is a deliberate design
+    ///      choice: the pause stops new records from being added without
+    ///      disrupting off-chain consumers that depend on read-only access
+    ///      to already-recorded data.
     /// @param caller Must be the contract admin.
     /// @param paused `true` to pause, `false` to unpause.
     pub fn set_paused(env: Env, caller: Address, paused: bool) -> Result<(), ComplianceError> {
@@ -1055,6 +1059,10 @@ impl ComplianceReportingContract {
         Ok(())
     }
 
+    /// Enforces the write-side of the pause asymmetry.
+    /// Only `log_record` calls this guard. Read functions (`generate_report`,
+    /// `get_withholding_records`, `get_record`, `get_record_count`) intentionally
+    /// skip this check, preserving read access for off-chain indexers.
     fn require_not_paused(env: &Env) -> Result<(), ComplianceError> {
         if env
             .storage()
