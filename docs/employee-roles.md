@@ -88,6 +88,22 @@ pub fn revoke_role(
 
 ---
 
+### Dynamic Role Implication
+
+```rust
+pub fn set_role_implies(
+    env: Env,
+    caller: Address,
+    role: BuiltInRole,
+    implies_role: BuiltInRole,
+) -> Result<(), RoleError>
+```
+
+- **Access control**: Only the `Owner` or an account with the `Admin` role can configure implications.
+- **Cycle prevention**: Reject any attempt to configure `A` implying `B` if `B` already transitively implies `A`. Attempting to do so returns `Err(RoleError::CircularRoleDependency)`.
+
+---
+
 ### Role Queries
 
 ```rust

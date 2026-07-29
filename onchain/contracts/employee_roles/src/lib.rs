@@ -13,6 +13,8 @@ pub enum RoleError {
     Unauthorized = 1,
     /// Invalid or unknown role name.
     InvalidRole = 2,
+    /// Circular role implication detected.
+    CircularRoleDependency = 3,
 }
 
 /// Built-in hierarchical roles.
@@ -77,6 +79,8 @@ pub enum StorageKey {
     EmployeeRoles(Address),
     /// Linked RBAC contract address.
     RbacAddress,
+    /// Mapping: BuiltInRole -> Vec<BuiltInRole>
+    RoleImplies(BuiltInRole),
 }
 
 /// Employee Roles Contract
@@ -124,6 +128,88 @@ impl EmployeeRolesContract {
         env.storage()
             .persistent()
             .set(&StorageKey::RbacAddress, &rbac_address);
+    }
+
+    /// Configures a role to imply another role, with cycle detection.
+    ///
+    /// # Access Control
+    /// - Caller must be the owner or hold the `Admin` role.
+    pub fn set_role_implies(
+        env: Env,
+        caller: Address,
+        role: BuiltInRole,
+        implies_role: BuiltInRole,
+    ) -> Result<(), RoleError> {
+        Self::require_role_admin(&env, &caller)?;
+
+        if role == implies_role {
+            return Err(RoleError::CircularRoleDependency);
+        }
+
+        // Cycle detection: check if `implies_role` transitively implies `role`
+        let mut visited = Vec::new(&env);
+        let mut to_visit = Vec::new(&env);
+        to_visit.push_back(implies_role);
+
+        while let Some(current) = to_visit.pop_front() {
+            if current == role {
+                return Err(RoleError::CircularRoleDependency);
+            }
+            if !visited.contains(&current) {
+                visited.push_back(current);
+                let implies_list: Vec<BuiltInRole> = env
+                    .storage()
+                    .persistent()
+                    .get(&StorageKey::RoleImplies(current))
+                    .unwrap_or(Vec::new(&env));
+                for implied in implies_list.iter() {
+                    to_visit.push_back(implied);
+                }
+            }
+        }
+
+        let mut implies_list: Vec<BuiltInRole> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::RoleImplies(role))
+            .unwrap_or(Vec::new(&env));
+
+        if !implies_list.contains(&implies_role) {
+            implies_list.push_back(implies_role);
+            env.storage()
+                .persistent()
+                .set(&StorageKey::RoleImplies(role), &implies_list);
+        }
+
+        Ok(())
+    }
+
+    /// Checks if a role transitively implies a target role.
+    pub fn role_implies(env: Env, role: BuiltInRole, target: BuiltInRole) -> bool {
+        if role == target {
+            return true;
+        }
+        let mut visited = Vec::new(&env);
+        let mut to_visit = Vec::new(&env);
+        to_visit.push_back(role);
+
+        while let Some(current) = to_visit.pop_front() {
+            if current == target {
+                return true;
+            }
+            if !visited.contains(&current) {
+                visited.push_back(current);
+                let implies_list: Vec<BuiltInRole> = env
+                    .storage()
+                    .persistent()
+                    .get(&StorageKey::RoleImplies(current))
+                    .unwrap_or(Vec::new(&env));
+                for implied in implies_list.iter() {
+                    to_visit.push_back(implied);
+                }
+            }
+        }
+        false
     }
 
     /// Assigns a built-in role to an employee.
@@ -291,7 +377,7 @@ impl EmployeeRolesContract {
             .unwrap_or(Vec::new(&env));
 
         let required_level = required as u32;
-        if roles.iter().any(|r| (r as u32) >= required_level) {
+        if roles.iter().any(|r| (r as u32) >= required_level || Self::role_implies(env.clone(), r, required)) {
             return true;
         }
 

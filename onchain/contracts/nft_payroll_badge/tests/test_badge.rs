@@ -1,8 +1,8 @@
 //! Comprehensive test suite for nft_payroll_badge contract.
 //!
-//! Covers: initialization, minting, admin metadata URI updates, `badges_of`,
-//! `badges_of_paged` (empty, single page, multi-page, exact-multiple-of-limit,
-//! oversized-limit clamping).
+//! Covers: initialization, minting, burning and burn-then-remint, admin
+//! metadata URI updates, `badges_of`, `badges_of_paged` (empty, single page,
+//! multi-page, exact-multiple-of-limit, oversized-limit clamping).
 
 #![cfg(test)]
 
@@ -169,6 +169,81 @@ fn test_non_admin_cannot_update_metadata_uri() {
     );
 
     client.update_metadata_uri(&attacker, &id, &String::from_str(&env, "ipfs://attack"));
+}
+
+// ============================================================================
+// Burn tests
+// ============================================================================
+
+#[test]
+fn test_burn_then_remint_issues_fresh_badge_id() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let employee = Address::generate(&env);
+    let name = String::from_str(&env, "Employee Badge");
+    let uri = String::from_str(&env, "ipfs://employee-badge");
+
+    let first_id = client.mint(&owner, &employee, &name, &uri);
+    client.burn(&owner, &first_id);
+
+    assert!(
+        client.get_badge(&first_id).is_none(),
+        "burned badge should be gone"
+    );
+
+    let second_id = client.mint(&owner, &employee, &name, &uri);
+
+    assert_ne!(second_id, first_id, "remint must receive a fresh id");
+    assert_eq!(second_id, first_id + 1, "ids are sequential");
+
+    assert!(
+        client.get_badge(&first_id).is_none(),
+        "original burned badge_id still returns None after remint"
+    );
+
+    let new_badge = client.get_badge(&second_id).expect("new badge exists");
+    assert_eq!(new_badge.owner, employee);
+    assert_eq!(new_badge.id, second_id);
+}
+
+#[test]
+fn test_burn_removes_badge_data() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let employee = Address::generate(&env);
+    let name = String::from_str(&env, "Burn Test");
+    let uri = String::from_str(&env, "ipfs://burn-test");
+
+    let id = client.mint(&owner, &employee, &name, &uri);
+    assert!(client.get_badge(&id).is_some(), "badge exists before burn");
+
+    client.burn(&owner, &id);
+
+    assert!(client.get_badge(&id).is_none(), "badge is gone after burn");
+}
+
+#[test]
+#[should_panic(expected = "Only owner can manage badges")]
+fn test_non_owner_cannot_burn() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let employee = Address::generate(&env);
+    let id = client.mint(
+        &owner,
+        &employee,
+        &String::from_str(&env, "Badge"),
+        &String::from_str(&env, "ipfs://badge"),
+    );
+    let attacker = Address::generate(&env);
+    client.burn(&attacker, &id);
+}
+
+#[test]
+#[should_panic(expected = "Badge not found")]
+fn test_burn_nonexistent_badge_panics() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    client.burn(&owner, &999);
 }
 
 // ============================================================================

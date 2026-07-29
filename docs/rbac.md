@@ -249,13 +249,13 @@ Granting a role that is already held is a no-op — it does not create duplicate
 
 All state-changing operations emit Soroban events for off-chain indexing:
 
-| Topic                  | Data             | Emitted by           |
-|------------------------|------------------|----------------------|
-| `("RBAC", "init")`    | `owner`          | `initialize`         |
-| `("RBAC", "grant")`   | `(target, role)` | `grant_role`         |
-| `("RBAC", "revoke")`  | `(target, role)` | `revoke_role`        |
-| `("RBAC", "propose")` | `new_owner`      | `transfer_ownership` |
-| `("RBAC", "owner")`   | `new_owner`      | `accept_ownership`   |
+| Topic                  | Data                              | Emitted by           |
+|------------------------|-----------------------------------|----------------------|
+| `("RBAC", "init")`    | `owner`                           | `initialize`         |
+| `("RBAC", "grant")`   | `(target, role)`                  | `grant_role`         |
+| `("RBAC", "revoke")`  | `(target, role)`                  | `revoke_role`        |
+| `("RBAC", "propose")` | `new_owner`                       | `transfer_ownership` |
+| `("RBAC", "owner")`   | `(previous_owner, new_owner)`     | `accept_ownership`   |
 
 ## Integration
 

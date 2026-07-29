@@ -814,7 +814,7 @@ impl GovernanceContract {
         write_proposal(&env, &proposal);
 
         env.events()
-            .publish((Symbol::new(&env, "proposal_cancelled"), proposal_id), ());
+            .publish((symbol_short!("cancelled"), proposal_id), ());
 
         Ok(())
     }

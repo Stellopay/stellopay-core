@@ -1974,8 +1974,28 @@ fn test_record_payment_identical_metadata_distinct_hashes_stored_separately() {
     let timestamp: u64 = 1_700_000_000;
 
     // Identical metadata, distinct payment hashes (two distinct on-chain transfers).
-    let id_a = record(&client, &env, agreement_id, 0xA1, &token, amount, &from, &to, timestamp);
-    let id_b = record(&client, &env, agreement_id, 0xB2, &token, amount, &from, &to, timestamp);
+    let id_a = record(
+        &client,
+        &env,
+        agreement_id,
+        0xA1,
+        &token,
+        amount,
+        &from,
+        &to,
+        timestamp,
+    );
+    let id_b = record(
+        &client,
+        &env,
+        agreement_id,
+        0xB2,
+        &token,
+        amount,
+        &from,
+        &to,
+        timestamp,
+    );
 
     // Distinct, monotonically increasing ids: neither overwrote the other.
     assert_eq!(id_a, 1u128);
@@ -1996,8 +2016,20 @@ fn test_record_payment_identical_metadata_distinct_hashes_stored_separately() {
     assert_eq!(rec_b.to, to);
 
     // Both retrievable by their distinct hashes: the reverse index does not collide.
-    assert_eq!(client.get_payment_by_hash(&make_hash(&env, 0xA1)).unwrap().id, id_a);
-    assert_eq!(client.get_payment_by_hash(&make_hash(&env, 0xB2)).unwrap().id, id_b);
+    assert_eq!(
+        client
+            .get_payment_by_hash(&make_hash(&env, 0xA1))
+            .unwrap()
+            .id,
+        id_a
+    );
+    assert_eq!(
+        client
+            .get_payment_by_hash(&make_hash(&env, 0xB2))
+            .unwrap()
+            .id,
+        id_b
+    );
 
     // Every counter reflects two independent records, not a collapsed single entry.
     assert_eq!(client.get_global_payment_count(), 2u128);
@@ -2019,8 +2051,28 @@ fn test_record_payment_identical_hash_is_idempotent_replay() {
     let from = Address::generate(&env);
     let to = Address::generate(&env);
 
-    let first = record(&client, &env, 1, 0xCD, &token, 100, &from, &to, 1_700_000_000);
-    let second = record(&client, &env, 1, 0xCD, &token, 100, &from, &to, 1_700_000_000);
+    let first = record(
+        &client,
+        &env,
+        1,
+        0xCD,
+        &token,
+        100,
+        &from,
+        &to,
+        1_700_000_000,
+    );
+    let second = record(
+        &client,
+        &env,
+        1,
+        0xCD,
+        &token,
+        100,
+        &from,
+        &to,
+        1_700_000_000,
+    );
 
     // Same hash → same id, and nothing new recorded across any counter.
     assert_eq!(first, second);
