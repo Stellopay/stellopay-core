@@ -1146,7 +1146,7 @@ fn test_reuse_effective_date_after_cancellation() {
     // This should still fail because the slot reservation is not cleared
     let result =
         client.try_create_adjustment(&employer, &employee, &approver, &5_000, &7_000, &200);
-    
+
     // The current implementation does NOT clear the reservation slot on cancellation,
     // so this will fail. This test documents the current behavior.
     assert!(

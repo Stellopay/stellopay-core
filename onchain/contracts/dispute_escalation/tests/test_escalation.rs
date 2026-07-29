@@ -2839,7 +2839,10 @@ fn test_expire_premature_rejected_across_all_escalation_levels() {
 
     // ── Level1 ──────────────────────────────────────────────────────────────
     client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-    assert_eq!(client.get_dispute(&id).unwrap().level, EscalationLevel::Level1);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level1
+    );
 
     // Premature at L1.
     assert_eq!(
@@ -2849,7 +2852,10 @@ fn test_expire_premature_rejected_across_all_escalation_levels() {
 
     // ── Level2 ──────────────────────────────────────────────────────────────
     client.escalate_dispute(&user, &id); // still within L1 window
-    assert_eq!(client.get_dispute(&id).unwrap().level, EscalationLevel::Level2);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level2
+    );
 
     // Premature at L2 (no additional time has passed since escalation).
     assert_eq!(
@@ -2859,7 +2865,10 @@ fn test_expire_premature_rejected_across_all_escalation_levels() {
 
     // ── Level3 ──────────────────────────────────────────────────────────────
     client.escalate_dispute(&user, &id); // still within L2 window
-    assert_eq!(client.get_dispute(&id).unwrap().level, EscalationLevel::Level3);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level3
+    );
 
     // Premature at L3 (fresh L3 deadline just set).
     assert_eq!(
