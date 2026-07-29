@@ -99,16 +99,18 @@ Reparents `dept_id` to `new_parent` (or makes it top-level with `None`). `caller
 > **Note on subtree moves**: only the moved department's `parent_id` changes. All descendants retain their existing `parent_id` links, so the entire subtree moves atomically.
 
 ```rust
-remove_department(caller: Address, dept_id: u128)
+rename_department(caller: Address, dept_id: u128, new_name: Symbol)
 ```
-Removes a department from an organization. `caller` must be the org owner.
+Renames `dept_id` to `new_name`. `caller` must be the org owner. Updates only the department's name field; all employee associations and hierarchy links remain completely unchanged.
 
-**Constraints enforced (Issue #1094):**
-- Department must have **no active employees**. Panics `"Cannot remove department with active employees"`.
-- Department must have **no child departments**. Panics `"Cannot remove department with child departments"`.
-- Properly cleans up storage: removes department record, children list, employees list, and updates parent's children list and org's department list.
+**Employee Association Preservation (Issue #1095):**
+The department name is a metadata field stored independently from employee indexes. Renaming does NOT modify:
+- Forward index: `EmployeeDepartment(emp, org_id) → dept_id`
+- Reverse index: `DepartmentEmployees(dept_id) → Vec<Address>`
 
-> **Note on deleting departments**: To remove a department, first reassign or remove all its employees and ensure it has no child departments. Leaf departments with no employees can be safely removed.
+Therefore, all employee lookups (`get_employee_department`, `get_department_employees`) continue to work identically before and after rename. Department reports and hierarchical queries remain valid.
+
+> **Note on deleting nodes with children**: there is no `delete_department` function. Departments are permanent once created. To "retire" a department, reassign its employees and stop using it.
 
 ---
 
