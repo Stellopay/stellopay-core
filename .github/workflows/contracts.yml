@@ -13,12 +13,12 @@ jobs:
   contracts:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust (nightly)
+        uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rustfmt
+          components: rustfmt, llvm-tools-preview
 
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
@@ -36,3 +36,12 @@ jobs:
       - name: Test workspace
         working-directory: onchain
         run: cargo test --workspace --verbose
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Coverage gate (fail under 95% lines)
+        working-directory: onchain
+        run: cargo llvm-cov --workspace --fail-under-lines 95
