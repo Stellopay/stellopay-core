@@ -1206,6 +1206,7 @@ dependencies = [
  "payment_retry",
  "payment_scheduler",
  "payroll_escrow",
+ "rate_limiter",
  "rbac",
  "salary_adjustment",
  "soroban-sdk",
