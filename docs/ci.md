@@ -39,10 +39,18 @@ This job builds and runs `tools/doc_checker` against the full `docs/` and `oncha
 It runs with the `--strict` and `--events` flags to promote any documentation gaps into hard failures.
 
 | Step | Command | Working directory |
-|---|---|---|
-| 1. Install Rust | _managed by `dtolnay/rust-toolchain@stable`_ | — |
-| 2. Cache Cargo registry | _managed by `Swatinem/rust-cache@v2`_ | — |
-| 3. Run doc_checker | `./tools/doc_checker/run_ci.py` | — |
+|---|---|---|---|
+| 1. Install Rust (stable + rustfmt + llvm-tools-preview) | _managed by `dtolnay/rust-toolchain@stable`_ | — |
+| 2. Install `cargo-llvm-cov` | _managed by `taiki-e/install-action@v2`_ | — |
+| 3. Cache Cargo registry | _managed by `Swatinem/rust-cache@v2`_ | — |
+| 4. Check formatting | `cargo fmt --all -- --check` | `onchain/` |
+| 5. Build workspace | `cargo build --workspace --verbose` | `onchain/` |
+| 6. Test workspace | `cargo test --workspace --verbose` | `onchain/` |
+| 7. Generate coverage | `cargo llvm-cov --workspace --exclude integration_tests --json` | `onchain/` |
+| 8. Enforce coverage gate | Python script checks each contract crate ≥ 95 % line coverage | `onchain/` |
+
+Steps 1–3 are handled automatically by GitHub Actions and have no equivalent
+local command. Steps 4–8 are the checks contributors must pass.
 
 ---
 
@@ -56,12 +64,8 @@ Run the same checks CI executes, in the same order, before opening a PR.
 |---|---|
 | Rust (stable) | `rustup install stable && rustup default stable` |
 | `rustfmt` component | `rustup component add rustfmt` |
-| WASM target | `rustup target add wasm32-unknown-unknown` |
-
-No Stellar CLI is required to run the WASM build because we delegate to
-`cargo build --target wasm32-unknown-unknown` directly. This is the only
-target the Soroban host accepts; see `docs/build-targets.md` for the
-rationale.
+| `llvm-tools-preview` component | `rustup component add llvm-tools-preview` |
+| `cargo-llvm-cov` | `cargo install cargo-llvm-cov` |
 
 ### Commands
 
@@ -79,11 +83,62 @@ cargo build --workspace --verbose
 # Tests — all workspace tests must pass
 cargo test --workspace --verbose
 
-# 4. WASM build (step 7 in CI)
-cargo build --workspace --release --target wasm32-unknown-unknown
+# 4. Coverage — generate JSON report for all contract crates
+cargo llvm-cov --workspace --exclude integration_tests --json --output-path coverage.json
 ```
 
-And then from the repository root:
+### Coverage gate
+
+After generating coverage data, each contract crate under `contracts/` must
+have at least **95 % line coverage**. CI enforces this automatically by
+parsing `coverage.json` and failing the build if any crate falls below the
+threshold.
+
+To check coverage locally after step 4:
+
+```bash
+python3 -c "
+import json, re
+
+with open('onchain/coverage.json') as f:
+    data = json.load(f)
+
+crates = {}
+for file_data in data['data'][0]['files']:
+    filename = file_data.get('filename', '')
+    m = re.search(r'/contracts/([^/]+)/', filename.replace('\\\\', '/'))
+    if not m:
+        continue
+    crate = m.group(1)
+    lines = file_data.get('summary', {}).get('lines', {})
+    total = lines.get('count', 0)
+    covered = lines.get('covered', 0)
+    if total == 0:
+        continue
+    if crate not in crates:
+        crates[crate] = {'lines': 0, 'covered': 0}
+    crates[crate]['lines'] += total
+    crates[crate]['covered'] += covered
+
+ok = True
+for crate in sorted(crates):
+    info = crates[crate]
+    pct = (info['covered'] / info['lines']) * 100
+    status = 'PASS' if pct >= 95 else 'FAIL'
+    print(f'  {status}: {crate}: {pct:.2f}%')
+    if pct < 95:
+        ok = False
+
+if not ok:
+    exit(1)
+"
+```
+
+**Note:** Running `cargo llvm-cov` gathers coverage for *every* test in the
+workspace (excluding `integration_tests`), so you only need the single
+`--workspace` invocation rather than per-crate runs.
+
+For CLI-specific regression coverage around the verify subcommand, also run:
 
 ```bash
 # 5. WASM size regression check (step 8 in CI)
@@ -94,7 +149,9 @@ cargo run --release --manifest-path tools/wasm_size_check/Cargo.toml -- \
     --fail-on-new
 ```
 
-All five commands must exit with code `0` for a PR to be mergeable.
+This explicitly exercises the tampered-WASM and matching-WASM verification paths so the CLI remains secure even when a rebuilt artifact is mutated by a single byte.
+
+All commands above must exit with code `0` for a PR to be mergeable.
 
 ### Fixing common failures
 
@@ -322,9 +379,7 @@ The following are **not** part of the automated CI pipeline and are therefore
 not required to pass before merging:
 
 - `cargo clippy` — linting is not enforced by the workflow.
-- Coverage reporting — no `cargo llvm-cov` step exists in the current workflow.
-- `stellar contract build` — CI uses raw `cargo build --target wasm32-unknown-unknown`.
-  `stellar contract build` is functionally equivalent but is not a dependency of CI.
+- WASM contract builds — `stellar contract build` is not run by CI.
 - Per-package test runs — CI uses `--workspace`; there are no per-crate steps.
 
 > If any of the above are added to `.github/workflows/contracts.yml` in the
