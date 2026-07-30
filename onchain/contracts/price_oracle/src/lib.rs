@@ -50,6 +50,10 @@ pub enum OracleError {
     TooManySources = 13,
     /// Price is older than the requested max_age threshold.
     PriceTooOld = 14,
+    /// Pair has been automatically halted after too many consecutive stale-price
+    /// detections. A fresh, valid `push_price` clears the halt and resumes normal
+    /// serving.
+    PairHalted = 15,
 }
 
 // ============================================================================
@@ -89,6 +93,15 @@ pub struct PairConfig {
     /// accepted submission timestamp. Combined with `DuplicateVote` enforcement in
     /// quorum mode, each source contributes at most one effective vote per bucket.
     pub min_submit_interval_secs: u64,
+    /// Number of consecutive read-side stale-price detections (i.e. calls to
+    /// `get_pair_state` that return `PriceTooOld`) that automatically halt this pair.
+    ///
+    /// Once the halt threshold is reached, `get_pair_state` returns
+    /// `OracleError::PairHalted` instead of `PriceTooOld` until a fresh, valid
+    /// `push_price` clears the counter.
+    ///
+    /// Set to `0` to disable the automatic halt mechanism for this pair.
+    pub max_consecutive_stale_before_halt: u32,
 }
 
 /// Last accepted rate for a `(base, quote)` pair.
@@ -144,6 +157,9 @@ enum DataKey {
     /// Last submission timestamp for a `(source, base, quote)` triple.
     /// Used to enforce `min_submit_interval_secs`.
     LastSubmission(Address, Address, Address),
+    /// Running count of consecutive read-side stale detections for a pair
+    /// (temporary storage). Reset to zero on a successful `push_price`.
+    StaleCount(Address, Address),
 }
 
 #[contract]
@@ -344,6 +360,7 @@ impl PriceOracleContract {
     ///      - `min_rate <= max_rate`
     ///      - `max_staleness_seconds > 0`
     ///      Emits event `("oracle", "cfgpair")` with `(base, quote)`.
+    ///      On (re-)configure, the consecutive-stale counter for this pair is reset.
     /// @param caller               Owner address.
     /// @param base                 Base token address.
     /// @param quote                Quote token address.
@@ -355,6 +372,8 @@ impl PriceOracleContract {
     /// @param quorum_window_seconds Time window used to bucket pending votes.
     /// @param min_submit_interval_secs Minimum seconds between consecutive
     ///        submissions from the same source for this pair. `0` disables the check.
+    /// @param max_consecutive_stale_before_halt Number of consecutive read-side stale
+    ///        detections that automatically halt the pair. `0` disables the mechanism.
     pub fn configure_pair(
         env: Env,
         caller: Address,
@@ -367,6 +386,7 @@ impl PriceOracleContract {
         tolerance_bps: u32,
         quorum_window_seconds: u64,
         min_submit_interval_secs: u64,
+        max_consecutive_stale_before_halt: u32,
     ) -> Result<(), OracleError> {
         require_admin(&env, &caller)?;
 
@@ -389,6 +409,7 @@ impl PriceOracleContract {
             tolerance_bps,
             quorum_window_seconds,
             min_submit_interval_secs,
+            max_consecutive_stale_before_halt,
         };
 
         env.storage()
@@ -397,6 +418,11 @@ impl PriceOracleContract {
         env.storage()
             .temporary()
             .remove(&DataKey::PendingBucket(base.clone(), quote.clone()));
+        // Reset the consecutive-stale counter whenever the pair is (re-)configured
+        // so a fresh configuration always starts from a clean slate.
+        env.storage()
+            .temporary()
+            .remove(&DataKey::StaleCount(base.clone(), quote.clone()));
 
         env.events().publish(
             (symbol_short!("oracle"), symbol_short!("cfgpair")),
@@ -633,6 +659,12 @@ impl PriceOracleContract {
             source_timestamp
         };
 
+        // Clear any accumulated consecutive-stale counter so the pair resumes
+        // normal serving after a fresh, valid price update.
+        env.storage()
+            .temporary()
+            .remove(&DataKey::StaleCount(base.clone(), quote.clone()));
+
         // Persist new state.
         let new_state = PairState {
             rate,
@@ -692,7 +724,7 @@ impl PriceOracleContract {
         let cfg = env
             .storage()
             .instance()
-            .get::<_, PairConfig>(&DataKey::PairConfig(base, quote))
+            .get::<_, PairConfig>(&DataKey::PairConfig(base.clone(), quote.clone()))
             .ok_or(OracleError::PairNotConfigured)?;
 
         if !cfg.enabled {
@@ -702,6 +734,25 @@ impl PriceOracleContract {
         let now = env.ledger().timestamp();
         let age = now.saturating_sub(state.last_updated_ts);
         if age > cfg.max_staleness_seconds {
+            // Consecutive-stale halt mechanism:
+            // If the pair has a non-zero threshold, track how many consecutive
+            // read-side stale detections have occurred.  Once the threshold is
+            // reached, switch from PriceTooOld to PairHalted so consumers and
+            // monitors know the pair needs a fresh push, not just a retry.
+            if cfg.max_consecutive_stale_before_halt > 0 {
+                let count_key = DataKey::StaleCount(base.clone(), quote.clone());
+                let prev: u32 = env
+                    .storage()
+                    .temporary()
+                    .get::<_, u32>(&count_key)
+                    .unwrap_or(0);
+                let count = prev.saturating_add(1);
+                env.storage().temporary().set(&count_key, &count);
+
+                if count >= cfg.max_consecutive_stale_before_halt {
+                    return Err(OracleError::PairHalted);
+                }
+            }
             return Err(OracleError::PriceTooOld);
         }
 
