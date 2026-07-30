@@ -3,11 +3,11 @@
 
 use salary_adjustment::{
     AdjustmentKind, AdjustmentStatus, AdjustmentType, SalaryAdjustmentContract,
-    SalaryAdjustmentContractClient, DEFAULT_MAX_SALARY,
+    SalaryAdjustmentContractClient, DEFAULT_MAX_SALARY, MAX_REJECTION_REASON_LENGTH,
 };
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
-    Address, BytesN, Env, Symbol,
+    Address, BytesN, Env, String, Symbol,
 };
 
 // ============================================================================
@@ -35,6 +35,10 @@ fn reason_hash(env: &Env, marker: u8) -> BytesN<32> {
     let mut bytes = [0u8; 32];
     bytes[0] = marker;
     BytesN::from_array(env, &bytes)
+}
+
+fn rejection_reason(env: &Env) -> String {
+    String::from_str(env, "Budget constraints for this review cycle")
 }
 
 // ============================================================================
@@ -573,7 +577,7 @@ fn test_only_approver_can_reject() {
     client.initialize(&owner);
 
     let id = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &100);
-    client.reject_adjustment(&attacker, &id);
+    client.reject_adjustment(&attacker, &id, &rejection_reason(&env));
 }
 
 #[test]
@@ -607,11 +611,11 @@ fn test_cannot_reject_after_approval() {
 
     let id = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &100);
     client.approve_adjustment(&approver, &id);
-    client.reject_adjustment(&approver, &id);
+    client.reject_adjustment(&approver, &id, &rejection_reason(&env));
 }
 
 #[test]
-fn test_reject_adjustment_changes_status() {
+fn test_reject_adjustment_persists_readable_reason() {
     let env = create_env();
     let client = create_contract(&env);
     let owner = Address::generate(&env);
@@ -622,10 +626,142 @@ fn test_reject_adjustment_changes_status() {
     client.initialize(&owner);
 
     let id = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &100);
-    client.reject_adjustment(&approver, &id);
+    let reason = rejection_reason(&env);
+    client.reject_adjustment(&approver, &id, &reason);
+
+    // Read through the public adjustment query, rather than relying on the event,
+    // to prove the justification is durably stored with the terminal record.
+    let stored = client.get_adjustment(&id).unwrap();
+    assert_eq!(stored.status, AdjustmentStatus::Rejected);
+    assert_eq!(stored.rejection_reason, Some(reason));
+}
+
+#[test]
+fn test_rejected_adjustment_is_terminal_and_id_cannot_be_reused() {
+    let env = create_env();
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+
+    let id = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &100);
+    let reason = rejection_reason(&env);
+    client.reject_adjustment(&approver, &id, &reason);
+    let audit_count_after_rejection = client.get_audit_log_count();
+
+    set_time(&env, 200);
+    assert!(
+        client.try_apply_adjustment(&employer, &id).is_err(),
+        "a rejected adjustment must never be applied"
+    );
+    assert!(
+        client.try_approve_adjustment(&approver, &id).is_err(),
+        "a rejected adjustment must never return to Approved"
+    );
+    assert!(
+        client
+            .try_reject_adjustment(
+                &approver,
+                &id,
+                &String::from_str(&env, "replacement reason"),
+            )
+            .is_err(),
+        "a rejected adjustment must not be re-submitted or re-rejected"
+    );
+    assert!(
+        client.try_cancel_adjustment(&employer, &id).is_err(),
+        "Rejected is terminal, not an intermediate cancellation state"
+    );
+    assert!(
+        client
+            .try_create_adjustment(&employer, &employee, &approver, &5_000, &6_500, &100,)
+            .is_err(),
+        "the rejected employee/effective-date slot must not be re-submitted"
+    );
+
+    // A later legitimate proposal receives a fresh id; callers never supply or
+    // overwrite ids, so no creation path can reuse the rejected id.
+    let next_id = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_500, &300);
+    assert_eq!(next_id, id + 1);
 
     let stored = client.get_adjustment(&id).unwrap();
     assert_eq!(stored.status, AdjustmentStatus::Rejected);
+    assert_eq!(stored.rejection_reason, Some(reason));
+    assert_eq!(client.get_employee_salary(&employee), None);
+    assert_eq!(
+        client.get_audit_log_count(),
+        audit_count_after_rejection + 1
+    );
+}
+
+#[test]
+fn test_reject_adjustment_requires_non_whitespace_reason() {
+    let env = create_env();
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+    let id = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &100);
+
+    assert!(client
+        .try_reject_adjustment(&approver, &id, &String::from_str(&env, ""))
+        .is_err());
+    assert!(client
+        .try_reject_adjustment(&approver, &id, &String::from_str(&env, " \t\n\r"))
+        .is_err());
+
+    let stored = client.get_adjustment(&id).unwrap();
+    assert_eq!(stored.status, AdjustmentStatus::Pending);
+    assert_eq!(stored.rejection_reason, None);
+}
+
+#[test]
+fn test_reject_adjustment_enforces_reason_length_bound() {
+    let env = create_env();
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+    let id = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &100);
+    let oversized = "x".repeat((MAX_REJECTION_REASON_LENGTH + 1) as usize);
+
+    assert!(client
+        .try_reject_adjustment(&approver, &id, &String::from_str(&env, &oversized))
+        .is_err());
+
+    let stored = client.get_adjustment(&id).unwrap();
+    assert_eq!(stored.status, AdjustmentStatus::Pending);
+    assert_eq!(stored.rejection_reason, None);
+}
+
+#[test]
+fn test_reject_adjustment_accepts_reason_at_length_bound() {
+    let env = create_env();
+    let client = create_contract(&env);
+    let owner = Address::generate(&env);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    let approver = Address::generate(&env);
+
+    client.initialize(&owner);
+    let id = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &100);
+    let at_limit = "x".repeat(MAX_REJECTION_REASON_LENGTH as usize);
+    let reason = String::from_str(&env, &at_limit);
+
+    client.reject_adjustment(&approver, &id, &reason);
+
+    let stored = client.get_adjustment(&id).unwrap();
+    assert_eq!(stored.status, AdjustmentStatus::Rejected);
+    assert_eq!(stored.rejection_reason, Some(reason));
 }
 
 // ============================================================================
@@ -752,7 +888,7 @@ fn test_cancel_pending_adjustment() {
 }
 
 #[test]
-fn test_reject_then_cancel() {
+fn test_cannot_cancel_rejected_adjustment() {
     let env = create_env();
     let client = create_contract(&env);
     let owner = Address::generate(&env);
@@ -763,14 +899,13 @@ fn test_reject_then_cancel() {
     client.initialize(&owner);
 
     let id = client.create_adjustment(&employer, &employee, &approver, &5_000, &6_000, &100);
-    client.reject_adjustment(&approver, &id);
+    let reason = rejection_reason(&env);
+    client.reject_adjustment(&approver, &id, &reason);
 
+    assert!(client.try_cancel_adjustment(&employer, &id).is_err());
     let rejected = client.get_adjustment(&id).unwrap();
     assert_eq!(rejected.status, AdjustmentStatus::Rejected);
-
-    client.cancel_adjustment(&employer, &id);
-    let cancelled = client.get_adjustment(&id).unwrap();
-    assert_eq!(cancelled.status, AdjustmentStatus::Cancelled);
+    assert_eq!(rejected.rejection_reason, Some(reason));
 }
 
 #[test]
@@ -1104,7 +1239,7 @@ fn test_reject_one_pending_proposal_does_not_affect_other() {
     let id2 = client.create_adjustment(&employer, &employee, &approver, &6_000, &7_000, &300);
 
     // Reject the first proposal
-    client.reject_adjustment(&approver, &id1);
+    client.reject_adjustment(&approver, &id1, &rejection_reason(&env));
 
     // Verify first proposal is rejected
     let adj1 = client.get_adjustment(&id1).unwrap();
@@ -1338,8 +1473,8 @@ fn test_propose_percentage_increase_applies_correct_salary() {
 
     let current_salary: i128 = 10_000;
     let percentage_bps: i128 = 1_000; // 10%
-    let expected_new_salary = current_salary
-        + (current_salary * percentage_bps) / salary_adjustment::BPS_DENOMINATOR;
+    let expected_new_salary =
+        current_salary + (current_salary * percentage_bps) / salary_adjustment::BPS_DENOMINATOR;
     assert_eq!(expected_new_salary, 11_000);
 
     let id = client.propose_adjustment(
