@@ -95,7 +95,6 @@ use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, Vec};
 /// from the crate root.
 pub use storage::PaymentRecord;
 use storage::StorageKey;
-
 /// Maximum number of records returned in a single paginated query.
 ///
 /// Capping page size prevents runaway ledger-entry reads that could exhaust
@@ -104,9 +103,12 @@ use storage::StorageKey;
 /// silently; no error is raised.
 pub const MAX_PAGE_SIZE: u32 = 100;
 
-/// Error message emitted when `from_ts > to_ts` is supplied to a date-range
-/// filtered query.  Both bounds are inclusive; swapping them is never done
-/// silently.
+/// Panic message raised by the `*_in_range` query variants when both
+/// `from_ts` and `to_ts` are supplied and `from_ts > to_ts`.
+///
+/// Centralised as a constant so the message stays in lock-step with the
+/// `@panics` documentation on each entry point and so callers (and tests)
+/// can assert against a single canonical string.
 pub const ERR_INVALID_RANGE: &str = "InvalidRange: from_ts must be <= to_ts";
 
 #[contract]

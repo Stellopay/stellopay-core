@@ -112,6 +112,14 @@ pub fn get_roles(env: Env, employee: Address) -> Vec<BuiltInRole>
 pub fn get_role_grants(env: Env, employee: Address) -> Vec<RoleGrant>
 pub fn has_role(env: Env, employee: Address, role: BuiltInRole) -> bool
 pub fn has_role_at_least(env: Env, employee: Address, required: BuiltInRole) -> bool
+pub fn get_effective_permissions(env: Env, employee: Address) -> Vec<PayrollAction>
+pub fn get_role_implies(env: Env, role: BuiltInRole) -> Vec<BuiltInRole>
+pub fn set_role_implies(
+    env: Env,
+    caller: Address,
+    role: BuiltInRole,
+    implied_roles: Vec<BuiltInRole>,
+)
 ```
 
 - **Runtime expiration evaluation**:
@@ -146,6 +154,37 @@ pub fn require_capability(
 
 - **`can_perform`**: Returns `true` if `employee` has sufficient role for the action (Owner always allowed). Use for read-only checks.
 - **`require_capability`**: Enforces that `employee` can perform the action; returns `Err(RoleError::Unauthorized)` otherwise. Requires `employee` authentication. Use in integrating contracts to gate payroll operations.
+
+---
+
+### Effective Permissions & Role Implication
+
+```rust
+pub fn get_effective_permissions(env: Env, employee: Address) -> Vec<PayrollAction>
+pub fn set_role_implies(
+    env: Env,
+    caller: Address,
+    role: BuiltInRole,
+    implied_roles: Vec<BuiltInRole>,
+)
+pub fn get_role_implies(env: Env, role: BuiltInRole) -> Vec<BuiltInRole>
+```
+
+- **`get_effective_permissions`** returns the complete, deduplicated set of payroll actions an employee can perform. It combines actions from directly-granted roles with actions inherited via the `role_implies` chain.
+- **`set_role_implies`** defines that `role` transitively implies each role in `implied_roles`. Only the contract owner may call this.
+- **`get_role_implies`** queries the set of roles implied by the given role.
+- The contract owner always receives all 12 payroll actions regardless of implication configuration.
+- When the same action is reachable through multiple inheritance paths, it appears exactly once in the result (union without duplicates).
+
+**Default implication setup (standard hierarchy):**
+
+```rust
+client.set_role_implies(&owner, &BuiltInRole::Admin,    &vec![&env, BuiltInRole::Manager]);
+client.set_role_implies(&owner, &BuiltInRole::Manager,  &vec![&env, BuiltInRole::Employee]);
+client.set_role_implies(&owner, &BuiltInRole::Employee, &vec![&env]);
+```
+
+With the default hierarchy, Admin gets all 12 actions, Manager gets 8 (Manager + Employee), and Employee gets 4.
 
 ---
 
@@ -199,7 +238,7 @@ pub fn set_rbac_address(env: Env, rbac_address: Address)
 
 ### Test Summary and Security Notes
 
-**Test output** (31 tests, all passing):
+**Test output** (44 tests, all passing):
 
 - **Regression**: owner/admin assign/revoke, hierarchy (Admin/Manager/Employee), `has_role` / `has_role_at_least`
 - **Time-bound grants**: lifecycle, expiry boundary checks (`exp - 1` vs `exp` vs `exp + 1`), non-expiring longevity, past timestamp validation (`InvalidExpiration`), grant extension/update, legacy storage compatibility
@@ -208,6 +247,8 @@ pub fn set_rbac_address(env: Env, rbac_address: Address)
 - **Role mutation deny**: Non-admin cannot assign/revoke; employee cannot self-grant Admin; manager cannot assign Admin
 - **`require_capability`**: Allow/deny paths for employee, manager, and admin actions
 - **Initialization**: Double-initialization panics with `"Already initialized"`
+- **Effective permissions**: Owner all-actions shortcut, Admin/Manager/Employee correct action sets, empty for no-role, union length matches deduplicated expected set
+- **Deduplication**: Action both directly granted and inherited appears once; converging inheritance paths produce no duplicates
 
 **Security validations covered by tests**:
 

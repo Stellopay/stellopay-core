@@ -128,7 +128,12 @@ fn setup_funded_milestone(
     amount: i128,
     num_milestones: u32,
 ) -> u128 {
-    let agreement_id = client.create_milestone_agreement(employer, contributor, token);
+    let agreement_id = client.create_milestone_agreement(
+        employer,
+        contributor,
+        token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     for _ in 1..=num_milestones {
         client.add_milestone(&agreement_id, &amount);
     }
@@ -305,7 +310,7 @@ fn test_milestone_concurrent_batch_claim_state_consistency() {
 
     assert_eq!(res.successful_claims, 3); // 1, 3, 5
     assert_eq!(res.failed_claims, 2); // 2 (unapproved) + 6 (invalid)
-    assert_eq!(res.total_claimed, 3000);
+    assert_eq!(res.total_claimed, 2001);
 
     // Persistent state: only approved milestones are marked claimed.
     assert!(client.get_milestone(&agreement_id, &1).unwrap().claimed);
@@ -316,7 +321,7 @@ fn test_milestone_concurrent_batch_claim_state_consistency() {
 
     // Token balance reflects claimed amount.
     let tok = soroban_sdk::token::Client::new(&env, &token);
-    assert_eq!(tok.balance(&contributor), 3000);
+    assert_eq!(tok.balance(&contributor), 2001);
 }
 
 // ============================================================================
@@ -338,7 +343,7 @@ fn test_milestone_duplicate_claims_rejected_idempotently() {
     // First claim succeeds for both milestones.
     let first = client.batch_claim_milestones(&agreement_id, &Vec::from_array(&env, [1u32, 2u32]));
     assert_eq!(first.successful_claims, 2);
-    assert_eq!(first.total_claimed, 1000);
+    assert_eq!(first.total_claimed, 501);
 
     // Second call with same IDs — both already claimed, both must fail.
     let second = client.batch_claim_milestones(&agreement_id, &Vec::from_array(&env, [1u32, 2u32]));
@@ -355,7 +360,7 @@ fn test_milestone_duplicate_claims_rejected_idempotently() {
 
     // Verify contributor was paid exactly once per milestone — never double-paid.
     let tok = soroban_sdk::token::Client::new(&env, &token);
-    assert_eq!(tok.balance(&contributor), 1500); // 3 × 500
+    assert_eq!(tok.balance(&contributor), 1001); // 1 + 500 + 500
 }
 
 // ============================================================================
@@ -578,7 +583,12 @@ fn test_sequential_agreement_creation_counter_consistency() {
     // ---- Milestone counter -----------------------------------------------
     let mut milestone_ids: soroban_sdk::Vec<u128> = soroban_sdk::Vec::new(&env);
     for _ in 0..10 {
-        let id = client.create_milestone_agreement(&employer, &contributor, &token);
+        let id = client.create_milestone_agreement(
+            &employer,
+            &contributor,
+            &token,
+            &soroban_sdk::vec![&env, 1i128],
+        );
         milestone_ids.push_back(id);
     }
     for i in 1..milestone_ids.len() {
@@ -634,7 +644,7 @@ fn test_high_milestone_count_state_consistency() {
 
     assert_eq!(res.successful_claims, count);
     assert_eq!(res.failed_claims, 0);
-    assert_eq!(res.total_claimed, amount * (count as i128));
+    assert_eq!(res.total_claimed, 1i128 + amount * ((count - 1) as i128));
 
     // Spot-check a few milestones directly.
     assert!(client.get_milestone(&agreement_id, &1).unwrap().claimed);
@@ -643,7 +653,10 @@ fn test_high_milestone_count_state_consistency() {
 
     // Total payout reaches contributor's wallet.
     let tok = soroban_sdk::token::Client::new(&env, &token);
-    assert_eq!(tok.balance(&contributor), amount * (count as i128));
+    assert_eq!(
+        tok.balance(&contributor),
+        1i128 + amount * ((count - 1) as i128)
+    );
 }
 
 // ============================================================================
@@ -678,7 +691,7 @@ fn test_separate_agreements_do_not_interfere() {
     // Claim milestones 1 and 2 on id1 via batch (performs SAC transfer).
     let batch1 = client.batch_claim_milestones(&id1, &Vec::from_array(&env, [1u32, 2u32]));
     assert_eq!(batch1.successful_claims, 2);
-    assert_eq!(batch1.total_claimed, 2000);
+    assert_eq!(batch1.total_claimed, 1001);
 
     // id1 milestone 3 still unclaimed — no cross-agreement contamination.
     assert!(!client.get_milestone(&id1, &3).unwrap().claimed);
@@ -702,9 +715,9 @@ fn test_separate_agreements_do_not_interfere() {
     let batch3 = client.batch_claim_milestones(&id1, &Vec::from_array(&env, [3u32]));
     assert_eq!(batch3.successful_claims, 1);
 
-    // Token balance: c1 received 3 × 1000 from batch claims; only from id1 funds.
+    // Token balance: c1 received 1001 + 1000 from batch claims; only from id1 funds.
     let tok = soroban_sdk::token::Client::new(&env, &token);
-    assert_eq!(tok.balance(&c1), 3000);
+    assert_eq!(tok.balance(&c1), 2001);
 }
 
 // ============================================================================
@@ -1047,7 +1060,7 @@ fn test_race_dispute_on_escrow_does_not_block_independent_milestone_claim() {
     assert!(client.get_milestone(&milestone_id, &1).unwrap().claimed);
 
     let tok = soroban_sdk::token::Client::new(&env, &token);
-    assert_eq!(tok.balance(&c_milestone), 500);
+    assert_eq!(tok.balance(&c_milestone), 1);
     assert_eq!(tok.balance(&c_escrow), 0, "no escrow funds must leak");
 }
 

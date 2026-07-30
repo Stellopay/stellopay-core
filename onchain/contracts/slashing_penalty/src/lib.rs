@@ -336,6 +336,36 @@ impl SlashingPenaltyContract {
     // ── Role Management ───────────────────────────────────────────────────────
 
     /// Grant the slasher role to an address. Admin only.
+    ///
+    /// # Idempotency guarantee
+    ///
+    /// This function is **idempotent with respect to the slasher set**: calling
+    /// `add_slasher` with an address that is already present in the set is a
+    /// no-op — the function succeeds (`Ok(())`) without inserting a duplicate
+    /// entry.  The slasher set therefore satisfies the mathematical set invariant:
+    /// each address appears **at most once**, regardless of how many times
+    /// `add_slasher` is called for it.
+    ///
+    /// # Add/remove/re-add cycle
+    ///
+    /// The combination of `add_slasher`, `remove_slasher`, and a subsequent
+    /// `add_slasher` preserves the set invariant end-to-end:
+    ///
+    /// ```text
+    /// add_slasher(A)    → set = {…, A}           (A inserted once)
+    /// remove_slasher(A) → set = {…}              (A removed)
+    /// add_slasher(A)    → set = {…, A}           (A inserted once, no duplicate)
+    /// get_slashers()    → exactly one entry for A ✓
+    /// ```
+    ///
+    /// The quorum threshold stored in `QUORUM` is independent of the slasher set
+    /// size and is therefore unaffected by add/remove/re-add cycles.
+    ///
+    /// # Arguments
+    /// * `slasher` – Address to grant the slasher role.
+    ///
+    /// # Errors
+    /// * [`SlashError::Unauthorized`] – Caller is not the admin.
     pub fn add_slasher(env: Env, slasher: Address) -> Result<(), SlashError> {
         Self::require_admin(&env)?;
         let mut slashers: Vec<Address> = env.storage().instance().get(&SLASHERS).unwrap();
@@ -347,6 +377,39 @@ impl SlashingPenaltyContract {
     }
 
     /// Revoke the slasher role from an address. Admin only.
+    ///
+    /// # Idempotency guarantee
+    ///
+    /// This function is **idempotent with respect to the slasher set**: calling
+    /// `remove_slasher` for an address that is not present in the set is a
+    /// no-op — the function succeeds (`Ok(())`) without error, and the set
+    /// remains unchanged.
+    ///
+    /// # Remove/re-add safety
+    ///
+    /// After `remove_slasher(A)`, a subsequent `add_slasher(A)` re-introduces
+    /// exactly one entry for A.  The combined cycle never creates duplicates:
+    ///
+    /// ```text
+    /// Initial:          set = {A, B, C}
+    /// remove_slasher(A) → set = {B, C}
+    /// add_slasher(A)    → set = {B, C, A}   (one entry, no duplicate)
+    /// add_slasher(A)    → set = {B, C, A}   (no-op, still one entry)
+    /// ```
+    ///
+    /// # Quorum accounting
+    ///
+    /// The `QUORUM` storage key is a plain `u32` that is set at initialisation
+    /// and updated only by `set_penalty_caps` (or the admin directly).  It is
+    /// **not** derived from the length of the slasher list at query time.
+    /// Therefore `get_quorum()` returns the same value before and after any
+    /// add/remove/re-add cycle.
+    ///
+    /// # Arguments
+    /// * `slasher` – Address whose slasher role is to be revoked.
+    ///
+    /// # Errors
+    /// * [`SlashError::Unauthorized`] – Caller is not the admin.
     pub fn remove_slasher(env: Env, slasher: Address) -> Result<(), SlashError> {
         Self::require_admin(&env)?;
         let slashers: Vec<Address> = env.storage().instance().get(&SLASHERS).unwrap();

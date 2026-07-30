@@ -1693,3 +1693,35 @@ fn execution_succeeds_after_timelock_boundary() {
     assert_eq!(executed.status, ProposalStatus::Executed);
     assert_eq!(setup.governance.get_parameter(&key).unwrap(), 555i128);
 }
+
+#[test]
+fn voting_period_is_snapshotted_when_config_changes_mid_vote() {
+    let env = create_env();
+    let setup = setup(&env);
+
+    let initial_voting_period = 3600u64;
+    let proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+
+    let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(proposal.end_time, proposal.start_time + initial_voting_period);
+
+    // Change config to double the voting period
+    let new_voting_period = 7200u64;
+    setup.governance.update_config(&setup.owner, &2u32, &new_voting_period);
+
+    // Existing proposal's end_time must remain unchanged
+    let existing_proposal = setup.governance.get_proposal(&proposal_id).unwrap();
+    assert_eq!(existing_proposal.end_time, proposal.end_time);
+
+    // New proposal captures the new voting period
+    advance_time(&env, 10);
+    let new_proposal_id = setup.governance.create_proposal(
+        &setup.owner,
+        &ProposalKind::ArbiterChange(Address::generate(&env)),
+    );
+    let new_proposal = setup.governance.get_proposal(&new_proposal_id).unwrap();
+    assert_eq!(new_proposal.end_time, new_proposal.start_time + new_voting_period);
+}

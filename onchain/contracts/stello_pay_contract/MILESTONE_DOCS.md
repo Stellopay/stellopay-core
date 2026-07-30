@@ -43,19 +43,27 @@ pub enum AgreementStatus {
 
 ### 1. Agreement Creation
 
-**Function**: `create_milestone_agreement(env, employer, contributor, token) -> u128`
+**Function**: `create_milestone_agreement(env, employer, contributor, token, milestones: Vec<i128>) -> u128`
 
 **Process**:
 
-- Employer creates a new milestone-based agreement
+- Employer creates a new milestone-based agreement with an upfront list of milestone amounts
 - System generates unique agreement ID
 - Agreement starts in `Created` status
+- Each milestone is immediately stored with `approved=false` and `claimed=false`
+- A `MilestoneAdded` event is emitted per milestone
 - Returns agreement ID for reference
+
+**Validation**:
+
+- `milestones` must be non-empty (at least one milestone). An empty vector is rejected with `EmptyMilestoneList`.
+- Each amount must be strictly positive (> 0). Non-positive amounts are rejected with `MilestoneAmountInvalid`.
 
 **Security**:
 
 - Requires employer authorization
 - Employer address is recorded for access control
+- Prevents creation of dead, zero-payout agreements
 
 **Example**:
 
@@ -63,7 +71,8 @@ pub enum AgreementStatus {
 let agreement_id = client.create_milestone_agreement(
     &employer_address,
     &contributor_address,
-    &token_address
+    &token_address,
+    &vec![&env, 1000, 2000, 3000]
 );
 ```
 

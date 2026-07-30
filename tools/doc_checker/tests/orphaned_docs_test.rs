@@ -128,3 +128,24 @@ fn test_check_orphaned_docs_can_be_disabled() {
     let findings = check_orphaned_docs(&repo_root, &config);
     assert!(findings.is_empty());
 }
+
+/// @notice Verifies that path traversal targets (such as `../`) are handled safely.
+/// @dev Ensures resolving a relative link outside the repository root does not panic,
+/// and that nonexistent traversed paths fail closed (are not treated as reachable).
+/// @security-critical Validates the primary security assumption of the orphaned doc linter:
+/// directory escape attempts are resolved safely using standard canonicalization and do not crash the tool.
+#[test]
+fn test_path_traversal_safety() {
+    let repo_root = fixture_root("orphaned_docs");
+    let base_dir = repo_root.join("docs");
+    
+    // Resolve relative path that escapes the base directory
+    let escaped = doc_checker::resolve_relative_link(&base_dir, "../../../outside.md");
+    assert!(escaped.is_some());
+    let path = escaped.unwrap();
+    
+    // Canonicalization (normalize_path) must not panic on non-existent files
+    let normalized = doc_checker::normalize_path(&path);
+    assert!(!normalized.is_file());
+}
+

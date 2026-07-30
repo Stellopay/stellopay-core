@@ -108,16 +108,52 @@ pub enum StorageKey {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RoleChangedEvent {
-    /// Previous role value, or None if a new role was assigned.
-    pub old_role: Option<BuiltInRole>,
-    /// New role value, or None if a role was revoked.
-    pub new_role: Option<BuiltInRole>,
+    /// Previous role value (u32), or None if a new role was assigned.
+    pub old_role: Option<u32>,
+    /// New role value (u32), or None if a role was revoked.
+    pub new_role: Option<u32>,
     /// Address that authorized the change (authenticated via require_auth).
     pub changed_by: Address,
     /// Employee whose role was changed.
     pub employee: Address,
     /// Ledger timestamp of the change.
     pub timestamp: u64,
+}
+
+impl RoleChangedEvent {
+    pub fn new(
+        old_role: Option<BuiltInRole>,
+        new_role: Option<BuiltInRole>,
+        changed_by: Address,
+        employee: Address,
+        timestamp: u64,
+    ) -> Self {
+        Self {
+            old_role: old_role.map(|r| r as u32),
+            new_role: new_role.map(|r| r as u32),
+            changed_by,
+            employee,
+            timestamp,
+        }
+    }
+
+    pub fn old_role_builtin(&self) -> Option<BuiltInRole> {
+        self.old_role.and_then(|v| match v {
+            1 => Some(BuiltInRole::Employee),
+            2 => Some(BuiltInRole::Manager),
+            3 => Some(BuiltInRole::Admin),
+            _ => None,
+        })
+    }
+
+    pub fn new_role_builtin(&self) -> Option<BuiltInRole> {
+        self.new_role.and_then(|v| match v {
+            1 => Some(BuiltInRole::Employee),
+            2 => Some(BuiltInRole::Manager),
+            3 => Some(BuiltInRole::Admin),
+            _ => None,
+        })
+    }
 }
 
 /// Employee Roles Contract
@@ -231,34 +267,57 @@ impl EmployeeRolesContract {
             return Err(RoleError::Unauthorized);
         }
 
-        let mut roles: Vec<BuiltInRole> = env
+        // Validate expiration is strictly in the future
+        if let Some(exp) = expires_at {
+            if exp <= env.ledger().timestamp() {
+                return Err(RoleError::InvalidExpiration);
+            }
+        }
+
+        let mut grants: Vec<RoleGrant> = env
             .storage()
             .persistent()
             .get(&StorageKey::EmployeeRoles(employee.clone()))
             .unwrap_or(Vec::new(&env));
 
-        if !roles.iter().any(|r| r == role) {
-            roles.push_back(role);
+        let mut changed = false;
+        let mut existing_idx: Option<u32> = None;
+        for i in 0..grants.len() {
+            let grant = grants.get(i).unwrap();
+            if grant.role == role {
+                existing_idx = Some(i);
+                if grant.expires_at != expires_at {
+                    changed = true;
+                }
+                break;
+            }
+        }
+
+        if existing_idx.is_none() {
+            grants.push_back(RoleGrant { role, expires_at });
+            changed = true;
+        } else if changed {
+            let idx = existing_idx.unwrap();
+            grants.set(idx, RoleGrant { role, expires_at });
+        }
+
+        if changed {
             env.storage()
                 .persistent()
-                .set(&StorageKey::EmployeeRoles(employee.clone()), &roles);
+                .set(&StorageKey::EmployeeRoles(employee.clone()), &grants);
 
-            let event = RoleChangedEvent {
-                old_role: None,
-                new_role: Some(role),
-                changed_by: caller,
-                employee: employee,
-                timestamp: env.ledger().timestamp(),
-            };
+            let event = RoleChangedEvent::new(
+                None,
+                Some(role),
+                caller,
+                employee,
+                env.ledger().timestamp(),
+            );
             env.events().publish(
                 (symbol_short!("ROLE"), symbol_short!("chng")),
                 &event,
             );
         }
-
-        env.storage()
-            .persistent()
-            .set(&StorageKey::EmployeeRoles(employee), &updated_grants);
 
         Ok(())
     }
@@ -292,18 +351,19 @@ impl EmployeeRolesContract {
             return Err(RoleError::Unauthorized);
         }
 
-        let roles: Vec<BuiltInRole> = env
+        let grants: Vec<RoleGrant> = env
             .storage()
             .persistent()
             .get(&StorageKey::EmployeeRoles(employee.clone()))
             .unwrap_or(Vec::new(&env));
 
-        let had_role = roles.iter().any(|r| r == role);
-
+        let mut had_role = false;
         let mut filtered = Vec::new(&env);
         for g in grants.iter() {
             if g.role != role {
                 filtered.push_back(g);
+            } else {
+                had_role = true;
             }
         }
 
@@ -312,13 +372,13 @@ impl EmployeeRolesContract {
             .set(&StorageKey::EmployeeRoles(employee.clone()), &filtered);
 
         if had_role {
-            let event = RoleChangedEvent {
-                old_role: Some(role),
-                new_role: None,
-                changed_by: caller,
-                employee: employee,
-                timestamp: env.ledger().timestamp(),
-            };
+            let event = RoleChangedEvent::new(
+                Some(role),
+                None,
+                caller,
+                employee,
+                env.ledger().timestamp(),
+            );
             env.events().publish(
                 (symbol_short!("ROLE"), symbol_short!("chng")),
                 &event,
@@ -531,5 +591,141 @@ impl EmployeeRolesContract {
             BuiltInRole::Manager => Some(rbac::Role::Employer),
             BuiltInRole::Admin => Some(rbac::Role::Admin),
         }
+    }
+
+    /// Sets the role implication mapping: `role` implies each role in `implied_roles`.
+    ///
+    /// When computing effective permissions, implied roles are traversed transitively
+    /// so that all actions reachable via the implication graph are collected.
+    ///
+    /// # Access Control
+    /// - Caller must be the contract owner.
+    pub fn set_role_implies(
+        env: Env,
+        caller: Address,
+        role: BuiltInRole,
+        implied_roles: Vec<BuiltInRole>,
+    ) {
+        let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
+        caller.require_auth();
+        if caller != owner {
+            panic!("only owner can set role implications");
+        }
+        env.storage()
+            .persistent()
+            .set(&StorageKey::RoleImplies(role), &implied_roles);
+    }
+
+    /// Returns the set of roles implied by `role`.
+    pub fn get_role_implies(env: Env, role: BuiltInRole) -> Vec<BuiltInRole> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::RoleImplies(role))
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Returns the complete, deduplicated set of payroll actions the employee can perform.
+    ///
+    /// Combines actions from all directly-granted roles with actions inherited via the
+    /// role-implication graph (`role_implies`). If the same action is reachable through
+    /// multiple paths it appears exactly once in the result. The contract owner always
+    /// receives the full set of all actions.
+    ///
+    /// # Arguments
+    /// * `employee` - Employee address to query
+    ///
+    /// # Returns
+    /// `Vec<PayrollAction>` containing every distinct action the employee is permitted to perform.
+    pub fn get_effective_permissions(env: Env, employee: Address) -> Vec<PayrollAction> {
+        let owner: Option<Address> = env.storage().persistent().get(&StorageKey::Owner);
+        if owner.as_ref() == Some(&employee) {
+            return Self::all_actions(&env);
+        }
+
+        let grants = Self::get_grants(&env, &employee);
+        let current_ts = env.ledger().timestamp();
+
+        // Collect unique roles (direct + implied via role_implies chain)
+        let mut unique_roles: Vec<BuiltInRole> = Vec::new(&env);
+        for g in grants.iter() {
+            if g.is_active(current_ts) {
+                Self::collect_implied_roles(&env, g.role, &mut unique_roles);
+            }
+        }
+
+        // Collect unique actions from all roles
+        let mut actions: Vec<PayrollAction> = Vec::new(&env);
+        for role in unique_roles.iter() {
+            let permitted = Self::actions_for_role(&env, role);
+            for action in permitted.iter() {
+                if !actions.iter().any(|a| a == action) {
+                    actions.push_back(action);
+                }
+            }
+        }
+
+        actions
+    }
+
+    /// Recursively collects `role` and all roles implied by it (transitively) into `collected`,
+    /// deduplicating along the way. Uses the `RoleImplies` storage map.
+    fn collect_implied_roles(env: &Env, role: BuiltInRole, collected: &mut Vec<BuiltInRole>) {
+        if collected.iter().any(|r| r == role) {
+            return;
+        }
+        collected.push_back(role);
+        if let Some(implied) = env
+            .storage()
+            .persistent()
+            .get::<_, Vec<BuiltInRole>>(&StorageKey::RoleImplies(role))
+        {
+            for r in implied.iter() {
+                Self::collect_implied_roles(env, r, collected);
+            }
+        }
+    }
+
+    /// Returns the set of `PayrollAction`s that `role` directly permits (without hierarchy).
+    fn actions_for_role(env: &Env, role: BuiltInRole) -> Vec<PayrollAction> {
+        let mut v = Vec::new(env);
+        match role {
+            BuiltInRole::Employee => {
+                v.push_back(PayrollAction::ViewPayrollStatus);
+                v.push_back(PayrollAction::ViewPayrollHistory);
+                v.push_back(PayrollAction::ClaimOwnPayroll);
+                v.push_back(PayrollAction::WithdrawOwnPayroll);
+            }
+            BuiltInRole::Manager => {
+                v.push_back(PayrollAction::CreatePayrollRecord);
+                v.push_back(PayrollAction::UpdatePayrollRecord);
+                v.push_back(PayrollAction::PauseEmployeePayroll);
+                v.push_back(PayrollAction::ResumeEmployeePayroll);
+            }
+            BuiltInRole::Admin => {
+                v.push_back(PayrollAction::AssignRoles);
+                v.push_back(PayrollAction::RevokeRoles);
+                v.push_back(PayrollAction::EmergencyPause);
+                v.push_back(PayrollAction::EmergencyUnpause);
+            }
+        }
+        v
+    }
+
+    /// Returns all 12 `PayrollAction` variants (used for the owner shortcut).
+    fn all_actions(env: &Env) -> Vec<PayrollAction> {
+        let mut v = Vec::new(env);
+        v.push_back(PayrollAction::ViewPayrollStatus);
+        v.push_back(PayrollAction::ViewPayrollHistory);
+        v.push_back(PayrollAction::ClaimOwnPayroll);
+        v.push_back(PayrollAction::WithdrawOwnPayroll);
+        v.push_back(PayrollAction::CreatePayrollRecord);
+        v.push_back(PayrollAction::UpdatePayrollRecord);
+        v.push_back(PayrollAction::PauseEmployeePayroll);
+        v.push_back(PayrollAction::ResumeEmployeePayroll);
+        v.push_back(PayrollAction::AssignRoles);
+        v.push_back(PayrollAction::RevokeRoles);
+        v.push_back(PayrollAction::EmergencyPause);
+        v.push_back(PayrollAction::EmergencyUnpause);
+        v
     }
 }

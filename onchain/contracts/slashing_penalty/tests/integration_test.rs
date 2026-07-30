@@ -1861,3 +1861,606 @@ fn test_attest_slash_countersign_matching_hash_succeeds() {
     assert!(record.attestors.contains(&t.slasher1));
     assert!(record.attestors.contains(&t.slasher2));
 }
+
+// ─── Slasher-Set Deduplication (issue #937) ───────────────────────────────────
+//
+// Requirements addressed (issue #937):
+//
+//   1. Adding a slasher, removing it, and re-adding it must leave exactly ONE
+//      entry for that address in get_slashers() — no duplicates.
+//
+//   2. get_quorum() must be completely unaffected by any add/remove/re-add cycle.
+//      The quorum threshold is stored independently and is never derived from the
+//      runtime length of the slasher list.
+//
+//   3. add_slasher is idempotent: calling it N times for the same address still
+//      results in exactly one entry.
+//
+//   4. remove_slasher is idempotent: calling it for an address that is not in the
+//      set is a no-op (returns Ok(()), set is unchanged).
+//
+//   5. The set-size invariant: after any sequence of add/remove/re-add operations
+//      the slasher list length matches the number of *unique* currently-active
+//      slashers, with no phantom or duplicate entries.
+//
+//   6. A re-added slasher is immediately functional: it can attest slashes and
+//      those attestations count toward quorum.
+//
+// All evidence hashes in this section use seeds 250+ to avoid collisions with
+// the seeds used in the rest of the test file (which go up to ~240).
+
+/// Requirement 1 — add/remove/re-add cycle leaves exactly one entry.
+///
+/// Sequence:
+///   1. Create a fresh address (not yet a slasher).
+///   2. add_slasher(A) → A appears exactly once in get_slashers().
+///   3. remove_slasher(A) → A is gone from get_slashers().
+///   4. add_slasher(A) → A appears exactly once again.
+///
+/// Invariant asserted after each step: count_in_list(A) is either 0 or 1, never >1.
+#[test]
+fn test_add_remove_readd_no_duplicate_entry() {
+    let t = TestEnv::setup();
+    let target = Address::generate(&t.env);
+
+    // Step 1: not yet added — must not appear.
+    let slashers_before = t.client.get_slashers();
+    assert!(
+        !slashers_before.contains(&target),
+        "address must not be in slasher set before being added"
+    );
+
+    // Step 2: first add.
+    t.client.add_slasher(&target);
+    let slashers_after_add = t.client.get_slashers();
+    let count_after_add = slashers_after_add.iter().filter(|s| *s == target).count();
+    assert_eq!(
+        count_after_add, 1,
+        "exactly one entry expected after first add_slasher"
+    );
+
+    // Step 3: remove.
+    t.client.remove_slasher(&target);
+    let slashers_after_remove = t.client.get_slashers();
+    assert!(
+        !slashers_after_remove.contains(&target),
+        "address must not appear in slasher set after remove_slasher"
+    );
+
+    // Step 4: re-add.
+    t.client.add_slasher(&target);
+    let slashers_after_readd = t.client.get_slashers();
+    let count_after_readd = slashers_after_readd.iter().filter(|s| *s == target).count();
+    assert_eq!(
+        count_after_readd, 1,
+        "exactly one entry expected after re-add — no duplicate must appear"
+    );
+}
+
+/// Requirement 1 (extended) — multiple add/remove/re-add cycles still leave
+/// exactly one entry.
+///
+/// This catches any scenario where the dedup guard is bypassed on the second or
+/// later re-add (e.g., a guard that only applies on the very first insertion).
+#[test]
+fn test_multiple_add_remove_readd_cycles_no_duplicate() {
+    let t = TestEnv::setup();
+    let target = Address::generate(&t.env);
+
+    for cycle in 0u8..5 {
+        t.client.add_slasher(&target);
+        let after_add = t.client.get_slashers();
+        let count = after_add.iter().filter(|s| *s == target).count();
+        assert_eq!(
+            count, 1,
+            "cycle {cycle}: exactly one entry expected after add_slasher"
+        );
+
+        t.client.remove_slasher(&target);
+        let after_remove = t.client.get_slashers();
+        assert!(
+            !after_remove.contains(&target),
+            "cycle {cycle}: address must be absent after remove_slasher"
+        );
+    }
+
+    // Final re-add after all cycles.
+    t.client.add_slasher(&target);
+    let final_slashers = t.client.get_slashers();
+    let final_count = final_slashers.iter().filter(|s| *s == target).count();
+    assert_eq!(
+        final_count, 1,
+        "exactly one entry expected after final re-add following 5 cycles"
+    );
+}
+
+/// Requirement 3 — add_slasher is idempotent: N consecutive calls for the same
+/// address must yield exactly one entry (not N entries).
+#[test]
+fn test_add_slasher_idempotent_multiple_calls() {
+    let t = TestEnv::setup();
+    let target = Address::generate(&t.env);
+
+    // Call add_slasher 5 times for the same address.
+    for _ in 0..5 {
+        t.client.add_slasher(&target);
+    }
+
+    let slashers = t.client.get_slashers();
+    let count = slashers.iter().filter(|s| *s == target).count();
+    assert_eq!(
+        count, 1,
+        "add_slasher must be idempotent: 5 calls must still yield exactly one entry"
+    );
+}
+
+/// Requirement 3 (variant) — calling add_slasher twice for an already-present
+/// slasher (one that was added during TestEnv::setup) still leaves exactly one entry.
+#[test]
+fn test_add_existing_slasher_is_noop() {
+    let t = TestEnv::setup();
+
+    // slasher1 was already added in setup.
+    let before_count = t
+        .client
+        .get_slashers()
+        .iter()
+        .filter(|s| *s == t.slasher1)
+        .count();
+    assert_eq!(before_count, 1, "pre-condition: slasher1 present once");
+
+    // Adding it again must be a no-op.
+    t.client.add_slasher(&t.slasher1);
+
+    let after_count = t
+        .client
+        .get_slashers()
+        .iter()
+        .filter(|s| *s == t.slasher1)
+        .count();
+    assert_eq!(
+        after_count, 1,
+        "re-adding an existing slasher must not create a duplicate"
+    );
+}
+
+/// Requirement 4 — remove_slasher is idempotent: calling it for an address that
+/// is not in the set must succeed (Ok(())) and leave the set unchanged.
+#[test]
+fn test_remove_nonexistent_slasher_is_noop() {
+    let t = TestEnv::setup();
+    let not_a_slasher = Address::generate(&t.env);
+
+    // Sanity: the address is not in the set.
+    assert!(!t.client.get_slashers().contains(&not_a_slasher));
+
+    let size_before = t.client.get_slashers().len();
+
+    // Removing an address that was never added must not error.
+    t.client.remove_slasher(&not_a_slasher);
+
+    let size_after = t.client.get_slashers().len();
+    assert_eq!(
+        size_after, size_before,
+        "remove_slasher on a non-member must not change the set size"
+    );
+}
+
+/// Requirement 4 (variant) — calling remove_slasher twice for the same address
+/// must be idempotent: the second call must not error and the set must remain
+/// correct.
+#[test]
+fn test_remove_slasher_twice_is_idempotent() {
+    let t = TestEnv::setup();
+    let target = Address::generate(&t.env);
+
+    t.client.add_slasher(&target);
+    assert!(t.client.get_slashers().contains(&target));
+
+    // First removal.
+    t.client.remove_slasher(&target);
+    assert!(!t.client.get_slashers().contains(&target));
+
+    // Second removal — must be a no-op, not an error.
+    t.client.remove_slasher(&target);
+    assert!(
+        !t.client.get_slashers().contains(&target),
+        "double-remove must leave the address absent (idempotent)"
+    );
+}
+
+/// Requirement 5 — set-size invariant: the slasher list length always equals
+/// the number of unique currently-active slashers.
+///
+/// After TestEnv::setup three slashers are present. We exercise multiple
+/// add/remove/re-add operations and verify that the list length tracks the
+/// exact number of unique members at each step.
+#[test]
+fn test_slasher_set_size_invariant() {
+    let t = TestEnv::setup();
+
+    // Baseline: 3 slashers from setup.
+    let baseline = t.client.get_slashers().len();
+    assert_eq!(baseline, 3u32, "pre-condition: 3 slashers after setup");
+
+    // Add a new slasher → size 4.
+    let extra = Address::generate(&t.env);
+    t.client.add_slasher(&extra);
+    assert_eq!(t.client.get_slashers().len(), 4u32, "size must be 4 after adding extra");
+
+    // Add extra again (idempotent) → size stays 4.
+    t.client.add_slasher(&extra);
+    assert_eq!(
+        t.client.get_slashers().len(),
+        4u32,
+        "size must remain 4 after redundant add"
+    );
+
+    // Remove extra → size 3.
+    t.client.remove_slasher(&extra);
+    assert_eq!(
+        t.client.get_slashers().len(),
+        3u32,
+        "size must return to 3 after removing extra"
+    );
+
+    // Remove extra again (idempotent) → size stays 3.
+    t.client.remove_slasher(&extra);
+    assert_eq!(
+        t.client.get_slashers().len(),
+        3u32,
+        "size must stay 3 after redundant remove"
+    );
+
+    // Re-add extra → size 4 again.
+    t.client.add_slasher(&extra);
+    assert_eq!(
+        t.client.get_slashers().len(),
+        4u32,
+        "size must be 4 after re-adding extra"
+    );
+
+    // Remove slasher1 → size 3.
+    t.client.remove_slasher(&t.slasher1);
+    assert_eq!(
+        t.client.get_slashers().len(),
+        3u32,
+        "size must be 3 after removing slasher1"
+    );
+
+    // Re-add slasher1 → size back to 4.
+    t.client.add_slasher(&t.slasher1);
+    assert_eq!(
+        t.client.get_slashers().len(),
+        4u32,
+        "size must be 4 after re-adding slasher1"
+    );
+}
+
+/// Requirement 2 — quorum threshold is unaffected by add/remove/re-add cycles.
+///
+/// The quorum value is stored in a separate `QUORUM` key and is never derived
+/// from the runtime length of the slasher list. Any add/remove/re-add sequence
+/// must leave get_quorum() returning the same value it had at initialisation.
+#[test]
+fn test_quorum_unaffected_by_add_remove_readd_cycle() {
+    let t = TestEnv::setup();
+
+    let quorum_initial = t.client.get_quorum();
+    assert_eq!(quorum_initial, 2u32, "pre-condition: quorum is 2 after setup");
+
+    let target = Address::generate(&t.env);
+
+    // Perform multiple add/remove/re-add cycles.
+    for _ in 0..3 {
+        t.client.add_slasher(&target);
+        assert_eq!(
+            t.client.get_quorum(),
+            quorum_initial,
+            "quorum must not change after add_slasher"
+        );
+
+        t.client.remove_slasher(&target);
+        assert_eq!(
+            t.client.get_quorum(),
+            quorum_initial,
+            "quorum must not change after remove_slasher"
+        );
+    }
+
+    // Final re-add.
+    t.client.add_slasher(&target);
+    assert_eq!(
+        t.client.get_quorum(),
+        quorum_initial,
+        "quorum must not change after final re-add"
+    );
+
+    // Also remove one of the original slashers to vary the set size.
+    t.client.remove_slasher(&t.slasher1);
+    assert_eq!(
+        t.client.get_quorum(),
+        quorum_initial,
+        "quorum must not change after removing an original slasher"
+    );
+
+    // Re-add the original slasher.
+    t.client.add_slasher(&t.slasher1);
+    assert_eq!(
+        t.client.get_quorum(),
+        quorum_initial,
+        "quorum must not change after re-adding an original slasher"
+    );
+}
+
+/// Requirement 2 (end-to-end) — quorum accounting is correct after a full
+/// add/remove/re-add cycle: attestation-based slashes still require exactly
+/// `quorum_threshold` distinct signatures.
+///
+/// Scenario:
+///   - quorum = 2 (set at initialisation).
+///   - Perform add/remove/re-add on slasher1.
+///   - One attestation from slasher1 (re-added) must be insufficient.
+///   - Two attestations from slasher1 + slasher2 must satisfy quorum.
+#[test]
+fn test_quorum_enforcement_after_readd_cycle() {
+    let t = TestEnv::setup();
+
+    // add/remove/re-add cycle for slasher1.
+    t.client.remove_slasher(&t.slasher1);
+    t.client.add_slasher(&t.slasher1);
+
+    // Confirm slasher1 is present exactly once and quorum is still 2.
+    let count = t
+        .client
+        .get_slashers()
+        .iter()
+        .filter(|s| *s == t.slasher1)
+        .count();
+    assert_eq!(count, 1, "slasher1 must be present exactly once after re-add");
+    assert_eq!(t.client.get_quorum(), 2u32, "quorum must still be 2");
+
+    let hash = t.evidence_hash(250);
+
+    // One attestation — quorum not yet met.
+    t.client.attest_slash(
+        &t.slasher1,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+
+    t.advance_time(APPEAL_WINDOW + 1);
+    let result_one_sig = t.client.try_execute_slash(&hash);
+    assert_eq!(
+        result_one_sig,
+        Err(Ok(SlashError::QuorumNotMet)),
+        "one attestation must not meet quorum of 2 even after re-add cycle"
+    );
+
+    // Second attestation — quorum met; execution must succeed.
+    t.client.attest_slash(
+        &t.slasher2,
+        &t.offender,
+        &Offense::DoubleSigning,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+
+    t.client.execute_slash(&hash);
+    let record = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(
+        record.status,
+        SlashStatus::Executed,
+        "slash must execute after quorum is met following a re-add cycle"
+    );
+    // Stake must reflect exactly one penalty deduction (10% of 10_000 = 1_000).
+    assert_eq!(
+        t.client.get_stake_balance(&t.offender),
+        9_000i128,
+        "stake must be reduced by exactly one penalty after execution"
+    );
+}
+
+/// Requirement 6 — a re-added slasher is immediately functional for attestation.
+///
+/// After an add/remove/re-add cycle the re-added slasher must be able to:
+///   a) Create a new slash record (first attestor).
+///   b) Have that attestation count toward quorum.
+#[test]
+fn test_readded_slasher_can_attest_and_contributes_to_quorum() {
+    let t = TestEnv::setup();
+
+    let new_slasher = Address::generate(&t.env);
+
+    // add/remove/re-add the new slasher.
+    t.client.add_slasher(&new_slasher);
+    t.client.remove_slasher(&new_slasher);
+    t.client.add_slasher(&new_slasher);
+
+    // Confirm present exactly once.
+    let count = t
+        .client
+        .get_slashers()
+        .iter()
+        .filter(|s| *s == new_slasher)
+        .count();
+    assert_eq!(count, 1, "re-added slasher must be present exactly once");
+
+    let hash = t.evidence_hash(251);
+
+    // re-added slasher creates the slash record.
+    t.client.attest_slash(
+        &new_slasher,
+        &t.offender,
+        &Offense::MissedDuty,
+        &500u32,
+        &hash,
+        &0u64,
+    );
+
+    let record_after_first = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(
+        record_after_first.attestors.len(),
+        1u32,
+        "re-added slasher's attestation must be recorded"
+    );
+    assert!(
+        record_after_first.attestors.contains(&new_slasher),
+        "new_slasher must appear in attestors"
+    );
+
+    // Second attestor (slasher1) completes quorum.
+    t.client.attest_slash(
+        &t.slasher1,
+        &t.offender,
+        &Offense::MissedDuty,
+        &500u32,
+        &hash,
+        &0u64,
+    );
+
+    t.advance_time(APPEAL_WINDOW + 1);
+    t.client.execute_slash(&hash);
+
+    let record_executed = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(
+        record_executed.status,
+        SlashStatus::Executed,
+        "slash must execute when re-added slasher contributed to quorum"
+    );
+}
+
+/// Invariant — the other slashers in the set are unaffected by add/remove/re-add
+/// operations on a different address.
+///
+/// This guards against an implementation bug where remove_slasher could
+/// accidentally shift or drop adjacent entries (e.g. off-by-one in a filter loop).
+#[test]
+fn test_peer_slashers_unaffected_by_cycle_on_different_address() {
+    let t = TestEnv::setup();
+
+    let target = Address::generate(&t.env);
+
+    // Add, remove, re-add target and verify slasher1/slasher2/slasher3 are intact.
+    t.client.add_slasher(&target);
+    t.client.remove_slasher(&target);
+    t.client.add_slasher(&target);
+
+    let slashers = t.client.get_slashers();
+    assert!(
+        slashers.contains(&t.slasher1),
+        "slasher1 must still be present after cycle on another address"
+    );
+    assert!(
+        slashers.contains(&t.slasher2),
+        "slasher2 must still be present after cycle on another address"
+    );
+    assert!(
+        slashers.contains(&t.slasher3),
+        "slasher3 must still be present after cycle on another address"
+    );
+    assert!(
+        slashers.contains(&target),
+        "target must be present after re-add"
+    );
+
+    // Each must appear exactly once.
+    for addr in [&t.slasher1, &t.slasher2, &t.slasher3, &target] {
+        let count = slashers.iter().filter(|s| *s == *addr).count();
+        assert_eq!(
+            count, 1,
+            "each slasher must appear exactly once after cycle on another address"
+        );
+    }
+}
+
+/// Edge case — removing all slashers one-by-one and then re-adding them must
+/// restore the full set without any duplicates.
+#[test]
+fn test_remove_all_then_readd_all_no_duplicates() {
+    let t = TestEnv::setup();
+
+    // Remove all three original slashers.
+    t.client.remove_slasher(&t.slasher1);
+    t.client.remove_slasher(&t.slasher2);
+    t.client.remove_slasher(&t.slasher3);
+    assert_eq!(
+        t.client.get_slashers().len(),
+        0u32,
+        "slasher set must be empty after removing all slashers"
+    );
+
+    // Re-add all three.
+    t.client.add_slasher(&t.slasher1);
+    t.client.add_slasher(&t.slasher2);
+    t.client.add_slasher(&t.slasher3);
+
+    let slashers = t.client.get_slashers();
+    assert_eq!(
+        slashers.len(),
+        3u32,
+        "slasher set must have exactly 3 entries after re-adding all"
+    );
+
+    // Each must appear exactly once.
+    for addr in [&t.slasher1, &t.slasher2, &t.slasher3] {
+        let count = slashers.iter().filter(|s| *s == *addr).count();
+        assert_eq!(count, 1, "each slasher must appear exactly once");
+    }
+
+    // Quorum must be unchanged.
+    assert_eq!(
+        t.client.get_quorum(),
+        2u32,
+        "quorum must still be 2 after removing and re-adding all slashers"
+    );
+}
+
+/// Evidence-based slash still works normally after a re-add cycle on the slasher.
+///
+/// This is a functional sanity check: the slasher can still call
+/// `slash_with_evidence` after being removed and re-added, and the resulting
+/// record is in the expected Pending state.
+#[test]
+fn test_readded_slasher_can_use_slash_with_evidence() {
+    let t = TestEnv::setup();
+
+    // Cycle slasher1.
+    t.client.remove_slasher(&t.slasher1);
+    t.client.add_slasher(&t.slasher1);
+
+    let hash = t.evidence_hash(252);
+    t.client.slash_with_evidence(
+        &t.slasher1,
+        &t.offender,
+        &Offense::FraudProof,
+        &1_000u32,
+        &hash,
+        &0u64,
+    );
+
+    let record = t.client.get_slash_record(&hash).unwrap();
+    assert_eq!(
+        record.status,
+        SlashStatus::Pending,
+        "slash initiated by a re-added slasher must be Pending"
+    );
+    assert_eq!(
+        record.penalty_bps, 1_000u32,
+        "penalty_bps must be stored correctly"
+    );
+    // 10% of 10_000 stake = 1_000.
+    assert_eq!(
+        record.escrowed_amount, 1_000i128,
+        "correct amount must be escrowed"
+    );
+    assert_eq!(
+        t.client.get_stake_balance(&t.offender),
+        9_000i128,
+        "offender stake must reflect the deduction"
+    );
+}

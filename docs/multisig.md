@@ -97,9 +97,93 @@ Storage keys:
    (`ContractUpgrade`), and threshold-override changes (`SetThresholdOverride`) are
    rejected even when called by the guardian.
 
-### ContractUpgrade Hash Validation
+### Payload Validation at Proposal Time
 
-`ContractUpgrade` operations carry a WASM hash (`BytesN<32>`) that is embedded
+`propose_operation` validates the payload of certain `OperationKind` variants
+**before** any state is written and before the proposer's auto-approval is
+recorded. A rejected proposal leaves the contract in exactly the state it was
+in before the call — no operation is stored, no event is emitted, and no
+approval accumulates.
+
+This matters because an unchecked invalid payload could accumulate approvals
+from multiple signers before anyone notices the mistake, resulting in wasted
+gas and a stale pending operation that must be manually cancelled.
+
+#### Rules enforced at proposal time
+
+| `OperationKind`   | Field    | Rule                                             | Error                                                                |
+|-------------------|----------|--------------------------------------------------|----------------------------------------------------------------------|
+| `LargePayment`    | `amount` | Must be strictly positive (`amount > 0`)         | `MultisigError::InvalidAmount` (code `2`)                            |
+| `LargePayment`    | `to`     | Must not equal `env.current_contract_address()`  | `MultisigError::SelfReferentialRecipient` (code `3`)                 |
+| `ContractUpgrade` | `target` | Must not equal `env.current_contract_address()`  | `MultisigError::SelfReferentialRecipient` (code `3`)                 |
+
+All other `OperationKind` variants (`DisputeResolution`, `SetThresholdOverride`)
+have no payload constraints at proposal time.
+
+#### Rationale for each rule
+
+**`LargePayment` — zero or negative amount (`InvalidAmount`)**
+
+A zero-amount token transfer is a no-op; a negative amount would be a reversed
+transfer, which the Soroban token client rejects anyway at execution. Allowing
+either value to proceed to proposal means signers would approve an operation
+that can never execute successfully or that does nothing meaningful.  Detecting
+this at proposal time avoids wasting approval flows on a doomed operation.
+
+**`LargePayment` — self-referential recipient (`SelfReferentialRecipient`)**
+
+A payment where the multisig contract sends tokens to itself leaves the balance
+unchanged and achieves nothing. It is almost certainly a configuration error
+(e.g., the caller confused the multisig contract address with the intended
+beneficiary). Catching this early prevents approvals accumulating for an
+operation whose execution would be a silent no-op.
+
+**`ContractUpgrade` — self-referential target (`SelfReferentialRecipient`)**
+
+A `ContractUpgrade` proposal naming the multisig contract itself as the upgrade
+target could permanently brick the multisig instance if a malformed WASM hash
+is approved and the resulting upgrade fails. An off-chain orchestrator that
+consumes the `operation_executed` event would attempt to apply the upgrade to
+the multisig contract itself — an extremely dangerous misfire. Rejecting this
+at proposal time makes the misconfiguration visible immediately.
+
+#### Error codes
+
+| Error                                         | Code | When raised                                           |
+|-----------------------------------------------|------|-------------------------------------------------------|
+| `MultisigError::ContractUpgradeHashMismatch`  | `1`  | `execute_operation` hash mismatch at execution time   |
+| `MultisigError::InvalidAmount`                | `2`  | `LargePayment` with `amount <= 0` at proposal time    |
+| `MultisigError::SelfReferentialRecipient`     | `3`  | `LargePayment` or `ContractUpgrade` self-address at proposal time |
+
+#### Implementation
+
+The validation is performed by the private `validate_operation_kind` helper in
+`lib.rs`, called unconditionally from `propose_operation` after the threshold
+override check:
+
+```rust
+fn validate_operation_kind(env: &Env, kind: &OperationKind) {
+    match kind {
+        OperationKind::LargePayment(_token, to, amount) => {
+            if *amount <= 0 {
+                panic_with_error!(env, MultisigError::InvalidAmount);
+            }
+            if to == &env.current_contract_address() {
+                panic_with_error!(env, MultisigError::SelfReferentialRecipient);
+            }
+        }
+        OperationKind::ContractUpgrade(target, _hash) => {
+            if target == &env.current_contract_address() {
+                panic_with_error!(env, MultisigError::SelfReferentialRecipient);
+            }
+        }
+        OperationKind::DisputeResolution(_, _, _, _)
+        | OperationKind::SetThresholdOverride(_, _) => {}
+    }
+}
+```
+
+### ContractUpgrade Hash Validation`ContractUpgrade` operations carry a WASM hash (`BytesN<32>`) that is embedded
 in the proposal at creation time and co-signed by all approving signers. Because
 the off-chain orchestrator that actually deploys the new WASM consumes the
 on-chain execution event, it is critical that the hash confirmed on-chain
@@ -144,6 +228,9 @@ execution:
   check.
 
 #### Error type
+
+See [Payload Validation at Proposal Time — Error codes](#error-codes) for the
+full error code table.  For `execute_operation` specifically:
 
 | Error | Value | Meaning |
 |-------|-------|---------|
@@ -282,6 +369,17 @@ The test suite covers:
 - Multiple independent operations
 - Zero-amount payment rejection
 - ContractUpgrade and DisputeResolution flows
+- **Payload validation at proposal time** (issue enforcement):
+  - `LargePayment` with `amount = 0` is rejected at `propose_operation` with
+    `MultisigError::InvalidAmount`; no operation is stored, no approval is recorded
+  - `LargePayment` with `amount < 0` is rejected at `propose_operation` with
+    `MultisigError::InvalidAmount`
+  - `LargePayment` whose `to` equals the multisig contract address is rejected
+    at `propose_operation` with `MultisigError::SelfReferentialRecipient`
+  - `ContractUpgrade` whose `target` equals the multisig contract address is
+    rejected at `propose_operation` with `MultisigError::SelfReferentialRecipient`
+  - Valid `LargePayment` (positive amount, distinct recipient) is still accepted
+  - Valid `ContractUpgrade` (distinct target) is still accepted
 - Query function correctness
 - Per-operation override enforcement and default fallback
 - Adversarial threshold lowering and guardian-bypass prevention

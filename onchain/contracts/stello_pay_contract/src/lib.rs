@@ -1,4 +1,35 @@
 #![no_std]
+
+// ---------------------------------------------------------------------------
+// Semver Stability Policy
+// ---------------------------------------------------------------------------
+// The public API of this contract consists of all `#[contractimpl]` methods
+// on `PayrollContract` plus the public types re-exported from `storage`,
+// `events`, `audit`, and `backup`.  Any of the following is considered a
+// **breaking change** and MUST be accompanied by a minor version bump
+// (0.x -> 0.y where y > x):
+//
+//   • Removing or renaming a public method.
+//   • Adding, removing, or reordering parameters.
+//   • Changing a parameter or return type.
+//   • Narrowing the visibility of a public item.
+//   • Removing or renaming a public struct, enum, or variant.
+//   • Adding a new required variant to an existing enum used in a public
+//     signature (add `#[non_exhaustive]` for extensibility).
+//
+// Additive changes (new methods, new types) that do not alter existing
+// signatures are allowed without a version bump.
+//
+// The CI workflow `.github/workflows/security-scan.yml` runs
+// `cargo semver-checks` weekly against the last tagged release of each
+// contract crate and fails the job when an unintentional breaking change
+// is detected.  Run locally with:
+//
+//   cargo semver-checks check-release -p stello_pay_contract \
+//       --baseline-rev <tag-or-rev>
+//
+// ---------------------------------------------------------------------------
+
 pub mod audit;
 pub mod backup;
 pub mod events;
@@ -347,28 +378,36 @@ impl PayrollContract {
         payroll::batch_create_escrow_agreements(&env, employer, items)
     }
 
-    /// Creates a milestone-based payment agreement.
+    /// Creates a milestone-based payment agreement with an upfront set of
+    /// milestones.
     ///
     /// # Arguments
-    /// * `employer` - Address of the employer who will approve milestones
-    /// * `contributor` - Address of the contributor who will complete work
-    /// * `token` - Token address for payments
+    /// * `employer`    - Address of the employer who will approve milestones.
+    /// * `contributor` - Address of the contributor who will complete work.
+    /// * `token`       - Token address for payments.
+    /// * `milestones`  - Non-empty list of strictly-positive milestone amounts.
+    ///                    Each amount must be > 0. The empty vector is rejected.
     ///
     /// # Returns
-    /// New agreement ID
+    /// New agreement ID.
+    ///
+    /// # Panics
+    /// * `EmptyMilestoneList` — `milestones` is empty.
+    /// * `MilestoneAmountInvalid` — any element ≤ 0.
     ///
     /// # State Transition
-    /// None -> Created
+    /// None → Created
     ///
     /// # Access Control
-    /// Requires employer authentication
+    /// Requires employer authentication.
     pub fn create_milestone_agreement(
         env: Env,
         employer: Address,
         contributor: Address,
         token: Address,
+        milestones: Vec<i128>,
     ) -> u128 {
-        payroll::create_milestone_agreement(env, employer, contributor, token)
+        payroll::create_milestone_agreement(env, employer, contributor, token, milestones)
     }
 
     /// Deposits tokens from `from` into the contract to fund a milestone agreement.
@@ -1469,7 +1508,7 @@ impl PayrollContract {
     /// # Errors
     /// Panics with "Unauthorized" when the caller lacks admin privileges.
     /// Panics with "InvalidAmount" when `amount` is negative.
-    pub fn admin_set_agr_escrow_balance(
+    pub fn admin_set_escrow_balance(
         env: Env,
         operator: Address,
         agreement_id: u128,
@@ -1518,7 +1557,7 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires owner or RBAC Admin authentication.
-    pub fn admin_set_agr_activation_time(
+    pub fn admin_set_activation_time(
         env: Env,
         operator: Address,
         agreement_id: u128,
@@ -1544,7 +1583,7 @@ impl PayrollContract {
     ///
     /// # Errors
     /// Panics with "InvalidDuration" when `duration` is 0.
-    pub fn admin_set_agr_period_duration(
+    pub fn admin_set_period_duration(
         env: Env,
         operator: Address,
         agreement_id: u128,

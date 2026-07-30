@@ -641,7 +641,12 @@ fn test_milestone_created_to_paused() {
     let contributor = create_address(&env);
     let token = create_address(&env);
 
-    let ms_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let ms_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
 
     client.pause_agreement(&ms_id);
 
@@ -665,7 +670,12 @@ fn test_milestone_paused_to_active() {
     let contributor = create_address(&env);
     let token = create_address(&env);
 
-    let ms_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let ms_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.pause_agreement(&ms_id);
     client.resume_agreement(&ms_id);
 
@@ -689,7 +699,12 @@ fn test_milestone_complete_on_last_claim() {
     let contributor = create_address(&env);
     let token = create_token(&env);
 
-    let ms_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let ms_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&ms_id, &1000i128);
     client.add_milestone(&ms_id, &2000i128);
     mint(&env, &token, &employer, 3000i128);

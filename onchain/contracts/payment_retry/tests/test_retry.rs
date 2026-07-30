@@ -430,7 +430,186 @@ fn test_cancelled_record_is_skipped_by_batch_processing() {
 }
 
 #[test]
-fn test_get_payment_retry_count_increments_per_attempt() {
+fn test_cancel_payment_refunds_escrow_and_stops_processing() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    client.initialize(&owner);
+    asset_admin.mint(&payer, &100);
+
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 20,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+
+    client.fund_payment(&payer, &id, &100);
+    assert_eq!(token.balance(&payer), 0);
+    assert_eq!(token.balance(&contract_id), 100);
+
+    client.cancel_payment(&payer, &id);
+
+    // Effect 1: the escrow deposit is refunded to the payer atomically with the cancel.
+    assert_eq!(token.balance(&payer), 100);
+    assert_eq!(token.balance(&contract_id), 0);
+
+    // Effect 2: the request is terminal, is skipped by batch processing, and the
+    // recipient is never paid.
+    assert_eq!(client.get_payment(&id).unwrap().state, RetryState::Failed);
+    assert_eq!(client.process_due_payments(&10), 0);
+    assert_eq!(token.balance(&recipient), 0);
+}
+
+#[test]
+fn test_cancel_payment_unfunded_refunds_nothing() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+
+    client.initialize(&owner);
+
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 21,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+
+    // Never funded: cancelling moves no tokens and still terminates the request.
+    client.cancel_payment(&payer, &id);
+    assert_eq!(token.balance(&payer), 0);
+    assert_eq!(token.balance(&contract_id), 0);
+    assert_eq!(client.get_payment(&id).unwrap().state, RetryState::Failed);
+}
+
+#[test]
+fn test_cancel_payment_refunds_cumulative_deposits() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    client.initialize(&owner);
+    asset_admin.mint(&payer, &150);
+
+    let id = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 22,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+
+    // Two deposits accumulate into a single escrow balance for the request.
+    client.fund_payment(&payer, &id, &100);
+    client.fund_payment(&payer, &id, &50);
+    assert_eq!(token.balance(&contract_id), 150);
+
+    // Cancellation refunds the full accumulated deposit.
+    client.cancel_payment(&payer, &id);
+    assert_eq!(token.balance(&payer), 150);
+    assert_eq!(token.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_cancel_payment_refund_isolated_to_its_own_request() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient_a = Address::generate(&env);
+    let recipient_b = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    client.initialize(&owner);
+    asset_admin.mint(&payer, &200);
+
+    let id_a = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 23,
+            payer: &payer,
+            recipient: &recipient_a,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+    let id_b = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 24,
+            payer: &payer,
+            recipient: &recipient_b,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+
+    client.fund_payment(&payer, &id_a, &100);
+    client.fund_payment(&payer, &id_b, &100);
+    assert_eq!(token.balance(&contract_id), 200);
+
+    // Cancelling A refunds exactly A's deposit and leaves B's escrow untouched.
+    client.cancel_payment(&payer, &id_a);
+    assert_eq!(token.balance(&payer), 100);
+    assert_eq!(token.balance(&contract_id), 100);
+
+    // B still processes normally and pays its recipient from its own escrow.
+    assert_eq!(client.process_due_payments(&10), 1);
+    assert_eq!(
+        client.get_payment(&id_b).unwrap().state,
+        RetryState::Success
+    );
+    assert_eq!(token.balance(&recipient_b), 100);
+    assert_eq!(token.balance(&recipient_a), 0);
+    assert_eq!(token.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_cancel_payment_twice_does_not_double_refund() {
     let env = create_env();
     let (_contract_id, client) = register_contract(&env);
     let owner = Address::generate(&env);
@@ -912,4 +1091,236 @@ fn test_get_payment_reports_terminal_cancelled_state() {
         f.client.get_payment(&f.id).unwrap().state,
         RetryState::Cancelled
     );
+}
+
+#[test]
+fn test_simultaneously_due_payments_processed_in_stable_order() {
+    let env = create_env();
+    let (contract_id, client) = register_contract(&env);
+    let owner = Address::generate(&env);
+    let payer = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let asset_admin = StellarAssetClient::new(&env, &token.address);
+
+    client.initialize(&owner);
+    env.ledger().with_mut(|li| li.timestamp = 100);
+
+    // Queue 3 payments at the same time, but with different seeds so their IDs differ.
+    // They will all be due immediately (next_retry_at = 100).
+    // We intentionally create them in an order such that their IDs are not naturally sorted.
+    let id_a = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 200,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+    let id_b = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 50,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+    let id_c = schedule_payment(
+        &env,
+        &client,
+        PaymentInput {
+            id_seed: 100,
+            payer: &payer,
+            recipient: &recipient,
+            token: &token.address,
+            amount: 100,
+            max_retries: 2,
+            intervals: &[30],
+        },
+    );
+
+    // Ensure we have funds
+    asset_admin.mint(&payer, &300);
+    client.fund_payment(&payer, &id_a, &100);
+    client.fund_payment(&payer, &id_b, &100);
+    client.fund_payment(&payer, &id_c, &100);
+
+    // Assert that their natural ID order is: id_b < id_c < id_a
+    let mut ids = vec![id_a.clone(), id_b.clone(), id_c.clone()];
+    ids.sort();
+
+    // Process them with max_payments = 2
+    let processed = client.process_due_payments(&2);
+    assert_eq!(processed, 2, "Should process exactly 2 payments");
+
+    // Because they were sorted by ID, the first two in ascending ID order should be processed (id_b and id_c)
+    // The third one should still be pending.
+    let pay_b = client.get_payment(&ids[0]).unwrap();
+    let pay_c = client.get_payment(&ids[1]).unwrap();
+    let pay_a = client.get_payment(&ids[2]).unwrap();
+
+    assert_eq!(pay_b.state, RetryState::Success);
+    assert_eq!(pay_c.state, RetryState::Success);
+    assert_eq!(pay_a.state, RetryState::Scheduled);
+}
+
+// ---------------------------------------------------------------------------
+// Exponential backoff interval generation tests (issue #773)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_backoff_base_2_mult_2_3_attempts() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 30,
+        multiplier: 2,
+        max_attempts: 3,
+    };
+    let intervals = generate_backoff_intervals(&env, &config).unwrap();
+    // Expected: [30, 60, 120]
+    assert_eq!(intervals.len(), 3);
+    assert_eq!(intervals.get(0).unwrap(), 30u64);
+    assert_eq!(intervals.get(1).unwrap(), 60u64);
+    assert_eq!(intervals.get(2).unwrap(), 120u64);
+}
+
+#[test]
+fn test_backoff_base_60_mult_3_2_attempts() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 60,
+        multiplier: 3,
+        max_attempts: 2,
+    };
+    let intervals = generate_backoff_intervals(&env, &config).unwrap();
+    // Expected: [60, 180]
+    assert_eq!(intervals.len(), 2);
+    assert_eq!(intervals.get(0).unwrap(), 60u64);
+    assert_eq!(intervals.get(1).unwrap(), 180u64);
+}
+
+#[test]
+fn test_backoff_mult_1_fixed_delay() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 300,
+        multiplier: 1,
+        max_attempts: 4,
+    };
+    let intervals = generate_backoff_intervals(&env, &config).unwrap();
+    // Multiplier 1 = fixed delay → [300, 300, 300, 300]
+    assert_eq!(intervals.len(), 4);
+    for i in 0..4 {
+        assert_eq!(intervals.get(i).unwrap(), 300u64);
+    }
+}
+
+#[test]
+fn test_backoff_single_attempt() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 10,
+        multiplier: 5,
+        max_attempts: 1,
+    };
+    let intervals = generate_backoff_intervals(&env, &config).unwrap();
+    assert_eq!(intervals.len(), 1);
+    assert_eq!(intervals.get(0).unwrap(), 10u64);
+}
+
+#[test]
+fn test_backoff_zero_attempts_returns_empty() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 30,
+        multiplier: 2,
+        max_attempts: 0,
+    };
+    let intervals = generate_backoff_intervals(&env, &config).unwrap();
+    assert!(intervals.is_empty());
+}
+
+#[test]
+fn test_backoff_rejects_zero_base_interval() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 0,
+        multiplier: 2,
+        max_attempts: 3,
+    };
+    assert!(generate_backoff_intervals(&env, &config).is_none());
+}
+
+#[test]
+fn test_backoff_rejects_zero_multiplier() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 30,
+        multiplier: 0,
+        max_attempts: 3,
+    };
+    assert!(generate_backoff_intervals(&env, &config).is_none());
+}
+
+#[test]
+fn test_backoff_rejects_attempts_exceeding_max() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 10,
+        multiplier: 2,
+        max_attempts: MAX_RETRY_ATTEMPTS + 1,
+    };
+    assert!(generate_backoff_intervals(&env, &config).is_none());
+}
+
+#[test]
+fn test_backoff_rejects_interval_exceeding_max_single() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: MAX_SINGLE_RETRY_INTERVAL_SECONDS,
+        multiplier: 2,
+        max_attempts: 2,
+    };
+    // First interval is exactly at the cap (allowed), second = cap * 2 > cap
+    assert!(generate_backoff_intervals(&env, &config).is_none());
+}
+
+#[test]
+fn test_backoff_rejects_overflow() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: u64::MAX,
+        multiplier: 2,
+        max_attempts: 2,
+    };
+    // u64::MAX * 2 overflows → None
+    assert!(generate_backoff_intervals(&env, &config).is_none());
+}
+
+#[test]
+fn test_backoff_generated_intervals_pass_validation() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 30,
+        multiplier: 2,
+        max_attempts: 5,
+    };
+    let intervals = generate_backoff_intervals(&env, &config).unwrap();
+    // Generated intervals should satisfy validate_retry_configuration
+    validate_retry_configuration(5, &intervals);
+    // If we got here without panicking, validation passed
+    assert_eq!(intervals.len(), 5);
+    assert_eq!(intervals.get(0).unwrap(), 30u64);
+    assert_eq!(intervals.get(4).unwrap(), 480u64);
 }

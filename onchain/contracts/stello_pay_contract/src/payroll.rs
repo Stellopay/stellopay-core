@@ -1,43 +1,75 @@
-use soroban_sdk::{
-    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contractclient, contracttype, panic_with_error, token,
-    token::TokenClient,
-    Address, Env, IntoVal, String, Symbol, Val, Vec,
+use crate::audit::{record_entry, AuditEvent};
+use crate::events::{
+    emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
+    emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
+    emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
+    emit_grace_period_finalized, emit_milestone_expired, emit_milestone_funded,
+    emit_milestone_rejected, emit_multisig_config_changed, emit_payment_received,
+    emit_payment_sent, emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent,
+    AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent,
+    ArbiterSetEvent, BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent,
+    DisputeResolvedEvent, EmployeeAddedEvent, ExchangeRateChangedEvent, GracePeriodExtendedEvent,
+    GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved, MilestoneClaimed,
+    MilestoneExpiredEvent, MilestoneFundedEvent, MilestoneRejectedEvent,
+    MultisigConfigChangedEvent, PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
+};
+use crate::storage::{
+    Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
+    BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
+    EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
+    MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
+    PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE, get_milestone, get_agreement, set_milestone, MilestoneStatus,
 };
 
-use crate::{
-    audit::{record_entry, AuditEvent},
-    events::{
-        emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
-        emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
-        emit_employee_added, emit_exchange_rate_updated, emit_grace_period_extended,
-        emit_grace_period_finalized, emit_milestone_expired, emit_milestone_funded,
-        emit_milestone_rejected, emit_multisig_config_changed, emit_payment_received,
-        emit_payment_sent, emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent,
-        AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent,
-        AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
-        BatchPayrollClaimedEvent, DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent,
-        ExchangeRateUpdatedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent,
-        MilestoneAdded, MilestoneApproved, MilestoneClaimed, MilestoneExpiredEvent,
-        MilestoneFundedEvent, MilestoneRejectedEvent, MultisigConfigChangedEvent,
-        PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
-        emit_bulk_agreements_paused, emit_bulk_agreements_unpaused,
-        BulkAgreementsPausedEvent, BulkAgreementsUnpausedEvent,
-    },
-    storage::{
-        Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
-        BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
-        EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
-        MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
-        PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE,
-    },
-};
+use soroban_sdk::{Env, Address, contracterror, panic_with_error};
 
 /// Minimal interface for cross-contract calls into the deployed multisig contract.
 #[contractclient(name = "MultisigClient")]
 trait MultisigInterface {
     fn get_operation(env: Env, operation_id: u128) -> Option<Operation>;
 }
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub enum PayrollError {
+    NotAuthorized = 1,
+    MilestoneNotFound = 2,
+    InvalidStatus = 3,
+}
+
+/// Approves a milestone, moving it toward a payable status.
+/// 
+/// ### Security
+/// Strictly restricts the caller to the agreement's designated `approver`. 
+/// Prevents self-approval by employees or approval by unrelated third parties.
+pub fn approve_milestone(env: Env, milestone_id: u64) {
+    // 1. Fetch milestone and its parent agreement
+    let mut milestone = get_milestone(&env, milestone_id)
+        .unwrap_or_else(|| panic_with_error!(&env, PayrollError::MilestoneNotFound));
+    
+    let agreement = get_agreement(&env, milestone.agreement_id)
+        .unwrap_or_else(|| panic_with_error!(&env, PayrollError::NotAuthorized));
+
+    // 2. SECURITY HARDENING: Bind auth to the designated approver
+    // This will fail if the signature does not match agreement.approver
+    agreement.approver.require_auth();
+
+    // 3. Logic: Ensure milestone is in a state that can be approved (e.g., Submitted)
+    if milestone.status != MilestoneStatus::Submitted {
+        panic_with_error!(&env, PayrollError::InvalidStatus);
+    }
+
+    // 4. Update status
+    milestone.status = MilestoneStatus::Approved;
+    set_milestone(&env, milestone_id, &milestone);
+
+    // 5. Emit event for indexer
+    env.events().publish(
+        (soroban_sdk::symbol_short!("approve"), milestone_id),
+        agreement.approver.clone()
+    );
+}
+
 
 #[contractclient(name = "RateLimiterClient")]
 trait RateLimiterInterface {
@@ -248,8 +280,13 @@ pub fn create_milestone_agreement(
     employer: Address,
     contributor: Address,
     token: Address,
+    milestones: Vec<i128>,
 ) -> u128 {
     employer.require_auth();
+
+    if milestones.is_empty() {
+        panic_with_error!(&env, PayrollError::EmptyMilestoneList);
+    }
 
     let mut counter: u128 = env
         .storage()
@@ -280,12 +317,43 @@ pub fn create_milestone_agreement(
         &MilestoneKey::Status(agreement_id),
         &AgreementStatus::Created,
     );
+
+    let milestone_count: u32 = milestones.len() as u32;
+    let mut total: i128 = 0;
+    for (i, amount) in milestones.iter().enumerate() {
+        if amount <= 0 {
+            panic_with_error!(&env, PayrollError::MilestoneAmountInvalid);
+        }
+        let milestone_id: u32 = (i as u32) + 1;
+        env.storage().persistent().set(
+            &MilestoneKey::MilestoneAmount(agreement_id, milestone_id),
+            &amount,
+        );
+        env.storage().persistent().set(
+            &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
+            &false,
+        );
+        env.storage().persistent().set(
+            &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
+            &false,
+        );
+        total += amount;
+
+        MilestoneAdded {
+            agreement_id,
+            milestone_id,
+            amount,
+        }
+        .publish(&env);
+    }
+
+    env.storage().persistent().set(
+        &MilestoneKey::MilestoneCount(agreement_id),
+        &milestone_count,
+    );
     env.storage()
         .persistent()
-        .set(&MilestoneKey::TotalAmount(agreement_id), &0i128);
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::MilestoneCount(agreement_id), &0u32);
+        .set(&MilestoneKey::TotalAmount(agreement_id), &total);
 
     add_to_employer_agreements(&env, &employer, agreement_id);
 

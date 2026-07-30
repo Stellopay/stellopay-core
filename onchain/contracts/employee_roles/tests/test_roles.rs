@@ -2,14 +2,13 @@
 
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
-    Address, Env, Map, Symbol, TryIntoVal, Val,
+    Address, Env, Map, Symbol, TryFromVal, TryIntoVal, Val, Vec,
 };
 
 use employee_roles::{
     BuiltInRole, EmployeeRolesContract, EmployeeRolesContractClient, PayrollAction,
-    RoleChangedEvent,
+    RoleChangedEvent, RoleError, RoleGrant,
 };
-use soroban_sdk::{testutils::Address as _, testutils::Ledger as _, Address, Env};
 
 fn setup() -> (Env, Address, EmployeeRolesContractClient<'static>) {
     let env = Env::default();
@@ -380,14 +379,21 @@ fn test_require_capability_allows_admin_action() {
 /// Helper: count RoleChanged events in the current event buffer.
 fn count_role_events(env: &Env) -> usize {
     let all = env.events().all();
-    let role_sym: Val = Symbol::new(env, "ROLE").into();
     all.iter()
-        .filter(|e| e.1.len() >= 2 && e.1.get(0) == role_sym)
+        .filter(|e| {
+            if e.1.len() < 2 {
+                return false;
+            }
+            Symbol::try_from_val(env, &e.1.get(0).unwrap())
+                .map_or(false, |s| s == Symbol::new(env, "ROLE"))
+        })
         .count()
 }
 
+
+
 /// Helper: extract a field from a RoleChangedEvent data map.
-fn event_field<T: TryIntoVal<Env, Val>>(env: &Env, data: &Val, name: &str) -> T {
+fn event_field<T: TryFromVal<Env, Val>>(env: &Env, data: &Val, name: &str) -> T {
     let map: Map<Symbol, Val> = data.clone().try_into_val(env).unwrap();
     map.get(Symbol::new(env, name))
         .unwrap()
@@ -398,9 +404,15 @@ fn event_field<T: TryIntoVal<Env, Val>>(env: &Env, data: &Val, name: &str) -> T 
 /// Helper: return the n-th RoleChanged event (0‑based from oldest) and its data Val.
 fn nth_role_event(env: &Env, n: usize) -> Option<(Address, Vec<Val>, Val)> {
     let all = env.events().all();
-    let role_sym: Val = Symbol::new(env, "ROLE").into();
+    let role_sym: Symbol = Symbol::new(env, "ROLE");
     all.iter()
-        .filter(|e| e.1.len() >= 2 && e.1.get(0) == role_sym)
+        .filter(|e| {
+            if e.1.len() < 2 {
+                return false;
+            }
+            Symbol::try_from_val(env, &e.1.get(0).unwrap())
+                .map_or(false, |s| s == role_sym)
+        })
         .nth(n)
         .map(|e| (e.0.clone(), e.1.clone(), e.2.clone()))
 }
@@ -418,14 +430,14 @@ fn test_role_changed_event_on_assign() {
 
     let (_contract, _topics, data) = nth_role_event(&env, 0).unwrap();
 
-    let old_role: Option<BuiltInRole> = event_field(&env, &data, "old_role");
-    let new_role: BuiltInRole = event_field(&env, &data, "new_role");
+    let old_role: Option<u32> = event_field(&env, &data, "old_role");
+    let new_role: u32 = event_field(&env, &data, "new_role");
     let changed_by: Address = event_field(&env, &data, "changed_by");
     let emp: Address = event_field(&env, &data, "employee");
     let ts: u64 = event_field(&env, &data, "timestamp");
 
     assert_eq!(old_role, None);
-    assert_eq!(new_role, BuiltInRole::Manager);
+    assert_eq!(new_role, BuiltInRole::Manager as u32);
     assert_eq!(changed_by, owner);
     assert_eq!(emp, employee);
     assert_eq!(ts, 42_000);
@@ -443,18 +455,18 @@ fn test_role_changed_event_on_revoke() {
 
     client.revoke_role(&owner, &employee, &BuiltInRole::Employee);
 
-    // We now have two RoleChanged events: assign (idx 0) and revoke (idx 1).
-    assert_eq!(count_role_events(&env), 2);
+    // Events are scoped per invocation. The revoke call emitted exactly one event.
+    assert_eq!(count_role_events(&env), 1);
 
-    let (_contract, _topics, data) = nth_role_event(&env, 1).unwrap();
+    let (_contract, _topics, data) = nth_role_event(&env, 0).unwrap();
 
-    let old_role: BuiltInRole = event_field(&env, &data, "old_role");
-    let new_role: Option<BuiltInRole> = event_field(&env, &data, "new_role");
+    let old_role: u32 = event_field(&env, &data, "old_role");
+    let new_role: Option<u32> = event_field(&env, &data, "new_role");
     let changed_by: Address = event_field(&env, &data, "changed_by");
     let emp_field: Address = event_field(&env, &data, "employee");
     let ts: u64 = event_field(&env, &data, "timestamp");
 
-    assert_eq!(old_role, BuiltInRole::Employee);
+    assert_eq!(old_role, BuiltInRole::Employee as u32);
     assert_eq!(new_role, None);
     assert_eq!(changed_by, owner);
     assert_eq!(emp_field, employee);
@@ -466,12 +478,14 @@ fn test_no_event_on_duplicate_assign() {
     let (env, owner, client) = setup();
     let employee = Address::generate(&env);
 
+    // First assign emits exactly one RoleChanged event
     client.assign_role(&owner, &employee, &BuiltInRole::Employee);
     assert_eq!(count_role_events(&env), 1, "First assign must emit one event");
 
     // Second assign of the same role is a no-op → no new event.
+    // Events are scoped per invocation, so the buffer is fresh.
     client.assign_role(&owner, &employee, &BuiltInRole::Employee);
-    assert_eq!(count_role_events(&env), 1, "Duplicate assign must not emit RoleChanged event");
+    assert_eq!(count_role_events(&env), 0, "Duplicate assign must not emit RoleChanged event");
 }
 
 #[test]
@@ -500,7 +514,7 @@ fn test_full_payload_roundtrip() {
     // Deserialize the full event and verify every field matches.
     let event: RoleChangedEvent = data.clone().try_into_val(&env).unwrap();
     assert_eq!(event.old_role, None);
-    assert_eq!(event.new_role, Some(BuiltInRole::Admin));
+    assert_eq!(event.new_role, Some(BuiltInRole::Admin as u32));
     assert_eq!(event.changed_by, owner);
     assert_eq!(event.employee, employee);
     assert_eq!(event.timestamp, 7_000);
@@ -713,4 +727,245 @@ fn test_legacy_storage_compatibility() {
     // Advance time significantly — non-expiring grants are still active
     env.ledger().set_timestamp(999_999_999);
     assert!(client.has_role(&employee, &BuiltInRole::Manager));
+}
+
+// --- get_effective_permissions: union-without-duplicates ---
+
+fn init_default_implies(env: &Env, client: &EmployeeRolesContractClient, owner: &Address) {
+    // Admin -> Manager -> Employee (standard hierarchy)
+    client.set_role_implies(
+        owner,
+        &BuiltInRole::Admin,
+        &soroban_sdk::vec![&env, BuiltInRole::Manager],
+    );
+    client.set_role_implies(
+        owner,
+        &BuiltInRole::Manager,
+        &soroban_sdk::vec![&env, BuiltInRole::Employee],
+    );
+    client.set_role_implies(
+        owner,
+        &BuiltInRole::Employee,
+        &soroban_sdk::vec![&env],
+    );
+}
+
+#[test]
+fn test_effective_permissions_owner_all_actions() {
+    let (env, owner, client) = setup();
+
+    init_default_implies(&env, &client, &owner);
+
+    // Owner should get all 12 actions
+    let perms = client.get_effective_permissions(&owner);
+    let expected = all_payroll_actions(&env);
+    assert_eq!(perms.len(), 12);
+    for a in expected.iter() {
+        assert!(
+            perms.iter().any(|p| p == a),
+            "Owner must have {:?}",
+            a
+        );
+    }
+}
+
+#[test]
+fn test_effective_permissions_admin_all_actions() {
+    let (env, owner, _emp, _mgr, adm, client) = setup_with_roles();
+    init_default_implies(&env, &client, &owner);
+
+    // Admin -> Manager -> Employee implies all 12 actions
+    let perms = client.get_effective_permissions(&adm);
+    assert_eq!(perms.len(), 12, "Admin should have all 12 actions");
+    for a in all_payroll_actions(&env).iter() {
+        assert!(perms.iter().any(|p| p == a), "Admin must have {:?}", a);
+    }
+}
+
+#[test]
+fn test_effective_permissions_manager_actions() {
+    let (env, owner, _emp, mgr, _adm, client) = setup_with_roles();
+    init_default_implies(&env, &client, &owner);
+
+    // Manager -> Employee implies 8 actions (4 manager + 4 employee)
+    let perms = client.get_effective_permissions(&mgr);
+    assert_eq!(perms.len(), 8, "Manager should have 8 actions");
+}
+
+#[test]
+fn test_effective_permissions_employee_actions() {
+    let (env, owner, emp, _mgr, _adm, client) = setup_with_roles();
+    init_default_implies(&env, &client, &owner);
+
+    // Employee alone implies 4 actions
+    let perms = client.get_effective_permissions(&emp);
+    assert_eq!(perms.len(), 4, "Employee should have 4 actions");
+}
+
+#[test]
+fn test_effective_permissions_no_duplicate_when_action_both_direct_and_inherited() {
+    let (env, owner, _client) = setup();
+    let client = &_client;
+
+    // Setup: Employee is granted both Admin and Employee roles.
+    // Admin implies Manager -> Employee, so Employee-level actions come from:
+    // 1) direct Employee role, and 2) inherited via Admin -> Manager -> Employee.
+    // The union must still have each action exactly once.
+    let employee = Address::generate(&env);
+    client.assign_role(&owner, &employee, &BuiltInRole::Admin);
+    client.assign_role(&owner, &employee, &BuiltInRole::Employee);
+
+    init_default_implies(&env, client, &owner);
+
+    let perms = client.get_effective_permissions(&employee);
+    assert_eq!(perms.len(), 12, "Admin+Employee should have 12 actions (no dupes)");
+
+    // Verify dedup: same action appears only once
+    let mut seen = soroban_sdk::Map::new(&env);
+    for i in 0..perms.len() {
+        let action = perms.get(i).unwrap();
+        let key: u32 = action as u32;
+        assert!(
+            !seen.contains_key(key),
+            "Duplicate action {:?} found",
+            action
+        );
+        seen.set(key, true);
+    }
+}
+
+#[test]
+fn test_effective_permissions_no_duplicate_converging_inheritance_paths() {
+    let (env, owner, _client) = setup();
+    let client = &_client;
+
+    // Setup: role graph with two inheritance paths converging on Employee:
+    //   Admin -> [SpecialManager, Employee]
+    //   SpecialManager -> [Employee]
+    // Admin's effective roles: [Admin, SpecialManager, Employee] (3 unique)
+    // Employee-level actions should NOT appear twice despite being reachable
+    // via two paths: Admin -> Employee and Admin -> SpecialManager -> Employee.
+    let employee = Address::generate(&env);
+
+    // We use Admin as a "VirtualAdmin" that implies both SpecialManager and Employee
+    client.assign_role(&owner, &employee, &BuiltInRole::Admin);
+
+    // Set converging implies: Admin -> [Manager, Employee], Manager -> [Employee]
+    client.set_role_implies(
+        &owner,
+        &BuiltInRole::Admin,
+        &soroban_sdk::vec![&env, BuiltInRole::Manager, BuiltInRole::Employee],
+    );
+    client.set_role_implies(
+        &owner,
+        &BuiltInRole::Manager,
+        &soroban_sdk::vec![&env, BuiltInRole::Employee],
+    );
+    client.set_role_implies(
+        &owner,
+        &BuiltInRole::Employee,
+        &soroban_sdk::vec![&env],
+    );
+
+    env.ledger().set_timestamp(1000);
+
+    let perms = client.get_effective_permissions(&employee);
+    // Expected: Admin directly -> Admin actions (4)
+    //           Admin -> Manager -> Manager actions (4)
+    //           Admin -> Employee -> Employee actions (4)
+    // All unique = 12
+    assert_eq!(
+        perms.len(),
+        12,
+        "Converging inheritance paths must not produce duplicates"
+    );
+
+    // Verify dedup with Map
+    let mut seen = soroban_sdk::Map::new(&env);
+    for i in 0..perms.len() {
+        let action = perms.get(i).unwrap();
+        let key: u32 = action as u32;
+        assert!(
+            !seen.contains_key(key),
+            "Duplicate action {:?} found in converging paths test",
+            action
+        );
+        seen.set(key, true);
+    }
+}
+
+#[test]
+fn test_effective_permissions_no_role_returns_empty() {
+    let (env, _owner, client) = setup();
+    let stranger = Address::generate(&env);
+
+    let perms = client.get_effective_permissions(&stranger);
+    assert_eq!(perms.len(), 0, "No-role address should have empty permissions");
+}
+
+#[test]
+fn test_effective_permissions_union_length_matches_expected() {
+    let (env, owner, _client) = setup();
+    let client = &_client;
+
+    // Set up only Partial implies: Manager -> [Employee] without Admin
+    let employee = Address::generate(&env);
+    client.assign_role(&owner, &employee, &BuiltInRole::Manager);
+
+    client.set_role_implies(
+        &owner,
+        &BuiltInRole::Manager,
+        &soroban_sdk::vec![&env, BuiltInRole::Employee],
+    );
+    client.set_role_implies(
+        &owner,
+        &BuiltInRole::Employee,
+        &soroban_sdk::vec![&env],
+    );
+
+    let perms = client.get_effective_permissions(&employee);
+    // Manager directly (4) + Employee implied (4) = 8 actions
+    assert_eq!(perms.len(), 8);
+
+    // Now add Admin role to same employee
+    client.assign_role(&owner, &employee, &BuiltInRole::Admin);
+    client.set_role_implies(
+        &owner,
+        &BuiltInRole::Admin,
+        &soroban_sdk::vec![&env, BuiltInRole::Manager],
+    );
+
+    let perms = client.get_effective_permissions(&employee);
+    // Admin (4) + Manager (4) + Employee (4) = 12, not duplicate Manager/Employee
+    assert_eq!(perms.len(), 12);
+
+    // Explicitly verify each expected action appears exactly once
+    let all = all_payroll_actions(&env);
+    for expected in all.iter() {
+            let count = perms.iter().filter(|a| *a == expected).count();
+        assert_eq!(
+            count, 1,
+            "Action {:?} should appear exactly once, got {}",
+            expected, count
+        );
+    }
+}
+
+/// Helper: returns all 12 payroll actions.
+fn all_payroll_actions(env: &Env) -> Vec<PayrollAction> {
+    soroban_sdk::vec![
+        &env,
+        PayrollAction::ViewPayrollStatus,
+        PayrollAction::ViewPayrollHistory,
+        PayrollAction::ClaimOwnPayroll,
+        PayrollAction::WithdrawOwnPayroll,
+        PayrollAction::CreatePayrollRecord,
+        PayrollAction::UpdatePayrollRecord,
+        PayrollAction::PauseEmployeePayroll,
+        PayrollAction::ResumeEmployeePayroll,
+        PayrollAction::AssignRoles,
+        PayrollAction::RevokeRoles,
+        PayrollAction::EmergencyPause,
+        PayrollAction::EmergencyUnpause,
+    ]
 }

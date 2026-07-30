@@ -601,13 +601,13 @@ fn test_sum_preservation_property_diverse_splits_and_amounts() {
 
     // Test multiple split configurations across a range of amounts
     let split_configs = [
-        vec![10000],                  // 1 recipient, 100%
-        vec![5000, 5000],             // 2 recipients, equal
-        vec![6000, 4000],             // 2 recipients, unequal
+        vec![10000],                   // 1 recipient, 100%
+        vec![5000, 5000],              // 2 recipients, equal
+        vec![6000, 4000],              // 2 recipients, unequal
         vec![3333, 3333, 3334],       // 3 recipients, unequal
-        vec![2500, 2500, 2500, 2500], // 4 recipients, equal
-        vec![1000, 2000, 3000, 4000], // 4 recipients, unequal
-        vec![200; 5],                 // 5 recipients, equal (5*200=1000 ≠ 10000)
+        vec![2500, 2500, 2500, 2500],  // 4 recipients, equal
+        vec![1000, 2000, 3000, 4000],  // 4 recipients, unequal
+        vec![200; 5],                  // 5 recipients, equal (5*200=1000 ≠ 10000)
     ];
 
     for (config_idx, bps_list) in split_configs.iter().enumerate() {
