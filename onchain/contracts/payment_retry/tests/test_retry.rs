@@ -1174,3 +1174,153 @@ fn test_simultaneously_due_payments_processed_in_stable_order() {
     assert_eq!(pay_c.state, RetryState::Success);
     assert_eq!(pay_a.state, RetryState::Scheduled);
 }
+
+// ---------------------------------------------------------------------------
+// Exponential backoff interval generation tests (issue #773)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_backoff_base_2_mult_2_3_attempts() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 30,
+        multiplier: 2,
+        max_attempts: 3,
+    };
+    let intervals = generate_backoff_intervals(&env, &config).unwrap();
+    // Expected: [30, 60, 120]
+    assert_eq!(intervals.len(), 3);
+    assert_eq!(intervals.get(0).unwrap(), 30u64);
+    assert_eq!(intervals.get(1).unwrap(), 60u64);
+    assert_eq!(intervals.get(2).unwrap(), 120u64);
+}
+
+#[test]
+fn test_backoff_base_60_mult_3_2_attempts() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 60,
+        multiplier: 3,
+        max_attempts: 2,
+    };
+    let intervals = generate_backoff_intervals(&env, &config).unwrap();
+    // Expected: [60, 180]
+    assert_eq!(intervals.len(), 2);
+    assert_eq!(intervals.get(0).unwrap(), 60u64);
+    assert_eq!(intervals.get(1).unwrap(), 180u64);
+}
+
+#[test]
+fn test_backoff_mult_1_fixed_delay() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 300,
+        multiplier: 1,
+        max_attempts: 4,
+    };
+    let intervals = generate_backoff_intervals(&env, &config).unwrap();
+    // Multiplier 1 = fixed delay → [300, 300, 300, 300]
+    assert_eq!(intervals.len(), 4);
+    for i in 0..4 {
+        assert_eq!(intervals.get(i).unwrap(), 300u64);
+    }
+}
+
+#[test]
+fn test_backoff_single_attempt() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 10,
+        multiplier: 5,
+        max_attempts: 1,
+    };
+    let intervals = generate_backoff_intervals(&env, &config).unwrap();
+    assert_eq!(intervals.len(), 1);
+    assert_eq!(intervals.get(0).unwrap(), 10u64);
+}
+
+#[test]
+fn test_backoff_zero_attempts_returns_empty() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 30,
+        multiplier: 2,
+        max_attempts: 0,
+    };
+    let intervals = generate_backoff_intervals(&env, &config).unwrap();
+    assert!(intervals.is_empty());
+}
+
+#[test]
+fn test_backoff_rejects_zero_base_interval() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 0,
+        multiplier: 2,
+        max_attempts: 3,
+    };
+    assert!(generate_backoff_intervals(&env, &config).is_none());
+}
+
+#[test]
+fn test_backoff_rejects_zero_multiplier() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 30,
+        multiplier: 0,
+        max_attempts: 3,
+    };
+    assert!(generate_backoff_intervals(&env, &config).is_none());
+}
+
+#[test]
+fn test_backoff_rejects_attempts_exceeding_max() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 10,
+        multiplier: 2,
+        max_attempts: MAX_RETRY_ATTEMPTS + 1,
+    };
+    assert!(generate_backoff_intervals(&env, &config).is_none());
+}
+
+#[test]
+fn test_backoff_rejects_interval_exceeding_max_single() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: MAX_SINGLE_RETRY_INTERVAL_SECONDS,
+        multiplier: 2,
+        max_attempts: 2,
+    };
+    // First interval is exactly at the cap (allowed), second = cap * 2 > cap
+    assert!(generate_backoff_intervals(&env, &config).is_none());
+}
+
+#[test]
+fn test_backoff_rejects_overflow() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: u64::MAX,
+        multiplier: 2,
+        max_attempts: 2,
+    };
+    // u64::MAX * 2 overflows → None
+    assert!(generate_backoff_intervals(&env, &config).is_none());
+}
+
+#[test]
+fn test_backoff_generated_intervals_pass_validation() {
+    let env = create_env();
+    let config = BackoffConfig {
+        base_interval: 30,
+        multiplier: 2,
+        max_attempts: 5,
+    };
+    let intervals = generate_backoff_intervals(&env, &config).unwrap();
+    // Generated intervals should satisfy validate_retry_configuration
+    validate_retry_configuration(5, &intervals);
+    // If we got here without panicking, validation passed
+    assert_eq!(intervals.len(), 5);
+    assert_eq!(intervals.get(0).unwrap(), 30u64);
+    assert_eq!(intervals.get(4).unwrap(), 480u64);
+}

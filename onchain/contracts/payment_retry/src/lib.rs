@@ -132,6 +132,27 @@ pub struct RetryConfig {
     pub retry_intervals: Vec<u64>,
 }
 
+/// Configuration for generating exponential-backoff retry intervals.
+///
+/// Produces `max_attempts` intervals following:
+///   `interval[i] = base_interval * multiplier^i`  (i = 0, 1, ...)
+///
+/// # Examples
+///
+/// * `BackoffConfig { base_interval: 30, multiplier: 2, max_attempts: 3 }` ->
+///   `[30, 60, 120]`
+/// * `BackoffConfig { base_interval: 60, multiplier: 3, max_attempts: 2 }` ->
+///   `[60, 180]`
+#[derive(Clone, Debug)]
+pub struct BackoffConfig {
+    /// First retry delay in seconds. Must be > 0.
+    pub base_interval: u64,
+    /// Multiplication factor for each successive interval. Must be >= 1.
+    pub multiplier: u64,
+    /// Number of attempts to generate intervals for. 0 yields an empty vector.
+    pub max_attempts: u32,
+}
+
 /// A payment request with embedded retry policy.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -388,6 +409,61 @@ fn validate_retry_configuration(max_retry_attempts: u32, retry_intervals: &Vec<u
         );
         i = i.saturating_add(1);
     }
+}
+
+/// Generates a `retry_intervals` sequence from exponential-backoff parameters
+/// and validates each interval against the same invariants enforced on explicit
+/// sequences.
+///
+/// The i-th interval (0-indexed) is `base_interval * multiplier^i`.
+/// Multiplication uses `checked_mul`; overflow is rejected rather than wrapping
+/// silently.
+///
+/// # Returns
+///
+/// `Some(Vec<u64>)` on success, `None` if:
+/// * `max_attempts` exceeds [`MAX_RETRY_ATTEMPTS`];
+/// * `base_interval` is 0;
+/// * `multiplier` is 0 (would produce zero-intervals after the first);
+/// * any generated interval exceeds [`MAX_SINGLE_RETRY_INTERVAL_SECONDS`];
+/// * multiplication overflows `u64`.
+///
+/// When `max_attempts == 0`, returns `Some(Vec::new(env))` — the caller is
+/// responsible for passing the result through [`validate_retry_configuration`]
+/// if a non-zero `max_retries` is expected.
+pub fn generate_backoff_intervals(
+    env: &Env,
+    config: &BackoffConfig,
+) -> Option<Vec<u64>> {
+    if config.max_attempts > MAX_RETRY_ATTEMPTS {
+        return None;
+    }
+
+    if config.max_attempts == 0 {
+        return Some(Vec::new(env));
+    }
+
+    if config.base_interval == 0 {
+        return None;
+    }
+
+    if config.multiplier == 0 {
+        return None;
+    }
+
+    let mut intervals = Vec::new(env);
+    let mut current: u64 = config.base_interval;
+
+    for _ in 0..config.max_attempts {
+        if current > MAX_SINGLE_RETRY_INTERVAL_SECONDS {
+            return None;
+        }
+        intervals.push_back(current);
+        // checked_mul to prevent silent overflow
+        current = current.checked_mul(config.multiplier)?;
+    }
+
+    Some(intervals)
 }
 
 /// Returns the delay (seconds) to apply before retry attempt number
