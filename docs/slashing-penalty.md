@@ -26,6 +26,119 @@ cannot administer the contract.
 
 ---
 
+## Slasher-Set Management
+
+### Data structure
+
+The active slasher set is stored as a `Vec<Address>` under the `SLASHERS` storage
+key.  The `get_slashers()` view returns the full list.  Lookup and membership
+checks (`contains`) are O(N) in the number of registered slashers; for the
+expected small slasher set (single-digit to low double-digit members) this is
+not a performance concern.
+
+### Idempotency guarantees
+
+Both `add_slasher` and `remove_slasher` are **idempotent** with respect to the
+stored set:
+
+| Operation | Already-present address | Already-absent address |
+|-----------|------------------------|------------------------|
+| `add_slasher(A)` | No-op — returns `Ok(())`, set unchanged | Inserts A once |
+| `remove_slasher(A)` | Removes A | No-op — returns `Ok(())`, set unchanged |
+
+Calling either function any number of times for the same address is safe; the
+set invariant (each address appears **at most once**) is maintained in all cases.
+
+### Add / remove / re-add cycles
+
+A common operational pattern is to rotate a slasher: remove the compromised or
+retired address and add a replacement — or re-add the original after its key
+material is rotated.  The deduplication guard in `add_slasher` ensures that
+this cycle never leaves a stale duplicate:
+
+```text
+Initial:          SLASHERS = {A, B, C}
+
+add_slasher(A)    → SLASHERS = {A, B, C}         (no-op, A already present)
+remove_slasher(A) → SLASHERS = {B, C}            (A removed)
+add_slasher(A)    → SLASHERS = {B, C, A}         (A re-inserted once)
+add_slasher(A)    → SLASHERS = {B, C, A}         (no-op, A already present)
+
+get_slashers() always returns exactly one entry for A ✓
+```
+
+After any sequence of add/remove/re-add operations the list length equals the
+number of **unique currently-active** slashers — never more.
+
+### Quorum accounting
+
+The quorum threshold is stored in a separate `QUORUM` storage key as a plain
+`u32`.  It is **never** derived from the runtime length of the slasher list.
+
+Consequence: `get_quorum()` returns the same value before and after any
+add/remove/re-add cycle.  Rotating slashers does not silently lower or raise the
+quorum required for attestation-based slashes.
+
+```text
+initialize(quorum=2)      → get_quorum() = 2
+add_slasher(D)            → get_quorum() = 2   (unchanged)
+remove_slasher(A)         → get_quorum() = 2   (unchanged)
+add_slasher(A)            → get_quorum() = 2   (unchanged)
+```
+
+To change the quorum threshold an admin must call `set_penalty_caps` (which does
+not touch `QUORUM` directly) — or, for an architectural change, re-deploy with a
+new `quorum` argument to `initialize`.  There is currently no standalone
+`set_quorum` entrypoint; the quorum value is set once at initialisation and
+remains fixed unless the contract is upgraded.
+
+### Point-in-time authorisation model
+
+Authorisation for `attest_slash` is evaluated **at the ledger in which the call
+is made**, not at the ledger in which the slash was first proposed.
+
+| Situation | Outcome |
+|-----------|---------|
+| Attestor is in `get_slashers()` at call time | Attestation accepted |
+| Attestor was removed via `remove_slasher` before this call | `SlashError::Unauthorized` |
+| Attestor was removed *after* a prior attestation was accepted | Prior attestation remains valid; future calls rejected |
+
+Removal is **prospective only**: it blocks future attestations but does not
+retroactively invalidate ones that were accepted while the address was authorised.
+Attestations in `record.attestors` that were recorded before removal continue to
+count toward quorum at `execute_slash` time.
+
+### Re-added slasher functionality
+
+A slasher that has gone through an add/remove/re-add cycle is immediately
+functional after the final `add_slasher` call:
+
+- It may call `slash_with_evidence` (bypasses quorum, on-chain evidence path).
+- It may call `attest_slash` as the first attestor (creates a new slash record).
+- It may call `attest_slash` as a countersignatory on an existing `Pending` record.
+- Its attestations count toward the quorum required by `execute_slash`.
+
+There is no cooldown or grace period after a re-add.
+
+### Security considerations
+
+1. **Duplicate injection attack**: An attacker with admin access who calls
+   `add_slasher(A)` twice cannot inject A into the list twice and thereby make a
+   single compromised attestation count as two signatures toward quorum.  The
+   dedup guard prevents this.
+
+2. **Rotation safety**: Removing a slasher while a slash is in progress does not
+   retroactively drop its earlier attestations (forward-only removal model).
+   An admin cannot silently kill a legitimate slash by removing an attesting
+   slasher after quorum is reached.
+
+3. **Empty-set state**: All slashers may be removed (set size = 0).  In this
+   state `slash_with_evidence` and `attest_slash` will always return
+   `SlashError::Unauthorized`.  This is an operational edge case; ensure at least
+   one trusted slasher is always present.
+
+---
+
 ## Slash Lifecycle
 
 ```
@@ -268,6 +381,20 @@ The test suite covers:
   - `test_execute_slash_rejects_storage_corrupted_evidence_hash` — defense-in-depth: storage corruption that diverges the stored `evidence_hash` from the map key triggers `EvidenceHashMismatch`
   - `test_attest_slash_countersign_rejects_mismatched_evidence_hash` — countersign path rejects a corrupted record whose stored `evidence_hash` diverges from the submitted hash
   - `test_attest_slash_countersign_matching_hash_succeeds` — countersign with matching hash succeeds under normal operation
+- **Slasher-set deduplication (issue #937)**:
+  - `test_add_remove_readd_no_duplicate_entry` — the core invariant: add/remove/re-add leaves exactly one entry for the address
+  - `test_multiple_add_remove_readd_cycles_no_duplicate` — 5 consecutive cycles never produce duplicates
+  - `test_add_slasher_idempotent_multiple_calls` — calling `add_slasher` N times yields exactly one entry
+  - `test_add_existing_slasher_is_noop` — re-adding a slasher that is already present is a no-op
+  - `test_remove_nonexistent_slasher_is_noop` — removing an address not in the set is a no-op (no error)
+  - `test_remove_slasher_twice_is_idempotent` — double-removal is idempotent
+  - `test_slasher_set_size_invariant` — set length always equals the number of unique active slashers through add/remove/re-add sequences
+  - `test_quorum_unaffected_by_add_remove_readd_cycle` — `get_quorum()` returns the same value before and after any cycle
+  - `test_quorum_enforcement_after_readd_cycle` — quorum is correctly enforced (not changed) after a re-add cycle; one sig still insufficient, two sigs still sufficient
+  - `test_readded_slasher_can_attest_and_contributes_to_quorum` — a re-added slasher is immediately functional: its attestations are accepted and count toward quorum
+  - `test_peer_slashers_unaffected_by_cycle_on_different_address` — add/remove/re-add on address A does not corrupt entries for B, C, D
+  - `test_remove_all_then_readd_all_no_duplicates` — removing all slashers and re-adding them restores the full set without duplicates
+  - `test_readded_slasher_can_use_slash_with_evidence` — a re-added slasher can initiate evidence-based slashes normally
 
 ---
 
