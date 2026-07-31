@@ -12,22 +12,40 @@
 **File:** `.github/workflows/contracts.yml`  
 **Triggers:** push and pull_request to `main`
 
-The workflow runs a single job (`contracts`) on `ubuntu-latest` with the
-following steps, in order:
+The workflow runs three jobs. The `lint` job checks formatting, builds the
+workspace, and runs all workspace tests. The `coverage` job uses a build
+matrix to generate and enforce line-coverage thresholds per contract crate.
+
+### Job: `list-crates`
+
+Discovers all contract crates via `cargo metadata` and exposes a JSON matrix
+for the downstream `coverage` job.
+
+### Job: `lint`
 
 | Step | Command | Working directory |
-|---|---|---|---|
-| 1. Install Rust (stable + rustfmt + llvm-tools-preview) | _managed by `dtolnay/rust-toolchain@stable`_ | — |
+|---|---|---|
+| 1. Install Rust (stable + rustfmt) | _managed by `dtolnay/rust-toolchain@stable`_ | — |
+| 2. Cache Cargo registry | _managed by `Swatinem/rust-cache@v2`_ | — |
+| 3. Check formatting | `cargo fmt --all -- --check` | `onchain/` |
+| 4. Build workspace | `cargo build --workspace --verbose` | `onchain/` |
+| 5. Test workspace | `cargo test --workspace --verbose` | `onchain/` |
+
+Steps 1-2 are handled automatically. Steps 3-5 are checks contributors must
+pass.
+
+### Job: `coverage` (matrix)
+
+| Step | Command | Working directory |
+|---|---|---|
+| 1. Install Rust (stable + llvm-tools-preview) | _managed by `dtolnay/rust-toolchain@stable`_ | — |
 | 2. Install `cargo-llvm-cov` | _managed by `taiki-e/install-action@v2`_ | — |
 | 3. Cache Cargo registry | _managed by `Swatinem/rust-cache@v2`_ | — |
-| 4. Check formatting | `cargo fmt --all -- --check` | `onchain/` |
-| 5. Build workspace | `cargo build --workspace --verbose` | `onchain/` |
-| 6. Test workspace | `cargo test --workspace --verbose` | `onchain/` |
-| 7. Generate coverage | `cargo llvm-cov --workspace --exclude integration_tests --json` | `onchain/` |
-| 8. Enforce coverage gate | Python script checks each contract crate ≥ 95 % line coverage | `onchain/` |
+| 4. Generate coverage per crate | `cargo llvm-cov -p <crate> --json` | `onchain/` |
+| 5. Enforce 95% gate | `.github/scripts/check_coverage.py --crate <name>` parses JSON and fails if below threshold | `onchain/` |
 
-Steps 1–3 are handled automatically by GitHub Actions and have no equivalent
-local command. Steps 4–8 are the checks contributors must pass.
+Each crate in `contracts/` runs in its own matrix entry. If any crate's line
+coverage is below 95%, its matrix entry fails, which fails the overall job.
 
 ---
 
@@ -49,79 +67,37 @@ Run the same checks CI executes, in the same order, before opening a PR.
 ```bash
 cd onchain
 
-# 1. Formatting — must produce no diff
+# 1. Formatting - must produce no diff
 cargo fmt --all -- --check
 
-# 2. Build — all workspace crates must compile
+# 2. Build - all workspace crates must compile
 cargo build --workspace --verbose
 
-# 3. Tests — all workspace tests must pass
+# 3. Tests - all workspace tests must pass
 cargo test --workspace --verbose
 
-# 4. Coverage — generate JSON report for all contract crates
+# 4. Coverage gate per crate - repeat for each contract crate
+cargo llvm-cov -p <crate> --json --output-path coverage.json
+python3 ../.github/scripts/check_coverage.py coverage.json
+```
+
+To check all crates at once (faster locally), run workspace coverage and
+validate with the same script:
+
+```bash
 cargo llvm-cov --workspace --exclude integration_tests --json --output-path coverage.json
+python3 ../.github/scripts/check_coverage.py coverage.json
 ```
 
 ### Coverage gate
 
-After generating coverage data, each contract crate under `contracts/` must
-have at least **95 % line coverage**. CI enforces this automatically by
-parsing `coverage.json` and failing the build if any crate falls below the
-threshold.
-
-To check coverage locally after step 4:
-
-```bash
-python3 -c "
-import json, re
-
-with open('onchain/coverage.json') as f:
-    data = json.load(f)
-
-crates = {}
-for file_data in data['data'][0]['files']:
-    filename = file_data.get('filename', '')
-    m = re.search(r'/contracts/([^/]+)/', filename.replace('\\\\', '/'))
-    if not m:
-        continue
-    crate = m.group(1)
-    lines = file_data.get('summary', {}).get('lines', {})
-    total = lines.get('count', 0)
-    covered = lines.get('covered', 0)
-    if total == 0:
-        continue
-    if crate not in crates:
-        crates[crate] = {'lines': 0, 'covered': 0}
-    crates[crate]['lines'] += total
-    crates[crate]['covered'] += covered
-
-ok = True
-for crate in sorted(crates):
-    info = crates[crate]
-    pct = (info['covered'] / info['lines']) * 100
-    status = 'PASS' if pct >= 95 else 'FAIL'
-    print(f'  {status}: {crate}: {pct:.2f}%')
-    if pct < 95:
-        ok = False
-
-if not ok:
-    exit(1)
-"
-```
-
-**Note:** Running `cargo llvm-cov` gathers coverage for *every* test in the
-workspace (excluding `integration_tests`), so you only need the single
-`--workspace` invocation rather than per-crate runs.
-
-For CLI-specific regression coverage around the verify subcommand, also run:
-
-```bash
-cargo test --manifest-path tools/cli/Cargo.toml
-```
-
-This explicitly exercises the tampered-WASM and matching-WASM verification paths so the CLI remains secure even when a rebuilt artifact is mutated by a single byte.
-
-All commands above must exit with code `0` for a PR to be mergeable.
+Each contract crate under `contracts/` must have at least **95% line
+coverage**. CI enforces this via a build matrix: every crate gets its own
+`cargo llvm-cov -p <crate>` invocation followed by
+`.github/scripts/check_coverage.py --crate <name>`, which parses
+`coverage.json` and exits non-zero if the crate's coverage falls below the
+threshold. Pure-interface crates with no executable lines (e.g.
+`rbac-interface`, `milestone-interface`) pass automatically.
 
 ### Fixing common failures
 
@@ -152,6 +128,19 @@ rustup update stable
 Test output is printed with `--verbose`. Read the failure message and fix
 the broken test or the code under test.
 
+**Coverage failure**
+
+If the coverage gate fails, generate the report locally and check which
+crates are below 95%:
+
+```bash
+cd onchain
+cargo llvm-cov --workspace --exclude integration_tests --json --output-path coverage.json
+python3 ../.github/scripts/check_coverage.py coverage.json
+```
+
+Add or improve tests for the failing crate(s) until the threshold is met.
+
 ---
 
 ## What CI does not check
@@ -159,10 +148,11 @@ the broken test or the code under test.
 The following are **not** part of the automated CI pipeline and are therefore
 not required to pass before merging:
 
-- `cargo clippy` — linting is not enforced by the workflow.
-- WASM contract builds — `stellar contract build` is not run by CI.
-- Per-package test runs — CI uses `--workspace`; there are no per-crate steps.
-- `tools/doc_checker` — the documentation linter (undocumented public
+- `cargo clippy` - linting is not enforced by the workflow.
+- WASM contract builds - `stellar contract build` is not run by CI.
+- Per-package test runs beyond coverage - CI uses `--workspace` for testing;
+  per-crate steps exist only for coverage measurement.
+- `tools/doc_checker` - the documentation linter (undocumented public
   functions, undocumented error-enum variants, and orphaned `docs/*.md`
   files) is a standalone tool contributors can run manually; it is not
   wired into `.github/workflows/contracts.yml`. See
