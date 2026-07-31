@@ -45,6 +45,7 @@ fn template_version_lifecycle() {
         .try_publish_template_version(
             &employer,
             &tid,
+            &1,
             &h1,
             &String::from_str(&env, "v1 notes"),
             &false,
@@ -58,6 +59,7 @@ fn template_version_lifecycle() {
         .try_publish_template_version(
             &employer,
             &tid,
+            &2,
             &h2,
             &String::from_str(&env, "v2 breaking: added tax fields"),
             &false,
@@ -129,7 +131,7 @@ fn non_owner_cannot_publish() {
 
     let h = BytesN::from_array(&env, &[9u8; 32]);
     assert!(client
-        .try_publish_template_version(&attacker, &tid, &h, &String::from_str(&env, "x"), &false,)
+        .try_publish_template_version(&attacker, &tid, &1, &h, &String::from_str(&env, "x"), &false,)
         .is_err());
 }
 
@@ -159,6 +161,7 @@ fn deprecate_version_emits_event() {
         .try_publish_template_version(
             &owner,
             &tid,
+            &1,
             &hash,
             &String::from_str(&env, "initial"),
             &false,
@@ -213,6 +216,7 @@ fn deprecate_already_deprecated_emits_event() {
         .try_publish_template_version(
             &owner,
             &tid,
+            &1,
             &hash,
             &String::from_str(&env, "notes"),
             &false,
@@ -285,7 +289,7 @@ fn deprecate_with_reason_is_stored_and_readable() {
 
     let hash = BytesN::from_array(&env, &[11u8; 32]);
     let ver = client
-        .try_publish_template_version(&owner, &tid, &hash, &String::from_str(&env, "v1"), &false)
+        .try_publish_template_version(&owner, &tid, &1, &hash, &String::from_str(&env, "v1"), &false)
         .unwrap()
         .unwrap();
 
@@ -335,7 +339,7 @@ fn deprecate_without_reason_still_works() {
 
     let hash = BytesN::from_array(&env, &[12u8; 32]);
     let ver = client
-        .try_publish_template_version(&owner, &tid, &hash, &String::from_str(&env, "v1"), &false)
+        .try_publish_template_version(&owner, &tid, &1, &hash, &String::from_str(&env, "v1"), &false)
         .unwrap()
         .unwrap();
 
@@ -380,7 +384,7 @@ fn non_owner_cannot_deprecate() {
 
     let hash = BytesN::from_array(&env, &[5u8; 32]);
     let ver = client
-        .try_publish_template_version(&owner, &tid, &hash, &String::from_str(&env, "v1"), &false)
+        .try_publish_template_version(&owner, &tid, &1, &hash, &String::from_str(&env, "v1"), &false)
         .unwrap()
         .unwrap();
 
@@ -424,6 +428,7 @@ fn test_register_template_rejects_collision_with_active_template() {
     client.publish_template_version(
         &owner_a,
         &tid_a,
+        &1,
         &BytesN::from_array(&env, &[1u8; 32]),
         &String::from_str(&env, "v1"),
         &false, // not deprecated
@@ -464,6 +469,7 @@ fn test_register_template_allowed_after_all_versions_deprecated() {
     let ver = client.publish_template_version(
         &owner_a,
         &tid_a,
+        &1,
         &BytesN::from_array(&env, &[1u8; 32]),
         &String::from_str(&env, "v1"),
         &false,
@@ -516,6 +522,7 @@ fn test_register_template_rejects_when_earlier_version_not_deprecated() {
     let _v1 = client.publish_template_version(
         &owner,
         &tid,
+        &1,
         &BytesN::from_array(&env, &[1u8; 32]),
         &String::from_str(&env, "v1"),
         &false,
@@ -523,6 +530,7 @@ fn test_register_template_rejects_when_earlier_version_not_deprecated() {
     let v2 = client.publish_template_version(
         &owner,
         &tid,
+        &2,
         &BytesN::from_array(&env, &[2u8; 32]),
         &String::from_str(&env, "v2"),
         &false,
@@ -621,6 +629,7 @@ fn new_agreement_uses_latest_version_after_publish() {
         .try_publish_template_version(
             &owner,
             &tid,
+            &1,
             &h1,
             &String::from_str(&env, "v1 initial"),
             &false,
@@ -665,6 +674,7 @@ fn test_register_template_collision_after_reuse() {
     let va = client.publish_template_version(
         &owner,
         &tid_a,
+        &1,
         &BytesN::from_array(&env, &[1u8; 32]),
         &String::from_str(&env, "v1"),
         &false,
@@ -676,6 +686,7 @@ fn test_register_template_collision_after_reuse() {
     client.publish_template_version(
         &owner,
         &tid_b,
+        &1,
         &BytesN::from_array(&env, &[2u8; 32]),
         &String::from_str(&env, "v1"),
         &false,
@@ -719,6 +730,7 @@ fn create_agreement_rejects_nonexistent_version() {
         .try_publish_template_version(
             &owner,
             &tid,
+            &1,
             &hash,
             &String::from_str(&env, "v1"),
             &false,
@@ -773,6 +785,7 @@ fn create_agreement_rejects_wrong_template_id() {
         .try_publish_template_version(
             &owner,
             &tid,
+            &1,
             &hash,
             &String::from_str(&env, "v1"),
             &false,
@@ -816,6 +829,7 @@ fn create_agreement_rejects_empty_label() {
         .try_publish_template_version(
             &owner,
             &tid,
+            &1,
             &hash,
             &String::from_str(&env, "v1"),
             &false,
@@ -859,6 +873,7 @@ fn create_agreement_rejects_deprecated_version() {
         .try_publish_template_version(
             &owner,
             &tid,
+            &1,
             &hash,
             &String::from_str(&env, "v1"),
             &false,
@@ -915,6 +930,7 @@ fn create_agreement_succeeds_with_conformant_parameters() {
         .try_publish_template_version(
             &owner,
             &tid,
+            &1,
             &hash,
             &String::from_str(&env, "v1 stable"),
             &false,
@@ -971,7 +987,7 @@ fn deprecated_template_remains_listable_not_creatable_and_preserves_existing_agr
     let schema_hash = BytesN::from_array(&env, &[0xAB; 32]);
     let notes = String::from_str(&env, "Original payroll schema");
     let version = client
-        .try_publish_template_version(&owner, &template_id, &schema_hash, &notes, &false)
+        .try_publish_template_version(&owner, &template_id, &1, &schema_hash, &notes, &false)
         .unwrap()
         .unwrap();
 
@@ -1033,4 +1049,174 @@ fn deprecated_template_remains_listable_not_creatable_and_preserves_existing_agr
         .unwrap()
         .unwrap();
     assert_eq!(historical_version, retired);
+}
+
+/// Enforces strictly-increasing version numbers: attempting to publish duplicate version N
+/// or lower version < N is rejected with VersioningError::InvalidData.
+#[test]
+fn test_publish_template_version_rejects_duplicate_or_out_of_order_version() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Strict Versioning Test"))
+        .unwrap()
+        .unwrap();
+
+    let hash1 = BytesN::from_array(&env, &[0x11; 32]);
+    let hash2 = BytesN::from_array(&env, &[0x22; 32]);
+
+    // 1. Publish version 1 (succeeds)
+    let v1 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &1,
+            &hash1,
+            &String::from_str(&env, "v1 initial"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v1, 1);
+    assert_eq!(client.latest_version(&tid).unwrap(), 1);
+
+    // 2. Attempt to publish version 1 again (duplicate) -> rejected with InvalidData
+    let res_dup = client.try_publish_template_version(
+        &owner,
+        &tid,
+        &1,
+        &hash2,
+        &String::from_str(&env, "duplicate v1"),
+        &false,
+    );
+    assert_eq!(res_dup, Err(Ok(VersioningError::InvalidData)));
+
+    // 3. Attempt to publish version 0 (less than 1) -> rejected with InvalidData
+    let res_zero = client.try_publish_template_version(
+        &owner,
+        &tid,
+        &0,
+        &hash2,
+        &String::from_str(&env, "v0 invalid"),
+        &false,
+    );
+    assert_eq!(res_zero, Err(Ok(VersioningError::InvalidData)));
+
+    // 4. Publish version 2 (succeeds)
+    let v2 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &2,
+            &hash2,
+            &String::from_str(&env, "v2 update"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v2, 2);
+    assert_eq!(client.latest_version(&tid).unwrap(), 2);
+
+    // 5. Attempt to publish version 1 after version 2 (out-of-order / lower) -> rejected with InvalidData
+    let res_lower = client.try_publish_template_version(
+        &owner,
+        &tid,
+        &1,
+        &hash1,
+        &String::from_str(&env, "re-publish old v1"),
+        &false,
+    );
+    assert_eq!(res_lower, Err(Ok(VersioningError::InvalidData)));
+
+    // 6. Attempt to publish version 2 again (duplicate of latest) -> rejected with InvalidData
+    let res_dup2 = client.try_publish_template_version(
+        &owner,
+        &tid,
+        &2,
+        &hash2,
+        &String::from_str(&env, "duplicate v2"),
+        &false,
+    );
+    assert_eq!(res_dup2, Err(Ok(VersioningError::InvalidData)));
+}
+
+/// Publishing strictly-increasing version N+1 after N succeeds and latest_version reflects it.
+#[test]
+fn test_publish_template_version_strictly_increasing_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    let tid = client
+        .try_register_template(&owner, &String::from_str(&env, "Sequential Versioning Test"))
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(client.latest_version(&tid).unwrap(), 0);
+
+    // Publish version 1
+    let hash1 = BytesN::from_array(&env, &[0x01; 32]);
+    let v1 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &1,
+            &hash1,
+            &String::from_str(&env, "v1"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v1, 1);
+    assert_eq!(client.latest_version(&tid).unwrap(), 1);
+
+    // Publish version 2 (N+1)
+    let hash2 = BytesN::from_array(&env, &[0x02; 32]);
+    let v2 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &2,
+            &hash2,
+            &String::from_str(&env, "v2"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v2, 2);
+    assert_eq!(client.latest_version(&tid).unwrap(), 2);
+
+    // Publish version 3 (N+1)
+    let hash3 = BytesN::from_array(&env, &[0x03; 32]);
+    let v3 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &3,
+            &hash3,
+            &String::from_str(&env, "v3"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v3, 3);
+    assert_eq!(client.latest_version(&tid).unwrap(), 3);
 }
