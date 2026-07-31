@@ -14,5 +14,93 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: CI green
-        run: echo "CI temporarily scoped to smoke check while build/test failures are triaged."
+
+      - name: Install Rust (stable + rustfmt + llvm-tools-preview)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Cache Cargo registry
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "onchain"
+
+      - name: Check formatting
+        working-directory: onchain
+        run: cargo fmt --all -- --check
+
+      - name: Build workspace
+        working-directory: onchain
+        run: cargo build --workspace --verbose
+
+      - name: Test workspace
+        working-directory: onchain
+        run: cargo test --workspace --verbose
+
+      - name: Generate per-crate coverage data
+        working-directory: onchain
+        run: cargo llvm-cov --workspace --exclude integration_tests --json --output-path coverage.json
+
+      - name: Enforce per-crate 95% line coverage threshold
+        working-directory: onchain
+        run: |
+          python3 -c "
+          import json, re, sys
+
+          with open('coverage.json') as f:
+              data = json.load(f)
+
+          crates = {}
+          files_seen = 0
+          for entry in data.get('data', [{}])[0].get('files', []):
+              filename = entry.get('filename', '')
+              norm = filename.replace('\\\\', '/')
+              m = re.search('/contracts/([^/]+)/', norm)
+              if not m:
+                  continue
+              crate = m.group(1)
+              summary = entry.get('summary', {})
+              lines = summary.get('lines', {})
+              total = lines.get('count', 0)
+              covered = lines.get('covered', 0)
+              if total == 0:
+                  continue
+              crates.setdefault(crate, {'lines': 0, 'covered': 0})
+              crates[crate]['lines'] += total
+              crates[crate]['covered'] += covered
+              files_seen += 1
+
+          if files_seen == 0:
+              print('ERROR: No contract source files found in coverage data.')
+              sys.exit(1)
+
+          failures = []
+          sep = '=' * 60
+          print(f'\\n{sep}')
+          print('  Per-crate line coverage report (threshold: 95%)')
+          print(sep)
+          for crate in sorted(crates):
+              info = crates[crate]
+              total = info['lines']
+              covered = info['covered']
+              pct = (covered / total) * 100.0
+              mark = 'PASS' if pct >= 95.0 else 'FAIL'
+              print(f'  [{mark}] {crate}: {pct:.2f}% ({covered}/{total})')
+              if pct < 95.0:
+                  failures.append(f'{crate}: {pct:.2f}%')
+
+          print(sep)
+          passes = len(crates) - len(failures)
+          if failures:
+              for f in failures:
+                  print(f'  FAILED: {f}')
+              sys.exit(1)
+          else:
+              print(f'  All {passes} crate(s) meet the 95% line coverage threshold.')
+              print(sep)
+          "
