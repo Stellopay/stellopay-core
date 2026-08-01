@@ -22,6 +22,7 @@ enum StorageKey {
     /// outright rather than writing `false`, so a removed rule leaves nothing
     /// behind that a later read could mistake for an active rule.
     BlockedAction(PayrollAction),
+    RulePriority(TraceRule),
 }
 
 /// Payroll agreement lifecycle statuses mirrored from main payroll flows.
@@ -234,7 +235,7 @@ impl ComplianceCheckerContract {
             let entry = match rule {
                 TraceRule::EmergencyPause => Self::evaluate_emergency_pause(&env),
                 TraceRule::AuxiliaryNotAllowed => {
-                    Self::evaluate_auxiliary_not_allowed(&env, &actor, &executor)
+                    Self::evaluate_auxiliary_not_allowed(&env, &action, &actor, &executor)
                 }
                 TraceRule::TerminalState => Self::evaluate_terminal_state(&current_state),
                 TraceRule::InvalidCurrentState => {
@@ -243,9 +244,12 @@ impl ComplianceCheckerContract {
                 TraceRule::InvalidTargetState => {
                     Self::evaluate_invalid_target_state(&action, &current_state, &target_state)
                 }
-                TraceRule::GracePeriodRequired => {
-                    Self::evaluate_grace_period_required(&action, &current_state, grace_period_active)
-                }
+                TraceRule::GracePeriodRequired => Self::evaluate_grace_period_required(
+                    &action,
+                    &current_state,
+                    grace_period_active,
+                ),
+                TraceRule::ActionBlocked => Self::evaluate_action_blocked(&env, &action),
             };
 
             if let Some(entry) = entry {
@@ -289,115 +293,116 @@ impl ComplianceCheckerContract {
 
     fn evaluate_auxiliary_not_allowed(
         env: &Env,
+        action: &PayrollAction,
         actor: &Address,
         executor: &Address,
     ) -> Option<TraceEntry> {
-        if executor == actor {
-            return None;
-        }
-
-        // 2. Registered action-blocking rule check.
-        //
-        // Read fresh from persistent storage on every evaluation. A trace entry
-        // is emitted only when a rule is actually registered for this action —
-        // consistent with the auxiliary and grace-period rules, which likewise
-        // trace only when they apply. Once `remove_rule` deletes the entry this
-        // read returns false and the rule stops contributing to the decision.
         let is_blocked = env
             .storage()
             .persistent()
-            .get::<_, bool>(&StorageKey::BlockedAction(action))
+            .get::<_, bool>(&StorageKey::BlockedAction(action.clone()))
             .unwrap_or(false);
 
         if is_blocked {
-            traces.push_back(TraceEntry {
+            return Some(TraceEntry {
                 rule: TraceRule::ActionBlocked,
                 result: Decision::Deny,
                 reason: ReasonCode::ActionBlocked,
             });
-            return Self::make_decision(Decision::Deny, ReasonCode::ActionBlocked, traces);
         }
 
-        // 3. Auxiliary Not Allowed check
-        if executor != actor {
-            let is_allowed = Self::is_auxiliary_allowed(env.clone(), executor);
-            let aux_result = if is_allowed {
-                Decision::Allow
-            } else {
-                Decision::Deny
-            },
-            reason: if is_allowed {
-                ReasonCode::Allowed
-            } else {
-                ReasonCode::AuxiliaryNotAllowed
-            },
+        if executor == actor {
+            return Some(TraceEntry {
+                rule: TraceRule::AuxiliaryNotAllowed,
+                result: Decision::Allow,
+                reason: ReasonCode::Allowed,
+            });
+        }
+
+        let is_allowed = Self::is_auxiliary_allowed(env.clone(), executor.clone());
+        let result = if is_allowed {
+            Decision::Allow
+        } else {
+            Decision::Deny
+        };
+        let reason = if is_allowed {
+            ReasonCode::Allowed
+        } else {
+            ReasonCode::AuxiliaryNotAllowed
+        };
+
+        Some(TraceEntry {
+            rule: TraceRule::AuxiliaryNotAllowed,
+            result,
+            reason,
         })
     }
 
-        // 4. Terminal State check
-        let is_terminal = current_state == AgreementStatus::Completed;
-        let terminal_result = if is_terminal {
+    fn evaluate_terminal_state(current_state: &AgreementStatus) -> Option<TraceEntry> {
+        let is_terminal = *current_state == AgreementStatus::Completed;
+        let result = if is_terminal {
             Decision::Deny
         } else {
             Decision::Allow
         };
-        traces.push_back(TraceEntry {
+        let reason = if is_terminal {
+            ReasonCode::TerminalState
+        } else {
+            ReasonCode::Allowed
+        };
+
+        Some(TraceEntry {
             rule: TraceRule::TerminalState,
-            result: if is_terminal {
-                Decision::Deny
-            } else {
-                Decision::Allow
-            },
-            reason: if is_terminal {
-                ReasonCode::TerminalState
-            } else {
-                ReasonCode::Allowed
-            },
+            result,
+            reason,
         })
     }
 
-        // 5. Invalid Current State check
-        let is_current_valid = Self::is_action_allowed_from_state(action, current_state);
-        let current_valid_result = if is_current_valid {
+    fn evaluate_invalid_current_state(
+        action: &PayrollAction,
+        current_state: &AgreementStatus,
+    ) -> Option<TraceEntry> {
+        let is_valid = Self::is_action_allowed_from_state(*action, *current_state);
+        let result = if is_valid {
             Decision::Allow
         } else {
             Decision::Deny
         };
-        traces.push_back(TraceEntry {
+        let reason = if is_valid {
+            ReasonCode::Allowed
+        } else {
+            ReasonCode::InvalidCurrentState
+        };
+
+        Some(TraceEntry {
             rule: TraceRule::InvalidCurrentState,
-            result: if is_valid {
-                Decision::Allow
-            } else {
-                Decision::Deny
-            },
-            reason: if is_valid {
-                ReasonCode::Allowed
-            } else {
-                ReasonCode::InvalidCurrentState
-            },
+            result,
+            reason,
         })
     }
 
-        // 6. Invalid Target State check
-        let expected_target = Self::expected_target_state(action, current_state);
-        let is_target_valid = target_state == expected_target;
-        let target_valid_result = if is_target_valid {
+    fn evaluate_invalid_target_state(
+        action: &PayrollAction,
+        current_state: &AgreementStatus,
+        target_state: &AgreementStatus,
+    ) -> Option<TraceEntry> {
+        let expected_target = Self::expected_target_state(*action, *current_state);
+        let is_valid = *target_state == expected_target;
+        let result = if is_valid {
             Decision::Allow
         } else {
             Decision::Deny
         };
-        traces.push_back(TraceEntry {
+        let reason = if is_valid {
+            ReasonCode::Allowed
+        } else {
+            ReasonCode::InvalidTargetState
+        };
+
+        Some(TraceEntry {
             rule: TraceRule::InvalidTargetState,
-            result: if is_valid {
-                Decision::Allow
-            } else {
-                Decision::Deny
-            },
-            reason: if is_valid {
-                ReasonCode::Allowed
-            } else {
-                ReasonCode::InvalidTargetState
-            },
+            result,
+            reason,
         })
     }
 
@@ -406,29 +411,61 @@ impl ComplianceCheckerContract {
         current_state: &AgreementStatus,
         grace_period_active: bool,
     ) -> Option<TraceEntry> {
-        let is_claim_action = *action == PayrollAction::ClaimPayroll
-            || *action == PayrollAction::ClaimTimeBased
-            || *action == PayrollAction::ClaimMilestone;
+        let is_claim_action = matches!(
+            action,
+            PayrollAction::ClaimPayroll
+                | PayrollAction::ClaimTimeBased
+                | PayrollAction::ClaimMilestone
+        );
 
         if !is_claim_action || *current_state != AgreementStatus::Cancelled {
             return None;
         }
 
-        // 7. Grace Period Required check
-        let is_claim_action = action == PayrollAction::ClaimPayroll
-            || action == PayrollAction::ClaimTimeBased
-            || action == PayrollAction::ClaimMilestone;
-        if is_claim_action && current_state == AgreementStatus::Cancelled {
-            let grace_result = if grace_period_active {
-                Decision::Allow
-            } else {
-                Decision::Deny
-            },
-            reason: if grace_period_active {
-                ReasonCode::Allowed
-            } else {
-                ReasonCode::GracePeriodRequired
-            },
+        let result = if grace_period_active {
+            Decision::Allow
+        } else {
+            Decision::Deny
+        };
+        let reason = if grace_period_active {
+            ReasonCode::Allowed
+        } else {
+            ReasonCode::GracePeriodRequired
+        };
+
+        Some(TraceEntry {
+            rule: TraceRule::GracePeriodRequired,
+            result,
+            reason,
+        })
+    }
+
+    // -------------------------------------------------------------------------
+    // Action-blocked evaluation
+    // -------------------------------------------------------------------------
+
+    fn evaluate_action_blocked(env: &Env, action: &PayrollAction) -> Option<TraceEntry> {
+        let is_blocked = env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&StorageKey::BlockedAction(action.clone()))
+            .unwrap_or(false);
+
+        let result = if is_blocked {
+            Decision::Deny
+        } else {
+            Decision::Allow
+        };
+        let reason = if is_blocked {
+            ReasonCode::ActionBlocked
+        } else {
+            ReasonCode::Allowed
+        };
+
+        Some(TraceEntry {
+            rule: TraceRule::ActionBlocked,
+            result,
+            reason,
         })
     }
 
@@ -444,6 +481,7 @@ impl ComplianceCheckerContract {
             TraceRule::InvalidCurrentState => 3,
             TraceRule::InvalidTargetState => 4,
             TraceRule::GracePeriodRequired => 5,
+            TraceRule::ActionBlocked => 6,
         }
     }
 

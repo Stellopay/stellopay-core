@@ -82,7 +82,9 @@
 pub mod storage;
 pub mod types;
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, token, Address, Env, IntoVal, Symbol, Val, Vec,
+};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 use types::{
@@ -194,29 +196,6 @@ pub struct DisputeSlaViolationAdvancedEvent {
     pub agreement_id: u128,
     pub level: EscalationLevel,
     pub keeper: Address,
-    pub breached_at: u64,
-    pub review_deadline: u64,
-}
-
-/// Emitted alongside [`DisputeSlaBreachedEvent`] when a keeper calls
-/// `keeper_advance_stage` after an SLA deadline has elapsed.
-///
-/// This event carries the same data under a more descriptive topic
-/// (`sla_violation_advanced`).  Downstream indexers and payroll contracts
-/// should prefer this event; `dispute_sla_breached` is retained for
-/// backward compatibility with existing integrations.
-///
-/// # Fields
-/// * `agreement_id`   — identifies the dispute.
-/// * `level`          — escalation level at which the SLA was breached.
-/// * `breached_at`    — ledger timestamp at which the advance was triggered.
-/// * `review_deadline`— timestamp by which the admin must act before the
-///   dispute can be expired via `expire_dispute`.
-#[contracttype]
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DisputeSlaViolationAdvancedEvent {
-    pub agreement_id: u128,
-    pub level: EscalationLevel,
     pub breached_at: u64,
     pub review_deadline: u64,
 }
@@ -544,6 +523,7 @@ impl DisputeEscalationContract {
             DisputeSlaBreachedEvent {
                 agreement_id,
                 level: dispute.level.clone(),
+                keeper: caller.clone(),
                 breached_at: now,
                 review_deadline,
             },
@@ -555,7 +535,7 @@ impl DisputeEscalationContract {
             DisputeSlaViolationAdvancedEvent {
                 agreement_id,
                 level: dispute.level,
-                keeper: caller,
+                keeper: caller.clone(),
                 breached_at: now,
                 review_deadline,
             },

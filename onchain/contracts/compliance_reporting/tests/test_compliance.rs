@@ -472,19 +472,16 @@ fn test_pause_read_write_asymmetry() {
     );
 
     // ── Phase 5: final reads confirm all data is intact (re-pause optional) ─
-    let final_report =
-        client.get_withholding_records(&employer, &employee, &0, &9999, &None, &100);
+    let final_report = client.get_withholding_records(&employer, &employee, &0, &9999, &None, &100);
     assert_eq!(
         final_report.record_count, 3,
         "all three records must be readable after unpause cycle"
     );
     assert_eq!(
-        final_report.total_amount,
-        1000,
+        final_report.total_amount, 1000,
         "total must include all three records"
     );
 }
-
 
 #[test]
 fn test_log_record_employer_as_publisher() {
@@ -1778,9 +1775,21 @@ fn test_generate_report_large_history_returns_all_matching_records() {
 
     let report = client.generate_report(&employer, &employee, &1000, &end_date);
 
-    assert_eq!(report.record_count, record_count, "large employer histories must not be truncated");
-    assert_eq!(report.records.len(), record_count as u32, "every matching record must be returned");
-    assert_eq!(report.total_amount, 100u128 as i128 * u128::from(record_count) as i128 + (1..=record_count).sum::<u32>() as i128, "total amount must include every matching record");
+    assert_eq!(
+        report.record_count, record_count,
+        "large employer histories must not be truncated"
+    );
+    assert_eq!(
+        report.records.len(),
+        record_count as u32,
+        "every matching record must be returned"
+    );
+    assert_eq!(
+        report.total_amount,
+        100u128 as i128 * u128::from(record_count) as i128
+            + (1..=record_count).sum::<u32>() as i128,
+        "total amount must include every matching record"
+    );
 }
 
 /// Verifies that generate_report only includes records within the
@@ -1915,13 +1924,16 @@ fn test_generate_report_multi_employer_isolation() {
     );
     // ensure no cross-contamination in the returned records array
     for record in report_a.records.iter() {
-        assert_eq!(record.employer, employer_a, "employer A report contains non-A record");
+        assert_eq!(
+            record.employer, employer_a,
+            "employer A report contains non-A record"
+        );
     }
 
     // employer_b's totals must not include employer_a's records.
     assert_eq!(report_b.employer, employer_b);
     assert_eq!(
-        report_b.total_amount, 600, 
+        report_b.total_amount, 600,
         "employer_b total must be exactly 200+400"
     );
     assert_eq!(
@@ -1929,7 +1941,10 @@ fn test_generate_report_multi_employer_isolation() {
         "employer_b must have exactly 2 records"
     );
     for record in report_b.records.iter() {
-        assert_eq!(record.employer, employer_b, "employer B report contains non-B record");
+        assert_eq!(
+            record.employer, employer_b,
+            "employer B report contains non-B record"
+        );
     }
 }
 

@@ -777,18 +777,17 @@ impl DataKey {
 // PayrollError discriminant stability test
 // ============================================================================
 
+/// Marks an agreement's grace period as finalized.
+pub fn set_agreement_grace_period_finalized(env: &Env, agreement_id: u128) {
+    let key = DataKey::AgreementGracePeriodFinalized(agreement_id);
+    env.storage().persistent().set(&key, &());
+}
 
-    /// Marks an agreement's grace period as finalized.
-    pub fn set_agreement_grace_period_finalized(env: &Env, agreement_id: u128) {
-        let key = DataKey::AgreementGracePeriodFinalized(agreement_id);
-        env.storage().persistent().set(&key, &());
-    }
-
-    /// Returns `true` if the agreement's grace period has been finalized.
-    pub fn is_agreement_grace_period_finalized(env: &Env, agreement_id: u128) -> bool {
-        let key = DataKey::AgreementGracePeriodFinalized(agreement_id);
-        env.storage().persistent().has(&key)
-    }
+/// Returns `true` if the agreement's grace period has been finalized.
+pub fn is_agreement_grace_period_finalized(env: &Env, agreement_id: u128) -> bool {
+    let key = DataKey::AgreementGracePeriodFinalized(agreement_id);
+    env.storage().persistent().has(&key)
+}
 
 #[cfg(test)]
 mod test {
@@ -858,5 +857,5 @@ mod test {
         assert_eq!(PayrollError::MilestoneRejectionReasonEmpty as u32, 49);
         assert_eq!(PayrollError::EmptyMilestoneList as u32, 50);
     }
-        assert_eq!(PayrollError::GracePeriodAlreadyFinalized as u32, 50);
+    assert_eq!(PayrollError::GracePeriodAlreadyFinalized as u32, 50);
 }

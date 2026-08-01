@@ -431,10 +431,7 @@ fn validate_retry_configuration(max_retry_attempts: u32, retry_intervals: &Vec<u
 /// When `max_attempts == 0`, returns `Some(Vec::new(env))` — the caller is
 /// responsible for passing the result through [`validate_retry_configuration`]
 /// if a non-zero `max_retries` is expected.
-pub fn generate_backoff_intervals(
-    env: &Env,
-    config: &BackoffConfig,
-) -> Option<Vec<u64>> {
+pub fn generate_backoff_intervals(env: &Env, config: &BackoffConfig) -> Option<Vec<u64>> {
     if config.max_attempts > MAX_RETRY_ATTEMPTS {
         return None;
     }

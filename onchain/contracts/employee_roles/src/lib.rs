@@ -1,6 +1,9 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Vec,
+};
 use stellar_contract_utils::upgradeable::UpgradeableInternal;
 use stellar_macros::Upgradeable;
 
@@ -306,17 +309,10 @@ impl EmployeeRolesContract {
                 .persistent()
                 .set(&StorageKey::EmployeeRoles(employee.clone()), &grants);
 
-            let event = RoleChangedEvent::new(
-                None,
-                Some(role),
-                caller,
-                employee,
-                env.ledger().timestamp(),
-            );
-            env.events().publish(
-                (symbol_short!("ROLE"), symbol_short!("chng")),
-                &event,
-            );
+            let event =
+                RoleChangedEvent::new(None, Some(role), caller, employee, env.ledger().timestamp());
+            env.events()
+                .publish((symbol_short!("ROLE"), symbol_short!("chng")), &event);
         }
 
         Ok(())
@@ -372,17 +368,10 @@ impl EmployeeRolesContract {
             .set(&StorageKey::EmployeeRoles(employee.clone()), &filtered);
 
         if had_role {
-            let event = RoleChangedEvent::new(
-                Some(role),
-                None,
-                caller,
-                employee,
-                env.ledger().timestamp(),
-            );
-            env.events().publish(
-                (symbol_short!("ROLE"), symbol_short!("chng")),
-                &event,
-            );
+            let event =
+                RoleChangedEvent::new(Some(role), None, caller, employee, env.ledger().timestamp());
+            env.events()
+                .publish((symbol_short!("ROLE"), symbol_short!("chng")), &event);
         }
 
         Ok(())

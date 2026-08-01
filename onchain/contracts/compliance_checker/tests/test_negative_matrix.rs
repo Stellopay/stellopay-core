@@ -296,9 +296,15 @@ fn test_set_rule_priority_changes_evaluation_order() {
 
     // With default priorities, EmergencyPause (0) at trace[0], TerminalState (2) at trace[1]
     assert_eq!(decision.traces.len(), 2);
-    assert_eq!(decision.traces.get(0).unwrap().rule, TraceRule::EmergencyPause);
+    assert_eq!(
+        decision.traces.get(0).unwrap().rule,
+        TraceRule::EmergencyPause
+    );
     assert_eq!(decision.traces.get(0).unwrap().result, Decision::Allow);
-    assert_eq!(decision.traces.get(1).unwrap().rule, TraceRule::TerminalState);
+    assert_eq!(
+        decision.traces.get(1).unwrap().rule,
+        TraceRule::TerminalState
+    );
     assert_eq!(decision.traces.get(1).unwrap().result, Decision::Deny);
     assert_eq!(decision.decision, Decision::Deny);
     assert_eq!(decision.reason, ReasonCode::TerminalState);
@@ -383,10 +389,7 @@ fn test_higher_priority_rule_short_circuits_lower() {
         decision_short.traces.get(0).unwrap().rule,
         TraceRule::AuxiliaryNotAllowed
     );
-    assert_eq!(
-        decision_short.traces.get(0).unwrap().result,
-        Decision::Deny
-    );
+    assert_eq!(decision_short.traces.get(0).unwrap().result, Decision::Deny);
     assert_eq!(decision_short.decision, Decision::Deny);
     assert_eq!(decision_short.reason, ReasonCode::AuxiliaryNotAllowed);
 }
@@ -419,11 +422,7 @@ fn test_set_rule_priority_rejects_non_admin() {
     let (client, _admin) = setup(&env);
     let non_admin = Address::generate(&env);
 
-    let result = client.try_set_rule_priority(
-        &non_admin,
-        &TraceRule::TerminalState,
-        &0,
-    );
+    let result = client.try_set_rule_priority(&non_admin, &TraceRule::TerminalState, &0);
     assert!(result.is_err(), "non-admin caller must be rejected");
 }
 
@@ -434,9 +433,6 @@ fn test_remove_rule_priority_rejects_non_admin() {
     let (client, _admin) = setup(&env);
     let non_admin = Address::generate(&env);
 
-    let result = client.try_remove_rule_priority(
-        &non_admin,
-        &TraceRule::TerminalState,
-    );
+    let result = client.try_remove_rule_priority(&non_admin, &TraceRule::TerminalState);
     assert!(result.is_err(), "non-admin caller must be rejected");
 }

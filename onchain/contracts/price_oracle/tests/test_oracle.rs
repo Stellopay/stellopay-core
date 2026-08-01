@@ -65,7 +65,7 @@ fn configure_pair_with_settings(
         &quorum_n,
         &tolerance_bps,
         &quorum_window_seconds,
-        &0u64, // no rate limit by default in tests
+        &0u64,    // no rate limit by default in tests
         &NO_HALT, // halt disabled by default in tests
     );
 }
@@ -1876,7 +1876,7 @@ fn setup_halt_pair(
         &quote,
         &500_000i128,
         &5_000_000i128,
-        &300u64,  // max_staleness = 300 s — easy to exceed in tests
+        &300u64, // max_staleness = 300 s — easy to exceed in tests
         &1u32,
         &0u32,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
@@ -2083,4 +2083,3 @@ fn test_fresh_push_before_halt_resets_counter() {
         "post-reset read 3 (counter=3 >= threshold=3) must be PairHalted"
     );
 }
-

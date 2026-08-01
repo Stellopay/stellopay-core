@@ -118,12 +118,17 @@ fn test_template_versioning_wired_to_payroll_agreement() {
 
     let v1_schema = schema_hash(&env, 0x01);
     let v1_notes = String::from_str(&env, "Initial version");
-    let v1_num = versioning
-        .publish_template_version(&admin, &template_id, &1, &v1_schema, &v1_notes, &false)
-        .unwrap();
+    let v1_num = versioning.publish_template_version(
+        &admin,
+        &template_id,
+        &1,
+        &v1_schema,
+        &v1_notes,
+        &false,
+    );
     assert_eq!(v1_num, 1, "First version should be 1");
     assert_eq!(
-        versioning.latest_version(&template_id).unwrap(),
+        versioning.latest_version(&template_id),
         1,
         "Latest version should be 1 after first publish"
     );
@@ -186,11 +191,16 @@ fn test_template_versioning_wired_to_payroll_agreement() {
     advance(&env, ONE_WEEK); // advance time so v2 has a distinct created_at
     let v2_schema = schema_hash(&env, 0x02);
     let v2_notes = String::from_str(&env, "Updated terms - v2");
-    let v2_num = versioning
-        .publish_template_version(&admin, &template_id, &2, &v2_schema, &v2_notes, &false)
-        .unwrap();
+    let v2_num = versioning.publish_template_version(
+        &admin,
+        &template_id,
+        &2,
+        &v2_schema,
+        &v2_notes,
+        &false,
+    );
     assert_eq!(v2_num, 2, "Second version should be 2");
-    assert_eq!(versioning.latest_version(&template_id).unwrap(), 2);
+    assert_eq!(versioning.latest_version(&template_id), 2);
 
     // ------------------------------------------------------------------
     // Step 5: Assert the pinned agreement is unchanged — it still points to v1
@@ -255,9 +265,7 @@ fn test_deprecated_version_does_not_affect_existing_agreements() {
     let template_id = versioning.register_template(&admin, &name).unwrap();
     let hash_v1 = schema_hash(&env, 0xAA);
     let notes_v1 = String::from_str(&env, "v1");
-    versioning
-        .publish_template_version(&admin, &template_id, &1, &hash_v1, &notes_v1, &false)
-        .unwrap();
+    versioning.publish_template_version(&admin, &template_id, &1, &hash_v1, &notes_v1, &false);
 
     // Create agreement pinned to v1
     let label_v1 = String::from_str(&env, "Legacy agreement");
@@ -276,9 +284,7 @@ fn test_deprecated_version_does_not_affect_existing_agreements() {
     advance(&env, 100);
     let hash_v2 = schema_hash(&env, 0xBB);
     let notes_v2 = String::from_str(&env, "v2");
-    versioning
-        .publish_template_version(&admin, &template_id, &2, &hash_v2, &notes_v2, &false)
-        .unwrap();
+    versioning.publish_template_version(&admin, &template_id, &2, &hash_v2, &notes_v2, &false);
     let deprecation_reason = Some(String::from_str(&env, "Superseded by v2"));
     versioning
         .deprecate_version(&admin, &template_id, &1, &deprecation_reason)

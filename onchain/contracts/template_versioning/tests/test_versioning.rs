@@ -131,7 +131,14 @@ fn non_owner_cannot_publish() {
 
     let h = BytesN::from_array(&env, &[9u8; 32]);
     assert!(client
-        .try_publish_template_version(&attacker, &tid, &1, &h, &String::from_str(&env, "x"), &false,)
+        .try_publish_template_version(
+            &attacker,
+            &tid,
+            &1,
+            &h,
+            &String::from_str(&env, "x"),
+            &false,
+        )
         .is_err());
 }
 
@@ -289,7 +296,14 @@ fn deprecate_with_reason_is_stored_and_readable() {
 
     let hash = BytesN::from_array(&env, &[11u8; 32]);
     let ver = client
-        .try_publish_template_version(&owner, &tid, &1, &hash, &String::from_str(&env, "v1"), &false)
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &1,
+            &hash,
+            &String::from_str(&env, "v1"),
+            &false,
+        )
         .unwrap()
         .unwrap();
 
@@ -339,7 +353,14 @@ fn deprecate_without_reason_still_works() {
 
     let hash = BytesN::from_array(&env, &[12u8; 32]);
     let ver = client
-        .try_publish_template_version(&owner, &tid, &1, &hash, &String::from_str(&env, "v1"), &false)
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &1,
+            &hash,
+            &String::from_str(&env, "v1"),
+            &false,
+        )
         .unwrap()
         .unwrap();
 
@@ -384,7 +405,14 @@ fn non_owner_cannot_deprecate() {
 
     let hash = BytesN::from_array(&env, &[5u8; 32]);
     let ver = client
-        .try_publish_template_version(&owner, &tid, &1, &hash, &String::from_str(&env, "v1"), &false)
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &1,
+            &hash,
+            &String::from_str(&env, "v1"),
+            &false,
+        )
         .unwrap()
         .unwrap();
 
@@ -593,7 +621,7 @@ fn test_register_template_different_names_do_not_collide() {
 
     client.initialize(&admin);
 
-    let tid = client
+    let _tid = client
         .try_register_template(&owner, &String::from_str(&env, "Payroll"))
         .unwrap()
         .unwrap();
@@ -646,8 +674,67 @@ fn new_agreement_uses_latest_version_after_publish() {
     let ag1: AgreementBinding = client.try_get_agreement(&aid1).unwrap().unwrap();
     assert_eq!(ag1.template_version, 1);
 
+    // Publish version 2
+    let h2 = BytesN::from_array(&env, &[2u8; 32]);
+    let v2 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &2,
+            &h2,
+            &String::from_str(&env, "v2 update"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v2, 2);
+
+    // Create agreement with version 2
+    let aid2 = client
+        .try_create_agreement(&owner, &tid, &2, &String::from_str(&env, "Agreement B"))
+        .unwrap()
+        .unwrap();
+    let ag2: AgreementBinding = client.try_get_agreement(&aid2).unwrap().unwrap();
+    assert_eq!(ag2.template_version, 2);
+}
+
+/// Querying the name index returns the full history of template IDs registered
+/// under a name, even after versions have been deprecated.
+#[test]
+fn test_get_templates_by_name_returns_full_history() {
+    let env = Env::default();
+    env.mock_all_auths();
+    ledger_ts(&env, 1_000_000);
+
+    let contract_id = env.register(TemplateVersioning, ());
+    let client = TemplateVersioningClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+
+    client.initialize(&admin);
+
+    // Before any registration, the index is empty.
+    let before = client.get_templates_by_name(&String::from_str(&env, "Expense"));
+    assert_eq!(before.len(), 0);
+
+    // Register A, publish + deprecate its version.
+    let tid_a = client.register_template(&owner, &String::from_str(&env, "Expense"));
+    let va = client.publish_template_version(
+        &owner,
+        &tid_a,
+        &1,
+        &BytesN::from_array(&env, &[1u8; 32]),
+        &String::from_str(&env, "v1"),
+        &false,
+    );
+    client.deprecate_version(&owner, &tid_a, &va, &None);
+
+    // Register B under same name (now allowed).
+    let tid_b = client.register_template(&owner, &String::from_str(&env, "Expense"));
+
     // Index must contain both IDs.
-    let history: Vec<u64> = client.get_templates_by_name(&String::from_str(&env, "Expense"));
+    let history = client.get_templates_by_name(&String::from_str(&env, "Expense"));
     assert_eq!(history.len(), 2);
     assert!(history.contains(&tid_a));
     assert!(history.contains(&tid_b));
@@ -794,12 +881,8 @@ fn create_agreement_rejects_wrong_template_id() {
         .unwrap();
 
     // Use a completely wrong template_id (9999) with version 1.
-    let result = client.try_create_agreement(
-        &owner,
-        &9999,
-        &1,
-        &String::from_str(&env, "wrong template"),
-    );
+    let result =
+        client.try_create_agreement(&owner, &9999, &1, &String::from_str(&env, "wrong template"));
     assert!(result.is_err());
 }
 
@@ -838,12 +921,7 @@ fn create_agreement_rejects_empty_label() {
         .unwrap();
 
     // Empty label should be rejected.
-    let result = client.try_create_agreement(
-        &owner,
-        &tid,
-        &1,
-        &String::from_str(&env, ""),
-    );
+    let result = client.try_create_agreement(&owner, &tid, &1, &String::from_str(&env, ""));
     assert!(result.is_err());
 }
 
@@ -893,12 +971,8 @@ fn create_agreement_rejects_deprecated_version() {
         .unwrap();
 
     // Agreement creation against deprecated version must fail.
-    let result = client.try_create_agreement(
-        &owner,
-        &tid,
-        &ver,
-        &String::from_str(&env, "should fail"),
-    );
+    let result =
+        client.try_create_agreement(&owner, &tid, &ver, &String::from_str(&env, "should fail"));
     assert!(result.is_err());
 }
 
@@ -954,10 +1028,7 @@ fn create_agreement_succeeds_with_conformant_parameters() {
     assert_eq!(binding.template_id, tid);
     assert_eq!(binding.template_version, ver);
     assert_eq!(binding.creator, creator);
-    assert_eq!(
-        binding.label,
-        String::from_str(&env, "Q3-2026 payroll")
-    );
+    assert_eq!(binding.label, String::from_str(&env, "Q3-2026 payroll"));
     assert_eq!(binding.created_at, 1_000_000);
 }
 
@@ -1002,10 +1073,8 @@ fn deprecated_template_remains_listable_not_creatable_and_preserves_existing_agr
         )
         .unwrap()
         .unwrap();
-    let agreement_before: AgreementBinding = client
-        .try_get_agreement(&agreement_id)
-        .unwrap()
-        .unwrap();
+    let agreement_before: AgreementBinding =
+        client.try_get_agreement(&agreement_id).unwrap().unwrap();
 
     let reason = String::from_str(&env, "Replaced after compliance update");
     client
@@ -1015,10 +1084,7 @@ fn deprecated_template_remains_listable_not_creatable_and_preserves_existing_agr
 
     // `get_template` must retain every detail necessary to audit the retired
     // schema; deprecation changes only its status and reason.
-    let retired: TemplateVersionRecord = client
-        .try_get_template(&template_id)
-        .unwrap()
-        .unwrap();
+    let retired: TemplateVersionRecord = client.try_get_template(&template_id).unwrap().unwrap();
     assert_eq!(retired.template_id, template_id);
     assert_eq!(retired.version, version);
     assert_eq!(retired.schema_hash, schema_hash);
@@ -1039,10 +1105,8 @@ fn deprecated_template_remains_listable_not_creatable_and_preserves_existing_agr
 
     // The existing agreement remains unchanged and continues to point at the
     // historical version, which can still be resolved for audit purposes.
-    let agreement_after: AgreementBinding = client
-        .try_get_agreement(&agreement_id)
-        .unwrap()
-        .unwrap();
+    let agreement_after: AgreementBinding =
+        client.try_get_agreement(&agreement_id).unwrap().unwrap();
     assert_eq!(agreement_after, agreement_before);
     let historical_version: TemplateVersionRecord = client
         .try_get_version(&template_id, &agreement_after.template_version)
@@ -1088,7 +1152,7 @@ fn test_publish_template_version_rejects_duplicate_or_out_of_order_version() {
         .unwrap()
         .unwrap();
     assert_eq!(v1, 1);
-    assert_eq!(client.latest_version(&tid).unwrap(), 1);
+    assert_eq!(client.latest_version(&tid), 1);
 
     // 2. Attempt to publish version 1 again (duplicate) -> rejected with InvalidData
     let res_dup = client.try_publish_template_version(
@@ -1125,7 +1189,7 @@ fn test_publish_template_version_rejects_duplicate_or_out_of_order_version() {
         .unwrap()
         .unwrap();
     assert_eq!(v2, 2);
-    assert_eq!(client.latest_version(&tid).unwrap(), 2);
+    assert_eq!(client.latest_version(&tid), 2);
 
     // 5. Attempt to publish version 1 after version 2 (out-of-order / lower) -> rejected with InvalidData
     let res_lower = client.try_publish_template_version(
@@ -1166,11 +1230,17 @@ fn test_publish_template_version_strictly_increasing_succeeds() {
     client.initialize(&admin);
 
     let tid = client
-        .try_register_template(&owner, &String::from_str(&env, "Sequential Versioning Test"))
+        .try_register_template(
+            &owner,
+            &String::from_str(&env, "Sequential Versioning Test"),
+        )
         .unwrap()
         .unwrap();
 
-    assert_eq!(client.latest_version(&tid).unwrap(), 0);
+    assert_eq!(
+        client.try_latest_version(&tid),
+        Err(Ok(VersioningError::VersionNotFound))
+    );
 
     // Publish version 1
     let hash1 = BytesN::from_array(&env, &[0x01; 32]);
@@ -1186,7 +1256,7 @@ fn test_publish_template_version_strictly_increasing_succeeds() {
         .unwrap()
         .unwrap();
     assert_eq!(v1, 1);
-    assert_eq!(client.latest_version(&tid).unwrap(), 1);
+    assert_eq!(client.latest_version(&tid), 1);
 
     // Publish version 2 (N+1)
     let hash2 = BytesN::from_array(&env, &[0x02; 32]);
@@ -1202,7 +1272,7 @@ fn test_publish_template_version_strictly_increasing_succeeds() {
         .unwrap()
         .unwrap();
     assert_eq!(v2, 2);
-    assert_eq!(client.latest_version(&tid).unwrap(), 2);
+    assert_eq!(client.latest_version(&tid), 2);
 
     // Publish version 3 (N+1)
     let hash3 = BytesN::from_array(&env, &[0x03; 32]);
@@ -1218,5 +1288,5 @@ fn test_publish_template_version_strictly_increasing_succeeds() {
         .unwrap()
         .unwrap();
     assert_eq!(v3, 3);
-    assert_eq!(client.latest_version(&tid).unwrap(), 3);
+    assert_eq!(client.latest_version(&tid), 3);
 }

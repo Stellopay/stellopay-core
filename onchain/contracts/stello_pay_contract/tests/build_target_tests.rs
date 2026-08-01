@@ -9,14 +9,11 @@
 
 use std::path::PathBuf;
 
-use soroban_sdk::{
-    testutils::Address as _,
-    token, Address, BytesN, Env, Vec,
-};
+use soroban_sdk::{testutils::Address as _, token, Address, BytesN, Env, Vec};
 use stello_pay_contract::{
     storage::{
-        DisputeStatus, EscrowCreateParams, GracePeriodExtensionPolicy,
-        PayrollCreateParams, PayrollError,
+        DisputeStatus, EscrowCreateParams, GracePeriodExtensionPolicy, PayrollCreateParams,
+        PayrollError,
     },
     PayrollContract, PayrollContractClient,
 };
@@ -68,13 +65,20 @@ fn full_setup(
         DataKey::set_agreement_escrow_balance(&env, agreement_id, &token_addr, 10000);
     });
 
-    (client, owner, employer, employee, arbiter, token_addr, agreement_id)
+    (
+        client,
+        owner,
+        employer,
+        employee,
+        arbiter,
+        token_addr,
+        agreement_id,
+    )
 }
 
 fn create_escrow_token_pair(env: &Env) -> (Address, token::StellarAssetClient<'_>) {
     let token_admin = Address::generate(env);
-    let t = env
-        .register_stellar_asset_contract_v2(token_admin);
+    let t = env.register_stellar_asset_contract_v2(token_admin);
     (
         t.address(),
         token::StellarAssetClient::new(env, &t.address()),
@@ -442,10 +446,8 @@ fn test_set_fx_rate_sanity_bound_rejects_non_positive() {
 fn test_emergency_guardians() {
     let env = Env::default();
     let (client, _owner) = setup(&env);
-    let guardians: Vec<Address> = Vec::from_array(
-        &env,
-        [Address::generate(&env), Address::generate(&env)],
-    );
+    let guardians: Vec<Address> =
+        Vec::from_array(&env, [Address::generate(&env), Address::generate(&env)]);
     client.set_emergency_guardians(&guardians);
     let stored = client.get_emergency_guardians();
     assert_eq!(stored, Some(guardians));
@@ -522,12 +524,8 @@ fn test_admin_set_escrow_balance_unauthorized() {
     let stranger = Address::generate(&env);
     let token_addr = Address::generate(&env);
     env.mock_auths(&[]);
-    let result = client.try_admin_set_escrow_balance(
-        &stranger,
-        &agreement_id,
-        &token_addr,
-        &500i128,
-    );
+    let result =
+        client.try_admin_set_escrow_balance(&stranger, &agreement_id, &token_addr, &500i128);
     assert!(result.is_err());
 }
 

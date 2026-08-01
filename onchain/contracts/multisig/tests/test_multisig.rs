@@ -237,7 +237,6 @@ fn cancel_operation_by_creator_or_owner() {
     assert!(res.is_err());
 }
 
-
 // --- Duplicate-signature rejection tests (#1084) ---
 
 #[test]
