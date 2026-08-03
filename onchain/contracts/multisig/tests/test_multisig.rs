@@ -238,7 +238,6 @@ fn cancel_operation_by_creator_or_owner() {
     assert!(res.is_err());
 }
 
-
 // --- Duplicate-signature rejection tests (#1084) ---
 
 #[test]
@@ -321,7 +320,6 @@ fn test_operation_only_executes_with_distinct_signers_reaching_threshold() {
     );
 }
 
-
 fn setup_with_rbac(
     env: &Env,
 ) -> (
@@ -351,7 +349,13 @@ fn setup_with_rbac(
     rbac_client.initialize(&owner);
     rbac_client.grant_role(&owner, &s1, &Role::Arbiter);
 
-    client.initialize(&owner, &signers, &2u32, &Some(guardian.clone()), &Some(rbac_id.clone()));
+    client.initialize(
+        &owner,
+        &signers,
+        &2u32,
+        &Some(guardian.clone()),
+        &Some(rbac_id.clone()),
+    );
 
     (id, client, owner, signers, guardian, rbac_id)
 }
@@ -367,7 +371,10 @@ fn dispute_resolution_rejected_for_non_arbiter_signer() {
         &non_arbiter,
         &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
     );
-    assert!(result.is_err(), "Non-arbiter signer must not propose DisputeResolution");
+    assert!(
+        result.is_err(),
+        "Non-arbiter signer must not propose DisputeResolution"
+    );
 }
 
 #[test]

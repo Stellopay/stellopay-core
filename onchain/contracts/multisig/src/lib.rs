@@ -1,11 +1,11 @@
 #![no_std]
 #![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
+use rbac_interface::{RbacContractClient, Role};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, BytesN,
     Env, Vec,
 };
-use rbac_interface::{RbacContractClient, Role};
 
 /// Errors emitted by the multisig contract.
 ///
@@ -223,7 +223,8 @@ fn validate_operation_kind(env: &Env, kind: &OperationKind) {
         }
         // DisputeResolution and SetThresholdOverride have no payload
         // constraints enforced at proposal time.
-        OperationKind::DisputeResolution(_, _, _, _) | OperationKind::SetThresholdOverride(_, _) => {}
+        OperationKind::DisputeResolution(_, _, _, _)
+        | OperationKind::SetThresholdOverride(_, _) => {}
     }
 }
 
@@ -238,13 +239,13 @@ fn is_signer(env: &Env, addr: &Address) -> bool {
 }
 
 fn read_rbac_address(env: &Env) -> Option<Address> {
-    env.storage()
-        .persistent()
-        .get(&StorageKey::RbacAddress)
+    env.storage().persistent().get(&StorageKey::RbacAddress)
 }
 
 fn write_rbac_address(env: &Env, addr: &Address) {
-    env.storage().persistent().set(&StorageKey::RbacAddress, addr);
+    env.storage()
+        .persistent()
+        .set(&StorageKey::RbacAddress, addr);
 }
 
 fn next_operation_id(env: &Env) -> u128 {
