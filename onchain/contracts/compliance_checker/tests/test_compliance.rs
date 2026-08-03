@@ -1198,11 +1198,13 @@ fn test_initialize_is_single_shot() {
     assert!(client.is_rule_registered(&PayrollAction::ClaimMilestone));
 }
 
-
-use soroban_sdk::{testutils::Address as _, Address, Env};
 use compliance_checker::{
-    ComplianceChecker, Rule, RuleGroup, RuleLogic, // CHECK: exact type names from Step 3
+    ComplianceChecker,
+    Rule,
+    RuleGroup,
+    RuleLogic, // CHECK: exact type names from Step 3
 };
+use soroban_sdk::{testutils::Address as _, Address, Env};
 
 /// Builds a rule that always evaluates as satisfied for the given transition.
 fn satisfied_rule(env: &Env) -> Rule {
@@ -1232,7 +1234,10 @@ fn and_group_rejects_when_only_one_of_two_rules_is_satisfied() {
 
     // An AND group requires ALL rules to pass — one unsatisfied rule
     // must reject the transition even though the other rule passes.
-    assert!(!result, "AND group with one failing rule must reject the transition");
+    assert!(
+        !result,
+        "AND group with one failing rule must reject the transition"
+    );
 }
 
 #[test]
@@ -1248,7 +1253,10 @@ fn or_group_allows_when_only_one_of_two_rules_is_satisfied() {
     let result = checker.check_transition(&env, &group);
 
     // An OR group only needs ONE rule to pass.
-    assert!(result, "OR group with one passing rule must allow the transition");
+    assert!(
+        result,
+        "OR group with one passing rule must allow the transition"
+    );
 }
 
 #[test]
@@ -1309,7 +1317,10 @@ fn nested_and_of_ors_allows_when_both_inner_or_groups_pass() {
 
     let result = checker.check_transition(&env, &outer_and);
 
-    assert!(result, "nested AND-of-ORs must allow when both inner OR groups pass");
+    assert!(
+        result,
+        "nested AND-of-ORs must allow when both inner OR groups pass"
+    );
 }
 
 #[test]

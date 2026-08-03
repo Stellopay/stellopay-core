@@ -1,4 +1,4 @@
-use soroban_sdk::{contracterror, contracttype, Address, String};
+use soroban_sdk::{contracterror, contracttype, Address, String, Vec};
 
 /// Maximum byte length allowed for the free-text `Other` variant.
 ///
@@ -178,6 +178,9 @@ pub enum StorageKey {
     PendingReviewTimeLimit,
     /// Optional address of the shared audit_logger contract.
     AuditLogger,
+    RewardToken,
+    IncentivePool,
+    KeeperRewardAmount,
 }
 
 /// Errors specific to the dispute escalation logic.

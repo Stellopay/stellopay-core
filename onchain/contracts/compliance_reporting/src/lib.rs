@@ -1004,7 +1004,8 @@ impl ComplianceReportingContract {
         let page_records = if start_offset >= all_matching_records.len() as usize {
             Vec::new(&env)
         } else {
-            let end_offset = (start_offset + limit as usize).min(all_matching_records.len() as usize);
+            let end_offset =
+                (start_offset + limit as usize).min(all_matching_records.len() as usize);
             let mut page = Vec::new(&env);
             for index in start_offset..end_offset {
                 let record = all_matching_records.get(index as u32).unwrap().clone();
@@ -1012,8 +1013,12 @@ impl ComplianceReportingContract {
             }
             page
         };
-        let page_total_amount = page_records.iter().fold(0i128, |sum, record| sum + record.amount);
-        let next_cursor = if start_offset + (page_records.len() as usize) < (all_matching_records.len() as usize) {
+        let page_total_amount = page_records
+            .iter()
+            .fold(0i128, |sum, record| sum + record.amount);
+        let next_cursor = if start_offset + (page_records.len() as usize)
+            < (all_matching_records.len() as usize)
+        {
             Some((start_offset + (page_records.len() as usize)) as u32)
         } else {
             None

@@ -1330,7 +1330,11 @@ fn test_removed_slasher_attestation_rejected() {
     );
     // Confirm slasher1's attestation was recorded.
     let record_after_first = t.client.get_slash_record(&hash).unwrap();
-    assert_eq!(record_after_first.attestors.len(), 1u32, "one attestor recorded");
+    assert_eq!(
+        record_after_first.attestors.len(),
+        1u32,
+        "one attestor recorded"
+    );
 
     // Step 2: admin removes slasher1.
     t.client.remove_slasher(&t.slasher1);
@@ -1823,8 +1827,15 @@ fn test_attest_slash_countersign_rejects_mismatched_evidence_hash() {
 
     // Step 4: the first attestor's record remains intact (no double-attestation).
     let record = client.get_slash_record(&hash).unwrap();
-    assert_eq!(record.attestors.len(), 1, "only slasher1 should be an attestor");
-    assert!(record.attestors.contains(&slasher1), "slasher1 must still be the sole attestor");
+    assert_eq!(
+        record.attestors.len(),
+        1,
+        "only slasher1 should be an attestor"
+    );
+    assert!(
+        record.attestors.contains(&slasher1),
+        "slasher1 must still be the sole attestor"
+    );
 }
 
 /// Verify that the EvidenceHashMismatch error is not triggered during normal
@@ -2086,7 +2097,11 @@ fn test_slasher_set_size_invariant() {
     // Add a new slasher → size 4.
     let extra = Address::generate(&t.env);
     t.client.add_slasher(&extra);
-    assert_eq!(t.client.get_slashers().len(), 4u32, "size must be 4 after adding extra");
+    assert_eq!(
+        t.client.get_slashers().len(),
+        4u32,
+        "size must be 4 after adding extra"
+    );
 
     // Add extra again (idempotent) → size stays 4.
     t.client.add_slasher(&extra);
@@ -2147,7 +2162,10 @@ fn test_quorum_unaffected_by_add_remove_readd_cycle() {
     let t = TestEnv::setup();
 
     let quorum_initial = t.client.get_quorum();
-    assert_eq!(quorum_initial, 2u32, "pre-condition: quorum is 2 after setup");
+    assert_eq!(
+        quorum_initial, 2u32,
+        "pre-condition: quorum is 2 after setup"
+    );
 
     let target = Address::generate(&t.env);
 
@@ -2217,7 +2235,10 @@ fn test_quorum_enforcement_after_readd_cycle() {
         .iter()
         .filter(|s| *s == t.slasher1)
         .count();
-    assert_eq!(count, 1, "slasher1 must be present exactly once after re-add");
+    assert_eq!(
+        count, 1,
+        "slasher1 must be present exactly once after re-add"
+    );
     assert_eq!(t.client.get_quorum(), 2u32, "quorum must still be 2");
 
     let hash = t.evidence_hash(250);

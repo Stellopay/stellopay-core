@@ -2,7 +2,7 @@
 #![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, IntoVal, Vec,
 };
 use stello_pay_contract::PayrollContractClient;
 
@@ -64,7 +64,7 @@ pub enum OracleError {
 ///
 /// @dev All rates use a fixed-point representation with 6 decimal places
 ///      (i.e. `1_000_000` = 1.0). This is referred to as `FX_SCALE` throughout.
-#[contracttype]
+// #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PairConfig {
     /// Minimum allowed scaled rate (inclusive). Must be > 0.
@@ -85,23 +85,84 @@ pub struct PairConfig {
     /// Minimum number of seconds a source must wait between consecutive submissions
     /// for this pair. Enforced per `(source, base, quote)` tuple.
     /// Set to `0` to disable the interval check (not recommended for quorum pairs).
-    ///
-    /// ## Anti-manipulation assumption
-    /// A single source cannot submit multiple near-duplicate prices within one window
-    /// to skew quorum clustering, because each submission from the same source is
-    /// rejected until `min_submit_interval_secs` have elapsed since its last
-    /// accepted submission timestamp. Combined with `DuplicateVote` enforcement in
-    /// quorum mode, each source contributes at most one effective vote per bucket.
     pub min_submit_interval_secs: u64,
-    /// Number of consecutive read-side stale-price detections (i.e. calls to
-    /// `get_pair_state` that return `PriceTooOld`) that automatically halt this pair.
-    ///
-    /// Once the halt threshold is reached, `get_pair_state` returns
-    /// `OracleError::PairHalted` instead of `PriceTooOld` until a fresh, valid
-    /// `push_price` clears the counter.
-    ///
-    /// Set to `0` to disable the automatic halt mechanism for this pair.
+    /// Number of consecutive read-side stale-price detections that automatically halt this pair.
     pub max_consecutive_stale_before_halt: u32,
+}
+
+impl soroban_sdk::TryFromVal<Env, soroban_sdk::Val> for PairConfig {
+    type Error = soroban_sdk::ConversionError;
+
+    fn try_from_val(env: &Env, val: &soroban_sdk::Val) -> Result<Self, Self::Error> {
+        let vec: Vec<soroban_sdk::Val> = Vec::try_from_val(env, val)?;
+        if vec.len() != 9 {
+            return Err(soroban_sdk::ConversionError);
+        }
+        Ok(PairConfig {
+            min_rate: soroban_sdk::TryFromVal::try_from_val(
+                env,
+                &vec.get(0).ok_or(soroban_sdk::ConversionError)?,
+            )?,
+            max_rate: soroban_sdk::TryFromVal::try_from_val(
+                env,
+                &vec.get(1).ok_or(soroban_sdk::ConversionError)?,
+            )?,
+            max_staleness_seconds: soroban_sdk::TryFromVal::try_from_val(
+                env,
+                &vec.get(2).ok_or(soroban_sdk::ConversionError)?,
+            )?,
+            enabled: soroban_sdk::TryFromVal::try_from_val(
+                env,
+                &vec.get(3).ok_or(soroban_sdk::ConversionError)?,
+            )?,
+            quorum_n: soroban_sdk::TryFromVal::try_from_val(
+                env,
+                &vec.get(4).ok_or(soroban_sdk::ConversionError)?,
+            )?,
+            tolerance_bps: soroban_sdk::TryFromVal::try_from_val(
+                env,
+                &vec.get(5).ok_or(soroban_sdk::ConversionError)?,
+            )?,
+            quorum_window_seconds: soroban_sdk::TryFromVal::try_from_val(
+                env,
+                &vec.get(6).ok_or(soroban_sdk::ConversionError)?,
+            )?,
+            min_submit_interval_secs: soroban_sdk::TryFromVal::try_from_val(
+                env,
+                &vec.get(7).ok_or(soroban_sdk::ConversionError)?,
+            )?,
+            max_consecutive_stale_before_halt: soroban_sdk::TryFromVal::try_from_val(
+                env,
+                &vec.get(8).ok_or(soroban_sdk::ConversionError)?,
+            )?,
+        })
+    }
+}
+
+impl soroban_sdk::TryFromVal<Env, PairConfig> for soroban_sdk::Val {
+    type Error = soroban_sdk::ConversionError;
+
+    fn try_from_val(env: &Env, val: &PairConfig) -> Result<Self, Self::Error> {
+        let mut vec: Vec<soroban_sdk::Val> = Vec::new(env);
+        vec.push_back(val.min_rate.into_val(env));
+        vec.push_back(val.max_rate.into_val(env));
+        vec.push_back(val.max_staleness_seconds.into_val(env));
+        vec.push_back(val.enabled.into_val(env));
+        vec.push_back(val.quorum_n.into_val(env));
+        vec.push_back(val.tolerance_bps.into_val(env));
+        vec.push_back(val.quorum_window_seconds.into_val(env));
+        vec.push_back(val.min_submit_interval_secs.into_val(env));
+        vec.push_back(val.max_consecutive_stale_before_halt.into_val(env));
+        Ok(vec.into_val(env))
+    }
+}
+
+impl soroban_sdk::TryFromVal<Env, &PairConfig> for soroban_sdk::Val {
+    type Error = soroban_sdk::ConversionError;
+
+    fn try_from_val(env: &Env, val: &&PairConfig) -> Result<Self, Self::Error> {
+        <soroban_sdk::Val as soroban_sdk::TryFromVal<Env, PairConfig>>::try_from_val(env, *val)
+    }
 }
 
 /// Last accepted rate for a `(base, quote)` pair.
@@ -368,53 +429,36 @@ impl PriceOracleContract {
     /// @param max_rate             Maximum allowed scaled rate (inclusive).
     /// @param max_staleness_seconds Maximum allowed age of a rate update.
     /// @param quorum_n             Minimum number of distinct sources required.
-    /// @param tolerance_bps        Maximum spread between quorum-supporting votes.
-    /// @param quorum_window_seconds Time window used to bucket pending votes.
-    /// @param min_submit_interval_secs Minimum seconds between consecutive
-    ///        submissions from the same source for this pair. `0` disables the check.
-    /// @param max_consecutive_stale_before_halt Number of consecutive read-side stale
-    ///        detections that automatically halt the pair. `0` disables the mechanism.
+    /// @param config               Pair configuration.
     pub fn configure_pair(
         env: Env,
         caller: Address,
         base: Address,
         quote: Address,
-        min_rate: i128,
-        max_rate: i128,
-        max_staleness_seconds: u64,
-        quorum_n: u32,
-        tolerance_bps: u32,
-        quorum_window_seconds: u64,
-        min_submit_interval_secs: u64,
-        max_consecutive_stale_before_halt: u32,
+        config: PairConfig,
     ) -> Result<(), OracleError> {
         require_admin(&env, &caller)?;
 
-        if base == quote || min_rate <= 0 || max_rate <= 0 || min_rate > max_rate {
+        if base == quote
+            || config.min_rate <= 0
+            || config.max_rate <= 0
+            || config.min_rate > config.max_rate
+        {
             return Err(OracleError::InvalidPairConfig);
         }
-        if max_staleness_seconds == 0 || quorum_n == 0 || quorum_window_seconds == 0 {
+        if config.max_staleness_seconds == 0
+            || config.quorum_n == 0
+            || config.quorum_window_seconds == 0
+        {
             return Err(OracleError::InvalidPairConfig);
         }
-        if tolerance_bps > 10_000 {
+        if config.tolerance_bps > 10_000 {
             return Err(OracleError::InvalidPairConfig);
         }
-
-        let cfg = PairConfig {
-            min_rate,
-            max_rate,
-            max_staleness_seconds,
-            enabled: true,
-            quorum_n,
-            tolerance_bps,
-            quorum_window_seconds,
-            min_submit_interval_secs,
-            max_consecutive_stale_before_halt,
-        };
 
         env.storage()
             .instance()
-            .set(&DataKey::PairConfig(base.clone(), quote.clone()), &cfg);
+            .set(&DataKey::PairConfig(base.clone(), quote.clone()), &config);
         env.storage()
             .temporary()
             .remove(&DataKey::PendingBucket(base.clone(), quote.clone()));
@@ -734,22 +778,9 @@ impl PriceOracleContract {
         let now = env.ledger().timestamp();
         let age = now.saturating_sub(state.last_updated_ts);
         if age > cfg.max_staleness_seconds {
-            // Consecutive-stale halt mechanism:
-            // If the pair has a non-zero threshold, track how many consecutive
-            // read-side stale detections have occurred.  Once the threshold is
-            // reached, switch from PriceTooOld to PairHalted so consumers and
-            // monitors know the pair needs a fresh push, not just a retry.
             if cfg.max_consecutive_stale_before_halt > 0 {
-                let count_key = DataKey::StaleCount(base.clone(), quote.clone());
-                let prev: u32 = env
-                    .storage()
-                    .temporary()
-                    .get::<_, u32>(&count_key)
-                    .unwrap_or(0);
-                let count = prev.saturating_add(1);
-                env.storage().temporary().set(&count_key, &count);
-
-                if count >= cfg.max_consecutive_stale_before_halt {
+                let stale_periods = age / cfg.max_staleness_seconds;
+                if stale_periods >= cfg.max_consecutive_stale_before_halt as u64 {
                     return Err(OracleError::PairHalted);
                 }
             }

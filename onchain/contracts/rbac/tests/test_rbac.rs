@@ -845,11 +845,7 @@ fn test_accept_ownership_emits_event_with_both_addresses() {
     assert_eq!(contract, contract_id, "event must be from contract");
 
     // Topics: [Symbol("RBAC"), Symbol("owner")]
-    assert_eq!(
-        topics.len(),
-        2,
-        "expected 2 event topics: 'RBAC', 'owner'"
-    );
+    assert_eq!(topics.len(), 2, "expected 2 event topics: 'RBAC', 'owner'");
 }
 
 #[test]

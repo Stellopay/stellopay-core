@@ -1051,7 +1051,10 @@ fn test_raise_dispute_rejects_duplicate_on_active_dispute() {
     client.activate_agreement(&id);
 
     client.raise_dispute(&employer, &id);
-    assert_eq!(client.get_agreement(&id).unwrap().dispute_status, DisputeStatus::Raised);
+    assert_eq!(
+        client.get_agreement(&id).unwrap().dispute_status,
+        DisputeStatus::Raised
+    );
 
     let result = client.try_raise_dispute(&employer, &id);
     assert_eq!(

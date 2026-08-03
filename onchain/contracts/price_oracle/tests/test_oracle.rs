@@ -55,19 +55,41 @@ fn configure_pair_with_settings(
     tolerance_bps: u32,
     quorum_window_seconds: u64,
 ) {
-    oracle_client.configure_pair(
-        oracle_owner,
-        base,
-        quote,
-        &min_rate,
-        &max_rate,
-        &max_staleness_seconds,
-        &quorum_n,
-        &tolerance_bps,
-        &quorum_window_seconds,
-        &0u64, // no rate limit by default in tests
-        &NO_HALT, // halt disabled by default in tests
-    );
+    let cfg = price_oracle::PairConfig {
+        min_rate,
+        max_rate,
+        max_staleness_seconds,
+        enabled: true,
+        quorum_n,
+        tolerance_bps,
+        quorum_window_seconds,
+        min_submit_interval_secs: 0,
+        max_consecutive_stale_before_halt: NO_HALT,
+    };
+    oracle_client.configure_pair(oracle_owner, base, quote, &cfg);
+}
+
+fn make_config(
+    min_rate: i128,
+    max_rate: i128,
+    max_staleness_seconds: u64,
+    quorum_n: u32,
+    tolerance_bps: u32,
+    quorum_window_seconds: u64,
+    min_submit_interval_secs: u64,
+    max_consecutive_stale_before_halt: u32,
+) -> price_oracle::PairConfig {
+    price_oracle::PairConfig {
+        min_rate,
+        max_rate,
+        max_staleness_seconds,
+        enabled: true,
+        quorum_n,
+        tolerance_bps,
+        quorum_window_seconds,
+        min_submit_interval_secs,
+        max_consecutive_stale_before_halt,
+    }
 }
 
 /// Full setup: payroll + oracle + FX admin registered + source + pair configured.
@@ -211,14 +233,16 @@ fn test_configure_pair_and_read_config() {
         &oracle_owner,
         &base2,
         &quote2,
-        &1_000_000i128,
-        &3_000_000i128,
-        &300u64,
-        &1u32,
-        &DEFAULT_TOLERANCE_BPS,
-        &DEFAULT_QUORUM_WINDOW_SECONDS,
-        &0u64,
-        &NO_HALT,
+        &make_config(
+            1_000_000,
+            3_000_000,
+            300,
+            1,
+            DEFAULT_TOLERANCE_BPS,
+            DEFAULT_QUORUM_WINDOW_SECONDS,
+            0,
+            NO_HALT,
+        ),
     );
 
     let cfg = oracle_client.get_pair_config(&base2, &quote2).unwrap();
@@ -242,14 +266,16 @@ fn test_configure_pair_same_base_quote_rejected() {
         &oracle_owner,
         &token,
         &token,
-        &1_000_000i128,
-        &2_000_000i128,
-        &300u64,
-        &1u32,
-        &DEFAULT_TOLERANCE_BPS,
-        &DEFAULT_QUORUM_WINDOW_SECONDS,
-        &0u64,
-        &NO_HALT,
+        &make_config(
+            1_000_000,
+            2_000_000,
+            300,
+            1,
+            DEFAULT_TOLERANCE_BPS,
+            DEFAULT_QUORUM_WINDOW_SECONDS,
+            0,
+            NO_HALT,
+        ),
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -265,14 +291,16 @@ fn test_configure_pair_min_greater_than_max_rejected() {
         &oracle_owner,
         &base,
         &quote,
-        &3_000_000i128,
-        &1_000_000i128,
-        &300u64,
-        &1u32,
-        &DEFAULT_TOLERANCE_BPS,
-        &DEFAULT_QUORUM_WINDOW_SECONDS,
-        &0u64,
-        &NO_HALT,
+        &make_config(
+            3_000_000,
+            1_000_000,
+            300,
+            1,
+            DEFAULT_TOLERANCE_BPS,
+            DEFAULT_QUORUM_WINDOW_SECONDS,
+            0,
+            NO_HALT,
+        ),
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -288,14 +316,16 @@ fn test_configure_pair_zero_min_rate_rejected() {
         &oracle_owner,
         &base,
         &quote,
-        &0i128,
-        &2_000_000i128,
-        &300u64,
-        &1u32,
-        &DEFAULT_TOLERANCE_BPS,
-        &DEFAULT_QUORUM_WINDOW_SECONDS,
-        &0u64,
-        &NO_HALT,
+        &make_config(
+            0,
+            2_000_000,
+            300,
+            1,
+            DEFAULT_TOLERANCE_BPS,
+            DEFAULT_QUORUM_WINDOW_SECONDS,
+            0,
+            NO_HALT,
+        ),
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -311,14 +341,16 @@ fn test_configure_pair_negative_rate_rejected() {
         &oracle_owner,
         &base,
         &quote,
-        &-1i128,
-        &2_000_000i128,
-        &300u64,
-        &1u32,
-        &DEFAULT_TOLERANCE_BPS,
-        &DEFAULT_QUORUM_WINDOW_SECONDS,
-        &0u64,
-        &NO_HALT,
+        &make_config(
+            -1,
+            2_000_000,
+            300,
+            1,
+            DEFAULT_TOLERANCE_BPS,
+            DEFAULT_QUORUM_WINDOW_SECONDS,
+            0,
+            NO_HALT,
+        ),
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -334,14 +366,16 @@ fn test_configure_pair_zero_staleness_rejected() {
         &oracle_owner,
         &base,
         &quote,
-        &1_000_000i128,
-        &2_000_000i128,
-        &0u64,
-        &1u32,
-        &DEFAULT_TOLERANCE_BPS,
-        &DEFAULT_QUORUM_WINDOW_SECONDS,
-        &0u64,
-        &NO_HALT,
+        &make_config(
+            1_000_000,
+            2_000_000,
+            0,
+            1,
+            DEFAULT_TOLERANCE_BPS,
+            DEFAULT_QUORUM_WINDOW_SECONDS,
+            0,
+            NO_HALT,
+        ),
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -357,14 +391,16 @@ fn test_configure_pair_zero_quorum_window_rejected() {
         &oracle_owner,
         &base,
         &quote,
-        &1_000_000i128,
-        &2_000_000i128,
-        &300u64,
-        &1u32,
-        &DEFAULT_TOLERANCE_BPS,
-        &0u64,
-        &0u64,
-        &NO_HALT,
+        &make_config(
+            1_000_000,
+            2_000_000,
+            300,
+            1,
+            DEFAULT_TOLERANCE_BPS,
+            0,
+            0,
+            NO_HALT,
+        ),
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -381,14 +417,16 @@ fn test_non_owner_cannot_configure_pair() {
         &attacker,
         &base,
         &quote,
-        &1_000_000i128,
-        &2_000_000i128,
-        &300u64,
-        &1u32,
-        &DEFAULT_TOLERANCE_BPS,
-        &DEFAULT_QUORUM_WINDOW_SECONDS,
-        &0u64,
-        &NO_HALT,
+        &make_config(
+            1_000_000,
+            2_000_000,
+            300,
+            1,
+            DEFAULT_TOLERANCE_BPS,
+            DEFAULT_QUORUM_WINDOW_SECONDS,
+            0,
+            NO_HALT,
+        ),
     );
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 }
@@ -500,14 +538,16 @@ fn test_disabled_pair_get_pair_state_distinguishable_from_fresh() {
         &oracle_owner,
         &base2,
         &quote2,
-        &500_000i128,
-        &5_000_000i128,
-        &600u64,
-        &1u32,
-        &DEFAULT_TOLERANCE_BPS,
-        &DEFAULT_QUORUM_WINDOW_SECONDS,
-        &0u64,
-        &NO_HALT,
+        &make_config(
+            500_000,
+            5_000_000,
+            600,
+            1,
+            DEFAULT_TOLERANCE_BPS,
+            DEFAULT_QUORUM_WINDOW_SECONDS,
+            0,
+            NO_HALT,
+        ),
     );
     let source2 = Address::generate(&env);
     oracle_client.add_source(&oracle_owner, &source2);
@@ -949,14 +989,16 @@ fn test_configure_pair_before_init_fails() {
         &a,
         &b,
         &c,
-        &1i128,
-        &2i128,
-        &1u64,
-        &1u32,
-        &DEFAULT_TOLERANCE_BPS,
-        &DEFAULT_QUORUM_WINDOW_SECONDS,
-        &0u64,
-        &NO_HALT,
+        &make_config(
+            1,
+            2,
+            1,
+            1,
+            DEFAULT_TOLERANCE_BPS,
+            DEFAULT_QUORUM_WINDOW_SECONDS,
+            0,
+            NO_HALT,
+        ),
     );
     assert_eq!(res, Err(Ok(OracleError::NotInitialized)));
 }
@@ -1019,14 +1061,16 @@ fn test_compromised_source_blast_radius() {
         &source,
         &base,
         &quote,
-        &1i128,
-        &999_000_000i128,
-        &86400u64,
-        &1u32,
-        &DEFAULT_TOLERANCE_BPS,
-        &DEFAULT_QUORUM_WINDOW_SECONDS,
-        &0u64,
-        &NO_HALT,
+        &make_config(
+            1,
+            999_000_000,
+            86400,
+            1,
+            DEFAULT_TOLERANCE_BPS,
+            DEFAULT_QUORUM_WINDOW_SECONDS,
+            0,
+            NO_HALT,
+        ),
     );
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 
@@ -1061,14 +1105,16 @@ fn test_pair_isolation() {
         &_oracle_owner,
         &base2,
         &quote2,
-        &100_000i128,
-        &9_000_000i128,
-        &600u64,
-        &1u32,
-        &DEFAULT_TOLERANCE_BPS,
-        &DEFAULT_QUORUM_WINDOW_SECONDS,
-        &0u64,
-        &NO_HALT,
+        &make_config(
+            100_000,
+            9_000_000,
+            600,
+            1,
+            DEFAULT_TOLERANCE_BPS,
+            DEFAULT_QUORUM_WINDOW_SECONDS,
+            0,
+            NO_HALT,
+        ),
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1105,14 +1151,16 @@ fn test_reconfigure_pair_tightens_bounds() {
         &oracle_owner,
         &base,
         &quote,
-        &1_000_000i128,
-        &3_000_000i128,
-        &600u64,
-        &1u32,
-        &DEFAULT_TOLERANCE_BPS,
-        &DEFAULT_QUORUM_WINDOW_SECONDS,
-        &0u64,
-        &NO_HALT,
+        &make_config(
+            1_000_000,
+            3_000_000,
+            600,
+            1,
+            DEFAULT_TOLERANCE_BPS,
+            DEFAULT_QUORUM_WINDOW_SECONDS,
+            0,
+            NO_HALT,
+        ),
     );
 
     // Same rate now rejected.
@@ -1152,14 +1200,7 @@ fn test_multi_source_quorum_success() {
         &oracle_owner,
         &base,
         &quote,
-        &500_000i128,
-        &5_000_000i128,
-        &600u64,
-        &2u32,
-        &50u32,
-        &60u64,
-        &0u64,
-        &NO_HALT,
+        &make_config(500_000, 5_000_000, 600, 2, 50, 60, 0, NO_HALT),
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1199,14 +1240,7 @@ fn test_multi_source_quorum_different_rates_do_not_count() {
         &oracle_owner,
         &base,
         &quote,
-        &500_000i128,
-        &5_000_000i128,
-        &600u64,
-        &2u32,
-        &50u32,
-        &60u64,
-        &0u64,
-        &NO_HALT,
+        &make_config(500_000, 5_000_000, 600, 2, 50, 60, 0, NO_HALT),
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1486,14 +1520,16 @@ fn test_quorum_rejection_on_zero_quorum() {
         &oracle_owner,
         &base,
         &quote,
-        &500_000i128,
-        &5_000_000i128,
-        &600u64,
-        &0u32, // Invalid
-        &DEFAULT_TOLERANCE_BPS,
-        &DEFAULT_QUORUM_WINDOW_SECONDS,
-        &0u64,
-        &NO_HALT,
+        &make_config(
+            500_000,
+            5_000_000,
+            600,
+            0,
+            DEFAULT_TOLERANCE_BPS,
+            DEFAULT_QUORUM_WINDOW_SECONDS,
+            0,
+            NO_HALT,
+        ),
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -1618,14 +1654,7 @@ fn test_rate_limit_rejects_rapid_resubmission() {
         &oracle_owner,
         &base,
         &quote,
-        &500_000i128,
-        &5_000_000i128,
-        &600u64,
-        &1u32,
-        &0u32,
-        &60u64,
-        &30u64, // 30-second min interval
-        &NO_HALT,
+        &make_config(500_000, 5_000_000, 600, 1, 0, 60, 30, NO_HALT),
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1651,14 +1680,7 @@ fn test_rate_limit_allows_submission_after_interval() {
         &oracle_owner,
         &base,
         &quote,
-        &500_000i128,
-        &5_000_000i128,
-        &600u64,
-        &1u32,
-        &0u32,
-        &60u64,
-        &30u64,
-        &NO_HALT,
+        &make_config(500_000, 5_000_000, 600, 1, 0, 60, 30, NO_HALT),
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1685,14 +1707,7 @@ fn test_rate_limit_does_not_affect_other_sources() {
         &oracle_owner,
         &base,
         &quote,
-        &500_000i128,
-        &5_000_000i128,
-        &600u64,
-        &1u32,
-        &0u32,
-        &60u64,
-        &30u64,
-        &NO_HALT,
+        &make_config(500_000, 5_000_000, 600, 1, 0, 60, 30, NO_HALT),
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1726,14 +1741,7 @@ fn test_rate_limit_single_source_counts_once_in_quorum() {
         &oracle_owner,
         &base,
         &quote,
-        &500_000i128,
-        &5_000_000i128,
-        &600u64,
-        &2u32,
-        &100u32,
-        &60u64,
-        &30u64,
-        &NO_HALT,
+        &make_config(500_000, 5_000_000, 600, 2, 100, 60, 30, NO_HALT),
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1874,14 +1882,16 @@ fn setup_halt_pair(
         &oracle_owner,
         &base,
         &quote,
-        &500_000i128,
-        &5_000_000i128,
-        &300u64,  // max_staleness = 300 s — easy to exceed in tests
-        &1u32,
-        &0u32,
-        &DEFAULT_QUORUM_WINDOW_SECONDS,
-        &0u64,
-        &halt_threshold,
+        &make_config(
+            500_000,
+            5_000_000,
+            300,
+            1,
+            0,
+            DEFAULT_QUORUM_WINDOW_SECONDS,
+            0,
+            halt_threshold,
+        ),
     );
 
     (oracle_client, oracle_owner, source, base, quote)
@@ -1904,24 +1914,24 @@ fn test_consecutive_stale_halt_triggers_after_threshold() {
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
-    // Advance time so the stored price is older than max_staleness (300 s).
-    env.ledger().with_mut(|li| li.timestamp = 2_000); // age = 1000 > 300
-
-    // Read 1 — counter becomes 1; still PriceTooOld.
+    // Read 1 — age = 301 (stale period 1); still PriceTooOld.
+    env.ledger().with_mut(|li| li.timestamp = 1_301);
     assert_eq!(
         oracle_client.try_get_pair_state(&base, &quote),
         Err(Ok(OracleError::PriceTooOld)),
         "first stale read must return PriceTooOld (counter=1, threshold=3)"
     );
 
-    // Read 2 — counter becomes 2; still PriceTooOld.
+    // Read 2 — age = 601 (stale period 2); still PriceTooOld.
+    env.ledger().with_mut(|li| li.timestamp = 1_601);
     assert_eq!(
         oracle_client.try_get_pair_state(&base, &quote),
         Err(Ok(OracleError::PriceTooOld)),
         "second stale read must return PriceTooOld (counter=2, threshold=3)"
     );
 
-    // Read 3 — counter reaches threshold (3 >= 3); PairHalted.
+    // Read 3 — age = 901 (stale period 3 >= threshold=3); PairHalted.
+    env.ledger().with_mut(|li| li.timestamp = 1_901);
     assert_eq!(
         oracle_client.try_get_pair_state(&base, &quote),
         Err(Ok(OracleError::PairHalted)),
@@ -1946,9 +1956,10 @@ fn test_consecutive_stale_below_threshold_returns_price_too_old() {
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
-    env.ledger().with_mut(|li| li.timestamp = 2_000); // stale
 
-    for read_n in 1..=5u32 {
+    for read_n in 1..=5u64 {
+        env.ledger()
+            .with_mut(|li| li.timestamp = 1_000 + read_n * 300 + 1); // stale period read_n < 10
         assert_eq!(
             oracle_client.try_get_pair_state(&base, &quote),
             Err(Ok(OracleError::PriceTooOld)),
@@ -1975,28 +1986,29 @@ fn test_fresh_push_clears_halt_and_resumes_serving() {
     // Push initial price and then let it go stale.
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
-    env.ledger().with_mut(|li| li.timestamp = 2_000); // age = 1000 > max_staleness=300
 
-    // Read 1 → PriceTooOld (counter=1).
+    // Read 1 → PriceTooOld (age = 301, period 1).
+    env.ledger().with_mut(|li| li.timestamp = 1_301);
     assert_eq!(
         oracle_client.try_get_pair_state(&base, &quote),
         Err(Ok(OracleError::PriceTooOld))
     );
-    // Read 2 → PairHalted (counter=2 >= threshold=2).
+    // Read 2 → PairHalted (age = 601, period 2 >= threshold 2).
+    env.ledger().with_mut(|li| li.timestamp = 1_601);
     assert_eq!(
         oracle_client.try_get_pair_state(&base, &quote),
         Err(Ok(OracleError::PairHalted))
     );
 
     // Push a fresh price — this must clear the counter.
-    // max_staleness=300, so source_timestamp=2_000 with ledger=2_000 is fresh.
-    oracle_client.push_price(&source, &base, &quote, &3_000_000i128, &2_000u64);
+    // max_staleness=300, so source_timestamp=1_601 with ledger=1_601 is fresh.
+    oracle_client.push_price(&source, &base, &quote, &3_000_000i128, &1_601u64);
 
     // Immediately after a fresh push, get_pair_state must succeed again.
     let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 3_000_000, "fresh push rate must be served");
     assert_eq!(
-        state.last_updated_ts, 2_000,
+        state.last_updated_ts, 1_601,
         "timestamp must reflect the new push"
     );
 
@@ -2040,15 +2052,14 @@ fn test_fresh_push_before_halt_resets_counter() {
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
-    // Advance time: price is stale.
-    env.ledger().with_mut(|li| li.timestamp = 2_000);
-
-    // Two stale reads (counter = 2; threshold not yet reached).
+    // Two stale reads (period 1 and 2; threshold not yet reached).
+    env.ledger().with_mut(|li| li.timestamp = 1_301);
     assert_eq!(
         oracle_client.try_get_pair_state(&base, &quote),
         Err(Ok(OracleError::PriceTooOld)),
         "read 1 (counter=1) must be PriceTooOld"
     );
+    env.ledger().with_mut(|li| li.timestamp = 1_601);
     assert_eq!(
         oracle_client.try_get_pair_state(&base, &quote),
         Err(Ok(OracleError::PriceTooOld)),
@@ -2056,31 +2067,30 @@ fn test_fresh_push_before_halt_resets_counter() {
     );
 
     // Push a fresh price BEFORE the third stale read resets the counter.
-    oracle_client.push_price(&source, &base, &quote, &2_500_000i128, &2_000u64);
+    oracle_client.push_price(&source, &base, &quote, &2_500_000i128, &1_601u64);
 
     // Fresh read immediately succeeds (counter is now 0).
     let state = oracle_client.get_pair_state(&base, &quote);
     assert_eq!(state.rate, 2_500_000, "fresh push must be served");
 
-    // Let the new price go stale again.
-    env.ledger().with_mut(|li| li.timestamp = 3_000); // age from ts=2000 is 1000 > 300
-
     // The full threshold (3) must be accumulated again from scratch.
+    env.ledger().with_mut(|li| li.timestamp = 1_902); // age = 301 from 1601 -> period 1
     assert_eq!(
         oracle_client.try_get_pair_state(&base, &quote),
         Err(Ok(OracleError::PriceTooOld)),
         "post-reset read 1 (counter=1) must be PriceTooOld"
     );
+    env.ledger().with_mut(|li| li.timestamp = 2_202); // age = 601 from 1601 -> period 2
     assert_eq!(
         oracle_client.try_get_pair_state(&base, &quote),
         Err(Ok(OracleError::PriceTooOld)),
         "post-reset read 2 (counter=2) must be PriceTooOld"
     );
-    // Third stale read — threshold reached again.
+    // Third stale read — threshold reached again (age = 901 from 1601 -> period 3 >= 3).
+    env.ledger().with_mut(|li| li.timestamp = 2_502);
     assert_eq!(
         oracle_client.try_get_pair_state(&base, &quote),
         Err(Ok(OracleError::PairHalted)),
         "post-reset read 3 (counter=3 >= threshold=3) must be PairHalted"
     );
 }
-

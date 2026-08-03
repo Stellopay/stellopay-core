@@ -42,9 +42,7 @@
 //! @custom:security-review 2024-08-15
 //! @custom:audit trail PR #1842 - Rate limiter and payment retry integration
 
-use payment_retry::{
-    PaymentRetryContract, PaymentRetryContractClient, RetryConfig, RetryState,
-};
+use payment_retry::{PaymentRetryContract, PaymentRetryContractClient, RetryConfig, RetryState};
 use rate_limiter::{RateLimiter, RateLimiterClient};
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
@@ -463,7 +461,8 @@ fn test_multiple_throttles_before_funding() {
         retry_client.process_retry(&payment_id);
     }
     assert_eq!(
-        retry_client.get_payment(&payment_id).unwrap().retry_count, 2,
+        retry_client.get_payment(&payment_id).unwrap().retry_count,
+        2,
         "retry_count must not change after terminal Failed state"
     );
 }
@@ -888,13 +887,13 @@ fn test_integrated_rate_limiter_and_payment_retry_flow() {
     assert_eq!(
         TokenClient::new(&env, &token).balance(&employer),
         500i128, // 2000 minted - 500 (partial escrow) - 1500 (successful payment) = 0... wait
-                 // Actually: 500 was consumed (partial escrow failed), 1500 succeeded
-                 // So employer has: minted(2000) - partial(500) - success(1500) = 0
-                 // But we minted 500 first, then 1500, so total minted = 2000
-                 // Partial escrow: 500 was in contract, failed, so not returned
-                 // Success: 1500 transferred to recipient
-                 // Final: employer balance = 2000 - 500 - 1500 = 0
-                 0i128,
+        // Actually: 500 was consumed (partial escrow failed), 1500 succeeded
+        // So employer has: minted(2000) - partial(500) - success(1500) = 0
+        // But we minted 500 first, then 1500, so total minted = 2000
+        // Partial escrow: 500 was in contract, failed, so not returned
+        // Success: 1500 transferred to recipient
+        // Final: employer balance = 2000 - 500 - 1500 = 0
+        0i128,
         "Employer should have no remaining balance after all transfers"
     );
 }
@@ -1087,7 +1086,8 @@ fn test_rapid_successive_calls_counter_integrity() {
     // Now call should be processed
     retry_client.process_retry(&payment_id);
     assert_eq!(
-        retry_client.get_payment(&payment_id).unwrap().retry_count, 2,
+        retry_client.get_payment(&payment_id).unwrap().retry_count,
+        2,
         "After backoff, retry_count should increment to 2"
     );
 }

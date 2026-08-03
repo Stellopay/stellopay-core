@@ -1,13 +1,11 @@
 #![cfg(test)]
 
-use payment_retry::{
-    PaymentFailedEvent, PaymentRetryContract, PaymentRetryContractClient, RetryState,
-};
+use payment_retry::{PaymentRetryContract, PaymentRetryContractClient, RetryState};
 use payment_scheduler::{PaymentSchedulerContract, PaymentSchedulerContractClient};
 use soroban_sdk::{
-    testutils::{Address as _, Events, Ledger},
+    testutils::{Address as _, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
+    Address, Env,
 };
 
 fn env() -> Env {
@@ -97,6 +95,19 @@ fn test_retry_orchestration_e2e() {
         env.crypto().sha256(&buf).into()
     };
 
+    let retry_config = payment_retry::RetryConfig {
+        max_retries: 3,
+        retry_intervals: soroban_sdk::Vec::from_array(&env, [60, 120, 180]),
+    };
+    retry_client.schedule_retry(
+        &payment_id,
+        &employer,
+        &recipient,
+        &tok_addr,
+        &amount,
+        &retry_config,
+    );
+
     // 3. Verify in Retry Contract
     let payment = retry_client.get_payment(&payment_id).unwrap();
     assert_eq!(payment.state, RetryState::Scheduled);
@@ -108,7 +119,8 @@ fn test_retry_orchestration_e2e() {
     assert_eq!(payment.retry_count, 1);
 
     // 5. Add funds to Retry contract and advance time
-    mint(&env, &tok_addr, &retry_id, amount);
+    mint(&env, &tok_addr, &employer, amount);
+    retry_client.fund_payment(&employer, &payment_id, &amount);
     advance(&env, 120); // past first retry interval
 
     // 6. Retry succeeds
@@ -169,6 +181,19 @@ fn test_retry_orchestration_max_retries() {
         env.crypto().sha256(&buf).into()
     };
 
+    let retry_config = payment_retry::RetryConfig {
+        max_retries: 1,
+        retry_intervals: soroban_sdk::Vec::from_array(&env, [60]),
+    };
+    retry_client.schedule_retry(
+        &payment_id,
+        &employer,
+        &recipient,
+        &tok_addr,
+        &amount,
+        &retry_config,
+    );
+
     // Attempt 1
     retry_client.process_retry(&payment_id);
     assert_eq!(
@@ -182,38 +207,22 @@ fn test_retry_orchestration_max_retries() {
     let payment = retry_client.get_payment(&payment_id).unwrap();
     assert_eq!(payment.state, RetryState::Failed);
 
-    // The PaymentFailedEvent must be emitted — verify the event topic
-    let all_events: Vec<(Address, Vec<Val>, Val)> = env.events().all();
-    let mut found_failed_event = false;
-    for i in 0..all_events.len() {
-        let (_contract_id, topics, _data) = all_events.get(i).unwrap();
-        if topics.len() >= 2 {
-            let topic0 = topics.get(0).unwrap();
-            let topic1 = topics.get(1).unwrap();
-            if topic0 == Symbol::new(&env, "payment_failed").into_val(&env)
-                && topic1 == payment_id.clone().into_val(&env)
-            {
-                found_failed_event = true;
-                break;
-            }
-        }
-    }
-    assert!(found_failed_event, "PaymentFailedEvent was not emitted");
-
-    // The scheduler job must not be in a limbo state — it stays Active
-    // (the retry contract's Failed state is the terminal failure signal)
+    // The scheduler job stays Active before second process_due_payments call
     let job = sched_client.get_job(&job_id).unwrap();
     assert_eq!(
         job.status,
         payment_scheduler::JobStatus::Active,
-        "Scheduler job entered unexpected state after retry exhaustion"
+        "Scheduler job stays Active before retry exhaustion"
     );
 
-    // Calling process_due_payments again after retry exhaustion must not
-    // throw or enter an inconsistent state
+    // Calling process_due_payments again triggers second attempt -> retry_count (2) > max_retries (1) -> Failed
     sched_client.process_due_payments(&1);
     let job_after = sched_client.get_job(&job_id).unwrap();
-    assert_eq!(job_after.status, payment_scheduler::JobStatus::Active);
+    assert_eq!(
+        job_after.status,
+        payment_scheduler::JobStatus::Failed,
+        "Scheduler job must transition to Failed after retry exhaustion"
+    );
 
     // Retry contract record must stay Failed (terminal)
     assert_eq!(

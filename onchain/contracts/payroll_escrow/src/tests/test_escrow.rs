@@ -986,8 +986,7 @@ fn test_double_refund_preserves_accounting() {
     // First refund succeeds — all accounting must be consistent
     client.refund_remaining(&manager, &agreement_id);
 
-    let after_refund =
-        AccountingSnapshot::take(&env, &token, &client, agreement_id, &recipient);
+    let after_refund = AccountingSnapshot::take(&env, &token, &client, agreement_id, &recipient);
     assert_eq!(after_refund.internal_balance, 0);
     assert_eq!(after_refund.contract_token_balance, 0);
     assert_eq!(
@@ -1888,8 +1887,7 @@ fn test_cumulative_release_cap_many_small_releases_never_exceed_funded() {
 
         // Counter sync: internal balance must equal funded minus released.
         assert_eq!(
-            internal_balance,
-            expected_remaining,
+            internal_balance, expected_remaining,
             "step {step}: internal balance ({internal_balance}) != funded ({funded}) \
              - released ({running_total}) = {expected_remaining}"
         );

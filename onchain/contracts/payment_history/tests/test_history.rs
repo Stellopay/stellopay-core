@@ -602,27 +602,71 @@ fn test_agreement_query_never_leaks_cross_agreement_records() {
 
     // Record 3 payments for agreement A with shared employer.
     let id_a1 = record(
-        &client, &env, agreement_a, 1u32, &token, 100, &shared_employer, &employee_a, 1_000,
+        &client,
+        &env,
+        agreement_a,
+        1u32,
+        &token,
+        100,
+        &shared_employer,
+        &employee_a,
+        1_000,
     );
     let id_a2 = record(
-        &client, &env, agreement_a, 2u32, &token, 200, &shared_employer, &employee_a, 2_000,
+        &client,
+        &env,
+        agreement_a,
+        2u32,
+        &token,
+        200,
+        &shared_employer,
+        &employee_a,
+        2_000,
     );
     let id_a3 = record(
-        &client, &env, agreement_a, 3u32, &token, 300, &shared_employer, &employee_a, 3_000,
+        &client,
+        &env,
+        agreement_a,
+        3u32,
+        &token,
+        300,
+        &shared_employer,
+        &employee_a,
+        3_000,
     );
 
     // Record 2 payments for agreement B with the SAME employer.
     let id_b1 = record(
-        &client, &env, agreement_b, 4u32, &token, 400, &shared_employer, &employee_b, 4_000,
+        &client,
+        &env,
+        agreement_b,
+        4u32,
+        &token,
+        400,
+        &shared_employer,
+        &employee_b,
+        4_000,
     );
     let id_b2 = record(
-        &client, &env, agreement_b, 5u32, &token, 500, &shared_employer, &employee_b, 5_000,
+        &client,
+        &env,
+        agreement_b,
+        5u32,
+        &token,
+        500,
+        &shared_employer,
+        &employee_b,
+        5_000,
     );
 
     // ── Agreement-level queries ──────────────────────────────────────────
 
     let page_a = client.get_payments_by_agreement(&agreement_a, &1u32, &10u32);
-    assert_eq!(page_a.len(), 3u32, "agreement A must return exactly 3 records");
+    assert_eq!(
+        page_a.len(),
+        3u32,
+        "agreement A must return exactly 3 records"
+    );
     for i in 0..page_a.len() {
         let record = page_a.get(i).unwrap();
         assert_eq!(
@@ -632,7 +676,11 @@ fn test_agreement_query_never_leaks_cross_agreement_records() {
     }
 
     let page_b = client.get_payments_by_agreement(&agreement_b, &1u32, &10u32);
-    assert_eq!(page_b.len(), 2u32, "agreement B must return exactly 2 records");
+    assert_eq!(
+        page_b.len(),
+        2u32,
+        "agreement B must return exactly 2 records"
+    );
     for i in 0..page_b.len() {
         let record = page_b.get(i).unwrap();
         assert_eq!(
@@ -2227,13 +2275,7 @@ fn test_prune_record_emits_event_with_correct_key() {
     let employee = Address::generate(&env);
     let hash = make_hash(&env, 0xAA);
     let payment_id = client.record_payment(
-        &1u128,
-        &hash,
-        &token,
-        &1000i128,
-        &employer,
-        &employee,
-        &1_000u64,
+        &1u128, &hash, &token, &1000i128, &employer, &employee, &1_000u64,
     );
 
     // Prune as owner.
@@ -2260,13 +2302,7 @@ fn test_prune_record_removes_record_from_storage() {
     let employee = Address::generate(&env);
     let hash = make_hash(&env, 0xBB);
     let payment_id = client.record_payment(
-        &1u128,
-        &hash,
-        &token,
-        &2000i128,
-        &employer,
-        &employee,
-        &2_000u64,
+        &1u128, &hash, &token, &2000i128, &employer, &employee, &2_000u64,
     );
 
     // Confirm record exists before pruning.
@@ -2306,9 +2342,16 @@ fn test_non_pruning_operations_do_not_emit_prune_event() {
     record(&client, &env, 1, 1u32, &token, 500, &from, &to, 1_000);
 
     let events = env.events().all();
-    assert_eq!(events.len(), 1, "record_payment must emit exactly one event");
+    assert_eq!(
+        events.len(),
+        1,
+        "record_payment must emit exactly one event"
+    );
     let (_contract, topics, _data) = events.get(0).unwrap();
     let expected_topic: soroban_sdk::Vec<soroban_sdk::Val> =
         (Symbol::new(&env, "payment_recorded"),).into_val(&env);
-    assert_eq!(topics, expected_topic, "event must be payment_recorded, not record_pruned");
+    assert_eq!(
+        topics, expected_topic,
+        "event must be payment_recorded, not record_pruned"
+    );
 }

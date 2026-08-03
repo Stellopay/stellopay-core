@@ -1356,7 +1356,10 @@ fn test_v1_method_parity_across_lifecycle() {
         direct.get_milestone_count(&aid),
         via.get_milestone_count(&aid)
     );
-    assert_milestone_eq(&direct.get_milestone(&aid, &1), &via.get_milestone(&aid, &1));
+    assert_milestone_eq(
+        &direct.get_milestone(&aid, &1),
+        &via.get_milestone(&aid, &1),
+    );
 
     // Add two milestones.
     direct.add_milestone(&aid, &1_000i128);
@@ -1365,21 +1368,36 @@ fn test_v1_method_parity_across_lifecycle() {
         direct.get_milestone_count(&aid),
         via.get_milestone_count(&aid)
     );
-    assert_milestone_eq(&direct.get_milestone(&aid, &1), &via.get_milestone(&aid, &1));
-    assert_milestone_eq(&direct.get_milestone(&aid, &2), &via.get_milestone(&aid, &2));
+    assert_milestone_eq(
+        &direct.get_milestone(&aid, &1),
+        &via.get_milestone(&aid, &1),
+    );
+    assert_milestone_eq(
+        &direct.get_milestone(&aid, &2),
+        &via.get_milestone(&aid, &2),
+    );
 
     // Approve milestone 1.
     direct.approve_milestone(&aid, &1);
-    assert_milestone_eq(&direct.get_milestone(&aid, &1), &via.get_milestone(&aid, &1));
+    assert_milestone_eq(
+        &direct.get_milestone(&aid, &1),
+        &via.get_milestone(&aid, &1),
+    );
 
     // Claim milestone 1.
     direct.claim_milestone(&aid, &1);
-    assert_milestone_eq(&direct.get_milestone(&aid, &1), &via.get_milestone(&aid, &1));
+    assert_milestone_eq(
+        &direct.get_milestone(&aid, &1),
+        &via.get_milestone(&aid, &1),
+    );
 
     // Reject milestone 2.
     let reason = soroban_sdk::String::from_str(&env, "out of scope");
     direct.reject_milestone(&aid, &2, &reason);
-    assert_milestone_eq(&direct.get_milestone(&aid, &2), &via.get_milestone(&aid, &2));
+    assert_milestone_eq(
+        &direct.get_milestone(&aid, &2),
+        &via.get_milestone(&aid, &2),
+    );
 
     // Count unchanged after reject.
     assert_eq!(

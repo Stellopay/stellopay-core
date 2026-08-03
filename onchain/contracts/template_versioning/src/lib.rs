@@ -240,29 +240,33 @@ impl TemplateVersioning {
 
     /// Publish a new immutable version for `template_id`.
     ///
-    /// # Security invariant
-    /// This function only appends a new version record. It does **not** modify or affect
-    /// existing agreements that are pinned to earlier versions. Existing agreements
-    /// continue to resolve to their originally specified `(template_id, version)` pair.
+    /// # Security Invariants
+    /// 1. **Version Pinning Guarantee**: This function appends a new version record. It does **not** modify
+    ///    or affect existing agreements pinned to earlier versions.
+    /// 2. **Strictly-Increasing Version Invariant**: Every newly published version number must strictly
+    ///    increase over the existing `latest_version` (`version > latest_version`). Duplicate, out-of-order,
+    ///    or non-positive version numbers are strictly rejected with [`VersioningError::InvalidData`].
     ///
     /// # Parameters
     /// - `owner`: Must be the registered owner of `template_id`
     /// - `template_id`: The template to publish a new version for
+    /// - `version`: Target version number (must be strictly greater than `latest_version`)
     /// - `schema_hash`: Commitment to the off-chain schema (e.g., SHA-256 of JSON ABI)
     /// - `migration_notes`: Human-readable notes about changes from previous version
     /// - `deprecated`: If true, this version is immediately deprecated upon publication
     ///
     /// # Returns
-    /// The new version number (monotonically increasing, starting at 1)
+    /// The published version number (monotonically strictly increasing, starting at 1)
     ///
     /// # Errors
     /// - `Unauthorized` if caller is not the template owner
     /// - `TemplateNotFound` if `template_id` does not exist
-    /// - `InvalidData` if version would overflow u32
+    /// - `InvalidData` if `version == 0` or `version <= latest_version`
     pub fn publish_template_version(
         env: Env,
         owner: Address,
         template_id: u64,
+        version: u32,
         schema_hash: BytesN<32>,
         migration_notes: String,
         deprecated: bool,
@@ -278,8 +282,7 @@ impl TemplateVersioning {
         let latest: u32 = storage
             .get(&DataKey::TemplateLatest(template_id))
             .unwrap_or(0);
-        let version = latest.saturating_add(1);
-        if version == 0 {
+        if version == 0 || version <= latest {
             return Err(VersioningError::InvalidData);
         }
         let now = env.ledger().timestamp();
