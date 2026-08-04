@@ -8,3 +8,7 @@ target
 
 # coverage
 tarpaulin-report.html
+llvm-cov-out
+coverage-reports/
+*.profraw
+*.profdata

@@ -1,3 +1,7 @@
 # Migration scripts generated artifacts (do not commit)
 scripts/migrations/.env.migration
 backups/
+
+# Coverage gate artifacts (cargo llvm-cov outputs)
+coverage-reports/
+llvm-cov-out

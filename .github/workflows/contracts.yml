@@ -36,3 +36,95 @@ jobs:
       - name: Test workspace
         working-directory: onchain
         run: cargo test --workspace --verbose
+
+  # Discovers the contract package names and exposes them to the coverage
+  # matrix below. Keeping this dynamic means a newly added contract crate is
+  # measured (and gated) without editing the workflow file.
+  coverage-list:
+    runs-on: ubuntu-latest
+    outputs:
+      contracts: ${{ steps.list.outputs.contracts }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust (nightly)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, llvm-tools-preview
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: onchain
+
+      - name: Compute contract package matrix
+        id: list
+        working-directory: onchain
+        run: |
+          echo "contracts=$(cargo metadata --format-version 1 --no-deps | jq -c '[.packages[] | select(.manifest_path | contains("/contracts/")) | .name]')" >> "$GITHUB_OUTPUT"
+
+  # One job per contract crate. Each job measures line coverage for its crate
+  # and fails if that crate drops below the 95% threshold. The JSON report is
+  # uploaded so the aggregate gate can verify no crate was skipped.
+  coverage:
+    needs: coverage-list
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        contract: ${{ fromJSON(needs.coverage-list.outputs.contracts) }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust (nightly) + llvm-tools
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, llvm-tools-preview
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: onchain
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Measure ${{ matrix.contract }} line coverage
+        working-directory: onchain
+        run: cargo llvm-cov -p ${{ matrix.contract }} --json --output-path /tmp/coverage-${{ matrix.contract }}.json
+
+      - name: Enforce 95% line coverage for ${{ matrix.contract }}
+        run: python3 tools/coverage_check/check_coverage.py --report /tmp/coverage-${{ matrix.contract }}.json --workspace onchain --min-line-pct 95 --crate ${{ matrix.contract }}
+
+      - name: Upload ${{ matrix.contract }} coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report-${{ matrix.contract }}
+          path: /tmp/coverage-${{ matrix.contract }}.json
+          if-no-files-found: error
+
+  # Runs after every per-crate leg. Verifies that every contract crate in
+  # contracts/ has a report (a silently skipped crate fails the gate) and
+  # prints the full per-crate summary table to the job summary.
+  coverage-summary:
+    needs: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download all per-crate coverage reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-report-*
+          path: coverage-reports
+          merge-multiple: true
+
+      - name: Aggregate coverage gate
+        run: python3 tools/coverage_check/check_coverage.py --report coverage-reports --workspace onchain --min-line-pct 95
+
+      - name: Upload aggregate coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports-aggregate
+          path: coverage-reports
+          if-no-files-found: error
