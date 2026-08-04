@@ -2424,3 +2424,98 @@ fn test_hire_to_resolve_full_workflow() {
         "employer must have received at least the refund from dispute resolution"
     );
 }
+
+// ============================================================================
+// CI workflow configuration guard
+// ============================================================================
+
+/// Guards the CI coverage-gate configuration against accidental removal.
+///
+/// The per-crate 95% line-coverage gate lives in
+/// `.github/workflows/contracts.yml` and is enforced by
+/// `tools/coverage_check/check_coverage.py`. This module is a **contract
+/// between the workflow and the test suite**: if someone edits the workflow in
+/// a way that silently weakens or removes the gate, these tests fail in CI even
+/// if every contract still passes its own coverage threshold.
+///
+/// The checks are deliberately plain substring assertions rather than a full
+/// YAML parse. The workflow file is small and reviewable; substring checks are
+/// robust against formatting churn while still catching a deleted gate, a
+/// removed per-crate matrix, or a changed threshold.
+///
+/// `CARGO_MANIFEST_DIR` points at this crate (`onchain/integration_tests`);
+/// the repository root is two directory levels up, so the path is stable
+/// regardless of the working directory cargo was invoked from.
+mod ci_coverage_gate_guard {
+    use std::path::PathBuf;
+
+    /// Repository root, resolved from this crate's manifest directory.
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .canonicalize()
+            .expect("repository root must resolve from CARGO_MANIFEST_DIR")
+    }
+
+    /// Contents of `.github/workflows/contracts.yml`.
+    fn workflow_yaml() -> String {
+        let path = repo_root().join(".github/workflows/contracts.yml");
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", path.display()))
+    }
+
+    /// The workflow must measure coverage, run the per-crate gate, and
+    /// aggregate the reports so a skipped crate cannot pass silently.
+    #[test]
+    fn test_workflow_enforces_per_crate_coverage_gate() {
+        let yml = workflow_yaml();
+        assert!(
+            yml.contains("cargo llvm-cov"),
+            "contracts.yml must measure coverage with `cargo llvm-cov`"
+        );
+        assert!(
+            yml.contains("--min-line-pct 95"),
+            "contracts.yml must pass an explicit 95% line-coverage threshold to the gate"
+        );
+        assert!(
+            yml.contains("check_coverage.py"),
+            "contracts.yml must invoke tools/coverage_check/check_coverage.py"
+        );
+        assert!(
+            yml.contains("--crate"),
+            "contracts.yml must gate each contract crate individually (per-crate matrix)"
+        );
+        assert!(
+            yml.contains("matrix:") && yml.contains("fromJSON"),
+            "contracts.yml must run one coverage job per contract crate via a matrix"
+        );
+        assert!(
+            yml.contains("merge-multiple"),
+            "contracts.yml must merge per-crate reports for the aggregate gate"
+        );
+        assert!(
+            yml.contains("coverage-summary"),
+            "contracts.yml must run an aggregate job that fails when a crate is skipped"
+        );
+    }
+
+    /// The gate tool and the conformance tests that keep the smallest crates
+    /// above the threshold must stay in the tree.
+    #[test]
+    fn test_coverage_gate_tool_and_support_tests_exist() {
+        let root = repo_root();
+        assert!(
+            root.join("tools/coverage_check/check_coverage.py").exists(),
+            "tools/coverage_check/check_coverage.py must exist (it is referenced by CI)"
+        );
+        assert!(
+            root.join("tools/coverage_check/tests/test_check_coverage.py").exists(),
+            "the coverage checker must ship unit tests"
+        );
+        assert!(
+            root.join("onchain/contracts/rbac-interface/tests/mock_contract.rs").exists(),
+            "rbac-interface must keep its conformance tests to satisfy the 95% gate"
+        );
+    }
+}
