@@ -66,18 +66,18 @@ fn initialize_rejects_invalid_threshold() {
     signers.push_back(s1);
 
     // threshold 0 is invalid
-    let res = client.try_initialize(&owner, &signers, &0u32, &None);
+    let res = client.try_initialize(&owner, &signers, &0u32, &None, &None);
     assert!(res.is_err());
 
     // threshold > len(signers) is invalid
-    let res = client.try_initialize(&owner, &signers, &2u32, &None);
+    let res = client.try_initialize(&owner, &signers, &2u32, &None, &None);
     assert!(res.is_err());
 
     // Sanity: valid config succeeds
-    client.initialize(&owner, &signers, &1u32, &None);
+    client.initialize(&owner, &signers, &1u32, &None, &None);
 
     // second initialize should fail
-    let res = client.try_initialize(&owner, &signers, &1u32, &None);
+    let res = client.try_initialize(&owner, &signers, &1u32, &None, &None);
     assert!(res.is_err());
 
     // avoid unused warning

@@ -458,6 +458,13 @@ impl MultisigContract {
                 .set(&StorageKey::EmergencyGuardian, &g);
         }
 
+        // Persist the RBAC contract address so that DisputeResolution
+        // proposals can be gated on the Arbiter role.  When omitted the
+        // contract keeps its previous behaviour (no role gating).
+        if let Some(rbac) = rbac_address {
+            write_rbac_address(&env, &rbac);
+        }
+
         env.storage()
             .persistent()
             .set(&StorageKey::Initialized, &true);

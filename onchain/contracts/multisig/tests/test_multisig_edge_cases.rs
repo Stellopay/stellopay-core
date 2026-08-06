@@ -49,7 +49,7 @@ fn setup_2of3(
     signers.push_back(s3.clone());
 
     let guardian = Address::generate(env);
-    client.initialize(&owner, &signers, &2u32, &Some(guardian.clone()));
+    client.initialize(&owner, &signers, &2u32, &Some(guardian.clone()), &None);
     (id, client, owner, signers, guardian)
 }
 
@@ -70,7 +70,7 @@ fn setup_1of1(
     signers.push_back(s1.clone());
 
     let guardian = Address::generate(env);
-    client.initialize(&owner, &signers, &1u32, &Some(guardian.clone()));
+    client.initialize(&owner, &signers, &1u32, &Some(guardian.clone()), &None);
     (id, client, owner, signers, guardian)
 }
 
@@ -95,7 +95,7 @@ fn setup_3of3(
     signers.push_back(s3.clone());
 
     let guardian = Address::generate(env);
-    client.initialize(&owner, &signers, &3u32, &Some(guardian.clone()));
+    client.initialize(&owner, &signers, &3u32, &Some(guardian.clone()), &None);
     (id, client, owner, signers, guardian)
 }
 
@@ -812,7 +812,7 @@ fn initialize_rejects_duplicate_signers() {
     signers.push_back(s1.clone());
     signers.push_back(s1.clone()); // duplicate
 
-    let res = client.try_initialize(&owner, &signers, &1u32, &None);
+    let res = client.try_initialize(&owner, &signers, &1u32, &None, &None);
     assert!(res.is_err());
 }
 
