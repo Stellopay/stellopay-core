@@ -3,6 +3,7 @@
 use multisig::{
     MultisigContract, MultisigContractClient, OperationKind, OperationStatus, OperationType,
 };
+use rbac::{RbacContract, RbacContractClient as RbacClient, Role};
 use soroban_sdk::{
     testutils::Address as _,
     token::{Client as TokenClient, StellarAssetClient},
@@ -49,7 +50,7 @@ fn setup_initialized(
 
     let guardian = Address::generate(env);
 
-    client.initialize(&owner, &signers, &2u32, &Some(guardian.clone()));
+    client.initialize(&owner, &signers, &2u32, &Some(guardian.clone()), &None);
 
     (id, client, owner, signers, guardian)
 }
@@ -65,18 +66,18 @@ fn initialize_rejects_invalid_threshold() {
     signers.push_back(s1);
 
     // threshold 0 is invalid
-    let res = client.try_initialize(&owner, &signers, &0u32, &None);
+    let res = client.try_initialize(&owner, &signers, &0u32, &None, &None);
     assert!(res.is_err());
 
     // threshold > len(signers) is invalid
-    let res = client.try_initialize(&owner, &signers, &2u32, &None);
+    let res = client.try_initialize(&owner, &signers, &2u32, &None, &None);
     assert!(res.is_err());
 
     // Sanity: valid config succeeds
-    client.initialize(&owner, &signers, &1u32, &None);
+    client.initialize(&owner, &signers, &1u32, &None, &None);
 
     // second initialize should fail
-    let res = client.try_initialize(&owner, &signers, &1u32, &None);
+    let res = client.try_initialize(&owner, &signers, &1u32, &None, &None);
     assert!(res.is_err());
 
     // avoid unused warning
@@ -237,7 +238,6 @@ fn cancel_operation_by_creator_or_owner() {
     assert!(res.is_err());
 }
 
-
 // --- Duplicate-signature rejection tests (#1084) ---
 
 #[test]
@@ -318,4 +318,80 @@ fn test_operation_only_executes_with_distinct_signers_reaching_threshold() {
         2,
         "Approval list must contain exactly 2 distinct signers, not duplicate entries"
     );
+}
+
+fn setup_with_rbac(
+    env: &Env,
+) -> (
+    Address,
+    MultisigContractClient<'static>,
+    Address,
+    Vec<Address>,
+    Address,
+    Address,
+) {
+    let (id, client) = register_contract(env);
+    let owner = Address::generate(env);
+    let s1 = Address::generate(env);
+    let s2 = Address::generate(env);
+    let s3 = Address::generate(env);
+
+    let mut signers = Vec::new(env);
+    signers.push_back(s1.clone());
+    signers.push_back(s2.clone());
+    signers.push_back(s3.clone());
+
+    let guardian = Address::generate(env);
+
+    // Deploy RBAC contract and grant Arbiter role to s1
+    let rbac_id = env.register_contract(None, RbacContract);
+    let rbac_client = RbacClient::new(env, &rbac_id);
+    rbac_client.initialize(&owner);
+    rbac_client.grant_role(&owner, &s1, &Role::Arbiter);
+
+    client.initialize(
+        &owner,
+        &signers,
+        &2u32,
+        &Some(guardian.clone()),
+        &Some(rbac_id.clone()),
+    );
+
+    (id, client, owner, signers, guardian, rbac_id)
+}
+
+#[test]
+fn dispute_resolution_rejected_for_non_arbiter_signer() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian, _rbac_id) = setup_with_rbac(&env);
+
+    // s2 does not have Arbiter role
+    let non_arbiter = signers.get(1).unwrap();
+    let result = client.try_propose_operation(
+        &non_arbiter,
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+    assert!(
+        result.is_err(),
+        "Non-arbiter signer must not propose DisputeResolution"
+    );
+}
+
+#[test]
+fn dispute_resolution_accepted_for_arbiter_signer() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian, _rbac_id) = setup_with_rbac(&env);
+
+    // s1 has Arbiter role (granted in setup_with_rbac)
+    let arbiter = signers.get(0).unwrap();
+    let op_id = client.propose_operation(
+        &arbiter,
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Pending);
+    let approvals = client.get_approvals(&op_id);
+    assert_eq!(approvals.len(), 1);
+    assert_eq!(approvals.get(0).unwrap(), arbiter);
 }

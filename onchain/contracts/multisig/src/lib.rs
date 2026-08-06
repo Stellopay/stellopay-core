@@ -1,6 +1,7 @@
 #![no_std]
 #![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
+use rbac_interface::{RbacContractClient, Role};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, BytesN,
     Env, Vec,
@@ -33,6 +34,12 @@ pub enum MultisigError {
     /// through the same contract instance).  These payloads are rejected at
     /// proposal time.
     SelfReferentialRecipient = 3,
+
+    /// A signer without the Arbiter role attempted to propose a
+    /// DisputeResolution operation.  Only addresses that hold or inherit
+    /// the Arbiter role through the configured RBAC contract may propose
+    /// dispute-resolution operations.
+    NotArbiter = 4,
 }
 
 #[contract]
@@ -98,6 +105,7 @@ enum StorageKey {
     Initialized,
     Owner,
     EmergencyGuardian,
+    RbacAddress,
     Signers,
     Threshold,
     OperationCounter,
@@ -215,7 +223,8 @@ fn validate_operation_kind(env: &Env, kind: &OperationKind) {
         }
         // DisputeResolution and SetThresholdOverride have no payload
         // constraints enforced at proposal time.
-        OperationKind::DisputeResolution(_, _, _, _) | OperationKind::SetThresholdOverride(_, _) => {}
+        OperationKind::DisputeResolution(_, _, _, _)
+        | OperationKind::SetThresholdOverride(_, _) => {}
     }
 }
 
@@ -227,6 +236,16 @@ fn is_signer(env: &Env, addr: &Address) -> bool {
         }
     }
     false
+}
+
+fn read_rbac_address(env: &Env) -> Option<Address> {
+    env.storage().persistent().get(&StorageKey::RbacAddress)
+}
+
+fn write_rbac_address(env: &Env, addr: &Address) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::RbacAddress, addr);
 }
 
 fn next_operation_id(env: &Env) -> u128 {
@@ -398,6 +417,7 @@ impl MultisigContract {
         signers: Vec<Address>,
         threshold: u32,
         emergency_guardian: Option<Address>,
+        rbac_address: Option<Address>,
     ) {
         owner.require_auth();
 
@@ -436,6 +456,13 @@ impl MultisigContract {
             env.storage()
                 .persistent()
                 .set(&StorageKey::EmergencyGuardian, &g);
+        }
+
+        // Persist the RBAC contract address so that DisputeResolution
+        // proposals can be gated on the Arbiter role.  When omitted the
+        // contract keeps its previous behaviour (no role gating).
+        if let Some(rbac) = rbac_address {
+            write_rbac_address(&env, &rbac);
         }
 
         env.storage()
@@ -505,6 +532,17 @@ impl MultisigContract {
         require_initialized(&env);
         proposer.require_auth();
         assert!(is_signer(&env, &proposer), "Only signers can propose");
+        // DisputeResolution proposals must come from a signer who holds
+        // (or inherits) the Arbiter role in the configured RBAC contract.
+        if matches!(&kind, OperationKind::DisputeResolution(_, _, _, _)) {
+            if let Some(rbac_addr) = read_rbac_address(&env) {
+                let rbac = RbacContractClient::new(&env, &rbac_addr);
+                assert!(
+                    rbac.has_role(&proposer, &Role::Arbiter),
+                    "DisputeResolution requires Arbiter role"
+                );
+            }
+        }
         if let OperationKind::SetThresholdOverride(_, threshold) = &kind {
             validate_threshold_override(&env, threshold);
         }
