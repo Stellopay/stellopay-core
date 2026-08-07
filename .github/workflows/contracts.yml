@@ -42,6 +42,74 @@ jobs:
         with:
           tool: cargo-llvm-cov
 
-      - name: Coverage gate (fail under 95% lines)
+      - name: Per-crate coverage gate (fail under 95% lines)
         working-directory: onchain
-        run: cargo llvm-cov --workspace --fail-under-lines 95
+        shell: bash
+        env:
+          COVERAGE_THRESHOLD: "95"
+        run: |
+          # A single `cargo llvm-cov --workspace --fail-under-lines 95` only
+          # enforces a workspace-wide *average*, so one uncovered crate can hide
+          # behind well-covered ones. Instrumentation is therefore collected once
+          # for the whole workspace (a single test run, so the gate stays cheap)
+          # and then attributed back to each crate individually. The llvm-cov
+          # JSON export always carries the per-file `.summary` blocks this gate
+          # aggregates by crate.
+          cargo llvm-cov --workspace --json --output-path coverage.json
+
+          # Only library sources count towards a crate's score: files under a
+          # `tests/` directory are the test code itself and would otherwise
+          # inflate every crate towards 100%.
+          jq -r '
+            [ .data[0].files[]
+              | select(.filename | test("/contracts/[^/]+/src/"))
+              | select(.filename | test("/src/tests?/") | not)
+              | { crate:   (.filename | capture("/contracts/(?<c>[^/]+)/").c),
+                  count:   .summary.lines.count,
+                  covered: .summary.lines.covered } ]
+            | group_by(.crate)
+            | map({ crate:   .[0].crate,
+                    count:   (map(.count)   | add),
+                    covered: (map(.covered) | add) })
+            | map(. + { pct: (if .count == 0 then 100 else 100 * .covered / .count end) })
+            | sort_by(.pct)
+            | .[] | [.crate, .count, .covered, .pct] | @tsv
+          ' coverage.json > per-crate.tsv
+
+          if [ ! -s per-crate.tsv ]; then
+            echo "::error::No per-crate coverage data was produced; the gate cannot be evaluated."
+            exit 1
+          fi
+
+          failed=0
+          {
+            printf '| crate | lines | covered | line %% | status |\n'
+            printf '|---|---:|---:|---:|---|\n'
+          } > per-crate.md
+          while IFS=$'\t' read -r crate count covered pct; do
+            if awk -v p="$pct" -v t="$COVERAGE_THRESHOLD" 'BEGIN { exit !(p + 0 >= t + 0) }'; then
+              status='pass'
+            else
+              status="**below ${COVERAGE_THRESHOLD}%**"
+              failed=$((failed + 1))
+            fi
+            printf '| %s | %s | %s | %.2f | %s |\n' \
+              "$crate" "$count" "$covered" "$pct" "$status" >> per-crate.md
+          done < per-crate.tsv
+
+          echo "Per-crate line coverage (gate: ${COVERAGE_THRESHOLD}%)"
+          cat per-crate.md
+
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo "### Per-crate line coverage (gate: ${COVERAGE_THRESHOLD}%)"
+              echo
+              cat per-crate.md
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::${failed} crate(s) are below the ${COVERAGE_THRESHOLD}% line-coverage gate; see the table above."
+            exit 1
+          fi
+          echo "All crates meet the ${COVERAGE_THRESHOLD}% line-coverage gate."
