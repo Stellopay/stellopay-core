@@ -10,7 +10,7 @@ The multisig contract acts as a governance and safety layer in front of critical
 - large outbound token payments from a shared wallet
 - approvals for dispute resolution flows
 
-The contract focuses on **threshold-based approvals**, clear **event logs** for off-chain automation, and a **break-glass emergency guardian**.
+The contract focuses on **threshold-based approvals**, clear **event logs** for off-chain automation, and a **break-glass emergency guardian** restricted to explicitly emergency-eligible operation kinds.
 
 ### Contract Location
 
@@ -21,12 +21,16 @@ The contract focuses on **threshold-based approvals**, clear **event logs** for 
 ### Security Model
 
 - `initialize` is **one-time only** and must be called by the designated owner.
-- A **fixed signer set** and **threshold** are stored on-chain.
+- A **fixed signer set** and default **threshold** are stored on-chain.
+- Each operation type can have an optional threshold override. Types without
+  an override continue to use the default threshold.
 - Only configured **signers** can:
   - propose new operations
   - approve existing operations
 - Operations auto-execute once `approvals >= threshold`.
-- An optional **emergency guardian** can execute any pending operation without satisfying the threshold (break-glass override).
+- An optional **emergency guardian** can execute pending operational actions
+  without satisfying the threshold (break-glass override), but cannot execute
+  threshold-override changes below their current threshold.
 - Large token payments are executed directly from the multisig contract balance using the Soroban token client.
 
 ### Data Model
@@ -37,6 +41,11 @@ Core types:
   - `ContractUpgrade(Address, BytesN<32>)`
   - `LargePayment(Address, Address, i128)` as `(token, to, amount)`
   - `DisputeResolution(Address, u128, i128, i128)` as `(payroll_contract, agreement_id, pay_employee, refund_employer)`
+  - `SetThresholdOverride(OperationType, Option<u32>)` as `(operation_type, threshold)`; `None` removes the override
+- `OperationType`
+  - `ContractUpgrade`
+  - `LargePayment`
+  - `DisputeResolution`
 - `OperationStatus`
   - `Pending`, `Executed`, `Cancelled`
 - `Operation`
@@ -51,6 +60,7 @@ Storage keys:
 - `OperationCounter`: auto-incrementing id
 - `Operation(id)`: stored operation
 - `Approvals(id)`: vector of signer addresses that approved
+- `ThresholdOverride(operation_type)`: optional required signature count for one operation type
 
 ### Public API
 
@@ -59,9 +69,12 @@ Storage keys:
 - `approve_operation(signer, operation_id)`
 - `cancel_operation(caller, operation_id)`
 - `emergency_execute(guardian, operation_id)`
+- `execute_operation(caller, operation_id, expected_hash)`
 - `get_operation(operation_id) -> Option<Operation>`
 - `get_signers() -> Vec<Address>`
 - `get_threshold() -> u32`
+- `get_threshold_override(operation_type) -> Option<u32>`
+- `get_effective_threshold(operation_type) -> u32`
 - `get_approvals(operation_id) -> Vec<Address>`
 
 ### Workflow Summary
@@ -72,8 +85,183 @@ Storage keys:
 4. When `approvals >= threshold`, the contract:
    - executes `LargePayment` operations by transferring tokens from its balance
    - marks `ContractUpgrade` and `DisputeResolution` operations as executed for off-chain tooling to act on
-5. Creator or owner can cancel a pending operation via `cancel_operation`.
-6. The emergency guardian can call `emergency_execute` to force execution of a pending operation in break-glass scenarios.
+5. Alternatively, for `ContractUpgrade` operations, the final signing party can call
+   `execute_operation(caller, operation_id, expected_hash)` instead of `approve_operation`.
+   This records their approval, re-validates the WASM hash, and triggers execution only if
+   the hash matches and the resulting approval count meets the threshold (see
+   [ContractUpgrade Hash Validation](#contractupgrade-hash-validation)).
+6. Creator or owner can cancel a pending operation via `cancel_operation`.
+7. The emergency guardian can call `emergency_execute` to force execution of a
+   pending emergency-eligible operation (currently only `DisputeResolution`) in
+   break-glass scenarios. Routine operations (`LargePayment`), governance changes
+   (`ContractUpgrade`), and threshold-override changes (`SetThresholdOverride`) are
+   rejected even when called by the guardian.
+
+### Payload Validation at Proposal Time
+
+`propose_operation` validates the payload of certain `OperationKind` variants
+**before** any state is written and before the proposer's auto-approval is
+recorded. A rejected proposal leaves the contract in exactly the state it was
+in before the call — no operation is stored, no event is emitted, and no
+approval accumulates.
+
+This matters because an unchecked invalid payload could accumulate approvals
+from multiple signers before anyone notices the mistake, resulting in wasted
+gas and a stale pending operation that must be manually cancelled.
+
+#### Rules enforced at proposal time
+
+| `OperationKind`   | Field    | Rule                                             | Error                                                                |
+|-------------------|----------|--------------------------------------------------|----------------------------------------------------------------------|
+| `LargePayment`    | `amount` | Must be strictly positive (`amount > 0`)         | `MultisigError::InvalidAmount` (code `2`)                            |
+| `LargePayment`    | `to`     | Must not equal `env.current_contract_address()`  | `MultisigError::SelfReferentialRecipient` (code `3`)                 |
+| `ContractUpgrade` | `target` | Must not equal `env.current_contract_address()`  | `MultisigError::SelfReferentialRecipient` (code `3`)                 |
+
+All other `OperationKind` variants (`DisputeResolution`, `SetThresholdOverride`)
+have no payload constraints at proposal time.
+
+#### Rationale for each rule
+
+**`LargePayment` — zero or negative amount (`InvalidAmount`)**
+
+A zero-amount token transfer is a no-op; a negative amount would be a reversed
+transfer, which the Soroban token client rejects anyway at execution. Allowing
+either value to proceed to proposal means signers would approve an operation
+that can never execute successfully or that does nothing meaningful.  Detecting
+this at proposal time avoids wasting approval flows on a doomed operation.
+
+**`LargePayment` — self-referential recipient (`SelfReferentialRecipient`)**
+
+A payment where the multisig contract sends tokens to itself leaves the balance
+unchanged and achieves nothing. It is almost certainly a configuration error
+(e.g., the caller confused the multisig contract address with the intended
+beneficiary). Catching this early prevents approvals accumulating for an
+operation whose execution would be a silent no-op.
+
+**`ContractUpgrade` — self-referential target (`SelfReferentialRecipient`)**
+
+A `ContractUpgrade` proposal naming the multisig contract itself as the upgrade
+target could permanently brick the multisig instance if a malformed WASM hash
+is approved and the resulting upgrade fails. An off-chain orchestrator that
+consumes the `operation_executed` event would attempt to apply the upgrade to
+the multisig contract itself — an extremely dangerous misfire. Rejecting this
+at proposal time makes the misconfiguration visible immediately.
+
+#### Error codes
+
+| Error                                         | Code | When raised                                           |
+|-----------------------------------------------|------|-------------------------------------------------------|
+| `MultisigError::ContractUpgradeHashMismatch`  | `1`  | `execute_operation` hash mismatch at execution time   |
+| `MultisigError::InvalidAmount`                | `2`  | `LargePayment` with `amount <= 0` at proposal time    |
+| `MultisigError::SelfReferentialRecipient`     | `3`  | `LargePayment` or `ContractUpgrade` self-address at proposal time |
+
+#### Implementation
+
+The validation is performed by the private `validate_operation_kind` helper in
+`lib.rs`, called unconditionally from `propose_operation` after the threshold
+override check:
+
+```rust
+fn validate_operation_kind(env: &Env, kind: &OperationKind) {
+    match kind {
+        OperationKind::LargePayment(_token, to, amount) => {
+            if *amount <= 0 {
+                panic_with_error!(env, MultisigError::InvalidAmount);
+            }
+            if to == &env.current_contract_address() {
+                panic_with_error!(env, MultisigError::SelfReferentialRecipient);
+            }
+        }
+        OperationKind::ContractUpgrade(target, _hash) => {
+            if target == &env.current_contract_address() {
+                panic_with_error!(env, MultisigError::SelfReferentialRecipient);
+            }
+        }
+        OperationKind::DisputeResolution(_, _, _, _)
+        | OperationKind::SetThresholdOverride(_, _) => {}
+    }
+}
+```
+
+### ContractUpgrade Hash Validation`ContractUpgrade` operations carry a WASM hash (`BytesN<32>`) that is embedded
+in the proposal at creation time and co-signed by all approving signers. Because
+the off-chain orchestrator that actually deploys the new WASM consumes the
+on-chain execution event, it is critical that the hash confirmed on-chain
+matches the WASM binary that will be deployed.
+
+#### The problem
+
+The standard `approve_operation` path auto-executes as soon as the approval
+count reaches the threshold. This means the final signer's `approve_operation`
+call triggers execution without any opportunity to re-assert the intended WASM
+hash at execution time.
+
+#### The solution: `execute_operation`
+
+`execute_operation(caller, operation_id, expected_hash)` is a hash-gated
+alternative to `approve_operation` for the final approval that triggers
+execution:
+
+1. **Hash check first** — for `ContractUpgrade` operations, `expected_hash` is
+   validated against the hash stored in the proposal *before* any approval is
+   recorded. If the hashes differ (or `expected_hash` is `None`), the call
+   panics with `MultisigError::ContractUpgradeHashMismatch` and no state is
+   modified.
+2. **Approval recorded** — if the hash check passes, the caller's approval is
+   written to storage (idempotent if already approved).
+3. **Threshold check** — `execute_if_threshold_met` is called. If the approval
+   count now meets the effective threshold, `perform_execute` marks the
+   operation as `Executed`.
+
+#### Security properties
+
+- The hash check fires before any state write. A mismatch leaves the operation
+  in its current `Pending` state, approval count unchanged.
+- `expected_hash` must be a `Some(BytesN<32>)` containing a value that equals
+  the stored hash exactly. Passing `None` is treated as a mismatch and rejected.
+- For non-`ContractUpgrade` operation kinds, `expected_hash` is ignored. Callers
+  may pass `None` for those kinds.
+- The function requires `caller` to be a configured signer and to authenticate
+  via `require_auth()`.
+- An operation that is not `Pending` (already `Executed` or `Cancelled`) is
+  rejected by the standard `"Operation not pending"` assertion before the hash
+  check.
+
+#### Error type
+
+See [Payload Validation at Proposal Time — Error codes](#error-codes) for the
+full error code table.  For `execute_operation` specifically:
+
+| Error | Value | Meaning |
+|-------|-------|---------|
+| `MultisigError::ContractUpgradeHashMismatch` | `1` | `expected_hash` is absent or does not equal the hash stored in the `ContractUpgrade` proposal. |
+
+#### Usage pattern
+
+```
+// S1 proposes; S2 approves normally (N-1 approvals).
+// S3 (final signer) calls execute_operation to confirm the hash and trigger execution:
+multisig.execute_operation(
+    &s3,
+    &operation_id,
+    &Some(expected_wasm_hash),  // must match the hash from the proposal
+);
+```
+
+### Per-operation Threshold Overrides
+
+Signers configure an override by proposing a `SetThresholdOverride` operation.
+The proposal is auto-approved by its creator and other signers approve it using
+the normal workflow. The configuration write occurs only after the approval
+count reaches the target operation type's currently active, pre-change
+threshold. For example, lowering `ContractUpgrade` from 3-of-3 to 2-of-3 still
+requires three approvals. The emergency guardian cannot bypass this check.
+
+Override values must be between `1` and the number of configured signers. To
+restore the default threshold, propose `SetThresholdOverride(type, None)`; that
+removal must also meet the type's current override. Pending operations are
+evaluated against the effective threshold at approval time, so an approved
+configuration change applies consistently to subsequent approvals.
 
 ### Threshold Configurations
 
@@ -86,14 +274,34 @@ Storage keys:
 
 ### Security Properties
 
-#### Replay Protection
-Each operation has a monotonically increasing ID. Once executed or cancelled, the status is immutable. Re-approving an executed operation is a no-op.
+### Replay Protection
+
+Each operation has a monotonically increasing ID (see `OperationCounter`). Once
+an operation reaches a terminal status (`Executed` or `Cancelled`), its status is
+immutable:
+
+- `approve_operation` panics when called against a non-pending (executed or
+  cancelled) operation.
+- `cancel_operation` panics when called against a non-pending operation.
+- `emergency_execute` panics when called against a non-pending operation.
+- `perform_execute` silently returns for non-pending operations, preventing
+  any code path from accidentally executing a cancelled or already-executed op.
+
+**Cancelled operations are terminal and non-resurrectable.** Once cancelled,
+no function can revive the operation toward execution. The operation's ID is
+never reused; every `propose_operation` call atomically increments the global
+`OperationCounter`, guaranteeing that a new proposal always receives a strictly
+higher ID than any previously cancelled operation.
 
 #### Duplicate Approval Prevention
 The `has_approved` check ensures each signer can only contribute one approval per operation, regardless of how many times `approve_operation` is called.
 
 #### Threshold Integrity
-Threshold is checked at execution time using the current stored value. Approvals are stored independently of threshold changes.
+The effective threshold is checked at execution time. An operation-type
+override takes precedence over the default, while approvals are stored
+independently of threshold changes. Override changes are themselves operations
+and use the target type's pre-change effective threshold, preventing a signer
+or emergency guardian from unilaterally weakening the approval requirement.
 
 #### Authorization
 All state-changing functions require `require_auth()` on the caller. The Soroban host enforces cryptographic signature verification.
@@ -102,6 +310,25 @@ All state-changing functions require `require_auth()` on the caller. The Soroban
 - Guardian address should be a cold wallet or hardware-secured key
 - Guardian actions are logged via events for audit trails
 - Guardian cannot execute already-executed or cancelled operations
+- Guardian cannot bypass the active threshold for an override change
+- Guardian is **restricted to emergency-eligible operation kinds only**
+  (see [Emergency Eligibility](#emergency-eligibility))
+
+### Emergency Eligibility
+
+Not all operation kinds can be executed via `emergency_execute`. Only
+time-sensitive, break-glass operations are eligible:
+
+| OperationKind | Emergency-Eligible | Rationale |
+|---|---|---|
+| `DisputeResolution` | Yes | Prevents fund lockup during disputes; time-critical |
+| `ContractUpgrade` | No | Governance change; requires full multi-signer consensus |
+| `LargePayment` | No | Routine operation; must use standard approval flow |
+| `SetThresholdOverride` | No | Already blocked in `perform_execute`; governance change |
+
+The `is_emergency_eligible` function in the contract enforces this restriction.
+Any attempt to call `emergency_execute` with a non-eligible operation kind is
+rejected with `"Operation kind not eligible for emergency execution"`.
 
 ### Events
 
@@ -131,14 +358,81 @@ The test suite covers:
 - 2-of-3 standard threshold flow
 - Duplicate approval prevention
 - Non-signer rejection (propose and approve)
-- Already-executed rejection
-- Cancel by creator and owner
+- Already-executed rejection (approve and cancel)
+- Cancel by creator or owner (signers who are neither the proposer nor the owner cannot cancel)
+- Cancelled operation replay protection:
+  - approve against cancelled operation is rejected (panic)
+  - cancel against already-cancelled operation is rejected
+  - cancelled operation ID is never reused (monotonic counter increases)
 - Guardian-only rescue
 - Guardian cannot execute executed/cancelled ops
 - Multiple independent operations
 - Zero-amount payment rejection
 - ContractUpgrade and DisputeResolution flows
+- **Payload validation at proposal time** (issue enforcement):
+  - `LargePayment` with `amount = 0` is rejected at `propose_operation` with
+    `MultisigError::InvalidAmount`; no operation is stored, no approval is recorded
+  - `LargePayment` with `amount < 0` is rejected at `propose_operation` with
+    `MultisigError::InvalidAmount`
+  - `LargePayment` whose `to` equals the multisig contract address is rejected
+    at `propose_operation` with `MultisigError::SelfReferentialRecipient`
+  - `ContractUpgrade` whose `target` equals the multisig contract address is
+    rejected at `propose_operation` with `MultisigError::SelfReferentialRecipient`
+  - Valid `LargePayment` (positive amount, distinct recipient) is still accepted
+  - Valid `ContractUpgrade` (distinct target) is still accepted
 - Query function correctness
+- Per-operation override enforcement and default fallback
+- Adversarial threshold lowering and guardian-bypass prevention
+- Override removal and invalid override rejection
+- **ContractUpgrade hash validation via `execute_operation`**:
+  - Negative: `execute_operation` with a mismatched hash is rejected; operation stays
+    `Pending` and approval count is unchanged
+  - Negative: `execute_operation` with `None` hash is rejected for `ContractUpgrade`
+    operations
+  - Positive: `execute_operation` with the correct hash records the approval and
+    transitions the operation to `Executed` once threshold is reached
+- **Emergency execute eligibility (issue #898)**:
+  - `emergency_execute` rejects `LargePayment` (routine; not emergency-eligible)
+  - `emergency_execute` rejects `ContractUpgrade` (governance; not emergency-eligible)
+  - `emergency_execute` rejects `SetThresholdOverride` (governance; not emergency-eligible)
+  - `emergency_execute` succeeds for `DisputeResolution` (emergency-eligible)
+  - Emergency-eligible operations still require the guardian's authentication
+    (not zero approvals)
+
+#### Below-Minimum-Threshold Signer Removal Rejection Tests (issue #1082)
+
+The test suite ensures the contract cannot be left with fewer signers than the
+configured threshold:
+
+- `test_reject_signer_reduction_below_threshold` — Verifies that removing
+  signers down to 1 while keeping the threshold at 2 is rejected, because the
+  new threshold (2) would exceed the number of signers (1).
+- `test_reject_update_signers_threshold_exceeding_count` — Verifies that
+  calling `update_signers` with a new signer count of 2 and a threshold of 3
+  is rejected, because 3 > 2.
+- `test_signer_reduction_with_threshold_adjustment_succeeds` — Verifies that
+  reducing from 3-of-3 to 2-of-2 (the intended recovery path) succeeds and
+  the reduced signer set can still reach quorum and execute operations.
+
+#### Integration Test Coverage for claim_payroll_multisig (issue #853)
+
+The `onchain/contracts/stello_pay_contract/tests/test_multisig_integration.rs`
+test suite covers:
+
+- **2-of-3 approval at threshold**: Propose + 2 signers approve → claim succeeds
+- **1-of-2 below threshold**: Propose only, op stays Pending → claim rejected with
+  `PayrollError::MultisigApprovalRequired`
+- **Direct path blocked**: `claim_payroll` (non-multisig) returns
+  `MultisigApprovalRequired` when amount ≥ threshold
+- **Below-threshold bypass**: `claim_payroll` succeeds when amount < threshold
+- **3-of-3 approval at threshold**: All 3 signers must approve → claim succeeds
+  (regression: ensures maximum-restrictive configuration works)
+- **2-of-3 below threshold of 3**: Even a majority (2/3) is insufficient when
+  the threshold is 3 → claim rejected with `MultisigApprovalRequired`
+- **Wrong employee rejection**: LargePayment op with mismatched `to` field →
+  claim rejected with `MultisigApprovalRequired`
+- **Wrong op kind rejection**: DisputeResolution op used for `claim_payroll_multisig`
+  → claim rejected with `MultisigApprovalRequired`
 
 ### Observability: payroll multisig threshold changes
 

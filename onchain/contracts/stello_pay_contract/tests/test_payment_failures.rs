@@ -40,8 +40,10 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env, Vec,
 };
-use stello_pay_contract::storage::{DataKey, PayrollError, MAX_BATCH_SIZE};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{DataKey, PayrollError, MAX_BATCH_SIZE},
+    PayrollContract, PayrollContractClient,
+};
 
 // ============================================================================
 // CONSTANTS
@@ -861,7 +863,12 @@ fn test_batch_milestone_error_codes() {
     let contributor = create_address(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
 
     // Add 3 milestones.
     client.add_milestone(&agreement_id, &500);
@@ -897,7 +904,7 @@ fn test_batch_milestone_error_codes() {
     let r1 = batch.results.get(1).unwrap();
     assert!(r1.success);
     assert_eq!(r1.error_code, 0);
-    assert_eq!(r1.amount_claimed, 600);
+    assert_eq!(r1.amount_claimed, 500);
 
     // ID 3: not approved.
     let r2 = batch.results.get(2).unwrap();
@@ -922,7 +929,12 @@ fn test_batch_milestone_over_limit_rejected_before_claims() {
     let employer = create_address(&env);
     let contributor = create_address(&env);
     let token = create_token(&env);
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
 
     let mut ids = Vec::<u32>::new(&env);
     for i in 1..=(MAX_BATCH_SIZE + 1) {
@@ -940,7 +952,12 @@ fn test_batch_milestone_duplicate_invalid_id_processed_once() {
     let employer = create_address(&env);
     let contributor = create_address(&env);
     let token = create_token(&env);
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &500);
 
     let batch =
@@ -1560,7 +1577,12 @@ fn test_milestone_claim_on_paused_agreement() {
     let contributor = create_address(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &1000);
     // Fund the accounted escrow so the approval invariant is satisfied.
     mint(&env, &token, &employer, 1000);
@@ -1588,7 +1610,12 @@ fn test_milestone_claim_without_approval() {
     let contributor = create_address(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &1000);
     mint(&env, &token, &client.address, 1000);
 
@@ -1606,7 +1633,12 @@ fn test_milestone_double_claim() {
     let contributor = create_address(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     client.add_milestone(&agreement_id, &1000);
     // Fund the accounted escrow so approval and the first claim succeed.
     mint(&env, &token, &employer, 1000);

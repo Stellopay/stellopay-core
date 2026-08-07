@@ -1,12 +1,19 @@
 //! Comprehensive test suite for nft_payroll_badge contract.
 //!
-//! Covers: initialization, minting, `badges_of`, `badges_of_paged` (empty,
-//! single page, multi-page, exact-multiple-of-limit, oversized-limit clamping).
+//! Covers: initialization, minting, burning and burn-then-remint, admin
+//! metadata URI updates, `badges_of`, `badges_of_paged` (empty, single page,
+//! multi-page, exact-multiple-of-limit, oversized-limit clamping).
 
 #![cfg(test)]
 
-use nft_payroll_badge::{NftPayrollBadgeContract, NftPayrollBadgeContractClient, MAX_PAGE_SIZE};
-use soroban_sdk::{testutils::Address as _, Address, Env, String};
+use nft_payroll_badge::{
+    BadgeBurned, MetadataUpdated, NftPayrollBadgeContract, NftPayrollBadgeContractClient, Tier,
+    MAX_PAGE_SIZE,
+};
+use soroban_sdk::{
+    testutils::{Address as _, Events},
+    Address, Env, IntoVal, String,
+};
 
 // ============================================================================
 // Helpers
@@ -36,7 +43,8 @@ fn mint_n(
 ) {
     for _ in 0..n {
         let name = String::from_str(env, "Payroll Badge");
-        client.mint(owner, recipient, &name);
+        let metadata_uri = String::from_str(env, "ipfs://payroll-badge");
+        client.mint(owner, recipient, &name, &metadata_uri, &Tier::Bronze);
     }
 }
 
@@ -69,8 +77,20 @@ fn test_mint_assigns_sequential_ids() {
     let (owner, client) = setup(&env);
     let recipient = Address::generate(&env);
 
-    let id1 = client.mint(&owner, &recipient, &String::from_str(&env, "First"));
-    let id2 = client.mint(&owner, &recipient, &String::from_str(&env, "Second"));
+    let id1 = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "First"),
+        &String::from_str(&env, "ipfs://first"),
+        &Tier::Bronze,
+    );
+    let id2 = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Second"),
+        &String::from_str(&env, "ipfs://second"),
+        &Tier::Bronze,
+    );
     assert_eq!(id1, 1);
     assert_eq!(id2, 2);
 }
@@ -81,23 +101,154 @@ fn test_mint_records_badge_metadata() {
     let (owner, client) = setup(&env);
     let recipient = Address::generate(&env);
     let name = String::from_str(&env, "Q1 2025 Payroll");
+    let metadata_uri = String::from_str(&env, "ipfs://q1-2025-payroll");
 
-    let id = client.mint(&owner, &recipient, &name);
+    let id = client.mint(&owner, &recipient, &name, &metadata_uri, &Tier::Bronze);
     let badge = client.get_badge(&id).expect("badge should exist");
 
     assert_eq!(badge.id, id);
     assert_eq!(badge.owner, recipient);
     assert_eq!(badge.name, name);
+    assert_eq!(badge.metadata_uri, metadata_uri);
 }
 
 #[test]
-#[should_panic(expected = "Only owner can mint badges")]
+#[should_panic(expected = "Only owner can manage badges")]
 fn test_non_owner_cannot_mint() {
     let env = create_env();
     let (_owner, client) = setup(&env);
     let attacker = Address::generate(&env);
     let recipient = Address::generate(&env);
-    client.mint(&attacker, &recipient, &String::from_str(&env, "Fake"));
+    client.mint(
+        &attacker,
+        &recipient,
+        &String::from_str(&env, "Fake"),
+        &String::from_str(&env, "ipfs://fake"),
+        &Tier::Bronze,
+    );
+}
+
+#[test]
+fn test_admin_can_update_metadata_uri_for_existing_token() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let recipient = Address::generate(&env);
+    let old_uri = String::from_str(&env, "ipfs://old-payroll-badge");
+    let new_uri = String::from_str(&env, "ipfs://new-payroll-badge");
+
+    let id = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Payroll Badge"),
+        &old_uri,
+        &Tier::Bronze,
+    );
+
+    client.update_metadata_uri(&owner, &id, &new_uri);
+
+    let events = env.events().all();
+    let event: MetadataUpdated = events.last().unwrap().2.into_val(&env);
+    assert_eq!(event.token_id, id);
+    assert_eq!(event.old_uri, old_uri);
+    assert_eq!(event.new_uri, new_uri);
+
+    let badge = client.get_badge(&id).expect("badge should exist");
+    assert_eq!(badge.metadata_uri, new_uri);
+    assert_eq!(badge.owner, recipient);
+}
+
+#[test]
+#[should_panic(expected = "Only owner can manage badges")]
+fn test_non_admin_cannot_update_metadata_uri() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let attacker = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let old_uri = String::from_str(&env, "ipfs://original");
+    let id = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Payroll Badge"),
+        &old_uri,
+        &Tier::Bronze,
+    );
+
+    client.update_metadata_uri(&attacker, &id, &String::from_str(&env, "ipfs://attack"));
+}
+
+// ============================================================================
+// Burn tests
+// ============================================================================
+
+#[test]
+fn test_burn_then_remint_issues_fresh_badge_id() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let employee = Address::generate(&env);
+    let name = String::from_str(&env, "Employee Badge");
+    let uri = String::from_str(&env, "ipfs://employee-badge");
+
+    let first_id = client.mint(&owner, &employee, &name, &uri);
+    client.burn(&owner, &first_id);
+
+    assert!(
+        client.get_badge(&first_id).is_none(),
+        "burned badge should be gone"
+    );
+
+    let second_id = client.mint(&owner, &employee, &name, &uri);
+
+    assert_ne!(second_id, first_id, "remint must receive a fresh id");
+    assert_eq!(second_id, first_id + 1, "ids are sequential");
+
+    assert!(
+        client.get_badge(&first_id).is_none(),
+        "original burned badge_id still returns None after remint"
+    );
+
+    let new_badge = client.get_badge(&second_id).expect("new badge exists");
+    assert_eq!(new_badge.owner, employee);
+    assert_eq!(new_badge.id, second_id);
+}
+
+#[test]
+fn test_burn_removes_badge_data() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let employee = Address::generate(&env);
+    let name = String::from_str(&env, "Burn Test");
+    let uri = String::from_str(&env, "ipfs://burn-test");
+
+    let id = client.mint(&owner, &employee, &name, &uri);
+    assert!(client.get_badge(&id).is_some(), "badge exists before burn");
+
+    client.burn(&owner, &id);
+
+    assert!(client.get_badge(&id).is_none(), "badge is gone after burn");
+}
+
+#[test]
+#[should_panic(expected = "Only owner can manage badges")]
+fn test_non_owner_cannot_burn() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let employee = Address::generate(&env);
+    let id = client.mint(
+        &owner,
+        &employee,
+        &String::from_str(&env, "Badge"),
+        &String::from_str(&env, "ipfs://badge"),
+    );
+    let attacker = Address::generate(&env);
+    client.burn(&attacker, &id);
+}
+
+#[test]
+#[should_panic(expected = "Badge not found")]
+fn test_burn_nonexistent_badge_panics() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    client.burn(&owner, &999);
 }
 
 // ============================================================================
@@ -273,4 +424,228 @@ fn test_start_beyond_count_returns_empty() {
     let page = client.badges_of_paged(&recipient, &10, &5);
     assert_eq!(page.items.len(), 0);
     assert_eq!(page.next_cursor, None);
+}
+
+// ============================================================================
+// get_badge read-query semantics
+// ============================================================================
+
+/// An ID that was never passed to `mint` must return `None`, not a
+/// default-valued struct that could be mistaken for a real badge.
+#[test]
+fn test_get_badge_unminted_id_returns_none() {
+    let env = create_env();
+    let (_owner, client) = setup(&env);
+
+    assert_eq!(client.get_badge(&999), None);
+    assert_eq!(client.get_badge(&0), None);
+    assert_eq!(client.get_badge(&u64::MAX), None);
+}
+
+/// A legitimately minted badge must be distinguishable from the not-found
+/// case: `get_badge` returns `Some` with all fields intact.
+#[test]
+fn test_get_badge_minted_id_is_distinguishable_from_not_found() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let recipient = Address::generate(&env);
+    let name = String::from_str(&env, "Payroll Badge");
+    let uri = String::from_str(&env, "ipfs://badge");
+
+    let id = client.mint(&owner, &recipient, &name, &uri, &Tier::Bronze);
+
+    // The minted badge is found.
+    let badge = client.get_badge(&id).expect("minted badge must be Some");
+    assert_eq!(badge.id, id);
+    assert_eq!(badge.owner, recipient);
+    assert_eq!(badge.name, name);
+    assert_eq!(badge.metadata_uri, uri);
+
+    // An adjacent, never-minted ID is not found.
+    assert_eq!(client.get_badge(&(id + 1)), None);
+}
+
+// ============================================================================
+// Tier upgrade / downgrade rejection tests
+// ============================================================================
+
+/// Mint a badge at Bronze, upgrade to Silver, then verify the upgrade is
+/// persisted on-chain.
+#[test]
+fn test_legitimate_tier_upgrade_bronze_to_silver() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let recipient = Address::generate(&env);
+
+    let id = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Badge"),
+        &String::from_str(&env, "ipfs://badge"),
+        &Tier::Bronze,
+    );
+
+    // Initial tier is Bronze
+    assert_eq!(client.get_badge(&id).expect("exists").tier, Tier::Bronze);
+
+    // Legitimate upgrade Bronze → Silver
+    client.upgrade_tier(&owner, &id, &Tier::Silver);
+
+    let badge = client.get_badge(&id).expect("exists");
+    assert_eq!(badge.tier, Tier::Silver);
+
+    // Upgrade Silver → Gold (two-step progression)
+    client.upgrade_tier(&owner, &id, &Tier::Gold);
+    assert_eq!(client.get_badge(&id).expect("exists").tier, Tier::Gold);
+}
+
+/// Mint a badge at Bronze, upgrade to Silver, then verify that a subsequent
+/// call to downgrade to Bronze panics and the badge's on-chain tier remains
+/// Silver.
+#[test]
+fn test_reject_tier_downgrade_silver_to_bronze() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let recipient = Address::generate(&env);
+
+    let id = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Badge"),
+        &String::from_str(&env, "ipfs://badge"),
+        &Tier::Bronze,
+    );
+
+    // Upgrade to Silver
+    client.upgrade_tier(&owner, &id, &Tier::Silver);
+    assert_eq!(client.get_badge(&id).expect("exists").tier, Tier::Silver);
+
+    // Attempted downgrade Silver → Bronze must panic
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.upgrade_tier(&owner, &id, &Tier::Bronze);
+    }));
+    assert!(result.is_err(), "downgrade must be rejected");
+
+    // Tier must remain Silver after the failed downgrade
+    assert_eq!(client.get_badge(&id).expect("exists").tier, Tier::Silver);
+}
+
+/// Mint a badge at Silver, then verify that a downgrade to Bronze is rejected,
+/// and that an upgrade to Gold still succeeds after the failed downgrade.
+#[test]
+fn test_reject_tier_downgrade_gold_to_silver() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let recipient = Address::generate(&env);
+
+    let id = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Badge"),
+        &String::from_str(&env, "ipfs://badge"),
+        &Tier::Gold,
+    );
+
+    // Attempted downgrade Gold → Silver must panic
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.upgrade_tier(&owner, &id, &Tier::Silver);
+    }));
+    assert!(result.is_err(), "Gold→Silver downgrade must be rejected");
+
+    // Tier must remain Gold
+    assert_eq!(client.get_badge(&id).expect("exists").tier, Tier::Gold);
+}
+
+/// Verify that a no-op call (same tier) is also rejected.
+#[test]
+fn test_reject_tier_no_op_same_tier() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let recipient = Address::generate(&env);
+
+    let id = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Badge"),
+        &String::from_str(&env, "ipfs://badge"),
+        &Tier::Silver,
+    );
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        client.upgrade_tier(&owner, &id, &Tier::Silver);
+    }));
+    assert!(result.is_err(), "same-tier no-op must be rejected");
+
+    assert_eq!(client.get_badge(&id).expect("exists").tier, Tier::Silver);
+}
+
+/// Only the contract owner may upgrade tiers.
+#[test]
+#[should_panic(expected = "Only owner can manage badges")]
+fn test_non_owner_cannot_upgrade_tier() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let recipient = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    let id = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Badge"),
+        &String::from_str(&env, "ipfs://badge"),
+        &Tier::Bronze,
+    );
+
+    client.upgrade_tier(&attacker, &id, &Tier::Silver);
+}
+
+/// Upgrading a non-existent badge must panic.
+#[test]
+#[should_panic(expected = "Badge not found")]
+fn test_upgrade_tier_non_existent_badge() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+
+    client.upgrade_tier(&owner, &999, &Tier::Silver);
+}
+
+/// Mint records the correct initial tier.
+#[test]
+fn test_mint_records_tier() {
+    let env = create_env();
+    let (owner, client) = setup(&env);
+    let recipient = Address::generate(&env);
+
+    let bronze_id = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Bronze"),
+        &String::from_str(&env, "ipfs://bronze"),
+        &Tier::Bronze,
+    );
+    assert_eq!(
+        client.get_badge(&bronze_id).expect("exists").tier,
+        Tier::Bronze
+    );
+
+    let silver_id = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Silver"),
+        &String::from_str(&env, "ipfs://silver"),
+        &Tier::Silver,
+    );
+    assert_eq!(
+        client.get_badge(&silver_id).expect("exists").tier,
+        Tier::Silver
+    );
+
+    let gold_id = client.mint(
+        &owner,
+        &recipient,
+        &String::from_str(&env, "Gold"),
+        &String::from_str(&env, "ipfs://gold"),
+        &Tier::Gold,
+    );
+    assert_eq!(client.get_badge(&gold_id).expect("exists").tier, Tier::Gold);
 }

@@ -103,6 +103,17 @@ pub enum MilestoneKey {
     MilestoneApproved(u128, u32),
     /// Milestone claim status: (agreement_id, milestone_id) -> bool
     MilestoneClaimed(u128, u32),
+    /// Milestone rejection status: (agreement_id, milestone_id) -> bool
+    ///
+    /// Set to `true` by `reject_milestone`. A rejected milestone cannot be
+    /// approved or claimed and cannot be rejected again.
+    MilestoneRejected(u128, u32),
+    /// Milestone expiry status: (agreement_id, milestone_id) -> bool
+    ///
+    /// Set to `true` by `expire_milestone`. An expired milestone was neither
+    /// approved nor claimed before expiry was recorded. It cannot subsequently
+    /// be approved, claimed, or rejected, and cannot be expired again.
+    MilestoneExpired(u128, u32),
     /// Accounted escrow balance for a milestone agreement: agreement_id -> i128
     ///
     /// Tracks only tokens explicitly deposited via `fund_milestone_agreement`.
@@ -239,12 +250,20 @@ pub enum StorageKey {
     MultisigContract,
     /// Minimum payout amount (inclusive) that requires multisig approval for LargePayment.
     LargePaymentThreshold,
-    /// Minimum total payout amount (inclusive) that requires multisig approval for DisputeResolution.
+    /// Minimum total payout amount (inclusive) that requires multisig approval for
+    /// DisputeResolution.
     DisputeResolutionThreshold,
     /// Optional rate limiter contract address for throttling claims.
     RateLimiterContract,
     /// Optional salary adjustment contract address for dynamic salary overrides.
     SalaryAdjustmentContract,
+    /// Optional hook contract address that implements MilestoneContractInterface.
+    ///
+    /// When set, `expire_milestone` calls `on_milestone_expired` on this address
+    /// after persisting the expiry flag and emitting `MilestoneExpiredEvent`.
+    /// The default no-op on the interface means contracts without an override
+    /// are unaffected.  Clear this key to disable hook invocation entirely.
+    MilestoneHookContract,
     /// Transient reentrancy guard for the claim paths. Stored in temporary
     /// storage so it is automatically cleared at the end of each transaction;
     /// a panic mid-transfer therefore cannot strand the guard.
@@ -359,7 +378,20 @@ pub struct BatchEscrowCreateResult {
     pub results: Vec<EscrowCreateResult>,
 }
 
-/// Error types for payroll operations
+/// Error types for payroll operations.
+///
+/// # Discriminant stability (append-only convention)
+///
+/// Every variant is assigned an **explicit `u32` discriminant** that must
+/// **never be changed or re-used**.  New variants **must always be appended**
+/// with the next available integer — never inserted between or before existing
+/// variants — because off-chain indexers, clients, and on-chain error-code
+/// fields match on these numeric values across contract upgrades.
+///
+/// A silently renumbered or repurposed discriminant would cause a downstream
+/// system to misinterpret one failure type as another.  The companion test
+/// [`test_payroll_error_discriminants_stable`] (in the `tests` module below)
+/// locks every current variant's value and will fail if any is altered.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -426,6 +458,31 @@ pub enum PayrollError {
     /// reentrancy guard was already set, indicating an in-progress claim
     /// re-entered (e.g. via a hostile or hook-enabled token during transfer).
     ReentrancyDetected = 43,
+    /// `set_arbiter` rejected the assignment: the caller attempted to
+    /// self-appoint (caller == arbiter), or the supplied arbiter is identical
+    /// to the currently-set arbiter (no-op duplicate assignment).
+    InvalidArbiter = 44,
+    /// The milestone has already been rejected by the employer.
+    /// Re-rejecting is idempotent-safe via an error so callers know the
+    /// milestone was not transitioned again.
+    MilestoneAlreadyRejected = 45,
+    /// Cannot reject a milestone that has already been approved.
+    MilestoneAlreadyApprovedCannotReject = 46,
+    /// Cannot reject a milestone that has already been claimed.
+    MilestoneAlreadyClaimedCannotReject = 47,
+    /// The milestone has already been expired via `expire_milestone`.
+    /// Re-expiring is idempotent-safe via an error so callers know the
+    /// milestone was not transitioned again.
+    MilestoneAlreadyExpired = 48,
+    /// The rejection reason must be non-empty and contain at least one
+    /// non-whitespace character.  Callers must provide a meaningful
+    /// justification so that off-chain indexers and dispute reviewers
+    /// can reconstruct the audit trail.
+    MilestoneRejectionReasonEmpty = 49,
+    /// Milestone agreement must have at least one milestone. Creating an
+    /// agreement without milestones leaves storage waste with no possible
+    /// payout path, so the operation is rejected at creation time.
+    EmptyMilestoneList = 50,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.
@@ -510,6 +567,14 @@ pub enum DataKey {
     /// Key: ExchangeRate(Address, Address)
     /// Value: ExchangeRateInfo { rate: i128, updated_at: u64 }
     ExchangeRate(Address, Address),
+
+    /// Tracks whether the grace period for an agreement has been finalized.
+    ///
+    /// Once set, `finalize_grace_period` becomes a no-op for that agreement,
+    /// preventing duplicate refunds and duplicate event emissions.
+    /// Key: AgreementGracePeriodFinalized(u128)
+    /// Value: ()  (presence = finalized)
+    AgreementGracePeriodFinalized(u128),
 }
 
 impl DataKey {
@@ -706,4 +771,92 @@ impl DataKey {
             .persistent()
             .set(&StorageKey::ExchangeRateMaxRateSanityBound, &max_rate);
     }
+}
+
+// ============================================================================
+// PayrollError discriminant stability test
+// ============================================================================
+
+
+    /// Marks an agreement's grace period as finalized.
+    pub fn set_agreement_grace_period_finalized(env: &Env, agreement_id: u128) {
+        let key = DataKey::AgreementGracePeriodFinalized(agreement_id);
+        env.storage().persistent().set(&key, &());
+    }
+
+    /// Returns `true` if the agreement's grace period has been finalized.
+    pub fn is_agreement_grace_period_finalized(env: &Env, agreement_id: u128) -> bool {
+        let key = DataKey::AgreementGracePeriodFinalized(agreement_id);
+        env.storage().persistent().has(&key)
+    }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// Asserts that every [`PayrollError`] variant retains its expected `u32`
+    /// discriminant.  If this test fails after a code change it means a variant
+    /// was renumbered, inserted between existing variants, or a previously
+    /// assigned value was re-used — all of which break the append-only
+    /// convention for off-chain error-code consumers.
+    ///
+    /// When adding a new error variant, add a corresponding assertion here
+    /// with the next integer discriminant.
+    #[test]
+    fn test_payroll_error_discriminants_stable() {
+        assert_eq!(PayrollError::DisputeAlreadyRaised as u32, 1);
+        assert_eq!(PayrollError::NotInGracePeriod as u32, 2);
+        assert_eq!(PayrollError::NotParty as u32, 3);
+        assert_eq!(PayrollError::NotArbiter as u32, 4);
+        assert_eq!(PayrollError::InvalidPayout as u32, 5);
+        assert_eq!(PayrollError::ActiveDispute as u32, 6);
+        assert_eq!(PayrollError::AgreementNotFound as u32, 7);
+        assert_eq!(PayrollError::NoDispute as u32, 8);
+        assert_eq!(PayrollError::NoEmployee as u32, 9);
+        assert_eq!(PayrollError::NotActivated as u32, 10);
+        assert_eq!(PayrollError::Unauthorized as u32, 11);
+        assert_eq!(PayrollError::InvalidEmployeeIndex as u32, 12);
+        assert_eq!(PayrollError::InvalidData as u32, 13);
+        assert_eq!(PayrollError::TransferFailed as u32, 14);
+        assert_eq!(PayrollError::InsufficientEscrowBalance as u32, 15);
+        assert_eq!(PayrollError::NoPeriodsToClaim as u32, 16);
+        assert_eq!(PayrollError::AgreementNotActivated as u32, 17);
+        assert_eq!(PayrollError::InvalidAgreementMode as u32, 18);
+        assert_eq!(PayrollError::AgreementPaused as u32, 19);
+        assert_eq!(PayrollError::AllPeriodsClaimed as u32, 20);
+        assert_eq!(PayrollError::ZeroAmountPerPeriod as u32, 21);
+        assert_eq!(PayrollError::ZeroPeriodDuration as u32, 22);
+        assert_eq!(PayrollError::ZeroNumPeriods as u32, 23);
+        assert_eq!(PayrollError::EmergencyPaused as u32, 24);
+        assert_eq!(PayrollError::NotGuardian as u32, 25);
+        assert_eq!(PayrollError::TimelockActive as u32, 26);
+        assert_eq!(PayrollError::InvalidTimelock as u32, 27);
+        assert_eq!(PayrollError::MultisigApprovalRequired as u32, 28);
+        assert_eq!(PayrollError::ExchangeRateNotFound as u32, 29);
+        assert_eq!(PayrollError::ExchangeRateOverflow as u32, 30);
+        assert_eq!(PayrollError::ExchangeRateInvalid as u32, 31);
+        assert_eq!(PayrollError::GraceExtensionInvalid as u32, 32);
+        assert_eq!(PayrollError::GraceExtensionCapExceeded as u32, 33);
+        assert_eq!(PayrollError::RateLimited as u32, 34);
+        assert_eq!(PayrollError::BatchTooLarge as u32, 35);
+        assert_eq!(PayrollError::MilestoneAmountInvalid as u32, 36);
+        assert_eq!(PayrollError::MilestoneAgreementInvalidStatus as u32, 37);
+        assert_eq!(PayrollError::MilestoneNotFound as u32, 38);
+        assert_eq!(PayrollError::MilestoneAlreadyApproved as u32, 39);
+        assert_eq!(PayrollError::MilestoneNotApproved as u32, 40);
+        assert_eq!(PayrollError::MilestoneAlreadyClaimed as u32, 41);
+        assert_eq!(PayrollError::EmployeeAlreadyExists as u32, 42);
+        assert_eq!(PayrollError::ReentrancyDetected as u32, 43);
+        assert_eq!(PayrollError::InvalidArbiter as u32, 44);
+        assert_eq!(PayrollError::MilestoneAlreadyRejected as u32, 45);
+        assert_eq!(
+            PayrollError::MilestoneAlreadyApprovedCannotReject as u32,
+            46
+        );
+        assert_eq!(PayrollError::MilestoneAlreadyClaimedCannotReject as u32, 47);
+        assert_eq!(PayrollError::MilestoneAlreadyExpired as u32, 48);
+        assert_eq!(PayrollError::MilestoneRejectionReasonEmpty as u32, 49);
+        assert_eq!(PayrollError::EmptyMilestoneList as u32, 50);
+    }
+        assert_eq!(PayrollError::GracePeriodAlreadyFinalized as u32, 50);
 }

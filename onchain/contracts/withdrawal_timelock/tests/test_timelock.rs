@@ -4,7 +4,6 @@ use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, BytesN, Env,
 };
-
 use withdrawal_timelock::{
     OperationKind, OperationStatus, TimelockError, TimelockedOperation, WithdrawalTimelock,
     WithdrawalTimelockClient, MAX_DELAY_SECONDS,
@@ -423,6 +422,41 @@ fn cancel_then_requeue_allowed() {
     assert_eq!(client.get_queued_count(), 1u32);
 }
 
+#[test]
+fn cancel_removes_from_consideration_and_rejects_execute_after_eta() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    // Queue an operation
+    let op_id = client.queue(&admin, &withdrawal_kind(&env));
+    let op_before = client.get_operation(&op_id).unwrap();
+
+    // Cancel the operation
+    client.cancel(&admin, &op_id);
+
+    // Assert it no longer appears in the Queued list for `get_operations_for`
+    let page_queued =
+        client.get_operations_for(&admin, &Some(OperationStatus::Queued), &None, &None);
+    assert_eq!(
+        page_queued.operations.len(),
+        0,
+        "Cancelled operation should not appear as Queued"
+    );
+
+    // Advance time past the original maturity timestamp
+    let now = env.ledger().timestamp();
+    let delta = op_before.eta.saturating_sub(now) + 1;
+    advance_time(&env, delta);
+
+    // Assert execute is rejected rather than proceeding against stale queued data
+    let res = client.try_execute(&admin, &op_id);
+    assert_eq!(
+        res,
+        Err(Ok(TimelockError::AlreadyExecutedOrCancelled)),
+        "Execute should be rejected after cancellation, even if ETA has passed"
+    );
+}
+
 // ─── Group E: Update Delay (5 tests) ─────────────────────────────────────────
 
 #[test]
@@ -436,12 +470,44 @@ fn update_delay_succeeds() {
 }
 
 #[test]
-fn update_delay_zero_fails() {
+fn update_delay_zero_is_rejected_and_preserves_existing_state() {
+    // Documented zero-delay policy: update_delay(0) is not an immediate-mode
+    // switch. It must fail atomically and preserve the active delay plus any
+    // already queued operation's frozen ETA.
     let env = create_env();
-    let (client, admin) = setup(&env);
+    let (client, admin) = setup(&env); // delay = 60s
+
+    let (cfg_admin_before, delay_before) = client.get_config();
+    assert_eq!(cfg_admin_before, admin);
+    assert_eq!(delay_before, 60u64);
+
+    let op_id = client.queue(&admin, &withdrawal_kind(&env));
+    let op_before: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    assert_eq!(op_before.eta, op_before.created_at + delay_before);
 
     let res = client.try_update_delay(&admin, &0u64);
     assert_eq!(res, Err(Ok(TimelockError::InvalidDelay)));
+
+    // Failed zero-delay update must not mutate configuration.
+    let (cfg_admin_after, delay_after) = client.get_config();
+    assert_eq!(cfg_admin_after, admin);
+    assert_eq!(delay_after, delay_before);
+
+    // Failed zero-delay update must not mutate already queued operations.
+    let op_after: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    assert_eq!(op_after.eta, op_before.eta);
+    assert_eq!(op_after.created_at, op_before.created_at);
+    assert_eq!(op_after.status, OperationStatus::Queued);
+
+    // Because zero was rejected, the existing nonzero-delay operation is still
+    // not immediately executable.
+    let early = client.try_execute(&admin, &op_id);
+    assert_eq!(early, Err(Ok(TimelockError::NotReady)));
+
+    // Future operations also continue using the prior nonzero delay.
+    let op_id2 = client.queue(&admin, &withdrawal_kind(&env));
+    let op2: TimelockedOperation = client.get_operation(&op_id2).unwrap();
+    assert_eq!(op2.eta, op2.created_at + delay_before);
 }
 
 #[test]
@@ -829,4 +895,149 @@ fn queue_admin_change_not_affected_by_withdrawal_validation() {
     let op_id = client.queue(&admin, &kind);
     let op: TimelockedOperation = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Queued);
+}
+
+// ─── Group H: Matured-but-unexecuted cancellation & no-stuck guarantee ────────
+//
+// Security invariant: a withdrawal that has passed its timelock delay but has
+// not yet been executed must never be permanently stuck.  The cancel function
+// checks only `op.status`, never `op.eta`, so both the execute path and the
+// cancel path remain open to a matured `Queued` operation.
+
+/// Cancelling a matured-but-unexecuted withdrawal succeeds.
+///
+/// This is the primary test for the scenario: queue → advance past eta →
+/// attempt cancel before execute.  The expected outcome is clean cancellation
+/// with correct state, i.e. no fund-lock.
+#[test]
+fn cancel_matured_unexecuted_withdrawal_succeeds() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    // 1. Queue a withdrawal.
+    let op_id = client.queue(&admin, &withdrawal_kind(&env));
+
+    // 2. Advance the ledger past the timelock maturity (eta + 1 s).
+    let op: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    let now = env.ledger().timestamp();
+    let delta = op.eta.saturating_sub(now) + 1;
+    advance_time(&env, delta);
+
+    // Confirm the operation is now matured (current time >= eta).
+    assert!(env.ledger().timestamp() >= op.eta);
+    // Status is still Queued — no separate "Matured" state exists.
+    let op_after_advance: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    assert_eq!(op_after_advance.status, OperationStatus::Queued);
+
+    // 3. Cancel before executing — must succeed.
+    client.cancel(&admin, &op_id);
+
+    // 4. Verify the operation reached exactly one terminal state: Cancelled.
+    let cancelled_op: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    assert_eq!(cancelled_op.status, OperationStatus::Cancelled);
+    assert!(cancelled_op.cancelled_at.is_some());
+    assert!(cancelled_op.executed_at.is_none());
+}
+
+/// After cancelling a matured-but-unexecuted withdrawal, execution is blocked.
+///
+/// Confirms there is no double-execution path: once cancelled the withdrawal
+/// is in a terminal state and `execute` must return `AlreadyExecutedOrCancelled`.
+#[test]
+fn execute_after_cancel_of_matured_withdrawal_fails() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    // Queue and advance past eta.
+    let op_id = queue_and_advance(&client, &admin, withdrawal_kind(&env), &env);
+
+    // Cancel the matured operation.
+    client.cancel(&admin, &op_id);
+
+    // Execution must now be rejected — the operation is in a terminal state.
+    let res = client.try_execute(&admin, &op_id);
+    assert_eq!(res, Err(Ok(TimelockError::AlreadyExecutedOrCancelled)));
+}
+
+/// Execution of a matured withdrawal succeeds when cancel is NOT called first.
+///
+/// Confirms the happy path is unaffected: maturity → execute still works.
+/// This guards against any regression introduced by the new doc comment or
+/// future refactors touching the `cancel`/`execute` interaction.
+#[test]
+fn execute_matured_withdrawal_succeeds_without_cancel() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    // Queue and advance past eta.
+    let op_id = queue_and_advance(&client, &admin, withdrawal_kind(&env), &env);
+
+    // Execute directly — no cancel attempted beforehand.
+    client.execute(&admin, &op_id);
+
+    let op: TimelockedOperation = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Executed);
+    assert!(op.executed_at.is_some());
+    assert!(op.cancelled_at.is_none());
+}
+
+/// No-stuck guarantee: after any single action on a matured Queued operation the
+/// operation is in exactly one valid state — never "neither executable nor
+/// cancellable".
+///
+/// Concretely: the three reachable post-maturity outcomes are
+///   (a) still Queued (no action taken — both paths still open),
+///   (b) Executed (execute called — cancel is now correctly blocked), or
+///   (c) Cancelled (cancel called — execute is now correctly blocked).
+/// This test exercises all three branches in one scenario to confirm the
+/// invariant holds and the queued-count accounting stays consistent.
+#[test]
+fn matured_operation_is_never_stuck_in_ambiguous_state() {
+    let env = create_env();
+    let (client, admin) = setup(&env);
+
+    // --- Outcome (a): still Queued post-maturity --------------------------------
+    let op_a = client.queue(&admin, &withdrawal_kind(&env));
+    let op_a_data: TimelockedOperation = client.get_operation(&op_a).unwrap();
+    let now = env.ledger().timestamp();
+    let delta = op_a_data.eta.saturating_sub(now) + 1;
+    advance_time(&env, delta);
+
+    let op_a_matured: TimelockedOperation = client.get_operation(&op_a).unwrap();
+    // Still Queued — no separate "Matured" state exists.
+    // Both paths (execute and cancel) remain open from here.
+    assert_eq!(op_a_matured.status, OperationStatus::Queued);
+
+    // --- Outcome (b): Executed --------------------------------------------------
+    let op_b = client.queue(&admin, &withdrawal_kind(&env));
+    // op_b.eta is in the future (queued after advance, within same ledger timestamp)
+    let op_b_data: TimelockedOperation = client.get_operation(&op_b).unwrap();
+    let now2 = env.ledger().timestamp();
+    let delta2 = op_b_data.eta.saturating_sub(now2) + 1;
+    advance_time(&env, delta2);
+
+    client.execute(&admin, &op_b);
+    let op_b_final: TimelockedOperation = client.get_operation(&op_b).unwrap();
+    assert_eq!(op_b_final.status, OperationStatus::Executed);
+    // Cancel must now be blocked.
+    let res_cancel_b = client.try_cancel(&admin, &op_b);
+    assert_eq!(
+        res_cancel_b,
+        Err(Ok(TimelockError::AlreadyExecutedOrCancelled))
+    );
+
+    // --- Outcome (c): Cancelled -------------------------------------------------
+    // op_a is still Queued and matured — cancel it now.
+    client.cancel(&admin, &op_a);
+    let op_a_final: TimelockedOperation = client.get_operation(&op_a).unwrap();
+    assert_eq!(op_a_final.status, OperationStatus::Cancelled);
+    // Execute must now be blocked.
+    let res_exec_a = client.try_execute(&admin, &op_a);
+    assert_eq!(
+        res_exec_a,
+        Err(Ok(TimelockError::AlreadyExecutedOrCancelled))
+    );
+
+    // --- queued_count is consistent: both ops resolved, count is 0 -------------
+    assert_eq!(client.get_queued_count(), 0u32);
 }

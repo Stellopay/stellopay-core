@@ -4,9 +4,10 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env, Vec,
 };
-
-use stello_pay_contract::storage::{AgreementStatus, DataKey};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{AgreementStatus, DataKey},
+    PayrollContract, PayrollContractClient,
+};
 
 /// Create a baseline environment + deployed payroll contract for benchmarks.
 fn setup_env() -> (
@@ -171,7 +172,12 @@ fn setup_funded_milestone(
     let amount: i128 = 1_000;
     let count: u32 = 10;
 
-    let agreement_id = client.create_milestone_agreement(employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     for _ in 0..count {
         client.add_milestone(&agreement_id, &amount);
     }

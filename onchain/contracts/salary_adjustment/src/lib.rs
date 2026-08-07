@@ -1,7 +1,8 @@
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, Symbol,
+    contract, contractimpl, contracttype, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Symbol,
 };
 
 // ============================================================================
@@ -22,13 +23,34 @@ pub enum AdjustmentKind {
     Decrease,
 }
 
+/// How a typed salary proposal expresses its delta.
+///
+/// * [`AdjustmentType::Percentage`] — `value` is in basis points (`10_000` = 100%).
+/// * [`AdjustmentType::FixedAmount`] — `value` is an absolute delta in stroops.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AdjustmentType {
+    Percentage,
+    FixedAmount,
+}
+
+/// Lifecycle state of a salary adjustment.
+///
+/// Valid transitions are `Pending -> Approved -> Applied` and
+/// `Pending -> Cancelled`. `Rejected` is terminal: a rejected adjustment can
+/// never be approved, applied, cancelled, or re-submitted under the same id.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdjustmentStatus {
+    /// Awaiting a decision from the configured approver.
     Pending,
+    /// Approved and waiting for the employer to apply it on or after its effective date.
     Approved,
+    /// Permanently declined by the approver.
     Rejected,
+    /// Finalized and reflected in the employee's tracked salary.
     Applied,
+    /// Withdrawn by the employer before an approval decision.
     Cancelled,
 }
 
@@ -47,7 +69,11 @@ pub struct SalaryAdjustment {
     pub created_at: u64,
     pub retroactive: bool,
     pub retroactive_approved_by: Option<Address>,
+    /// Domain-separated reason commitment for a retroactive adjustment.
     pub reason_hash: Option<BytesN<32>>,
+    /// Human-readable explanation recorded when the adjustment is rejected.
+    /// This is `None` before rejection and immutable once populated.
+    pub rejection_reason: Option<String>,
 }
 
 #[contracttype]
@@ -116,6 +142,8 @@ pub struct AdjustmentApprovedEvent {
 pub struct AdjustmentRejectedEvent {
     pub adjustment_id: u128,
     pub approver: Address,
+    /// Human-readable justification persisted on the rejected adjustment.
+    pub reason: String,
 }
 
 #[contracttype]
@@ -160,6 +188,15 @@ pub struct AdjustmentAuditEvent {
 /// Default maximum allowable salary (1 trillion stroops) used when no
 /// explicit cap has been configured by the owner.
 pub const DEFAULT_MAX_SALARY: i128 = 1_000_000_000_000;
+
+/// Basis-points denominator used by [`AdjustmentType::Percentage`] proposals
+/// (`10_000` bps = 100%).
+pub const BPS_DENOMINATOR: i128 = 10_000;
+
+/// Maximum UTF-8 byte length accepted for a human-readable rejection reason.
+/// The bound limits persistent-storage growth while leaving enough room for an
+/// actionable explanation.
+pub const MAX_REJECTION_REASON_LENGTH: u32 = 256;
 
 const RETRO_REASON_DOMAIN: &[u8] = b"salary_adjustment:retroactive:v1";
 
@@ -221,6 +258,29 @@ fn effective_salary_cap(env: &Env) -> i128 {
         .persistent()
         .get::<_, i128>(&StorageKey::SalaryCap)
         .unwrap_or(DEFAULT_MAX_SALARY)
+}
+
+/// Validates a mandatory, bounded rejection reason before it is persisted.
+///
+/// ASCII whitespace is checked explicitly because Soroban strings expose
+/// UTF-8 bytes rather than Rust `str` values in `no_std` contracts.
+fn assert_valid_rejection_reason(reason: &String) {
+    let bytes = reason.to_bytes();
+    assert!(bytes.len() > 0, "Rejection reason is required");
+    assert!(
+        bytes.len() <= MAX_REJECTION_REASON_LENGTH,
+        "Rejection reason too long"
+    );
+
+    let mut has_content = false;
+    for index in 0..bytes.len() {
+        let byte = bytes.get(index).expect("Rejection reason byte missing");
+        if !(byte == b' ' || byte == b'\t' || byte == b'\n' || byte == b'\r') {
+            has_content = true;
+            break;
+        }
+    }
+    assert!(has_content, "Rejection reason is required");
 }
 
 fn domain_separated_reason_hash(
@@ -341,6 +401,65 @@ fn append_audit(
     audit_id
 }
 
+/// Resolves a typed proposal (`percentage` or `fixed-amount`) into an absolute
+/// `new_salary`, rejecting out-of-range inputs before any storage write.
+///
+/// # Panics
+/// * `"Percentage must be positive"` — percentage `value <= 0`
+/// * `"Fixed amount must be positive"` — fixed-amount `value <= 0`
+/// * `"Adjustment would result in non-positive salary"` — decrease drives salary ≤ 0
+/// * Overflow / underflow on checked arithmetic
+fn compute_proposed_salary(
+    current_salary: i128,
+    adjustment_type: &AdjustmentType,
+    value: i128,
+    kind: &AdjustmentKind,
+) -> i128 {
+    match adjustment_type {
+        AdjustmentType::Percentage => {
+            assert!(value > 0, "Percentage must be positive");
+            let delta = current_salary
+                .checked_mul(value)
+                .expect("Percentage multiplication overflow")
+                .checked_div(BPS_DENOMINATOR)
+                .expect("Percentage division failed");
+            match kind {
+                AdjustmentKind::Increase => current_salary
+                    .checked_add(delta)
+                    .expect("Salary increase overflow"),
+                AdjustmentKind::Decrease => {
+                    let new_salary = current_salary
+                        .checked_sub(delta)
+                        .expect("Salary decrease underflow");
+                    assert!(
+                        new_salary > 0,
+                        "Adjustment would result in non-positive salary"
+                    );
+                    new_salary
+                }
+            }
+        }
+        AdjustmentType::FixedAmount => {
+            assert!(value > 0, "Fixed amount must be positive");
+            match kind {
+                AdjustmentKind::Increase => current_salary
+                    .checked_add(value)
+                    .expect("Salary increase overflow"),
+                AdjustmentKind::Decrease => {
+                    let new_salary = current_salary
+                        .checked_sub(value)
+                        .expect("Salary decrease underflow");
+                    assert!(
+                        new_salary > 0,
+                        "Adjustment would result in non-positive salary"
+                    );
+                    new_salary
+                }
+            }
+        }
+    }
+}
+
 fn create_adjustment_internal(
     env: &Env,
     employer: Address,
@@ -384,6 +503,7 @@ fn create_adjustment_internal(
         retroactive,
         retroactive_approved_by,
         reason_hash: reason_hash.clone(),
+        rejection_reason: None,
     };
 
     write_adjustment(env, &adjustment);
@@ -486,6 +606,10 @@ impl SalaryAdjustmentContract {
     /// @dev Determines increase or decrease from salary comparison.
     ///      Rejects retroactive effective dates (before current ledger time).
     ///      Rejects new_salary exceeding the configured salary cap.
+    ///      Rejects concurrent proposals for the same employee with the same effective date.
+    ///      Multiple pending proposals for the same employee are allowed if they have
+    ///      different effective dates. Each proposal is identified by its unique id and
+    ///      must be approved/rejected/applied independently.
     ///
     /// @param employer Employer submitting the adjustment; must authenticate.
     /// @param employee Employee whose salary is being adjusted.
@@ -502,6 +626,7 @@ impl SalaryAdjustmentContract {
     /// * `"New salary must differ from current salary"`
     /// * `"New salary exceeds salary cap"`
     /// * `"Effective date cannot be in the past"`
+    /// * `"Conflicting adjustment exists"` (same employee + effective_date)
     ///
     /// # Events
     /// Emits `("adjustment_created", adjustment_id)` with an `AdjustmentCreatedEvent`.
@@ -529,9 +654,78 @@ impl SalaryAdjustmentContract {
         )
     }
 
+    /// @notice Proposes a salary adjustment using a percentage or fixed-amount delta.
+    /// @dev Computes the absolute `new_salary` from `adjustment_type` + `value` + `kind`,
+    ///      then follows the same pending → approve → apply workflow as `create_adjustment`.
+    ///
+    /// * [`AdjustmentType::Percentage`] — `value` is basis points (`10_000` = 100%). Example:
+    ///   `current=10_000`, `value=1_000` (10%), `kind=Increase` → `new_salary=11_000`.
+    /// * [`AdjustmentType::FixedAmount`] — `value` is an absolute stroop delta. Example:
+    ///   `current=10_000`, `value=2_000`, `kind=Increase` → `new_salary=12_000`.
+    ///
+    /// # Panics
+    /// * `"Percentage must be positive"` — percentage `value <= 0` (rejects negative %)
+    /// * `"Fixed amount must be positive"` — fixed-amount `value <= 0`
+    /// * `"Adjustment would result in non-positive salary"` — decrease drives salary ≤ 0
+    /// * All standard `create_adjustment` validation panics after the absolute salary is computed
+    ///
+    /// # Events
+    /// Emits `("adjustment_created", adjustment_id)` with an `AdjustmentCreatedEvent`.
+    pub fn propose_adjustment(
+        env: Env,
+        employer: Address,
+        employee: Address,
+        approver: Address,
+        current_salary: i128,
+        adjustment_type: AdjustmentType,
+        value: i128,
+        kind: AdjustmentKind,
+        effective_date: u64,
+    ) -> u128 {
+        require_initialized(&env);
+        employer.require_auth();
+
+        let new_salary = compute_proposed_salary(current_salary, &adjustment_type, value, &kind);
+
+        // Kind is caller-declared; enforce it matches the computed direction so a
+        // mismatched (type, kind) pair cannot silently invert the intended change.
+        match kind {
+            AdjustmentKind::Increase => {
+                assert!(
+                    new_salary > current_salary,
+                    "Increase kind requires a higher resulting salary"
+                );
+            }
+            AdjustmentKind::Decrease => {
+                assert!(
+                    new_salary < current_salary,
+                    "Decrease kind requires a lower resulting salary"
+                );
+            }
+        }
+
+        create_adjustment_internal(
+            &env,
+            employer,
+            employee,
+            approver,
+            current_salary,
+            new_salary,
+            effective_date,
+            None,
+            None,
+        )
+    }
+
     /// @notice Creates a retroactive salary adjustment with explicit owner approval.
-    /// @dev Requires both the employer and contract owner to authenticate. The provided
-    ///      reason hash is domain-separated with the adjustment details before storage.
+    /// @dev The `effective_date` is a constraint on when the adjustment can be
+    ///      applied (must be past the effective date). The actual salary change
+    ///      takes effect going forward from the time `apply_adjustment` is called.
+    ///      Retroactive adjustments do NOT retroactively alter already-processed
+    ///      payroll periods — past claims are not recalculated or topped up.
+    ///      Requires both the employer and contract owner to authenticate. The
+    ///      provided reason hash is domain-separated with the adjustment details
+    ///      before storage.
     ///
     /// # Panics
     /// * `"Only owner can authorize retroactive adjustment"`
@@ -637,19 +831,30 @@ impl SalaryAdjustmentContract {
         );
     }
 
-    /// @notice Rejects a pending salary adjustment.
-    /// @dev Rejected adjustments can subsequently be cancelled by the employer.
+    /// @notice Rejects a pending salary adjustment and records why it was declined.
+    /// @dev Atomically stores the reason and moves `Pending -> Rejected`. `Rejected`
+    ///      is terminal: the same adjustment id cannot later be approved, applied,
+    ///      cancelled, or re-submitted. The reason is public on-chain data and is
+    ///      limited to [`MAX_REJECTION_REASON_LENGTH`] UTF-8 bytes.
     /// @param approver Approver address; must authenticate.
     /// @param adjustment_id Adjustment identifier.
+    /// @param rejection_reason Non-empty human-readable reason for the rejection.
     ///
     /// # Panics
     /// * `"Contract not initialized"`
     /// * `"Only approver can reject"`
     /// * `"Adjustment is not pending"`
+    /// * `"Rejection reason is required"`
+    /// * `"Rejection reason too long"`
     ///
     /// # Events
     /// Emits `("adjustment_rejected", adjustment_id)` with an `AdjustmentRejectedEvent`.
-    pub fn reject_adjustment(env: Env, approver: Address, adjustment_id: u128) {
+    pub fn reject_adjustment(
+        env: Env,
+        approver: Address,
+        adjustment_id: u128,
+        rejection_reason: String,
+    ) {
         require_initialized(&env);
         approver.require_auth();
 
@@ -659,8 +864,10 @@ impl SalaryAdjustmentContract {
             adjustment.status == AdjustmentStatus::Pending,
             "Adjustment is not pending"
         );
+        assert_valid_rejection_reason(&rejection_reason);
 
         adjustment.status = AdjustmentStatus::Rejected;
+        adjustment.rejection_reason = Some(rejection_reason.clone());
         write_adjustment(&env, &adjustment);
 
         env.events().publish(
@@ -668,6 +875,7 @@ impl SalaryAdjustmentContract {
             AdjustmentRejectedEvent {
                 adjustment_id,
                 approver: approver.clone(),
+                reason: rejection_reason,
             },
         );
         append_audit(
@@ -684,6 +892,7 @@ impl SalaryAdjustmentContract {
     /// @notice Applies an approved salary adjustment after the effective date.
     /// @dev Only the employer can apply. Ledger timestamp must be at or past effective_date.
     ///      Updates the employee's tracked salary for payroll claiming visibility.
+    ///      A `Rejected` adjustment can never satisfy the `Approved` status guard.
     ///
     /// @param employer Employer applying the adjustment; must authenticate.
     /// @param adjustment_id Adjustment identifier.
@@ -741,8 +950,9 @@ impl SalaryAdjustmentContract {
         );
     }
 
-    /// @notice Cancels a pending or rejected salary adjustment.
-    /// @dev Approved adjustments cannot be cancelled to preserve scheduling guarantees.
+    /// @notice Cancels a pending salary adjustment.
+    /// @dev Only `Pending` adjustments can be cancelled. `Approved`, `Applied`, and
+    ///      terminal `Rejected` adjustments are immutable.
     /// @param employer Employer requesting cancellation; must authenticate.
     /// @param adjustment_id Adjustment identifier.
     ///
@@ -760,8 +970,7 @@ impl SalaryAdjustmentContract {
         let mut adjustment = read_adjustment(&env, adjustment_id);
         assert!(adjustment.employer == employer, "Only employer can cancel");
         assert!(
-            adjustment.status == AdjustmentStatus::Pending
-                || adjustment.status == AdjustmentStatus::Rejected,
+            adjustment.status == AdjustmentStatus::Pending,
             "Adjustment cannot be cancelled"
         );
 

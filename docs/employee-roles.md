@@ -40,6 +40,10 @@ The `employee_roles` contract can be linked to the centralized `rbac` contract. 
   - `Manager`
   - `Admin`
 
+- **RoleGrant** (contract type)
+  - `role: BuiltInRole` – assigned built-in role
+  - `expires_at: Option<u64>` – optional expiration timestamp (unix epoch seconds). `None` indicates a non-expiring grant.
+
 - **PayrollAction** (contract type)
   - Employee-level: `ViewPayrollStatus`, `ViewPayrollHistory`, `ClaimOwnPayroll`, `WithdrawOwnPayroll`
   - Manager-level: `CreatePayrollRecord`, `UpdatePayrollRecord`, `PauseEmployeePayroll`, `ResumeEmployeePayroll`
@@ -47,7 +51,7 @@ The `employee_roles` contract can be linked to the centralized `rbac` contract. 
 
 - **StorageKey**
   - `Owner` – contract owner (top-level administrator)
-  - `EmployeeRoles(Address) -> Vec<BuiltInRole>` – roles assigned to a given employee
+  - `EmployeeRoles(Address) -> Vec<RoleGrant>` – role grants assigned to a given employee (with backward compatibility for legacy `Vec<BuiltInRole>`)
 
 ---
 
@@ -73,6 +77,14 @@ pub fn assign_role(
     role: BuiltInRole,
 ) -> Result<(), RoleError>
 
+pub fn assign_role_with_expiration(
+    env: Env,
+    caller: Address,
+    employee: Address,
+    role: BuiltInRole,
+    expires_at: Option<u64>,
+) -> Result<(), RoleError>
+
 pub fn revoke_role(
     env: Env,
     caller: Address,
@@ -84,23 +96,48 @@ pub fn revoke_role(
 - **Access control**:
   - `caller` must be either the contract `Owner` or an account with the `Admin` role.
   - **Escalation safeguard**: Non-owner callers must have at least the role they assign or revoke (e.g. an Admin cannot assign Admin if they lack it; in practice only Admin+ can assign, so this is defense-in-depth).
-- Duplicate assignments are ignored; revoking a non-present role overwrites storage (no-op for the role set).
+- **Time-bound grants**:
+  - `assign_role` creates a non-expiring grant (`expires_at = None`).
+  - `assign_role_with_expiration` allows specifying `expires_at: Option<u64>`.
+  - Expiration timestamps must be strictly in the future (`expires_at > env.ledger().timestamp()`), otherwise `RoleError::InvalidExpiration` is returned.
+- Re-assigning an existing role updates its expiration timestamp.
+- Revoking a role removes the grant entry from storage regardless of its expiration state.
 
 ---
 
-### Role Queries
+### Role Queries & Authorization Semantics
 
 ```rust
 pub fn get_roles(env: Env, employee: Address) -> Vec<BuiltInRole>
+pub fn get_role_grants(env: Env, employee: Address) -> Vec<RoleGrant>
 pub fn has_role(env: Env, employee: Address, role: BuiltInRole) -> bool
 pub fn has_role_at_least(env: Env, employee: Address, required: BuiltInRole) -> bool
+pub fn get_effective_permissions(env: Env, employee: Address) -> Vec<PayrollAction>
+pub fn get_role_implies(env: Env, role: BuiltInRole) -> Vec<BuiltInRole>
+pub fn set_role_implies(
+    env: Env,
+    caller: Address,
+    role: BuiltInRole,
+    implied_roles: Vec<BuiltInRole>,
+)
 ```
 
-- `get_roles` returns all roles explicitly granted to `employee`.
-- `has_role` checks membership for a specific role.
-- `has_role_at_least` enforces **role hierarchy**:
-  - `has_role_at_least(emp, Manager)` is true if `emp` has `Manager` or `Admin`.
-  - `has_role_at_least(emp, Employee)` is true for any non-empty role assignment.
+- **Runtime expiration evaluation**:
+  - Authorization checks (`has_role`, `has_role_at_least`, `can_perform`, `require_capability`) evaluate role expiration dynamically at execution time against the current ledger timestamp (`env.ledger().timestamp()`).
+  - A grant with `expires_at = Some(exp)` is authorized when `current_timestamp < exp`, and fails when `current_timestamp >= exp`.
+- `get_roles` returns only currently active (non-expired) roles assigned to `employee`.
+- `get_role_grants` returns all `RoleGrant` entries for `employee` (including `expires_at` metadata).
+- `has_role` checks active membership for a specific role.
+- `has_role_at_least` enforces **role hierarchy** for active grants:
+  - `has_role_at_least(emp, Manager)` is true if `emp` holds an active `Manager` or `Admin` grant.
+  - `has_role_at_least(emp, Employee)` is true for any active role assignment.
+
+---
+
+### Expiration vs. Revocation
+
+- **Expiration**: Temporary roles automatically stop granting permissions as soon as `env.ledger().timestamp() >= expires_at`. No cleanup transaction is required, avoiding gas overhead and administrative delay. Expired grants are simply ignored during authorization checks.
+- **Revocation**: Explicitly calling `revoke_role` immediately removes the specified grant record from contract storage.
 
 ---
 
@@ -120,33 +157,60 @@ pub fn require_capability(
 
 ---
 
-### Integration Guidance
-
-**Assign Admin and Manager roles:**
+### Effective Permissions & Role Implication
 
 ```rust
+pub fn get_effective_permissions(env: Env, employee: Address) -> Vec<PayrollAction>
+pub fn set_role_implies(
+    env: Env,
+    caller: Address,
+    role: BuiltInRole,
+    implied_roles: Vec<BuiltInRole>,
+)
+pub fn get_role_implies(env: Env, role: BuiltInRole) -> Vec<BuiltInRole>
+```
+
+- **`get_effective_permissions`** returns the complete, deduplicated set of payroll actions an employee can perform. It combines actions from directly-granted roles with actions inherited via the `role_implies` chain.
+- **`set_role_implies`** defines that `role` transitively implies each role in `implied_roles`. Only the contract owner may call this.
+- **`get_role_implies`** queries the set of roles implied by the given role.
+- The contract owner always receives all 12 payroll actions regardless of implication configuration.
+- When the same action is reachable through multiple inheritance paths, it appears exactly once in the result (union without duplicates).
+
+**Default implication setup (standard hierarchy):**
+
+```rust
+client.set_role_implies(&owner, &BuiltInRole::Admin,    &vec![&env, BuiltInRole::Manager]);
+client.set_role_implies(&owner, &BuiltInRole::Manager,  &vec![&env, BuiltInRole::Employee]);
+client.set_role_implies(&owner, &BuiltInRole::Employee, &vec![&env]);
+```
+
+With the default hierarchy, Admin gets all 12 actions, Manager gets 8 (Manager + Employee), and Employee gets 4.
+
+---
+
+### Integration Guidance
+
+**Assign permanent and temporary contractor roles:**
+
+```rust
+// Grant permanent Admin role
 client.assign_role(&owner, &admin, &BuiltInRole::Admin);
-client.assign_role(&admin, &employee, &BuiltInRole::Manager);
+
+// Grant temporary Manager role to contractor expiring at unix timestamp 1750000000
+let contractor_expiry = Some(1750000000u64);
+client.assign_role_with_expiration(&admin, &contractor, &BuiltInRole::Manager, &contractor_expiry);
 ```
 
 **Gate operations with capability checks:**
 
 ```rust
-// Option 1: Boolean check
+// Option 1: Boolean check (evaluates active non-expired roles)
 if client.can_perform(&caller, &PayrollAction::CreatePayrollRecord) {
     // proceed with creating payroll record
 }
 
 // Option 2: Enforcing check (caller must be authenticated)
 client.require_capability(&caller, &PayrollAction::CreatePayrollRecord)?;
-```
-
-**Legacy-style role checks:**
-
-```rust
-if client.has_role_at_least(&employee, &BuiltInRole::Manager) {
-    // Department-level configuration changes, approvals, etc.
-}
 ```
 
 ---
@@ -165,26 +229,31 @@ pub fn set_rbac_address(env: Env, rbac_address: Address)
 ### Security Assumptions and Notes
 
 - **Role escalation**: Only Owner or Admin can assign or revoke roles. Non-admin users (including Manager, Employee) cannot grant themselves or others elevated roles. The contract enforces that assigners have at least the role they assign.
-- **Delegation**: There is no delegated authority model. Only the Owner (from initialization) and accounts explicitly granted the Admin role can manage roles. Capability checks do not support time-limited or scope-limited delegation.
+- **Runtime Expiration Evaluation**: Expiration is always evaluated live against `env.ledger().timestamp()`. Authorization decisions are never cached, ensuring expired grants are immediately treated as revoked without risk of lingering access.
 - **Owner vs Admin**: The Owner is stored separately and bypasses all role checks. The Owner is not required to hold any BuiltInRole. Only the Owner can authorize contract upgrades (via `UpgradeableInternal`).
 - **Initialization**: The contract can be initialized only once. Double initialization panics.
-- **Test coverage**: The test suite includes an allow/deny matrix for all roles and payroll actions, plus explicit tests for role mutation (assign/revoke) deny paths and initialization safeguards.
+- **Backward Storage Compatibility**: Legacy state stored as `Vec<BuiltInRole>` is automatically read as non-expiring `RoleGrant`s (`expires_at: None`), preserving complete compatibility for existing deployments.
 
 ---
 
 ### Test Summary and Security Notes
 
-**Test output** (25 tests, all passing):
+**Test output** (44 tests, all passing):
 
 - **Regression**: owner/admin assign/revoke, hierarchy (Admin/Manager/Employee), `has_role` / `has_role_at_least`
+- **Time-bound grants**: lifecycle, expiry boundary checks (`exp - 1` vs `exp` vs `exp + 1`), non-expiring longevity, past timestamp validation (`InvalidExpiration`), grant extension/update, legacy storage compatibility
 - **Allow matrix**: Owner, Admin, Manager, and Employee can each perform their permitted payroll actions
 - **Deny matrix**: Employee denied Manager/Admin actions; Manager denied Admin actions; no-role denied all
 - **Role mutation deny**: Non-admin cannot assign/revoke; employee cannot self-grant Admin; manager cannot assign Admin
 - **`require_capability`**: Allow/deny paths for employee, manager, and admin actions
 - **Initialization**: Double-initialization panics with `"Already initialized"`
+- **Effective permissions**: Owner all-actions shortcut, Admin/Manager/Employee correct action sets, empty for no-role, union length matches deduplicated expected set
+- **Deduplication**: Action both directly granted and inherited appears once; converging inheritance paths produce no duplicates
 
 **Security validations covered by tests**:
 
 - Role escalation prevention: only Owner/Admin can mutate roles; self-grant and cross-role escalation attempts fail
+- Dynamic time checks: authorization immediately reverts after `expires_at` timestamp without explicit transaction
 - Capability checks are monotonic: Admin implies Manager+Employee; Manager implies Employee
 - Unauthorized callers cannot mutate role state; capability helpers enforce role hierarchy
+

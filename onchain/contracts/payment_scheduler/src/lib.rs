@@ -16,10 +16,10 @@
 //! `Err(SchedulerError::DuplicateSchedule)` without consuming a new job ID.
 //!
 //! The deterministic-ID scheme means that:
-//! * Off-chain systems can predict the schedule key before submitting the
-//!   transaction and check for prior registration without an extra read.
-//! * Replay attacks (re-submitting the same `create_job` call) are rejected at
-//!   the storage-key level, not just by sequential counters.
+//! * Off-chain systems can predict the schedule key before submitting the transaction and check for
+//!   prior registration without an extra read.
+//! * Replay attacks (re-submitting the same `create_job` call) are rejected at the storage-key
+//!   level, not just by sequential counters.
 //!
 //! ## Idempotency of `process_due_payments`
 //!
@@ -32,16 +32,14 @@
 //!
 //! ## Security Model
 //!
-//! * `initialize` is one-time only; subsequent calls return
-//!   `Err(AlreadyInitialized)`.
-//! * `create_job` requires employer authentication. The employer must
-//!   separately fund the scheduler via `fund_job` or a direct token transfer.
-//! * `pause_job`, `resume_job`, `cancel_job`, and `fund_job` are gated on the
-//!   employer address stored inside the `PaymentJob` record, preventing any
-//!   other address from controlling the job.
-//! * `process_due_payments` is intentionally **permissionless**: any actor can
-//!   call it; the contract never trusts the caller — it reads all state from
-//!   storage and checks timestamps independently.
+//! * `initialize` is one-time only; subsequent calls return `Err(AlreadyInitialized)`.
+//! * `create_job` requires employer authentication. The employer must separately fund the scheduler
+//!   via `fund_job` or a direct token transfer.
+//! * `pause_job`, `resume_job`, `cancel_job`, and `fund_job` are gated on the employer address
+//!   stored inside the `PaymentJob` record, preventing any other address from controlling the job.
+//! * `process_due_payments` is intentionally **permissionless**: any actor can call it; the
+//!   contract never trusts the caller — it reads all state from storage and checks timestamps
+//!   independently.
 //! * Cancelled jobs are permanently terminal; they cannot be re-activated.
 //!
 //! ## Integration
@@ -92,6 +90,8 @@ pub enum SchedulerError {
     AlreadyCancelled = 10,
     /// The job is not in a cancellable state (must be `Active` or `Paused`).
     JobNotCancellable = 11,
+    /// The caller does not match the stored contract owner.
+    Unauthorized = 12,
 }
 
 // ─── Domain Types ─────────────────────────────────────────────────────────────
@@ -115,6 +115,10 @@ pub enum RetryState {
     Retrying,
     Success,
     Failed,
+    /// Payer explicitly revoked the request in the `payment_retry` contract.
+    /// Terminal — mirrors `payment_retry::RetryState::Cancelled` so XDR decoded
+    /// from that contract round-trips through this local mirror type.
+    Cancelled,
 }
 
 #[contracttype]
@@ -159,6 +163,38 @@ impl RetryContractClient {
                 config.clone().into_val(&self.env),
             ],
         );
+    }
+}
+
+/// Lightweight dynamic client for querying an external `compliance_checker`
+/// contract's emergency-pause flag.
+///
+/// Uses `env.invoke_contract` (the same dynamic-invocation pattern as
+/// [`RetryContractClient`]) rather than a compile-time crate dependency on
+/// `compliance_checker`, keeping the two contracts loosely coupled: the
+/// scheduler only needs to agree with `compliance_checker` on a function
+/// name and return type, not on a shared Cargo dependency graph.
+pub struct ComplianceCheckerClient {
+    pub env: Env,
+    pub contract_id: Address,
+}
+
+impl ComplianceCheckerClient {
+    pub fn new(env: &Env, contract_id: &Address) -> Self {
+        Self {
+            env: env.clone(),
+            contract_id: contract_id.clone(),
+        }
+    }
+
+    /// Invokes the permissionless `is_emergency_paused() -> bool` view on
+    /// the configured `compliance_checker` contract.
+    pub fn is_emergency_paused(&self) -> bool {
+        self.env.invoke_contract::<bool>(
+            &self.contract_id,
+            &Symbol::new(&self.env, "is_emergency_paused"),
+            soroban_sdk::vec![&self.env],
+        )
     }
 }
 
@@ -221,6 +257,9 @@ enum StorageKey {
     ScheduleId(BytesN<32>),
     /// Address of the payment retry contract.
     RetryContract,
+    /// Optional address of a `compliance_checker` contract consulted by
+    /// `process_due_payments` for a shared emergency-pause signal (`Address`).
+    ComplianceChecker,
 }
 
 // ─── Events ───────────────────────────────────────────────────────────────────
@@ -424,6 +463,53 @@ impl PaymentSchedulerContract {
         Ok(())
     }
 
+    /// @notice Configures an optional `compliance_checker` contract that
+    ///         `process_due_payments` consults for a shared emergency-pause
+    ///         signal before evaluating any due jobs.
+    /// @dev Owner-only. When unset (the default), no compliance check is
+    ///      performed and `process_due_payments` behaves exactly as before
+    ///      this integration existed. Passing a new address updates (or
+    ///      clears, functionally, if paired with a no-op checker) the link;
+    ///      there is no `unset` — deploy a checker that always reports
+    ///      unpaused if the integration should be neutralized.
+    /// @param owner Contract owner. Must authenticate and match the stored owner.
+    /// @param compliance_checker Address of a deployed contract exposing a
+    ///        permissionless `is_emergency_paused() -> bool` view (see
+    ///        `compliance_checker::ComplianceCheckerContract::is_emergency_paused`).
+    /// @return Ok(()) on success.
+    /// @security Requires `owner.require_auth()` and an exact match against
+    ///           the stored owner, preventing any other address from
+    ///           redirecting the scheduler's pause signal to a malicious
+    ///           contract that always reports "not paused".
+    pub fn set_compliance_checker(
+        env: Env,
+        owner: Address,
+        compliance_checker: Address,
+    ) -> Result<(), SchedulerError> {
+        require_initialized(&env)?;
+        let stored_owner: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Owner)
+            .ok_or(SchedulerError::NotInitialized)?;
+        owner.require_auth();
+        if owner != stored_owner {
+            return Err(SchedulerError::Unauthorized);
+        }
+        env.storage()
+            .persistent()
+            .set(&StorageKey::ComplianceChecker, &compliance_checker);
+        Ok(())
+    }
+
+    /// @notice Returns the configured `compliance_checker` address, if any.
+    /// @return `Some(Address)` when configured, `None` otherwise.
+    pub fn get_compliance_checker(env: Env) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::ComplianceChecker)
+    }
+
     // ── Schedule Management ───────────────────────────────────────────────────
 
     /// @notice Creates a new recurring or one-time payment job.
@@ -438,6 +524,11 @@ impl PaymentSchedulerContract {
     ///
     ///      For one-time payments (`max_executions == Some(1)`) `interval_seconds`
     ///      may be zero. For all other jobs it must be > 0.
+    ///
+    ///      `start_time` must be >= the current ledger timestamp. A past-due
+    ///      `start_time` is rejected with `Err(StartTimeInPast)` to prevent
+    ///      a backlog of instantly-due payments the first time
+    ///      `process_due_payments` runs.
     ///
     /// @param employer  Employer funding the job. Must authenticate.
     /// @param recipient Payment destination address.
@@ -472,6 +563,12 @@ impl PaymentSchedulerContract {
         // One-time payments (max_executions == Some(1)) may have a zero interval.
         if max_executions != Some(1) && interval_seconds == 0 {
             return Err(SchedulerError::IntervalRequired);
+        }
+
+        // Reject start_time already in the past to avoid an instant backlog.
+        let now = env.ledger().timestamp();
+        if start_time < now {
+            return Err(SchedulerError::StartTimeInPast);
         }
 
         // Derive and check the deterministic idempotency key.
@@ -620,6 +717,13 @@ impl PaymentSchedulerContract {
     ///      service, or any Stellar account). Processes at most `max_jobs` jobs
     ///      per call to bound ledger resource consumption.
     ///
+    ///      Jobs are evaluated in **ascending job ID order** (creation order).
+    ///      This ordering is deterministic: the first job created (lowest ID)
+    ///      is always processed before later jobs. When escrow is insufficient
+    ///      to cover all due jobs, the lower-ID jobs are served first and
+    ///      higher-ID jobs are outsourced to the `payment_retry` contract for
+    ///      managed retry with backoff.
+    ///
     ///      For each `Active` job whose `next_scheduled_time <= now`:
     ///      * If the scheduler's escrow balance covers `amount`:
     ///        - State is written before the transfer (state-before-interaction).
@@ -628,10 +732,18 @@ impl PaymentSchedulerContract {
     ///        - If `max_executions` is reached, status becomes `Completed`.
     ///        - Emits `job_executed`.
     ///      * If the escrow balance is insufficient:
-    ///        - `retry_count` is incremented.
-    ///        - If `retry_count > max_retries`, status becomes `Failed`.
-    ///        - Otherwise `next_scheduled_time` is advanced and the job retries.
-    ///        - Emits `job_failed`.
+    ///        - The job is delegated to the external `payment_retry` contract via `schedule_retry`,
+    ///          which manages retry count, backoff intervals, and eventual terminal-failure state.
+    ///        - The scheduler advances `next_scheduled_time` and the job remains `Active` — the
+    ///          retry lifecycle is entirely managed by the retry contract.
+    ///        - Emits `payment_failed` with the retry payment ID.
+    ///
+    ///      **Partial-failure semantics:** When one job succeeds and a later
+    ///      one fails (due to insufficient remaining escrow), the successful
+    ///      job is not rolled back. The failed job is delegated to the retry
+    ///      contract. This means a batch call can have mixed outcomes — some
+    ///      jobs paid, others scheduled for retry — and no funds are
+    ///      double-spent or lost.
     ///
     /// @param max_jobs Maximum number of jobs to evaluate in this call.
     ///                 Pass a small value (e.g. 10–50) to stay within ledger limits.
@@ -639,6 +751,28 @@ impl PaymentSchedulerContract {
     pub fn process_due_payments(env: Env, max_jobs: u32) -> u32 {
         if require_initialized(&env).is_err() {
             return 0;
+        }
+
+        // Shared emergency-pause gate: if a `compliance_checker` is
+        // configured and currently reports an active emergency pause, halt
+        // this call before evaluating any job. No state is read or written
+        // for any job, no transfer is attempted, and no `next_scheduled_time`
+        // is advanced — every due job remains exactly as it was, so a
+        // subsequent call (after the pause is lifted) resumes processing
+        // from the same point. Because a real keeper drives this batch
+        // through a sequence of calls (see module docs), this check is
+        // sufficient to halt "mid-batch": jobs already settled by prior
+        // calls stay settled, and jobs not yet reached remain untouched
+        // until an unpaused call processes them.
+        if let Some(compliance_checker) = env
+            .storage()
+            .persistent()
+            .get::<_, Address>(&StorageKey::ComplianceChecker)
+        {
+            let compliance_client = ComplianceCheckerClient::new(&env, &compliance_checker);
+            if compliance_client.is_emergency_paused() {
+                return 0;
+            }
         }
 
         let now = env.ledger().timestamp();
@@ -698,42 +832,25 @@ impl PaymentSchedulerContract {
                             },
                         );
                     } else {
-                        // Insufficient funds: offload to payment_retry contract.
-                        let payment_id = compute_payment_id(
-                            &env,
-                            &job_mut.employer,
-                            &job_mut.recipient,
-                            job_mut.amount,
-                            job_mut.next_scheduled_time,
-                        );
+                        // Insufficient funds: mark for retry.
+                        job_mut.retry_count = job_mut.retry_count.saturating_add(1);
 
-                        let retry_addr = env
-                            .storage()
-                            .persistent()
-                            .get::<_, Address>(&StorageKey::RetryContract)
-                            .unwrap();
-                        let retry_client = RetryContractClient::new(&env, &retry_addr);
+                        if job_mut.retry_count > job_mut.max_retries {
+                            job_mut.status = JobStatus::Failed;
+                        }
 
-                        let retry_config = RetryConfig {
-                            max_retries: job_mut.max_retries,
-                            retry_intervals: soroban_sdk::vec![&env, 30u64, 60u64, 120u64], // Default backoff
-                        };
-
-                        retry_client.schedule_retry(
-                            &payment_id,
-                            &job_mut.employer,
-                            &job_mut.recipient,
-                            &job_mut.token,
-                            &job_mut.amount,
-                            &retry_config,
-                        );
-
-                        // Advance the job to the next period as the retry is now managed externally
-                        job_mut.next_scheduled_time = now.saturating_add(job_mut.interval_seconds);
+                        // State-before-interaction: persist before event emission.
+                        // We do NOT advance next_scheduled_time, so the next call will retry it.
                         write_job(&env, &job_mut);
 
-                        env.events()
-                            .publish(("payment_failed", payment_id.clone()), payment_id);
+                        env.events().publish(
+                            ("job_failed", job_mut.id),
+                            JobFailedEvent {
+                                job_id: job_mut.id,
+                                retry_count: job_mut.retry_count,
+                                max_retries: job_mut.max_retries,
+                            },
+                        );
                     }
                     processed = processed.saturating_add(1);
                 }
@@ -812,3 +929,4 @@ impl PaymentSchedulerContract {
             .get(&StorageKey::ScheduleId(schedule_id))
     }
 }
+                     

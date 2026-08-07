@@ -21,6 +21,14 @@
 //! | 12 | Load: agreement creation produces strictly monotone IDs under concurrent creates |
 //! | 13 | Load: high milestone count — state remains consistent after bulk approval + claim |
 //! | 14 | Isolation: operations on separate agreements do not interfere |
+//! | 15 | Race: claim vs dispute on the same agreement — deterministic, safe ordering |
+//! |    | 15.1 — Escrow: dispute-first blocks the subsequent claim                   |
+//! |    | 15.2 — Escrow: claim-first pays once; dispute blocks further claims        |
+//! |    | 15.3 — Payroll: dispute-first blocks the subsequent payroll claim          |
+//! |    | 15.4 — Payroll: claim-first pays once; dispute blocks further claims       |
+//! |    | 15.5 — Milestone: dispute on escrow does not block independent milestone   |
+//! |    | 15.6 — Full lifecycle: claim → dispute → resolve conserves funds           |
+//! |    | 15.7 — Batch payroll: dispute between batches blocks second batch          |
 
 #![cfg(test)]
 #![allow(deprecated)]
@@ -30,8 +38,10 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env, Vec,
 };
-use stello_pay_contract::storage::{AgreementStatus, DataKey, DisputeStatus, PayrollError};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{AgreementStatus, DataKey, DisputeStatus, PayrollError},
+    PayrollContract, PayrollContractClient,
+};
 
 // ============================================================================
 // HELPERS
@@ -118,7 +128,12 @@ fn setup_funded_milestone(
     amount: i128,
     num_milestones: u32,
 ) -> u128 {
-    let agreement_id = client.create_milestone_agreement(employer, contributor, token);
+    let agreement_id = client.create_milestone_agreement(
+        employer,
+        contributor,
+        token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     for _ in 1..=num_milestones {
         client.add_milestone(&agreement_id, &amount);
     }
@@ -295,7 +310,7 @@ fn test_milestone_concurrent_batch_claim_state_consistency() {
 
     assert_eq!(res.successful_claims, 3); // 1, 3, 5
     assert_eq!(res.failed_claims, 2); // 2 (unapproved) + 6 (invalid)
-    assert_eq!(res.total_claimed, 3000);
+    assert_eq!(res.total_claimed, 2001);
 
     // Persistent state: only approved milestones are marked claimed.
     assert!(client.get_milestone(&agreement_id, &1).unwrap().claimed);
@@ -306,7 +321,7 @@ fn test_milestone_concurrent_batch_claim_state_consistency() {
 
     // Token balance reflects claimed amount.
     let tok = soroban_sdk::token::Client::new(&env, &token);
-    assert_eq!(tok.balance(&contributor), 3000);
+    assert_eq!(tok.balance(&contributor), 2001);
 }
 
 // ============================================================================
@@ -328,7 +343,7 @@ fn test_milestone_duplicate_claims_rejected_idempotently() {
     // First claim succeeds for both milestones.
     let first = client.batch_claim_milestones(&agreement_id, &Vec::from_array(&env, [1u32, 2u32]));
     assert_eq!(first.successful_claims, 2);
-    assert_eq!(first.total_claimed, 1000);
+    assert_eq!(first.total_claimed, 501);
 
     // Second call with same IDs — both already claimed, both must fail.
     let second = client.batch_claim_milestones(&agreement_id, &Vec::from_array(&env, [1u32, 2u32]));
@@ -345,7 +360,7 @@ fn test_milestone_duplicate_claims_rejected_idempotently() {
 
     // Verify contributor was paid exactly once per milestone — never double-paid.
     let tok = soroban_sdk::token::Client::new(&env, &token);
-    assert_eq!(tok.balance(&contributor), 1500); // 3 × 500
+    assert_eq!(tok.balance(&contributor), 1001); // 1 + 500 + 500
 }
 
 // ============================================================================
@@ -568,7 +583,12 @@ fn test_sequential_agreement_creation_counter_consistency() {
     // ---- Milestone counter -----------------------------------------------
     let mut milestone_ids: soroban_sdk::Vec<u128> = soroban_sdk::Vec::new(&env);
     for _ in 0..10 {
-        let id = client.create_milestone_agreement(&employer, &contributor, &token);
+        let id = client.create_milestone_agreement(
+            &employer,
+            &contributor,
+            &token,
+            &soroban_sdk::vec![&env, 1i128],
+        );
         milestone_ids.push_back(id);
     }
     for i in 1..milestone_ids.len() {
@@ -624,7 +644,7 @@ fn test_high_milestone_count_state_consistency() {
 
     assert_eq!(res.successful_claims, count);
     assert_eq!(res.failed_claims, 0);
-    assert_eq!(res.total_claimed, amount * (count as i128));
+    assert_eq!(res.total_claimed, 1i128 + amount * ((count - 1) as i128));
 
     // Spot-check a few milestones directly.
     assert!(client.get_milestone(&agreement_id, &1).unwrap().claimed);
@@ -633,7 +653,10 @@ fn test_high_milestone_count_state_consistency() {
 
     // Total payout reaches contributor's wallet.
     let tok = soroban_sdk::token::Client::new(&env, &token);
-    assert_eq!(tok.balance(&contributor), amount * (count as i128));
+    assert_eq!(
+        tok.balance(&contributor),
+        1i128 + amount * ((count - 1) as i128)
+    );
 }
 
 // ============================================================================
@@ -668,7 +691,7 @@ fn test_separate_agreements_do_not_interfere() {
     // Claim milestones 1 and 2 on id1 via batch (performs SAC transfer).
     let batch1 = client.batch_claim_milestones(&id1, &Vec::from_array(&env, [1u32, 2u32]));
     assert_eq!(batch1.successful_claims, 2);
-    assert_eq!(batch1.total_claimed, 2000);
+    assert_eq!(batch1.total_claimed, 1001);
 
     // id1 milestone 3 still unclaimed — no cross-agreement contamination.
     assert!(!client.get_milestone(&id1, &3).unwrap().claimed);
@@ -692,7 +715,487 @@ fn test_separate_agreements_do_not_interfere() {
     let batch3 = client.batch_claim_milestones(&id1, &Vec::from_array(&env, [3u32]));
     assert_eq!(batch3.successful_claims, 1);
 
-    // Token balance: c1 received 3 × 1000 from batch claims; only from id1 funds.
+    // Token balance: c1 received 1001 + 1000 from batch claims; only from id1 funds.
     let tok = soroban_sdk::token::Client::new(&env, &token);
-    assert_eq!(tok.balance(&c1), 3000);
+    assert_eq!(tok.balance(&c1), 2001);
+}
+
+// ============================================================================
+// SECTION 15 — RACE: CLAIM vs DISPUTE ON THE SAME AGREEMENT
+// ============================================================================
+//
+// # Deterministic ordering guarantee
+//
+// Soroban ledgers apply transactions sequentially within a single ledger close.
+// Both operations must therefore land in *some* total order, and the contract
+// must produce a safe, deterministic outcome for each permutation:
+//
+// | Order           | Expected outcome                                           |
+// |-----------------|------------------------------------------------------------|
+// | claim → dispute | Claim finalises first; dispute is accepted (window open).  |
+// |                 | Subsequent claims on the same agreement are blocked once   |
+// |                 | status is `Disputed`. No double-payment through dispute.   |
+// | dispute → claim | Status transitions to `Disputed`; all subsequent claim    |
+// |                 | attempts return an error (`InvalidData` for               |
+// |                 | `claim_payroll` / `NotInGracePeriod` for                  |
+// |                 | `claim_time_based`). No funds are transferred.            |
+//
+// # Why `Disputed` blocks claims
+//
+// Every claim entry-point (`claim_payroll_inner`, `claim_time_based`,
+// `batch_claim_payroll_inner`) evaluates:
+//
+// ```rust
+// let can_claim = match agreement.status {
+//     AgreementStatus::Active    => true,
+//     AgreementStatus::Cancelled => is_grace_period_active(env, agreement_id),
+//     _                          => false,   // Disputed falls here
+// };
+// if !can_claim { return Err(...); }
+// ```
+//
+// `raise_dispute` atomically sets `agreement.status = AgreementStatus::Disputed`
+// before returning.  Any transaction that reads the agreement after that write
+// sees `Disputed` and cannot proceed — guaranteeing a disputed agreement can
+// never have additional funds drained by a racing claim.
+
+/// Helper: seed the DataKey entries that `claim_payroll_inner` requires but
+/// that the public `create_payroll_agreement` / `add_employee_to_agreement`
+/// entry-points do not write (they use a separate `StorageKey::AgreementEmployees`
+/// Vec which is not consulted by the payroll-claim path).
+///
+/// Must be called inside `env.as_contract(&client.address, || { … })`.
+fn seed_payroll_claim_keys(
+    env: &Env,
+    agreement_id: u128,
+    token: &Address,
+    employees: &[(Address, i128)],
+    period_s: u64,
+    total_escrow: i128,
+) {
+    let now = env.ledger().timestamp();
+    DataKey::set_agreement_activation_time(env, agreement_id, now);
+    DataKey::set_agreement_period_duration(env, agreement_id, period_s);
+    DataKey::set_agreement_token(env, agreement_id, token);
+    DataKey::set_employee_count(env, agreement_id, employees.len() as u32);
+    DataKey::set_agreement_escrow_balance(env, agreement_id, token, total_escrow);
+    for (idx, (addr, salary)) in employees.iter().enumerate() {
+        DataKey::set_employee(env, agreement_id, idx as u32, addr);
+        DataKey::set_employee_salary(env, agreement_id, idx as u32, *salary);
+    }
+}
+
+// ----------------------------------------------------------------------------
+// 15.1 — ESCROW: dispute-first ordering blocks the subsequent claim
+// ----------------------------------------------------------------------------
+
+/// Race scenario: `raise_dispute` lands **before** `claim_time_based`.
+///
+/// Once the agreement is `Disputed`, `claim_time_based` hits the `_ => false`
+/// branch of its status match and returns `NotInGracePeriod`.  No tokens move.
+#[test]
+fn test_race_dispute_before_escrow_claim_blocks_claim() {
+    let (env, employer, token, _arbiter, client) = create_test_env();
+    let contributor = Address::generate(&env);
+
+    let agreement_id = setup_funded_escrow(
+        &env,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        1_000,
+        86400,
+        4,
+    );
+    env.ledger().with_mut(|li| li.timestamp += 86400);
+
+    // ── Simulated ledger close ──────────────────────────────────────────────
+    // TX 0: dispute lands first.
+    client.raise_dispute(&employer, &agreement_id);
+    // TX 1: contributor tries to claim — must be blocked.
+    let result = client.try_claim_time_based(&agreement_id);
+    // ───────────────────────────────────────────────────────────────────────
+
+    assert_eq!(
+        result,
+        Err(Ok(PayrollError::NotInGracePeriod)),
+        "claim_time_based must be blocked after dispute is raised"
+    );
+
+    let tok = soroban_sdk::token::Client::new(&env, &token);
+    assert_eq!(
+        tok.balance(&contributor),
+        0,
+        "no funds must reach contributor"
+    );
+
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
+    assert_eq!(
+        client.get_agreement(&agreement_id).unwrap().status,
+        AgreementStatus::Disputed
+    );
+}
+
+// ----------------------------------------------------------------------------
+// 15.2 — ESCROW: claim-first ordering pays once; subsequent dispute accepted
+//         but cannot trigger a second payout
+// ----------------------------------------------------------------------------
+
+/// Race scenario: `claim_time_based` lands **before** `raise_dispute`.
+///
+/// The claim pays exactly one period.  The dispute is subsequently accepted.
+/// A second claim attempt after the dispute is raised is blocked — no
+/// double-payment is possible through the dispute resolution path.
+#[test]
+fn test_race_escrow_claim_before_dispute_no_double_payment() {
+    let (env, employer, token, _arbiter, client) = create_test_env();
+    let contributor = Address::generate(&env);
+
+    let amount = 1_000i128;
+    let agreement_id = setup_funded_escrow(
+        &env,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        amount,
+        86400,
+        4,
+    );
+    env.ledger().with_mut(|li| li.timestamp += 86400);
+
+    // ── Simulated ledger close ──────────────────────────────────────────────
+    // TX 0: claim lands first and succeeds.
+    client.claim_time_based(&agreement_id);
+    // TX 1: dispute raised immediately after.
+    client.raise_dispute(&employer, &agreement_id);
+    // ───────────────────────────────────────────────────────────────────────
+
+    let tok = soroban_sdk::token::Client::new(&env, &token);
+    assert_eq!(tok.balance(&contributor), amount, "exactly one period paid");
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
+    assert_eq!(
+        client.get_claimed_periods(&agreement_id),
+        1u32,
+        "claimed_periods must not be reset by the dispute raise"
+    );
+
+    // A second claim after the dispute is raised must be blocked.
+    env.ledger().with_mut(|li| li.timestamp += 86400);
+    assert_eq!(
+        client.try_claim_time_based(&agreement_id),
+        Err(Ok(PayrollError::NotInGracePeriod)),
+        "second claim must be blocked once agreement is Disputed"
+    );
+    assert_eq!(tok.balance(&contributor), amount, "balance must not change");
+}
+
+// ----------------------------------------------------------------------------
+// 15.3 — PAYROLL: dispute-first ordering blocks the subsequent payroll claim
+// ----------------------------------------------------------------------------
+
+/// Race scenario: `raise_dispute` lands **before** `claim_payroll`.
+///
+/// Once the agreement is `Disputed`, `claim_payroll` hits the `_ => false`
+/// branch of its status match and returns `InvalidData`.  No tokens move.
+#[test]
+fn test_race_dispute_before_payroll_claim_blocks_claim() {
+    let (env, employer, token, _arbiter, client) = create_test_env();
+    let employee = Address::generate(&env);
+
+    let grace_s = 86400u64 * 30;
+    let period_s = 86400u64;
+    let salary = 2_000i128;
+    let num_periods = 6u32;
+    let total = salary * num_periods as i128;
+
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &grace_s);
+    client.add_employee_to_agreement(&agreement_id, &employee, &salary);
+    client.activate_agreement(&agreement_id);
+
+    env.as_contract(&client.address, || {
+        seed_payroll_claim_keys(
+            &env,
+            agreement_id,
+            &token,
+            &[(employee.clone(), salary)],
+            period_s,
+            total,
+        );
+    });
+    mint(&env, &token, &client.address, total);
+
+    env.ledger().with_mut(|li| li.timestamp += period_s);
+
+    // ── Simulated ledger close ──────────────────────────────────────────────
+    // TX 0: dispute raised first.
+    client.raise_dispute(&employer, &agreement_id);
+    // TX 1: employee tries to claim — must be rejected.
+    let result = client.try_claim_payroll(&employee, &agreement_id, &0u32);
+    // ───────────────────────────────────────────────────────────────────────
+
+    assert_eq!(
+        result,
+        Err(Ok(PayrollError::InvalidData)),
+        "claim_payroll must be blocked after dispute is raised"
+    );
+
+    let tok = soroban_sdk::token::Client::new(&env, &token);
+    assert_eq!(tok.balance(&employee), 0, "no funds must reach employee");
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
+    assert_eq!(
+        client.get_agreement(&agreement_id).unwrap().status,
+        AgreementStatus::Disputed
+    );
+}
+
+// ----------------------------------------------------------------------------
+// 15.4 — PAYROLL: claim-first ordering pays once; dispute blocks further claims
+// ----------------------------------------------------------------------------
+
+/// Race scenario: `claim_payroll` lands **before** `raise_dispute`.
+///
+/// Exactly one salary period is paid.  The dispute is accepted.  Any
+/// subsequent claim attempt is blocked — confirming no double-payment.
+#[test]
+fn test_race_payroll_claim_before_dispute_no_double_payment() {
+    let (env, employer, token, _arbiter, client) = create_test_env();
+    let employee = Address::generate(&env);
+
+    let grace_s = 86400u64 * 30;
+    let period_s = 86400u64;
+    let salary = 2_000i128;
+    let num_periods = 6u32;
+    let total = salary * num_periods as i128;
+
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &grace_s);
+    client.add_employee_to_agreement(&agreement_id, &employee, &salary);
+    client.activate_agreement(&agreement_id);
+
+    env.as_contract(&client.address, || {
+        seed_payroll_claim_keys(
+            &env,
+            agreement_id,
+            &token,
+            &[(employee.clone(), salary)],
+            period_s,
+            total,
+        );
+    });
+    mint(&env, &token, &client.address, total);
+
+    env.ledger().with_mut(|li| li.timestamp += period_s);
+
+    // ── Simulated ledger close ──────────────────────────────────────────────
+    // TX 0: payroll claim lands first.
+    client.claim_payroll(&employee, &agreement_id, &0u32);
+    // TX 1: dispute raised immediately after.
+    client.raise_dispute(&employer, &agreement_id);
+    // ───────────────────────────────────────────────────────────────────────
+
+    let tok = soroban_sdk::token::Client::new(&env, &token);
+    assert_eq!(tok.balance(&employee), salary, "exactly one period paid");
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
+
+    // A second claim after dispute must be blocked.
+    env.ledger().with_mut(|li| li.timestamp += period_s);
+    assert_eq!(
+        client.try_claim_payroll(&employee, &agreement_id, &0u32),
+        Err(Ok(PayrollError::InvalidData)),
+        "second payroll claim must be blocked once agreement is Disputed"
+    );
+    assert_eq!(tok.balance(&employee), salary, "balance must not change");
+}
+
+// ----------------------------------------------------------------------------
+// 15.5 — ISOLATION: dispute on one agreement does not block a separate
+//         milestone claim
+// ----------------------------------------------------------------------------
+
+/// Confirms the race guard is per-agreement, not global.
+///
+/// Raising a dispute on an escrow agreement transitions *only that agreement*
+/// to `Disputed`.  A milestone claim on a separate, independent agreement
+/// in the same ledger close must succeed unimpeded.
+#[test]
+fn test_race_dispute_on_escrow_does_not_block_independent_milestone_claim() {
+    let (env, employer, token, _arbiter, client) = create_test_env();
+    let c_escrow = Address::generate(&env);
+    let c_milestone = Address::generate(&env);
+
+    let escrow_id =
+        setup_funded_escrow(&env, &client, &employer, &c_escrow, &token, 1_000, 86400, 4);
+    let milestone_id =
+        setup_funded_milestone(&env, &client, &employer, &c_milestone, &token, 500, 2);
+    client.approve_milestone(&milestone_id, &1);
+
+    env.ledger().with_mut(|li| li.timestamp += 86400);
+
+    // ── Simulated ledger close ──────────────────────────────────────────────
+    // TX 0: dispute raised on the ESCROW agreement.
+    client.raise_dispute(&employer, &escrow_id);
+    // TX 1: milestone claim on the MILESTONE agreement — must succeed.
+    let result = client.try_claim_milestone(&milestone_id, &1u32);
+    // ───────────────────────────────────────────────────────────────────────
+
+    assert!(
+        result.is_ok(),
+        "milestone claim on a separate agreement must not be blocked: {result:?}"
+    );
+
+    assert_eq!(client.get_dispute_status(&escrow_id), DisputeStatus::Raised);
+    assert!(client.get_milestone(&milestone_id, &1).unwrap().claimed);
+
+    let tok = soroban_sdk::token::Client::new(&env, &token);
+    assert_eq!(tok.balance(&c_milestone), 1);
+    assert_eq!(tok.balance(&c_escrow), 0, "no escrow funds must leak");
+}
+
+// ----------------------------------------------------------------------------
+// 15.6 — FULL LIFECYCLE: claim → dispute → resolve conserves funds exactly
+// ----------------------------------------------------------------------------
+
+/// End-to-end fund-conservation test across a claim/dispute race.
+///
+/// After a successful claim reduces the escrow balance, the arbiter cannot
+/// distribute more than what remains.  The total of all payouts (claim +
+/// dispute resolution) equals the original `total_amount` exactly.
+#[test]
+fn test_race_claim_then_dispute_then_resolve_no_double_payment() {
+    let (env, employer, token, arbiter, client) = create_test_env();
+    let contributor = Address::generate(&env);
+
+    let amount = 1_000i128;
+    let num_periods = 4u32;
+    let total = amount * num_periods as i128; // 4_000
+
+    let agreement_id = setup_funded_escrow(
+        &env,
+        &client,
+        &employer,
+        &contributor,
+        &token,
+        amount,
+        86400,
+        num_periods,
+    );
+    env.ledger().with_mut(|li| li.timestamp += 86400);
+
+    // TX 0: contributor claims one period (1_000 tokens leave escrow).
+    client.claim_time_based(&agreement_id);
+    let tok = soroban_sdk::token::Client::new(&env, &token);
+    assert_eq!(tok.balance(&contributor), amount);
+
+    // TX 1: employer raises dispute (3_000 remain in tracked escrow).
+    client.raise_dispute(&employer, &agreement_id);
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
+
+    // Arbiter attempts to distribute the full original total — must FAIL because
+    // only 3_000 remain in the tracked escrow balance.
+    assert!(
+        client
+            .try_resolve_dispute(&arbiter, &agreement_id, &total, &0)
+            .is_err(),
+        "arbiter must not distribute more than the remaining escrow balance"
+    );
+    // Nothing extra transferred by the failed call.
+    assert_eq!(tok.balance(&contributor), amount);
+
+    // Correct resolution: 2_000 to contributor + 1_000 refund to employer.
+    client.resolve_dispute(&arbiter, &agreement_id, &2_000, &1_000);
+
+    assert_eq!(
+        tok.balance(&contributor),
+        amount + 2_000,
+        "contributor total = claim + dispute payout"
+    );
+    assert_eq!(tok.balance(&employer), 1_000, "employer refund");
+    assert_eq!(
+        tok.balance(&contributor) + tok.balance(&employer),
+        total,
+        "sum of all payouts must equal original total_amount"
+    );
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Resolved
+    );
+}
+
+// ----------------------------------------------------------------------------
+// 15.7 — BATCH PAYROLL: dispute between batches blocks the second batch fully
+// ----------------------------------------------------------------------------
+
+/// Verifies that when a dispute is raised after one successful `claim_payroll`
+/// call, a subsequent `claim_payroll` for a different employee on the same
+/// agreement is entirely rejected.
+///
+/// Specifically guards against a TOCTOU window where the second employee's
+/// claim could slip through before the agreement status check fires.
+#[test]
+fn test_race_dispute_between_batch_payroll_calls_blocks_second_batch() {
+    let (env, employer, token, _arbiter, client) = create_test_env();
+    let e1 = Address::generate(&env);
+    let e2 = Address::generate(&env);
+
+    let grace_s = 86400u64 * 30;
+    let period_s = 86400u64;
+    let salary = 1_500i128;
+    let num_periods = 4u32;
+    let total = salary * 2 * num_periods as i128;
+
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &grace_s);
+    client.add_employee_to_agreement(&agreement_id, &e1, &salary);
+    client.add_employee_to_agreement(&agreement_id, &e2, &salary);
+    client.activate_agreement(&agreement_id);
+
+    env.as_contract(&client.address, || {
+        seed_payroll_claim_keys(
+            &env,
+            agreement_id,
+            &token,
+            &[(e1.clone(), salary), (e2.clone(), salary)],
+            period_s,
+            total,
+        );
+    });
+    mint(&env, &token, &client.address, total);
+
+    env.ledger().with_mut(|li| li.timestamp += period_s);
+
+    // ── First close: e1 claims one period ──────────────────────────────────
+    client.claim_payroll(&e1, &agreement_id, &0u32);
+    let tok = soroban_sdk::token::Client::new(&env, &token);
+    assert_eq!(tok.balance(&e1), salary);
+
+    // ── Second close: dispute raised, then e2 tries to claim ───────────────
+    client.raise_dispute(&employer, &agreement_id);
+
+    assert_eq!(
+        client.try_claim_payroll(&e2, &agreement_id, &1u32),
+        Err(Ok(PayrollError::InvalidData)),
+        "e2 claim must be blocked because the agreement is now Disputed"
+    );
+
+    assert_eq!(tok.balance(&e2), 0, "e2 must receive nothing");
+    assert_eq!(tok.balance(&e1), salary, "e1 balance must be preserved");
+    assert_eq!(
+        client.get_dispute_status(&agreement_id),
+        DisputeStatus::Raised
+    );
 }

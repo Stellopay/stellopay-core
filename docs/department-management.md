@@ -44,6 +44,15 @@ create_organization(owner: Address, name: Symbol) -> u128
 ```
 Creates an org; `owner` must authenticate. Returns `org_id` (sequential from 1).
 
+**Uniqueness Invariant (Issue #917):** Each `name` is **globally unique** across the
+entire contract. `create_organization` rejects any call whose `name` already maps
+to an existing organization (via the `OrgByName` reverse index), regardless of who
+the caller is. A rejected attempt **rolls back all state mutations**, so the
+original organization's record and its full `get_org_departments` tree are left
+intact. Soroban `Symbol` is case-sensitive, so `"Acme"` and `"acme"` are distinct
+identifiers.
+
+
 ```rust
 get_organization(org_id: u128) -> Organization
 ```
@@ -89,6 +98,18 @@ Reparents `dept_id` to `new_parent` (or makes it top-level with `None`). `caller
 
 > **Note on subtree moves**: only the moved department's `parent_id` changes. All descendants retain their existing `parent_id` links, so the entire subtree moves atomically.
 
+```rust
+rename_department(caller: Address, dept_id: u128, new_name: Symbol)
+```
+Renames `dept_id` to `new_name`. `caller` must be the org owner. Updates only the department's name field; all employee associations and hierarchy links remain completely unchanged.
+
+**Employee Association Preservation (Issue #1095):**
+The department name is a metadata field stored independently from employee indexes. Renaming does NOT modify:
+- Forward index: `EmployeeDepartment(emp, org_id) → dept_id`
+- Reverse index: `DepartmentEmployees(dept_id) → Vec<Address>`
+
+Therefore, all employee lookups (`get_employee_department`, `get_department_employees`) continue to work identically before and after rename. Department reports and hierarchical queries remain valid.
+
 > **Note on deleting nodes with children**: there is no `delete_department` function. Departments are permanent once created. To "retire" a department, reassign its employees and stop using it.
 
 ---
@@ -122,7 +143,13 @@ Returns the department ID for the employee in that org, or `None` if not assigne
 ```rust
 get_department_report(department_id: u128) -> (u32, Vec<u128>, Vec<Address>)
 ```
-Returns `(employee_count, child_department_ids, employee_addresses)` for a department.
+Returns `(total_employee_count, direct_child_department_ids, all_employee_addresses)` for a department.  
+
+**Aggregation rules:**
+- `employee_count` and `employee_addresses` include employees from the queried department **and** all descendant departments (children, grandchildren, etc.), recursively.
+- `child_department_ids` contains only **direct** children (one level), enabling tree traversal.
+- A leaf department (no children) returns only its own employees.
+- Zero employees in a subtree produces `count = 0` and an empty addresses vector.
 
 ---
 
@@ -135,8 +162,90 @@ All mutating operations publish events for indexer/integrator consumption:
 | `("org_crtd", org_id)` | `org_id: u128` | Organization created |
 | `("dept_crtd", dept_id)` | `dept_id: u128` | Department created |
 | `("dept_mvd", dept_id)` | `dept_id: u128` | Department reparented |
+| `("dept_rmvd", dept_id)` | `dept_id: u128` | Department removed |
 | `("emp_asgnd", dept_id)` | `employee: Address` | Employee assigned to department |
 | `("emp_rmvd", dept_id)` | `employee: Address` | Employee removed from department |
+
+---
+
+## Reverse-Index Invariant
+
+The contract maintains **two complementary storage indexes** for employee placement:
+
+| Index | Storage key | Meaning |
+|-------|-------------|---------|
+| Forward | `EmployeeDepartment(employee, org_id) → dept_id` | Which department is the employee currently in? |
+| Reverse | `DepartmentEmployees(dept_id) → Vec<Address>` | Which employees are currently in this department? |
+| Membership flag | `EmployeeInDepartment(dept_id, employee) → ()` | Fast O(1) membership test (no list scan required) |
+
+### The invariant
+
+After every successful call to `assign_employee_to_department` or
+`remove_employee_from_department`, **all three indexes are mutually consistent**:
+
+> For any `(employee, org_id)` pair there is **at most one** department `d` such
+> that the forward index returns `d` **and** the reverse index contains the
+> employee in `d`. For every other department `d'` in the same org, the reverse
+> index for `d'` must **not** contain the employee.
+
+In plain terms:
+
+- `get_employee_department(emp, org)` returns `Some(d)` ↔ `get_department_employees(d)` contains `emp`.
+- If the employee is not assigned, `get_employee_department` returns `None` **and** no department's employee list contains them.
+
+### How the invariant is maintained
+
+`assign_employee_to_department` auto-removes from the previous department:
+
+```text
+assign(caller, org, new_dept, emp):
+  if EmployeeDepartment(emp, org) = Some(old_dept):
+    remove_employee_from_dept_internal(old_dept, emp)  ← clears reverse index + flag
+  set EmployeeInDepartment(new_dept, emp)              ← set flag
+  set EmployeeDepartment(emp, org) = new_dept          ← update forward index
+  push emp to DepartmentEmployees(new_dept)            ← update reverse index
+```
+
+`remove_employee_from_department` clears all three:
+
+```text
+remove(caller, org, emp):
+  old_dept = EmployeeDepartment(emp, org)              ← read forward index
+  remove_employee_from_dept_internal(old_dept, emp)    ← clears reverse index + flag
+  delete EmployeeDepartment(emp, org)                  ← clears forward index
+```
+
+The internal helper `remove_employee_from_dept_internal` only clears the
+**reverse index** (`DepartmentEmployees`) and the **membership flag**
+(`EmployeeInDepartment`). It intentionally does **not** touch the forward index
+(`EmployeeDepartment`), which is the responsibility of each caller. Both callers
+above satisfy this contract.
+
+### Proven by tests
+
+The following tests in `tests/test_department.rs` verify this invariant end-to-end:
+
+- **`test_assign_remove_reassign_indexes_are_consistent`** — exercises the full
+  assign → remove → reassign cycle and asserts that after each step both
+  `get_employee_department` (forward) and `get_department_employees` (reverse)
+  agree with each other and contain no stale references.
+
+- **`test_original_department_excludes_moved_employee`** — assigns two employees
+  to a department, moves one to a second department via direct reassignment, and
+  asserts that the original department's employee list no longer includes the
+  moved employee while the remaining employee is still present.
+
+### Implications for integrators
+
+- There is no need to call `remove_employee_from_department` before
+  `assign_employee_to_department`: the assignment operation handles cleanup
+  automatically if the employee is already placed in another department in the
+  same org.
+- Cross-org assignments are fully independent. Assigning an employee to
+  `org_b.dept_x` does not alter their assignment in `org_a`.
+- If an employee is removed and then re-assigned, both indexes start from a clean
+  state for the new assignment — there are no lingering references to the old
+  department.
 
 ---
 
@@ -151,7 +260,8 @@ All mutating operations publish events for indexer/integrator consumption:
 7. **Bounded hierarchy depth**: `create_department` and `update_department` both enforce `MAX_DEPTH = 10`. A department at depth 10 cannot have children. This prevents unbounded storage reads during depth traversal.
 8. **No cycles**: `update_department` walks the ancestor chain of the proposed new parent and rejects the move if `dept_id` appears in that chain. Since `create_department` only appends to an existing tree (no reparenting), cycles can only arise through `update_department`, which is fully guarded.
 9. **Subtree moves are safe**: Moving a department only updates its own `parent_id` and the children lists of the old and new parents. Descendants are unaffected, so the subtree is moved atomically without touching descendant records.
-10. **No department deletion**: Departments cannot be deleted. This avoids dangling `parent_id` references in child departments. To retire a department, reassign its employees and stop using it.
+10. **Department deletion constraints (Issue #1094)**: Departments can only be removed when they have no active employees and no child departments. This prevents stranding employees' organizational references and orphaning the department hierarchy. The function properly cleans up all storage entries and updates parent/organization references.
+11. **Organization name uniqueness (Issue #917)**: Each `name` is globally unique across the entire contract. The `OrgByName(name) -> org_id` reverse index is checked inside `create_organization` **before** any state mutation (counter increment, organization record, empty `OrgDepartments` vec, or reverse-index write). On rejection, Soroban rolls back the entire call, so the original organization's record and its department tree are guaranteed to be unaffected. Because there is no `delete_organization`, a name, once claimed, is permanently reserved for the lifetime of the contract instance. If a future version introduces `delete_organization`, it MUST also clear the corresponding `OrgByName(name)` entry to prevent orphaned reverse-index entries from permanently blocking re-creation under that name.
 
 ---
 
@@ -170,6 +280,7 @@ All mutating operations publish events for indexer/integrator consumption:
 | `EmployeeInDepartment(dept_id, addr)` | `()` | Membership flag |
 | `EmployeeDepartment(addr, org_id)` | `u128` | Employee → current dept ID in org |
 | `DepartmentEmployees(dept_id)` | `Vec<Address>` | All employees in a dept |
+| `OrgByName(name)` | `u128` | Reverse index: organization name → org_id (enforces name uniqueness) |
 
 ---
 
@@ -195,6 +306,8 @@ Organization (org_id)
 
 | Condition | Error message |
 |-----------|--------------|
+| `create_organization` with a `name` already in use by any existing org | `"Organization name already in use"` |
+| `create_organization` before `initialize` | `"Contract not initialized"` |
 | `create_department` with non-existent org | `"Organization not found"` |
 | `create_department` by non-owner | `"Not organization owner"` |
 | `create_department` with non-existent parent | `"Parent department not found"` |
@@ -206,6 +319,10 @@ Organization (org_id)
 | `update_department` with new parent in different org | `"Parent must be in same org"` |
 | `update_department` that would exceed depth 10 | `"Max hierarchy depth exceeded"` |
 | `update_department` that would create a cycle | `"Cycle detected"` |
+| `remove_department` with active employees | `"Cannot remove department with active employees"` |
+| `remove_department` with child departments | `"Cannot remove department with child departments"` |
+| `remove_department` by non-owner | `"Not organization owner"` |
+| `remove_department` on non-existent dept | `"Department not found"` |
 
 ## Running Tests
 
@@ -231,5 +348,22 @@ The test suite covers:
   - All 6 possible cycle-creating moves in a 4-node chain are rejected
   - Subtree move preserves all descendant relationships
 - Employee assignment, reassignment, removal
+- Reverse-index consistency (see [Reverse-Index Invariant](#reverse-index-invariant)):
+  - Full assign → remove → reassign cycle leaves both the forward index (`get_employee_department`) and the reverse index (`get_department_employees`) pointing exclusively at the new department, with no stale references to earlier departments
+  - After an employee is moved to a new department, the original department's employee list no longer includes them, even when other employees remain in it
 - Access control: all mutating ops reject non-owners
 - Cross-org isolation
+- Unique-organization-id guard (Issue #917):
+  - Duplicate name with same owner is rejected with `"Organization name already in use"`
+  - Duplicate name with different owner is rejected with `"Organization name already in use"`
+  - Rejected duplicate-name attempt leaves the original org record and its full department tree (`get_org_departments`) intact
+  - Symbol case-sensitivity documented (different case ⇒ different id)
+  - Failed attempt does not consume a `NextOrgId` slot (sequential ids remain gap-free after a rejected attempt)
+  - Many distinct names are accepted in sequence; verifies that legitimate creates still get strictly increasing, sequential ids (no gap, no skip)
+- Department removal (Issue #1094):
+  - Removal with active employees is rejected with `"Cannot remove department with active employees"`
+  - Removal with child departments is rejected with `"Cannot remove department with child departments"`
+  - Removal succeeds after employees are reassigned to another department
+  - Removal succeeds after employees are removed from the org
+  - Removal properly updates parent's children list and org's department list
+  - Access control: non-owner cannot remove departments

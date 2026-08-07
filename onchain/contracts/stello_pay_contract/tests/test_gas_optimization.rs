@@ -29,8 +29,7 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env, Vec,
 };
-use stello_pay_contract::storage::PayrollCreateParams;
-use stello_pay_contract::PayrollContractClient;
+use stello_pay_contract::{storage::PayrollCreateParams, PayrollContractClient};
 
 // ---------------------------------------------------------------------------
 // WASM binary — must be up to date with the current source
@@ -248,7 +247,12 @@ fn setup_funded_milestones(
     let token = make_token(env);
     let amount_per_milestone: i128 = 1_000;
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
 
     for _ in 0..n {
         client.add_milestone(&agreement_id, &amount_per_milestone);

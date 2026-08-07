@@ -6,7 +6,8 @@
 //! ## Evidence Format
 //! Evidence must include:
 //! - `offender`   : Address of the party being slashed
-//! - `offense`    : Enum variant describing the misbehaviour (DoubleSigning | MissedDuty | FraudProof)
+//! - `offense`    : Enum variant describing the misbehaviour (DoubleSigning | MissedDuty |
+//!   FraudProof)
 //! - `penalty_bps`: Penalty in basis points (max 10_000 = 100%)
 //! - `evidence_hash`: SHA-256 hash of the raw proof payload (bytes32 equivalent)
 //! - `timestamp`  : Ledger timestamp when misbehaviour occurred
@@ -19,13 +20,18 @@
 //! ## Security Assumptions
 //! - Only addresses granted the `slasher` role may initiate or countersign a slash.
 //! - Penalty is strictly proportional — capped at `MAX_PENALTY_BPS` (5 000 bps = 50%).
-//! - Each unique `evidence_hash` can only be acted upon once (replay protection).
-//!   Replay detection uses O(1) keyed storage: each hash is stored as a key in `USED_EV`
-//!   (a `Map<BytesN<32>, bool>`), so lookup time is constant regardless of slash history.
+//! - Each unique `evidence_hash` can only be acted upon once (replay protection). Replay detection
+//!   uses O(1) keyed storage: each hash is stored as a key in `USED_EV` (a `Map<BytesN<32>,
+//!   bool>`), so lookup time is constant regardless of slash history.
 //! - Slashed funds are held in escrow during the appeal window before burning/redistribution.
 //! - Admin cannot slash; roles are separated (admin ≠ slasher).
+//! - The `execute_slash` and `attest_slash` (countersign) paths re-validate that the submitted
+//!   evidence hash matches the reference stored in the `SlashRecord` at attestation time
+//!   (defense-in-depth against storage-corruption edge cases). A mismatch returns
+//!   `SlashError::EvidenceHashMismatch (18)` before any mutation.
 
 #![no_std]
+#![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, token, Address, BytesN, Env,
@@ -71,16 +77,61 @@ pub enum Offense {
 }
 
 /// Status of a slash record through its lifecycle.
+///
+/// # State machine
+///
+/// ```text
+/// slash_with_evidence() / attest_slash() × K
+///                  │
+///                  ▼
+///               Pending  ◄─── appeal window open (7 days)
+///               │     │
+///     appeal    │     │  no appeal / appeal window expired
+///     raised    │     │
+///               │     ▼
+///               │  execute_slash()          ← terminal: funds burned/redistributed
+///               │     │
+///               │     ▼
+///               │  [Executed]  ── second execute_slash() call ──► InvalidState (8)
+///               │
+///               ▼
+///          resolve_appeal()
+///          ┌────────┴──────────┐
+///      uphold               reject
+///         │                    │
+///         ▼                    ▼
+///     [Reversed]        [AppealRejected]
+///  (funds returned)   (funds burned)
+/// ```
+///
+/// Once a record reaches **Executed**, **Reversed**, or **AppealRejected** it is
+/// permanently terminal. Any further attempt to call `execute_slash`, `resolve_appeal`,
+/// or `raise_appeal` on such a record is rejected with `SlashError::InvalidState (8)`.
+///
+/// This terminal-state enforcement is the **double-execution guard**: the second call
+/// to `execute_slash` for the same `slash_record_id` (evidence hash) finds the record
+/// in `Executed` state rather than `Pending` and returns `InvalidState` immediately,
+/// preventing the penalty from being applied a second time against the offender's stake.
 #[contracttype]
 #[derive(Clone, PartialEq, Debug)]
 pub enum SlashStatus {
-    /// Slash initiated; appeal window is open.
+    /// Slash initiated; the 7-day appeal window is open.
+    /// This is the **only** state from which `execute_slash` may proceed.
     Pending,
-    /// Appeal window closed; slash executed (funds burned/redistributed).
+    /// **Terminal state.** Appeal window closed without a successful reversal;
+    /// `execute_slash` finalised the slash and burned/redistributed the escrowed funds.
+    ///
+    /// # Double-execution guard
+    /// Because the record transitions to `Executed` on the first successful call,
+    /// any subsequent `execute_slash` call for the same evidence hash returns
+    /// `SlashError::InvalidState (8)` at the status check (`status != Pending`).
+    /// The offender's stake is therefore debited **exactly once**.
     Executed,
-    /// Appeal upheld; slash reversed and funds returned.
+    /// **Terminal state.** Admin upheld the appeal; escrowed funds were returned
+    /// to the offender's stake balance.
     Reversed,
-    /// Appeal rejected; slash executed despite appeal.
+    /// **Terminal state.** Admin rejected the appeal; escrowed funds were burned
+    /// despite the appeal.
     AppealRejected,
 }
 
@@ -175,6 +226,10 @@ pub enum SlashError {
     ArithmeticOverflow = 16,
     /// Quorum must be greater than zero; passing 0 is a misconfiguration.
     ZeroQuorum = 17,
+    /// The evidence hash submitted at execution does not match the reference recorded at
+    /// attestation time. Each slash record is keyed by its evidence hash; the submitted hash
+    /// must be the same as the one stored in the record.
+    EvidenceHashMismatch = 18,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -191,10 +246,10 @@ impl SlashingPenaltyContract {
     /// # Arguments
     /// * `admin`   - Address that can grant/revoke slasher roles and reverse appeals.
     /// * `token`   - Contract address of the XLM-wrapped or custom token used for stake.
-    /// * `quorum`  - Minimum number of slasher signatures for attestation slashes.
-    ///              Must be greater than zero; `DEFAULT_QUORUM` (2) is the recommended
-    ///              minimum. Passing 0 returns `SlashError::ZeroQuorum` — it is never
-    ///              silently raised to the default, as that would hide misconfiguration.
+    /// * `quorum`  - Minimum number of slasher signatures for attestation slashes. Must be greater
+    ///   than zero; `DEFAULT_QUORUM` (2) is the recommended minimum. Passing 0 returns
+    ///   `SlashError::ZeroQuorum` — it is never silently raised to the default, as that would hide
+    ///   misconfiguration.
     pub fn initialize(
         env: Env,
         admin: Address,
@@ -281,6 +336,36 @@ impl SlashingPenaltyContract {
     // ── Role Management ───────────────────────────────────────────────────────
 
     /// Grant the slasher role to an address. Admin only.
+    ///
+    /// # Idempotency guarantee
+    ///
+    /// This function is **idempotent with respect to the slasher set**: calling
+    /// `add_slasher` with an address that is already present in the set is a
+    /// no-op — the function succeeds (`Ok(())`) without inserting a duplicate
+    /// entry.  The slasher set therefore satisfies the mathematical set invariant:
+    /// each address appears **at most once**, regardless of how many times
+    /// `add_slasher` is called for it.
+    ///
+    /// # Add/remove/re-add cycle
+    ///
+    /// The combination of `add_slasher`, `remove_slasher`, and a subsequent
+    /// `add_slasher` preserves the set invariant end-to-end:
+    ///
+    /// ```text
+    /// add_slasher(A)    → set = {…, A}           (A inserted once)
+    /// remove_slasher(A) → set = {…}              (A removed)
+    /// add_slasher(A)    → set = {…, A}           (A inserted once, no duplicate)
+    /// get_slashers()    → exactly one entry for A ✓
+    /// ```
+    ///
+    /// The quorum threshold stored in `QUORUM` is independent of the slasher set
+    /// size and is therefore unaffected by add/remove/re-add cycles.
+    ///
+    /// # Arguments
+    /// * `slasher` – Address to grant the slasher role.
+    ///
+    /// # Errors
+    /// * [`SlashError::Unauthorized`] – Caller is not the admin.
     pub fn add_slasher(env: Env, slasher: Address) -> Result<(), SlashError> {
         Self::require_admin(&env)?;
         let mut slashers: Vec<Address> = env.storage().instance().get(&SLASHERS).unwrap();
@@ -292,6 +377,39 @@ impl SlashingPenaltyContract {
     }
 
     /// Revoke the slasher role from an address. Admin only.
+    ///
+    /// # Idempotency guarantee
+    ///
+    /// This function is **idempotent with respect to the slasher set**: calling
+    /// `remove_slasher` for an address that is not present in the set is a
+    /// no-op — the function succeeds (`Ok(())`) without error, and the set
+    /// remains unchanged.
+    ///
+    /// # Remove/re-add safety
+    ///
+    /// After `remove_slasher(A)`, a subsequent `add_slasher(A)` re-introduces
+    /// exactly one entry for A.  The combined cycle never creates duplicates:
+    ///
+    /// ```text
+    /// Initial:          set = {A, B, C}
+    /// remove_slasher(A) → set = {B, C}
+    /// add_slasher(A)    → set = {B, C, A}   (one entry, no duplicate)
+    /// add_slasher(A)    → set = {B, C, A}   (no-op, still one entry)
+    /// ```
+    ///
+    /// # Quorum accounting
+    ///
+    /// The `QUORUM` storage key is a plain `u32` that is set at initialisation
+    /// and updated only by `set_penalty_caps` (or the admin directly).  It is
+    /// **not** derived from the length of the slasher list at query time.
+    /// Therefore `get_quorum()` returns the same value before and after any
+    /// add/remove/re-add cycle.
+    ///
+    /// # Arguments
+    /// * `slasher` – Address whose slasher role is to be revoked.
+    ///
+    /// # Errors
+    /// * [`SlashError::Unauthorized`] – Caller is not the admin.
     pub fn remove_slasher(env: Env, slasher: Address) -> Result<(), SlashError> {
         Self::require_admin(&env)?;
         let slashers: Vec<Address> = env.storage().instance().get(&SLASHERS).unwrap();
@@ -403,6 +521,27 @@ impl SlashingPenaltyContract {
     /// The first caller creates the slash record (Pending). Subsequent slashers
     /// countersign. Once `quorum_threshold` unique slashers have attested,
     /// the slash enters the appeal window automatically.
+    ///
+    /// # Point-in-time authorisation model
+    ///
+    /// Authorisation is evaluated **at the ledger in which `attest_slash` is
+    /// invoked**, not at the ledger in which the slash was first proposed.
+    ///
+    /// - If `attestor` is in [`get_slashers`] *at call time* → the call proceeds.
+    /// - If `attestor` has been removed via [`remove_slasher`] before this call →
+    ///   the call is rejected with [`SlashError::Unauthorized`], even when:
+    ///     - `attestor` submitted an earlier attestation for the same `evidence_hash`, or
+    ///     - the slash record is still in [`SlashStatus::Pending`].
+    ///
+    /// Removal is **forward-only**: it blocks future attestations from the removed
+    /// address but does **not** retroactively invalidate attestations that were
+    /// accepted while the address was authorised.  Those prior attestations remain
+    /// in `record.attestors` and continue to count toward the quorum required by
+    /// [`execute_slash`].
+    ///
+    /// This design keeps the invariant simple: every entry in `record.attestors` was
+    /// valid at the time it was recorded; re-checking historical authorisation at
+    /// execution time is unnecessary and is intentionally not performed.
     pub fn attest_slash(
         env: Env,
         attestor: Address,
@@ -421,6 +560,12 @@ impl SlashingPenaltyContract {
 
         if let Some(mut record) = records.get(evidence_hash.clone()) {
             // Countersign existing record
+            // Verify the submitted evidence hash matches the one recorded at initial
+            // attestation. This guards against storage-corruption edge cases where the
+            // map key and stored hash could diverge.
+            if record.evidence_hash != evidence_hash {
+                return Err(SlashError::EvidenceHashMismatch);
+            }
             if record.status != SlashStatus::Pending {
                 return Err(SlashError::InvalidState);
             }
@@ -535,12 +680,49 @@ impl SlashingPenaltyContract {
 
     /// Execute a slash after the appeal window has closed without a successful appeal.
     /// Anyone may call this to finalise an expired pending slash.
+    ///
+    /// # Double-execution guard
+    ///
+    /// This function is idempotent in the rejection sense: the **first** successful call
+    /// atomically transitions the slash record from `Pending` to `Executed` and burns
+    /// the escrowed funds. Every subsequent call for the **same** `evidence_hash`
+    /// (i.e., the same `slash_record_id`) finds the record in `Executed` state and
+    /// returns `SlashError::InvalidState (8)` **before** touching the offender's stake.
+    ///
+    /// ```text
+    /// Call 1: status == Pending  → burns escrow, sets status = Executed  → Ok(())
+    /// Call 2: status == Executed → returns Err(InvalidState)             ← guard fires
+    /// Call N: status == Executed → returns Err(InvalidState)             ← guard fires
+    /// ```
+    ///
+    /// This ensures the penalty is applied **exactly once**, regardless of how many
+    /// times or by how many callers `execute_slash` is invoked for the same record.
+    ///
+    /// # Arguments
+    /// * `evidence_hash` - SHA-256 hash identifying the slash record (slash record id).
+    ///
+    /// # Errors
+    /// * `RecordNotFound`        — No slash record exists for the given hash.
+    /// * `EvidenceHashMismatch`  — The submitted evidence hash does not match the reference
+    ///   stored in the record at attestation time.
+    /// * `InvalidState (8)`      — Record is not `Pending` (already `Executed`, `Reversed`, or
+    ///   `AppealRejected`). **This is the double-execution guard.**
+    /// * `QuorumNotMet`          — Attestation-based slash does not yet have enough signatures.
+    /// * `AppealWindowOpen`      — Appeal deadline has not yet passed.
     pub fn execute_slash(env: Env, evidence_hash: BytesN<32>) -> Result<(), SlashError> {
         let mut records: Map<BytesN<32>, SlashRecord> =
             env.storage().instance().get(&SLASH_REC).unwrap();
         let mut record = records
             .get(evidence_hash.clone())
             .ok_or(SlashError::RecordNotFound)?;
+
+        // Defense-in-depth: verify the submitted evidence hash matches the one stored
+        // in the record. While the record is keyed by this hash in the map (guaranteeing
+        // a match in normal operation), this explicit check prevents storage-corruption
+        // edge cases from silently passing.
+        if record.evidence_hash != evidence_hash {
+            return Err(SlashError::EvidenceHashMismatch);
+        }
 
         if record.status != SlashStatus::Pending {
             return Err(SlashError::InvalidState);

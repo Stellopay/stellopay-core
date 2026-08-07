@@ -1,12 +1,13 @@
 #![cfg(test)]
 
+use multisig::{
+    MultisigContract, MultisigContractClient, OperationKind, OperationStatus, OperationType,
+};
 use soroban_sdk::{
     testutils::Address as _,
     token::{Client as TokenClient, StellarAssetClient},
     Address, BytesN, Env, Vec,
 };
-
-use multisig::{MultisigContract, MultisigContractClient, OperationKind, OperationStatus};
 
 fn create_env() -> Env {
     let env = Env::default();
@@ -139,29 +140,74 @@ fn threshold_execution_for_large_payment() {
 }
 
 #[test]
-fn emergency_guardian_can_execute_without_threshold() {
+fn operation_type_override_takes_effect_without_changing_default() {
     let env = create_env();
-    let (multisig_id, client, _owner, signers, guardian) = setup_initialized(&env);
+    let (_id, client, _owner, signers, _guardian) = setup_initialized(&env);
 
-    // fund multisig
-    let admin = Address::generate(&env);
-    let token = create_token_contract(&env, &admin);
-    let token_admin_client = StellarAssetClient::new(&env, &token.address);
-    token_admin_client.mint(&multisig_id, &1_000i128);
-
-    let recipient = Address::generate(&env);
-
-    let op_id = client.propose_operation(
+    let set_override = client.propose_operation(
         &signers.get(0).unwrap(),
-        &OperationKind::LargePayment(token.address.clone(), recipient.clone(), 200i128),
+        &OperationKind::SetThresholdOverride(OperationType::ContractUpgrade, Some(3)),
+    );
+    client.approve_operation(&signers.get(1).unwrap(), &set_override);
+
+    assert_eq!(
+        client.get_threshold_override(&OperationType::ContractUpgrade),
+        Some(3)
+    );
+    assert_eq!(
+        client.get_effective_threshold(&OperationType::ContractUpgrade),
+        3
+    );
+    assert_eq!(
+        client.get_effective_threshold(&OperationType::DisputeResolution),
+        2
     );
 
-    // Guardian executes directly
+    let upgrade = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::ContractUpgrade(
+            Address::generate(&env),
+            BytesN::from_array(&env, &[2u8; 32]),
+        ),
+    );
+    client.approve_operation(&signers.get(1).unwrap(), &upgrade);
+    assert_eq!(
+        client.get_operation(&upgrade).unwrap().status,
+        OperationStatus::Pending
+    );
+    client.approve_operation(&signers.get(2).unwrap(), &upgrade);
+    assert_eq!(
+        client.get_operation(&upgrade).unwrap().status,
+        OperationStatus::Executed
+    );
+
+    let dispute = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 7, 10, 0),
+    );
+    client.approve_operation(&signers.get(1).unwrap(), &dispute);
+    assert_eq!(
+        client.get_operation(&dispute).unwrap().status,
+        OperationStatus::Executed
+    );
+}
+
+#[test]
+fn emergency_guardian_can_execute_dispute_resolution_without_threshold() {
+    let env = create_env();
+    let (_id, client, _owner, signers, guardian) = setup_initialized(&env);
+
+    // DisputeResolution is emergency-eligible
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+
+    // Guardian executes directly (skipping the second approval)
     client.emergency_execute(&guardian, &op_id);
 
     let op = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Executed);
-    assert_eq!(token.balance(&recipient), 200i128);
 }
 
 #[test]
@@ -189,4 +235,87 @@ fn cancel_operation_by_creator_or_owner() {
     // owner can no longer cancel an already-cancelled op
     let res = client.try_cancel_operation(&owner, &op_id);
     assert!(res.is_err());
+}
+
+
+// --- Duplicate-signature rejection tests (#1084) ---
+
+#[test]
+fn test_duplicate_approval_does_not_inflate_approval_count() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_initialized(&env);
+
+    let proposer = signers.get(0).unwrap();
+    let op_id = client.propose_operation(
+        &proposer,
+        &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
+    );
+
+    // After proposal, creator has auto-approved (count = 1)
+    let approvals = client.get_approvals(&op_id);
+    assert_eq!(approvals.len(), 1);
+
+    // The same signer calling approve_operation again on the same operation
+    // must not inflate the approval count.
+    client.approve_operation(&proposer, &op_id);
+
+    let approvals_after = client.get_approvals(&op_id);
+    assert_eq!(
+        approvals_after.len(),
+        1,
+        "Duplicate approval from the same signer must not increase approval count"
+    );
+
+    // Operation must stay Pending because threshold (2) is not met with only 1 distinct signer.
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Pending);
+}
+
+#[test]
+fn test_operation_only_executes_with_distinct_signers_reaching_threshold() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_initialized(&env);
+
+    let s1 = signers.get(0).unwrap();
+    let s2 = signers.get(1).unwrap();
+    let s3 = signers.get(2).unwrap();
+
+    let op_id = client.propose_operation(
+        &s1,
+        &OperationKind::DisputeResolution(Address::generate(&env), 2u128, 20, 0),
+    );
+
+    // s1 is auto-approved. A duplicate approval from s1 must not trigger execution.
+    client.approve_operation(&s1, &op_id);
+    let op_mid = client.get_operation(&op_id).unwrap();
+    assert_eq!(
+        op_mid.status,
+        OperationStatus::Pending,
+        "Operation must remain Pending after duplicate approval from the same signer"
+    );
+
+    // s2 is a distinct signer. Threshold (2) is now met → execution fires.
+    client.approve_operation(&s2, &op_id);
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(
+        op.status,
+        OperationStatus::Executed,
+        "Operation must execute only when distinct signers reach the threshold"
+    );
+
+    // After execution, any further approval from a remaining signer must be rejected.
+    let res = client.try_approve_operation(&s3, &op_id);
+    assert!(
+        res.is_err(),
+        "Approving an already-executed operation must fail"
+    );
+
+    // The approval list must contain exactly the 2 distinct signers (s1 and s2),
+    // not inflated by the duplicate approval or the post-execution attempt.
+    let approvals = client.get_approvals(&op_id);
+    assert_eq!(
+        approvals.len(),
+        2,
+        "Approval list must contain exactly 2 distinct signers, not duplicate entries"
+    );
 }

@@ -15,6 +15,14 @@ The compliance reporting contract provides on-chain, tamper-evident structures s
 | Emergency pause | Admin can halt all writes while reads remain available for indexers |
 | Amount validation | Zero and negative amounts are rejected at the contract level |
 
+## Cross-Publisher Sequencing Guarantee
+
+The contract-wide `global_seq` counter is atomically incremented on every successful `log_record` call, regardless of which authorized publisher (including the employer themselves) submits the entry. This guarantees:
+
+1. **Strict monotonicity**: `get_global_seq()` returns a value that is strictly greater than the previous call, even when multiple distinct publisher addresses interleave their `log_record` calls.
+2. **No collisions**: No two `ComplianceRecord` entries will ever share the same `global_seq` value. Each record is assigned a unique, sequential number at write time.
+3. **Indexer reconstruction**: Off-chain indexers can use `global_seq` to reconstruct a single, ordered timeline across all employers and publishers, without needing to resolve timestamp ties or rely on transaction ordering.
+
 ## Data Retention
 
 Records are stored in `persistent` storage. Callers are responsible for extending ledger TTLs if long-term on-chain retention is required. Off-chain indexers should consume events and snapshot data independently of on-chain storage.
@@ -72,7 +80,7 @@ Returns whether an address is currently an authorized publisher.
 
 Pauses or unpauses the contract. Only the admin may call this.
 
-- When paused, `log_record` is blocked. All read operations remain available.
+- **Read/write asymmetry** (see dedicated section below): When paused, `log_record` is blocked but all read operations (`generate_report`, `get_withholding_records`, `get_record`, `get_record_count`) continue to work.
 - Errors: `NotAuthorized`
 
 ### `is_paused() -> bool`
@@ -108,7 +116,35 @@ Generates an aggregated report for a given employer and time window.
 - Iterates backwards (newest-first) through the employer's records.
 - Stops early when a record's timestamp falls below `start_date`, saving instruction budget.
 - `limit` must be between 1 and 100 (inclusive).
+- `generate_report` uses the same on-chain aggregation path as `get_withholding_records`; it does not silently truncate a long employer history. For very large histories, callers should use paginated follow-up queries or off-chain indexed snapshots.
 - Errors: `NotInitialized`, `InvalidDateRange`, `QueryLimitExceeded`
+
+## Emergency Pause — Read/Write Asymmetry
+
+The emergency pause (`set_paused`) exhibits deliberate asymmetric behavior:
+
+| Operation     | While Paused | Category |
+|---------------|-------------|----------|
+| `log_record`  | **Blocked** (returns `ContractPaused`) | Write |
+| `generate_report` | Allowed | Read |
+| `get_withholding_records` | Allowed | Read |
+| `get_record` | Allowed | Read |
+| `get_record_count` | Allowed | Read |
+| `get_global_seq` | Allowed | Read |
+| `is_paused` | Allowed | Read |
+| `is_publisher` | Allowed | Read |
+
+### Design Rationale
+
+Only `log_record` calls the `require_not_paused` guard. All read-only functions intentionally skip this check so that:
+
+1. **Indexers stay online**: Off-chain indexers reconstructing reporting periods can continue reading already-recorded records without interruption.
+2. **Emergency use case**: The pause is designed to stop the flow of new records during an incident, not to deny access to historical data.
+3. **Fail-open for reads**: Blocking reads while paused would create a secondary incident by cutting off dependent systems that need to verify or export pre-existing compliance data.
+
+### Security Consideration
+
+The pause does not provide confidentiality — paused or not, all on-chain data is publicly readable. It is strictly an availability control for writes, ensuring that during an incident window no new (potentially malicious or erroneous) records are accepted until the admin has assessed the situation and either unpauses or takes additional mitigation steps.
 
 ## Events
 

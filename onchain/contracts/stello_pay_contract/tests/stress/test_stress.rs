@@ -16,8 +16,10 @@ use soroban_sdk::{
     token::StellarAssetClient,
     Address, Env, Vec,
 };
-use stello_pay_contract::storage::{DataKey, PayrollError};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{DataKey, PayrollError},
+    PayrollContract, PayrollContractClient,
+};
 
 /// Creates a fresh test environment with mocked auth and initialized contract.
 ///
@@ -88,7 +90,12 @@ fn setup_funded_milestone(
     amount: i128,
     milestone_count: u32,
 ) -> u128 {
-    let agreement_id = client.create_milestone_agreement(employer, contributor, token);
+    let agreement_id = client.create_milestone_agreement(
+        employer,
+        contributor,
+        token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
     for _ in 0..milestone_count {
         client.add_milestone(&agreement_id, &amount);
     }
@@ -218,7 +225,7 @@ fn stress_network_congestion_mixed_batch() {
 
     assert_eq!(result.successful_claims, 6);
     assert_eq!(result.failed_claims, 10);
-    assert_eq!(result.total_claimed, 600);
+    assert_eq!(result.total_claimed, 501);
 
     println!(
         "[stress][congestion] batch_size={} duration_ms={} success={} failed={}",

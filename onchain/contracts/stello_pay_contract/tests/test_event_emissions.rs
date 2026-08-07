@@ -16,8 +16,7 @@ use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     Address, Env, Symbol, TryFromVal, TryIntoVal, Vec,
 };
-use stello_pay_contract::storage::AgreementMode;
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{storage::AgreementMode, PayrollContract, PayrollContractClient};
 
 // ============================================================================
 // TEST HELPERS
@@ -189,7 +188,12 @@ fn test_milestone_agreement_creation() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
 
     // Milestone agreements don't emit agreement_created_event
     // They use a separate storage system
@@ -340,8 +344,12 @@ fn test_milestone_added_event() {
     let token = create_test_address(&env);
     let amount = 5000i128;
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &amount);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, amount],
+    );
 
     assert!(has_event(&env, "milestone_added"));
 
@@ -363,8 +371,12 @@ fn test_milestone_approved_event() {
     let contributor = create_test_address(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &5000);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 5000i128],
+    );
     mint(&env, &token, &employer, 5000);
     client.fund_milestone_agreement(&agreement_id, &employer, &5000);
     client.approve_milestone(&agreement_id, &1);
@@ -388,8 +400,12 @@ fn test_milestone_claimed_event() {
     let token = create_token(&env);
     let amount = 5000i128;
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-    client.add_milestone(&agreement_id, &amount);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, amount],
+    );
     mint(&env, &token, &employer, amount);
     client.fund_milestone_agreement(&agreement_id, &employer, &amount);
     client.approve_milestone(&agreement_id, &1);
@@ -559,7 +575,12 @@ fn test_event_ordering_milestone_workflow() {
     let contributor = create_test_address(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
 
     client.add_milestone(&agreement_id, &5000);
     assert!(
@@ -644,7 +665,12 @@ fn test_complete_milestone_workflow_events() {
     let contributor = create_test_address(&env);
     let token = create_token(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
 
     client.add_milestone(&agreement_id, &1000);
     assert!(
@@ -795,6 +821,85 @@ fn test_multisig_config_changed_event_reports_previous_values() {
 }
 
 // ============================================================================
+// EXCHANGE RATE UPDATED EVENT TESTS
+// ============================================================================
+
+/// Test: exchange_rate_updated_event is emitted with correct pair, rates, and updater
+#[test]
+fn test_exchange_rate_updated_event() {
+    let env = create_test_env();
+    let (_contract_id, client) = setup_contract(&env);
+    let owner = create_test_address(&env);
+    let base = create_token(&env);
+    let quote = create_token(&env);
+    let rate: i128 = 2_000_000; // 1 base = 2 quote
+
+    client.set_exchange_rate(&owner, &base, &quote, &rate);
+
+    assert!(has_event(&env, "exchange_rate_updated_event"));
+
+    let event = find_event(&env, "exchange_rate_updated_event").unwrap();
+    let event_base: Address = get_event_field(&env, &event.2, "base");
+    let event_quote: Address = get_event_field(&env, &event.2, "quote");
+    let event_new_rate: i128 = get_event_field(&env, &event.2, "new_rate");
+    let event_prev_rate: i128 = get_event_field(&env, &event.2, "prev_rate");
+    let event_updater: Address = get_event_field(&env, &event.2, "updater");
+    let event_updated_at: u64 = get_event_field(&env, &event.2, "updated_at");
+
+    assert_eq!(event_base, base);
+    assert_eq!(event_quote, quote);
+    assert_eq!(event_new_rate, rate);
+    assert_eq!(event_prev_rate, 0); // First time, no previous rate
+    assert_eq!(event_updater, owner);
+    assert_eq!(event_updated_at, env.ledger().timestamp());
+}
+
+/// Test: exchange_rate_updated_event from exchange rate admin
+#[test]
+fn test_exchange_rate_updated_event_by_admin() {
+    let env = create_test_env();
+    let (_contract_id, client) = setup_contract(&env);
+    let owner = create_test_address(&env);
+    let admin = create_test_address(&env);
+    let base = create_token(&env);
+    let quote = create_token(&env);
+    let rate: i128 = 3_000_000;
+
+    // Owner designates admin
+    client.set_exchange_rate_admin(&owner, &admin);
+
+    // Admin sets rate
+    client.set_exchange_rate(&admin, &base, &quote, &rate);
+
+    assert!(has_event(&env, "exchange_rate_updated_event"));
+
+    let event = find_event(&env, "exchange_rate_updated_event").unwrap();
+    let event_updater: Address = get_event_field(&env, &event.2, "updater");
+
+    assert_eq!(event_updater, admin);
+}
+
+/// Test: second rate update reports the previous rate as prev_rate
+#[test]
+fn test_exchange_rate_updated_event_prev_rate_reported() {
+    let env = create_test_env();
+    let (_contract_id, client) = setup_contract(&env);
+    let owner = create_test_address(&env);
+    let base = create_token(&env);
+    let quote = create_token(&env);
+
+    client.set_exchange_rate(&owner, &base, &quote, &2_000_000);
+    client.set_exchange_rate(&owner, &base, &quote, &4_000_000);
+
+    let event = find_event(&env, "exchange_rate_updated_event").unwrap();
+    let event_new_rate: i128 = get_event_field(&env, &event.2, "new_rate");
+    let event_prev_rate: i128 = get_event_field(&env, &event.2, "prev_rate");
+
+    assert_eq!(event_prev_rate, 2_000_000);
+    assert_eq!(event_new_rate, 4_000_000);
+}
+
+// ============================================================================
 // SUMMARY TEST
 // ============================================================================
 
@@ -816,6 +921,7 @@ fn test_all_event_types_covered() {
     // ✓ milestone_claimed
     // ✓ arbiter_set_event
     // ✓ dispute_raised_event
+    // ✓ exchange_rate_updated_event
 
     // All existing event types are covered in this test suite
     assert!(true);

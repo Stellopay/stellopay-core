@@ -9,9 +9,8 @@
 //!
 //! # Role Model
 //! - **Admin**: Deploys and initializes the contract (one-time).
-//! - **Org Owner**: Any authenticated address that creates an organization.
-//!   Only the org owner may create departments within the org and manage
-//!   all employee assignments within that org.
+//! - **Org Owner**: Any authenticated address that creates an organization. Only the org owner may
+//!   create departments within the org and manage all employee assignments within that org.
 //!
 //! # Storage Layout (for integrators)
 //! | Key                                  | Value               | Description                       |
@@ -27,6 +26,7 @@
 //! | `EmployeeInDepartment(dept_id, addr)`| `()`               | Membership flag                   |
 //! | `EmployeeDepartment(addr, org_id)`   | `u128`              | Employee → current dept in org    |
 //! | `DepartmentEmployees(dept_id)`       | `Vec<Address>`      | All employees in a dept           |
+//! | `OrgByName(name)`                    | `u128`              | Reverse index: name → org_id (enforces name uniqueness) |
 
 use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
 
@@ -63,6 +63,11 @@ enum StorageKey {
     EmployeeDepartment(Address, u128),
     /// List of employee addresses in a department: dept_id -> Vec<Address>
     DepartmentEmployees(u128),
+    /// Reverse index enforcing organization name uniqueness: name -> org_id.
+    /// Presence of this entry under `name` indicates the name is already claimed
+    /// by the org whose ID matches the stored value. Acts as the unique-organization-id
+    /// guard for `create_organization`.
+    OrgByName(soroban_sdk::Symbol),
 }
 
 /// Organization record
@@ -125,18 +130,50 @@ impl DepartmentManagerContract {
 
     /// Creates a new organization. The caller becomes the **org owner**.
     ///
+    /// # Uniqueness Invariant (Issue #917)
+    /// Each `name` is **globally unique** across the entire contract. If `name`
+    /// is already claimed by an existing organization (regardless of owner), the
+    /// call is rejected and **all state mutations are rolled back**, so the
+    /// original organization's record and its `OrgDepartments` tree are left
+    /// fully intact. This guards against a re-creation that would otherwise
+    /// reset or overwrite the org's department tree.
+    ///
+    /// Symbols are case-sensitive in Soroban, so `"Acme"` and `"acme"` are
+    /// distinct identifiers. There is no `delete_organization`, so claiming a
+    /// name locks it permanently for the lifetime of the contract.
+    ///
     /// # Arguments
     /// * `owner` - Caller (must authenticate); becomes org owner.
-    /// * `name`  - Symbol name for the organization.
+    /// * `name`  - Symbol name for the organization (must be unique).
     ///
     /// # Returns
     /// The new organization ID (starts at 1, increments by 1).
+    ///
+    /// # Panics
+    /// - `"Organization name already in use"` – `name` already maps to an existing organization via
+    ///   the `OrgByName` reverse index.
+    /// - `"Contract not initialized"` – `initialize` was not called.
     ///
     /// # Events
     /// Publishes `("org_created", org_id)` on success.
     pub fn create_organization(env: Env, owner: Address, name: soroban_sdk::Symbol) -> u128 {
         owner.require_auth();
         Self::require_initialized(&env);
+
+        // === Unique-organization-id guard ===
+        // Reject BEFORE allocating any state (NextOrgId, Organization record,
+        // OrgDepartments Vec). On panic, Soroban rolls back storage writes from
+        // this call, so the check is also safe if placed later; doing it first
+        // keeps the invariant explicit and prevents wasting an org_id on a
+        // duplicate-name attempt.
+        assert!(
+            env.storage()
+                .persistent()
+                .get::<_, u128>(&StorageKey::OrgByName(name.clone()))
+                .is_none(),
+            "Organization name already in use"
+        );
+
         let next_id: u128 = env
             .storage()
             .persistent()
@@ -147,7 +184,7 @@ impl DepartmentManagerContract {
             .set(&StorageKey::NextOrgId, &(next_id + 1));
         let org = Organization {
             id: next_id,
-            name,
+            name: name.clone(),
             owner: owner.clone(),
             created_at: env.ledger().timestamp(),
         };
@@ -158,6 +195,12 @@ impl DepartmentManagerContract {
         env.storage()
             .persistent()
             .set(&StorageKey::OrgDepartments(next_id), &empty);
+
+        // Register the name in the reverse index so future calls with the same
+        // name are rejected by the guard above.
+        env.storage()
+            .persistent()
+            .set(&StorageKey::OrgByName(name), &next_id);
 
         env.events()
             .publish((symbol_short!("org_crtd"), next_id), next_id);
@@ -482,23 +525,49 @@ impl DepartmentManagerContract {
             .get(&StorageKey::EmployeeDepartment(employee, org_id))
     }
 
-    /// Returns a department-level report:
-    /// `(employee_count, child_department_ids, employee_addresses)`.
+    /// Returns a department-level report that **recursively** aggregates
+    /// employee figures across the full descendant tree:
+    /// `(total_employee_count, direct_child_department_ids, all_employee_addresses)`.
+    ///
+    /// The returned `employee_count` and `employee_addresses` include employees
+    /// from the queried department **and** every descendant department (children,
+    /// grandchildren, …).  `child_department_ids` contains only **direct**
+    /// children (one level) so callers can still traverse the tree structure.
     ///
     /// # Arguments
     /// * `department_id` - The department ID.
     pub fn get_department_report(env: Env, department_id: u128) -> (u32, Vec<u128>, Vec<Address>) {
-        let employees: Vec<Address> = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::DepartmentEmployees(department_id))
-            .unwrap_or_else(|| Vec::new(&env));
+        Self::collect_descendant_employees(&env, department_id)
+    }
+
+    /// Recursively collects all employee addresses from `dept_id` and its
+    /// full descendant subtree.  Returns `(count, direct_children, employees)`.
+    fn collect_descendant_employees(env: &Env, dept_id: u128) -> (u32, Vec<u128>, Vec<Address>) {
         let children: Vec<u128> = env
             .storage()
             .persistent()
-            .get(&StorageKey::DepartmentChildren(department_id))
-            .unwrap_or_else(|| Vec::new(&env));
-        (employees.len(), children, employees)
+            .get(&StorageKey::DepartmentChildren(dept_id))
+            .unwrap_or_else(|| Vec::new(env));
+
+        let mut all_employees: Vec<Address> = Vec::new(env);
+
+        let direct_employees: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::DepartmentEmployees(dept_id))
+            .unwrap_or_else(|| Vec::new(env));
+        for emp in direct_employees.iter() {
+            all_employees.push_back(emp);
+        }
+
+        for child_id in children.iter() {
+            let (_, _, child_employees) = Self::collect_descendant_employees(env, child_id);
+            for emp in child_employees.iter() {
+                all_employees.push_back(emp);
+            }
+        }
+
+        (all_employees.len(), children, all_employees)
     }
 
     /// Reparents a department to a new parent (or makes it top-level).
@@ -593,6 +662,328 @@ impl DepartmentManagerContract {
             .publish((symbol_short!("dept_mvd"), dept_id), dept_id);
     }
 
+    /// Renames a department while preserving all employee associations and hierarchy.
+    ///
+    /// This operation updates only the department's name field. All employee
+    /// assignments (forward index `EmployeeDepartment` and reverse index
+    /// `DepartmentEmployees`) remain completely unchanged, ensuring that employee
+    /// department lookups continue to resolve correctly after the rename.
+    ///
+    /// # Arguments
+    /// * `caller`    - Must be the **org owner** (must authenticate).
+    /// * `dept_id`   - Department to rename.
+    /// * `new_name`  - New symbol name for the department.
+    ///
+    /// # Panics
+    /// - `"Organization not found"` – org not found.
+    /// - `"Not organization owner"` – caller is not the org owner.
+    /// - `"Department not found"` – dept_id does not exist.
+    ///
+    /// # Events
+    /// Publishes `("dept_renamed", dept_id)` on success with the new name as data.
+    ///
+    /// # Security & Correctness
+    /// **Employee Association Preservation**: The department name is a metadata field
+    /// stored separately from employee indexes. Renaming does not modify:
+    /// - Forward index: `EmployeeDepartment(emp, org_id) → dept_id`
+    /// - Reverse index: `DepartmentEmployees(dept_id) → Vec<Address>`
+    ///
+    /// Therefore, all employee lookups remain valid after rename.
+    pub fn rename_department(
+        env: Env,
+        caller: Address,
+        dept_id: u128,
+        new_name: soroban_sdk::Symbol,
+    ) {
+        caller.require_auth();
+        Self::require_initialized(&env);
+
+        let mut dept: Department = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Department(dept_id))
+            .expect("Department not found");
+
+        let org: Organization = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Organization(dept.org_id))
+            .expect("Organization not found");
+        assert!(org.owner == caller, "Not organization owner");
+
+        // Update the department name
+        dept.name = new_name.clone();
+        env.storage()
+            .persistent()
+            .set(&StorageKey::Department(dept_id), &dept);
+
+        env.events()
+            .publish((symbol_short!("dpt_rn"), dept_id), new_name);
+    }
+
+    /// Merges two departments within the same organization.
+    ///
+    /// Moves all members and child departments from `source` into `target`,
+    /// then removes `source`.
+    ///
+    /// # Arguments
+    /// * `caller` - Must be the **org owner** (must authenticate).
+    /// * `org_id`  - Organization ID.
+    /// * `source`  - Department to merge (will be removed).
+    /// * `target`  - Department to merge into (will absorb members/children).
+    ///
+    /// # Panics
+    /// - `"Organization not found"` – org_id does not exist.
+    /// - `"Not organization owner"` – caller is not the org owner.
+    /// - `"Department not found"` – source or target does not exist.
+    /// - `"Department not in this org"` – source or target belongs to a different org.
+    /// - `"Cannot merge a department into itself"` – source == target.
+    /// - `"Cycle detected"` – target is a descendant of source.
+    ///
+    /// # Events
+    /// Publishes `("dept_merged", source)` with target as data on success.
+    pub fn merge_departments(env: Env, caller: Address, org_id: u128, source: u128, target: u128) {
+        caller.require_auth();
+        Self::require_initialized(&env);
+
+        let source_dept: Department = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Department(source))
+            .expect("Department not found");
+        assert!(source_dept.org_id == org_id, "Department not in this org");
+
+        let target_dept: Department = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Department(target))
+            .expect("Department not found");
+        assert!(target_dept.org_id == org_id, "Department not in this org");
+
+        let org: Organization = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Organization(org_id))
+            .expect("Organization not found");
+        assert!(org.owner == caller, "Not organization owner");
+
+        assert!(source != target, "Cannot merge a department into itself");
+        assert!(!Self::has_cycle(&env, source, target), "Cycle detected");
+
+        // Move all members from source to target
+        let source_employees: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::DepartmentEmployees(source))
+            .unwrap_or_else(|| Vec::new(&env));
+        for emp in source_employees.iter() {
+            Self::remove_employee_from_dept_internal(&env, source, &emp);
+            env.storage()
+                .persistent()
+                .set(&StorageKey::EmployeeInDepartment(target, emp.clone()), &());
+            env.storage().persistent().set(
+                &StorageKey::EmployeeDepartment(emp.clone(), org_id),
+                &target,
+            );
+            let mut target_employees: Vec<Address> = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::DepartmentEmployees(target))
+                .unwrap_or_else(|| Vec::new(&env));
+            target_employees.push_back(emp.clone());
+            env.storage()
+                .persistent()
+                .set(&StorageKey::DepartmentEmployees(target), &target_employees);
+        }
+
+        // Move all child departments from source to target
+        let source_children: Vec<u128> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::DepartmentChildren(source))
+            .unwrap_or_else(|| Vec::new(&env));
+        for child_id in source_children.iter() {
+            let mut child: Department = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::Department(child_id))
+                .expect("Department not found");
+            child.parent_id = Some(target);
+            env.storage()
+                .persistent()
+                .set(&StorageKey::Department(child_id), &child);
+
+            let mut target_children: Vec<u128> = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::DepartmentChildren(target))
+                .unwrap_or_else(|| Vec::new(&env));
+            target_children.push_back(child_id);
+            env.storage()
+                .persistent()
+                .set(&StorageKey::DepartmentChildren(target), &target_children);
+        }
+
+        // Remove source from its parent's children list
+        if let Some(parent_id) = source_dept.parent_id {
+            let mut parent_children: Vec<u128> = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::DepartmentChildren(parent_id))
+                .unwrap_or_else(|| Vec::new(&env));
+            let mut i = 0u32;
+            while i < parent_children.len() {
+                if parent_children.get(i) == Some(source) {
+                    parent_children.remove(i);
+                    break;
+                }
+                i += 1;
+            }
+            env.storage()
+                .persistent()
+                .set(&StorageKey::DepartmentChildren(parent_id), &parent_children);
+        }
+
+        // Remove source from org's department list
+        let mut org_depts: Vec<u128> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::OrgDepartments(org_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut i = 0u32;
+        while i < org_depts.len() {
+            if org_depts.get(i) == Some(source) {
+                org_depts.remove(i);
+                break;
+            }
+            i += 1;
+        }
+        env.storage()
+            .persistent()
+            .set(&StorageKey::OrgDepartments(org_id), &org_depts);
+
+        // Clean up source storage entries
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::Department(source));
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::DepartmentChildren(source));
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::DepartmentEmployees(source));
+
+        env.events()
+            .publish((symbol_short!("dept_mrg"), source), target);
+    }
+
+    /// Removes a department from an organization.
+    ///
+    /// # Arguments
+    /// * `caller`   - Must be the **org owner** (must authenticate).
+    /// * `dept_id`  - Department ID to remove.
+    ///
+    /// # Panics
+    /// - `"Organization not found"` – org not found.
+    /// - `"Not organization owner"` – caller is not the org owner.
+    /// - `"Department not found"` – dept_id does not exist.
+    /// - `"Cannot remove department with active employees"` – department has employees assigned.
+    /// - `"Cannot remove department with child departments"` – department has child departments.
+    ///
+    /// # Events
+    /// Publishes `("dept_rmvd", dept_id)` on success.
+    pub fn remove_department(env: Env, caller: Address, dept_id: u128) {
+        caller.require_auth();
+        Self::require_initialized(&env);
+
+        let dept: Department = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Department(dept_id))
+            .expect("Department not found");
+
+        let org: Organization = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Organization(dept.org_id))
+            .expect("Organization not found");
+        assert!(org.owner == caller, "Not organization owner");
+
+        // Check for active employees
+        let employees: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::DepartmentEmployees(dept_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        assert!(
+            employees.is_empty(),
+            "Cannot remove department with active employees"
+        );
+
+        // Check for child departments
+        let children: Vec<u128> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::DepartmentChildren(dept_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        assert!(
+            children.is_empty(),
+            "Cannot remove department with child departments"
+        );
+
+        // Remove dept from its parent's children list (if it has a parent)
+        if let Some(parent_id) = dept.parent_id {
+            let mut parent_children: Vec<u128> = env
+                .storage()
+                .persistent()
+                .get(&StorageKey::DepartmentChildren(parent_id))
+                .unwrap_or_else(|| Vec::new(&env));
+            let mut i = 0u32;
+            while i < parent_children.len() {
+                if parent_children.get(i) == Some(dept_id) {
+                    parent_children.remove(i);
+                    break;
+                }
+                i += 1;
+            }
+            env.storage()
+                .persistent()
+                .set(&StorageKey::DepartmentChildren(parent_id), &parent_children);
+        }
+
+        // Remove dept from org's department list
+        let mut org_depts: Vec<u128> = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::OrgDepartments(dept.org_id))
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut i = 0u32;
+        while i < org_depts.len() {
+            if org_depts.get(i) == Some(dept_id) {
+                org_depts.remove(i);
+                break;
+            }
+            i += 1;
+        }
+        env.storage()
+            .persistent()
+            .set(&StorageKey::OrgDepartments(dept.org_id), &org_depts);
+
+        // Clean up department storage entries
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::Department(dept_id));
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::DepartmentChildren(dept_id));
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::DepartmentEmployees(dept_id));
+
+        env.events()
+            .publish((symbol_short!("dept_rmvd"), dept_id), dept_id);
+    }
+
     // -------------------------------------------------------------------------
     // Internal helpers
     // -------------------------------------------------------------------------
@@ -683,14 +1074,14 @@ impl DepartmentManagerContract {
     /// # Arguments
     /// * `department_id` - Department to query
     /// * `start`         - Zero-based index of the first employee to return
-    /// * `limit`         - Maximum number of employees to return; clamped to
-    ///                     [`MAX_PAGE_SIZE`] (50) to bound instruction usage
+    /// * `limit`         - Maximum number of employees to return; clamped to [`MAX_PAGE_SIZE`] (50)
+    ///   to bound instruction usage
     ///
     /// # Returns
     /// A tuple `(page, next_start)` where:
     /// - `page`       – the slice of employee addresses for this page
-    /// - `next_start` – the index to pass as `start` on the next call, or
-    ///                  `None` when the last page has been reached
+    /// - `next_start` – the index to pass as `start` on the next call, or `None` when the last page
+    ///   has been reached
     ///
     /// # Security
     /// Clamping `limit` to `MAX_PAGE_SIZE` prevents unbounded-return DoS.
