@@ -34,6 +34,37 @@ local command. Steps 3–8 are the checks contributors must pass. Step 9 is a
 diagnostic convenience — its presence is gated on `if: always()` so it is
 preserved on failure for post-mortem download.
 
+#### Per-crate coverage gate
+
+Immediately after `Test workspace`, the job runs a step named
+**`Per-crate coverage gate (fail under 95% lines)`**. It fails the build if
+**any** crate under `onchain/contracts/` has line coverage below the
+threshold.
+
+The gate is deliberately *not* `cargo llvm-cov --workspace --fail-under-lines 95`:
+that flag only enforces a workspace-wide **average**, so a single uncovered
+crate can hide behind well-covered ones. Instead the workspace is instrumented
+once — a single test run, so the gate stays cheap — and the resulting
+per-file summaries are attributed back to each crate and evaluated
+individually.
+
+Only library sources count towards a crate's score. Files under a crate's
+`tests/` directory, or under a `src/tests/` module, are the test code itself
+and are excluded so they cannot inflate a crate towards 100%.
+
+Every run prints a per-crate table, sorted worst-first, to both the job log
+and the job summary:
+
+| crate | lines | covered | line % | status |
+|---|---:|---:|---:|---|
+| rate_limiter | 200 | 100 | 50.00 | **below 95%** |
+| multisig | 400 | 400 | 100.00 | pass |
+
+The threshold lives in the `COVERAGE_THRESHOLD` environment variable on that
+step in `.github/workflows/contracts.yml`; change it there to tune the gate.
+See **Run Locally → 2. Coverage gate** below to reproduce the exact numbers
+before pushing.
+
 ### Job: `doc-checker`
 This job builds and runs `tools/doc_checker` against the full `docs/` and `onchain/contracts/` tree.
 It runs with the `--strict` and `--events` flags to promote any documentation gaps into hard failures.
@@ -57,6 +88,12 @@ Run the same checks CI executes, in the same order, before opening a PR.
 | Rust (stable) | `rustup install stable && rustup default stable` |
 | `rustfmt` component | `rustup component add rustfmt` |
 | WASM target | `rustup target add wasm32-unknown-unknown` |
+| `llvm-tools-preview` component | `rustup component add llvm-tools-preview` |
+| `cargo-llvm-cov` | `cargo install cargo-llvm-cov` |
+| `jq` | your package manager, e.g. `apt install jq` / `brew install jq` |
+
+The last three are only needed for the coverage gate (**2. Coverage gate**
+below); the formatting, build and test commands do not require them.
 
 No Stellar CLI is required to run the WASM build because we delegate to
 `cargo build --target wasm32-unknown-unknown` directly. This is the only
@@ -96,6 +133,39 @@ cargo run --release --manifest-path tools/wasm_size_check/Cargo.toml -- \
 
 All five commands must exit with code `0` for a PR to be mergeable.
 
+**2. Coverage gate**
+
+```bash
+cd onchain
+
+# Exactly what CI runs to collect the data.
+cargo llvm-cov --workspace --json --output-path coverage.json
+
+# Exactly what CI evaluates: line coverage per crate, worst-first.
+jq -r '
+  [ .data[0].files[]
+    | select(.filename | test("/contracts/[^/]+/src/"))
+    | select(.filename | test("/src/tests?/") | not)
+    | { crate:   (.filename | capture("/contracts/(?<c>[^/]+)/").c),
+        count:   .summary.lines.count,
+        covered: .summary.lines.covered } ]
+  | group_by(.crate)
+  | map({ crate:   .[0].crate,
+          count:   (map(.count)   | add),
+          covered: (map(.covered) | add) })
+  | map(. + { pct: (if .count == 0 then 100 else 100 * .covered / .count end) })
+  | sort_by(.pct)
+  | .[] | [.crate, .count, .covered, .pct] | @tsv
+' coverage.json
+```
+
+Every crate printed must be at `95.00` or above. To iterate on a single
+crate, `cargo-llvm-cov` can enforce the threshold directly:
+
+```bash
+cargo llvm-cov -p <crate> --fail-under-lines 95
+```
+
 ### Fixing common failures
 
 **Formatting failure**
@@ -124,6 +194,14 @@ rustup update stable
 
 Test output is printed with `--verbose`. Read the failure message and fix
 the broken test or the code under test.
+
+**Coverage gate failure**
+
+The step annotates the run with the number of crates below the threshold and
+prints the full per-crate table to both the log and the job summary. Find the
+crates marked `below 95%`, add tests for their uncovered lines, and re-run the
+commands in **2. Coverage gate** above until every crate reports `95.00` or
+higher. Do not lower `COVERAGE_THRESHOLD` to make a red build pass.
 
 **WASM size regression failure**
 
@@ -322,10 +400,11 @@ The following are **not** part of the automated CI pipeline and are therefore
 not required to pass before merging:
 
 - `cargo clippy` — linting is not enforced by the workflow.
-- Coverage reporting — no `cargo llvm-cov` step exists in the current workflow.
 - `stellar contract build` — CI uses raw `cargo build --target wasm32-unknown-unknown`.
   `stellar contract build` is functionally equivalent but is not a dependency of CI.
-- Per-package test runs — CI uses `--workspace`; there are no per-crate steps.
+- Per-package test runs — CI invokes `cargo test` and `cargo llvm-cov` with
+  `--workspace`. Coverage is *evaluated* per crate, but the tests themselves
+  are never run one crate at a time.
 
 > If any of the above are added to `.github/workflows/contracts.yml` in the
 > future, this section and the **Run locally** section above must both be
