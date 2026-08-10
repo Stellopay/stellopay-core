@@ -1277,7 +1277,10 @@ fn emergency_execute_rejects_large_payment() {
 
     // Guardian attempts emergency execute on a LargePayment → must be rejected
     let result = client.try_emergency_execute(&guardian, &op_id);
-    assert!(result.is_err(), "LargePayment must not be emergency-eligible");
+    assert!(
+        result.is_err(),
+        "LargePayment must not be emergency-eligible"
+    );
 
     // Operation must remain Pending — no state change on rejection
     let op = client.get_operation(&op_id).unwrap();
