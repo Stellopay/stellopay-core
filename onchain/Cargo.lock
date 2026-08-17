@@ -2289,9 +2289,9 @@ dependencies = [
 
 [[package]]
 name = "stellar-macros"
-version = "0.6.0"
+version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bb4b3dd8f599646dab3e949ba2febc3a060a194bc1a3711ddd5e7c275acfe5e"
+checksum = "1a512f2975f47ab532537c7b3cc845bd5a39cab8f8c52c16388a26482f201883"
 dependencies = [
  "proc-macro2",
  "quote",

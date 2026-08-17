@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 soroban-sdk = { workspace = true }
 stellar-contract-utils = { version = "0.6.0" }
-stellar-macros = { version = "0.6.0" }
+stellar-macros = { version = "0.7.2" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
