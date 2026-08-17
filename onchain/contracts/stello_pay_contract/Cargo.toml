@@ -9,7 +9,7 @@ crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [dependencies]
-aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+aes-gcm = { version = "0.11", default-features = false, features = ["aes", "alloc"] }
 base64 = { version = "0.21", default-features = false }
 hmac = { version = "0.12", default-features = false }
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
