@@ -8,9 +8,6 @@ use soroban_sdk::{
 };
 use stello_pay_contract::{PayrollContract, PayrollContractClient};
 
-// Helper constant — halt disabled in all legacy tests.
-const NO_HALT: u32 = 0;
-
 const DEFAULT_TOLERANCE_BPS: u32 = 0;
 const DEFAULT_QUORUM_WINDOW_SECONDS: u64 = 60;
 
@@ -66,7 +63,6 @@ fn configure_pair_with_settings(
         &tolerance_bps,
         &quorum_window_seconds,
         &0u64, // no rate limit by default in tests
-        &NO_HALT, // halt disabled by default in tests
     );
 }
 
@@ -102,7 +98,7 @@ fn full_setup(
         DEFAULT_TOLERANCE_BPS,
         DEFAULT_QUORUM_WINDOW_SECONDS,
     );
-    // NB: min_submit_interval_secs = 0, max_consecutive_stale_before_halt = 0 (both disabled).
+    // NB: min_submit_interval_secs = 0, max_stale_before_halt = 0 (both disabled).
 
     (
         oracle_client,
@@ -218,7 +214,6 @@ fn test_configure_pair_and_read_config() {
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
         &0u64,
-        &NO_HALT,
     );
 
     let cfg = oracle_client.get_pair_config(&base2, &quote2).unwrap();
@@ -249,7 +244,6 @@ fn test_configure_pair_same_base_quote_rejected() {
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
         &0u64,
-        &NO_HALT,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -272,7 +266,6 @@ fn test_configure_pair_min_greater_than_max_rejected() {
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
         &0u64,
-        &NO_HALT,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -295,7 +288,6 @@ fn test_configure_pair_zero_min_rate_rejected() {
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
         &0u64,
-        &NO_HALT,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -318,7 +310,6 @@ fn test_configure_pair_negative_rate_rejected() {
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
         &0u64,
-        &NO_HALT,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -341,7 +332,6 @@ fn test_configure_pair_zero_staleness_rejected() {
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
         &0u64,
-        &NO_HALT,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -364,7 +354,6 @@ fn test_configure_pair_zero_quorum_window_rejected() {
         &DEFAULT_TOLERANCE_BPS,
         &0u64,
         &0u64,
-        &NO_HALT,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -388,7 +377,6 @@ fn test_non_owner_cannot_configure_pair() {
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
         &0u64,
-        &NO_HALT,
     );
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 }
@@ -507,7 +495,6 @@ fn test_disabled_pair_get_pair_state_distinguishable_from_fresh() {
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
         &0u64,
-        &NO_HALT,
     );
     let source2 = Address::generate(&env);
     oracle_client.add_source(&oracle_owner, &source2);
@@ -956,7 +943,6 @@ fn test_configure_pair_before_init_fails() {
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
         &0u64,
-        &NO_HALT,
     );
     assert_eq!(res, Err(Ok(OracleError::NotInitialized)));
 }
@@ -1026,7 +1012,6 @@ fn test_compromised_source_blast_radius() {
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
         &0u64,
-        &NO_HALT,
     );
     assert_eq!(res, Err(Ok(OracleError::NotAuthorized)));
 
@@ -1068,7 +1053,6 @@ fn test_pair_isolation() {
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
         &0u64,
-        &NO_HALT,
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1112,7 +1096,6 @@ fn test_reconfigure_pair_tightens_bounds() {
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
         &0u64,
-        &NO_HALT,
     );
 
     // Same rate now rejected.
@@ -1159,7 +1142,6 @@ fn test_multi_source_quorum_success() {
         &50u32,
         &60u64,
         &0u64,
-        &NO_HALT,
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1206,7 +1188,6 @@ fn test_multi_source_quorum_different_rates_do_not_count() {
         &50u32,
         &60u64,
         &0u64,
-        &NO_HALT,
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1493,7 +1474,6 @@ fn test_quorum_rejection_on_zero_quorum() {
         &DEFAULT_TOLERANCE_BPS,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
         &0u64,
-        &NO_HALT,
     );
     assert_eq!(res, Err(Ok(OracleError::InvalidPairConfig)));
 }
@@ -1625,7 +1605,6 @@ fn test_rate_limit_rejects_rapid_resubmission() {
         &0u32,
         &60u64,
         &30u64, // 30-second min interval
-        &NO_HALT,
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1658,7 +1637,6 @@ fn test_rate_limit_allows_submission_after_interval() {
         &0u32,
         &60u64,
         &30u64,
-        &NO_HALT,
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1692,7 +1670,6 @@ fn test_rate_limit_does_not_affect_other_sources() {
         &0u32,
         &60u64,
         &30u64,
-        &NO_HALT,
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1733,7 +1710,6 @@ fn test_rate_limit_single_source_counts_once_in_quorum() {
         &100u32,
         &60u64,
         &30u64,
-        &NO_HALT,
     );
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
@@ -1876,18 +1852,18 @@ fn setup_halt_pair(
         &quote,
         &500_000i128,
         &5_000_000i128,
-        &300u64,  // max_staleness = 300 s — easy to exceed in tests
+        &300u64, // max_staleness = 300 s — easy to exceed in tests
         &1u32,
         &0u32,
         &DEFAULT_QUORUM_WINDOW_SECONDS,
         &0u64,
-        &halt_threshold,
     );
+    oracle_client.set_stale_halt_threshold(&oracle_owner, &base, &quote, &halt_threshold);
 
     (oracle_client, oracle_owner, source, base, quote)
 }
 
-/// After exactly `max_consecutive_stale_before_halt` consecutive stale reads,
+/// After exactly `max_stale_before_halt` consecutive stale reads,
 /// `get_pair_state` must return `PairHalted` instead of `PriceTooOld`.
 ///
 /// # Security note
@@ -2005,7 +1981,7 @@ fn test_fresh_push_clears_halt_and_resumes_serving() {
     assert_eq!(state2.rate, 3_000_000);
 }
 
-/// When `max_consecutive_stale_before_halt = 0`, the halt mechanism is disabled
+/// When `max_stale_before_halt = 0`, the halt mechanism is disabled
 /// entirely. Any number of stale reads must keep returning `PriceTooOld`, never
 /// `PairHalted`.
 #[test]
@@ -2083,4 +2059,3 @@ fn test_fresh_push_before_halt_resets_counter() {
         "post-reset read 3 (counter=3 >= threshold=3) must be PairHalted"
     );
 }
-

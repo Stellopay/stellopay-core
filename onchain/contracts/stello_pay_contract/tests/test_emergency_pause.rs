@@ -562,12 +562,22 @@ fn test_bulk_pause_milestone_agreements() {
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
 
-    let aid1 = client.create_milestone_agreement(&employer, &contributor, &token.address);
+    let aid1 = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token.address,
+        &soroban_sdk::vec![&env, 1_000i128],
+    );
     client.add_milestone(&aid1, &1000);
     // Milestone agreements are Created by default — bulk pause also pauses Created milestone
     // agreements (since they can have approved, claimable milestones).
 
-    let aid2 = client.create_milestone_agreement(&employer, &contributor, &token.address);
+    let aid2 = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token.address,
+        &soroban_sdk::vec![&env, 1_000i128],
+    );
     client.add_milestone(&aid2, &2000);
 
     let paused = client.pause_employer_agreements(&employer);
@@ -601,7 +611,12 @@ fn test_bulk_unpause_milestone_agreements() {
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
 
-    let aid = client.create_milestone_agreement(&employer, &contributor, &token.address);
+    let aid = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token.address,
+        &soroban_sdk::vec![&env, 1_000i128],
+    );
     client.add_milestone(&aid, &1000);
 
     // Use per-agreement pause first, then bulk-unpause

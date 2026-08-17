@@ -101,7 +101,7 @@ pub struct PairConfig {
     /// `push_price` clears the counter.
     ///
     /// Set to `0` to disable the automatic halt mechanism for this pair.
-    pub max_consecutive_stale_before_halt: u32,
+    pub max_stale_before_halt: u32,
 }
 
 /// Last accepted rate for a `(base, quote)` pair.
@@ -372,8 +372,6 @@ impl PriceOracleContract {
     /// @param quorum_window_seconds Time window used to bucket pending votes.
     /// @param min_submit_interval_secs Minimum seconds between consecutive
     ///        submissions from the same source for this pair. `0` disables the check.
-    /// @param max_consecutive_stale_before_halt Number of consecutive read-side stale
-    ///        detections that automatically halt the pair. `0` disables the mechanism.
     pub fn configure_pair(
         env: Env,
         caller: Address,
@@ -386,7 +384,6 @@ impl PriceOracleContract {
         tolerance_bps: u32,
         quorum_window_seconds: u64,
         min_submit_interval_secs: u64,
-        max_consecutive_stale_before_halt: u32,
     ) -> Result<(), OracleError> {
         require_admin(&env, &caller)?;
 
@@ -409,7 +406,10 @@ impl PriceOracleContract {
             tolerance_bps,
             quorum_window_seconds,
             min_submit_interval_secs,
-            max_consecutive_stale_before_halt,
+            // Automatic stale-halt starts disabled; enable it per pair with
+            // `set_stale_halt_threshold`. Keeping it out of `configure_pair`
+            // holds that function at Soroban's 10-parameter ceiling.
+            max_stale_before_halt: 0,
         };
 
         env.storage()
@@ -428,6 +428,47 @@ impl PriceOracleContract {
             (symbol_short!("oracle"), symbol_short!("cfgpair")),
             (&base, &quote),
         );
+
+        Ok(())
+    }
+
+    /// @notice Sets the consecutive-stale-read threshold that auto-halts a pair.
+    /// @dev Once `get_pair_state` returns `PriceTooOld` this many times in a row,
+    ///      the pair reports `OracleError::PairHalted` until a fresh `push_price`
+    ///      clears the counter. `0` disables the mechanism.
+    ///
+    ///      This is a separate setter rather than a `configure_pair` parameter
+    ///      because `configure_pair` already sits at Soroban's 10-parameter
+    ///      ceiling for contract functions. `configure_pair` resets the
+    ///      threshold to `0`, so call this afterwards to enable the halt.
+    /// @param caller    Owner address.
+    /// @param base      Base token address.
+    /// @param quote     Quote token address.
+    /// @param threshold Consecutive stale reads before halting; `0` disables.
+    pub fn set_stale_halt_threshold(
+        env: Env,
+        caller: Address,
+        base: Address,
+        quote: Address,
+        threshold: u32,
+    ) -> Result<(), OracleError> {
+        require_admin(&env, &caller)?;
+
+        let mut cfg: PairConfig = env
+            .storage()
+            .instance()
+            .get(&DataKey::PairConfig(base.clone(), quote.clone()))
+            .ok_or(OracleError::PairNotConfigured)?;
+
+        cfg.max_stale_before_halt = threshold;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PairConfig(base.clone(), quote.clone()), &cfg);
+        // A changed threshold re-arms the mechanism from a clean slate.
+        env.storage()
+            .temporary()
+            .remove(&DataKey::StaleCount(base.clone(), quote.clone()));
 
         Ok(())
     }
@@ -739,7 +780,7 @@ impl PriceOracleContract {
             // read-side stale detections have occurred.  Once the threshold is
             // reached, switch from PriceTooOld to PairHalted so consumers and
             // monitors know the pair needs a fresh push, not just a retry.
-            if cfg.max_consecutive_stale_before_halt > 0 {
+            if cfg.max_stale_before_halt > 0 {
                 let count_key = DataKey::StaleCount(base.clone(), quote.clone());
                 let prev: u32 = env
                     .storage()
@@ -749,7 +790,7 @@ impl PriceOracleContract {
                 let count = prev.saturating_add(1);
                 env.storage().temporary().set(&count_key, &count);
 
-                if count >= cfg.max_consecutive_stale_before_halt {
+                if count >= cfg.max_stale_before_halt {
                     return Err(OracleError::PairHalted);
                 }
             }

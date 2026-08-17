@@ -168,7 +168,14 @@ fn test_create_job_one_time_zero_interval_allowed() {
 
     // max_executions = Some(1) with interval = 0 → allowed
     let job_id = client.create_job(
-        &employer, &recipient, &token, &100i128, &0u64, &0u64, &Some(1u32), &1u32,
+        &employer,
+        &recipient,
+        &token,
+        &100i128,
+        &0u64,
+        &0u64,
+        &Some(1u32),
+        &1u32,
     );
     let job = client.get_job(&job_id).unwrap();
     assert_eq!(job.interval_seconds, 0);
@@ -266,12 +273,26 @@ fn test_same_params_different_employer_allowed() {
     let token = Address::generate(&env);
 
     client.create_job(
-        &employer_a, &recipient, &token, &100i128, &10u64, &0u64, &None, &1u32,
+        &employer_a,
+        &recipient,
+        &token,
+        &100i128,
+        &10u64,
+        &0u64,
+        &None,
+        &1u32,
     );
 
     // Different employer — allowed.
     let id2 = client.create_job(
-        &employer_b, &recipient, &token, &100i128, &10u64, &0u64, &None, &1u32,
+        &employer_b,
+        &recipient,
+        &token,
+        &100i128,
+        &10u64,
+        &0u64,
+        &None,
+        &1u32,
     );
     let job = client.get_job(&id2).unwrap();
     assert_eq!(job.employer, employer_b);

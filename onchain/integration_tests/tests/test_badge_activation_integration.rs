@@ -26,7 +26,7 @@
 //! Scope: test only — no runtime logic, storage schema, or APIs are changed.
 #![cfg(test)]
 
-use nft_payroll_badge::{Badge, NftPayrollBadgeContract, NftPayrollBadgeContractClient};
+use nft_payroll_badge::{Badge, NftPayrollBadgeContract, NftPayrollBadgeContractClient, Tier};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env,
@@ -174,7 +174,13 @@ fn test_activate_agreement_and_mint_badge_end_to_end() {
         &format!("ipfs://stellopay/badge/{}/employee", agreement_id),
     );
 
-    let minted_id = badge_client.mint(&badge_owner, &employee, &badge_name, &metadata_uri);
+    let minted_id = badge_client.mint(
+        &badge_owner,
+        &employee,
+        &badge_name,
+        &metadata_uri,
+        &Tier::Bronze,
+    );
 
     // ── Step 5: Assert badge correctness ──────────────────────────────────
 
@@ -267,6 +273,7 @@ fn test_multiple_employee_badges_after_activation() {
             &env,
             &format!("ipfs://stellopay/badge/{}/employee/0", agreement_id),
         ),
+        &Tier::Bronze,
     );
     let id_b = badge_client.mint(
         &badge_owner,
@@ -276,6 +283,7 @@ fn test_multiple_employee_badges_after_activation() {
             &env,
             &format!("ipfs://stellopay/badge/{}/employee/1", agreement_id),
         ),
+        &Tier::Bronze,
     );
 
     // Verify each badge references the agreement
@@ -348,6 +356,7 @@ fn test_non_owner_cannot_mint_badge_after_activation() {
             &employee,
             &soroban_sdk::String::from_str(&env, "Unauthorized"),
             &soroban_sdk::String::from_str(&env, "ipfs://fake"),
+            &Tier::Bronze,
         );
     }));
     assert!(result.is_err(), "Non-owner must not be able to mint badges");
@@ -400,6 +409,7 @@ fn test_badge_persists_after_agreement_cancellation() {
         &employee,
         &soroban_sdk::String::from_str(&env, "Active Badge"),
         &soroban_sdk::String::from_str(&env, &format!("ipfs://stellopay/badge/{}", agreement_id)),
+        &Tier::Bronze,
     );
 
     // Cancel the agreement
@@ -471,6 +481,7 @@ fn test_badges_of_paged_after_multiple_activations() {
                 &env,
                 &format!("ipfs://stellopay/badge/{}", agreement_id),
             ),
+            &Tier::Bronze,
         );
     }
 

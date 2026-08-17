@@ -100,9 +100,7 @@ impl MockMilestoneContract {
 
         let id: u128 = ids.len() as u128 + 1;
         ids.push_back(id);
-        env.storage()
-            .instance()
-            .set(&MockKey::AgreementIds, &ids);
+        env.storage().instance().set(&MockKey::AgreementIds, &ids);
 
         env.storage()
             .instance()

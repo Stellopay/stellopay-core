@@ -382,7 +382,7 @@ fn untrack_pending_payment(env: &Env, payment_id: BytesN<32>) {
 
 /// Validates that `max_retry_attempts` and `retry_intervals` satisfy protocol
 /// constraints. Called at creation time; never called during retry processing.
-fn validate_retry_configuration(max_retry_attempts: u32, retry_intervals: &Vec<u64>) {
+pub fn validate_retry_configuration(max_retry_attempts: u32, retry_intervals: &Vec<u64>) {
     assert!(
         max_retry_attempts <= MAX_RETRY_ATTEMPTS,
         "Too many retry attempts"
@@ -431,10 +431,7 @@ fn validate_retry_configuration(max_retry_attempts: u32, retry_intervals: &Vec<u
 /// When `max_attempts == 0`, returns `Some(Vec::new(env))` — the caller is
 /// responsible for passing the result through [`validate_retry_configuration`]
 /// if a non-zero `max_retries` is expected.
-pub fn generate_backoff_intervals(
-    env: &Env,
-    config: &BackoffConfig,
-) -> Option<Vec<u64>> {
+pub fn generate_backoff_intervals(env: &Env, config: &BackoffConfig) -> Option<Vec<u64>> {
     if config.max_attempts > MAX_RETRY_ATTEMPTS {
         return None;
     }

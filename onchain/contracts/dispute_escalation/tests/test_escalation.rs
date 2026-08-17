@@ -1,8 +1,9 @@
 #![cfg(test)]
 
 use dispute_escalation::{
-    types::{DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel,
-           KeeperAdvance},
+    types::{
+        DisputeError, DisputeOutcome, DisputeReason, DisputeStatus, EscalationLevel, KeeperAdvance,
+    },
     DisputeEscalatedEvent, DisputeEscalationContract, DisputeEscalationContractClient,
     DisputeSlaBreachedEvent, DisputeSlaViolationAdvancedEvent,
 };
@@ -2412,10 +2413,7 @@ fn test_duplicate_filing_rejected_when_open() {
 
     // First filing: succeeds and creates an Open dispute.
     client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-    assert_eq!(
-        client.get_dispute(&id).unwrap().status,
-        DisputeStatus::Open
-    );
+    assert_eq!(client.get_dispute(&id).unwrap().status, DisputeStatus::Open);
 
     // Second filing against the same claim while the first is still Open.
     let res = client.try_file_dispute(&user, &id, &DisputeReason::QualityIssue);
@@ -2557,11 +2555,7 @@ fn test_refile_allowed_after_finalised() {
 
     // Re-file a fresh dispute against the same agreement_id.
     let res = client.try_file_dispute(&user, &id, &DisputeReason::QualityIssue);
-    assert_eq!(
-        res,
-        Ok(Ok(())),
-        "re-filing after Finalised must succeed"
-    );
+    assert_eq!(res, Ok(Ok(())), "re-filing after Finalised must succeed");
 
     // The new dispute must be a fresh Open dispute at Level1.
     let new_d = client.get_dispute(&id).unwrap();
@@ -2602,10 +2596,7 @@ fn test_refile_allowed_after_expired() {
 
     // File initial dispute and let it expire without any admin action.
     client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-    assert_eq!(
-        client.get_dispute(&id).unwrap().status,
-        DisputeStatus::Open
-    );
+    assert_eq!(client.get_dispute(&id).unwrap().status, DisputeStatus::Open);
 
     // Let the SLA and grace period lapse, then expire the dispute.
     advance(&env, 101);
@@ -2617,11 +2608,7 @@ fn test_refile_allowed_after_expired() {
 
     // Re-file: must succeed because the prior dispute is in a terminal state.
     let res = client.try_file_dispute(&user, &id, &DisputeReason::NonDelivery);
-    assert_eq!(
-        res,
-        Ok(Ok(())),
-        "re-filing after Expired must succeed"
-    );
+    assert_eq!(res, Ok(Ok(())), "re-filing after Expired must succeed");
 
     // The new dispute must be a fresh Open record.
     let new_d = client.get_dispute(&id).unwrap();
@@ -2746,10 +2733,7 @@ fn test_refile_after_expire_then_expire_then_refile_again() {
 
     // Re-file #1.
     client.file_dispute(&user, &id, &DisputeReason::QualityIssue);
-    assert_eq!(
-        client.get_dispute(&id).unwrap().status,
-        DisputeStatus::Open
-    );
+    assert_eq!(client.get_dispute(&id).unwrap().status, DisputeStatus::Open);
 
     // Second lifecycle: let it expire again.
     advance(&env, 51);
@@ -2766,10 +2750,7 @@ fn test_refile_after_expire_then_expire_then_refile_again() {
         Ok(Ok(())),
         "re-filing after a second Expired state must succeed"
     );
-    assert_eq!(
-        client.get_dispute(&id).unwrap().status,
-        DisputeStatus::Open
-    );
+    assert_eq!(client.get_dispute(&id).unwrap().status, DisputeStatus::Open);
     assert_eq!(
         client.get_dispute(&id).unwrap().reason,
         DisputeReason::NonDelivery
@@ -2800,7 +2781,6 @@ fn test_refile_after_expired_emits_dispute_filed_event() {
     );
 }
 
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // §17  ESCALATION DIRECTION TESTS
 //
@@ -2822,9 +2802,21 @@ fn test_level1_escalates_forward_to_level2() {
     client.escalate_dispute(&user, &id);
 
     let d = client.get_dispute(&id).unwrap();
-    assert_eq!(d.level, EscalationLevel::Level2, "Level1 must escalate to Level2, not Level1");
-    assert_ne!(d.level, EscalationLevel::Level1, "Level1 must not stay at Level1 after escalation");
-    assert_ne!(d.level, EscalationLevel::Level3, "Level1 must not skip Level2 to reach Level3");
+    assert_eq!(
+        d.level,
+        EscalationLevel::Level2,
+        "Level1 must escalate to Level2, not Level1"
+    );
+    assert_ne!(
+        d.level,
+        EscalationLevel::Level1,
+        "Level1 must not stay at Level1 after escalation"
+    );
+    assert_ne!(
+        d.level,
+        EscalationLevel::Level3,
+        "Level1 must not skip Level2 to reach Level3"
+    );
 }
 
 /// A Level2 dispute escalates forward to Level3 (not backward to Level1).
@@ -2839,15 +2831,31 @@ fn test_level2_escalates_forward_to_level3_not_back_to_level1() {
     client.escalate_dispute(&user, &id);
 
     let d = client.get_dispute(&id).unwrap();
-    assert_eq!(d.level, EscalationLevel::Level2, "Precondition: dispute must be at Level2");
+    assert_eq!(
+        d.level,
+        EscalationLevel::Level2,
+        "Precondition: dispute must be at Level2"
+    );
 
     // Escalate from Level2 - must go forward to Level3, never back to Level1
     client.escalate_dispute(&user, &id);
 
     let d = client.get_dispute(&id).unwrap();
-    assert_eq!(d.level, EscalationLevel::Level3, "Level2 must escalate to Level3");
-    assert_ne!(d.level, EscalationLevel::Level1, "Level2 must NEVER downgrade to Level1");
-    assert_ne!(d.level, EscalationLevel::Level2, "Level2 must not stay at Level2 after escalation");
+    assert_eq!(
+        d.level,
+        EscalationLevel::Level3,
+        "Level2 must escalate to Level3"
+    );
+    assert_ne!(
+        d.level,
+        EscalationLevel::Level1,
+        "Level2 must NEVER downgrade to Level1"
+    );
+    assert_ne!(
+        d.level,
+        EscalationLevel::Level2,
+        "Level2 must not stay at Level2 after escalation"
+    );
 }
 
 /// A dispute at Level3 cannot be escalated further (terminal escalation level).
@@ -2863,16 +2871,32 @@ fn test_level3_cannot_escalate_due_to_max_level() {
     client.escalate_dispute(&user, &id); // L2 -> L3
 
     let d = client.get_dispute(&id).unwrap();
-    assert_eq!(d.level, EscalationLevel::Level3, "Precondition: dispute must be at Level3");
+    assert_eq!(
+        d.level,
+        EscalationLevel::Level3,
+        "Precondition: dispute must be at Level3"
+    );
 
     // Escalating from Level3 must fail
     let res = client.try_escalate_dispute(&user, &id);
-    assert_eq!(res, Err(Ok(DisputeError::MaxEscalationReached)), "Level3 must not escalate further");
+    assert_eq!(
+        res,
+        Err(Ok(DisputeError::MaxEscalationReached)),
+        "Level3 must not escalate further"
+    );
 
     // Level must remain Level3 after failed attempt
     let d = client.get_dispute(&id).unwrap();
-    assert_eq!(d.level, EscalationLevel::Level3, "Level must stay Level3 after failed escalation");
-    assert_eq!(d.status, DisputeStatus::Escalated, "Status must remain unchanged after failed escalation");
+    assert_eq!(
+        d.level,
+        EscalationLevel::Level3,
+        "Level must stay Level3 after failed escalation"
+    );
+    assert_eq!(
+        d.status,
+        DisputeStatus::Escalated,
+        "Status must remain unchanged after failed escalation"
+    );
 }
 
 /// The entire escalation chain Level1 -> Level2 -> Level3 succeeds sequentially
@@ -2883,18 +2907,29 @@ fn test_full_escalation_chain_forward_only() {
     let id = 1703u128;
 
     client.file_dispute(&user, &id, &DisputeReason::PaymentDispute);
-    assert_eq!(client.get_dispute(&id).unwrap().level, EscalationLevel::Level1);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level1
+    );
 
     client.escalate_dispute(&user, &id);
-    assert_eq!(client.get_dispute(&id).unwrap().level, EscalationLevel::Level2);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level2
+    );
 
     client.escalate_dispute(&user, &id);
-    assert_eq!(client.get_dispute(&id).unwrap().level, EscalationLevel::Level3);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level3
+    );
 
     let res = client.try_escalate_dispute(&user, &id);
     assert_eq!(res, Err(Ok(DisputeError::MaxEscalationReached)));
 
     // Verify level is still Level3
-    assert_eq!(client.get_dispute(&id).unwrap().level, EscalationLevel::Level3);
+    assert_eq!(
+        client.get_dispute(&id).unwrap().level,
+        EscalationLevel::Level3
+    );
 }
-

@@ -188,7 +188,7 @@ fn test_burn_then_remint_issues_fresh_badge_id() {
     let name = String::from_str(&env, "Employee Badge");
     let uri = String::from_str(&env, "ipfs://employee-badge");
 
-    let first_id = client.mint(&owner, &employee, &name, &uri);
+    let first_id = client.mint(&owner, &employee, &name, &uri, &Tier::Bronze);
     client.burn(&owner, &first_id);
 
     assert!(
@@ -196,7 +196,7 @@ fn test_burn_then_remint_issues_fresh_badge_id() {
         "burned badge should be gone"
     );
 
-    let second_id = client.mint(&owner, &employee, &name, &uri);
+    let second_id = client.mint(&owner, &employee, &name, &uri, &Tier::Bronze);
 
     assert_ne!(second_id, first_id, "remint must receive a fresh id");
     assert_eq!(second_id, first_id + 1, "ids are sequential");
@@ -219,7 +219,7 @@ fn test_burn_removes_badge_data() {
     let name = String::from_str(&env, "Burn Test");
     let uri = String::from_str(&env, "ipfs://burn-test");
 
-    let id = client.mint(&owner, &employee, &name, &uri);
+    let id = client.mint(&owner, &employee, &name, &uri, &Tier::Bronze);
     assert!(client.get_badge(&id).is_some(), "badge exists before burn");
 
     client.burn(&owner, &id);
@@ -238,6 +238,7 @@ fn test_non_owner_cannot_burn() {
         &employee,
         &String::from_str(&env, "Badge"),
         &String::from_str(&env, "ipfs://badge"),
+        &Tier::Bronze,
     );
     let attacker = Address::generate(&env);
     client.burn(&attacker, &id);

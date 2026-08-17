@@ -1,16 +1,17 @@
 use crate::audit::{record_entry, AuditEvent};
 use crate::events::{
     emit_agreement_activated, emit_agreement_cancelled, emit_agreement_created,
-    emit_agreement_paused, emit_agreement_resumed, emit_dsipute_raised, emit_dsipute_resolved,
-    emit_employee_added, emit_exchange_rate_changed, emit_grace_period_extended,
-    emit_grace_period_finalized, emit_milestone_expired, emit_milestone_funded,
-    emit_milestone_rejected, emit_multisig_config_changed, emit_payment_received,
-    emit_payment_sent, emit_payroll_claimed, emit_set_arbiter, AgreementActivatedEvent,
-    AgreementCancelledEvent, AgreementCreatedEvent, AgreementPausedEvent, AgreementResumedEvent,
-    ArbiterSetEvent, BatchMilestoneClaimedEvent, BatchPayrollClaimedEvent, DisputeRaisedEvent,
-    DisputeResolvedEvent, EmployeeAddedEvent, ExchangeRateChangedEvent, GracePeriodExtendedEvent,
-    GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved, MilestoneClaimed,
-    MilestoneExpiredEvent, MilestoneFundedEvent, MilestoneRejectedEvent,
+    emit_agreement_paused, emit_agreement_resumed, emit_bulk_agreements_paused,
+    emit_bulk_agreements_unpaused, emit_dsipute_raised, emit_dsipute_resolved, emit_employee_added,
+    emit_exchange_rate_updated, emit_grace_period_extended, emit_grace_period_finalized,
+    emit_milestone_expired, emit_milestone_funded, emit_milestone_rejected,
+    emit_multisig_config_changed, emit_payment_received, emit_payment_sent, emit_payroll_claimed,
+    emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
+    AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
+    BatchPayrollClaimedEvent, BulkAgreementsPausedEvent, BulkAgreementsUnpausedEvent,
+    DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, ExchangeRateUpdatedEvent,
+    GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
+    MilestoneClaimed, MilestoneExpiredEvent, MilestoneFundedEvent, MilestoneRejectedEvent,
     MultisigConfigChangedEvent, PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
 };
 use crate::storage::{
@@ -18,58 +19,21 @@ use crate::storage::{
     BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
     EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
     MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
-    PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE, get_milestone, get_agreement, set_milestone, MilestoneStatus,
+    PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE,
 };
 
-use soroban_sdk::{Env, Address, contracterror, panic_with_error};
+use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
+    contractclient, contracttype, panic_with_error, token,
+    token::Client as TokenClient,
+    Address, Env, IntoVal, String, Symbol, Val, Vec,
+};
 
 /// Minimal interface for cross-contract calls into the deployed multisig contract.
 #[contractclient(name = "MultisigClient")]
 trait MultisigInterface {
     fn get_operation(env: Env, operation_id: u128) -> Option<Operation>;
 }
-
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-pub enum PayrollError {
-    NotAuthorized = 1,
-    MilestoneNotFound = 2,
-    InvalidStatus = 3,
-}
-
-/// Approves a milestone, moving it toward a payable status.
-/// 
-/// ### Security
-/// Strictly restricts the caller to the agreement's designated `approver`. 
-/// Prevents self-approval by employees or approval by unrelated third parties.
-pub fn approve_milestone(env: Env, milestone_id: u64) {
-    // 1. Fetch milestone and its parent agreement
-    let mut milestone = get_milestone(&env, milestone_id)
-        .unwrap_or_else(|| panic_with_error!(&env, PayrollError::MilestoneNotFound));
-    
-    let agreement = get_agreement(&env, milestone.agreement_id)
-        .unwrap_or_else(|| panic_with_error!(&env, PayrollError::NotAuthorized));
-
-    // 2. SECURITY HARDENING: Bind auth to the designated approver
-    // This will fail if the signature does not match agreement.approver
-    agreement.approver.require_auth();
-
-    // 3. Logic: Ensure milestone is in a state that can be approved (e.g., Submitted)
-    if milestone.status != MilestoneStatus::Submitted {
-        panic_with_error!(&env, PayrollError::InvalidStatus);
-    }
-
-    // 4. Update status
-    milestone.status = MilestoneStatus::Approved;
-    set_milestone(&env, milestone_id, &milestone);
-
-    // 5. Emit event for indexer
-    env.events().publish(
-        (soroban_sdk::symbol_short!("approve"), milestone_id),
-        agreement.approver.clone()
-    );
-}
-
 
 #[contractclient(name = "RateLimiterClient")]
 trait RateLimiterInterface {
@@ -2287,7 +2251,13 @@ pub fn resolve_dispute(
     refund_employer: i128,
 ) -> Result<(), PayrollError> {
     acquire_reentrancy_guard(&env)?;
-    let result = resolve_dispute_inner(env.clone(), caller, agreement_id, pay_employee, refund_employer);
+    let result = resolve_dispute_inner(
+        env.clone(),
+        caller,
+        agreement_id,
+        pay_employee,
+        refund_employer,
+    );
     release_reentrancy_guard(&env);
     result
 }
@@ -4213,7 +4183,6 @@ pub fn finalize_grace_period(env: &Env, agreement_id: u128) {
     if DataKey::is_agreement_grace_period_finalized(env, agreement_id) {
         return;
     }
-
 
     // Refund remaining balance using escrow contract if available
     // For now, we'll use the existing escrow balance tracking

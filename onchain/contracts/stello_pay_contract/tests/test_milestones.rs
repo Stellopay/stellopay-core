@@ -108,7 +108,7 @@ fn test_create_empty_milestone_list_rejected() {
     let (env, employer, contributor, token, client) = create_test_env();
     let empty: soroban_sdk::Vec<i128> = soroban_sdk::Vec::new(&env);
     let result = client.try_create_milestone_agreement(&employer, &contributor, &token, &empty);
-    assert_eq!(result, Err(PayrollError::EmptyMilestoneList.into()));
+    assert_eq!(result, Err(Ok(PayrollError::EmptyMilestoneList.into())));
 }
 
 /// Creating an agreement with a zero-amount milestone must be rejected with
@@ -122,7 +122,7 @@ fn test_create_milestone_agreement_zero_amount_rejected() {
         &token,
         &soroban_sdk::vec![&env, 0i128],
     );
-    assert_eq!(result, Err(PayrollError::MilestoneAmountInvalid.into()));
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAmountInvalid.into())));
 }
 
 /// A single-milestone agreement is created successfully and the milestone
@@ -425,7 +425,7 @@ fn test_add_milestone_zero_amount_fails() {
     let (env, employer, contributor, token, client) = create_test_env();
     let agreement_id = setup_milestone_agreement(&env, &client, &employer, &contributor, &token);
     let result = client.try_add_milestone(&agreement_id, &0);
-    assert_eq!(result, Err(Ok(PayrollError::MilestoneAmountInvalid)));
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAmountInvalid.into())));
 }
 
 /// Adding a milestone when agreement is not in Created status must fail.
@@ -1348,15 +1348,23 @@ fn test_v1_method_parity_across_lifecycle() {
 
     soroban_sdk::token::StellarAssetClient::new(&env, &token).mint(&employer, &50_000i128);
 
-    let aid = direct.create_milestone_agreement(&employer, &contributor, &token);
+    let aid = direct.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1_000i128],
+    );
     direct.fund_milestone_agreement(&aid, &employer, &50_000i128);
 
-    // State: Created, 0 milestones.
+    // State: Created, one upfront milestone.
     assert_eq!(
         direct.get_milestone_count(&aid),
         via.get_milestone_count(&aid)
     );
-    assert_milestone_eq(&direct.get_milestone(&aid, &1), &via.get_milestone(&aid, &1));
+    assert_milestone_eq(
+        &direct.get_milestone(&aid, &1),
+        &via.get_milestone(&aid, &1),
+    );
 
     // Add two milestones.
     direct.add_milestone(&aid, &1_000i128);
@@ -1365,21 +1373,36 @@ fn test_v1_method_parity_across_lifecycle() {
         direct.get_milestone_count(&aid),
         via.get_milestone_count(&aid)
     );
-    assert_milestone_eq(&direct.get_milestone(&aid, &1), &via.get_milestone(&aid, &1));
-    assert_milestone_eq(&direct.get_milestone(&aid, &2), &via.get_milestone(&aid, &2));
+    assert_milestone_eq(
+        &direct.get_milestone(&aid, &1),
+        &via.get_milestone(&aid, &1),
+    );
+    assert_milestone_eq(
+        &direct.get_milestone(&aid, &2),
+        &via.get_milestone(&aid, &2),
+    );
 
     // Approve milestone 1.
     direct.approve_milestone(&aid, &1);
-    assert_milestone_eq(&direct.get_milestone(&aid, &1), &via.get_milestone(&aid, &1));
+    assert_milestone_eq(
+        &direct.get_milestone(&aid, &1),
+        &via.get_milestone(&aid, &1),
+    );
 
     // Claim milestone 1.
     direct.claim_milestone(&aid, &1);
-    assert_milestone_eq(&direct.get_milestone(&aid, &1), &via.get_milestone(&aid, &1));
+    assert_milestone_eq(
+        &direct.get_milestone(&aid, &1),
+        &via.get_milestone(&aid, &1),
+    );
 
     // Reject milestone 2.
     let reason = soroban_sdk::String::from_str(&env, "out of scope");
     direct.reject_milestone(&aid, &2, &reason);
-    assert_milestone_eq(&direct.get_milestone(&aid, &2), &via.get_milestone(&aid, &2));
+    assert_milestone_eq(
+        &direct.get_milestone(&aid, &2),
+        &via.get_milestone(&aid, &2),
+    );
 
     // Count unchanged after reject.
     assert_eq!(
@@ -1417,7 +1440,12 @@ fn test_milestone_view_field_parity_with_internal_milestone() {
 
     soroban_sdk::token::StellarAssetClient::new(&env, &token).mint(&employer, &10_000i128);
 
-    let aid = direct.create_milestone_agreement(&employer, &contributor, &token);
+    let aid = direct.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1_000i128],
+    );
     direct.fund_milestone_agreement(&aid, &employer, &10_000i128);
     direct.add_milestone(&aid, &1_000i128);
 

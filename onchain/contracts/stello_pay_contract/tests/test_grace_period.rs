@@ -2,7 +2,7 @@
 #![allow(deprecated)]
 
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
+    testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env,
 };
@@ -1356,68 +1356,68 @@ fn test_claim_boundary_mid_grace_extension() {
             "Claim one second after extended deadline must fail"
         );
     }
-// ============================================================================
-// SECTION 24: FINALIZE GRACE PERIOD IDEMPOTENCY TEST (ISSUE #1049)
-// ============================================================================
+    // ============================================================================
+    // SECTION 24: FINALIZE GRACE PERIOD IDEMPOTENCY TEST (ISSUE #1049)
+    // ============================================================================
 
-#[test]
-fn test_finalize_grace_period_is_idempotent() {
-    let env = create_test_environment();
-    let (contract_id, client) = setup_contract(&env);
-    let employer = create_test_address(&env);
-    let employee = create_test_address(&env);
-    let token = create_token(&env);
+    #[test]
+    fn test_finalize_grace_period_is_idempotent() {
+        let env = create_test_environment();
+        let (contract_id, client) = setup_contract(&env);
+        let employer = create_test_address(&env);
+        let employee = create_test_address(&env);
+        let token = create_token(&env);
 
-    // Create and fund payroll agreement with 1-hour grace period
-    let employees = vec![(employee.clone(), STANDARD_SALARY)];
-    let agreement_id = setup_funded_payroll_agreement(
-        &env,
-        &client,
-        &contract_id,
-        &employer,
-        &token,
-        &employees,
-        ONE_HOUR,
-    );
+        // Create and fund payroll agreement with 1-hour grace period
+        let employees = vec![(employee.clone(), STANDARD_SALARY)];
+        let agreement_id = setup_funded_payroll_agreement(
+            &env,
+            &client,
+            &contract_id,
+            &employer,
+            &token,
+            &employees,
+            ONE_HOUR,
+        );
 
-    mint(&env, &token, &contract_id, LARGE_AMOUNT);
+        mint(&env, &token, &contract_id, LARGE_AMOUNT);
 
-    // Advance 1 period so there is salary to claim
-    advance_time(&env, ONE_DAY);
+        // Advance 1 period so there is salary to claim
+        advance_time(&env, ONE_DAY);
 
-    // Cancel the agreement
-    cancel_and_get_timestamp(&env, &client, agreement_id);
-    let agreement = client.get_agreement(&agreement_id).unwrap();
-    assert_eq!(agreement.status, AgreementStatus::Cancelled);
+        // Cancel the agreement
+        cancel_and_get_timestamp(&env, &client, agreement_id);
+        let agreement = client.get_agreement(&agreement_id).unwrap();
+        assert_eq!(agreement.status, AgreementStatus::Cancelled);
 
-    // Advance past the grace period end
-    let grace_end = client.get_grace_period_end(&agreement_id).unwrap();
-    set_time(&env, grace_end + 1);
-    assert!(!client.is_grace_period_active(&agreement_id));
+        // Advance past the grace period end
+        let grace_end = client.get_grace_period_end(&agreement_id).unwrap();
+        set_time(&env, grace_end + 1);
+        assert!(!client.is_grace_period_active(&agreement_id));
 
-    // First call: MUST succeed and emit a GracePeriodFinalized event
-    let events_before = env.events().all().len();
-    client.finalize_grace_period(&agreement_id);
-    let events_after_first = env.events().all().len();
-    assert!(
-        events_after_first > events_before,
-        "First finalize_grace_period must emit events"
-    );
+        // First call: MUST succeed and emit a GracePeriodFinalized event
+        let events_before = env.events().all().len();
+        client.finalize_grace_period(&agreement_id);
+        let events_after_first = env.events().all().len();
+        assert!(
+            events_after_first > events_before,
+            "First finalize_grace_period must emit events"
+        );
 
-    // Second call: MUST be a no-op (no additional events)
-    client.finalize_grace_period(&agreement_id);
-    let events_after_second = env.events().all().len();
-    assert_eq!(
-        events_after_second, events_after_first,
-        "Second finalize_grace_period must NOT emit additional events"
-    );
+        // Second call: MUST be a no-op (no additional events)
+        client.finalize_grace_period(&agreement_id);
+        let events_after_second = env.events().all().len();
+        assert_eq!(
+            events_after_second, events_after_first,
+            "Second finalize_grace_period must NOT emit additional events"
+        );
 
-    // Third call: still a no-op
-    client.finalize_grace_period(&agreement_id);
-    let events_after_third = env.events().all().len();
-    assert_eq!(
-        events_after_third, events_after_first,
-        "Third finalize_grace_period must also be a no-op"
-    );
-}
+        // Third call: still a no-op
+        client.finalize_grace_period(&agreement_id);
+        let events_after_third = env.events().all().len();
+        assert_eq!(
+            events_after_third, events_after_first,
+            "Third finalize_grace_period must also be a no-op"
+        );
+    }
 }

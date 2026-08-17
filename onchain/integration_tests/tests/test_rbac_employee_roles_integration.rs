@@ -149,7 +149,7 @@ fn test_mid_transaction_role_revocation() {
 
     // Step 1 of a Manager-gated flow — succeeds via RBAC inheritance
     assert!(er_client
-        .require_capability(&user, &PayrollAction::CreatePayrollRecord)
+        .try_require_capability(&user, &PayrollAction::CreatePayrollRecord)
         .is_ok());
 
     // Mid-transaction: revoke the role
@@ -157,7 +157,7 @@ fn test_mid_transaction_role_revocation() {
 
     // Step 2 — rejected without the role
     assert!(er_client
-        .require_capability(&user, &PayrollAction::CreatePayrollRecord)
+        .try_require_capability(&user, &PayrollAction::CreatePayrollRecord)
         .is_err());
 }
 

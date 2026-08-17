@@ -1209,6 +1209,7 @@ dependencies = [
  "rate_limiter",
  "rbac",
  "salary_adjustment",
+ "slashing_penalty",
  "soroban-sdk",
  "stello_pay_contract",
  "template_versioning",

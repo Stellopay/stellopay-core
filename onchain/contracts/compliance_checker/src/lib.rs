@@ -22,6 +22,9 @@ enum StorageKey {
     /// outright rather than writing `false`, so a removed rule leaves nothing
     /// behind that a later read could mistake for an active rule.
     BlockedAction(PayrollAction),
+    /// Admin-set priority override for a rule. Absence means the rule uses the
+    /// default from `default_rule_priority`.
+    RulePriority(TraceRule),
 }
 
 /// Payroll agreement lifecycle statuses mirrored from main payroll flows.
@@ -190,6 +193,74 @@ impl ComplianceCheckerContract {
             .unwrap_or(false)
     }
 
+    /// @notice Sets the evaluation priority for a compliance rule.
+    /// @dev Lower values indicate higher priority (evaluated first). When a
+    ///      higher-priority rule returns `Deny`, lower-priority rules are
+    ///      short-circuited and not evaluated.
+    pub fn set_rule_priority(env: Env, caller: Address, rule: TraceRule, priority: u32) {
+        Self::require_initialized(&env);
+        Self::require_admin(&env, &caller);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::RulePriority(rule), &priority);
+    }
+
+    /// @notice Removes a custom priority override for a rule, restoring the
+    ///         default priority.
+    pub fn remove_rule_priority(env: Env, caller: Address, rule: TraceRule) {
+        Self::require_initialized(&env);
+        Self::require_admin(&env, &caller);
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::RulePriority(rule));
+    }
+
+    /// @notice Returns the effective priority for a rule (custom override if
+    ///         set, otherwise the default).
+    pub fn get_rule_priority(env: Env, rule: TraceRule) -> u32 {
+        Self::effective_rule_priority(&env, &rule)
+    }
+
+    /// @notice Registers a compliance rule that blocks a specific payroll action.
+    /// @dev Only the admin may call this. Registering an already-registered rule
+    ///      is idempotent. The rule is stored in persistent storage and read by
+    ///      `check_action` on every invocation, so it takes effect immediately.
+    /// @param action The payroll action the rule denies.
+    pub fn register_rule(env: Env, caller: Address, action: PayrollAction) {
+        Self::require_initialized(&env);
+        Self::require_admin(&env, &caller);
+        env.storage()
+            .persistent()
+            .set(&StorageKey::BlockedAction(action), &true);
+    }
+
+    /// @notice Removes a previously registered action-blocking rule.
+    /// @dev Only the admin may call this. Removing a rule that was never
+    ///      registered is a no-op rather than an error, so removal is idempotent.
+    ///
+    ///      The storage entry is *deleted*, not set to `false`. `check_action`
+    ///      re-reads storage on every invocation and holds no cached or
+    ///      snapshotted copy of the rule set, so enforcement of the removed rule
+    ///      stops on the very next evaluation — including one that occurs later
+    ///      in the same transaction as this removal.
+    /// @param action The payroll action whose blocking rule is removed.
+    pub fn remove_rule(env: Env, caller: Address, action: PayrollAction) {
+        Self::require_initialized(&env);
+        Self::require_admin(&env, &caller);
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::BlockedAction(action));
+    }
+
+    /// @notice Returns whether a blocking rule is currently registered for an action.
+    /// @dev Reads live persistent storage; returns false once the rule is removed.
+    pub fn is_rule_registered(env: Env, action: PayrollAction) -> bool {
+        env.storage()
+            .persistent()
+            .get(&StorageKey::BlockedAction(action))
+            .unwrap_or(false)
+    }
+
     /// @notice Validates a payroll action transition.
     /// @dev Rule precedence (highest -> lowest):
     ///      1. Emergency pause deny.
@@ -233,6 +304,7 @@ impl ComplianceCheckerContract {
         for rule in sorted_rules.iter() {
             let entry = match rule {
                 TraceRule::EmergencyPause => Self::evaluate_emergency_pause(&env),
+                TraceRule::ActionBlocked => Self::evaluate_action_blocked(&env, &action),
                 TraceRule::AuxiliaryNotAllowed => {
                     Self::evaluate_auxiliary_not_allowed(&env, &actor, &executor)
                 }
@@ -243,9 +315,11 @@ impl ComplianceCheckerContract {
                 TraceRule::InvalidTargetState => {
                     Self::evaluate_invalid_target_state(&action, &current_state, &target_state)
                 }
-                TraceRule::GracePeriodRequired => {
-                    Self::evaluate_grace_period_required(&action, &current_state, grace_period_active)
-                }
+                TraceRule::GracePeriodRequired => Self::evaluate_grace_period_required(
+                    &action,
+                    &current_state,
+                    grace_period_active,
+                ),
             };
 
             if let Some(entry) = entry {
@@ -287,6 +361,34 @@ impl ComplianceCheckerContract {
         })
     }
 
+    /// Denies when a blocking rule is registered for this action.
+    ///
+    /// Read fresh from persistent storage on every evaluation. A trace entry is
+    /// emitted only when a rule is actually registered for this action —
+    /// consistent with the auxiliary and grace-period rules, which likewise
+    /// trace only when they apply. Once `remove_rule` deletes the entry this
+    /// read returns false and the rule stops contributing to the decision.
+    fn evaluate_action_blocked(env: &Env, action: &PayrollAction) -> Option<TraceEntry> {
+        let is_blocked = env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&StorageKey::BlockedAction(*action))
+            .unwrap_or(false);
+
+        if !is_blocked {
+            return None;
+        }
+
+        Some(TraceEntry {
+            rule: TraceRule::ActionBlocked,
+            result: Decision::Deny,
+            reason: ReasonCode::ActionBlocked,
+        })
+    }
+
+    /// Denies when the immediate executor differs from the authorizing actor and
+    /// has not been allowlisted. Traces nothing when actor and executor match,
+    /// since the auxiliary rule does not apply to direct invocations.
     fn evaluate_auxiliary_not_allowed(
         env: &Env,
         actor: &Address,
@@ -296,32 +398,11 @@ impl ComplianceCheckerContract {
             return None;
         }
 
-        // 2. Registered action-blocking rule check.
-        //
-        // Read fresh from persistent storage on every evaluation. A trace entry
-        // is emitted only when a rule is actually registered for this action —
-        // consistent with the auxiliary and grace-period rules, which likewise
-        // trace only when they apply. Once `remove_rule` deletes the entry this
-        // read returns false and the rule stops contributing to the decision.
-        let is_blocked = env
-            .storage()
-            .persistent()
-            .get::<_, bool>(&StorageKey::BlockedAction(action))
-            .unwrap_or(false);
+        let is_allowed = Self::is_auxiliary_allowed(env.clone(), executor.clone());
 
-        if is_blocked {
-            traces.push_back(TraceEntry {
-                rule: TraceRule::ActionBlocked,
-                result: Decision::Deny,
-                reason: ReasonCode::ActionBlocked,
-            });
-            return Self::make_decision(Decision::Deny, ReasonCode::ActionBlocked, traces);
-        }
-
-        // 3. Auxiliary Not Allowed check
-        if executor != actor {
-            let is_allowed = Self::is_auxiliary_allowed(env.clone(), executor);
-            let aux_result = if is_allowed {
+        Some(TraceEntry {
+            rule: TraceRule::AuxiliaryNotAllowed,
+            result: if is_allowed {
                 Decision::Allow
             } else {
                 Decision::Deny
@@ -334,14 +415,11 @@ impl ComplianceCheckerContract {
         })
     }
 
-        // 4. Terminal State check
-        let is_terminal = current_state == AgreementStatus::Completed;
-        let terminal_result = if is_terminal {
-            Decision::Deny
-        } else {
-            Decision::Allow
-        };
-        traces.push_back(TraceEntry {
+    /// Denies any transition out of a terminal (`Completed`) agreement state.
+    fn evaluate_terminal_state(current_state: &AgreementStatus) -> Option<TraceEntry> {
+        let is_terminal = *current_state == AgreementStatus::Completed;
+
+        Some(TraceEntry {
             rule: TraceRule::TerminalState,
             result: if is_terminal {
                 Decision::Deny
@@ -356,14 +434,14 @@ impl ComplianceCheckerContract {
         })
     }
 
-        // 5. Invalid Current State check
-        let is_current_valid = Self::is_action_allowed_from_state(action, current_state);
-        let current_valid_result = if is_current_valid {
-            Decision::Allow
-        } else {
-            Decision::Deny
-        };
-        traces.push_back(TraceEntry {
+    /// Denies when the action is not permitted from the current agreement state.
+    fn evaluate_invalid_current_state(
+        action: &PayrollAction,
+        current_state: &AgreementStatus,
+    ) -> Option<TraceEntry> {
+        let is_valid = Self::is_action_allowed_from_state(*action, *current_state);
+
+        Some(TraceEntry {
             rule: TraceRule::InvalidCurrentState,
             result: if is_valid {
                 Decision::Allow
@@ -378,15 +456,17 @@ impl ComplianceCheckerContract {
         })
     }
 
-        // 6. Invalid Target State check
-        let expected_target = Self::expected_target_state(action, current_state);
-        let is_target_valid = target_state == expected_target;
-        let target_valid_result = if is_target_valid {
-            Decision::Allow
-        } else {
-            Decision::Deny
-        };
-        traces.push_back(TraceEntry {
+    /// Denies when the requested target state is not the one this action must
+    /// produce from the current state.
+    fn evaluate_invalid_target_state(
+        action: &PayrollAction,
+        current_state: &AgreementStatus,
+        target_state: &AgreementStatus,
+    ) -> Option<TraceEntry> {
+        let expected_target = Self::expected_target_state(*action, *current_state);
+        let is_valid = *target_state == expected_target;
+
+        Some(TraceEntry {
             rule: TraceRule::InvalidTargetState,
             result: if is_valid {
                 Decision::Allow
@@ -401,6 +481,9 @@ impl ComplianceCheckerContract {
         })
     }
 
+    /// Denies claims against a cancelled agreement unless a grace period is
+    /// still active. Traces nothing for non-claim actions or non-cancelled
+    /// agreements, where the rule does not apply.
     fn evaluate_grace_period_required(
         action: &PayrollAction,
         current_state: &AgreementStatus,
@@ -414,12 +497,9 @@ impl ComplianceCheckerContract {
             return None;
         }
 
-        // 7. Grace Period Required check
-        let is_claim_action = action == PayrollAction::ClaimPayroll
-            || action == PayrollAction::ClaimTimeBased
-            || action == PayrollAction::ClaimMilestone;
-        if is_claim_action && current_state == AgreementStatus::Cancelled {
-            let grace_result = if grace_period_active {
+        Some(TraceEntry {
+            rule: TraceRule::GracePeriodRequired,
+            result: if grace_period_active {
                 Decision::Allow
             } else {
                 Decision::Deny
@@ -439,6 +519,12 @@ impl ComplianceCheckerContract {
     fn default_rule_priority(rule: &TraceRule) -> u32 {
         match rule {
             TraceRule::EmergencyPause => 0,
+            // ActionBlocked ties with AuxiliaryNotAllowed and wins the tie via
+            // its earlier slot in `get_sorted_rule_ids`' stable sort, which
+            // reproduces the documented precedence (blocked-action check runs
+            // directly after the emergency pause) without renumbering the
+            // rules below it.
+            TraceRule::ActionBlocked => 1,
             TraceRule::AuxiliaryNotAllowed => 1,
             TraceRule::TerminalState => 2,
             TraceRule::InvalidCurrentState => 3,
@@ -461,6 +547,10 @@ impl ComplianceCheckerContract {
             (
                 Self::effective_rule_priority(env, &TraceRule::EmergencyPause),
                 TraceRule::EmergencyPause,
+            ),
+            (
+                Self::effective_rule_priority(env, &TraceRule::ActionBlocked),
+                TraceRule::ActionBlocked,
             ),
             (
                 Self::effective_rule_priority(env, &TraceRule::AuxiliaryNotAllowed),
@@ -486,7 +576,7 @@ impl ComplianceCheckerContract {
 
         // Stable insertion sort
         let mut i: usize = 1;
-        while i < 6 {
+        while i < 7 {
             let mut j = i;
             while j > 0 && sorted[j - 1].0 > sorted[j].0 {
                 sorted.swap(j - 1, j);

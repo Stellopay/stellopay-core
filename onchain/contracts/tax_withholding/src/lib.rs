@@ -30,6 +30,8 @@ pub enum TaxError {
     VersionLocked = 8,
     /// Requested remittance exceeds the accrued, unremitted liability.
     AmountExceedsAccrued = 9,
+    /// The ruleset version is marked deprecated and may no longer be assigned.
+    DeprecatedVersion = 10,
 }
 
 /// Storage keys for the tax withholding contract.

@@ -328,11 +328,7 @@ impl PaymentHistoryContract {
     ///         address other than the contract owner.
     /// @panics If no record exists for the given `payment_id`.
     pub fn prune_record(env: Env, payment_id: u128) {
-        let owner: Address = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::Owner)
-            .unwrap();
+        let owner: Address = env.storage().persistent().get(&StorageKey::Owner).unwrap();
         owner.require_auth();
 
         let record: PaymentRecord = env

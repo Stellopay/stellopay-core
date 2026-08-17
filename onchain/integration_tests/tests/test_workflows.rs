@@ -23,8 +23,8 @@
 use bonus_system::{BonusSystemContract, BonusSystemContractClient};
 use dispute_escalation::{
     types::{
-        DisputeError as EscalationError, DisputeOutcome, DisputeStatus as EscalationStatus,
-        EscalationLevel,
+        DisputeError as EscalationError, DisputeOutcome, DisputeReason,
+        DisputeStatus as EscalationStatus, EscalationLevel,
     },
     DisputeEscalationContract, DisputeEscalationContractClient,
 };

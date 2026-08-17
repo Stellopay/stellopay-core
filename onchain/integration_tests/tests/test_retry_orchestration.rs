@@ -7,7 +7,7 @@ use payment_scheduler::{PaymentSchedulerContract, PaymentSchedulerContractClient
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, BytesN, Env, IntoVal, Symbol, Val, Vec,
+    Address, BytesN, Env, IntoVal, Symbol, TryFromVal, Val, Vec,
 };
 
 fn env() -> Env {
@@ -188,10 +188,11 @@ fn test_retry_orchestration_max_retries() {
     for i in 0..all_events.len() {
         let (_contract_id, topics, _data) = all_events.get(i).unwrap();
         if topics.len() >= 2 {
-            let topic0 = topics.get(0).unwrap();
-            let topic1 = topics.get(1).unwrap();
-            if topic0 == Symbol::new(&env, "payment_failed").into_val(&env)
-                && topic1 == payment_id.clone().into_val(&env)
+            // `Val` has no `PartialEq`; convert each topic back to its concrete
+            // type and compare those instead of the raw handles.
+            let topic0 = Symbol::try_from_val(&env, &topics.get(0).unwrap());
+            let topic1 = BytesN::<32>::try_from_val(&env, &topics.get(1).unwrap());
+            if topic0 == Ok(Symbol::new(&env, "payment_failed")) && topic1 == Ok(payment_id.clone())
             {
                 found_failed_event = true;
                 break;

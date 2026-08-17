@@ -6,9 +6,8 @@ use soroban_sdk::{
     vec, Address, Env, IntoVal, Vec,
 };
 use token_vesting::{
-    BeneficiaryAssignedEvent, ClaimedEvent, CreatedEvent, CustomCheckpoint,
-    EarlyReleaseEvent, RevokedEvent, TokenVestingContract, TokenVestingContractClient,
-    VestingKind, VestingStatus,
+    BeneficiaryAssignedEvent, ClaimedEvent, CreatedEvent, CustomCheckpoint, EarlyReleaseEvent,
+    RevokedEvent, TokenVestingContract, TokenVestingContractClient, VestingKind, VestingStatus,
 };
 
 // ---------------------------------------------------------------------------

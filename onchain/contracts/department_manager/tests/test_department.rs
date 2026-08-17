@@ -1727,7 +1727,6 @@ fn test_original_department_excludes_moved_employee() {
     );
 }
 
-
 // ---------------------------------------------------------------------------
 // Department rename tests (Issue #1095)
 // ---------------------------------------------------------------------------
@@ -1788,7 +1787,11 @@ fn test_department_rename_preserves_employee_associations() {
     let eng_before = client.get_department(&eng_id);
     assert_eq!(eng_before.name, symbol_short!("Eng"));
     let eng_emps_before = client.get_department_employees(&eng_id);
-    assert_eq!(eng_emps_before.len(), 3, "Engineering should have 3 employees before rename");
+    assert_eq!(
+        eng_emps_before.len(),
+        3,
+        "Engineering should have 3 employees before rename"
+    );
 
     // ======================== RENAME OPERATION ========================
     client.rename_department(&owner, &eng_id, &symbol_short!("TechTeam"));
@@ -2008,7 +2011,10 @@ fn test_department_rename_nested_preserves_hierarchy() {
 
     // Verify hierarchical report still works
     let (parent_count, parent_children, parent_addrs) = client.get_department_report(&parent_id);
-    assert_eq!(parent_count, 2, "parent report should include both parent and child emps");
+    assert_eq!(
+        parent_count, 2,
+        "parent report should include both parent and child emps"
+    );
     assert!(parent_addrs.contains(&parent_emp));
     assert!(parent_addrs.contains(&child_emp));
     assert_eq!(parent_children.len(), 1);
@@ -2065,10 +2071,7 @@ fn test_department_rename_after_employee_reassignment() {
     assert_eq!(dept_a_emps.get(0), Some(emp2.clone()));
 
     // Verify renamed dept name is correct
-    assert_eq!(
-        client.get_department(&dept_a).name,
-        symbol_short!("TeamA")
-    );
+    assert_eq!(client.get_department(&dept_a).name, symbol_short!("TeamA"));
 }
 
 /// Access control: Non-owner cannot rename a department.
@@ -2113,7 +2116,7 @@ fn test_rename_department_isolated_from_org_list() {
     assert_eq!(org_depts_before.len(), 3);
 
     // Rename d2
-    client.rename_department(&owner, &d2, &symbol_short!("D2_Renamed"));
+    client.rename_department(&owner, &d2, &symbol_short!("D2_Renam"));
 
     // Organization department list should be unchanged
     let org_depts_after = client.get_org_departments(&org_id);

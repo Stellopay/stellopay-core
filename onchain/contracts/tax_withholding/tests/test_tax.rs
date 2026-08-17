@@ -754,7 +754,7 @@ fn test_jurisdiction_removal_historical_annual_accrual_intact() {
     let tok = create_token(&env, &token_admin);
     token::StellarAssetClient::new(&env, &tok.address).mint(&owner, &6_000i128);
 
-    let remitted = client.remit_withholding(&owner, &j_state, &tok.address);
+    let remitted = client.remit_withholding(&owner, &j_state, &tok.address, &6_000i128);
     assert_eq!(remitted, 6_000);
     assert_eq!(tok.balance(&state_treasury), 6_000);
     assert_eq!(client.get_accrued_balance(&j_state), 0);

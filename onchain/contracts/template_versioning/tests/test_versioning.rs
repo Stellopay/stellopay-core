@@ -637,11 +637,31 @@ fn new_agreement_uses_latest_version_after_publish() {
     let ag1: AgreementBinding = client.try_get_agreement(&aid1).unwrap().unwrap();
     assert_eq!(ag1.template_version, 1);
 
-    // Index must contain both IDs.
-    let history: Vec<u64> = client.get_templates_by_name(&String::from_str(&env, "Expense"));
-    assert_eq!(history.len(), 2);
-    assert!(history.contains(&tid_a));
-    assert!(history.contains(&tid_b));
+    // Publish version 2; an agreement created afterwards must bind to it.
+    let h2 = BytesN::from_array(&env, &[2u8; 32]);
+    let v2 = client
+        .try_publish_template_version(
+            &owner,
+            &tid,
+            &h2,
+            &String::from_str(&env, "v2 update"),
+            &false,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(v2, 2);
+
+    let aid2 = client
+        .try_create_agreement(&owner, &tid, &v2, &String::from_str(&env, "Agreement B"))
+        .unwrap()
+        .unwrap();
+    let ag2: AgreementBinding = client.try_get_agreement(&aid2).unwrap().unwrap();
+    assert_eq!(ag2.template_version, 2);
+
+    // The earlier agreement keeps its original binding — publishing does not
+    // retroactively migrate agreements already bound to version 1.
+    let ag1_after: AgreementBinding = client.try_get_agreement(&aid1).unwrap().unwrap();
+    assert_eq!(ag1_after.template_version, 1);
 }
 
 /// Re-registration after deprecation produces a new active template; attempting
@@ -716,13 +736,7 @@ fn create_agreement_rejects_nonexistent_version() {
 
     let hash = BytesN::from_array(&env, &[0xAA; 32]);
     let ver = client
-        .try_publish_template_version(
-            &owner,
-            &tid,
-            &hash,
-            &String::from_str(&env, "v1"),
-            &false,
-        )
+        .try_publish_template_version(&owner, &tid, &hash, &String::from_str(&env, "v1"), &false)
         .unwrap()
         .unwrap();
     assert_eq!(ver, 1);
@@ -770,23 +784,13 @@ fn create_agreement_rejects_wrong_template_id() {
 
     let hash = BytesN::from_array(&env, &[0xBB; 32]);
     client
-        .try_publish_template_version(
-            &owner,
-            &tid,
-            &hash,
-            &String::from_str(&env, "v1"),
-            &false,
-        )
+        .try_publish_template_version(&owner, &tid, &hash, &String::from_str(&env, "v1"), &false)
         .unwrap()
         .unwrap();
 
     // Use a completely wrong template_id (9999) with version 1.
-    let result = client.try_create_agreement(
-        &owner,
-        &9999,
-        &1,
-        &String::from_str(&env, "wrong template"),
-    );
+    let result =
+        client.try_create_agreement(&owner, &9999, &1, &String::from_str(&env, "wrong template"));
     assert!(result.is_err());
 }
 
@@ -813,23 +817,12 @@ fn create_agreement_rejects_empty_label() {
 
     let hash = BytesN::from_array(&env, &[0xCC; 32]);
     client
-        .try_publish_template_version(
-            &owner,
-            &tid,
-            &hash,
-            &String::from_str(&env, "v1"),
-            &false,
-        )
+        .try_publish_template_version(&owner, &tid, &hash, &String::from_str(&env, "v1"), &false)
         .unwrap()
         .unwrap();
 
     // Empty label should be rejected.
-    let result = client.try_create_agreement(
-        &owner,
-        &tid,
-        &1,
-        &String::from_str(&env, ""),
-    );
+    let result = client.try_create_agreement(&owner, &tid, &1, &String::from_str(&env, ""));
     assert!(result.is_err());
 }
 
@@ -856,13 +849,7 @@ fn create_agreement_rejects_deprecated_version() {
 
     let hash = BytesN::from_array(&env, &[0xDD; 32]);
     let ver = client
-        .try_publish_template_version(
-            &owner,
-            &tid,
-            &hash,
-            &String::from_str(&env, "v1"),
-            &false,
-        )
+        .try_publish_template_version(&owner, &tid, &hash, &String::from_str(&env, "v1"), &false)
         .unwrap()
         .unwrap();
 
@@ -878,12 +865,8 @@ fn create_agreement_rejects_deprecated_version() {
         .unwrap();
 
     // Agreement creation against deprecated version must fail.
-    let result = client.try_create_agreement(
-        &owner,
-        &tid,
-        &ver,
-        &String::from_str(&env, "should fail"),
-    );
+    let result =
+        client.try_create_agreement(&owner, &tid, &ver, &String::from_str(&env, "should fail"));
     assert!(result.is_err());
 }
 
@@ -938,10 +921,7 @@ fn create_agreement_succeeds_with_conformant_parameters() {
     assert_eq!(binding.template_id, tid);
     assert_eq!(binding.template_version, ver);
     assert_eq!(binding.creator, creator);
-    assert_eq!(
-        binding.label,
-        String::from_str(&env, "Q3-2026 payroll")
-    );
+    assert_eq!(binding.label, String::from_str(&env, "Q3-2026 payroll"));
     assert_eq!(binding.created_at, 1_000_000);
 }
 
@@ -986,10 +966,8 @@ fn deprecated_template_remains_listable_not_creatable_and_preserves_existing_agr
         )
         .unwrap()
         .unwrap();
-    let agreement_before: AgreementBinding = client
-        .try_get_agreement(&agreement_id)
-        .unwrap()
-        .unwrap();
+    let agreement_before: AgreementBinding =
+        client.try_get_agreement(&agreement_id).unwrap().unwrap();
 
     let reason = String::from_str(&env, "Replaced after compliance update");
     client
@@ -999,10 +977,7 @@ fn deprecated_template_remains_listable_not_creatable_and_preserves_existing_agr
 
     // `get_template` must retain every detail necessary to audit the retired
     // schema; deprecation changes only its status and reason.
-    let retired: TemplateVersionRecord = client
-        .try_get_template(&template_id)
-        .unwrap()
-        .unwrap();
+    let retired: TemplateVersionRecord = client.try_get_template(&template_id).unwrap().unwrap();
     assert_eq!(retired.template_id, template_id);
     assert_eq!(retired.version, version);
     assert_eq!(retired.schema_hash, schema_hash);
@@ -1023,10 +998,8 @@ fn deprecated_template_remains_listable_not_creatable_and_preserves_existing_agr
 
     // The existing agreement remains unchanged and continues to point at the
     // historical version, which can still be resolved for audit purposes.
-    let agreement_after: AgreementBinding = client
-        .try_get_agreement(&agreement_id)
-        .unwrap()
-        .unwrap();
+    let agreement_after: AgreementBinding =
+        client.try_get_agreement(&agreement_id).unwrap().unwrap();
     assert_eq!(agreement_after, agreement_before);
     let historical_version: TemplateVersionRecord = client
         .try_get_version(&template_id, &agreement_after.template_version)

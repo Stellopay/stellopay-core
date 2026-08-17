@@ -215,7 +215,8 @@ fn validate_operation_kind(env: &Env, kind: &OperationKind) {
         }
         // DisputeResolution and SetThresholdOverride have no payload
         // constraints enforced at proposal time.
-        OperationKind::DisputeResolution(_, _, _, _) | OperationKind::SetThresholdOverride(_, _) => {}
+        OperationKind::DisputeResolution(_, _, _, _)
+        | OperationKind::SetThresholdOverride(_, _) => {}
     }
 }
 

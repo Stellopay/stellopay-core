@@ -92,6 +92,9 @@ pub enum SchedulerError {
     JobNotCancellable = 11,
     /// The caller does not match the stored contract owner.
     Unauthorized = 12,
+    /// `start_time` is earlier than the current ledger timestamp, which would
+    /// make the job immediately due for every missed interval.
+    StartTimeInPast = 13,
 }
 
 // ─── Domain Types ─────────────────────────────────────────────────────────────
@@ -929,4 +932,3 @@ impl PaymentSchedulerContract {
             .get(&StorageKey::ScheduleId(schedule_id))
     }
 }
-                     

@@ -950,7 +950,10 @@ fn test_partial_clawback_percentage_arithmetic() {
     assert_eq!(clawed, 240);
 
     // Employer received exactly 240
-    assert_eq!(token_client.balance(&employer), employer_start_balance + 240);
+    assert_eq!(
+        token_client.balance(&employer),
+        employer_start_balance + 240
+    );
 
     // Remaining tracked clawback total = 240
     assert_eq!(client.get_clawback_total(&incentive_id), 240);

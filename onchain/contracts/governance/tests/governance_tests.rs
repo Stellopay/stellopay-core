@@ -859,10 +859,7 @@ fn assert_metadata_unchanged(
     phase: &str,
 ) {
     let meta = proposal_metadata(actual);
-    assert_eq!(
-        meta, *expected,
-        "proposal metadata changed after {phase}"
-    );
+    assert_eq!(meta, *expected, "proposal metadata changed after {phase}");
 }
 
 /// Creates a proposal with a known ParameterChange kind and returns its ID
@@ -910,9 +907,9 @@ fn proposal_metadata_is_immutable_after_vote_cast() {
         &setup.employer_a,
         &key,
         42i128,
-        0,                        // start_time (ledger starts at 0)
-        3600,                     // end_time (0 + 3600s voting period)
-        2,                        // quorum_votes snapshotted at creation
+        0,    // start_time (ledger starts at 0)
+        3600, // end_time (0 + 3600s voting period)
+        2,    // quorum_votes snapshotted at creation
     );
 
     // Cast a vote — this is the "voting has started" threshold.
@@ -1004,7 +1001,12 @@ fn proposal_metadata_is_immutable_after_execution() {
     assert_metadata_unchanged(&proposal, &meta, "execution");
 
     // Verify the parameter was actually stored (side effect must still work).
-    assert_eq!(setup.governance.get_parameter(&Symbol::new(&env, "exec_param")), Some(77i128));
+    assert_eq!(
+        setup
+            .governance
+            .get_parameter(&Symbol::new(&env, "exec_param")),
+        Some(77i128)
+    );
 }
 
 #[test]
@@ -1056,9 +1058,7 @@ fn proposal_metadata_is_immutable_after_owner_cancel() {
     );
 
     // Owner cancels (owner can cancel at any time before execution).
-    setup
-        .governance
-        .cancel_proposal(&setup.owner, &proposal_id);
+    setup.governance.cancel_proposal(&setup.owner, &proposal_id);
 
     // Metadata must be unchanged after owner-initiated cancellation.
     let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
@@ -1412,9 +1412,7 @@ fn get_vote_returns_none_for_uncast_voter() {
 
     // No vote cast yet
     assert_eq!(
-        setup
-            .governance
-            .get_vote(&proposal_id, &setup.employer_a),
+        setup.governance.get_vote(&proposal_id, &setup.employer_a),
         None
     );
 
@@ -1706,11 +1704,16 @@ fn voting_period_is_snapshotted_when_config_changes_mid_vote() {
     );
 
     let proposal = setup.governance.get_proposal(&proposal_id).unwrap();
-    assert_eq!(proposal.end_time, proposal.start_time + initial_voting_period);
+    assert_eq!(
+        proposal.end_time,
+        proposal.start_time + initial_voting_period
+    );
 
     // Change config to double the voting period
     let new_voting_period = 7200u64;
-    setup.governance.update_config(&setup.owner, &2u32, &new_voting_period);
+    setup
+        .governance
+        .update_config(&setup.owner, &2u32, &new_voting_period);
 
     // Existing proposal's end_time must remain unchanged
     let existing_proposal = setup.governance.get_proposal(&proposal_id).unwrap();
@@ -1723,5 +1726,8 @@ fn voting_period_is_snapshotted_when_config_changes_mid_vote() {
         &ProposalKind::ArbiterChange(Address::generate(&env)),
     );
     let new_proposal = setup.governance.get_proposal(&new_proposal_id).unwrap();
-    assert_eq!(new_proposal.end_time, new_proposal.start_time + new_voting_period);
+    assert_eq!(
+        new_proposal.end_time,
+        new_proposal.start_time + new_voting_period
+    );
 }

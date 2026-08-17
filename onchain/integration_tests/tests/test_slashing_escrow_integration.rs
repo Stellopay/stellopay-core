@@ -80,7 +80,7 @@ impl<'a> MockOrchestrator<'a> {
             .slashing_client
             .get_slash_record(&evidence_hash)
             .expect("Slash record not found");
-        
+
         // Use matching instead of direct comparison to avoid importing SlashStatus
         let is_executed = match record.status {
             slashing_penalty::SlashStatus::Executed => true,
@@ -128,13 +128,13 @@ fn test_slashing_reduces_payroll_escrow_available_balance() {
     slashing_client.initialize(
         &admin,
         &token,
-        &2u32,      // quorum
-        &5_000u32,  // per_event_bps_cap
+        &2u32,        // quorum
+        &5_000u32,    // per_event_bps_cap
         &100_000i128, // per_period_amount_cap
         &100_000i128, // lifetime_amount_cap
-        &86400u64,   // period_secs
+        &86400u64,    // period_secs
     );
-    slashing_client.add_slasher(&admin, &slasher);
+    slashing_client.add_slasher(&slasher);
 
     // Employee stakes in slashing_penalty
     slashing_client.stake(&employee, &STAKE_AMOUNT);
@@ -178,7 +178,10 @@ fn test_slashing_reduces_payroll_escrow_available_balance() {
 
     let slash_record = slashing_client.get_slash_record(&evidence_hash).unwrap();
     let slashed_amount = slash_record.escrowed_amount;
-    assert_eq!(slashed_amount, (STAKE_AMOUNT * (PENALTY_BPS as i128)) / 10000);
+    assert_eq!(
+        slashed_amount,
+        (STAKE_AMOUNT * (PENALTY_BPS as i128)) / 10000
+    );
 
     // 4. Orchestrator syncs the slash to payroll_escrow
     let orchestrator = MockOrchestrator::new(&env, &slashing_id, &escrow_id, orchestrator_addr);
@@ -223,7 +226,7 @@ fn test_unrelated_party_escrow_unaffected_by_slash() {
         &100_000i128,
         &86400u64,
     );
-    slashing_client.add_slasher(&admin, &slasher);
+    slashing_client.add_slasher(&slasher);
     slashing_client.stake(&employee1, &STAKE_AMOUNT);
 
     // Deploy Payroll Escrow

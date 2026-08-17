@@ -145,6 +145,7 @@ fn setup() -> (
 /// Create a funded milestone agreement with one milestone.
 /// Returns `(agreement_id, milestone_id=1)`.
 fn funded_milestone(
+    env: &Env,
     client: &PayrollContractClient,
     employer: &Address,
     contributor: &Address,
@@ -154,7 +155,7 @@ fn funded_milestone(
         employer,
         contributor,
         token,
-        &soroban_sdk::vec![&env, 1i128],
+        &soroban_sdk::vec![env, 1i128],
     );
     client.fund_milestone_agreement(&agreement_id, employer, &50_000i128);
     client.add_milestone(&agreement_id, &1_000i128);
@@ -168,8 +169,9 @@ fn funded_milestone(
 /// A fresh, unapproved milestone can be expired by the employer.
 #[test]
 fn test_expire_milestone_success() {
-    let (_env, _owner, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token);
+    let (env, _owner, employer, contributor, token, client) = setup();
+    let (agreement_id, milestone_id) =
+        funded_milestone(&env, &client, &employer, &contributor, &token);
 
     let result = client.try_expire_milestone(&agreement_id, &milestone_id);
     assert!(
@@ -182,7 +184,8 @@ fn test_expire_milestone_success() {
 #[test]
 fn test_expire_milestone_emits_event() {
     let (env, _owner, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token);
+    let (agreement_id, milestone_id) =
+        funded_milestone(&env, &client, &employer, &contributor, &token);
 
     client.expire_milestone(&agreement_id, &milestone_id);
 
@@ -200,7 +203,7 @@ fn test_expire_milestone_emits_event() {
 /// Escrow balance is unchanged after a milestone is expired.
 #[test]
 fn test_expire_milestone_escrow_unchanged() {
-    let (_env, _owner, employer, contributor, token, client) = setup();
+    let (env, _owner, employer, contributor, token, client) = setup();
     let fund_amount = 50_000i128;
     let agreement_id = client.create_milestone_agreement(
         &employer,
@@ -226,7 +229,7 @@ fn test_expire_milestone_escrow_unchanged() {
 /// Expiring one milestone does not affect sibling milestones.
 #[test]
 fn test_expire_one_milestone_does_not_affect_siblings() {
-    let (_env, _owner, employer, contributor, token, client) = setup();
+    let (env, _owner, employer, contributor, token, client) = setup();
     let agreement_id = client.create_milestone_agreement(
         &employer,
         &contributor,
@@ -248,8 +251,9 @@ fn test_expire_one_milestone_does_not_affect_siblings() {
 /// `expire_milestone` works on an agreement that is in `Created` status.
 #[test]
 fn test_expire_milestone_created_status() {
-    let (_env, _owner, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token);
+    let (env, _owner, employer, contributor, token, client) = setup();
+    let (agreement_id, milestone_id) =
+        funded_milestone(&env, &client, &employer, &contributor, &token);
     // Agreement is still in Created status (no activate_agreement called).
     assert!(client
         .try_expire_milestone(&agreement_id, &milestone_id)
@@ -263,8 +267,9 @@ fn test_expire_milestone_created_status() {
 /// Re-expiring a milestone returns `MilestoneAlreadyExpired`.
 #[test]
 fn test_expire_milestone_already_expired() {
-    let (_env, _owner, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token);
+    let (env, _owner, employer, contributor, token, client) = setup();
+    let (agreement_id, milestone_id) =
+        funded_milestone(&env, &client, &employer, &contributor, &token);
 
     client.expire_milestone(&agreement_id, &milestone_id);
 
@@ -280,8 +285,9 @@ fn test_expire_milestone_already_expired() {
 /// An approved milestone cannot be expired.
 #[test]
 fn test_expire_approved_milestone_returns_error() {
-    let (_env, _owner, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token);
+    let (env, _owner, employer, contributor, token, client) = setup();
+    let (agreement_id, milestone_id) =
+        funded_milestone(&env, &client, &employer, &contributor, &token);
 
     client.approve_milestone(&agreement_id, &milestone_id);
 
@@ -299,7 +305,7 @@ fn test_expire_approved_milestone_returns_error() {
 /// status and the per-milestone `MilestoneAlreadyClaimed` guard is reached.
 #[test]
 fn test_expire_claimed_milestone_returns_error() {
-    let (_env, _owner, employer, contributor, token, client) = setup();
+    let (env, _owner, employer, contributor, token, client) = setup();
     let agreement_id = client.create_milestone_agreement(
         &employer,
         &contributor,
@@ -324,7 +330,8 @@ fn test_expire_claimed_milestone_returns_error() {
 #[test]
 fn test_expire_rejected_milestone_returns_error() {
     let (env, _owner, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token);
+    let (agreement_id, milestone_id) =
+        funded_milestone(&env, &client, &employer, &contributor, &token);
 
     client.reject_milestone(
         &agreement_id,
@@ -341,8 +348,8 @@ fn test_expire_rejected_milestone_returns_error() {
 /// `milestone_id = 0` returns `MilestoneNotFound`.
 #[test]
 fn test_expire_milestone_id_zero() {
-    let (_env, _owner, employer, contributor, token, client) = setup();
-    let (agreement_id, _) = funded_milestone(&client, &employer, &contributor, &token);
+    let (env, _owner, employer, contributor, token, client) = setup();
+    let (agreement_id, _) = funded_milestone(&env, &client, &employer, &contributor, &token);
 
     let err = client
         .try_expire_milestone(&agreement_id, &0u32)
@@ -353,8 +360,8 @@ fn test_expire_milestone_id_zero() {
 /// Out-of-range `milestone_id` returns `MilestoneNotFound`.
 #[test]
 fn test_expire_milestone_out_of_range() {
-    let (_env, _owner, employer, contributor, token, client) = setup();
-    let (agreement_id, _) = funded_milestone(&client, &employer, &contributor, &token);
+    let (env, _owner, employer, contributor, token, client) = setup();
+    let (agreement_id, _) = funded_milestone(&env, &client, &employer, &contributor, &token);
 
     let err = client
         .try_expire_milestone(&agreement_id, &999u32)
@@ -365,7 +372,7 @@ fn test_expire_milestone_out_of_range() {
 /// Non-existent agreement ID returns `AgreementNotFound`.
 #[test]
 fn test_expire_milestone_unknown_agreement() {
-    let (_env, _owner, _employer, _contributor, _token, client) = setup();
+    let (env, _owner, _employer, _contributor, _token, client) = setup();
 
     let err = client
         .try_expire_milestone(&9999u128, &1u32)
@@ -376,8 +383,9 @@ fn test_expire_milestone_unknown_agreement() {
 /// A paused milestone agreement rejects expiry.
 #[test]
 fn test_expire_milestone_paused_agreement() {
-    let (_env, _owner, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token);
+    let (env, _owner, employer, contributor, token, client) = setup();
+    let (agreement_id, milestone_id) =
+        funded_milestone(&env, &client, &employer, &contributor, &token);
 
     let _ = client.pause_agreement(&agreement_id);
 
@@ -394,8 +402,9 @@ fn test_expire_milestone_paused_agreement() {
 /// When no hook contract is configured, `expire_milestone` completes silently.
 #[test]
 fn test_expire_milestone_no_hook_succeeds() {
-    let (_env, _owner, employer, contributor, token, client) = setup();
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token);
+    let (env, _owner, employer, contributor, token, client) = setup();
+    let (agreement_id, milestone_id) =
+        funded_milestone(&env, &client, &employer, &contributor, &token);
 
     // No set_milestone_hook_contract call — hook is absent.
     assert!(
@@ -418,7 +427,8 @@ fn test_expire_milestone_noop_hook_does_not_break_expiry() {
 
     client.set_milestone_hook_contract(&owner, &hook_id);
 
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token);
+    let (agreement_id, milestone_id) =
+        funded_milestone(&env, &client, &employer, &contributor, &token);
 
     assert!(
         client
@@ -441,7 +451,8 @@ fn test_expire_milestone_hook_receives_correct_args() {
 
     client.set_milestone_hook_contract(&owner, &hook_id);
 
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token);
+    let (agreement_id, milestone_id) =
+        funded_milestone(&env, &client, &employer, &contributor, &token);
 
     client.expire_milestone(&agreement_id, &milestone_id);
 
@@ -493,7 +504,8 @@ fn test_set_milestone_hook_contract_updates_correctly() {
     );
 
     // Expiry with hook B should record the call.
-    let (agreement_id, milestone_id) = funded_milestone(&client, &employer, &contributor, &token);
+    let (agreement_id, milestone_id) =
+        funded_milestone(&env, &client, &employer, &contributor, &token);
     client.expire_milestone(&agreement_id, &milestone_id);
 
     let recorded: u128 = env.as_contract(&hook_b, || {
@@ -508,7 +520,7 @@ fn test_set_milestone_hook_contract_updates_correctly() {
 /// `get_milestone_hook_contract` returns `None` when no hook has been set.
 #[test]
 fn test_get_milestone_hook_contract_none_when_unset() {
-    let (_env, _owner, _employer, _contributor, _token, client) = setup();
+    let (env, _owner, _employer, _contributor, _token, client) = setup();
     assert_eq!(client.get_milestone_hook_contract(), None);
 }
 

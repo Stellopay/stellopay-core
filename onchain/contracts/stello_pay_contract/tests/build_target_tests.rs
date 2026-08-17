@@ -9,14 +9,11 @@
 
 use std::path::PathBuf;
 
-use soroban_sdk::{
-    testutils::Address as _,
-    token, Address, BytesN, Env, Vec,
-};
+use soroban_sdk::{testutils::Address as _, token, Address, BytesN, Env, Vec};
 use stello_pay_contract::{
     storage::{
-        DisputeStatus, EscrowCreateParams, GracePeriodExtensionPolicy,
-        PayrollCreateParams, PayrollError,
+        DisputeStatus, EscrowCreateParams, GracePeriodExtensionPolicy, PayrollCreateParams,
+        PayrollError,
     },
     PayrollContract, PayrollContractClient,
 };
@@ -24,6 +21,27 @@ use stello_pay_contract::{
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn manifest_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")
+}
+
+/// Returns the body of the TOML `[header]` section, up to the next section.
+fn section(text: &str, header: &str) -> Option<String> {
+    let start = text.find(&format!("[{}]", header))?;
+    let body_start = start + 1;
+    let after = &text[body_start..];
+    let body_end = after
+        .find("\n[")
+        .map(|i| body_start + i)
+        .unwrap_or(text.len());
+    Some(text[body_start..body_end].to_string())
+}
+
+/// True when `needle` appears as a quoted entry of a TOML array in `body`.
+fn array_contains_quote(body: &str, needle: &str) -> bool {
+    body.contains(&format!("\"{}\"", needle))
+}
 
 fn setup(env: &Env) -> (PayrollContractClient<'_>, Address) {
     env.mock_all_auths();
@@ -68,13 +86,20 @@ fn full_setup(
         DataKey::set_agreement_escrow_balance(&env, agreement_id, &token_addr, 10000);
     });
 
-    (client, owner, employer, employee, arbiter, token_addr, agreement_id)
+    (
+        client,
+        owner,
+        employer,
+        employee,
+        arbiter,
+        token_addr,
+        agreement_id,
+    )
 }
 
 fn create_escrow_token_pair(env: &Env) -> (Address, token::StellarAssetClient<'_>) {
     let token_admin = Address::generate(env);
-    let t = env
-        .register_stellar_asset_contract_v2(token_admin);
+    let t = env.register_stellar_asset_contract_v2(token_admin);
     (
         t.address(),
         token::StellarAssetClient::new(env, &t.address()),
@@ -237,7 +262,12 @@ fn test_create_milestone_agreement_ok() {
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
     let (token_addr, _token_client) = create_escrow_token_pair(&env);
-    let id = client.create_milestone_agreement(&employer, &contributor, &token_addr);
+    let id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token_addr,
+        &soroban_sdk::vec![&env, 1_000i128],
+    );
     assert!(id > 0);
 }
 
@@ -292,8 +322,14 @@ fn test_get_milestone_count_zero() {
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
     let (token_addr, _token_client) = create_escrow_token_pair(&env);
-    let id = client.create_milestone_agreement(&employer, &contributor, &token_addr);
-    assert_eq!(client.get_milestone_count(&id), 0);
+    let id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token_addr,
+        &soroban_sdk::vec![&env, 1_000i128],
+    );
+    // The agreement is created with exactly the upfront milestones supplied.
+    assert_eq!(client.get_milestone_count(&id), 1);
 }
 
 #[test]
@@ -303,8 +339,14 @@ fn test_get_milestone_none() {
     let employer = Address::generate(&env);
     let contributor = Address::generate(&env);
     let (token_addr, _token_client) = create_escrow_token_pair(&env);
-    let id = client.create_milestone_agreement(&employer, &contributor, &token_addr);
-    assert!(client.get_milestone(&id, &1).is_none());
+    let id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token_addr,
+        &soroban_sdk::vec![&env, 1_000i128],
+    );
+    // Milestone 1 exists (created upfront); 2 is past the end.
+    assert!(client.get_milestone(&id, &2).is_none());
 }
 
 #[test]
@@ -442,10 +484,8 @@ fn test_set_fx_rate_sanity_bound_rejects_non_positive() {
 fn test_emergency_guardians() {
     let env = Env::default();
     let (client, _owner) = setup(&env);
-    let guardians: Vec<Address> = Vec::from_array(
-        &env,
-        [Address::generate(&env), Address::generate(&env)],
-    );
+    let guardians: Vec<Address> =
+        Vec::from_array(&env, [Address::generate(&env), Address::generate(&env)]);
     client.set_emergency_guardians(&guardians);
     let stored = client.get_emergency_guardians();
     assert_eq!(stored, Some(guardians));
@@ -522,12 +562,8 @@ fn test_admin_set_escrow_balance_unauthorized() {
     let stranger = Address::generate(&env);
     let token_addr = Address::generate(&env);
     env.mock_auths(&[]);
-    let result = client.try_admin_set_escrow_balance(
-        &stranger,
-        &agreement_id,
-        &token_addr,
-        &500i128,
-    );
+    let result =
+        client.try_admin_set_escrow_balance(&stranger, &agreement_id, &token_addr, &500i128);
     assert!(result.is_err());
 }
 

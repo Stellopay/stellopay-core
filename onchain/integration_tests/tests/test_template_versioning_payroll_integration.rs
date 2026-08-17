@@ -105,25 +105,22 @@ fn test_template_versioning_wired_to_payroll_agreement() {
     mint(&env, &tok, &employer, EMPLOYER_FLOAT);
 
     // Initialize both contracts
-    versioning.initialize(&admin).unwrap();
+    versioning.initialize(&admin);
     payroll.initialize(&employer);
 
     // ------------------------------------------------------------------
     // Step 1: Register a template and publish v1
     // ------------------------------------------------------------------
     let template_name = String::from_str(&env, "Standard Payroll");
-    let template_id = versioning
-        .register_template(&admin, &template_name)
-        .unwrap();
+    let template_id = versioning.register_template(&admin, &template_name);
 
     let v1_schema = schema_hash(&env, 0x01);
     let v1_notes = String::from_str(&env, "Initial version");
-    let v1_num = versioning
-        .publish_template_version(&admin, &template_id, &v1_schema, &v1_notes, &false)
-        .unwrap();
+    let v1_num =
+        versioning.publish_template_version(&admin, &template_id, &v1_schema, &v1_notes, &false);
     assert_eq!(v1_num, 1, "First version should be 1");
     assert_eq!(
-        versioning.latest_version(&template_id).unwrap(),
+        versioning.latest_version(&template_id),
         1,
         "Latest version should be 1 after first publish"
     );
@@ -132,11 +129,9 @@ fn test_template_versioning_wired_to_payroll_agreement() {
     // Step 2: Create a template_versioning agreement pinned to v1
     // ------------------------------------------------------------------
     let label = String::from_str(&env, "Onboarding Agreement");
-    let tv_agreement_id = versioning
-        .create_agreement(&employer, &template_id, &v1_num, &label)
-        .unwrap();
+    let tv_agreement_id = versioning.create_agreement(&employer, &template_id, &v1_num, &label);
 
-    let tv_agreement = versioning.get_agreement(&tv_agreement_id).unwrap();
+    let tv_agreement = versioning.get_agreement(&tv_agreement_id);
     assert_eq!(tv_agreement.template_id, template_id);
     assert_eq!(tv_agreement.template_version, 1);
     assert_eq!(tv_agreement.creator, employer);
@@ -186,16 +181,15 @@ fn test_template_versioning_wired_to_payroll_agreement() {
     advance(&env, ONE_WEEK); // advance time so v2 has a distinct created_at
     let v2_schema = schema_hash(&env, 0x02);
     let v2_notes = String::from_str(&env, "Updated terms - v2");
-    let v2_num = versioning
-        .publish_template_version(&admin, &template_id, &v2_schema, &v2_notes, &false)
-        .unwrap();
+    let v2_num =
+        versioning.publish_template_version(&admin, &template_id, &v2_schema, &v2_notes, &false);
     assert_eq!(v2_num, 2, "Second version should be 2");
-    assert_eq!(versioning.latest_version(&template_id).unwrap(), 2);
+    assert_eq!(versioning.latest_version(&template_id), 2);
 
     // ------------------------------------------------------------------
     // Step 5: Assert the pinned agreement is unchanged — it still points to v1
     // ------------------------------------------------------------------
-    let tv_agreement_after = versioning.get_agreement(&tv_agreement_id).unwrap();
+    let tv_agreement_after = versioning.get_agreement(&tv_agreement_id);
     assert_eq!(
         tv_agreement_after.template_version, 1,
         "Agreement must remain pinned to v1 after v2 is published"
@@ -209,8 +203,8 @@ fn test_template_versioning_wired_to_payroll_agreement() {
     // Step 6: Verify the payroll agreement's creation timestamp is between
     //         v1 publication and v2 publication, confirming temporal ordering
     // ------------------------------------------------------------------
-    let v1_record = versioning.get_version(&template_id, &1).unwrap();
-    let v2_record = versioning.get_version(&template_id, &2).unwrap();
+    let v1_record = versioning.get_version(&template_id, &1);
+    let v2_record = versioning.get_version(&template_id, &2);
     assert!(
         v1_record.created_at <= payroll_agreement.created_at,
         "Payroll agreement should be created after (or at) v1 publication"
@@ -225,10 +219,9 @@ fn test_template_versioning_wired_to_payroll_agreement() {
     // ------------------------------------------------------------------
     advance(&env, 1);
     let label_v2 = String::from_str(&env, "Post-update agreement");
-    let tv_agreement_v2_id = versioning
-        .create_agreement(&employer, &template_id, &v2_num, &label_v2)
-        .unwrap();
-    let tv_agreement_v2 = versioning.get_agreement(&tv_agreement_v2_id).unwrap();
+    let tv_agreement_v2_id =
+        versioning.create_agreement(&employer, &template_id, &v2_num, &label_v2);
+    let tv_agreement_v2 = versioning.get_agreement(&tv_agreement_v2_id);
     assert_eq!(
         tv_agreement_v2.template_version, 2,
         "New agreements can explicitly pin to v2"
@@ -248,27 +241,20 @@ fn test_deprecated_version_does_not_affect_existing_agreements() {
     let admin = addr(&env);
     let employer = addr(&env);
 
-    versioning.initialize(&admin).unwrap();
+    versioning.initialize(&admin);
 
     // Register and publish v1
     let name = String::from_str(&env, "Deprecation Test Template");
-    let template_id = versioning.register_template(&admin, &name).unwrap();
+    let template_id = versioning.register_template(&admin, &name);
     let hash_v1 = schema_hash(&env, 0xAA);
     let notes_v1 = String::from_str(&env, "v1");
-    versioning
-        .publish_template_version(&admin, &template_id, &hash_v1, &notes_v1, &false)
-        .unwrap();
+    versioning.publish_template_version(&admin, &template_id, &hash_v1, &notes_v1, &false);
 
     // Create agreement pinned to v1
     let label_v1 = String::from_str(&env, "Legacy agreement");
-    let tv_agreement_id = versioning
-        .create_agreement(&employer, &template_id, &1, &label_v1)
-        .unwrap();
+    let tv_agreement_id = versioning.create_agreement(&employer, &template_id, &1, &label_v1);
     assert_eq!(
-        versioning
-            .get_agreement(&tv_agreement_id)
-            .unwrap()
-            .template_version,
+        versioning.get_agreement(&tv_agreement_id).template_version,
         1
     );
 
@@ -276,16 +262,12 @@ fn test_deprecated_version_does_not_affect_existing_agreements() {
     advance(&env, 100);
     let hash_v2 = schema_hash(&env, 0xBB);
     let notes_v2 = String::from_str(&env, "v2");
-    versioning
-        .publish_template_version(&admin, &template_id, &hash_v2, &notes_v2, &false)
-        .unwrap();
+    versioning.publish_template_version(&admin, &template_id, &hash_v2, &notes_v2, &false);
     let deprecation_reason = Some(String::from_str(&env, "Superseded by v2"));
-    versioning
-        .deprecate_version(&admin, &template_id, &1, &deprecation_reason)
-        .unwrap();
+    versioning.deprecate_version(&admin, &template_id, &1, &deprecation_reason);
 
     // Existing agreement is unaffected
-    let binding = versioning.get_agreement(&tv_agreement_id).unwrap();
+    let binding = versioning.get_agreement(&tv_agreement_id);
     assert_eq!(
         binding.template_version, 1,
         "Existing agreement must remain on v1 even after deprecation"
@@ -293,7 +275,7 @@ fn test_deprecated_version_does_not_affect_existing_agreements() {
 
     // New agreement against v1 is rejected
     let new_label = String::from_str(&env, "Should fail");
-    let result = versioning.create_agreement(&employer, &template_id, &1, &new_label);
+    let result = versioning.try_create_agreement(&employer, &template_id, &1, &new_label);
     assert!(
         result.is_err(),
         "Creating a new agreement on deprecated v1 must fail"
@@ -301,16 +283,11 @@ fn test_deprecated_version_does_not_affect_existing_agreements() {
 
     // New agreement against v2 succeeds
     let label_v2 = String::from_str(&env, "Post-deprecation agreement");
-    let new_id = versioning
-        .create_agreement(&employer, &template_id, &2, &label_v2)
-        .unwrap();
-    assert_eq!(
-        versioning.get_agreement(&new_id).unwrap().template_version,
-        2
-    );
+    let new_id = versioning.create_agreement(&employer, &template_id, &2, &label_v2);
+    assert_eq!(versioning.get_agreement(&new_id).template_version, 2);
 
     // Verify v1 record shows deprecated = true with reason
-    let v1_record = versioning.get_version(&template_id, &1).unwrap();
+    let v1_record = versioning.get_version(&template_id, &1);
     assert!(v1_record.deprecated, "v1 should be marked deprecated");
     assert_eq!(
         v1_record.deprecation_reason, deprecation_reason,

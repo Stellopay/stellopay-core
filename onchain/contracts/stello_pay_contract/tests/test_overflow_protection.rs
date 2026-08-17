@@ -120,10 +120,13 @@ fn test_milestone_amount_summation_overflow_guard() {
     let contributor = Address::generate(&env);
     let token = Address::generate(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
-
-    // Add a milestone at i128::MAX — the total will be i128::MAX.
-    client.add_milestone(&agreement_id, &i128::MAX);
+    // Seed the agreement at i128::MAX so the cumulative total is already saturated.
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, i128::MAX],
+    );
 
     // Any positive amount would overflow i128::MAX + positive > i128::MAX.
     let result = client.try_add_milestone(&agreement_id, &1i128);
@@ -145,7 +148,12 @@ fn test_milestone_amount_summation_normal_amounts_ok() {
     let contributor = Address::generate(&env);
     let token = Address::generate(&env);
 
-    let agreement_id = client.create_milestone_agreement(&employer, &contributor, &token);
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 100i128],
+    );
 
     client.add_milestone(&agreement_id, &100i128);
     client.add_milestone(&agreement_id, &200i128);
