@@ -244,12 +244,6 @@ checksum = "4c7f02d4ea65f2c1853089ffd8d2787bdbc63de2f0d29dedbcf8ccdfa0ccd4cf"
 
 [[package]]
 name = "base64"
-version = "0.21.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
-
-[[package]]
-name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
@@ -1954,7 +1948,7 @@ version = "3.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "381b283ce7bc6b476d903296fb59d0d36633652b633b27f64db4fb46dcbfc3b9"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "chrono",
  "hex",
  "indexmap 1.9.3",
@@ -2197,7 +2191,7 @@ version = "23.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bc4fef2cad410563bbd56f9fa68731268f89e90a4d7e6c4d62adb45c0b4c571"
 dependencies = [
- "base64 0.22.1",
+ "base64",
  "stellar-xdr",
  "thiserror",
  "wasmparser 0.116.1",
@@ -2336,7 +2330,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "89d2848e1694b0c8db81fd812bfab5ea71ee28073e09ccc45620ef3cf7a75a9b"
 dependencies = [
  "arbitrary",
- "base64 0.22.1",
+ "base64",
  "cfg_eval",
  "crate-git-revision",
  "escape-bytes",
@@ -2353,7 +2347,7 @@ name = "stello_pay_contract"
 version = "0.0.0"
 dependencies = [
  "aes-gcm",
- "base64 0.21.7",
+ "base64",
  "criterion",
  "hmac",
  "milestone-interface",
