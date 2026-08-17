@@ -58,3 +58,5 @@ fixed, since the code is no longer built:
 - `payment_scheduler` → `payment_retry` orchestration is scaffolding only. The
   scheduler never calls `schedule_retry`, never constructs `RetryContractClient`,
   and never calls its own `compute_payment_id`.
+
+<!-- probe -->
