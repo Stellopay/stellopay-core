@@ -11,7 +11,7 @@ doctest = false
 [dependencies]
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 base64 = { version = "0.21", default-features = false }
-hmac = { version = "0.12", default-features = false }
+hmac = { version = "0.13", default-features = false }
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 sha1 = { version = "0.10", default-features = false }
 # For backup encryption and hashing (Soroban-compatible)
