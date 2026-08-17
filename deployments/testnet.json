@@ -1,0 +1,89 @@
+{
+  "$comment": [
+    "Deployed Stellopay contracts. Testnet only — these are demo deployments.",
+    "The deploying key is a locally generated, Friendbot-funded demo key and",
+    "becomes the contract admin. It must never be reused on Mainnet.",
+    "",
+    "Reproducibility: check out source_commit, run `stellar contract build` in",
+    "onchain/contracts/stello_pay_contract, and the resulting wasm sha256 must",
+    "equal wasm_hash below."
+  ],
+  "network": {
+    "name": "testnet",
+    "passphrase": "Test SDF Network ; September 2015",
+    "protocol_version": 27,
+    "rpc_url": "https://soroban-testnet.stellar.org",
+    "contract_max_size_bytes": 131072
+  },
+  "contracts": {
+    "stello_pay_contract": {
+      "contract_id": "CC2LL26VQDXQFEHQ3RB7JMNHMRHOCEI47EI4IMVGEVKOOQ5WF7GTGGHQ",
+      "wasm_hash": "2b51f32a35109efc3fe8edf3ea2e03129b788f7cf96727515ea69e48dabfd4d7",
+      "wasm_size_bytes": 120510,
+      "headroom_bytes": 10562,
+      "source_commit": "b507d4981de6bb0387c140af65eeb08d5d3a497c",
+      "source_path": "onchain/contracts/stello_pay_contract",
+      "build_command": "stellar contract build",
+      "deployed_by": "GA3JPF7VM2A7NCKOEML3CCR3BP6X72VUPWIKGNR65LL6ROAQLK54PAAF",
+      "admin": "GA3JPF7VM2A7NCKOEML3CCR3BP6X72VUPWIKGNR65LL6ROAQLK54PAAF",
+      "upload_tx": "7c2d82874299d0e101b873207a4cfbc2c89fb3f1b7a45ebd46c0c3520b758213",
+      "deploy_tx": "e38650506cc02af3b8f6d08d8a5e41cba821793db40b6b444c0dbd6c112bbae1",
+      "initialize_tx": "f27b8edb97fdebde850bbc763769e3e7d70cf7ff32b8faa3963b0a17488d7aaa",
+      "deployed_at": "2026-08-17T19:33:11Z",
+      "deploy_ledger": 4194653
+    }
+  },
+  "tokens": {
+    "native_xlm_sac": {
+      "contract_id": "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC",
+      "$comment": "Stellar Asset Contract for native XLM. Not deployed by us; derived via `stellar contract id asset --asset native`."
+    }
+  },
+  "demo_accounts": {
+    "$comment": "Friendbot-funded Testnet demo accounts. Secrets are in .env, which is gitignored. DEMO ONLY — never reuse on Mainnet.",
+    "employer": "GA3JPF7VM2A7NCKOEML3CCR3BP6X72VUPWIKGNR65LL6ROAQLK54PAAF",
+    "worker": "GCXWSEQMZOCOROSYJDMFUCP5FPYPS42765UFPB7H6SV6XYYIZ7UCR7OL"
+  },
+  "verification_run": {
+    "$comment": "End-to-end milestone escrow executed against the deployed contract via the Stellar CLI. Amounts in stroops; 100000000 = 10 XLM.",
+    "agreement_id": 1,
+    "milestone_id": 1,
+    "amount_stroops": "100000000",
+    "steps": [
+      {
+        "step": "create_milestone_agreement",
+        "signer": "employer",
+        "tx": "916fe2cd9156d4893a577be1f35361c0d5f19c84bb526093e9a451557a0cdbd5"
+      },
+      {
+        "step": "fund_milestone_agreement",
+        "signer": "employer",
+        "tx": "61c709abee0809290629024f429eb3f58dd2d1ac358fad0bc33aa98b1c6a49a4"
+      },
+      {
+        "step": "approve_milestone",
+        "signer": "employer",
+        "tx": "16332ebffaac0589bc05bfc4041613980df6a6ec194b48e2e0e443f9600bd603"
+      },
+      {
+        "step": "claim_milestone",
+        "signer": "worker",
+        "tx": "23a34a6681e3b27c07a997c4e6f9ddd38fd541dbc4ad94bcb2eb48de1048f6b1"
+      }
+    ],
+    "balances_stroops": {
+      "employer_before": "99949254049",
+      "employer_after": "99849104789",
+      "contract_before": "0",
+      "contract_after": "0",
+      "worker_before": "100000000000",
+      "worker_after": "100099970212"
+    },
+    "final_milestone_state": {
+      "id": 1,
+      "amount": "100000000",
+      "approved": true,
+      "claimed": true
+    }
+  }
+}
