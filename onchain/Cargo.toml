@@ -3,7 +3,7 @@ resolver = "2"
 members = ["contracts/*", "integration_tests"]
 
 [workspace.dependencies]
-soroban-sdk = "23.4.1"
+soroban-sdk = "27.0.6"
 
 [profile.release]
 opt-level = "z"
