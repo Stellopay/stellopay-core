@@ -19,6 +19,31 @@ Keeping them in the workspace meant every build and every CI run compiled and
 tested ~20k lines of unreachable code, and any breakage in them blocked work on
 the contract that matters.
 
+## Archived module: `stello_pay_contract` encrypted backup
+
+`archive/stello_pay_contract/` holds the encrypted backup/restore module lifted
+out of the live contract — `src/backup.rs` plus its three test files. It is not
+a crate; the paths mirror their original location inside
+`onchain/contracts/stello_pay_contract/`.
+
+**Why it was removed:** the contract compiled to 145,351 bytes, which Stellar
+Testnet rejects at upload with `TxSorobanInvalid`. `backup.rs` was the only
+consumer of six crypto crates — `aes-gcm`, `pbkdf2`, `hmac`, `sha2`, plus
+`sha1` and `base64`, which were declared in Cargo.toml but referenced nowhere
+at all. Removing the module and those dependencies brings the build to
+120,510 bytes, which uploads successfully.
+
+Three entrypoints went with it: `admin_restore_agreement`,
+`admin_restore_from_encrypted`, `admin_restore_dry_run`.
+
+`docs/encrypted-backup-recovery.md` still describes this feature and needs to
+be marked as archived or planned.
+
+To restore, move the files back to their mirrored paths, re-add the six
+dependencies to `Cargo.toml`, re-add `pub mod backup;` and
+`pub mod test_backup_dry_run;`, and re-declare the three entrypoints — then
+check the wasm size again, because it will exceed the deployable limit.
+
 ## Restoring a crate
 
 ```bash

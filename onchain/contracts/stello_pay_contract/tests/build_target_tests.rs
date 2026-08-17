@@ -665,20 +665,6 @@ fn test_payroll_error_variants_accessible() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Backup / dry-run entrypoints
-// ---------------------------------------------------------------------------
-
-#[test]
-fn test_admin_restore_dry_run_rejects_empty_envelope() {
-    let env = Env::default();
-    let (client, _owner) = setup(&env);
-    let empty = soroban_sdk::Bytes::new(&env);
-    let passphrase = soroban_sdk::Bytes::from_array(&env, b"secret");
-    let result = client.try_admin_restore_dry_run(&empty, &passphrase);
-    assert!(result.is_err());
-}
-
-// ---------------------------------------------------------------------------
 // 6. Grace period extension queries
 // ---------------------------------------------------------------------------
 
