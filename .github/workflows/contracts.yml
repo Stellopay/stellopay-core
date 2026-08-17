@@ -15,10 +15,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Installed via the preinstalled rustup rather than dtolnay/rust-toolchain:
+      # fetching that action from codeload intermittently returns 429 and fails
+      # the job during setup, before any of the checks below even run.
       - name: Install Rust (nightly)
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: rustfmt
+        run: |
+          rustup toolchain install nightly --profile minimal --component rustfmt
+          rustup default nightly
 
       - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
