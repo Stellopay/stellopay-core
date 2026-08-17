@@ -31,7 +31,6 @@
 // ---------------------------------------------------------------------------
 
 pub mod audit;
-pub mod backup;
 pub mod events;
 // Test-only mocks. Excluded from wasm builds: their `#[contractimpl]` blocks
 // export the same symbols as the real contract (e.g. `get_agreement`), which
@@ -1599,103 +1598,5 @@ impl PayrollContract {
             panic!("InvalidDuration: period duration must be greater than zero");
         }
         storage::DataKey::set_agreement_period_duration(&env, agreement_id, duration);
-    }
-
-    /// Admin-only: restore an `Agreement` from a pre-decrypted struct.
-    ///
-    /// Use this when the operator has already decrypted and verified the backup
-    /// off-chain and simply needs to re-write the state into persistent storage.
-    ///
-    /// # Arguments
-    /// * `caller`    – must be the contract owner.
-    /// * `agreement` – the `Agreement` to write back.
-    ///
-    /// # Access Control
-    /// Requires owner authentication.
-    pub fn admin_restore_agreement(
-        env: Env,
-        caller: Address,
-        agreement: storage::Agreement,
-    ) -> Result<(), storage::PayrollError> {
-        caller.require_auth();
-        let owner: Address = env
-            .storage()
-            .persistent()
-            .get(&storage::StorageKey::Owner)
-            .ok_or(storage::PayrollError::Unauthorized)?;
-        if caller != owner {
-            return Err(storage::PayrollError::Unauthorized);
-        }
-        backup::admin_restore_agreement(&env, agreement);
-        Ok(())
-    }
-
-    /// Admin-only: decrypt an encrypted backup envelope and restore the
-    /// contained `Agreement` into persistent storage in a single call.
-    ///
-    /// # Arguments
-    /// * `caller`     – must be the contract owner.
-    /// * `envelope`   – encrypted backup bytes (version | salt | nonce | ciphertext).
-    /// * `passphrase` – decryption passphrase; never stored on-chain.
-    ///
-    /// # Returns
-    /// The restored `agreement_id` on success.
-    ///
-    /// # Errors
-    /// Returns `PayrollError::InvalidData` if decryption or deserialisation fails.
-    /// Returns `PayrollError::Unauthorized` if caller is not the owner.
-    ///
-    /// # Access Control
-    /// Requires owner authentication.
-    pub fn admin_restore_from_encrypted(
-        env: Env,
-        caller: Address,
-        envelope: soroban_sdk::Bytes,
-        passphrase: soroban_sdk::Bytes,
-    ) -> Result<u128, storage::PayrollError> {
-        caller.require_auth();
-        let owner: Address = env
-            .storage()
-            .persistent()
-            .get(&storage::StorageKey::Owner)
-            .ok_or(storage::PayrollError::Unauthorized)?;
-        if caller != owner {
-            return Err(storage::PayrollError::Unauthorized);
-        }
-        backup::admin_restore_from_encrypted(&env, envelope, passphrase)
-    }
-
-    /// Read-only dry-run: validates an encrypted backup envelope and reports
-    /// what a real restore would do, without writing any state.
-    ///
-    /// Use this to confirm a backup is intact and targets the expected
-    /// `agreement_id` before committing `admin_restore_from_encrypted` in
-    /// production.
-    ///
-    /// # Arguments
-    /// * `envelope`   – encrypted backup bytes (version | salt | nonce | ciphertext).
-    /// * `passphrase` – decryption passphrase; never stored on-chain.
-    ///
-    /// # Returns
-    /// `(valid, agreement_id)` — `valid` is `true` when the backup decrypts
-    /// and deserialises without error; `agreement_id` is the id encoded in the
-    /// payload (0 when validation failed).
-    ///
-    /// # Errors
-    /// * `PayrollError::InvalidData` — envelope bytes are empty.
-    ///
-    /// # Access Control
-    /// No authentication required. A correct passphrase is still necessary to
-    /// obtain a meaningful result.
-    ///
-    /// # Security
-    /// Does not leak decrypted payload contents beyond `agreement_id`.
-    /// No state is written under any circumstance.
-    pub fn admin_restore_dry_run(
-        env: Env,
-        envelope: soroban_sdk::Bytes,
-        passphrase: soroban_sdk::Bytes,
-    ) -> Result<(bool, u128), storage::PayrollError> {
-        backup::admin_restore_dry_run(&env, envelope, passphrase)
     }
 }
