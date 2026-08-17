@@ -23,8 +23,10 @@ version: 2
 
 updates:
   # ── Rust / Cargo workspace ──────────────────────────────────────────
+  # The Cargo workspace root lives in `onchain/`, not the repo root — pointing
+  # Dependabot at "/" makes every run abort with `/Cargo.toml not found`.
   - package-ecosystem: "cargo"
-    directory: "/"
+    directory: "/onchain"
     schedule:
       interval: "weekly"
       day: "monday"
