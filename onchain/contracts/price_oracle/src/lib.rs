@@ -776,6 +776,15 @@ impl PriceOracleContract {
         let age = now.saturating_sub(state.last_updated_ts);
         if age > cfg.max_staleness_seconds {
             // Consecutive-stale halt mechanism:
+            // KNOWN LIMITATION: this counter never advances beyond 1. The
+            // write below happens in the same invocation that returns
+            // `Err(PriceTooOld)`, and Soroban discards storage writes made by
+            // an invocation that fails, so the increment is rolled back every
+            // time. Making the halt work requires either returning the stale
+            // status as an `Ok` value or moving the counter into a separate
+            // mutating entrypoint; both change the public API. See the ignored
+            // tests in tests/test_oracle.rs.
+            //
             // If the pair has a non-zero threshold, track how many consecutive
             // read-side stale detections have occurred.  Once the threshold is
             // reached, switch from PriceTooOld to PairHalted so consumers and

@@ -1291,20 +1291,10 @@ fn test_approve_incentive_fails_when_funding_pool_insufficient() {
         &100,
     );
 
-    // Step 2: drain 1 token by creating, approving, and immediately claiming a
-    // 1-token incentive (unlock_time = 0). Pool drops to 299 < 300.
-    token::StellarAssetClient::new(&env, &token_client.address).mint(&employer, &1);
-    let drain_incentive = client.create_one_time_bonus(
-        &employer,
-        &employee,
-        &approver,
-        &token_client.address,
-        &1,
-        &0, // immediately claimable
-    );
-    client.approve_incentive(&approver, &drain_incentive);
-    client.claim_incentive(&employee, &drain_incentive);
-    // Pool = 300 - 1 = 299, which is less than the 300 required by target_incentive.
+    // Step 2: claw 1 token back out of the pool, leaving 299 < 300. Creating and
+    // claiming a helper incentive would not work: it escrows and then pays out
+    // the same amount, netting zero.
+    token_client.burn(&client.address, &1);
 
     // Step 3: must panic — pool is insufficient.
     client.approve_incentive(&approver, &target_incentive);
@@ -1344,18 +1334,9 @@ fn test_approve_incentive_succeeds_after_pool_topped_up() {
         &100,
     );
 
-    // Step 2: drain 1 token via approve+claim of a helper incentive. Pool = 499.
-    token::StellarAssetClient::new(&env, &token_client.address).mint(&employer, &1);
-    let drain_incentive = client.create_one_time_bonus(
-        &employer,
-        &employee,
-        &approver,
-        &token_client.address,
-        &1,
-        &0,
-    );
-    client.approve_incentive(&approver, &drain_incentive);
-    client.claim_incentive(&employee, &drain_incentive);
+    // Step 2: burn 1 token out of the pool. Pool = 499. A helper incentive
+    // would not drain anything — it escrows and pays out the same amount.
+    token_client.burn(&client.address, &1);
 
     // Confirm approval still fails with pool at 499.
     let result = client.try_approve_incentive(&approver, &target_incentive);

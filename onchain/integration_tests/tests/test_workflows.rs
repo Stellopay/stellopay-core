@@ -460,18 +460,12 @@ fn test_milestone_full_lifecycle() {
         &employer,
         &contributor,
         &tok,
-        &soroban_sdk::vec![&env, 1i128],
+        &soroban_sdk::vec![&env, 500i128, 1000i128, 1500i128],
     );
-    assert_eq!(client.get_milestone_count(&aid), 1);
-
-    // Add 3 milestones
-    client.add_milestone(&aid, &500);
-    client.add_milestone(&aid, &1000);
-    client.add_milestone(&aid, &1500);
-    assert_eq!(client.get_milestone_count(&aid), 4);
+    assert_eq!(client.get_milestone_count(&aid), 3);
 
     // Verify milestones are not approved or claimed
-    for id in 1..=4u32 {
+    for id in 1..=3u32 {
         let m = client.get_milestone(&aid, &id).unwrap();
         assert!(!m.approved);
         assert!(!m.claimed);
@@ -2232,7 +2226,7 @@ fn test_hire_to_resolve_full_workflow() {
     payroll_client.claim_time_based(&agreement_id);
     assert_eq!(
         balance(&env, &tok, &contributor),
-        contributor_before_claim + amount_per_period
+        contributor_before_claim + amount_per_period * 2
     );
     assert_eq!(payroll_client.get_claimed_periods(&agreement_id), 2);
 

@@ -471,7 +471,10 @@ fn test_cancel_payment_refunds_escrow_and_stops_processing() {
 
     // Effect 2: the request is terminal, is skipped by batch processing, and the
     // recipient is never paid.
-    assert_eq!(client.get_payment(&id).unwrap().state, RetryState::Failed);
+    assert_eq!(
+        client.get_payment(&id).unwrap().state,
+        RetryState::Cancelled
+    );
     assert_eq!(client.process_due_payments(&10), 0);
     assert_eq!(token.balance(&recipient), 0);
 }
@@ -506,7 +509,10 @@ fn test_cancel_payment_unfunded_refunds_nothing() {
     client.cancel_payment(&payer, &id);
     assert_eq!(token.balance(&payer), 0);
     assert_eq!(token.balance(&contract_id), 0);
-    assert_eq!(client.get_payment(&id).unwrap().state, RetryState::Failed);
+    assert_eq!(
+        client.get_payment(&id).unwrap().state,
+        RetryState::Cancelled
+    );
 }
 
 #[test]

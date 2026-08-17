@@ -639,7 +639,11 @@ fn test_sum_preservation_property_diverse_splits_and_amounts() {
         }
 
         // Edge values
-        let edge_amounts = [999, 1000, 5000, 10000, 100000, 999999, i128::MAX / 100];
+        // `compute_split` computes `bps * total_amount` before dividing by 10_000,
+        // so the largest representable input is `i128::MAX / 10_000` (a 100%
+        // share). Anything above that overflows the intermediate product and the
+        // contract correctly refuses it rather than wrapping.
+        let edge_amounts = [999, 1000, 5000, 10000, 100000, 999999, i128::MAX / 10_000];
         for &amount in &edge_amounts {
             let out = client.compute_split(&id, &amount);
             let sum: i128 = out.iter().map(|entry| entry.1).sum();

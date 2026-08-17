@@ -426,7 +426,15 @@ impl RbacContract {
             write_roles(&env, &caller, &new_roles);
         }
 
-        // Revoke Admin from old owner.
+        // Revoke Admin from old owner — unless ownership was transferred to the
+        // same address, in which case the revoke would undo the grant above and
+        // leave the owner with no Admin role at all.
+        if old_owner == caller {
+            env.storage().persistent().remove(&StorageKey::PendingOwner);
+            env.storage().persistent().set(&StorageKey::Owner, &caller);
+            return;
+        }
+
         let mut old_roles = read_roles(&env, &old_owner);
         let mut i = 0u32;
         while i < old_roles.len() {

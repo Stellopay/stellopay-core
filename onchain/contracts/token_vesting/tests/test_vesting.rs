@@ -2739,7 +2739,7 @@ fn test_revoke_fully_vested_does_not_emit_a_spurious_transfer() {
 }
 
 #[test]
-#[should_panic(expected = "Schedule not active")]
+#[should_panic(expected = "Error(Contract, #4)")] // Error::InvalidInput — schedule is no longer Active
 fn test_revoke_twice_after_fully_vested_fails() {
     let env = create_env();
     let (client, _owner, employer, beneficiary, token) = full_setup(&env);
