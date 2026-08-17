@@ -10,11 +10,6 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true, features = ["alloc"] }
-soroban-token-sdk = "23.4.1"
-stellar-access = "0.6.0"
-stellar-contract-utils = "0.6.0"
-stellar-macros = "0.6.0"
-stellar-tokens = "0.6.0"
 rbac-interface = { path = "../rbac-interface" }
 milestone-interface = { path = "../milestone-interface" }
 

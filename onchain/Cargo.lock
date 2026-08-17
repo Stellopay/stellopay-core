@@ -1931,15 +1931,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "soroban-token-sdk"
-version = "23.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "52f8b9257001a8897ef07cd80799a4c2ac66040b549eb74b5b0416819f7d6046"
-dependencies = [
- "soroban-sdk",
-]
-
-[[package]]
 name = "soroban-wasmi"
 version = "0.31.1-soroban.20.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1981,35 +1972,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
-name = "stellar-access"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "974e461afe1538ee54dc9314ed46144f393265c7625606c240760cd6a2baaadf"
-dependencies = [
- "soroban-sdk",
-]
-
-[[package]]
-name = "stellar-contract-utils"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a918daa29a4cfc0fe97118a2425893a0336a33b436e8f70ca4b4f5c739f23e4"
-dependencies = [
- "soroban-sdk",
-]
-
-[[package]]
-name = "stellar-macros"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8bb4b3dd8f599646dab3e949ba2febc3a060a194bc1a3711ddd5e7c275acfe5e"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "stellar-strkey"
 version = "0.0.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2028,16 +1990,6 @@ dependencies = [
  "crate-git-revision",
  "data-encoding",
  "heapless",
-]
-
-[[package]]
-name = "stellar-tokens"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbc8be39a374a3520726017623d7c79d7d0530e626778619ba8f9462037e37aa"
-dependencies = [
- "soroban-sdk",
- "stellar-contract-utils",
 ]
 
 [[package]]
@@ -2072,11 +2024,6 @@ dependencies = [
  "rbac",
  "rbac-interface",
  "soroban-sdk",
- "soroban-token-sdk",
- "stellar-access",
- "stellar-contract-utils",
- "stellar-macros",
- "stellar-tokens",
 ]
 
 [[package]]
