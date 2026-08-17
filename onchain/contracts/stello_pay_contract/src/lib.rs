@@ -33,6 +33,11 @@
 pub mod audit;
 pub mod backup;
 pub mod events;
+// Test-only mocks. Excluded from wasm builds: their `#[contractimpl]` blocks
+// export the same symbols as the real contract (e.g. `get_agreement`), which
+// collides when linking the deployable artifact. Still compiled for native
+// unit and integration test builds.
+#[cfg(not(target_family = "wasm"))]
 pub mod mock_contract;
 mod payroll;
 pub mod storage;

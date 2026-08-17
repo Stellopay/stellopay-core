@@ -516,6 +516,16 @@ fn test_disputed_direct_claim_payroll_rejected() {
     client.add_employee_to_agreement(&id, &employee, &SALARY);
     client.activate_agreement(&id);
 
+    // `claim_payroll` resolves employees through the DataKey table, which
+    // `add_employee_to_agreement` does not write, so seed it here — otherwise
+    // the index guard rejects the call before the status guard under test.
+    env.as_contract(&_cid, || {
+        DataKey::set_employee_count(&env, id, 1);
+        DataKey::set_employee(&env, id, 0, &employee);
+        DataKey::set_employee_salary(&env, id, 0, SALARY);
+        DataKey::set_employee_claimed_periods(&env, id, 0, 0);
+    });
+
     // Put the agreement into Disputed state.
     client.raise_dispute(&employer, &id);
     assert_eq!(
@@ -703,10 +713,8 @@ fn test_milestone_complete_on_last_claim() {
         &employer,
         &contributor,
         &token,
-        &soroban_sdk::vec![&env, 1i128],
+        &soroban_sdk::vec![&env, 1000i128, 2000i128],
     );
-    client.add_milestone(&ms_id, &1000i128);
-    client.add_milestone(&ms_id, &2000i128);
     mint(&env, &token, &employer, 3000i128);
     client.fund_milestone_agreement(&ms_id, &employer, &3000i128);
 

@@ -634,6 +634,9 @@ fn test_claim_payroll_multisig_wrong_employee_rejected() {
     );
     env.ledger().with_mut(|l| l.timestamp += period + 1);
 
+    // Executing the approved op transfers from the multisig, so fund it.
+    StellarAssetClient::new(&env, &token_addr).mint(&multisig_id, &salary);
+
     // Propose LargePayment with a different employee address
     let op_id = ms.propose_operation(
         &signers.get(0).unwrap(),

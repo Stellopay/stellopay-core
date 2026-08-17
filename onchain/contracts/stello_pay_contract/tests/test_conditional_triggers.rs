@@ -857,11 +857,8 @@ fn test_milestone_batch_claim_only_approved() {
         &employer,
         &contributor,
         &token,
-        &soroban_sdk::vec![&env, 1i128],
+        &soroban_sdk::vec![&env, 100i128, 200i128, 300i128], // ids 1, 2, 3
     );
-    client.add_milestone(&agreement_id, &100i128); // id 1
-    client.add_milestone(&agreement_id, &200i128); // id 2
-    client.add_milestone(&agreement_id, &300i128); // id 3
 
     // Fund the milestone agreement
     mint(&env, &token, &employer, 10_000i128);

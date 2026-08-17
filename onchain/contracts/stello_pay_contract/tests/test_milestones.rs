@@ -212,10 +212,9 @@ fn test_fund_then_approve_then_claim_transfers_to_contributor() {
         &employer,
         &contributor,
         &token,
-        &soroban_sdk::vec![&env, 1i128],
+        &soroban_sdk::vec![&env, 1_000i128],
     );
     client.fund_milestone_agreement(&agreement_id, &employer, &1_000i128);
-    client.add_milestone(&agreement_id, &1_000i128);
     client.approve_milestone(&agreement_id, &1);
     client.claim_milestone(&agreement_id, &1);
 
@@ -260,11 +259,9 @@ fn test_escrow_balance_decrements_after_each_claim() {
         &employer,
         &contributor,
         &token,
-        &soroban_sdk::vec![&env, 1i128],
+        &soroban_sdk::vec![&env, 100i128, 200i128],
     );
     client.fund_milestone_agreement(&agreement_id, &employer, &300i128);
-    client.add_milestone(&agreement_id, &100i128);
-    client.add_milestone(&agreement_id, &200i128);
     client.approve_milestone(&agreement_id, &1);
     client.approve_milestone(&agreement_id, &2);
 
@@ -373,9 +370,8 @@ fn test_approve_underfunded_fails() {
         &employer,
         &contributor,
         &token,
-        &soroban_sdk::vec![&env, 1i128],
+        &soroban_sdk::vec![&env, 1_000i128],
     );
-    client.add_milestone(&agreement_id, &1_000i128);
     client.fund_milestone_agreement(&agreement_id, &employer, &499i128); // short by 501
     let result = client.try_approve_milestone(&agreement_id, &1);
     assert_eq!(result, Err(Ok(PayrollError::InsufficientEscrowBalance)));
@@ -436,6 +432,8 @@ fn test_add_milestone_wrong_status_fails() {
     client.add_milestone(&agreement_id, &100);
     client.approve_milestone(&agreement_id, &1);
     client.claim_milestone(&agreement_id, &1);
+    client.approve_milestone(&agreement_id, &2);
+    client.claim_milestone(&agreement_id, &2);
     let result = client.try_add_milestone(&agreement_id, &200);
     assert_eq!(
         result,
@@ -1366,8 +1364,7 @@ fn test_v1_method_parity_across_lifecycle() {
         &via.get_milestone(&aid, &1),
     );
 
-    // Add two milestones.
-    direct.add_milestone(&aid, &1_000i128);
+    // Add the second milestone (the first was created upfront).
     direct.add_milestone(&aid, &2_000i128);
     assert_eq!(
         direct.get_milestone_count(&aid),

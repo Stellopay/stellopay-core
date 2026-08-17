@@ -828,8 +828,11 @@ fn test_multisig_config_changed_event_reports_previous_values() {
 #[test]
 fn test_exchange_rate_updated_event() {
     let env = create_test_env();
-    let (_contract_id, client) = setup_contract(&env);
+    #[allow(deprecated)]
+    let contract_id = env.register_contract(None, PayrollContract);
+    let client = PayrollContractClient::new(&env, &contract_id);
     let owner = create_test_address(&env);
+    client.initialize(&owner);
     let base = create_token(&env);
     let quote = create_token(&env);
     let rate: i128 = 2_000_000; // 1 base = 2 quote
@@ -858,8 +861,11 @@ fn test_exchange_rate_updated_event() {
 #[test]
 fn test_exchange_rate_updated_event_by_admin() {
     let env = create_test_env();
-    let (_contract_id, client) = setup_contract(&env);
+    #[allow(deprecated)]
+    let contract_id = env.register_contract(None, PayrollContract);
+    let client = PayrollContractClient::new(&env, &contract_id);
     let owner = create_test_address(&env);
+    client.initialize(&owner);
     let admin = create_test_address(&env);
     let base = create_token(&env);
     let quote = create_token(&env);
@@ -883,8 +889,11 @@ fn test_exchange_rate_updated_event_by_admin() {
 #[test]
 fn test_exchange_rate_updated_event_prev_rate_reported() {
     let env = create_test_env();
-    let (_contract_id, client) = setup_contract(&env);
+    #[allow(deprecated)]
+    let contract_id = env.register_contract(None, PayrollContract);
+    let client = PayrollContractClient::new(&env, &contract_id);
     let owner = create_test_address(&env);
+    client.initialize(&owner);
     let base = create_token(&env);
     let quote = create_token(&env);
 

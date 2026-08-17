@@ -835,10 +835,8 @@ fn test_approve_milestone_id_beyond_count_panics() {
         &employer,
         &contributor,
         &token,
-        &soroban_sdk::vec![&env, 1i128],
+        &soroban_sdk::vec![&env, 500i128, 500i128],
     );
-    client.add_milestone(&agreement_id, &500i128);
-    client.add_milestone(&agreement_id, &500i128);
 
     // Only 2 milestones exist; ID 3 is out of range
     let result = client.try_approve_milestone(&agreement_id, &3u32);

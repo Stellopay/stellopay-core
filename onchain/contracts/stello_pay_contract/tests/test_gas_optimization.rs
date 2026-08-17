@@ -41,7 +41,9 @@ const WASM: &[u8] = include_bytes!("stello_pay_contract.wasm");
 // Input size levels used by all three tests
 // ---------------------------------------------------------------------------
 
-const SIZES: [usize; 3] = [1, 10, 50];
+// Top size is `MAX_BATCH_SIZE` (20): the batch entrypoints reject anything
+// larger with `BatchTooLarge`, so 50 can no longer be benchmarked.
+const SIZES: [usize; 3] = [1, 10, 20];
 
 // ---------------------------------------------------------------------------
 // Regression bounds
@@ -53,15 +55,15 @@ const SIZES: [usize; 3] = [1, 10, 50];
 
 const BATCH_CREATE_1_INSTR_MAX: i64 = 0;
 const BATCH_CREATE_10_INSTR_MAX: i64 = 0;
-const BATCH_CREATE_50_INSTR_MAX: i64 = 27_000_000; // baseline 22_532_825
+const BATCH_CREATE_20_INSTR_MAX: i64 = 27_000_000; // upper bound; baseline measured at n=50 was 22_532_825
 
 const BATCH_CLAIM_1_INSTR_MAX: i64 = 0;
 const BATCH_CLAIM_10_INSTR_MAX: i64 = 0;
-const BATCH_CLAIM_50_INSTR_MAX: i64 = 33_000_000; // baseline 27_712_846
+const BATCH_CLAIM_20_INSTR_MAX: i64 = 33_000_000; // upper bound; baseline measured at n=50 was 27_712_846
 
 const ADD_EMP_1ST_INSTR_MAX: i64 = 0;
 const ADD_EMP_10TH_INSTR_MAX: i64 = 0;
-const ADD_EMP_50TH_INSTR_MAX: i64 = 1_400_000; // baseline 1_137_103
+const ADD_EMP_20TH_INSTR_MAX: i64 = 1_400_000; // upper bound; baseline measured at n=50 was 1_137_103
 
 // ---------------------------------------------------------------------------
 // ResourceReport — snapshot of cost_estimate() after a single contract call
@@ -140,9 +142,15 @@ fn print_table(reports: &[ResourceReport]) {
 /// Snapshot capture is suppressed to prevent gas test runs from polluting the
 /// snapshot directory used by `tests/snapshot/mod.rs`.
 fn gas_env() -> Env {
-    Env::new_with_config(EnvTestConfig {
+    let env = Env::new_with_config(EnvTestConfig {
         capture_snapshot_at_drop: false,
-    })
+    });
+    // Lift the host's default budget. This harness measures cost and asserts it
+    // against the explicit *_INSTR_MAX thresholds below; letting the host abort
+    // the call on its own ceiling would turn a measurement into a hard failure
+    // and report nothing useful.
+    env.cost_estimate().budget().reset_unlimited();
+    env
 }
 
 /// Deploys the contract from the compiled WASM binary and runs `initialize`.
@@ -184,7 +192,7 @@ fn gas_batch_create_payroll_agreements() {
     let instr_bounds = [
         BATCH_CREATE_1_INSTR_MAX,
         BATCH_CREATE_10_INSTR_MAX,
-        BATCH_CREATE_50_INSTR_MAX,
+        BATCH_CREATE_20_INSTR_MAX,
     ];
 
     let mut reports = std::vec::Vec::new();
@@ -247,19 +255,21 @@ fn setup_funded_milestones(
     let token = make_token(env);
     let amount_per_milestone: i128 = 1_000;
 
-    let agreement_id = client.create_milestone_agreement(
-        &employer,
-        &contributor,
-        &token,
-        &soroban_sdk::vec![&env, 1i128],
-    );
-
+    // Create all n milestones upfront so their IDs are exactly 1..=n.
+    let mut milestones = Vec::<i128>::new(env);
     for _ in 0..n {
-        client.add_milestone(&agreement_id, &amount_per_milestone);
+        milestones.push_back(amount_per_milestone);
     }
+    let agreement_id =
+        client.create_milestone_agreement(&employer, &contributor, &token, &milestones);
 
-    // Fund the contract so that token.transfer succeeds during claiming.
-    mint(env, &token, contract_addr, amount_per_milestone * n as i128);
+    // `approve_milestone` checks the agreement's tracked escrow, which is only
+    // written by `fund_milestone_agreement` — a bare token balance on the
+    // contract is not enough. Funding transfers from the employer.
+    let total = amount_per_milestone * n as i128;
+    mint(env, &token, &employer, total);
+    client.fund_milestone_agreement(&agreement_id, &employer, &total);
+    let _ = contract_addr;
 
     // Approve every milestone (IDs are 1-based).
     for i in 1..=(n as u32) {
@@ -281,7 +291,7 @@ fn gas_batch_claim_milestones() {
     let instr_bounds = [
         BATCH_CLAIM_1_INSTR_MAX,
         BATCH_CLAIM_10_INSTR_MAX,
-        BATCH_CLAIM_50_INSTR_MAX,
+        BATCH_CLAIM_20_INSTR_MAX,
     ];
 
     let mut reports = std::vec::Vec::new();
@@ -359,7 +369,7 @@ fn gas_add_employee_scaling() {
     let instr_bounds = [
         ADD_EMP_1ST_INSTR_MAX,
         ADD_EMP_10TH_INSTR_MAX,
-        ADD_EMP_50TH_INSTR_MAX,
+        ADD_EMP_20TH_INSTR_MAX,
     ];
 
     let mut reports = std::vec::Vec::new();

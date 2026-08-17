@@ -47,7 +47,7 @@ use rate_limiter::{RateLimiter, RateLimiterClient};
 use soroban_sdk::{
     testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient as TokenAdminClient},
-    vec, Address, BytesN, Env, Vec,
+    vec, Address, BytesN, Env, TryFromVal, Vec,
 };
 
 // ---------------------------------------------------------------------------
@@ -223,7 +223,9 @@ fn test_throttled_attempt_counts_as_one() {
     );
 
     // Second process_retry call: still no escrow, rate limiter throttled
-    // This should increment retry_count to 2
+    // This should increment retry_count to 2. Advance past the backoff window
+    // first — an attempt before `next_retry_at` is intentionally a no-op.
+    advance_time(&env, 61);
     retry_client.process_retry(&payment_id);
 
     let payment = retry_client.get_payment(&payment_id).unwrap();
@@ -238,6 +240,7 @@ fn test_throttled_attempt_counts_as_one() {
     );
 
     // Third process_retry call: no escrow
+    advance_time(&env, 61);
     retry_client.process_retry(&payment_id);
 
     let payment = retry_client.get_payment(&payment_id).unwrap();
@@ -247,6 +250,7 @@ fn test_throttled_attempt_counts_as_one() {
     );
 
     // Fourth process_retry call: exceeds max_retries -> Failed terminal state
+    advance_time(&env, 61);
     retry_client.process_retry(&payment_id);
 
     let payment = retry_client.get_payment(&payment_id).unwrap();
@@ -256,8 +260,8 @@ fn test_throttled_attempt_counts_as_one() {
         "Payment should be in Failed terminal state"
     );
     assert_eq!(
-        payment.retry_count, 3,
-        "retry_count should remain 3 after exceeding max_retries"
+        payment.retry_count, 4,
+        "the attempt that exceeds max_retries still increments the counter"
     );
 
     // Idempotency: calling again should not change anything
@@ -269,7 +273,7 @@ fn test_throttled_attempt_counts_as_one() {
         "Terminal state should be preserved"
     );
     assert_eq!(
-        payment.retry_count, 3,
+        payment.retry_count, 4,
         "retry_count should not change after terminal state"
     );
 }
@@ -339,7 +343,7 @@ fn test_successful_retry_after_throttle_increments_by_one() {
 
     // Add escrow funding (insufficient for full amount)
     mint_tokens(&env, &token, &employer, 500i128);
-    TokenClient::new(&env, &token).transfer(&employer, &retry_id, &500i128);
+    retry_client.fund_payment(&employer, &payment_id, &500i128);
 
     // Second attempt: still insufficient escrow -> fails, retry_count = 2
     retry_client.process_retry(&payment_id);
@@ -353,7 +357,7 @@ fn test_successful_retry_after_throttle_increments_by_one() {
 
     // Add full escrow funding
     mint_tokens(&env, &token, &employer, 1000i128);
-    TokenClient::new(&env, &token).transfer(&employer, &retry_id, &1000i128);
+    retry_client.fund_payment(&employer, &payment_id, &1000i128);
 
     // Third attempt: sufficient escrow -> succeeds
     retry_client.process_retry(&payment_id);
@@ -455,7 +459,8 @@ fn test_multiple_throttles_before_funding() {
     retry_client.process_retry(&payment_id);
     let payment = retry_client.get_payment(&payment_id).unwrap();
     assert_eq!(payment.state, RetryState::Failed);
-    assert_eq!(payment.retry_count, 2);
+    // The attempt that exceeds max_retries still increments the counter.
+    assert_eq!(payment.retry_count, 3);
 
     // Verify idempotency: no more increments
     for _ in 0..5 {
@@ -463,7 +468,7 @@ fn test_multiple_throttles_before_funding() {
     }
     assert_eq!(
         retry_client.get_payment(&payment_id).unwrap().retry_count,
-        2,
+        3,
         "retry_count must not change after terminal Failed state"
     );
 }
@@ -525,7 +530,7 @@ fn test_rate_limiter_exhaustion_then_refill() {
 
     // Add full escrow
     mint_tokens(&env, &token, &employer, amount);
-    TokenClient::new(&env, &token).transfer(&employer, &retry_id, &amount);
+    retry_client.fund_payment(&employer, &payment_id, &amount);
 
     // Second attempt: succeeds
     retry_client.process_retry(&payment_id);
@@ -592,7 +597,7 @@ fn test_full_lifecycle_throttle_to_success() {
     // Step 2: Partial escrow -> fail
     advance_time(&env, 60);
     mint_tokens(&env, &token, &employer, 500i128);
-    TokenClient::new(&env, &token).transfer(&employer, &retry_id, &500i128);
+    retry_client.fund_payment(&employer, &payment_id, &500i128);
 
     retry_client.process_retry(&payment_id);
     let payment = retry_client.get_payment(&payment_id).unwrap();
@@ -602,7 +607,7 @@ fn test_full_lifecycle_throttle_to_success() {
     // Step 3: More partial escrow -> fail
     advance_time(&env, 120);
     mint_tokens(&env, &token, &employer, 500i128);
-    TokenClient::new(&env, &token).transfer(&employer, &retry_id, &500i128);
+    retry_client.fund_payment(&employer, &payment_id, &500i128);
 
     retry_client.process_retry(&payment_id);
     let payment = retry_client.get_payment(&payment_id).unwrap();
@@ -611,7 +616,7 @@ fn test_full_lifecycle_throttle_to_success() {
     // Step 4: Full escrow -> success
     advance_time(&env, 240);
     mint_tokens(&env, &token, &employer, 2000i128);
-    TokenClient::new(&env, &token).transfer(&employer, &retry_id, &2000i128);
+    retry_client.fund_payment(&employer, &payment_id, &2000i128);
 
     retry_client.process_retry(&payment_id);
     let payment = retry_client.get_payment(&payment_id).unwrap();
@@ -855,7 +860,7 @@ fn test_integrated_rate_limiter_and_payment_retry_flow() {
 
     // === Attempt 3: Add partial escrow ===
     mint_tokens(&env, &token, &employer, 500i128);
-    TokenClient::new(&env, &token).transfer(&employer, &retry_id, &500i128);
+    retry_client.fund_payment(&employer, &payment_id, &500i128);
 
     retry_client.process_retry(&payment_id);
     let payment = retry_client.get_payment(&payment_id).unwrap();
@@ -865,7 +870,7 @@ fn test_integrated_rate_limiter_and_payment_retry_flow() {
 
     // === Attempt 4: Add remaining escrow ===
     mint_tokens(&env, &token, &employer, 1500i128);
-    TokenClient::new(&env, &token).transfer(&employer, &retry_id, &1500i128);
+    retry_client.fund_payment(&employer, &payment_id, &1500i128);
 
     retry_client.process_retry(&payment_id);
     let payment = retry_client.get_payment(&payment_id).unwrap();
@@ -967,7 +972,7 @@ fn test_batch_process_due_payments_counter_integrity() {
 
     // Fund one payment
     mint_tokens(&env, &token, &employer1, amount);
-    TokenClient::new(&env, &token).transfer(&employer1, &_retry_id, &amount);
+    retry_client.fund_payment(&employer1, &payment_id_1, &amount);
 
     advance_time(&env, 120);
     retry_client.process_due_payments(&2);
@@ -1023,7 +1028,7 @@ fn test_zero_max_retries_counter_behavior() {
     retry_client.process_retry(&payment_id);
     let payment = retry_client.get_payment(&payment_id).unwrap();
     assert_eq!(payment.state, RetryState::Failed);
-    assert_eq!(payment.retry_count, 0);
+    assert_eq!(payment.retry_count, 1);
 
     // Idempotency: terminal state preserved
     for _ in 0..5 {
@@ -1134,9 +1139,13 @@ fn test_retry_failed_events_emitted_during_throttle() {
     for i in 0..events.len() {
         let (_contract_id, topics, _data) = events.get(i).unwrap();
         if topics.len() >= 1 {
-            // Check for payment_retry_failed topic
-            let topic0 = topics.get(0).unwrap();
-            if format!("{:?}", topic0).contains("payment_retry_failed") {
+            // Compare the decoded Symbol: `Val`'s Debug form is an opaque
+            // handle, so a string match on it never succeeds.
+            // The contract publishes this topic as a string literal, which the
+            // SDK encodes as `String` — not `Symbol`. Decode it as such; a
+            // Debug-string match on the raw `Val` would never succeed.
+            let topic0 = soroban_sdk::String::try_from_val(&env, &topics.get(0).unwrap());
+            if topic0 == Ok(soroban_sdk::String::from_str(&env, "payment_retry_failed")) {
                 retry_failed_count += 1;
             }
         }

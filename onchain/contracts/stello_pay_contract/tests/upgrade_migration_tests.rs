@@ -7,6 +7,9 @@ use stello_pay_contract::{PayrollContract, PayrollContractClient};
 const NEW_CONTRACT_WASM: &[u8] = include_bytes!("./stello_pay_contract.wasm");
 
 fn setup(env: &Env) -> (PayrollContractClient<'_>, Address) {
+    // Uploading the full contract wasm exceeds the host's default budget.
+    // These tests exercise upgrade authorization, not cost, so lift the limit.
+    env.cost_estimate().budget().reset_unlimited();
     let contract_id = env.register(PayrollContract, ());
     let client = PayrollContractClient::new(env, &contract_id);
     let owner = Address::generate(env);

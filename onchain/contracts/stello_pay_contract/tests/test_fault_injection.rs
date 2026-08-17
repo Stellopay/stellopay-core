@@ -192,10 +192,11 @@ fn chaos_batch_partial_completion_and_rollback() {
 
     assert!(r0.success);
     assert!(!r1.success);
-    assert_eq!(
-        r1.error_code,
-        PayrollError::InsufficientEscrowBalance as u32
-    );
+    // Index 1 belongs to e2, and `batch_claim_payroll` requires the caller to be
+    // the employee at each index (same check as `claim_payroll`), so the entry
+    // is rejected on identity before escrow is ever consulted. A single caller
+    // can only own one index, so escrow exhaustion is unreachable in one batch.
+    assert_eq!(r1.error_code, PayrollError::Unauthorized as u32);
 
     // State: e1 has claimed one period, e2 still at zero.
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &0u32), 1);

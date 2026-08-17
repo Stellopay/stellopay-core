@@ -77,10 +77,9 @@ fn funded_milestone(
         employer,
         contributor,
         token,
-        &soroban_sdk::vec![env, 1i128],
+        &soroban_sdk::vec![env, milestone_amount],
     );
     client.fund_milestone_agreement(&agreement_id, employer, &fund_amount);
-    client.add_milestone(&agreement_id, &milestone_amount);
     (agreement_id, 1u32)
 }
 

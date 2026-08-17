@@ -293,17 +293,18 @@ fn setup_milestone_agreement(
     let contributor = create_address(env);
     let token = create_token(env);
 
-    // Create and fund a milestone agreement.
+    // Create and fund a milestone agreement. `fund_milestone_agreement`
+    // transfers from the employer, so the employer must hold the tokens.
+    let milestone_amount = 1000i128;
     let agreement_id = client.create_milestone_agreement(
         &employer,
         &contributor,
         &token,
-        &soroban_sdk::vec![&env, 1i128],
+        &soroban_sdk::vec![&env, milestone_amount],
     );
-    let milestone_amount = 1000i128;
-    client.add_milestone(&agreement_id, &milestone_amount);
+    mint(env, &token, &employer, milestone_amount);
     client.fund_milestone_agreement(&agreement_id, &employer, &milestone_amount);
-    mint(env, &token, contract_id, milestone_amount);
+    let _ = contract_id;
 
     (employer, contributor, token, agreement_id)
 }
@@ -435,11 +436,11 @@ fn test_expire_milestone_hook_fires_and_milestone_remains_expired() {
         &employer2,
         &contributor2,
         &token2,
-        &soroban_sdk::vec![&env, 1i128],
+        &soroban_sdk::vec![&env, fresh_token_amount],
     );
-    fresh_client.add_milestone(&fresh_agreement_id, &fresh_token_amount);
+    // Funding transfers from the employer, so mint to the employer first.
+    mint(&env, &token2, &employer2, fresh_token_amount);
     fresh_client.fund_milestone_agreement(&fresh_agreement_id, &employer2, &fresh_token_amount);
-    mint(&env, &token2, &fresh_contract_id, fresh_token_amount);
 
     // Deploy the malicious hook mock and initialize it.
     let fresh_hook_id = env.register(MaliciousMilestoneHook, ());
