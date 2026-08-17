@@ -222,15 +222,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "audit_logger"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
- "stellar-contract-utils",
- "stellar-macros",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -288,13 +279,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
-]
-
-[[package]]
-name = "bonus_system"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
 ]
 
 [[package]]
@@ -427,22 +411,6 @@ name = "clap_lex"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
-
-[[package]]
-name = "compliance_checker"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
-]
-
-[[package]]
-name = "compliance_reporting"
-version = "0.0.0"
-dependencies = [
- "audit_logger",
- "payment_history",
- "soroban-sdk",
-]
 
 [[package]]
 name = "const-oid"
@@ -693,13 +661,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7a1e2f27636f116493b8b860f5546edb47c8d8f8ea73e1d2a20be88e28d1fea"
 
 [[package]]
-name = "department_manager"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
-]
-
-[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -751,16 +712,6 @@ dependencies = [
  "const-oid",
  "crypto-common",
  "subtle",
-]
-
-[[package]]
-name = "dispute_escalation"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
- "stellar-access",
- "stellar-contract-utils",
- "stellar-macros",
 ]
 
 [[package]]
@@ -853,16 +804,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "employee_roles"
-version = "0.0.0"
-dependencies = [
- "rbac",
- "soroban-sdk",
- "stellar-contract-utils",
- "stellar-macros",
-]
-
-[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -891,24 +832,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40404c3f5f511ec4da6fe866ddf6a717c309fdbb69fbbad7b0f3edab8f2e835f"
 
 [[package]]
-name = "expense_reimbursement"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
-
-[[package]]
-name = "fee_collector"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
-]
 
 [[package]]
 name = "ff"
@@ -1001,16 +928,6 @@ checksum = "f0d8a4362ccb29cb0b265253fb0a2728f592895ee6854fd9bc13f2ffda266ff1"
 dependencies = [
  "opaque-debug",
  "polyval",
-]
-
-[[package]]
-name = "governance"
-version = "0.0.0"
-dependencies = [
- "multisig",
- "rbac",
- "soroban-sdk",
- "withdrawal_timelock",
 ]
 
 [[package]]
@@ -1189,35 +1106,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "integration_tests"
-version = "0.0.0"
-dependencies = [
- "audit_logger",
- "bonus_system",
- "compliance_checker",
- "department_manager",
- "dispute_escalation",
- "employee_roles",
- "expense_reimbursement",
- "governance",
- "multisig",
- "nft-payroll-badge",
- "payment_history",
- "payment_retry",
- "payment_scheduler",
- "payroll_escrow",
- "rate_limiter",
- "rbac",
- "salary_adjustment",
- "slashing_penalty",
- "soroban-sdk",
- "stello_pay_contract",
- "template_versioning",
- "token_vesting",
- "withdrawal_timelock",
-]
-
-[[package]]
 name = "itertools"
 version = "0.10.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1334,13 +1222,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nft-payroll-badge"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
-]
-
-[[package]]
 name = "num-bigint"
 version = "0.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1430,45 +1311,6 @@ name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
-
-[[package]]
-name = "payment_history"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
- "stellar-contract-utils",
- "stellar-macros",
-]
-
-[[package]]
-name = "payment_retry"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
-]
-
-[[package]]
-name = "payment_scheduler"
-version = "0.0.0"
-dependencies = [
- "payment_retry",
- "soroban-sdk",
-]
-
-[[package]]
-name = "payment_splitter"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
-]
-
-[[package]]
-name = "payroll_escrow"
-version = "0.1.0"
-dependencies = [
- "proptest",
- "soroban-sdk",
-]
 
 [[package]]
 name = "pbkdf2"
@@ -1837,13 +1679,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "salary_adjustment"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
-]
-
-[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2027,13 +1862,6 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest",
  "rand_core 0.6.4",
-]
-
-[[package]]
-name = "slashing_penalty"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
 ]
 
 [[package]]
@@ -2410,15 +2238,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tax_withholding"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
- "stellar-contract-utils",
- "stellar-macros",
-]
-
-[[package]]
 name = "tempfile"
 version = "3.26.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2429,13 +2248,6 @@ dependencies = [
  "once_cell",
  "rustix",
  "windows-sys",
-]
-
-[[package]]
-name = "template_versioning"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
 ]
 
 [[package]]
@@ -2497,13 +2309,6 @@ checksum = "be4d6b5f19ff7664e8c98d03e2139cb510db9b0a60b55f8e8709b689d939b6bc"
 dependencies = [
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "token_vesting"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
 ]
 
 [[package]]
@@ -2911,13 +2716,6 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser 0.244.0",
-]
-
-[[package]]
-name = "withdrawal_timelock"
-version = "0.0.0"
-dependencies = [
- "soroban-sdk",
 ]
 
 [[package]]
