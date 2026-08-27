@@ -11,7 +11,7 @@ debug = 0
 strip = "symbols"
 debug-assertions = false
 overflow-checks = true
-lto = true
+lto = "fat"
 panic = "abort"
 codegen-units = 1
 

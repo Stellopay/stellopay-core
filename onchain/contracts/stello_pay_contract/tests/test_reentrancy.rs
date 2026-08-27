@@ -281,8 +281,10 @@ fn test_claim_time_based_state_updated_prevents_double_claim() {
 // ============================================================================
 
 /// Import the mock hook contract so we can register it in tests.
-use stello_pay_contract::mock_contract::MaliciousMilestoneHook;
-use stello_pay_contract::mock_contract::MaliciousMilestoneHookClient;
+mod support;
+
+use support::MaliciousMilestoneHook;
+use support::MaliciousMilestoneHookClient;
 
 fn setup_milestone_agreement(
     env: &Env,
