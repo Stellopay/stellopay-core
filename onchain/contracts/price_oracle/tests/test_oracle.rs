@@ -1863,202 +1863,211 @@ fn setup_halt_pair(
     (oracle_client, oracle_owner, source, base, quote)
 }
 
-/// After exactly `max_stale_before_halt` consecutive stale reads,
-/// `get_pair_state` must return `PairHalted` instead of `PriceTooOld`.
+/// Approach C (time-based halt): a pair whose last accepted price has been
+/// stale for longer than `max_stale_before_halt` full staleness windows
+/// escalates from the transient `PriceTooOld` to the sticky `PairHalted`. The
+/// boundary is exact: at exactly `threshold * max_staleness_seconds` of age the
+/// pair is still `PriceTooOld`; one second later it is `PairHalted`.
+///
+/// Adapted from the former count-based
+/// `test_consecutive_stale_halt_triggers_after_threshold`; the halt no longer
+/// depends on a read counter, so the assertion is on age, not on read count.
 ///
 /// # Security note
-/// `PairHalted` is a distinct error so off-chain consumers can differentiate
-/// between a briefly stale price (transient) and a pair that has been
-/// persistently stale (requires intervention).
+/// `PairHalted` stays distinct from `PriceTooOld` so off-chain consumers can
+/// tell a briefly stale price (transient) from a dead feed (needs intervention).
 #[test]
-#[ignore = "consecutive-stale halt cannot work as specified: the counter is written by the same get_pair_state call that returns Err, and Soroban rolls back storage writes from a failed invocation, so it never advances past 1."]
-fn test_consecutive_stale_halt_triggers_after_threshold() {
+fn test_stale_halt_triggers_past_threshold_window() {
     let env = create_env();
-    // Threshold = 3: reads 1 and 2 return PriceTooOld; read 3 returns PairHalted.
+    // max_staleness = 300 s, threshold = 3 -> halt once age > 900 s.
     let (oracle_client, _, source, base, quote) = setup_halt_pair(&env, 3);
 
-    // Push a fresh price, then advance time past max_staleness.
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
-    // Advance time so the stored price is older than max_staleness (300 s).
-    env.ledger().with_mut(|li| li.timestamp = 2_000); // age = 1000 > 300
-
-    // Read 1 — counter becomes 1; still PriceTooOld.
+    // Age exactly at the halt boundary (3 * 300 = 900): still transient.
+    env.ledger().with_mut(|li| li.timestamp = 1_900); // age = 900
     assert_eq!(
         oracle_client.try_get_pair_state(&base, &quote),
         Err(Ok(OracleError::PriceTooOld)),
-        "first stale read must return PriceTooOld (counter=1, threshold=3)"
+        "at exactly threshold*max_staleness the pair must still be PriceTooOld"
     );
 
-    // Read 2 — counter becomes 2; still PriceTooOld.
-    assert_eq!(
-        oracle_client.try_get_pair_state(&base, &quote),
-        Err(Ok(OracleError::PriceTooOld)),
-        "second stale read must return PriceTooOld (counter=2, threshold=3)"
-    );
-
-    // Read 3 — counter reaches threshold (3 >= 3); PairHalted.
+    // One second past the boundary: sticky halt.
+    env.ledger().with_mut(|li| li.timestamp = 1_901); // age = 901 > 900
     assert_eq!(
         oracle_client.try_get_pair_state(&base, &quote),
         Err(Ok(OracleError::PairHalted)),
-        "third stale read must return PairHalted (counter=3 >= threshold=3)"
+        "one second past threshold*max_staleness the pair must be PairHalted"
     );
 
-    // Subsequent reads also return PairHalted until a fresh push clears the state.
+    // Halt is sticky: as time only moves forward, later reads stay halted.
+    env.ledger().with_mut(|li| li.timestamp = 5_000);
     assert_eq!(
         oracle_client.try_get_pair_state(&base, &quote),
         Err(Ok(OracleError::PairHalted)),
-        "reads beyond threshold must keep returning PairHalted"
+        "a pair past the halt boundary must keep returning PairHalted"
     );
 }
 
-/// Reads that stay below the consecutive-stale threshold must still return
-/// `PriceTooOld`, NOT `PairHalted`. The halt only fires at the exact threshold.
+/// Below the halt window (age > max_staleness but <= threshold*max_staleness)
+/// the pair is transiently `PriceTooOld`, never `PairHalted`.
+///
+/// Adapted from the former
+/// `test_consecutive_stale_below_threshold_returns_price_too_old`.
 #[test]
-fn test_consecutive_stale_below_threshold_returns_price_too_old() {
+fn test_stale_below_halt_window_returns_price_too_old() {
     let env = create_env();
-    // High threshold: 10. We will only perform 5 stale reads.
+    // threshold = 10 -> halt window is 10 * 300 = 3000 s.
     let (oracle_client, _, source, base, quote) = setup_halt_pair(&env, 10);
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
-    env.ledger().with_mut(|li| li.timestamp = 2_000); // stale
 
-    for read_n in 1..=5u32 {
-        assert_eq!(
-            oracle_client.try_get_pair_state(&base, &quote),
-            Err(Ok(OracleError::PriceTooOld)),
-            "read {} of 5 (threshold=10) must return PriceTooOld, not PairHalted",
-            read_n
-        );
-    }
+    // age = 301 (just stale), well within the 3000 s halt window.
+    env.ledger().with_mut(|li| li.timestamp = 1_301);
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PriceTooOld)),
+        "just-stale price must be PriceTooOld"
+    );
+
+    // age = 3000 (exactly the boundary): still transient, not yet halted.
+    env.ledger().with_mut(|li| li.timestamp = 4_000);
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PriceTooOld)),
+        "at exactly the halt boundary the pair must still be PriceTooOld"
+    );
 }
 
-/// A fresh, valid `push_price` clears the consecutive-stale counter so that
-/// subsequent reads of a non-stale price succeed, and the halt counter starts
-/// from zero again.
-///
-/// # Security note
-/// Only a genuine price update (which passes all validation checks including
-/// freshness, bounds, and source authorization) resets the halt state.
-/// An attacker cannot fake-reset it by any other means.
+/// A pair with `max_stale_before_halt == 1` has no transient window: as soon as
+/// the price is stale (age > max_staleness) it halts immediately. This mirrors
+/// the original threshold-of-one intent (halt on the first stale detection).
 #[test]
-#[ignore = "consecutive-stale halt cannot work as specified: the counter is written by the same get_pair_state call that returns Err, and Soroban rolls back storage writes from a failed invocation, so it never advances past 1."]
-fn test_fresh_push_clears_halt_and_resumes_serving() {
+fn test_stale_halt_threshold_one_halts_immediately() {
     let env = create_env();
-    // Threshold = 2: two stale reads trigger PairHalted.
-    let (oracle_client, _, source, base, quote) = setup_halt_pair(&env, 2);
+    let (oracle_client, _, source, base, quote) = setup_halt_pair(&env, 1);
 
-    // Push initial price and then let it go stale.
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
-    env.ledger().with_mut(|li| li.timestamp = 2_000); // age = 1000 > max_staleness=300
 
-    // Read 1 → PriceTooOld (counter=1).
-    assert_eq!(
-        oracle_client.try_get_pair_state(&base, &quote),
-        Err(Ok(OracleError::PriceTooOld))
-    );
-    // Read 2 → PairHalted (counter=2 >= threshold=2).
-    assert_eq!(
-        oracle_client.try_get_pair_state(&base, &quote),
-        Err(Ok(OracleError::PairHalted))
-    );
-
-    // Push a fresh price — this must clear the counter.
-    // max_staleness=300, so source_timestamp=2_000 with ledger=2_000 is fresh.
-    oracle_client.push_price(&source, &base, &quote, &3_000_000i128, &2_000u64);
-
-    // Immediately after a fresh push, get_pair_state must succeed again.
+    // Fresh (age = 300 == max_staleness): served.
+    env.ledger().with_mut(|li| li.timestamp = 1_300);
     let state = oracle_client.get_pair_state(&base, &quote);
-    assert_eq!(state.rate, 3_000_000, "fresh push rate must be served");
-    assert_eq!(
-        state.last_updated_ts, 2_000,
-        "timestamp must reflect the new push"
-    );
+    assert_eq!(state.rate, 2_000_000);
 
-    // The halt counter is zero again; a subsequent non-stale read also succeeds.
-    let state2 = oracle_client.get_pair_state(&base, &quote);
-    assert_eq!(state2.rate, 3_000_000);
+    // One second stale (age = 301 > 1 * 300): straight to PairHalted.
+    env.ledger().with_mut(|li| li.timestamp = 1_301);
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairHalted)),
+        "with threshold 1 the first stale read must halt immediately"
+    );
 }
 
-/// When `max_stale_before_halt = 0`, the halt mechanism is disabled
-/// entirely. Any number of stale reads must keep returning `PriceTooOld`, never
-/// `PairHalted`.
+/// When `max_stale_before_halt == 0` the halt mechanism is disabled entirely:
+/// no matter how old the price gets, `get_pair_state` returns `PriceTooOld`,
+/// never `PairHalted`.
 #[test]
 fn test_halt_disabled_when_threshold_zero() {
     let env = create_env();
-    // Threshold = 0 → halt disabled.
     let (oracle_client, _, source, base, quote) = setup_halt_pair(&env, 0);
 
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
-    env.ledger().with_mut(|li| li.timestamp = 2_000); // stale
 
-    // Many stale reads — all must return PriceTooOld, never PairHalted.
-    for _ in 0..20 {
-        assert_eq!(
-            oracle_client.try_get_pair_state(&base, &quote),
-            Err(Ok(OracleError::PriceTooOld)),
-            "with threshold=0 every stale read must return PriceTooOld"
-        );
-    }
+    // Even at an extreme age the disabled halt never fires.
+    env.ledger().with_mut(|li| li.timestamp = 1_000_000_000);
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PriceTooOld)),
+        "with threshold 0 an arbitrarily old price must stay PriceTooOld, never PairHalted"
+    );
 }
 
-/// A fresh push mid-way through accumulating stale detections resets the counter
-/// to zero, requiring the full threshold to be reached again before halting.
+/// A halted pair is recoverable: a fresh, authorised `push_price` moves the
+/// stored timestamp forward, so the pair serves again immediately, and the halt
+/// re-arms from the new timestamp. Because the halt is derived from
+/// `last_updated_ts` there is no counter to clear.
+///
+/// Adapted from the former `test_fresh_push_clears_halt_and_resumes_serving`.
+///
+/// # Security note
+/// Only a genuine `push_price` (which passes all validation) recovers the pair;
+/// an attacker cannot fake-reset it by any other means.
 #[test]
-#[ignore = "consecutive-stale halt cannot work as specified: the counter is written by the same get_pair_state call that returns Err, and Soroban rolls back storage writes from a failed invocation, so it never advances past 1."]
-fn test_fresh_push_before_halt_resets_counter() {
+fn test_halted_pair_recovers_after_fresh_push() {
     let env = create_env();
-    // Threshold = 3.
-    let (oracle_client, _, source, base, quote) = setup_halt_pair(&env, 3);
+    // threshold = 2 -> halt once age > 600 s.
+    let (oracle_client, _, source, base, quote) = setup_halt_pair(&env, 2);
 
-    // Initial fresh push.
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
-    // Advance time: price is stale.
+    // Drive the pair into the halted state (age = 1000 > 2 * 300 = 600).
     env.ledger().with_mut(|li| li.timestamp = 2_000);
-
-    // Two stale reads (counter = 2; threshold not yet reached).
-    assert_eq!(
-        oracle_client.try_get_pair_state(&base, &quote),
-        Err(Ok(OracleError::PriceTooOld)),
-        "read 1 (counter=1) must be PriceTooOld"
-    );
-    assert_eq!(
-        oracle_client.try_get_pair_state(&base, &quote),
-        Err(Ok(OracleError::PriceTooOld)),
-        "read 2 (counter=2) must be PriceTooOld"
-    );
-
-    // Push a fresh price BEFORE the third stale read resets the counter.
-    oracle_client.push_price(&source, &base, &quote, &2_500_000i128, &2_000u64);
-
-    // Fresh read immediately succeeds (counter is now 0).
-    let state = oracle_client.get_pair_state(&base, &quote);
-    assert_eq!(state.rate, 2_500_000, "fresh push must be served");
-
-    // Let the new price go stale again.
-    env.ledger().with_mut(|li| li.timestamp = 3_000); // age from ts=2000 is 1000 > 300
-
-    // The full threshold (3) must be accumulated again from scratch.
-    assert_eq!(
-        oracle_client.try_get_pair_state(&base, &quote),
-        Err(Ok(OracleError::PriceTooOld)),
-        "post-reset read 1 (counter=1) must be PriceTooOld"
-    );
-    assert_eq!(
-        oracle_client.try_get_pair_state(&base, &quote),
-        Err(Ok(OracleError::PriceTooOld)),
-        "post-reset read 2 (counter=2) must be PriceTooOld"
-    );
-    // Third stale read — threshold reached again.
     assert_eq!(
         oracle_client.try_get_pair_state(&base, &quote),
         Err(Ok(OracleError::PairHalted)),
-        "post-reset read 3 (counter=3 >= threshold=3) must be PairHalted"
+        "pair must be halted before testing recovery"
+    );
+
+    // A fresh authorised push (source_ts = 2_000, ledger = 2_000, age 0) recovers it.
+    oracle_client.push_price(&source, &base, &quote, &3_000_000i128, &2_000u64);
+    let state = oracle_client.get_pair_state(&base, &quote);
+    assert_eq!(state.rate, 3_000_000, "a fresh push must resume serving");
+    assert_eq!(state.last_updated_ts, 2_000);
+
+    // The halt re-arms from the new timestamp (age from 2_000 = 1000 > 600).
+    env.ledger().with_mut(|li| li.timestamp = 3_000);
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairHalted)),
+        "after recovery the halt must re-arm from the new timestamp"
+    );
+}
+
+/// A fresh push mid-staleness restarts the halt window: age is measured from the
+/// new `last_updated_ts`, so the pair must age past the full window again before
+/// halting. This is the time-based analogue of the old "reset the counter".
+///
+/// Adapted from the former `test_fresh_push_before_halt_resets_counter`.
+#[test]
+fn test_fresh_push_restarts_halt_window() {
+    let env = create_env();
+    // threshold = 3 -> halt window = 3 * 300 = 900 s.
+    let (oracle_client, _, source, base, quote) = setup_halt_pair(&env, 3);
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // Stale but below the halt window (age = 800 <= 900).
+    env.ledger().with_mut(|li| li.timestamp = 1_800);
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PriceTooOld)),
+        "below the halt window the pair must be PriceTooOld"
+    );
+
+    // Fresh push at ts = 1_800 restarts the clock.
+    oracle_client.push_price(&source, &base, &quote, &2_500_000i128, &1_800u64);
+    assert_eq!(oracle_client.get_pair_state(&base, &quote).rate, 2_500_000);
+
+    // age from the NEW timestamp = 2_600 - 1_800 = 800 <= 900: still only stale.
+    // Had the clock NOT restarted, age from 1_000 would be 1_600 > 900 -> halted.
+    env.ledger().with_mut(|li| li.timestamp = 2_600);
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PriceTooOld)),
+        "the halt window must be measured from the fresh push, not the original price"
+    );
+
+    // Past the window from the new timestamp (age = 2_701 - 1_800 = 901 > 900).
+    env.ledger().with_mut(|li| li.timestamp = 2_701);
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairHalted)),
+        "once past the window from the fresh push, the pair halts"
     );
 }
