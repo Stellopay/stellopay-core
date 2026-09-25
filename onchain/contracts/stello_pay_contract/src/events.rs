@@ -206,6 +206,12 @@ pub struct GracePeriodExtendedEvent {
     pub total_extension_seconds: u64,
     /// True if the contract owner authorized the call; false if the employer did.
     pub extended_by_owner: bool,
+    /// The maximum cumulative extension duration cap at the time of extension.
+    pub max_cumulative_extension_duration_seconds: u64,
+    /// The maximum allowed number of extensions per agreement at the time of extension.
+    pub max_extension_count: u32,
+    /// The current number of extensions for this agreement after this call.
+    pub extension_count: u32,
 }
 
 pub fn emit_grace_period_extended(env: &Env, event: GracePeriodExtendedEvent) {

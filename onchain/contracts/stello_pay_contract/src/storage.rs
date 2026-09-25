@@ -244,6 +244,8 @@ pub enum StorageKey {
     /// Cumulative grace extension (seconds) applied on top of `Agreement::grace_period_seconds`
     /// for cancelled agreements (`agreement_id` -> u64).
     GracePeriodExtensionSeconds(u128),
+    /// Track how many times `extend_grace_period` was called for an agreement (`agreement_id` -> u32).
+    GracePeriodExtensionCount(u128),
     /// Owner-configurable caps for `extend_grace_period` (singleton).
     GracePeriodExtensionPolicy,
     /// Address of the deployed multisig contract used for threshold checks.
@@ -497,6 +499,10 @@ pub struct GracePeriodExtensionPolicy {
     pub max_cumulative_extension_bps: u32,
     /// Upper bound on `additional_seconds` for a single `extend_grace_period` call.
     pub max_extension_per_call_seconds: u64,
+    /// Absolute maximum cumulative extension duration per agreement.
+    pub max_cumulative_extension_duration_seconds: u64,
+    /// Absolute maximum number of extensions per agreement.
+    pub max_extension_count: u32,
 }
 
 /// Emergency pause state

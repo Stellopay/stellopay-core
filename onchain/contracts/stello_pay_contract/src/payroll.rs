@@ -2031,6 +2031,8 @@ pub fn get_grace_extension_policy(env: &Env) -> GracePeriodExtensionPolicy {
         .unwrap_or(GracePeriodExtensionPolicy {
             max_cumulative_extension_bps: 10_000,
             max_extension_per_call_seconds: 90 * 24 * 3600,
+            max_cumulative_extension_duration_seconds: 365 * 24 * 3600,
+            max_extension_count: 10,
         })
 }
 
@@ -2072,6 +2074,12 @@ pub fn set_grace_extension_policy(
     if policy.max_extension_per_call_seconds == 0
         || policy.max_extension_per_call_seconds > MAX_PER_CALL
     {
+        return Err(PayrollError::GraceExtensionInvalid);
+    }
+    if policy.max_cumulative_extension_duration_seconds == 0 {
+        return Err(PayrollError::GraceExtensionInvalid);
+    }
+    if policy.max_extension_count == 0 {
         return Err(PayrollError::GraceExtensionInvalid);
     }
     env.storage()
@@ -2131,10 +2139,23 @@ pub fn extend_grace_period(
         return Err(PayrollError::GraceExtensionCapExceeded);
     }
 
+    if new_total > policy.max_cumulative_extension_duration_seconds {
+        return Err(PayrollError::GraceExtensionCapExceeded);
+    }
+
+    let count_key = StorageKey::GracePeriodExtensionCount(agreement_id);
+    let current_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
+    let new_count = current_count.checked_add(1).ok_or(PayrollError::GraceExtensionInvalid)?;
+
+    if new_count > policy.max_extension_count {
+        return Err(PayrollError::GraceExtensionCapExceeded);
+    }
+
     env.storage().persistent().set(
         &StorageKey::GracePeriodExtensionSeconds(agreement_id),
         &new_total,
     );
+    env.storage().persistent().set(&count_key, &new_count);
 
     emit_grace_period_extended(
         env,
@@ -2143,6 +2164,9 @@ pub fn extend_grace_period(
             additional_seconds,
             total_extension_seconds: new_total,
             extended_by_owner,
+            max_cumulative_extension_duration_seconds: policy.max_cumulative_extension_duration_seconds,
+            max_extension_count: policy.max_extension_count,
+            extension_count: new_count,
         },
     );
 
