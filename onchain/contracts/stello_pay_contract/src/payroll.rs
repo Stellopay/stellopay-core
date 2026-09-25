@@ -1009,6 +1009,20 @@ pub fn claim_milestone(
         .ok_or(PayrollError::AgreementNotFound)?;
     contributor.require_auth();
 
+    // Enforce agreement-kind boundary: claim_milestone is only valid for
+    // Milestone agreements. Passing a Payroll or Escrow agreement_id would
+    // operate on the wrong storage namespace and could panic or produce
+    // incorrect results.
+    let _agreement_mode: crate::storage::AgreementMode = env
+        .storage()
+        .persistent()
+        .get(&StorageKey::Agreement(agreement_id))
+        .map(|a: Agreement| a.mode)
+        .ok_or(PayrollError::AgreementNotFound)?;
+    if _agreement_mode != AgreementMode::Milestone {
+        return Err(PayrollError::InvalidAgreementMode);
+    }
+
     // Check if agreement is paused
     let status: AgreementStatus = env
         .storage()
