@@ -8,7 +8,7 @@
 
 use soroban_sdk::{testutils::Address as _, Address, Env};
 use stello_pay_contract::{
-    storage::{AgreementMode, AgreementStatus},
+    storage::{AgreementMode, AgreementStatus, PayrollError},
     PayrollContract, PayrollContractClient,
 };
 
@@ -246,7 +246,7 @@ fn test_add_employee_wrong_status_fails() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
     client.add_employee_to_agreement(&agreement_id, &create_test_address(&env), &500);
 }
 
@@ -298,16 +298,15 @@ fn test_activate_agreement_with_employees() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let agreement = client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agreement.status, AgreementStatus::Active);
     assert!(agreement.activated_at.is_some());
 }
 
-/// Activating payroll agreement with no employees must fail.
+/// Activating payroll agreement with no employees must fail with `NoEmployee`.
 #[test]
-#[should_panic(expected = "Payroll agreement must have at least one employee to activate")]
 fn test_activate_agreement_no_employees_fails() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -315,12 +314,14 @@ fn test_activate_agreement_no_employees_fails() {
     let token = create_test_address(&env);
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    client.activate_agreement(&agreement_id);
+    assert_eq!(
+        client.try_activate_agreement(&agreement_id),
+        Err(Ok(PayrollError::NoEmployee))
+    );
 }
 
-/// Activating already active agreement must fail.
+/// Activating already active agreement must fail with `InvalidData`.
 #[test]
-#[should_panic(expected = "Agreement must be in Created status")]
 fn test_activate_already_active_fails() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -330,8 +331,11 @@ fn test_activate_already_active_fails() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
+    assert_eq!(
+        client.try_activate_agreement(&agreement_id),
+        Err(Ok(PayrollError::InvalidData))
+    );
 }
 
 /// Only employer can activate.
@@ -347,7 +351,7 @@ fn test_activate_unauthorized_fails() {
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
     env.mock_auths(&[]);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 }
 
 /// Activated_at timestamp is set after activation.
@@ -362,7 +366,7 @@ fn test_activated_at_timestamp_set() {
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
     let before = env.ledger().timestamp();
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
     let agreement = client.get_agreement(&agreement_id).unwrap();
     let activated_at = agreement.activated_at.unwrap();
     assert!(activated_at >= before);
@@ -413,7 +417,7 @@ fn test_get_agreement_status() {
         AgreementStatus::Created
     );
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
     assert_eq!(
         client.get_agreement(&agreement_id).unwrap().status,
         AgreementStatus::Active
@@ -451,7 +455,7 @@ fn test_agreement_activated_event() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
     let agreement = client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agreement.status, AgreementStatus::Active);
     assert!(agreement.activated_at.is_some());

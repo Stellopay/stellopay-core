@@ -140,7 +140,7 @@ fn setup_funded_payroll(
 ) -> u128 {
     let agreement_id = client.create_payroll_agreement(employer, token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, employee, &salary);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     seed_payroll_claim_storage(
         env,
@@ -189,7 +189,7 @@ fn setup_funded_escrow(
         });
     }
 
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
     agreement_id
 }
 
@@ -236,7 +236,7 @@ fn test_payroll_claim_zero_escrow_balance() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, &employee, &STANDARD_SALARY);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Seed with zero escrow balance.
     seed_payroll_claim_storage(
@@ -344,7 +344,7 @@ fn test_time_based_claim_escrow_drains_across_periods() {
         DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, amount_per_period);
     });
 
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Claim after 1 period — should succeed.
     advance_time(&env, ONE_DAY + 1);
@@ -377,7 +377,7 @@ fn test_batch_payroll_partial_escrow_failure() {
     let agreement_id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, &e1, &salary);
     client.add_employee_to_agreement(&agreement_id, &e2, &salary);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Fund for only 1 employee's 1 period.
     let escrow = salary;
@@ -434,7 +434,7 @@ fn test_payroll_claim_panics_without_onchain_tokens() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, &employee, &STANDARD_SALARY);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Set escrow balance in DataKey but do NOT mint tokens to the contract.
     env.as_contract(&contract_id, || {
@@ -480,7 +480,7 @@ fn test_time_based_claim_panics_without_onchain_tokens() {
         DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, STANDARD_SALARY * 4);
     });
 
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
     advance_time(&env, ONE_DAY + 1);
 
     // Panics on the token transfer.
@@ -528,7 +528,7 @@ fn test_pause_blocks_claim_resume_allows_claim() {
     );
 
     // Resume — claim should succeed.
-    client.resume_agreement(&agreement_id);
+    client.resume_agreement(&agreement_id).unwrap();
 
     let result = client.try_claim_payroll(&employee, &agreement_id, &0u32);
     assert!(result.is_ok());
@@ -571,7 +571,7 @@ fn test_escrow_pause_resume_preserves_state() {
     assert_eq!(result, Err(Ok(PayrollError::AgreementPaused)));
 
     // Resume — claim should succeed for the period that elapsed during pause.
-    client.resume_agreement(&agreement_id);
+    client.resume_agreement(&agreement_id).unwrap();
     let result = client.try_claim_time_based(&agreement_id);
     assert!(result.is_ok());
     assert_eq!(client.get_claimed_periods(&agreement_id), 2);
@@ -610,7 +610,7 @@ fn test_time_based_claim_during_and_after_grace_period() {
         DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, total);
     });
 
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Advance 2 periods and claim.
     advance_time(&env, period_seconds * 2 + 1);
@@ -618,7 +618,7 @@ fn test_time_based_claim_during_and_after_grace_period() {
     assert_eq!(client.get_claimed_periods(&agreement_id), 2);
 
     // Cancel agreement — grace period starts.
-    client.cancel_agreement(&agreement_id);
+    client.cancel_agreement(&agreement_id).unwrap();
     assert!(client.is_grace_period_active(&agreement_id));
 
     // Advance 1 more period within grace window — claim should succeed.
@@ -659,7 +659,7 @@ fn test_fund_and_retry_after_insufficient_balance() {
     // Start with zero escrow.
     let agreement_id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, &employee, &STANDARD_SALARY);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     seed_payroll_claim_storage(
         &env,
@@ -708,7 +708,7 @@ fn test_batch_payroll_error_codes() {
     let agreement_id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary);
     client.add_employee_to_agreement(&agreement_id, &other, &salary);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let escrow = salary * 10;
     mint(&env, &token, &contract_id, escrow);
@@ -760,7 +760,7 @@ fn test_batch_payroll_invalid_index_error_code() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let escrow = salary * 10;
     mint(&env, &token, &contract_id, escrow);
@@ -816,7 +816,7 @@ fn test_batch_payroll_duplicate_index_processed_once() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let escrow = salary * 10;
     mint(&env, &token, &contract_id, escrow);
@@ -877,7 +877,7 @@ fn test_batch_milestone_error_codes() {
 
     // Fund the accounted escrow for all milestones up front.
     mint(&env, &token, &employer, 1800);
-    client.fund_milestone_agreement(&agreement_id, &employer, &1800);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1800).unwrap();
 
     // Approve and claim milestone 1.
     client.approve_milestone(&agreement_id, &1u32);
@@ -1510,7 +1510,7 @@ fn test_batch_payroll_mixed_state_consistency() {
     client.add_employee_to_agreement(&agreement_id, &e1, &salary);
     client.add_employee_to_agreement(&agreement_id, &e2, &salary);
     client.add_employee_to_agreement(&agreement_id, &e3, &salary);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Fund for exactly 2 employees' 1 period.
     let escrow = salary * 2;
@@ -1586,7 +1586,7 @@ fn test_milestone_claim_on_paused_agreement() {
     client.add_milestone(&agreement_id, &1000);
     // Fund the accounted escrow so the approval invariant is satisfied.
     mint(&env, &token, &employer, 1000);
-    client.fund_milestone_agreement(&agreement_id, &employer, &1000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1000).unwrap();
     client.approve_milestone(&agreement_id, &1u32);
 
     // Pause the agreement.
@@ -1642,7 +1642,7 @@ fn test_milestone_double_claim() {
     client.add_milestone(&agreement_id, &1000);
     // Fund the accounted escrow so approval and the first claim succeed.
     mint(&env, &token, &employer, 1000);
-    client.fund_milestone_agreement(&agreement_id, &employer, &1000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1000).unwrap();
     client.approve_milestone(&agreement_id, &1u32);
 
     client.claim_milestone(&agreement_id, &1u32);
@@ -1684,10 +1684,10 @@ fn test_claim_rejected_after_grace_period_expiry() {
         DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, total);
     });
 
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Cancel immediately.
-    client.cancel_agreement(&agreement_id);
+    client.cancel_agreement(&agreement_id).unwrap();
 
     // Jump past the grace period.
     let grace_end = client.get_grace_period_end(&agreement_id).unwrap();

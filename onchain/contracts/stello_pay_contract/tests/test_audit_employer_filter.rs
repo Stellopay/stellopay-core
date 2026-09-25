@@ -24,8 +24,8 @@ fn only_returns_entries_for_the_requested_employer() {
 
     let agreement_a = payroll_client.create_payroll_agreement(&employer_a, &token, &3600);
     let agreement_b = payroll_client.create_payroll_agreement(&employer_b, &token, &3600);
-    payroll_client.cancel_agreement(&agreement_a);
-    payroll_client.cancel_agreement(&agreement_b);
+    payroll_client.cancel_agreement(&agreement_a).unwrap();
+    payroll_client.cancel_agreement(&agreement_b).unwrap();
 
     // 4 entries total: A created, B created, A cancelled, B cancelled.
     assert_eq!(payroll_client.get_audit_entry_count(), 4);
@@ -90,7 +90,7 @@ fn paginates_with_limit_and_resumes_from_next_start_id() {
 
     for _ in 0..5 {
         let agreement_id = payroll_client.create_payroll_agreement(&employer, &token, &3600);
-        payroll_client.cancel_agreement(&agreement_id);
+        payroll_client.cancel_agreement(&agreement_id).unwrap();
     }
     // 10 entries total for this employer (5 created + 5 cancelled).
     assert_eq!(payroll_client.get_audit_entry_count(), 10);

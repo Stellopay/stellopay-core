@@ -76,7 +76,7 @@ fn setup_funded_escrow(
     env.as_contract(&client.address, || {
         DataKey::set_agreement_escrow_balance(env, agreement_id, token, total);
     });
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
     agreement_id
 }
 
@@ -103,7 +103,7 @@ fn setup_funded_milestone(
     // set; approve/claim check that balance, not the raw token balance.
     let total = amount * (milestone_count as i128);
     mint(env, token, employer, total);
-    client.fund_milestone_agreement(&agreement_id, employer, &total);
+    client.fund_milestone_agreement(&agreement_id, employer, &total).unwrap();
     agreement_id
 }
 

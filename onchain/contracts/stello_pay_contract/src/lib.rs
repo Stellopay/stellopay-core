@@ -471,10 +471,17 @@ impl PayrollContract {
     /// - `from.require_auth()` is enforced.
     ///
     /// # Errors
-    /// Panics with descriptive messages for: unknown agreement, wrong caller,
-    /// non-positive amount, `Cancelled` or `Completed` status, arithmetic overflow.
-    pub fn fund_milestone_agreement(env: Env, agreement_id: u128, from: Address, amount: i128) {
-        payroll::fund_milestone_agreement(&env, agreement_id, from, amount);
+    /// Returns `Err(PayrollError)` for: unknown agreement (`AgreementNotFound`),
+    /// wrong caller (`Unauthorized`), non-positive amount (`MilestoneAmountInvalid`),
+    /// `Cancelled`/`Completed` status (`MilestoneAgreementInvalidStatus`), and
+    /// arithmetic overflow (`InvalidData`).
+    pub fn fund_milestone_agreement(
+        env: Env,
+        agreement_id: u128,
+        from: Address,
+        amount: i128,
+    ) -> Result<(), PayrollError> {
+        payroll::fund_milestone_agreement(&env, agreement_id, from, amount)
     }
 
     /// Adds a milestone to a milestone-based agreement.
@@ -688,8 +695,12 @@ impl PayrollContract {
     /// # Requirements
     /// - Agreement must be in Created status
     /// - Caller must be the employer
-    pub fn activate_agreement(env: Env, agreement_id: u128) {
-        payroll::activate_agreement(&env, agreement_id);
+    ///
+    /// # Errors
+    /// Returns `Err(PayrollError)` instead of trapping: `AgreementNotFound` (missing agreement),
+    /// `InvalidData` (not in `Created` status), `NoEmployee` (payroll mode with no employees).
+    pub fn activate_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
+        payroll::activate_agreement(&env, agreement_id)
     }
 
     /// Retrieves an agreement by ID.
@@ -1183,10 +1194,14 @@ impl PayrollContract {
     /// - Agreement returns to Active status
     /// - Claims can be processed again
     /// - All agreement data is preserved
+    /// # Errors
+    /// Returns `Err(PayrollError)` instead of trapping. Payroll/escrow agreements surface
+    /// `AgreementNotFound` / `InvalidData`; milestone agreements surface
+    /// `MilestoneAgreementInvalidStatus`.
     pub fn resume_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
         // Try new-style agreement first (payroll/escrow)
         if payroll::get_agreement(&env, agreement_id).is_some() {
-            payroll::resume_agreement(&env, agreement_id);
+            payroll::resume_agreement(&env, agreement_id)?;
             return Ok(());
         }
 
@@ -1243,8 +1258,12 @@ impl PayrollContract {
     /// - Sets cancelled_at timestamp
     /// - Claims are allowed during grace period
     /// - Refunds are prevented until grace period expires
-    pub fn cancel_agreement(env: Env, agreement_id: u128) {
-        payroll::cancel_agreement(&env, agreement_id);
+    ///
+    /// # Errors
+    /// Returns `Err(PayrollError)` instead of trapping: `AgreementNotFound` (missing agreement),
+    /// `InvalidData` (not in `Active` or `Created` status).
+    pub fn cancel_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
+        payroll::cancel_agreement(&env, agreement_id)
     }
 
     /// Finalizes the grace period and allows refund of remaining balance.
@@ -1260,8 +1279,13 @@ impl PayrollContract {
     /// # Behavior
     /// - Refunds remaining escrow balance to employer
     /// - Marks agreement as ready for finalization
-    pub fn finalize_grace_period(env: Env, agreement_id: u128) {
-        payroll::finalize_grace_period(&env, agreement_id);
+    ///
+    /// # Errors
+    /// Returns `Err(PayrollError)` instead of trapping: `AgreementNotFound` (missing agreement),
+    /// `InvalidData` (not cancelled, corrupt cancellation record, timestamp overflow, or the grace
+    /// period has not yet expired). Already-finalized agreements return `Ok(())` (idempotent).
+    pub fn finalize_grace_period(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
+        payroll::finalize_grace_period(&env, agreement_id)
     }
 
     /// Checks if the grace period is currently active for a cancelled agreement.

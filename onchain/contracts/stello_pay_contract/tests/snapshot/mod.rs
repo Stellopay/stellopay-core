@@ -138,7 +138,7 @@ fn snapshot_payroll_claim_and_batch_result() {
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &e1, &1000i128);
     client.add_employee_to_agreement(&agreement_id, &e2, &2000i128);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Fund escrow and advance time so one period is claimable.
     let total = 3000i128;
@@ -186,7 +186,7 @@ fn snapshot_dispute_and_fx_helpers() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &base, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000i128);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     client.set_arbiter(&employer, &arbiter);
     let before = client.get_dispute_status(&agreement_id);
@@ -375,7 +375,7 @@ fn snapshot_payroll_lifecycle_created_funded_first_claim() {
     let after_add_emp = client.get_agreement(&id).unwrap();
     let employees = client.get_agreement_employees(&id);
 
-    client.activate_agreement(&id);
+    client.activate_agreement(&id).unwrap();
     let after_activate = client.get_agreement(&id).unwrap();
 
     let escrow_total: i128 = SALARY * 3;
@@ -441,7 +441,7 @@ fn snapshot_dispute_opened_escalation_resolution() {
 
     let id = client.create_payroll_agreement(&employer, &token, &GRACE);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id);
+    client.activate_agreement(&id).unwrap();
 
     let escrow_total: i128 = SALARY * 2;
     seed_escrow(&env, &contract_id, id, &token, escrow_total);
@@ -452,7 +452,7 @@ fn snapshot_dispute_opened_escalation_resolution() {
     let dispute_before = client.get_dispute_status(&id);
 
     // Phase 2: Cancel -> starts grace period
-    client.cancel_agreement(&id);
+    client.cancel_agreement(&id).unwrap();
     let after_cancel = client.get_agreement(&id).unwrap();
 
     // Phase 3: Raise dispute halfway through grace window
@@ -476,8 +476,8 @@ fn snapshot_dispute_opened_escalation_resolution() {
     // Boundary: dispute after grace window expires must fail
     let id2 = client.create_payroll_agreement(&employer, &token, &GRACE);
     client.add_employee_to_agreement(&id2, &employee, &SALARY);
-    client.activate_agreement(&id2);
-    client.cancel_agreement(&id2);
+    client.activate_agreement(&id2).unwrap();
+    client.cancel_agreement(&id2).unwrap();
     tick(&env, GRACE + 1);
     let dispute_outside_grace_rejected = client.try_raise_dispute(&employer, &id2).is_err();
 
@@ -532,7 +532,7 @@ fn snapshot_emergency_pause_blocks_and_unblocks_operations() {
     // Setup payroll agreement
     let payroll_id = client.create_payroll_agreement(&employer, &token, &GRACE);
     client.add_employee_to_agreement(&payroll_id, &employee, &SALARY);
-    client.activate_agreement(&payroll_id);
+    client.activate_agreement(&payroll_id).unwrap();
     seed_escrow(&env, &contract_id, payroll_id, &token, SALARY * 5);
 
     env.as_contract(&contract_id, || {
@@ -636,7 +636,7 @@ fn snapshot_milestone_completion_all_claimed() {
     // Security: claim while paused must fail
     client.pause_agreement(&id);
     let claim_while_paused = client.try_claim_milestone(&id, &1u32).is_err();
-    client.resume_agreement(&id);
+    client.resume_agreement(&id).unwrap();
 
     // Claim milestone 1
     client.claim_milestone(&id, &1u32);
@@ -709,13 +709,13 @@ fn snapshot_pause_resume_preserves_agreement_fields() {
 
     let id = client.create_payroll_agreement(&employer, &token, &GRACE);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id);
+    client.activate_agreement(&id).unwrap();
 
     let before_pause = client.get_agreement(&id).unwrap();
 
     client.pause_agreement(&id);
     let while_paused = client.get_agreement(&id).unwrap();
-    client.resume_agreement(&id);
+    client.resume_agreement(&id).unwrap();
     let after_resume = client.get_agreement(&id).unwrap();
 
     let fields_before = stable_agreement_fields(&before_pause);
@@ -753,17 +753,17 @@ fn snapshot_repeated_transitions_rejected() {
 
     let id = client.create_payroll_agreement(&employer, &token, &GRACE);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id);
+    client.activate_agreement(&id).unwrap();
 
     let double_activate_rejected = client.try_activate_agreement(&id).is_err();
 
     client.pause_agreement(&id);
     let double_pause_rejected = client.try_pause_agreement(&id).is_err();
 
-    client.resume_agreement(&id);
+    client.resume_agreement(&id).unwrap();
     let double_resume_rejected = client.try_resume_agreement(&id).is_err();
 
-    client.cancel_agreement(&id);
+    client.cancel_agreement(&id).unwrap();
     let double_cancel_rejected = client.try_cancel_agreement(&id).is_err();
 
     let snapshot = format!(
@@ -813,7 +813,7 @@ fn snapshot_escrow_lifecycle_created_funded_first_claim() {
 
     let after_create = client.get_agreement(&id).unwrap();
 
-    client.activate_agreement(&id);
+    client.activate_agreement(&id).unwrap();
     let after_activate = client.get_agreement(&id).unwrap();
 
     seed_escrow(&env, &contract_id, id, &token, TOTAL);

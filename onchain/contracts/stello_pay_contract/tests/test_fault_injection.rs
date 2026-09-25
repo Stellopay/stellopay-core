@@ -63,7 +63,7 @@ fn chaos_token_transfer_failure_does_not_corrupt_state() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, &employee, &1_000i128);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Set up DataKey-based escrow tracking but do NOT mint any tokens to the contract.
     env.as_contract(&contract_id, || {
@@ -116,7 +116,7 @@ fn chaos_escrow_misconfiguration_then_recovery() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, &employee, &1_000i128);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Misconfigured storage: escrow balance says 0 while contract has tokens.
     mint(&env, &token, &contract_id, 10_000);
@@ -161,7 +161,7 @@ fn chaos_batch_partial_completion_and_rollback() {
     let agreement_id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, &e1, &1_000i128);
     client.add_employee_to_agreement(&agreement_id, &e2, &1_000i128);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Fund for only one employee period and set DataKey storage accordingly.
     mint(&env, &token, &contract_id, 1_000);
@@ -217,7 +217,7 @@ fn chaos_claim_in_token_transfer_failure_does_not_corrupt_state() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &base_token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, &employee, &1_000i128);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Set a valid exchange rate so convert_amount succeeds.
     // 1 base = 2 payout (rate = 2_000_000)

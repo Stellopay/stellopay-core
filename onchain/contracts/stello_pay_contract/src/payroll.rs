@@ -358,49 +358,57 @@ pub fn create_milestone_agreement(
 /// - Reads + writes `MilestoneKey::MilestoneEscrowBalance(agreement_id)` once.
 /// - Executes exactly one `token.transfer(from, contract_address, amount)`.
 ///
-/// # Errors / panics
-/// - "Agreement not found" — `agreement_id` does not correspond to a known milestone agreement.
-/// - "Unauthorized: only the employer can fund a milestone agreement" — `from` ≠ stored employer.
-/// - "Amount must be positive" — `amount` is zero or negative.
-/// - "Cannot fund a Cancelled agreement" — agreement status is `Cancelled`.
-/// - "Cannot fund a Completed agreement" — agreement status is `Completed`.
-/// - "Escrow balance overflow" — cumulative funded amount would overflow `i128`.
-/// - Token-transfer panics propagated from the Soroban token host.
+/// # Errors
+/// Returns `Err(PayrollError)` for every recoverable precondition — this entry
+/// point never traps on a caller-recoverable condition:
+/// * `PayrollError::AgreementNotFound` — `agreement_id` does not correspond to a known milestone
+///   agreement, or its status/token record is missing.
+/// * `PayrollError::Unauthorized` — `from` ≠ the stored employer.
+/// * `PayrollError::MilestoneAmountInvalid` — `amount` is zero or negative.
+/// * `PayrollError::MilestoneAgreementInvalidStatus` — agreement status is `Cancelled` or
+///   `Completed`.
+/// * `PayrollError::InvalidData` — cumulative funded amount would overflow `i128`.
+///
+/// # Panics
+/// `from.require_auth()` and the token `transfer` call into the Soroban host and
+/// may trap on authentication or token-level failure; those are external
+/// failures, not recoverable contract preconditions.
 ///
 /// # Security
 /// The accounted balance (`MilestoneEscrowBalance`) is the sole source of
 /// truth used by `approve_milestone` and `claim_milestone` invariant checks.
 /// Raw `token.balance()` of the contract is intentionally **not** consulted
 /// so that third-party deposits cannot inflate claimable funds.
-pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, amount: i128) {
+pub fn fund_milestone_agreement(
+    env: &Env,
+    agreement_id: u128,
+    from: Address,
+    amount: i128,
+) -> Result<(), PayrollError> {
     let employer: Address = env
         .storage()
         .persistent()
         .get(&MilestoneKey::Employer(agreement_id))
-        .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
+        .ok_or(PayrollError::AgreementNotFound)?;
 
     // Only the agreement's employer may fund it.
-    assert!(
-        from == employer,
-        "Unauthorized: only the employer can fund a milestone agreement"
-    );
+    if from != employer {
+        return Err(PayrollError::Unauthorized);
+    }
     from.require_auth();
 
-    assert!(amount > 0, "Amount must be positive");
+    if amount <= 0 {
+        return Err(PayrollError::MilestoneAmountInvalid);
+    }
 
     let status: AgreementStatus = env
         .storage()
         .persistent()
         .get(&MilestoneKey::Status(agreement_id))
-        .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
-    assert!(
-        status != AgreementStatus::Cancelled,
-        "Cannot fund a Cancelled agreement"
-    );
-    assert!(
-        status != AgreementStatus::Completed,
-        "Cannot fund a Completed agreement"
-    );
+        .ok_or(PayrollError::AgreementNotFound)?;
+    if status == AgreementStatus::Cancelled || status == AgreementStatus::Completed {
+        return Err(PayrollError::MilestoneAgreementInvalidStatus);
+    }
 
     let current_balance: i128 = env
         .storage()
@@ -409,7 +417,7 @@ pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, am
         .unwrap_or(0i128);
     let new_balance = current_balance
         .checked_add(amount)
-        .unwrap_or_else(|| panic_with_error!(env, PayrollError::InvalidData));
+        .ok_or(PayrollError::InvalidData)?;
     env.storage().persistent().set(
         &MilestoneKey::MilestoneEscrowBalance(agreement_id),
         &new_balance,
@@ -419,7 +427,7 @@ pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, am
         .storage()
         .persistent()
         .get(&MilestoneKey::Token(agreement_id))
-        .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
+        .ok_or(PayrollError::AgreementNotFound)?;
     TokenClient::new(env, &token_address).transfer(&from, env.current_contract_address(), &amount);
 
     emit_milestone_funded(
@@ -431,6 +439,8 @@ pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, am
             total_escrow_balance: new_balance,
         },
     );
+
+    Ok(())
 }
 
 /// Adds a milestone to an agreement
@@ -1901,25 +1911,24 @@ pub fn add_employee_to_agreement(
 /// * `agreement.activated_at` is set to the current ledger timestamp.
 /// * The updated agreement is persisted to durable storage.
 ///
-/// # Panics
+/// # Errors
 ///
-/// * If the agreement is not in `Created` status (includes already-Active, Paused, Cancelled,
-///   Completed, or Disputed agreements).
-/// * If the agreement is in `Payroll` mode and has no employees.
+/// * `PayrollError::AgreementNotFound` — the agreement does not exist.
+/// * `PayrollError::InvalidData` — the agreement is not in `Created` status (includes already-Active,
+///   Paused, Cancelled, Completed, or Disputed agreements).
+/// * `PayrollError::NoEmployee` — the agreement is in `Payroll` mode and has no employees.
 ///
 /// # Emits
 ///
 /// * [`AgreementActivatedEvent`] with the `agreement_id`.
-pub fn activate_agreement(env: &Env, agreement_id: u128) {
-    let mut agreement = get_agreement(env, agreement_id)
-        .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
+pub fn activate_agreement(env: &Env, agreement_id: u128) -> Result<(), PayrollError> {
+    let mut agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     agreement.employer.require_auth();
 
-    assert!(
-        agreement.status == AgreementStatus::Created,
-        "Agreement must be in Created status"
-    );
+    if agreement.status != AgreementStatus::Created {
+        return Err(PayrollError::InvalidData);
+    }
 
     if agreement.mode == AgreementMode::Payroll {
         let employees: Vec<EmployeeInfo> = env
@@ -1927,10 +1936,9 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
             .persistent()
             .get(&StorageKey::AgreementEmployees(agreement_id))
             .unwrap_or(Vec::new(env));
-        assert!(
-            !employees.is_empty(),
-            "Payroll agreement must have at least one employee to activate"
-        );
+        if employees.is_empty() {
+            return Err(PayrollError::NoEmployee);
+        }
     }
 
     agreement.status = AgreementStatus::Active;
@@ -1949,6 +1957,8 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
         None,
         Some(agreement.total_amount),
     );
+
+    Ok(())
 }
 
 /// Set Arbiter
@@ -3923,24 +3933,23 @@ pub fn pause_agreement(env: &Env, agreement_id: u128) -> Result<(), PayrollError
 /// * Claims can be processed again.
 /// * All agreement data (employees, amounts, timestamps) is preserved.
 ///
-/// # Panics
+/// # Errors
 ///
-/// * If the agreement is not in `Paused` status (includes Active, Created, Cancelled, Completed,
-///   or Disputed agreements).
+/// * `PayrollError::AgreementNotFound` — the agreement does not exist.
+/// * `PayrollError::InvalidData` — the agreement is not in `Paused` status (includes Active,
+///   Created, Cancelled, Completed, or Disputed agreements).
 ///
 /// # Emits
 ///
 /// * [`AgreementResumedEvent`] with the `agreement_id`.
-pub fn resume_agreement(env: &Env, agreement_id: u128) {
-    let mut agreement = get_agreement(env, agreement_id)
-        .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
+pub fn resume_agreement(env: &Env, agreement_id: u128) -> Result<(), PayrollError> {
+    let mut agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     agreement.employer.require_auth();
 
-    assert!(
-        agreement.status == AgreementStatus::Paused,
-        "Can only resume Paused agreements"
-    );
+    if agreement.status != AgreementStatus::Paused {
+        return Err(PayrollError::InvalidData);
+    }
 
     agreement.status = AgreementStatus::Active;
 
@@ -3949,6 +3958,8 @@ pub fn resume_agreement(env: &Env, agreement_id: u128) {
         .set(&StorageKey::Agreement(agreement_id), &agreement);
 
     emit_agreement_resumed(env, AgreementResumedEvent { agreement_id });
+
+    Ok(())
 }
 
 /// Pauses a milestone-based agreement, preventing claims
@@ -4109,25 +4120,24 @@ fn add_to_employer_agreements(env: &Env, employer: &Address, agreement_id: u128)
 /// * Claims are still allowed during the grace period but blocked after expiry.
 /// * Refunds are prevented until the grace period expires and `finalize_grace_period` is called.
 ///
-/// # Panics
+/// # Errors
 ///
-/// * If the agreement is not in `Active` or `Created` status (includes already-Cancelled, Paused,
-///   Completed, or Disputed agreements).
+/// * `PayrollError::AgreementNotFound` — the agreement does not exist.
+/// * `PayrollError::InvalidData` — the agreement is not in `Active` or `Created` status (includes
+///   already-Cancelled, Paused, Completed, or Disputed agreements).
 ///
 /// # Emits
 ///
 /// * [`AgreementCancelledEvent`] with the `agreement_id`.
 /// * An audit entry of type `AuditEvent::AgreementCancelled` for the employer.
-pub fn cancel_agreement(env: &Env, agreement_id: u128) {
-    let mut agreement = get_agreement(env, agreement_id)
-        .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
+pub fn cancel_agreement(env: &Env, agreement_id: u128) -> Result<(), PayrollError> {
+    let mut agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     agreement.employer.require_auth();
 
-    assert!(
-        agreement.status == AgreementStatus::Active || agreement.status == AgreementStatus::Created,
-        "Can only cancel Active or Created agreements"
-    );
+    if agreement.status != AgreementStatus::Active && agreement.status != AgreementStatus::Created {
+        return Err(PayrollError::InvalidData);
+    }
 
     agreement.status = AgreementStatus::Cancelled;
     agreement.cancelled_at = Some(env.ledger().timestamp());
@@ -4145,6 +4155,8 @@ pub fn cancel_agreement(env: &Env, agreement_id: u128) {
         None,
         Some(agreement.total_amount),
     );
+
+    Ok(())
 }
 
 /// Finalizes the grace period and allows refund of remaining balance.
@@ -4161,20 +4173,24 @@ pub fn cancel_agreement(env: &Env, agreement_id: u128) {
 /// # Behavior
 /// - Refunds remaining escrow balance to employer
 /// - Marks agreement as ready for finalization
-pub fn finalize_grace_period(env: &Env, agreement_id: u128) {
-    let agreement = get_agreement(env, agreement_id)
-        .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
+///
+/// # Errors
+///
+/// * `PayrollError::AgreementNotFound` — the agreement does not exist.
+/// * `PayrollError::InvalidData` — the agreement is not `Cancelled`, the cancellation timestamp is
+///   missing/corrupt, the grace-end timestamp overflows, or the grace period has not yet expired.
+///
+/// Calling this after the agreement is already finalized is an idempotent `Ok(())` no-op.
+pub fn finalize_grace_period(env: &Env, agreement_id: u128) -> Result<(), PayrollError> {
+    let agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
     agreement.employer.require_auth();
 
-    assert!(
-        agreement.status == AgreementStatus::Cancelled,
-        "Agreement must be cancelled"
-    );
+    if agreement.status != AgreementStatus::Cancelled {
+        return Err(PayrollError::InvalidData);
+    }
 
-    let cancelled_at = agreement
-        .cancelled_at
-        .unwrap_or_else(|| panic_with_error!(env, PayrollError::InvalidData));
+    let cancelled_at = agreement.cancelled_at.ok_or(PayrollError::InvalidData)?;
 
     let current_time = env.ledger().timestamp();
     let effective_grace = effective_cancelled_grace_duration_seconds(
@@ -4184,17 +4200,16 @@ pub fn finalize_grace_period(env: &Env, agreement_id: u128) {
     );
     let grace_end = cancelled_at
         .checked_add(effective_grace)
-        .unwrap_or_else(|| panic_with_error!(env, PayrollError::InvalidData));
+        .ok_or(PayrollError::InvalidData)?;
 
-    assert!(
-        current_time >= grace_end,
-        "Grace period has not expired yet"
-    );
+    if current_time < grace_end {
+        return Err(PayrollError::InvalidData);
+    }
 
     // Idempotency guard: if already finalized, return early as a no-op
     // rather than re-executing the refund or re-emitting the event.
     if DataKey::is_agreement_grace_period_finalized(env, agreement_id) {
-        return;
+        return Ok(());
     }
 
     // Refund remaining balance using escrow contract if available
@@ -4232,6 +4247,8 @@ pub fn finalize_grace_period(env: &Env, agreement_id: u128) {
 
     emit_grace_period_finalized(env, GracePeriodFinalizedEvent { agreement_id });
     DataKey::set_agreement_grace_period_finalized(env, agreement_id);
+
+    Ok(())
 }
 
 /// Checks if the grace period is currently active for a cancelled agreement.

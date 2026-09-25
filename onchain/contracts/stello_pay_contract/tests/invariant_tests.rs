@@ -63,7 +63,7 @@ fn test_invariant_escrow_claimed_periods_limit() {
     env.as_contract(&contract_id, || {
         DataKey::set_agreement_escrow_balance(&env, agreement_id, &token_id, 2000i128);
     });
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Jump 1 hour - claim 1 period
     env.ledger().with_mut(|l| l.timestamp = 3600);
@@ -123,7 +123,7 @@ fn test_invariant_milestone_balance_sufficient() {
 
     // Fund contract
     token_admin_client.mint(&employer, &1000i128);
-    client.fund_milestone_agreement(&agreement_id, &employer, &1000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1000i128).unwrap();
 
     // Should succeed
     client.approve_milestone(&agreement_id, &1u32);
@@ -149,7 +149,7 @@ fn test_invariant_milestone_claim_insufficient_balance() {
 
     // Fund contract
     token_admin_client.mint(&employer, &1000i128);
-    client.fund_milestone_agreement(&agreement_id, &employer, &1000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1000i128).unwrap();
     client.approve_milestone(&agreement_id, &1u32);
 
     // Now someone steals the funds from the contract (mocked by manual balance update).
@@ -200,7 +200,7 @@ fn test_invariant_escrow_conservation_across_lifecycle() {
     env.as_contract(&contract_id, || {
         DataKey::set_agreement_escrow_balance(&env, agreement_id, &token_id, total_amount);
     });
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Helper: Assert conservation at every step
     let assert_conservation = || {
@@ -276,7 +276,7 @@ fn test_invariant_payroll_multi_employee_conservation() {
         DataKey::set_employee_claimed_periods(&env, agreement_id, 2, 0);
     });
 
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let assert_conservation = || {
         env.as_contract(&contract_id, || {
@@ -354,7 +354,7 @@ fn test_invariant_dispute_resolution_bounds() {
             .set(&StorageKey::Agreement(agreement_id), &agreement);
     });
 
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Raise dispute
     client.raise_dispute(&employer, &agreement_id);
@@ -436,7 +436,7 @@ fn test_invariant_claimed_periods_monotonic_bounded() {
         DataKey::set_employee_claimed_periods(&env, agreement_id, 0, 0);
     });
 
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let mut prev_claimed = 0u32;
 

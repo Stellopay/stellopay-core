@@ -157,7 +157,7 @@ fn funded_milestone(
         token,
         &soroban_sdk::vec![env, 1i128],
     );
-    client.fund_milestone_agreement(&agreement_id, employer, &50_000i128);
+    client.fund_milestone_agreement(&agreement_id, employer, &50_000i128).unwrap();
     client.add_milestone(&agreement_id, &1_000i128);
     (agreement_id, 1u32)
 }
@@ -211,7 +211,7 @@ fn test_expire_milestone_escrow_unchanged() {
         &token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &employer, &fund_amount);
+    client.fund_milestone_agreement(&agreement_id, &employer, &fund_amount).unwrap();
     client.add_milestone(&agreement_id, &1_000i128);
 
     // Expiry must NOT touch escrow.
@@ -236,7 +236,7 @@ fn test_expire_one_milestone_does_not_affect_siblings() {
         &token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &employer, &50_000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &50_000i128).unwrap();
     client.add_milestone(&agreement_id, &1_000i128); // id=1
     client.add_milestone(&agreement_id, &2_000i128); // id=2
 
@@ -312,7 +312,7 @@ fn test_expire_claimed_milestone_returns_error() {
         &token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &employer, &50_000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &50_000i128).unwrap();
     client.add_milestone(&agreement_id, &1_000i128); // id=1 — will be claimed
     client.add_milestone(&agreement_id, &1_000i128); // id=2 — keeps agreement alive
 

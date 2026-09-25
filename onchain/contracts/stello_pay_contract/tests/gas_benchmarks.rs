@@ -256,7 +256,7 @@ fn setup_payroll_for_periods(
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, &employee, &SALARY);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let now = env.ledger().timestamp();
     let escrow = SALARY * (periods as i128) * 2;
@@ -304,7 +304,7 @@ fn setup_funded_milestones(
 
     let total_amount = amount * n as i128;
     StellarAssetClient::new(env, &token).mint(&employer, &total_amount);
-    client.fund_milestone_agreement(&agreement_id, &employer, &total_amount);
+    client.fund_milestone_agreement(&agreement_id, &employer, &total_amount).unwrap();
 
     for i in 1..=(n as u32) {
         client.approve_milestone(&agreement_id, &i);

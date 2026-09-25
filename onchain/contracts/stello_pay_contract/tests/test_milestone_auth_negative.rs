@@ -43,7 +43,7 @@ fn create_funded_agreement(
         token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&id, employer, &100_000i128);
+    client.fund_milestone_agreement(&id, employer, &100_000i128).unwrap();
     client.add_milestone(&id, &10_000i128);
     id
 }
@@ -133,7 +133,7 @@ fn test_batch_claim_second_milestone_after_first_claimed() {
         &token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&id, &employer, &100_000i128);
+    client.fund_milestone_agreement(&id, &employer, &100_000i128).unwrap();
     client.add_milestone(&id, &10_000i128);
     client.add_milestone(&id, &20_000i128);
     client.approve_milestone(&id, &1u32);

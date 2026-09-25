@@ -148,7 +148,7 @@ fn setup_active_escrow(
         &period_seconds,
         &(num_periods),
     );
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let now = env.ledger().timestamp();
     let total = amount_per_period * (num_periods as i128);
@@ -186,7 +186,7 @@ fn setup_active_payroll(
     for (emp, salary) in employees.iter() {
         client.add_employee_to_agreement(&agreement_id, emp, salary);
     }
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let now = env.ledger().timestamp();
     let total_per_period: i128 = employees.iter().map(|(_, s)| s).sum();
@@ -653,7 +653,7 @@ fn test_milestone_approval_does_not_transfer_funds() {
 
     // Fund the milestone agreement
     mint(&env, &token, &employer, STANDARD_SALARY);
-    client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY);
+    client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY).unwrap();
 
     client.approve_milestone(&agreement_id, &1u32);
 
@@ -682,7 +682,7 @@ fn test_milestone_claim_succeeds_immediately_after_approval() {
 
     // Fund the milestone agreement
     mint(&env, &token, &employer, STANDARD_SALARY);
-    client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY);
+    client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY).unwrap();
 
     client.approve_milestone(&agreement_id, &1u32);
     client.claim_milestone(&agreement_id, &1u32);
@@ -712,7 +712,7 @@ fn test_milestone_double_claim_rejected() {
 
     // Fund the milestone agreement
     mint(&env, &token, &employer, STANDARD_SALARY);
-    client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY);
+    client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY).unwrap();
 
     client.approve_milestone(&agreement_id, &1u32);
     client.claim_milestone(&agreement_id, &1u32);
@@ -742,7 +742,7 @@ fn test_milestone_out_of_order_approval_and_claim() {
 
     // Fund the milestone agreement
     mint(&env, &token, &employer, 600i128);
-    client.fund_milestone_agreement(&agreement_id, &employer, &600i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &600i128).unwrap();
 
     // Approve and claim milestone 3 first.
     client.approve_milestone(&agreement_id, &3u32);
@@ -779,7 +779,7 @@ fn test_milestone_wrong_caller_cannot_claim() {
 
     // Fund the milestone agreement
     mint(&env, &token, &employer, STANDARD_SALARY);
-    client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY);
+    client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY).unwrap();
 
     client.approve_milestone(&agreement_id, &1u32);
 
@@ -808,7 +808,7 @@ fn test_milestone_wrong_caller_cannot_approve() {
 
     // Fund the milestone agreement
     mint(&env, &token, &employer, STANDARD_SALARY);
-    client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY);
+    client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY).unwrap();
 
     env.mock_auths(&[]); // strip all auth — approve must fail
     client.approve_milestone(&agreement_id, &1u32);
@@ -834,7 +834,7 @@ fn test_milestone_claim_blocked_when_paused() {
 
     // Fund the milestone agreement
     mint(&env, &token, &employer, STANDARD_SALARY);
-    client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY);
+    client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY).unwrap();
 
     client.approve_milestone(&agreement_id, &1u32);
     client.pause_agreement(&agreement_id);
@@ -862,7 +862,7 @@ fn test_milestone_batch_claim_only_approved() {
 
     // Fund the milestone agreement
     mint(&env, &token, &employer, 10_000i128);
-    client.fund_milestone_agreement(&agreement_id, &employer, &10_000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &10_000i128).unwrap();
 
     client.approve_milestone(&agreement_id, &1u32);
     client.approve_milestone(&agreement_id, &3u32);
@@ -902,7 +902,7 @@ fn test_milestone_batch_claim_skips_duplicates() {
 
     // Fund the milestone agreement
     mint(&env, &token, &employer, 10_000i128);
-    client.fund_milestone_agreement(&agreement_id, &employer, &10_000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &10_000i128).unwrap();
 
     client.approve_milestone(&agreement_id, &1u32);
 
@@ -937,7 +937,7 @@ fn test_milestone_batch_claim_partial_success_correct_counts() {
 
     // Fund the milestone agreement
     mint(&env, &token, &employer, 10_000i128);
-    client.fund_milestone_agreement(&agreement_id, &employer, &10_000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &10_000i128).unwrap();
 
     client.approve_milestone(&agreement_id, &1u32);
 
@@ -971,7 +971,7 @@ fn test_milestone_invalid_id_rejected() {
 
     // Fund the milestone agreement
     mint(&env, &token, &employer, STANDARD_SALARY);
-    client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY);
+    client.fund_milestone_agreement(&agreement_id, &employer, &STANDARD_SALARY).unwrap();
 
     let result = client.try_approve_milestone(&agreement_id, &99u32); // does not exist
     assert_eq!(result, Err(Ok(PayrollError::MilestoneNotFound)));
@@ -1144,7 +1144,7 @@ fn test_payroll_claim_blocked_after_grace_period_expired() {
     // Use a payroll agreement with a known grace period.
     let agreement_id = client.create_payroll_agreement(&employer, &token, &grace_period);
     client.add_employee_to_agreement(&agreement_id, &employee, &STANDARD_SALARY);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let now = env.ledger().timestamp();
     let escrow_total = STANDARD_SALARY * 10;
@@ -1163,7 +1163,7 @@ fn test_payroll_claim_blocked_after_grace_period_expired() {
 
     // Advance one period, then cancel.
     advance_time(&env, ONE_DAY);
-    client.cancel_agreement(&agreement_id);
+    client.cancel_agreement(&agreement_id).unwrap();
 
     // Advance past the grace period.
     advance_time(&env, grace_period + ONE_SECOND);
@@ -1197,7 +1197,7 @@ fn test_payroll_claim_in_token_applies_fx_rate() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &base_token, &ONE_WEEK);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let now = env.ledger().timestamp();
     let escrow_payout: i128 = 20_000;
@@ -1254,7 +1254,7 @@ fn test_composite_pause_resume_time_trigger_fires_after_resume() {
     assert!(client.try_claim_time_based(&agreement_id).is_err());
 
     // Resume and retry — must succeed.
-    client.resume_agreement(&agreement_id);
+    client.resume_agreement(&agreement_id).unwrap();
     client.claim_time_based(&agreement_id);
     assert_eq!(
         client.get_agreement(&agreement_id).unwrap().claimed_periods,
@@ -1304,7 +1304,7 @@ fn test_composite_emergency_pause_blocks_all_trigger_types() {
     );
     client.add_milestone(&ms_id, &STANDARD_SALARY);
     mint(&env, &token, &employer, STANDARD_SALARY);
-    client.fund_milestone_agreement(&ms_id, &employer, &STANDARD_SALARY);
+    client.fund_milestone_agreement(&ms_id, &employer, &STANDARD_SALARY).unwrap();
     client.approve_milestone(&ms_id, &1u32);
 
     // Advance past one period.
@@ -1369,7 +1369,7 @@ fn test_composite_grace_period_claim_succeeds_then_expires() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &grace_period);
     client.add_employee_to_agreement(&agreement_id, &employee, &STANDARD_SALARY);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let now = env.ledger().timestamp();
     let escrow_total = STANDARD_SALARY * 10;
@@ -1388,7 +1388,7 @@ fn test_composite_grace_period_claim_succeeds_then_expires() {
 
     // Advance one period, then cancel.
     advance_time(&env, ONE_DAY);
-    client.cancel_agreement(&agreement_id);
+    client.cancel_agreement(&agreement_id).unwrap();
     assert!(client.is_grace_period_active(&agreement_id));
 
     // Claim within grace period must succeed.

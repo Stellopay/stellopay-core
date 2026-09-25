@@ -79,7 +79,7 @@ fn full_setup(
     client.initialize(&owner);
     let agreement_id = client.create_payroll_agreement(&employer, &token_addr, &86400);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     env.as_contract(&client.address, || {
         use stello_pay_contract::storage::DataKey;
@@ -436,7 +436,7 @@ fn test_pause_resume_agreement() {
 fn test_cancel_and_grace_period() {
     let env = Env::default();
     let (client, _owner, _employer, _employee, _arbiter, _token, agreement_id) = full_setup(&env);
-    client.cancel_agreement(&agreement_id);
+    client.cancel_agreement(&agreement_id).unwrap();
     assert!(client.is_grace_period_active(&agreement_id));
     assert!(client.get_grace_period_end(&agreement_id).is_some());
 }
@@ -446,7 +446,7 @@ fn test_finalize_grace_period_fails_before_expiry() {
     let env = Env::default();
     let (client, _owner, _employer, _employee, _arbiter, _token, agreement_id) = full_setup(&env);
     env.mock_all_auths();
-    client.cancel_agreement(&agreement_id);
+    client.cancel_agreement(&agreement_id).unwrap();
     let result = client.try_finalize_grace_period(&agreement_id);
     assert!(result.is_err());
 }

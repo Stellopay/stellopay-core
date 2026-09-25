@@ -139,7 +139,7 @@ fn test_claim_payroll_in_different_token_uses_fx_rate() {
     client.add_employee_to_agreement(&agreement_id, &employee, &salary_per_period);
 
     // Activate agreement so claims are allowed after setup.
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // ---------------------------------------------------------------------
     // Seed DataKey metadata and escrow for the payout token.
@@ -396,7 +396,7 @@ fn test_claim_payroll_in_token_rounding_to_zero_rejects_and_does_not_burn_period
 
     let employee = Address::generate(&env);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary_per_period);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let contract_address = client.address.clone();
     let escrow_total: i128 = 10_000;
@@ -479,7 +479,7 @@ fn test_claim_payroll_in_token_accumulated_periods_escape_dust_guard() {
     let agreement_id = client.create_payroll_agreement(&employer, &base_token, &grace_period);
     let employee = Address::generate(&env);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary_per_period);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let contract_address = client.address.clone();
     let escrow_total: i128 = 10_000;
@@ -546,7 +546,7 @@ fn test_claim_payroll_in_token_fractional_rate_floors_not_rounds() {
     let agreement_id = client.create_payroll_agreement(&employer, &base_token, &grace_period);
     let employee = Address::generate(&env);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary_per_period);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let contract_address = client.address.clone();
     let escrow_total: i128 = 10_000;

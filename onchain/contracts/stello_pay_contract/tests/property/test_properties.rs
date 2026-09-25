@@ -203,7 +203,7 @@ proptest! {
             }
         });
 
-        client.activate_agreement(&agreement_id);
+        client.activate_agreement(&agreement_id).unwrap();
 
         // Track total deposits
         let total_deposited = initial_escrow;
@@ -329,7 +329,7 @@ proptest! {
         env.as_contract(&contract_id, || {
             DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, total_amount);
         });
-        client.activate_agreement(&agreement_id);
+        client.activate_agreement(&agreement_id).unwrap();
 
         // Attempt multiple claims
         for _ in 0..claim_attempts {
@@ -404,7 +404,7 @@ proptest! {
             }
         });
 
-        client.activate_agreement(&agreement_id);
+        client.activate_agreement(&agreement_id).unwrap();
 
         // Track previous claimed_periods for monotonicity check
         let mut prev_claimed = vec![0u32; employee_count as usize];
@@ -481,7 +481,7 @@ proptest! {
             DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, escrow_balance);
         });
 
-        client.activate_agreement(&agreement_id);
+        client.activate_agreement(&agreement_id).unwrap();
 
         // Raise dispute
         if client.try_raise_dispute(&employer, &agreement_id).is_err() {
@@ -575,7 +575,7 @@ proptest! {
             DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, total_escrow);
         });
 
-        client.activate_agreement(&agreement_id);
+        client.activate_agreement(&agreement_id).unwrap();
 
         // Raise and resolve dispute
         if client.try_raise_dispute(&employer, &agreement_id).is_err() {
@@ -644,7 +644,7 @@ proptest! {
         env.as_contract(&contract_id, || {
             DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, total_amount);
         });
-        client.activate_agreement(&agreement_id);
+        client.activate_agreement(&agreement_id).unwrap();
 
         // Advance time to allow some claims
         env.ledger().with_mut(|li: &mut Ledger| {
@@ -659,7 +659,7 @@ proptest! {
         });
 
         // Cancel agreement
-        client.cancel_agreement(&agreement_id);
+        client.cancel_agreement(&agreement_id).unwrap();
 
         // Try to claim during grace period
         env.ledger().with_mut(|li: &mut Ledger| {
@@ -672,7 +672,7 @@ proptest! {
             env.ledger().with_mut(|li: &mut Ledger| {
                 li.timestamp = grace_end + 1;
             });
-            client.finalize_grace_period(&agreement_id);
+            client.finalize_grace_period(&agreement_id).unwrap();
         }
 
         // **Assert conservation**
@@ -741,7 +741,7 @@ proptest! {
             }
         });
 
-        client.activate_agreement(&agreement_id);
+        client.activate_agreement(&agreement_id).unwrap();
 
         let total_funded: i128 = initial_escrow;
 

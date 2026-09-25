@@ -78,7 +78,7 @@ fn test_claim_payroll_state_updated_prevents_double_claim() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &grace);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     fund_agreement_escrow(&env, &contract_id, agreement_id, &token, 10000);
     mint(&env, &token, &contract_id, 10000);
@@ -125,7 +125,7 @@ fn test_reentrant_claim_payroll_rejected() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &grace);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     fund_agreement_escrow(&env, &contract_id, agreement_id, &token, 10000);
     mint(&env, &token, &contract_id, 10000);
@@ -177,7 +177,7 @@ fn test_guard_released_allows_subsequent_claim() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &grace);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     fund_agreement_escrow(&env, &contract_id, agreement_id, &token, 10000);
     mint(&env, &token, &contract_id, 10000);
@@ -238,7 +238,7 @@ fn test_claim_time_based_state_updated_prevents_double_claim() {
         &period_seconds,
         &num_periods,
     );
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let token_client = TokenClient::new(&env, &token);
     mint(&env, &token, &employer, 4000);
@@ -305,7 +305,7 @@ fn setup_milestone_agreement(
         &soroban_sdk::vec![&env, milestone_amount],
     );
     mint(env, &token, &employer, milestone_amount);
-    client.fund_milestone_agreement(&agreement_id, &employer, &milestone_amount);
+    client.fund_milestone_agreement(&agreement_id, &employer, &milestone_amount).unwrap();
     let _ = contract_id;
 
     (employer, contributor, token, agreement_id)
@@ -443,7 +443,7 @@ fn test_expire_milestone_hook_fires_and_milestone_remains_expired() {
     );
     // Funding transfers from the employer, so mint to the employer first.
     mint(&env, &token2, &employer2, fresh_token_amount);
-    fresh_client.fund_milestone_agreement(&fresh_agreement_id, &employer2, &fresh_token_amount);
+    fresh_client.fund_milestone_agreement(&fresh_agreement_id, &employer2, &fresh_token_amount).unwrap();
 
     // Deploy the malicious hook mock and initialize it.
     let fresh_hook_id = env.register(MaliciousMilestoneHook, ());
@@ -568,7 +568,7 @@ fn test_reentrant_dispute_resolution_rejected() {
         &ONE_DAY,
         &4u32,
     );
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Fund the contract so the dispute resolution *could* succeed (the guard is
     // checked before any transfer, so the funding is for setup completeness).

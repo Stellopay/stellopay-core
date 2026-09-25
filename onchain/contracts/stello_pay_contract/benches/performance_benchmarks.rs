@@ -126,7 +126,7 @@ fn setup_funded_escrow_single(
     env.as_contract(&client.address, || {
         DataKey::set_agreement_escrow_balance(env, agreement_id, &token, total);
     });
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     (token, agreement_id)
 }

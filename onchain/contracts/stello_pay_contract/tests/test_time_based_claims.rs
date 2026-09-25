@@ -105,7 +105,7 @@ fn time_based_claim_pays_all_elapsed_unclaimed_periods() {
         5,
     );
 
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
     advance_time(&env, PERIOD_SECONDS * 3);
     client.claim_time_based(&agreement_id);
 
@@ -128,7 +128,7 @@ fn time_based_claim_rounds_partial_periods_down() {
         5,
     );
 
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
     advance_time(&env, PERIOD_SECONDS - 1);
 
     assert_eq!(
@@ -151,7 +151,7 @@ fn time_based_claim_completes_when_final_period_is_claimed() {
         2,
     );
 
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
     advance_time(&env, PERIOD_SECONDS * 10);
     client.claim_time_based(&agreement_id);
 
@@ -177,9 +177,9 @@ fn time_based_claim_during_grace_period_still_pays_elapsed_periods() {
         10,
     );
 
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
     advance_time(&env, PERIOD_SECONDS * 2);
-    client.cancel_agreement(&agreement_id);
+    client.cancel_agreement(&agreement_id).unwrap();
     client.claim_time_based(&agreement_id);
 
     let agreement = client.get_agreement(&agreement_id).unwrap();
@@ -201,9 +201,9 @@ fn time_based_claim_after_grace_period_expires_is_rejected() {
         2,
     );
 
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
     advance_time(&env, PERIOD_SECONDS);
-    client.cancel_agreement(&agreement_id);
+    client.cancel_agreement(&agreement_id).unwrap();
     advance_time(&env, PERIOD_SECONDS * 2 + 1);
 
     assert_eq!(

@@ -215,7 +215,7 @@ fn bench_claim_payroll_in_token() {
 
     let employee = Address::generate(&env);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary_per_period);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // ── Seed DataKey metadata and escrow for the payout token ────────────────
     let contract_address = client.address.clone();

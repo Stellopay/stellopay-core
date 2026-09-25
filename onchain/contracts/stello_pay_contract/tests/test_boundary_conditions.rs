@@ -627,19 +627,21 @@ fn test_resolve_dispute_zero_payouts_succeeds() {
 
 /// Verifies that a payroll agreement cannot be activated with zero employees.
 ///
-/// The contract asserts `employees.len() > 0` during activation. An
+/// The contract rejects activation when no employees have been added. An
 /// agreement with no employees is not operational.
 #[test]
-#[should_panic(expected = "Payroll agreement must have at least one employee to activate")]
-fn test_activate_payroll_with_zero_employees_panics() {
+fn test_activate_payroll_with_zero_employees_returns_no_employee() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
     let employer = create_test_address(&env);
     let token = create_test_address(&env);
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    // Activate without adding any employees → panics
-    client.activate_agreement(&agreement_id);
+    // Activate without adding any employees → typed error, not a trap
+    assert_eq!(
+        client.try_activate_agreement(&agreement_id),
+        Err(Ok(PayrollError::NoEmployee))
+    );
 }
 
 /// Verifies that a payroll agreement with exactly one employee can be
@@ -657,7 +659,7 @@ fn test_activate_payroll_with_one_employee_succeeds() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000i128);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     let agreement = client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agreement.status, AgreementStatus::Active);
@@ -866,7 +868,7 @@ fn test_claim_milestone_id_zero_panics() {
 
     // Fund the accounted escrow so the approval invariant is satisfied.
     token_client.mint(&employer, &1000i128);
-    client.fund_milestone_agreement(&agreement_id, &employer, &1000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &1000i128).unwrap();
     client.approve_milestone(&agreement_id, &1u32);
 
     // Attempt to claim milestone ID 0 — always invalid

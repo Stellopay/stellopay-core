@@ -123,8 +123,8 @@ fn records_agreement_activated_and_cancelled_audit_entries() {
 
     let agreement_id = payroll_client.create_payroll_agreement(&employer, &token, &3600);
     payroll_client.add_employee_to_agreement(&agreement_id, &employee, &500);
-    payroll_client.activate_agreement(&agreement_id);
-    payroll_client.cancel_agreement(&agreement_id);
+    payroll_client.activate_agreement(&agreement_id).unwrap();
+    payroll_client.cancel_agreement(&agreement_id).unwrap();
 
     assert_eq!(payroll_client.get_audit_entry_count(), 3);
     let activated = payroll_client.get_audit_entry(&2).unwrap();

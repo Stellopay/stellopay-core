@@ -113,7 +113,7 @@ fn setup_funded_escrow(
     env.as_contract(&client.address, || {
         DataKey::set_agreement_escrow_balance(env, agreement_id, token, total);
     });
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
     agreement_id
 }
 
@@ -141,7 +141,7 @@ fn setup_funded_milestone(
     // set; approve/claim check that balance, not the raw token balance.
     let total = amount * (num_milestones as i128);
     mint(env, token, employer, total);
-    client.fund_milestone_agreement(&agreement_id, employer, &total);
+    client.fund_milestone_agreement(&agreement_id, employer, &total).unwrap();
     agreement_id
 }
 
@@ -482,7 +482,7 @@ fn test_pause_resume_blocks_and_restores_claims() {
     assert!(!client.get_milestone(&agreement_id, &1).unwrap().claimed);
 
     // Resume and verify claims succeed again.
-    client.resume_agreement(&agreement_id);
+    client.resume_agreement(&agreement_id).unwrap();
     client.claim_milestone(&agreement_id, &1);
     assert!(client.get_milestone(&agreement_id, &1).unwrap().claimed);
 
@@ -524,7 +524,7 @@ fn test_cancel_during_active_period_grace_window() {
     env.ledger().with_mut(|li| li.timestamp += period_s * 2);
 
     // Employer cancels agreement (e.g., project cancelled mid-stream).
-    client.cancel_agreement(&agreement_id);
+    client.cancel_agreement(&agreement_id).unwrap();
 
     let cancelled = client.get_agreement(&agreement_id).unwrap();
     assert_eq!(cancelled.status, AgreementStatus::Cancelled);
@@ -918,7 +918,7 @@ fn test_race_dispute_before_payroll_claim_blocks_claim() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &grace_s);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     env.as_contract(&client.address, || {
         seed_payroll_claim_keys(
@@ -980,7 +980,7 @@ fn test_race_payroll_claim_before_dispute_no_double_payment() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &grace_s);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     env.as_contract(&client.address, || {
         seed_payroll_claim_keys(
@@ -1162,7 +1162,7 @@ fn test_race_dispute_between_batch_payroll_calls_blocks_second_batch() {
     let agreement_id = client.create_payroll_agreement(&employer, &token, &grace_s);
     client.add_employee_to_agreement(&agreement_id, &e1, &salary);
     client.add_employee_to_agreement(&agreement_id, &e2, &salary);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     env.as_contract(&client.address, || {
         seed_payroll_claim_keys(

@@ -174,7 +174,7 @@ fn test_paused_blocks_claims() {
     // Create and activate payroll agreement
     let agreement_id = client.create_payroll_agreement(&employer, &token.address, &86400);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id);
+    client.activate_agreement(&agreement_id).unwrap();
 
     // Mint tokens to contract
     token.mint(&client.address, &10000);
@@ -210,7 +210,7 @@ fn test_paused_blocks_milestone_claims() {
 
     // Fund the accounted escrow so the approve_milestone invariant passes.
     token.mint(&employer, &10000);
-    client.fund_milestone_agreement(&agreement_id, &employer, &10000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &10000).unwrap();
 
     client.approve_milestone(&agreement_id, &1);
 
@@ -245,7 +245,7 @@ fn test_unpause_restores_functionality() {
 
     // Fund the accounted escrow so the approve_milestone invariant passes.
     token.mint(&employer, &10000);
-    client.fund_milestone_agreement(&agreement_id, &employer, &10000);
+    client.fund_milestone_agreement(&agreement_id, &employer, &10000).unwrap();
 
     client.approve_milestone(&agreement_id, &1);
 
@@ -356,7 +356,7 @@ fn create_active_payroll_agreement(
     let aid = client.create_payroll_agreement(employer, &token.address, &grace);
     let employee = Address::generate(env);
     client.add_employee_to_agreement(&aid, &employee, &1000);
-    client.activate_agreement(&aid);
+    client.activate_agreement(&aid).unwrap();
     token.mint(&client.address, &10000);
     aid
 }
@@ -526,7 +526,7 @@ fn test_bulk_pause_skips_non_active_agreements() {
 
     // Cancelled agreement — will be skipped
     let aid_cancelled = create_active_payroll_agreement(&env, &client, &employer, &token, 86400);
-    client.cancel_agreement(&aid_cancelled);
+    client.cancel_agreement(&aid_cancelled).unwrap();
 
     let paused = client.pause_employer_agreements(&employer);
     assert_eq!(paused, 1);

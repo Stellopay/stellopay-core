@@ -307,7 +307,7 @@ fn test_claim_payroll_multisig_2of3_approval_succeeds() {
 
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    payroll.activate_agreement(&agreement_id);
+    payroll.activate_agreement(&agreement_id).unwrap();
     fund_payroll(
         &env,
         &payroll_id,
@@ -363,7 +363,7 @@ fn test_claim_payroll_multisig_insufficient_signatures_rejected() {
 
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    payroll.activate_agreement(&agreement_id);
+    payroll.activate_agreement(&agreement_id).unwrap();
     fund_payroll(
         &env,
         &payroll_id,
@@ -412,7 +412,7 @@ fn test_claim_payroll_direct_blocked_above_threshold() {
 
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    payroll.activate_agreement(&agreement_id);
+    payroll.activate_agreement(&agreement_id).unwrap();
     fund_payroll(
         &env,
         &payroll_id,
@@ -451,7 +451,7 @@ fn test_claim_payroll_below_threshold_bypasses_multisig() {
 
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    payroll.activate_agreement(&agreement_id);
+    payroll.activate_agreement(&agreement_id).unwrap();
     fund_payroll(
         &env,
         &payroll_id,
@@ -501,7 +501,7 @@ fn test_claim_payroll_multisig_3of3_approval_succeeds() {
 
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    payroll.activate_agreement(&agreement_id);
+    payroll.activate_agreement(&agreement_id).unwrap();
     fund_payroll(
         &env,
         &payroll_id,
@@ -574,7 +574,7 @@ fn test_claim_payroll_multisig_2of3_below_threshold_of_3_rejected() {
 
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    payroll.activate_agreement(&agreement_id);
+    payroll.activate_agreement(&agreement_id).unwrap();
     fund_payroll(
         &env,
         &payroll_id,
@@ -623,7 +623,7 @@ fn test_claim_payroll_multisig_wrong_employee_rejected() {
 
     let agreement_id = payroll.create_payroll_agreement(&employer, &token_addr, &period);
     payroll.add_employee_to_agreement(&agreement_id, &employee, &salary);
-    payroll.activate_agreement(&agreement_id);
+    payroll.activate_agreement(&agreement_id).unwrap();
     fund_payroll(
         &env,
         &payroll_id,
