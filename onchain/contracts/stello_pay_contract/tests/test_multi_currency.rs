@@ -52,7 +52,7 @@ fn test_convert_currency_basic() {
 
     // Convert 10 base units → expect 20 quote units.
     let amount: i128 = 10;
-    let converted = client.convert_currency(&base, &quote, &amount);
+    let converted = client.convert_currency(&base, &quote, &amount, &None, &None, &None);
     assert_eq!(converted, 20);
 }
 
@@ -75,7 +75,7 @@ fn test_exchange_rate_staleness_rejected() {
     // advance ledger far beyond max age
     env.ledger().with_mut(|li| li.timestamp += 10u64);
 
-    let res = client.try_convert_currency(&base, &quote, &10i128);
+    let res = client.try_convert_currency(&base, &quote, &10i128, &None, &None, &None);
     assert!(res.is_err());
 }
 
@@ -225,7 +225,7 @@ fn test_convert_amount_rounds_to_zero_is_rejected() {
     client.set_exchange_rate(&owner, &base, &quote, &rate);
 
     // amount=1: (1 * 999_999) / 1_000_000 = 0  → must be rejected
-    let result = client.try_convert_currency(&base, &quote, &1i128);
+    let result = client.try_convert_currency(&base, &quote, &1i128, &None, &None, &None);
     assert_eq!(
         result,
         Err(Ok(PayrollError::ExchangeRateInvalid)),
@@ -245,7 +245,7 @@ fn test_convert_amount_at_parity_one_unit_succeeds() {
     let rate: i128 = 1_000_000; // exactly 1:1
     client.set_exchange_rate(&owner, &base, &quote, &rate);
 
-    let converted = client.convert_currency(&base, &quote, &1i128);
+    let converted = client.convert_currency(&base, &quote, &1i128, &None, &None, &None);
     assert_eq!(
         converted, 1,
         "1 base at 1:1 rate must yield exactly 1 quote"
@@ -265,7 +265,7 @@ fn test_convert_amount_extreme_low_rate_rounds_to_zero() {
     let rate: i128 = 1;
     client.set_exchange_rate(&owner, &base, &quote, &rate);
 
-    let result = client.try_convert_currency(&base, &quote, &1i128);
+    let result = client.try_convert_currency(&base, &quote, &1i128, &None, &None, &None);
     assert_eq!(
         result,
         Err(Ok(PayrollError::ExchangeRateInvalid)),
@@ -286,7 +286,7 @@ fn test_convert_amount_large_amount_escapes_dust_guard_at_low_rate() {
     client.set_exchange_rate(&owner, &base, &quote, &rate);
 
     // (1_000_001 * 1) / 1_000_000 = 1  →  should succeed
-    let converted = client.convert_currency(&base, &quote, &1_000_001i128);
+    let converted = client.convert_currency(&base, &quote, &1_000_001i128, &None, &None, &None);
     assert_eq!(converted, 1);
 }
 
@@ -308,7 +308,7 @@ fn test_convert_amount_fractional_rate_floors_correctly() {
     client.set_exchange_rate(&owner, &base, &quote, &rate);
 
     // (3 * 1_500_000) / 1_000_000 = 4_500_000 / 1_000_000 = 4  (floor, not 5)
-    let converted = client.convert_currency(&base, &quote, &3i128);
+    let converted = client.convert_currency(&base, &quote, &3i128, &None, &None, &None);
     assert_eq!(converted, 4, "floor(3 * 1.5) must be 4, not 5");
 }
 
@@ -325,7 +325,7 @@ fn test_convert_amount_fractional_rate_exact_multiple() {
     client.set_exchange_rate(&owner, &base, &quote, &rate);
 
     // (2 * 1_500_000) / 1_000_000 = 3_000_000 / 1_000_000 = 3  (exact)
-    let converted = client.convert_currency(&base, &quote, &2i128);
+    let converted = client.convert_currency(&base, &quote, &2i128, &None, &None, &None);
     assert_eq!(
         converted, 3,
         "2 base at 1.5x rate must yield exactly 3 quote"
@@ -346,14 +346,14 @@ fn test_convert_amount_high_precision_rate_no_excess_precision_loss() {
     client.set_exchange_rate(&owner, &base, &quote, &rate);
 
     // (3 * 1_333_333) / 1_000_000 = 3_999_999 / 1_000_000 = 3  (floor)
-    let converted = client.convert_currency(&base, &quote, &3i128);
+    let converted = client.convert_currency(&base, &quote, &3i128, &None, &None, &None);
     assert_eq!(
         converted, 3,
         "floor(3 * 1.333333) must be 3, not 4 — no over-crediting"
     );
 
     // (6 * 1_333_333) / 1_000_000 = 7_999_998 / 1_000_000 = 7  (floor)
-    let converted6 = client.convert_currency(&base, &quote, &6i128);
+    let converted6 = client.convert_currency(&base, &quote, &6i128, &None, &None, &None);
     assert_eq!(
         converted6, 7,
         "floor(6 * 1.333333) must be 7 — confirms consistent floor across larger amounts"
@@ -592,10 +592,90 @@ fn test_convert_amount_overflow_returns_error_not_panic() {
     client.set_exchange_rate(&owner, &base, &quote, &rate);
 
     // i128::MAX overflows when multiplied by 2
-    let result = client.try_convert_currency(&base, &quote, &i128::MAX);
+    let result = client.try_convert_currency(&base, &quote, &i128::MAX, &None, &None, &None);
     assert_eq!(
         result,
         Err(Ok(PayrollError::ExchangeRateOverflow)),
         "i128::MAX * rate=2 must return ExchangeRateOverflow, not panic"
     );
+}
+
+// ---------------------------------------------------------------------------
+// convert_currency — staleness and min/max output bounds validation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_convert_currency_bounds_and_staleness() {
+    let (env, owner, _employer, _arbiter, client) = create_test_env();
+
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+    let rate: i128 = 2_000_000; // 1 base = 2 quote
+
+    client.set_exchange_rate(&owner, &base, &quote, &rate);
+
+    // 1. Fresh rate inside bounds (amount=10 -> converted=20, min=15, max=25, max_age=60s)
+    let converted = client.convert_currency(
+        &base,
+        &quote,
+        &10i128,
+        &Some(60u64),
+        &Some(15i128),
+        &Some(25i128),
+    );
+    assert_eq!(converted, 20);
+
+    // 2. Stale rate violation (advance ledger past max_age)
+    env.ledger().with_mut(|li| li.timestamp += 61u64);
+    let stale_res = client.try_convert_currency(
+        &base,
+        &quote,
+        &10i128,
+        &Some(60u64),
+        &Some(15i128),
+        &Some(25i128),
+    );
+    assert_eq!(stale_res, Err(Ok(PayrollError::ExchangeRateStale)));
+
+    // Reset timestamp / update rate
+    client.set_exchange_rate(&owner, &base, &quote, &rate);
+
+    // 3. Result below min_output_amount (converted=20 < min=25)
+    let low_res = client.try_convert_currency(
+        &base,
+        &quote,
+        &10i128,
+        &Some(60u64),
+        &Some(25i128),
+        &Some(30i128),
+    );
+    assert_eq!(low_res, Err(Ok(PayrollError::ConversionOutputTooLow)));
+
+    // 4. Result above max_output_amount (converted=20 > max=15)
+    let high_res = client.try_convert_currency(
+        &base,
+        &quote,
+        &10i128,
+        &Some(60u64),
+        &Some(5i128),
+        &Some(15i128),
+    );
+    assert_eq!(high_res, Err(Ok(PayrollError::ConversionOutputTooHigh)));
+}
+
+#[test]
+fn test_convert_currency_default_staleness_fallback() {
+    let (env, owner, _employer, _arbiter, client) = create_test_env();
+
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+    let rate: i128 = 1_000_000;
+
+    client.set_exchange_rate(&owner, &base, &quote, &rate);
+
+    // Advance timestamp by 3601 seconds (> DEFAULT_MAX_RATE_AGE_SECONDS = 3600)
+    env.ledger().with_mut(|li| li.timestamp += 3601u64);
+
+    let res = client.try_convert_currency(&base, &quote, &10i128, &None, &None, &None);
+    assert_eq!(res, Err(Ok(PayrollError::ExchangeRateStale)));
 }

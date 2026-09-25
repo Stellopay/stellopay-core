@@ -97,17 +97,24 @@ pub fn convert_currency(
     from_token: Address,
     to_token: Address,
     amount: i128,
+    max_rate_age_seconds: Option<u64>,
+    min_output_amount: Option<i128>,
+    max_output_amount: Option<i128>,
 ) -> Result<i128, PayrollError>
 ```
 
-- **Purpose**: Pure conversion helper for off-chain estimation and validation.
+- **Purpose**: Pure conversion helper for off-chain estimation and validation with freshness and output bounds enforcement.
 - **Behavior**:
-  - If `from_token == to_token` or `amount == 0`, returns `amount`.
-  - Otherwise, loads `DataKey::ExchangeRate(from, to)` and returns the converted value in `to_token`.
+  - If `from_token == to_token` or `amount == 0`, checks min/max output bounds and returns `amount`.
+  - Otherwise, loads `DataKey::ExchangeRate(from, to)` and validates rate age against `max_rate_age_seconds` (or fallback contract/default setting).
+  - Returns the converted value in `to_token` if within `min_output_amount` and `max_output_amount`.
 - **Errors**:
   - `ExchangeRateNotFound` – missing FX rate for `(from, to)`
-  - `ExchangeRateInvalid` – non-positive rate or division error
+  - `ExchangeRateInvalid` – non-positive rate or timestamp inconsistency
   - `ExchangeRateOverflow` – multiplication overflow
+  - `ExchangeRateStale` – rate age exceeds maximum acceptable age threshold
+  - `ConversionOutputTooLow` – converted output is less than minimum acceptable amount
+  - `ConversionOutputTooHigh` – converted output exceeds maximum acceptable amount
 
 #### `claim_payroll_in_token`
 

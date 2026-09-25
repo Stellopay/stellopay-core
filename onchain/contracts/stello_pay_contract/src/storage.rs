@@ -483,6 +483,12 @@ pub enum PayrollError {
     /// agreement without milestones leaves storage waste with no possible
     /// payout path, so the operation is rejected at creation time.
     EmptyMilestoneList = 50,
+    /// FX rate update timestamp exceeds the maximum acceptable rate age threshold.
+    ExchangeRateStale = 51,
+    /// Converted output amount is less than the caller's minimum acceptable output bound.
+    ConversionOutputTooLow = 52,
+    /// Converted output amount exceeds the caller's maximum acceptable output bound.
+    ConversionOutputTooHigh = 53,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.
@@ -856,5 +862,8 @@ mod test {
         assert_eq!(PayrollError::MilestoneAlreadyExpired as u32, 48);
         assert_eq!(PayrollError::MilestoneRejectionReasonEmpty as u32, 49);
         assert_eq!(PayrollError::EmptyMilestoneList as u32, 50);
+        assert_eq!(PayrollError::ExchangeRateStale as u32, 51);
+        assert_eq!(PayrollError::ConversionOutputTooLow as u32, 52);
+        assert_eq!(PayrollError::ConversionOutputTooHigh as u32, 53);
     }
 }
