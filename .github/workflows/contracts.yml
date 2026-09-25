@@ -46,6 +46,9 @@ jobs:
       - name: Reject untyped payroll traps
         run: bash scripts/check-contract-no-traps.sh
 
+      - name: Self-test contract trap guard
+        run: bash scripts/tests/check_contract_no_traps_test.sh
+
       - name: Build workspace
         working-directory: onchain
         run: cargo build --workspace --verbose

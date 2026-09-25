@@ -151,16 +151,16 @@ See the rollback section in [`docs/migrations.md`](./migrations.md) for CLI/scri
 from_version == current_stored_version
 ```
 
-This assertion is checked at the start of every `migrate_state` call. Because the migration bumps the stored version before returning, the same `from_version` can never be used twice.
+This invariant is checked at the start of every `migrate_state` call. Because the migration bumps the stored version before returning, the same `from_version` can never be used twice.
 
 ### What is prevented
 
 | Scenario | Result | Why it matters |
 |---|---|---|
-| `from_version < current_version` (downgrade) | Panic `"Invalid migration version"` | Prevents re-running an old migration against a newer schema, which could overwrite or corrupt v1+ data with v0 logic. |
-| Repeated call with same `from_version` after successful migration | Panic `"Invalid migration version"` | The stored version has already been bumped; the call is equivalent to a downgrade. |
-| `from_version > current_version` (future version) | Panic `"Invalid migration version"` | Prevents the operator from skipping migration steps. |
-| Non-admin caller | Panic via `require_upgrade_admin` | Migrations are as privileged as upgrades. |
+| `from_version < current_version` (downgrade) | `PayrollError::InvalidData` | Prevents re-running an old migration against a newer schema, which could overwrite or corrupt v1+ data with v0 logic. |
+| Repeated call with same `from_version` after successful migration | `PayrollError::InvalidData` | The stored version has already been bumped; the call is equivalent to a downgrade. |
+| `from_version > current_version` (future version) | `PayrollError::InvalidData` | Prevents the operator from skipping migration steps. |
+| Non-admin caller | `PayrollError::Unauthorized` via `require_upgrade_admin` | Migrations are as privileged as upgrades. |
 
 ### Guard implementation
 
@@ -177,8 +177,11 @@ pub fn migrate_state(env: Env, operator: Address, from_version: u32) {
         .unwrap_or(0u32);
 
     // Monotonicity guard: from_version must exactly match the stored version.
-    // Any value lower (downgrade) or higher (skip) is rejected.
-    assert!(from_version == current, "Invalid migration version");
+    // Any value lower (downgrade) or higher (skip) is rejected with a typed
+    // PayrollError rather than an untyped string trap.
+    if from_version != current {
+        panic_with_error!(env, PayrollError::InvalidData);
+    }
 
     // Migration logic …
 }
@@ -192,7 +195,7 @@ migrate_state(0)   →  ContractVersion = 1
 migrate_state(1)   →  ContractVersion = 2  (when v1→v2 is added)
 ```
 
-Attempting `migrate_state(0)` after the first migration has already run returns the `"Invalid migration version"` panic because the stored version is now `1`, not `0`.
+Attempting `migrate_state(0)` after the first migration has already run raises `PayrollError::InvalidData` because the stored version is now `1`, not `0`.
 
 ### Regression Tests
 
