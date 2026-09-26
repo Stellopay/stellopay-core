@@ -27,8 +27,8 @@ fn cancel_payroll_agreement(
     let aid = client.create_payroll_agreement(employer, token, &base_grace);
     let emp = Address::generate(env);
     client.add_employee_to_agreement(&aid, &emp, &1000_i128);
-    client.activate_agreement(&aid).unwrap();
-    client.cancel_agreement(&aid).unwrap();
+    client.activate_agreement(&aid);
+    client.cancel_agreement(&aid);
     aid
 }
 
@@ -97,7 +97,7 @@ fn test_extend_active_agreement_fails() {
     let aid = client.create_payroll_agreement(&employer, &token, &86400_u64);
     let emp = Address::generate(&env);
     client.add_employee_to_agreement(&aid, &emp, &1000_i128);
-    client.activate_agreement(&aid).unwrap();
+    client.activate_agreement(&aid);
 
     let e = client
         .try_extend_grace_period(&employer, &aid, &10_u64)
@@ -441,5 +441,5 @@ fn test_finalize_after_extended_grace() {
     });
     assert!(!client.is_grace_period_active(&aid));
 
-    client.finalize_grace_period(&aid).unwrap();
+    client.finalize_grace_period(&aid);
 }

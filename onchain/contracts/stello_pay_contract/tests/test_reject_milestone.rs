@@ -79,7 +79,7 @@ fn funded_milestone(
         token,
         &soroban_sdk::vec![env, milestone_amount],
     );
-    client.fund_milestone_agreement(&agreement_id, employer, &fund_amount).unwrap();
+    client.fund_milestone_agreement(&agreement_id, employer, &fund_amount);
     (agreement_id, 1u32)
 }
 
@@ -315,7 +315,7 @@ fn test_reject_claimed_milestone_with_pending() {
         &token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &employer, &2_000i128).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &2_000i128);
 
     // Add two milestones; approve and claim only the first.
     client.add_milestone(&agreement_id, &400i128); // id=1
@@ -459,7 +459,7 @@ fn test_reject_one_milestone_does_not_affect_others() {
         &token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &employer, &3_000i128).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &3_000i128);
 
     // Add three milestones (ids 1, 2, 3).
     client.add_milestone(&agreement_id, &500i128);
@@ -497,7 +497,7 @@ fn test_reject_all_milestones_individually() {
         &token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &employer, &2_000i128).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &2_000i128);
 
     client.add_milestone(&agreement_id, &300i128);
     client.add_milestone(&agreement_id, &400i128);

@@ -64,7 +64,7 @@ fn test_rate_limited_claim() {
     // Create payroll
     let agreement_id = client.create_payroll_agreement(&employer, &token, &3600);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     // Setup DataKey storage for claiming
     env.as_contract(&payroll_id, || {
@@ -144,7 +144,7 @@ fn test_batch_claim_rate_limited() {
     client.add_employee_to_agreement(&agreement_id, &employee1, &1000);
     client.add_employee_to_agreement(&agreement_id, &employee2, &1000);
     client.add_employee_to_agreement(&agreement_id, &employee3, &1000);
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     // Setup DataKey storage for claiming
     env.as_contract(&payroll_id, || {

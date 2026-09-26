@@ -90,7 +90,7 @@ fn test_activation_state_integrity() {
         AgreementStatus::Created
     );
 
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
     let agreement = client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agreement.status, AgreementStatus::Active);
     assert!(agreement.activated_at.is_some());

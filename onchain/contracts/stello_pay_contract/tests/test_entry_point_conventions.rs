@@ -116,10 +116,9 @@ fn fund_milestone_cancelled_agreement_returns_invalid_status() {
     );
 
     env.as_contract(&cid, || {
-        env.storage().persistent().set(
-            &MilestoneKey::Status(id),
-            &AgreementStatus::Cancelled,
-        );
+        env.storage()
+            .persistent()
+            .set(&MilestoneKey::Status(id), &AgreementStatus::Cancelled);
     });
 
     assert_eq!(
@@ -144,10 +143,9 @@ fn fund_milestone_completed_agreement_returns_invalid_status() {
     );
 
     env.as_contract(&cid, || {
-        env.storage().persistent().set(
-            &MilestoneKey::Status(id),
-            &AgreementStatus::Completed,
-        );
+        env.storage()
+            .persistent()
+            .set(&MilestoneKey::Status(id), &AgreementStatus::Completed);
     });
 
     assert_eq!(
@@ -172,10 +170,9 @@ fn fund_milestone_escrow_overflow_returns_invalid_data() {
     );
 
     env.as_contract(&cid, || {
-        env.storage().persistent().set(
-            &MilestoneKey::MilestoneEscrowBalance(id),
-            &i128::MAX,
-        );
+        env.storage()
+            .persistent()
+            .set(&MilestoneKey::MilestoneEscrowBalance(id), &i128::MAX);
     });
 
     assert_eq!(
@@ -209,7 +206,7 @@ fn activate_non_created_agreement_returns_invalid_data() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &1000);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     assert_eq!(
         client.try_activate_agreement(&id),
@@ -257,7 +254,7 @@ fn resume_non_paused_agreement_returns_invalid_data() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &1000);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     assert_eq!(
         client.try_resume_agreement(&id),
@@ -288,7 +285,7 @@ fn cancel_non_cancellable_status_returns_invalid_data() {
     let token = Address::generate(&env);
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
 
     assert_eq!(
         client.try_cancel_agreement(&id),
@@ -334,7 +331,7 @@ fn finalize_before_grace_expiry_returns_invalid_data() {
     let token = Address::generate(&env);
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
 
     assert_eq!(
         client.try_finalize_grace_period(&id),
@@ -350,7 +347,7 @@ fn finalize_after_grace_expiry_is_idempotent() {
     let token = Address::generate(&env);
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
 
     env.ledger().with_mut(|li| {
         li.timestamp += ONE_WEEK + 1;
@@ -358,6 +355,6 @@ fn finalize_after_grace_expiry_is_idempotent() {
 
     // First finalization succeeds, and a second call is a no-op that still
     // returns `Ok(())` (no duplicate refund, no re-emitted event).
-    client.finalize_grace_period(&id).unwrap();
-    assert_eq!(client.try_finalize_grace_period(&id), Ok(()));
+    client.finalize_grace_period(&id);
+    assert_eq!(client.try_finalize_grace_period(&id), Ok(Ok(())));
 }

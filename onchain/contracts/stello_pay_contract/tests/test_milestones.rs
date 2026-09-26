@@ -58,7 +58,7 @@ fn setup_milestone_agreement(
         token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&id, employer, &fund_amount).unwrap();
+    client.fund_milestone_agreement(&id, employer, &fund_amount);
     id
 }
 
@@ -138,7 +138,7 @@ fn test_create_single_milestone_success() {
         &token,
         &soroban_sdk::vec![&env, 1000i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &employer, &fund_amount).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &fund_amount);
 
     assert!(agreement_id >= 1);
     assert_eq!(client.get_milestone_count(&agreement_id), 1);
@@ -174,7 +174,7 @@ fn test_fund_transfers_tokens_to_contract() {
         &token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &employer, &5_000i128).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &5_000i128);
 
     let token_client = soroban_sdk::token::TokenClient::new(&env, &token);
     assert_eq!(token_client.balance(&client.address), 5_000i128);
@@ -194,8 +194,8 @@ fn test_fund_accumulates_across_multiple_deposits() {
         &token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &employer, &1_000i128).unwrap();
-    client.fund_milestone_agreement(&agreement_id, &employer, &2_000i128).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &1_000i128);
+    client.fund_milestone_agreement(&agreement_id, &employer, &2_000i128);
 
     let token_client = soroban_sdk::token::TokenClient::new(&env, &token);
     assert_eq!(token_client.balance(&client.address), 3_000i128);
@@ -214,7 +214,7 @@ fn test_fund_then_approve_then_claim_transfers_to_contributor() {
         &token,
         &soroban_sdk::vec![&env, 1_000i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &employer, &1_000i128).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &1_000i128);
     client.approve_milestone(&agreement_id, &1);
     client.claim_milestone(&agreement_id, &1);
 
@@ -239,7 +239,7 @@ fn test_fund_exact_total_allows_approve() {
     client.add_milestone(&agreement_id, &100i128);
     client.add_milestone(&agreement_id, &200i128);
     // Fund after adding milestones — order should not matter.
-    client.fund_milestone_agreement(&agreement_id, &employer, &300i128).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &300i128);
 
     client.approve_milestone(&agreement_id, &1);
     client.approve_milestone(&agreement_id, &2);
@@ -261,7 +261,7 @@ fn test_escrow_balance_decrements_after_each_claim() {
         &token,
         &soroban_sdk::vec![&env, 100i128, 200i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &employer, &300i128).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &300i128);
     client.approve_milestone(&agreement_id, &1);
     client.approve_milestone(&agreement_id, &2);
 
@@ -348,7 +348,7 @@ fn test_fund_contributor_cannot_fund_returns_unauthorized() {
 fn test_fund_nonexistent_agreement_returns_agreement_not_found() {
     let (_env, employer, _contributor, _token, client) = create_test_env();
     let result = client.try_fund_milestone_agreement(&999u128, &employer, &500i128);
-    assert_eq!(result, Err(Ok(PayrollError::AgreementNotFound.into())));
+    assert_eq!(result, Err(Ok(PayrollError::AgreementNotFound)));
 }
 
 /// Approving a milestone without prior funding must fail the balance invariant.
@@ -380,7 +380,7 @@ fn test_approve_underfunded_fails() {
         &token,
         &soroban_sdk::vec![&env, 1_000i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &employer, &499i128).unwrap(); // short by 501
+    client.fund_milestone_agreement(&agreement_id, &employer, &499i128); // short by 501
     let result = client.try_approve_milestone(&agreement_id, &1);
     assert_eq!(result, Err(Ok(PayrollError::InsufficientEscrowBalance)));
 }
@@ -892,7 +892,7 @@ fn test_milestone_interface_conformance() {
         &token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    direct.fund_milestone_agreement(&agreement_id, &employer, &fund_amount).unwrap();
+    direct.fund_milestone_agreement(&agreement_id, &employer, &fund_amount);
 
     // get_milestone_count = 1 (one milestone passed at creation)
     assert_eq!(
@@ -1363,7 +1363,7 @@ fn test_v1_method_parity_across_lifecycle() {
         &token,
         &soroban_sdk::vec![&env, 1_000i128],
     );
-    direct.fund_milestone_agreement(&aid, &employer, &50_000i128).unwrap();
+    direct.fund_milestone_agreement(&aid, &employer, &50_000i128);
 
     // State: Created, one upfront milestone.
     assert_eq!(
@@ -1454,7 +1454,7 @@ fn test_milestone_view_field_parity_with_internal_milestone() {
         &token,
         &soroban_sdk::vec![&env, 1_000i128],
     );
-    direct.fund_milestone_agreement(&aid, &employer, &10_000i128).unwrap();
+    direct.fund_milestone_agreement(&aid, &employer, &10_000i128);
     direct.add_milestone(&aid, &1_000i128);
 
     // Helper closure: compare Milestone vs MilestoneView field-by-field.

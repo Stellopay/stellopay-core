@@ -277,7 +277,7 @@ fn test_agreement_activated_event() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     assert!(has_event(&env, "agreement_activated_event"));
 
@@ -301,7 +301,7 @@ fn test_agreement_paused_event() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
     client.pause_agreement(&agreement_id);
 
     assert!(has_event(&env, "agreement_paused_event"));
@@ -322,9 +322,9 @@ fn test_agreement_resumed_event() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
     client.pause_agreement(&agreement_id);
-    client.resume_agreement(&agreement_id).unwrap();
+    client.resume_agreement(&agreement_id);
 
     assert!(has_event(&env, "agreement_resumed_event"));
 
@@ -381,7 +381,7 @@ fn test_milestone_approved_event() {
         &soroban_sdk::vec![&env, 5000i128],
     );
     mint(&env, &token, &employer, 5000);
-    client.fund_milestone_agreement(&agreement_id, &employer, &5000).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &5000);
     client.approve_milestone(&agreement_id, &1);
 
     assert!(has_event(&env, "milestone_approved"));
@@ -410,7 +410,7 @@ fn test_milestone_claimed_event() {
         &soroban_sdk::vec![&env, amount],
     );
     mint(&env, &token, &employer, amount);
-    client.fund_milestone_agreement(&agreement_id, &employer, &amount).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &amount);
     client.approve_milestone(&agreement_id, &1);
     client.claim_milestone(&agreement_id, &1);
 
@@ -491,8 +491,8 @@ fn test_agreement_cancelled_event() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id).unwrap();
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
+    client.cancel_agreement(&agreement_id);
 
     assert!(has_event(&env, "agreement_cancelled_event"));
 
@@ -519,14 +519,14 @@ fn test_grace_period_finalized_event() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &grace_period);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id).unwrap();
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
+    client.cancel_agreement(&agreement_id);
 
     env.ledger().with_mut(|li| {
         li.timestamp += grace_period + 1;
     });
 
-    client.finalize_grace_period(&agreement_id).unwrap();
+    client.finalize_grace_period(&agreement_id);
 
     assert!(has_event(&env, "grace_period_finalized_event"));
 
@@ -563,7 +563,7 @@ fn test_event_ordering_agreement_lifecycle() {
     );
 
     // Activate agreement
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
     assert!(
         has_event(&env, "agreement_activated_event"),
         "agreement_activated_event not found"
@@ -592,7 +592,7 @@ fn test_event_ordering_milestone_workflow() {
     );
 
     mint(&env, &token, &employer, 5000);
-    client.fund_milestone_agreement(&agreement_id, &employer, &5000).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &5000);
     client.approve_milestone(&agreement_id, &1);
     assert!(
         has_event(&env, "milestone_approved"),
@@ -635,7 +635,7 @@ fn test_complete_payroll_workflow_events() {
         "employee_added_event not found"
     );
 
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
     assert!(
         has_event(&env, "agreement_activated_event"),
         "agreement_activated_event not found"
@@ -647,13 +647,13 @@ fn test_complete_payroll_workflow_events() {
         "agreement_paused_event not found"
     );
 
-    client.resume_agreement(&agreement_id).unwrap();
+    client.resume_agreement(&agreement_id);
     assert!(
         has_event(&env, "agreement_resumed_event"),
         "agreement_resumed_event not found"
     );
 
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
     assert!(
         has_event(&env, "agreement_cancelled_event"),
         "agreement_cancelled_event not found"
@@ -688,7 +688,7 @@ fn test_complete_milestone_workflow_events() {
     );
 
     mint(&env, &token, &employer, 3000);
-    client.fund_milestone_agreement(&agreement_id, &employer, &3000).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &3000);
     client.approve_milestone(&agreement_id, &1);
     assert!(
         has_event(&env, "milestone_approved"),

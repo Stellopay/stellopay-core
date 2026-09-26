@@ -134,7 +134,7 @@ fn test_payroll_created_to_active() {
     );
 
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     let a = client.get_agreement(&id).unwrap();
     assert_eq!(a.status, AgreementStatus::Active);
@@ -152,7 +152,7 @@ fn test_payroll_active_to_paused() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
     assert_eq!(
         client.get_agreement(&id).unwrap().status,
         AgreementStatus::Active
@@ -177,14 +177,14 @@ fn test_payroll_paused_to_active() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
     client.pause_agreement(&id);
     assert_eq!(
         client.get_agreement(&id).unwrap().status,
         AgreementStatus::Paused
     );
 
-    client.resume_agreement(&id).unwrap();
+    client.resume_agreement(&id);
 
     assert_eq!(
         client.get_agreement(&id).unwrap().status,
@@ -207,7 +207,7 @@ fn test_payroll_created_to_cancelled() {
         AgreementStatus::Created
     );
 
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
 
     let a = client.get_agreement(&id).unwrap();
     assert_eq!(a.status, AgreementStatus::Cancelled);
@@ -226,13 +226,13 @@ fn test_payroll_active_to_cancelled() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
     assert_eq!(
         client.get_agreement(&id).unwrap().status,
         AgreementStatus::Active
     );
 
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
 
     let a = client.get_agreement(&id).unwrap();
     assert_eq!(a.status, AgreementStatus::Cancelled);
@@ -256,7 +256,7 @@ fn test_escrow_created_to_active() {
         AgreementStatus::Created
     );
 
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     assert_eq!(
         client.get_agreement(&id).unwrap().status,
@@ -286,7 +286,7 @@ fn test_escrow_active_to_completed_via_all_claims() {
         &period_seconds,
         &num_periods,
     );
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
     assert_eq!(
         client.get_agreement(&id).unwrap().status,
         AgreementStatus::Active
@@ -318,21 +318,21 @@ fn test_finalize_grace_period_refunds_escrow() {
 
     let id = client.create_payroll_agreement(&employer, &token, &grace);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     mint(&env, &token, &cid, SALARY);
     env.as_contract(&cid, || {
         DataKey::set_agreement_escrow_balance(&env, id, &token, SALARY);
     });
 
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
     assert_eq!(
         client.get_agreement(&id).unwrap().status,
         AgreementStatus::Cancelled
     );
 
     advance_time(&env, grace + 1);
-    client.finalize_grace_period(&id).unwrap();
+    client.finalize_grace_period(&id);
 
     env.as_contract(&cid, || {
         let balance = DataKey::get_agreement_escrow_balance(&env, id, &token);
@@ -368,7 +368,7 @@ fn test_finalize_grace_period_refunds_unclaimed_remainder_after_partial_claim() 
         &ONE_DAY,
         &num_periods,
     );
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     mint(&env, &token, &cid, total);
     env.as_contract(&cid, || {
@@ -381,9 +381,9 @@ fn test_finalize_grace_period_refunds_unclaimed_remainder_after_partial_claim() 
     let token_client = StellarAssetClient::new(&env, &token);
     let employer_balance_before = token_client.balance(&employer);
 
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
     advance_time(&env, grace + 1);
-    client.finalize_grace_period(&id).unwrap();
+    client.finalize_grace_period(&id);
 
     let employer_balance_after = token_client.balance(&employer);
     assert_eq!(
@@ -419,7 +419,7 @@ fn test_finalize_grace_period_refunds_full_escrow_when_no_claims_were_made() {
         &ONE_DAY,
         &num_periods,
     );
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     mint(&env, &token, &cid, total);
     env.as_contract(&cid, || {
@@ -429,9 +429,9 @@ fn test_finalize_grace_period_refunds_full_escrow_when_no_claims_were_made() {
     let token_client = StellarAssetClient::new(&env, &token);
     let employer_balance_before = token_client.balance(&employer);
 
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
     advance_time(&env, grace + 1);
-    client.finalize_grace_period(&id).unwrap();
+    client.finalize_grace_period(&id);
 
     let employer_balance_after = token_client.balance(&employer);
     assert_eq!(employer_balance_after - employer_balance_before, total);
@@ -458,7 +458,7 @@ fn test_active_to_disputed_via_raise_dispute() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     client.raise_dispute(&employer, &id);
 
@@ -481,7 +481,7 @@ fn test_disputed_to_completed_via_resolve_dispute() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     client.set_arbiter(&employer, &arbiter);
     mint(&env, &token, &cid, SALARY);
@@ -514,7 +514,7 @@ fn test_disputed_direct_claim_payroll_rejected() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     // `claim_payroll` resolves employees through the DataKey table, which
     // `add_employee_to_agreement` does not write, so seed it here — otherwise
@@ -564,7 +564,7 @@ fn test_disputed_direct_claim_time_based_rejected() {
 
     let id =
         client.create_escrow_agreement(&employer, &contributor, &token, &SALARY, &ONE_DAY, &4u32);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     // Fund the escrow so the claim would otherwise succeed.
     let total = SALARY * 4;
@@ -615,7 +615,7 @@ fn test_raise_dispute_succeeds_after_resolution() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     // --- First dispute life-cycle: raise + resolve ---
     client.raise_dispute(&employer, &id);
@@ -687,7 +687,7 @@ fn test_milestone_paused_to_active() {
         &soroban_sdk::vec![&env, 1i128],
     );
     client.pause_agreement(&ms_id);
-    client.resume_agreement(&ms_id).unwrap();
+    client.resume_agreement(&ms_id);
 
     env.as_contract(&cid, || {
         let status: AgreementStatus = env
@@ -716,7 +716,7 @@ fn test_milestone_complete_on_last_claim() {
         &soroban_sdk::vec![&env, 1000i128, 2000i128],
     );
     mint(&env, &token, &employer, 3000i128);
-    client.fund_milestone_agreement(&ms_id, &employer, &3000i128).unwrap();
+    client.fund_milestone_agreement(&ms_id, &employer, &3000i128);
 
     client.approve_milestone(&ms_id, &1u32);
     client.approve_milestone(&ms_id, &2u32);
@@ -760,8 +760,8 @@ fn test_activate_active_agreement_panics() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
+    client.activate_agreement(&id);
 }
 
 /// Activating a Paused agreement must be rejected.
@@ -776,9 +776,9 @@ fn test_activate_paused_agreement_panics() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
     client.pause_agreement(&id);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 }
 
 /// Activating a Cancelled agreement must be rejected.
@@ -791,8 +791,8 @@ fn test_activate_cancelled_agreement_panics() {
     let token = create_address(&env);
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
-    client.cancel_agreement(&id).unwrap();
-    client.activate_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
+    client.activate_agreement(&id);
 }
 
 /// Pausing a Created payroll agreement must be rejected.
@@ -820,7 +820,7 @@ fn test_pause_paused_agreement_rejected() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
     client.pause_agreement(&id);
 
     let result = client.try_pause_agreement(&id);
@@ -838,8 +838,8 @@ fn test_pause_cancelled_agreement_rejected() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
-    client.cancel_agreement(&id).unwrap();
+    client.activate_agreement(&id);
+    client.cancel_agreement(&id);
     let result = client.try_pause_agreement(&id);
     assert!(result.is_err());
 }
@@ -857,8 +857,8 @@ fn test_resume_active_agreement_panics() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
-    client.resume_agreement(&id).unwrap();
+    client.activate_agreement(&id);
+    client.resume_agreement(&id);
 }
 
 /// Resuming a Created agreement must be rejected.
@@ -871,7 +871,7 @@ fn test_resume_created_agreement_panics() {
     let token = create_address(&env);
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
-    client.resume_agreement(&id).unwrap();
+    client.resume_agreement(&id);
 }
 
 /// Resuming a Completed agreement must be rejected.
@@ -897,7 +897,7 @@ fn test_resume_completed_agreement_panics() {
         &period_seconds,
         &num_periods,
     );
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     mint(&env, &token, &cid, total);
     env.as_contract(&cid, || {
@@ -912,7 +912,7 @@ fn test_resume_completed_agreement_panics() {
         AgreementStatus::Completed
     );
 
-    client.resume_agreement(&id).unwrap();
+    client.resume_agreement(&id);
 }
 
 /// Resuming a Cancelled agreement must be rejected.
@@ -926,14 +926,14 @@ fn test_resume_cancelled_agreement_panics() {
     let token = create_address(&env);
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
 
     assert_eq!(
         client.get_agreement(&id).unwrap().status,
         AgreementStatus::Cancelled
     );
 
-    client.resume_agreement(&id).unwrap();
+    client.resume_agreement(&id);
 }
 
 /// Resuming a Disputed agreement must be rejected.
@@ -949,7 +949,7 @@ fn test_resume_disputed_agreement_panics() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
     client.raise_dispute(&employer, &id);
 
     assert_eq!(
@@ -957,7 +957,7 @@ fn test_resume_disputed_agreement_panics() {
         AgreementStatus::Disputed
     );
 
-    client.resume_agreement(&id).unwrap();
+    client.resume_agreement(&id);
 }
 
 /// Cancelling a Paused agreement must be rejected.
@@ -973,9 +973,9 @@ fn test_cancel_paused_agreement_panics() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
     client.pause_agreement(&id);
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
 }
 
 /// Cancelling a Disputed agreement must be rejected.
@@ -990,9 +990,9 @@ fn test_cancel_disputed_agreement_panics() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
     client.raise_dispute(&employer, &id);
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
 }
 
 /// Cancelling an already Cancelled agreement must be rejected.
@@ -1005,8 +1005,8 @@ fn test_cancel_cancelled_agreement_panics() {
     let token = create_address(&env);
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
-    client.cancel_agreement(&id).unwrap();
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
+    client.cancel_agreement(&id);
 }
 
 /// Adding an employee to an Active agreement must be rejected.
@@ -1023,7 +1023,7 @@ fn test_add_employee_to_active_panics() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &e1, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
     client.add_employee_to_agreement(&id, &e2, &SALARY);
 }
 
@@ -1039,9 +1039,9 @@ fn test_finalize_before_grace_expiry_panics() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
-    client.cancel_agreement(&id).unwrap();
-    client.finalize_grace_period(&id).unwrap();
+    client.activate_agreement(&id);
+    client.cancel_agreement(&id);
+    client.finalize_grace_period(&id);
 }
 
 /// Raising a dispute when one is already active must return `DisputeAlreadyRaised`.
@@ -1056,7 +1056,7 @@ fn test_raise_dispute_rejects_duplicate_on_active_dispute() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     client.raise_dispute(&employer, &id);
     assert_eq!(
@@ -1084,7 +1084,7 @@ fn test_dispute_outside_grace_window_returns_error() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     advance_time(&env, ONE_WEEK + 1);
 
@@ -1118,7 +1118,7 @@ fn test_resume_rejects_all_non_paused_statuses() {
         let employee = create_address(&env);
         let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
         client.add_employee_to_agreement(&id, &employee, &SALARY);
-        client.activate_agreement(&id).unwrap();
+        client.activate_agreement(&id);
         assert!(
             client.try_resume_agreement(&id).is_err(),
             "resume from Active must be rejected"
@@ -1132,7 +1132,7 @@ fn test_resume_rejects_all_non_paused_statuses() {
         let employer = create_address(&env);
         let token = create_address(&env);
         let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
-        client.cancel_agreement(&id).unwrap();
+        client.cancel_agreement(&id);
         assert_eq!(
             client.get_agreement(&id).unwrap().status,
             AgreementStatus::Cancelled
@@ -1163,7 +1163,7 @@ fn test_resume_rejects_all_non_paused_statuses() {
             &period_seconds,
             &num_periods,
         );
-        client.activate_agreement(&id).unwrap();
+        client.activate_agreement(&id);
 
         mint(&env, &token, &cid, total);
         env.as_contract(&cid, || {
@@ -1192,7 +1192,7 @@ fn test_resume_rejects_all_non_paused_statuses() {
         let employee = create_address(&env);
         let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
         client.add_employee_to_agreement(&id, &employee, &SALARY);
-        client.activate_agreement(&id).unwrap();
+        client.activate_agreement(&id);
         client.raise_dispute(&employer, &id);
         assert_eq!(
             client.get_agreement(&id).unwrap().status,
@@ -1222,7 +1222,7 @@ fn test_activation_timestamp_persisted() {
     client.add_employee_to_agreement(&id, &employee, &SALARY);
 
     advance_time(&env, 1000);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     let a = client.get_agreement(&id).unwrap();
     assert_eq!(a.activated_at, Some(1000u64));
@@ -1242,7 +1242,7 @@ fn test_cancellation_timestamp_persisted() {
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
 
     advance_time(&env, 5000);
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
 
     let a = client.get_agreement(&id).unwrap();
     assert_eq!(a.cancelled_at, Some(5000u64));
@@ -1263,12 +1263,12 @@ fn test_pause_resume_preserves_all_agreement_fields() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     let before = client.get_agreement(&id).unwrap();
 
     client.pause_agreement(&id);
-    client.resume_agreement(&id).unwrap();
+    client.resume_agreement(&id);
 
     let after = client.get_agreement(&id).unwrap();
 
@@ -1304,7 +1304,7 @@ fn test_employee_list_preserved_across_transitions() {
     let in_created = client.get_agreement_employees(&id);
     assert_eq!(in_created.len(), 3);
 
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
     let in_active = client.get_agreement_employees(&id);
     assert_eq!(in_active.len(), 3);
 
@@ -1312,11 +1312,11 @@ fn test_employee_list_preserved_across_transitions() {
     let in_paused = client.get_agreement_employees(&id);
     assert_eq!(in_paused.len(), 3);
 
-    client.resume_agreement(&id).unwrap();
+    client.resume_agreement(&id);
     let in_resumed = client.get_agreement_employees(&id);
     assert_eq!(in_resumed.len(), 3);
 
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
     let in_cancelled = client.get_agreement_employees(&id);
     assert_eq!(in_cancelled.len(), 3);
 }
@@ -1337,7 +1337,7 @@ fn test_state_unchanged_after_failed_transition() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     let before = client.get_agreement(&id).unwrap();
 
@@ -1362,7 +1362,7 @@ fn test_multiple_pause_resume_cycles() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     for _ in 0..5 {
         client.pause_agreement(&id);
@@ -1371,7 +1371,7 @@ fn test_multiple_pause_resume_cycles() {
             AgreementStatus::Paused
         );
 
-        client.resume_agreement(&id).unwrap();
+        client.resume_agreement(&id);
         assert_eq!(
             client.get_agreement(&id).unwrap().status,
             AgreementStatus::Active
@@ -1404,7 +1404,7 @@ fn test_full_lifecycle_created_to_finalized() {
 
     // Created -> Active
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
     assert_eq!(
         client.get_agreement(&id).unwrap().status,
         AgreementStatus::Active
@@ -1418,7 +1418,7 @@ fn test_full_lifecycle_created_to_finalized() {
     );
 
     // Paused -> Active
-    client.resume_agreement(&id).unwrap();
+    client.resume_agreement(&id);
     assert_eq!(
         client.get_agreement(&id).unwrap().status,
         AgreementStatus::Active
@@ -1431,7 +1431,7 @@ fn test_full_lifecycle_created_to_finalized() {
     });
 
     // Active -> Cancelled
-    client.cancel_agreement(&id).unwrap();
+    client.cancel_agreement(&id);
     assert_eq!(
         client.get_agreement(&id).unwrap().status,
         AgreementStatus::Cancelled
@@ -1441,7 +1441,7 @@ fn test_full_lifecycle_created_to_finalized() {
     // Wait for grace period to expire, then finalize
     advance_time(&env, grace + 1);
     assert!(!client.is_grace_period_active(&id));
-    client.finalize_grace_period(&id).unwrap();
+    client.finalize_grace_period(&id);
 
     env.as_contract(&cid, || {
         let balance = DataKey::get_agreement_escrow_balance(&env, id, &token);
@@ -1499,7 +1499,7 @@ fn test_get_agreement_bumps_ttl() {
 
     let id = client.create_payroll_agreement(&employer, &token, &ONE_WEEK);
     client.add_employee_to_agreement(&id, &employee, &SALARY);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     // Let almost the whole TTL window elapse so the entry is near expiry.
     advance_until_near_expiry(&env);
@@ -1550,7 +1550,7 @@ fn test_escrow_balance_ttl_survives_ledger_advance() {
 
     let id =
         client.create_escrow_agreement(&employer, &contributor, &token, &SALARY, &ONE_DAY, &4u32);
-    client.activate_agreement(&id).unwrap();
+    client.activate_agreement(&id);
 
     mint(&env, &token, &cid, total);
     env.as_contract(&cid, || {

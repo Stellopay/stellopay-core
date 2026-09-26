@@ -268,7 +268,7 @@ fn setup_funded_milestones(
     // contract is not enough. Funding transfers from the employer.
     let total = amount_per_milestone * n as i128;
     mint(env, &token, &employer, total);
-    client.fund_milestone_agreement(&agreement_id, &employer, &total).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &total);
     let _ = contract_addr;
 
     // Approve every milestone (IDs are 1-based).

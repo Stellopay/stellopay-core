@@ -86,7 +86,7 @@ fn test_security_unauthorized_claim() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token.address, &86400);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     token.mint(&client.address, &10000);
 
@@ -129,12 +129,12 @@ fn test_security_grace_period_boundaries() {
     let grace_period = 86400u64; // 1 day
     let agreement_id = client.create_payroll_agreement(&employer, &token.address, &grace_period);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     token.mint(&client.address, &10000);
 
     // Cancel agreement
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
     assert!(client.is_grace_period_active(&agreement_id));
 
     // Employer tries to finalize grace period immediately - should fail
@@ -151,7 +151,7 @@ fn test_security_grace_period_boundaries() {
     assert!(!client.is_grace_period_active(&agreement_id));
 
     // Finalize should now work
-    client.finalize_grace_period(&agreement_id).unwrap();
+    client.finalize_grace_period(&agreement_id);
 }
 
 #[test]
@@ -166,7 +166,7 @@ fn test_security_reentrancy_mitigation_simulation() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token.address, &86400);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     token.mint(&client.address, &10000);
 

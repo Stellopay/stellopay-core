@@ -91,7 +91,7 @@ fn test_activate_nonexistent_agreement_returns_agreement_not_found() {
     let (_contract_id, client) = setup_contract(&env);
 
     let result = client.try_activate_agreement(&999_999u128);
-    assert_eq!(result, Err(Ok(PayrollError::AgreementNotFound.into())));
+    assert_eq!(result, Err(Ok(PayrollError::AgreementNotFound)));
 }
 
 /// Verifies that querying employees for a non-existent agreement ID returns
@@ -659,7 +659,7 @@ fn test_activate_payroll_with_one_employee_succeeds() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000i128);
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     let agreement = client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agreement.status, AgreementStatus::Active);
@@ -868,7 +868,7 @@ fn test_claim_milestone_id_zero_panics() {
 
     // Fund the accounted escrow so the approval invariant is satisfied.
     token_client.mint(&employer, &1000i128);
-    client.fund_milestone_agreement(&agreement_id, &employer, &1000i128).unwrap();
+    client.fund_milestone_agreement(&agreement_id, &employer, &1000i128);
     client.approve_milestone(&agreement_id, &1u32);
 
     // Attempt to claim milestone ID 0 — always invalid

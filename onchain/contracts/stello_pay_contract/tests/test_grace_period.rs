@@ -104,7 +104,7 @@ fn setup_payroll_agreement_with_grace(
     if status == AgreementStatus::Active || status == AgreementStatus::Paused {
         let employee = create_test_address(env);
         client.add_employee_to_agreement(&agreement_id, &employee, &STANDARD_SALARY);
-        client.activate_agreement(&agreement_id).unwrap();
+        client.activate_agreement(&agreement_id);
     }
 
     // Pause if needed
@@ -139,7 +139,7 @@ fn setup_escrow_agreement_with_grace(
 
     // Activate if needed
     if status == AgreementStatus::Active {
-        client.activate_agreement(&agreement_id).unwrap();
+        client.activate_agreement(&agreement_id);
     }
 
     agreement_id
@@ -158,7 +158,7 @@ fn add_test_employees(
 
 /// Cancels an agreement and returns the cancellation timestamp
 fn cancel_and_get_timestamp(_env: &Env, client: &PayrollContractClient, agreement_id: u128) -> u64 {
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
     let agreement = client.get_agreement(&agreement_id).unwrap();
     agreement.cancelled_at.unwrap()
 }
@@ -199,7 +199,7 @@ fn setup_funded_payroll_agreement(
     add_test_employees(client, agreement_id, employees);
 
     // Activate agreement
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     // Fund escrow
     let total_funding: i128 = employees.iter().map(|(_, salary)| salary * 10).sum();
@@ -249,7 +249,7 @@ fn test_cancel_active_agreement() {
     let cancel_time = get_current_time(&env);
 
     // Cancel agreement
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
 
     // Verify status changed to Cancelled
     let agreement = client.get_agreement(&agreement_id).unwrap();
@@ -285,7 +285,7 @@ fn test_cancel_created_agreement() {
     let cancel_time = get_current_time(&env);
 
     // Cancel created agreement
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
 
     // Verify cancellation succeeded
     let agreement = client.get_agreement(&agreement_id).unwrap();
@@ -336,7 +336,7 @@ fn test_cancel_already_cancelled_fails() {
         AgreementStatus::Active,
     );
 
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
     // Attempt to cancel again - must return a typed error
     assert_eq!(
         client.try_cancel_agreement(&agreement_id),
@@ -405,7 +405,7 @@ fn test_cancel_unauthorized_fails() {
     env.mock_auths(&[]);
 
     // Attempt to cancel as unauthorized user - should fail auth
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
 }
 
 #[test]
@@ -430,7 +430,7 @@ fn test_cancelled_at_timestamp_set() {
 
     // Cancel at known time
     set_time(&env, 2000000);
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
 
     // Verify exact timestamp
     let agreement = client.get_agreement(&agreement_id).unwrap();
@@ -460,7 +460,7 @@ fn test_agreement_cancelled_event() {
     );
 
     // Cancel and verify event emission
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
 
     // Event verification - AgreementCancelledEvent emitted
     let agreement = client.get_agreement(&agreement_id).unwrap();
@@ -518,7 +518,7 @@ fn test_grace_period_expires_after_default_time() {
     );
 
     // Cancel agreement
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
 
     // Grace period should be active
     assert!(client.is_grace_period_active(&agreement_id));
@@ -557,7 +557,7 @@ fn test_custom_grace_period() {
             *grace_period,
             AgreementStatus::Active,
         );
-        client.cancel_agreement(&agreement_id).unwrap();
+        client.cancel_agreement(&agreement_id);
         agreements.push((agreement_id, *grace_period));
     }
 
@@ -689,7 +689,7 @@ fn test_claim_payroll_during_grace_period() {
     advance_time(&env, ONE_DAY);
 
     // Cancel agreement
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
 
     // Both employees claim during grace period
     let result1 = client.try_claim_payroll(&employee1, &agreement_id, &0);
@@ -738,7 +738,7 @@ fn test_claim_time_based_during_grace_period() {
     advance_time(&env, ONE_DAY * 2);
 
     // Cancel agreement
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
 
     // Contributor claims during grace period
     client.claim_time_based(&agreement_id);
@@ -775,7 +775,7 @@ fn test_cannot_claim_after_grace_period() {
     advance_time(&env, ONE_DAY);
 
     // Cancel agreement
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
 
     // Advance beyond grace period
     advance_time(&env, ONE_HOUR + 1);
@@ -844,7 +844,7 @@ fn test_finalize_grace_period_after_expiration() {
     mint(&env, &token, &contract_id, 5000);
 
     // Cancel
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
 
     // Advance beyond grace period
     advance_time(&env, ONE_HOUR + 1);
@@ -852,7 +852,7 @@ fn test_finalize_grace_period_after_expiration() {
     let employer_balance_before = get_balance(&env, &token, &employer);
 
     // Finalize
-    client.finalize_grace_period(&agreement_id).unwrap();
+    client.finalize_grace_period(&agreement_id);
 
     // Verify refund
     let employer_balance_after = get_balance(&env, &token, &employer);
@@ -885,7 +885,7 @@ fn test_finalize_before_expiration_fails() {
     fund_agreement_escrow(&env, &contract_id, agreement_id, &token, 5000);
 
     // Cancel
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
 
     // Advance to halfway through grace period
     advance_time(&env, ONE_DAY / 2);
@@ -987,7 +987,7 @@ fn test_finalize_refunds_remaining() {
     advance_time(&env, ONE_DAY);
 
     // Cancel
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
 
     // Employee claims 1000
     let _ = client
@@ -1000,7 +1000,7 @@ fn test_finalize_refunds_remaining() {
     let employer_balance_before = get_balance(&env, &token, &employer);
 
     // Finalize
-    client.finalize_grace_period(&agreement_id).unwrap();
+    client.finalize_grace_period(&agreement_id);
 
     // Employer should receive 9000 (10000 - 1000 claimed)
     let employer_balance_after = get_balance(&env, &token, &employer);
@@ -1028,9 +1028,9 @@ fn test_grace_period_finalized_event() {
     mint(&env, &token, &contract_id, 1000);
 
     // Cancel and finalize
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
     advance_time(&env, ONE_HOUR + 1);
-    client.finalize_grace_period(&agreement_id).unwrap();
+    client.finalize_grace_period(&agreement_id);
 
     // Event verification - GracePeriodFinalizedEvent emitted
     // Verify finalization completed
@@ -1131,7 +1131,7 @@ fn test_time_boundary_cases() {
         AgreementStatus::Active,
     );
 
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
 
     // Verify grace period calculated correctly from 0
     let grace_end = client.get_grace_period_end(&agreement_id).unwrap();
@@ -1151,7 +1151,7 @@ fn test_time_boundary_cases() {
         AgreementStatus::Active,
     );
 
-    client.cancel_agreement(&agreement_id2).unwrap();
+    client.cancel_agreement(&agreement_id2);
 
     // Verify no overflow
     let grace_end2 = client.get_grace_period_end(&agreement_id2).unwrap();
@@ -1399,7 +1399,7 @@ fn test_finalize_grace_period_is_idempotent() {
 
     // First call: MUST succeed and emit a GracePeriodFinalized event
     let events_before = env.events().all().len();
-    client.finalize_grace_period(&agreement_id).unwrap();
+    client.finalize_grace_period(&agreement_id);
     let events_after_first = env.events().all().len();
     assert!(
         events_after_first > events_before,
@@ -1407,7 +1407,7 @@ fn test_finalize_grace_period_is_idempotent() {
     );
 
     // Second call: MUST be a no-op (no additional events)
-    client.finalize_grace_period(&agreement_id).unwrap();
+    client.finalize_grace_period(&agreement_id);
     let events_after_second = env.events().all().len();
     assert_eq!(
         events_after_second, 0,
@@ -1415,7 +1415,7 @@ fn test_finalize_grace_period_is_idempotent() {
     );
 
     // Third call: still a no-op
-    client.finalize_grace_period(&agreement_id).unwrap();
+    client.finalize_grace_period(&agreement_id);
     let events_after_third = env.events().all().len();
     assert_eq!(
         events_after_third, 0,

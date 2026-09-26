@@ -174,7 +174,7 @@ fn seed_payroll_agreement(
     let grace_period: u64 = 7 * 24 * 3600;
     let agreement_id = payroll_client.create_payroll_agreement(employer, base_token, &grace_period);
     payroll_client.add_employee_to_agreement(&agreement_id, employee, &salary_per_period);
-    payroll_client.activate_agreement(&agreement_id).unwrap();
+    payroll_client.activate_agreement(&agreement_id);
 
     let contract_address = payroll_client.address.clone();
 

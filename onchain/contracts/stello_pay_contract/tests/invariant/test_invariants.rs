@@ -229,7 +229,7 @@ fn test_invariants_escrow_create_claim_flow() {
         DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, total);
     });
 
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
     assert_agreement_core_invariants(&env, &contract_id, agreement_id);
 
     // Advance one period and perform a time-based claim.
@@ -263,7 +263,7 @@ fn test_invariants_payroll_create_claim_flow() {
     // At this point total_amount must equal salary.
     assert_agreement_core_invariants(&env, &contract_id, agreement_id);
 
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     // Seed DataKey storage for payroll claiming.
     env.as_contract(&contract_id, || {
@@ -325,7 +325,7 @@ fn test_invariants_escrow_refund_flow() {
     env.as_contract(&contract_id, || {
         DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, total);
     });
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     assert_agreement_core_invariants(&env, &contract_id, agreement_id);
 
@@ -338,12 +338,12 @@ fn test_invariants_escrow_refund_flow() {
     assert_agreement_core_invariants(&env, &contract_id, agreement_id);
 
     // Cancel and advance past grace period, then finalize refund.
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
     let grace_end = client.get_grace_period_end(&agreement_id).unwrap();
     env.ledger().with_mut(|li: &mut Ledger| {
         li.timestamp = grace_end + 1;
     });
-    client.finalize_grace_period(&agreement_id).unwrap();
+    client.finalize_grace_period(&agreement_id);
 
     // After refund, escrow balance must be zero and invariants preserved.
     assert_agreement_core_invariants(&env, &contract_id, agreement_id);
@@ -411,7 +411,7 @@ fn test_invariants_pause_and_resume_flow() {
     let salary_per_period: i128 = 1_000;
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &salary_per_period);
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     // Seed DataKey storage with sufficient escrow.
     env.as_contract(&contract_id, || {
@@ -439,7 +439,7 @@ fn test_invariants_pause_and_resume_flow() {
     assert_agreement_core_invariants(&env, &contract_id, agreement_id);
 
     // Resume and perform a claim; invariants must still hold.
-    client.resume_agreement(&agreement_id).unwrap();
+    client.resume_agreement(&agreement_id);
     client
         .try_claim_payroll(&employee, &agreement_id, &0u32)
         .unwrap();
@@ -500,7 +500,7 @@ fn test_conservation_payroll_multi_claim_sequence() {
     });
 
     mint(&env, &token, &contract_id, initial_escrow);
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     // Helper: assert conservation at current state
     let assert_conservation = || {
@@ -567,7 +567,7 @@ fn test_conservation_multi_employee_dispute_integer_division() {
     });
 
     mint(&env, &token, &contract_id, escrow_balance);
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     // Raise dispute
     client.raise_dispute(&employer, &agreement_id).unwrap();
@@ -656,7 +656,7 @@ fn test_conservation_batch_claim_payroll() {
     });
 
     mint(&env, &token, &contract_id, initial_escrow);
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     // Advance time
     env.ledger().with_mut(|li| li.timestamp += 86400 + 1);
@@ -718,7 +718,7 @@ fn test_invariant_claimed_periods_never_exceeds_available() {
     });
 
     mint(&env, &token, &contract_id, 1000 * (max_periods as i128));
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     // Attempt to claim beyond max_periods
     for _ in 0..max_periods + 5 {
@@ -769,7 +769,7 @@ fn test_invariant_cancelled_agreement_grace_period_conservation() {
         DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, total_amount);
     });
 
-    client.activate_agreement(&agreement_id).unwrap();
+    client.activate_agreement(&agreement_id);
 
     // Claim 2 periods before cancellation
     env.ledger().with_mut(|li| li.timestamp += 86400 * 2 + 1);
@@ -780,7 +780,7 @@ fn test_invariant_cancelled_agreement_grace_period_conservation() {
     });
 
     // Cancel agreement
-    client.cancel_agreement(&agreement_id).unwrap();
+    client.cancel_agreement(&agreement_id);
 
     // Try to claim during grace period
     env.ledger().with_mut(|li| li.timestamp += 86400);
@@ -789,7 +789,7 @@ fn test_invariant_cancelled_agreement_grace_period_conservation() {
     // Finalize grace period
     if let Some(grace_end) = client.get_grace_period_end(&agreement_id) {
         env.ledger().with_mut(|li| li.timestamp = grace_end + 1);
-        client.finalize_grace_period(&agreement_id).unwrap();
+        client.finalize_grace_period(&agreement_id);
     }
 
     // **Assert conservation and that paid amount didn't decrease**
