@@ -172,6 +172,10 @@ impl PayrollContract {
     }
 
     /// Gets the linked Rate Limiter contract address, if any.
+    ///
+    /// @param env The contract environment.
+    /// @return The configured rate-limiter contract address, if one has been set.
+    /// @access This is a read-only query and does not require any additional auth.
     pub fn get_rate_limiter_contract(env: Env) -> Option<Address> {
         env.storage()
             .persistent()
@@ -201,6 +205,10 @@ impl PayrollContract {
     }
 
     /// Gets the linked Salary Adjustment contract address, if any.
+    ///
+    /// @param env The contract environment.
+    /// @return The configured salary-adjustment contract address, if one has been set.
+    /// @access This is a read-only query and does not require any additional auth.
     pub fn get_salary_adjustment_contract(env: Env) -> Option<Address> {
         env.storage()
             .persistent()
@@ -214,8 +222,10 @@ impl PayrollContract {
     /// address is set, the hook is silently skipped.  Pass any address to update
     /// or remove via `clear_milestone_hook_contract`.
     ///
-    /// # Access Control
-    /// Requires owner authentication.
+    /// @param env The contract environment.
+    /// @param owner The contract owner updating the milestone hook.
+    /// @param hook_contract The milestone hook contract address to register.
+    /// @access Requires owner authentication.
     pub fn set_milestone_hook_contract(env: Env, owner: Address, hook_contract: Address) {
         let stored_owner = match contract_owner(&env) {
             Ok(owner) => owner,
@@ -231,6 +241,10 @@ impl PayrollContract {
     }
 
     /// Gets the configured `on_milestone_expired` hook contract address, if any.
+    ///
+    /// @param env The contract environment.
+    /// @return The configured milestone hook contract address, if any.
+    /// @access This is a read-only query and does not require any additional auth.
     pub fn get_milestone_hook_contract(env: Env) -> Option<Address> {
         env.storage()
             .persistent()
@@ -487,6 +501,12 @@ impl PayrollContract {
     /// - Agreement must be in Created status
     /// - Amount must be positive
     /// - Caller must be the employer
+    ///
+    /// @param env The contract environment.
+    /// @param agreement_id The agreement to mutate.
+    /// @param amount The amount to assign to the new milestone.
+    /// @return `Ok(())` on success or a `PayrollError` on validation failure.
+    /// @access This entrypoint is employer-authorized and must be called by the agreement employer.
     pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), PayrollError> {
         payroll::add_milestone(env, agreement_id, amount)
     }
@@ -504,6 +524,12 @@ impl PayrollContract {
     /// - Milestone must exist
     /// - Milestone must not be already approved
     /// - Caller must be the employer
+    ///
+    /// @param env The contract environment.
+    /// @param agreement_id The agreement containing the milestone.
+    /// @param milestone_id The milestone to approve.
+    /// @return `Ok(())` on success or a `PayrollError` on validation failure.
+    /// @access This entrypoint is employer-authorized and must be called by the agreement employer.
     pub fn approve_milestone(
         env: Env,
         agreement_id: u128,
@@ -530,6 +556,13 @@ impl PayrollContract {
     /// - Agreement must be in `Created` or `Active` status.
     /// - Milestone must not already be rejected, approved, or claimed.
     /// - `reason` must be non-empty and not whitespace-only.
+    ///
+    /// @param env The contract environment.
+    /// @param agreement_id The agreement containing the milestone.
+    /// @param milestone_id The milestone being rejected.
+    /// @param reason The justification for the rejection.
+    /// @return `Ok(())` on success or a `PayrollError` on validation failure.
+    /// @access This entrypoint is employer-authorized and must be called by the agreement employer.
     pub fn reject_milestone(
         env: Env,
         agreement_id: u128,
@@ -559,6 +592,12 @@ impl PayrollContract {
     /// - Caller must be the employer.
     /// - Agreement must be in `Created` or `Active` status.
     /// - Milestone must not already be expired, approved, claimed, or rejected.
+    ///
+    /// @param env The contract environment.
+    /// @param agreement_id The agreement containing the milestone.
+    /// @param milestone_id The milestone to mark as expired.
+    /// @return `Ok(())` on success or a `PayrollError` on validation failure.
+    /// @access This entrypoint is employer-authorized and must be called by the agreement employer.
     pub fn expire_milestone(
         env: Env,
         agreement_id: u128,
@@ -581,6 +620,12 @@ impl PayrollContract {
     /// - Milestone must not be already claimed
     /// - Caller must be the contributor
     /// - Agreement auto-completes when all milestones are claimed
+    ///
+    /// @param env The contract environment.
+    /// @param agreement_id The agreement containing the milestone.
+    /// @param milestone_id The milestone to claim.
+    /// @return `Ok(())` on success or a `PayrollError` on validation failure.
+    /// @access This entrypoint is contributor-authorized and must be called by the agreement contributor.
     pub fn claim_milestone(
         env: Env,
         agreement_id: u128,
@@ -668,6 +713,12 @@ impl PayrollContract {
     /// - The employee address must not already be present in the agreement; a duplicate add panics
     ///   with `PayrollError::EmployeeAlreadyExists` to preserve the 1:1 employee-to-salary mapping.
     ///   A previously removed employee may be re-added.
+    ///
+    /// @param env The contract environment.
+    /// @param agreement_id The agreement to mutate.
+    /// @param employee The employee address to add.
+    /// @param salary_per_period The employee's salary per period.
+    /// @access This entrypoint is employer-authorized and must be called by the agreement employer.
     pub fn add_employee_to_agreement(
         env: Env,
         agreement_id: u128,
@@ -732,6 +783,12 @@ impl PayrollContract {
     ///
     /// # Returns
     /// bool
+    ///
+    /// @param env The contract environment.
+    /// @param caller The caller trying to set the arbiter.
+    /// @param arbiter The arbiter address being assigned.
+    /// @return True when the arbiter is set successfully.
+    /// @access Requires the caller to authenticate as the authorized admin or employer.
     pub fn set_arbiter(env: Env, caller: Address, arbiter: Address) -> bool {
         payroll::set_arbiter(&env, caller, arbiter)
     }
@@ -743,6 +800,10 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires caller authentication
+    ///
+    /// @param env The contract environment.
+    /// @return The current arbiter address, if one is configured.
+    /// @access This is a read-only query and the contract may require caller authentication.
     pub fn get_arbiter(env: Env) -> Option<Address> {
         payroll::get_arbiter(&env)
     }
@@ -751,21 +812,35 @@ impl PayrollContract {
     /// @dev Only the initialized contract owner can set this address. Once configured,
     /// successful lifecycle mutations append to the local audit stream and call the
     /// external audit logger's append-only entrypoint.
+    /// @param env The contract environment.
+    /// @param owner The contract owner authorizing the logger update.
+    /// @param audit_logger The shared audit logger address to register.
+    /// @access Requires owner authentication.
     pub fn set_audit_logger(env: Env, owner: Address, audit_logger: Address) {
         audit::set_audit_logger(&env, owner, audit_logger);
     }
 
     /// @notice Returns the configured shared audit logger address, if one is set.
+    /// @param env The contract environment.
+    /// @return The configured audit logger address, if any.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_audit_logger(env: Env) -> Option<Address> {
         audit::get_audit_logger(&env)
     }
 
     /// @notice Returns the number of lifecycle audit entries appended locally.
+    /// @param env The contract environment.
+    /// @return The number of local lifecycle audit entries recorded.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_audit_entry_count(env: Env) -> u64 {
         audit::get_audit_entry_count(&env)
     }
 
     /// @notice Returns a lifecycle audit entry by append-only id.
+    /// @param env The contract environment.
+    /// @param audit_id The lifecycle audit ID to fetch.
+    /// @return The requested lifecycle audit entry, if present.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_audit_entry(env: Env, audit_id: u64) -> Option<LifecycleAuditEntry> {
         audit::get_audit_entry(&env, audit_id)
     }
@@ -777,6 +852,12 @@ impl PayrollContract {
     /// `agreement_id` of `0`) are excluded, since they have no employer to scope by.
     /// Paginated via `start_id` (use `1` for the first page) and `limit`; the returned
     /// `next_start_id` is passed as `start_id` on the next call, `None` once exhausted.
+    /// @param env The contract environment.
+    /// @param employer The employer whose agreement audit entries are being queried.
+    /// @param start_id The lowest audit id to include in the paged result.
+    /// @param limit The maximum number of entries to return in the page.
+    /// @return The paginated employer audit page for the requested query.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_audit_entries_by_employer(
         env: Env,
         employer: Address,
@@ -844,6 +925,15 @@ impl PayrollContract {
     /// * `pay_employee` - Amount to distribute to employees
     /// * `refund_employer` - Amount to refund the employer
     /// * `multisig_operation_id` - ID of the Executed DisputeResolution operation in the multisig
+    ///
+    /// @param env The contract environment.
+    /// @param caller The arbiter or authorized account resolving the dispute.
+    /// @param agreement_id The agreement under dispute.
+    /// @param pay_employee The amount to pay the employee.
+    /// @param refund_employer The amount to refund the employer.
+    /// @param multisig_operation_id The multisig operation identifier that authorized the settlement.
+    /// @return `Ok(())` on success or a `PayrollError` on validation failure.
+    /// @access Requires the authorized arbiter and the signed multisig approval path.
     pub fn resolve_dispute_multisig(
         env: Env,
         caller: Address,
@@ -870,6 +960,14 @@ impl PayrollContract {
     /// * `large_payment_threshold` - Min amount requiring multisig for LargePayment (0 = disabled)
     /// * `dispute_resolution_threshold` - Min total payout requiring multisig for DisputeResolution
     ///   (0 = disabled)
+    ///
+    /// @param env The contract environment.
+    /// @param owner The owner authorizing the multisig configuration change.
+    /// @param multisig_contract The multisig contract address to register.
+    /// @param large_payment_threshold The minimum large-payment threshold requiring multisig approval.
+    /// @param dispute_resolution_threshold The minimum dispute-resolution payout requiring multisig approval.
+    /// @return `Ok(())` on success or a `PayrollError` on validation failure.
+    /// @access Requires owner authentication.
     pub fn set_multisig_config(
         env: Env,
         owner: Address,
@@ -887,6 +985,10 @@ impl PayrollContract {
     }
 
     /// Returns the configured multisig contract address, if any.
+    ///
+    /// @param env The contract environment.
+    /// @return The configured multisig contract address, if any.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_multisig_contract(env: Env) -> Option<Address> {
         payroll::get_multisig_contract(&env)
     }
@@ -959,6 +1061,12 @@ impl PayrollContract {
     /// Sets an absolute upper-bound sanity limit for exchange rates.
     /// Any `set_exchange_rate` call with a rate above this value will be rejected.
     /// Caller must be the contract owner.
+    ///
+    /// @param env The contract environment.
+    /// @param caller The owner authorizing the sanity bound update.
+    /// @param max_rate The maximum allowed FX rate.
+    /// @return `Ok(())` on success or a `PayrollError` on validation failure.
+    /// @access Requires owner authentication.
     pub fn set_fx_rate_sanity_bound(
         env: Env,
         caller: Address,
@@ -1055,6 +1163,14 @@ impl PayrollContract {
     /// * `agreement_id` - Payroll agreement ID
     /// * `employee_index` - Employee index within the agreement
     /// * `multisig_operation_id` - ID of the Executed LargePayment operation in the multisig
+    ///
+    /// @param env The contract environment.
+    /// @param caller The employee invoking the large-payment claim.
+    /// @param agreement_id The agreement being claimed against.
+    /// @param employee_index The employee index within the agreement.
+    /// @param multisig_operation_id The multisig approval identifier for this payout.
+    /// @return `Ok(())` on success or a `PayrollError` on validation failure.
+    /// @access Requires the employee to authenticate and the multisig authorization to be valid.
     pub fn claim_payroll_multisig(
         env: Env,
         caller: Address,
@@ -1156,6 +1272,11 @@ impl PayrollContract {
     /// - Paused agreements cannot have claims processed
     /// - Agreement state is preserved
     /// - Can be resumed later or cancelled
+    ///
+    /// @param env The contract environment.
+    /// @param agreement_id The agreement to pause.
+    /// @return `Ok(())` on success or a `PayrollError` on validation failure.
+    /// @access Requires the agreement employer to authenticate.
     pub fn pause_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
         // Try new-style agreement first (payroll/escrow)
         if payroll::get_agreement(&env, agreement_id).is_some() {
@@ -1302,6 +1423,13 @@ impl PayrollContract {
     ///
     /// # Events
     /// Emits `grace_period_extended_event` for auditing.
+    ///
+    /// @param env The contract environment.
+    /// @param caller The owner or employer authorizing the extension.
+    /// @param agreement_id The agreement to extend.
+    /// @param additional_seconds The extra grace time to add.
+    /// @return `Ok(())` on success or a `PayrollError` on validation failure.
+    /// @access Requires the caller to authenticate and to be either the contract owner or the agreement employer.
     pub fn extend_grace_period(
         env: Env,
         caller: Address,
@@ -1312,6 +1440,12 @@ impl PayrollContract {
     }
 
     /// Owner-only: updates caps for grace extensions (basis points of base grace, per-call max).
+    ///
+    /// @param env The contract environment.
+    /// @param caller The owner authorizing the policy change.
+    /// @param policy The updated grace-extension policy.
+    /// @return `Ok(())` on success or a `PayrollError` on validation failure.
+    /// @access Requires owner authentication.
     pub fn set_grace_extension_policy(
         env: Env,
         caller: Address,
@@ -1321,11 +1455,20 @@ impl PayrollContract {
     }
 
     /// Current grace extension policy (defaults until explicitly set).
+    ///
+    /// @param env The contract environment.
+    /// @return The current grace-extension policy for the contract.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_grace_extension_policy(env: Env) -> GracePeriodExtensionPolicy {
         payroll::get_grace_extension_policy(&env)
     }
 
     /// Cumulative extra seconds applied on top of `Agreement.grace_period_seconds`.
+    ///
+    /// @param env The contract environment.
+    /// @param agreement_id The agreement to query.
+    /// @return The total accumulated grace-extension seconds for the agreement.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_grace_extension_seconds(env: Env, agreement_id: u128) -> u64 {
         payroll::get_grace_extension_seconds(&env, agreement_id)
     }
@@ -1386,6 +1529,10 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires caller authentication
+    ///
+    /// @param env The contract environment.
+    /// @return The configured guardian addresses, if any.
+    /// @access This is a read-only query and may require caller authentication based on contract policy.
     pub fn get_emergency_guardians(env: Env) -> Option<Vec<Address>> {
         payroll::get_emergency_guardians(&env)
     }
@@ -1442,6 +1589,10 @@ impl PayrollContract {
     ///
     /// # Returns
     /// Result<(), storage::PayrollError>
+    ///
+    /// @param env The contract environment.
+    /// @return `Ok(())` on success or a `PayrollError` on validation failure.
+    /// @access Requires owner authentication.
     pub fn emergency_pause(env: Env) -> Result<(), storage::PayrollError> {
         payroll::emergency_pause(&env)
     }
@@ -1456,6 +1607,10 @@ impl PayrollContract {
     ///
     /// # Errors
     /// Returns an error if validation fails
+    ///
+    /// @param env The contract environment.
+    /// @return `Ok(())` on success or a `PayrollError` on validation failure.
+    /// @access Requires owner authentication.
     pub fn emergency_unpause(env: Env) -> Result<(), storage::PayrollError> {
         payroll::emergency_unpause(&env)
     }
@@ -1467,6 +1622,10 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires caller authentication
+    ///
+    /// @param env The contract environment.
+    /// @return True when the contract is emergency-paused.
+    /// @access This is a read-only query and may require caller authentication depending on policy.
     pub fn is_emergency_paused(env: Env) -> bool {
         payroll::is_emergency_paused(&env)
     }
@@ -1478,6 +1637,10 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires caller authentication
+    ///
+    /// @param env The contract environment.
+    /// @return The current emergency-pause state, if one is set.
+    /// @access This is a read-only query and may require caller authentication depending on policy.
     pub fn get_emergency_pause_state(env: Env) -> Option<storage::EmergencyPause> {
         payroll::get_emergency_pause_state(&env)
     }

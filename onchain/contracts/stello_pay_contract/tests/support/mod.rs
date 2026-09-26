@@ -19,7 +19,12 @@ pub struct MaliciousMilestoneHook;
 
 #[contractimpl]
 impl MaliciousMilestoneHook {
-    /// Configure the addresses that are useful when inspecting a test run.
+    /// Configures the addresses used to verify the reentrancy hook behavior.
+    ///
+    /// @param env The contract environment.
+    /// @param payroll_contract The payroll contract address under test.
+    /// @param contributor The contributor address used for the reentry simulation.
+    /// @access Requires the test harness to invoke this entrypoint with a valid environment.
     pub fn initialize(env: Env, payroll_contract: Address, contributor: Address) {
         env.storage()
             .instance()
@@ -35,7 +40,11 @@ impl MaliciousMilestoneHook {
             .set(&Symbol::new(&env, "attempted_reentry"), &false);
     }
 
-    /// Return the number of callback invocations recorded by this hook.
+    /// Returns the number of callback invocations recorded by this hook.
+    ///
+    /// @param env The contract environment.
+    /// @return The number of times the milestone-expired hook was invoked.
+    /// @access This is a read-only test helper and does not require special authorization.
     pub fn get_hook_call_count(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -43,7 +52,11 @@ impl MaliciousMilestoneHook {
             .unwrap_or(0)
     }
 
-    /// Return whether the callback path was reached.
+    /// Returns whether the callback path was reached.
+    ///
+    /// @param env The contract environment.
+    /// @return True when the hook marked a reentry attempt as observed.
+    /// @access This is a read-only test helper and does not require special authorization.
     pub fn attempted_reentry(env: Env) -> bool {
         env.storage()
             .instance()
@@ -51,7 +64,12 @@ impl MaliciousMilestoneHook {
             .unwrap_or(false)
     }
 
-    /// Record a callback from `expire_milestone`.
+    /// Records a callback from `expire_milestone`.
+    ///
+    /// @param env The contract environment.
+    /// @param _agreement_id The agreement ID passed to the hook.
+    /// @param _milestone_id The milestone ID passed to the hook.
+    /// @access This test hook is intentionally callable without additional auth checks.
     pub fn on_milestone_expired(env: Env, _agreement_id: u128, _milestone_id: u32) {
         let previous: u32 = env
             .storage()
@@ -66,7 +84,11 @@ impl MaliciousMilestoneHook {
             .set(&Symbol::new(&env, "attempted_reentry"), &true);
     }
 
-    /// Return the configured payroll contract for test diagnostics.
+    /// Returns the configured payroll contract for test diagnostics.
+    ///
+    /// @param env The contract environment.
+    /// @return The configured payroll contract address, if any.
+    /// @access This is a read-only test helper and does not require special authorization.
     pub fn get_payroll_contract(env: Env) -> Option<Address> {
         env.storage()
             .instance()

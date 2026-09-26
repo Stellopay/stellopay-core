@@ -117,7 +117,9 @@ impl RbacContract {
     /// @notice Initializes the RBAC contract and assigns the bootstrap admin.
     /// @dev Can only be called once. The `owner` is granted the `Admin` role.
     ///      Emits event `("RBAC", "init")` with the owner address.
+    /// @param env The contract environment.
     /// @param owner Address that becomes contract owner and initial admin.
+    /// @access Requires the bootstrap owner to authenticate.
     pub fn initialize(env: Env, owner: Address) {
         owner.require_auth();
 
@@ -336,8 +338,10 @@ impl RbacContract {
     /// @notice Returns all roles directly assigned to an address.
     /// @dev Does not include inherited roles; use `has_role` for
     ///      inheritance-aware checks.
+    /// @param env The contract environment.
     /// @param addr Address to query.
     /// @return roles Vector of directly assigned roles.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_roles(env: Env, addr: Address) -> Vec<Role> {
         require_initialized(&env);
         read_roles(&env, &addr)
@@ -367,7 +371,9 @@ impl RbacContract {
     }
 
     /// @notice Returns the current contract owner.
+    /// @param env The contract environment.
     /// @return owner The owner address.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn owner(env: Env) -> Address {
         require_initialized(&env);
         read_owner(&env)

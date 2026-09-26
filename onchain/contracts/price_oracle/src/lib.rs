@@ -279,10 +279,11 @@ impl PriceOracleContract {
     /// @notice Initializes the price oracle contract.
     /// @dev Must be called exactly once by the protocol owner.
     ///      Emits event `("oracle", "init")` with the owner address.
-    /// @param owner            Administrative owner address.
-    /// @param payroll_contract Address of the core payroll contract that
-    ///                         will consume FX rates.
+    /// @param env The contract environment.
+    /// @param owner Administrative owner address.
+    /// @param payroll_contract Address of the core payroll contract that will consume FX rates.
     /// @return Result<(), OracleError>
+    /// @access Requires the owner to authenticate.
     pub fn initialize(
         env: Env,
         owner: Address,
@@ -317,8 +318,11 @@ impl PriceOracleContract {
     /// @notice Adds an authorized oracle source.
     /// @dev Only the contract owner may call this.
     ///      Emits event `("oracle", "addsrc")` with the source address.
+    /// @param env The contract environment.
     /// @param caller Owner address authorizing the source.
     /// @param source Oracle source address (e.g. off-chain signer or feeder).
+    /// @return Result<(), OracleError>
+    /// @access Requires the owner to authenticate.
     pub fn add_source(env: Env, caller: Address, source: Address) -> Result<(), OracleError> {
         require_admin(&env, &caller)?;
         env.storage()
@@ -335,8 +339,11 @@ impl PriceOracleContract {
     /// @dev Only the contract owner may call this. A removed source can no
     ///      longer push prices. Existing rates published by this source remain.
     ///      Emits event `("oracle", "rmsrc")` with the source address.
+    /// @param env The contract environment.
     /// @param caller Owner address.
     /// @param source Oracle source to revoke.
+    /// @return Result<(), OracleError>
+    /// @access Requires the owner to authenticate.
     pub fn remove_source(env: Env, caller: Address, source: Address) -> Result<(), OracleError> {
         require_admin(&env, &caller)?;
         env.storage()
@@ -361,17 +368,19 @@ impl PriceOracleContract {
     ///      - `max_staleness_seconds > 0`
     ///      Emits event `("oracle", "cfgpair")` with `(base, quote)`.
     ///      On (re-)configure, the consecutive-stale counter for this pair is reset.
-    /// @param caller               Owner address.
-    /// @param base                 Base token address.
-    /// @param quote                Quote token address.
-    /// @param min_rate             Minimum allowed scaled rate (inclusive).
-    /// @param max_rate             Maximum allowed scaled rate (inclusive).
+    /// @param env The contract environment.
+    /// @param caller Owner address.
+    /// @param base Base token address.
+    /// @param quote Quote token address.
+    /// @param min_rate Minimum allowed scaled rate (inclusive).
+    /// @param max_rate Maximum allowed scaled rate (inclusive).
     /// @param max_staleness_seconds Maximum allowed age of a rate update.
-    /// @param quorum_n             Minimum number of distinct sources required.
-    /// @param tolerance_bps        Maximum spread between quorum-supporting votes.
+    /// @param quorum_n Minimum number of distinct sources required.
+    /// @param tolerance_bps Maximum spread between quorum-supporting votes.
     /// @param quorum_window_seconds Time window used to bucket pending votes.
-    /// @param min_submit_interval_secs Minimum seconds between consecutive
-    ///        submissions from the same source for this pair. `0` disables the check.
+    /// @param min_submit_interval_secs Minimum seconds between consecutive submissions from the same source for this pair.
+    /// @return Result<(), OracleError>
+    /// @access Requires the owner to authenticate.
     pub fn configure_pair(
         env: Env,
         caller: Address,
@@ -441,10 +450,13 @@ impl PriceOracleContract {
     ///      because `configure_pair` already sits at Soroban's 10-parameter
     ///      ceiling for contract functions. `configure_pair` resets the
     ///      threshold to `0`, so call this afterwards to enable the halt.
-    /// @param caller    Owner address.
-    /// @param base      Base token address.
-    /// @param quote     Quote token address.
+    /// @param env The contract environment.
+    /// @param caller Owner address.
+    /// @param base Base token address.
+    /// @param quote Quote token address.
     /// @param threshold Consecutive stale reads before halting; `0` disables.
+    /// @return Result<(), OracleError>
+    /// @access Requires the owner to authenticate.
     pub fn set_stale_halt_threshold(
         env: Env,
         caller: Address,
@@ -476,9 +488,12 @@ impl PriceOracleContract {
     /// @notice Disables a `(base, quote)` pair so it no longer accepts updates.
     /// @dev The configuration is preserved but `enabled` is set to false.
     ///      Emits event `("oracle", "disable")` with `(base, quote)`.
+    /// @param env The contract environment.
     /// @param caller Owner address.
-    /// @param base   Base token address.
-    /// @param quote  Quote token address.
+    /// @param base Base token address.
+    /// @param quote Quote token address.
+    /// @return Result<(), OracleError>
+    /// @access Requires the owner to authenticate.
     pub fn disable_pair(
         env: Env,
         caller: Address,
@@ -514,9 +529,12 @@ impl PriceOracleContract {
 
     /// @notice Re-enables a previously disabled `(base, quote)` pair.
     /// @dev Emits event `("oracle", "enable")` with `(base, quote)`.
+    /// @param env The contract environment.
     /// @param caller Owner address.
-    /// @param base   Base token address.
-    /// @param quote  Quote token address.
+    /// @param base Base token address.
+    /// @param quote Quote token address.
+    /// @return Result<(), OracleError>
+    /// @access Requires the owner to authenticate.
     pub fn enable_pair(
         env: Env,
         caller: Address,
@@ -563,11 +581,14 @@ impl PriceOracleContract {
     ///      9. Persists the new `PairState`.
     ///      10. Calls `set_exchange_rate` on the downstream payroll contract.
     ///      Emits event `("oracle", "price")` with `(base, quote, rate)`.
-    /// @param source           Oracle source address (must be pre-authorized).
-    /// @param base             Base token address.
-    /// @param quote            Quote token address.
-    /// @param rate             Scaled exchange rate (quote_per_base * FX_SCALE).
+    /// @param env The contract environment.
+    /// @param source Oracle source address (must be pre-authorized).
+    /// @param base Base token address.
+    /// @param quote Quote token address.
+    /// @param rate Scaled exchange rate (quote_per_base * FX_SCALE).
     /// @param source_timestamp Timestamp associated with the external price (seconds).
+    /// @return Result<(), OracleError>
+    /// @access Requires an authorized oracle source to authenticate.
     pub fn push_price(
         env: Env,
         source: Address,
@@ -739,8 +760,11 @@ impl PriceOracleContract {
     // ------------------------------------------------------------------------
 
     /// @notice Returns the configuration for a `(base, quote)` pair, if any.
+    /// @param env The contract environment.
     /// @param base Base token address.
     /// @param quote Quote token address.
+    /// @return The configured `PairConfig` if the pair has been set up.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_pair_config(env: Env, base: Address, quote: Address) -> Option<PairConfig> {
         env.storage()
             .instance()
@@ -751,6 +775,9 @@ impl PriceOracleContract {
     /// stale. @dev Rejects the state with `PriceTooOld` if `ledger.timestamp() -
     /// last_updated_ts > max_staleness_seconds`. @param base Base token address.
     /// @param quote Quote token address.
+    /// @param env The contract environment.
+    /// @return The accepted pair state or an `OracleError` if the pair is missing or stale.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_pair_state(
         env: Env,
         base: Address,
@@ -810,12 +837,18 @@ impl PriceOracleContract {
     }
 
     /// @notice Returns the configured owner.
+    /// @param env The contract environment.
+    /// @return The configured owner address, if set.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_owner(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::Owner)
     }
 
     /// @notice Returns whether an address is an authorized oracle source.
+    /// @param env The contract environment.
     /// @param addr Address to check.
+    /// @return True if the address is an authorized oracle source.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn is_source_address(env: Env, addr: Address) -> bool {
         is_source(&env, &addr)
     }
@@ -835,6 +868,13 @@ impl PriceOracleContract {
     /// - `Ok(PairState)` when a non-stale price exists.
     /// - `Err(PairNotConfigured)` if no price has ever been pushed.
     /// - `Err(PriceTooOld)` if `now - last_updated_ts > max_age_seconds`.
+    ///
+    /// @param env The contract environment.
+    /// @param base Base token address.
+    /// @param quote Quote token address.
+    /// @param max_age_seconds The maximum acceptable age of the pair price.
+    /// @return The pair state if its age is within the allowed bound.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_price_checked(
         env: Env,
         base: Address,
@@ -866,8 +906,11 @@ impl PriceOracleContract {
     /// @dev Only the current owner may call this. The pending owner is stored
     ///      but has no privileges until they accept.
     ///      Emits event `("oracle", "propose")` with the new_owner address.
-    /// @param caller    Current owner; must authenticate.
+    /// @param env The contract environment.
+    /// @param caller Current owner; must authenticate.
     /// @param new_owner Proposed new owner address.
+    /// @return Result<(), OracleError>
+    /// @access Requires the current owner to authenticate.
     pub fn propose_ownership(
         env: Env,
         caller: Address,
@@ -889,7 +932,10 @@ impl PriceOracleContract {
     /// @notice Accepts a pending ownership transfer.
     /// @dev The caller must be the pending owner.
     ///      Emits event `("oracle", "owner")` with the new owner address.
+    /// @param env The contract environment.
     /// @param caller Must be the pending owner; must authenticate.
+    /// @return Result<(), OracleError>
+    /// @access Requires the pending owner to authenticate.
     pub fn accept_ownership(env: Env, caller: Address) -> Result<(), OracleError> {
         require_initialized(&env)?;
         caller.require_auth();
@@ -916,7 +962,10 @@ impl PriceOracleContract {
     /// @notice Cancels a pending ownership transfer.
     /// @dev Only the current owner may call this.
     ///      Emits event `("oracle", "cancel")` with the pending owner address.
+    /// @param env The contract environment.
     /// @param caller Current owner; must authenticate.
+    /// @return Result<(), OracleError>
+    /// @access Requires the current owner to authenticate.
     pub fn cancel_ownership_transfer(env: Env, caller: Address) -> Result<(), OracleError> {
         require_admin(&env, &caller)?;
 

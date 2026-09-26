@@ -2,8 +2,9 @@
 
 use rate_limiter::{RateLimiter, RateLimiterClient};
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    Address, Env,
+    symbol_short,
+    testutils::{Address as _, Events, Ledger},
+    Address, Env, Symbol, TryFromVal,
 };
 
 fn create_env() -> Env {
@@ -223,6 +224,108 @@ fn test_admin_transfer() {
 
     client.transfer_admin(&admin2);
     assert_eq!(client.get_admin(), Some(admin2.clone()));
+}
+
+#[test]
+fn test_mutating_entrypoints_emit_expected_events() {
+    let env = create_env();
+    let contract_id = env.register(RateLimiter, ());
+    let client = RateLimiterClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    let contract = Address::generate(&env);
+
+    client.initialize(&admin, &10u32, &2u32, &false);
+    let events = env.events().all();
+    let (_, topics, data) = events.last().unwrap();
+    let topic0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    let topic1: Symbol = Symbol::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    let payload: (Address, u32, u32, bool) =
+        <(Address, u32, u32, bool) as TryFromVal<_, _>>::try_from_val(&env, &data).unwrap();
+    assert_eq!(topic0, symbol_short!("RATE"));
+    assert_eq!(topic1, symbol_short!("init"));
+    assert_eq!(payload, (admin.clone(), 10u32, 2u32, false));
+
+    client.set_global_limit(&true, &9u32, &3u32);
+    let (_, topics, data) = env.events().all().last().unwrap();
+    let topic0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    let topic1: Symbol = Symbol::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    let payload: (bool, u32, u32) =
+        <(bool, u32, u32) as TryFromVal<_, _>>::try_from_val(&env, &data).unwrap();
+    assert_eq!(topic0, symbol_short!("RATE"));
+    assert_eq!(topic1, symbol_short!("global"));
+    assert_eq!(payload, (true, 9u32, 3u32));
+
+    client.set_limit_for(&user, &7u32, &4u32);
+    let (_, topics, data) = env.events().all().last().unwrap();
+    let topic0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    let topic1: Symbol = Symbol::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    let payload: (Address, (u32, u32)) =
+        <(Address, (u32, u32)) as TryFromVal<_, _>>::try_from_val(&env, &data).unwrap();
+    assert_eq!(topic0, symbol_short!("RATE"));
+    assert_eq!(topic1, symbol_short!("addr_set"));
+    assert_eq!(payload, (user.clone(), (7u32, 4u32)));
+
+    client.clear_limit_for(&user);
+    let (_, topics, data) = env.events().all().last().unwrap();
+    let topic0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    let topic1: Symbol = Symbol::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    let payload: (Address, Option<(u32, u32)>) =
+        <(Address, Option<(u32, u32)>) as TryFromVal<_, _>>::try_from_val(&env, &data).unwrap();
+    assert_eq!(topic0, symbol_short!("RATE"));
+    assert_eq!(topic1, symbol_short!("addr_clr"));
+    assert_eq!(payload, (user.clone(), None::<(u32, u32)>));
+
+    client.set_limit_for_contract(&contract, &12u32, &5u32);
+    let (_, topics, data) = env.events().all().last().unwrap();
+    let topic0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    let topic1: Symbol = Symbol::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    let payload: (Address, (u32, u32)) =
+        <(Address, (u32, u32)) as TryFromVal<_, _>>::try_from_val(&env, &data).unwrap();
+    assert_eq!(topic0, symbol_short!("RATE"));
+    assert_eq!(topic1, Symbol::new(&env, "contract_set"));
+    assert_eq!(payload, (contract.clone(), (12u32, 5u32)));
+
+    client.clear_limit_for_contract(&contract);
+    let (_, topics, data) = env.events().all().last().unwrap();
+    let topic0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    let topic1: Symbol = Symbol::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    let payload: (Address, Option<(u32, u32)>) =
+        <(Address, Option<(u32, u32)>) as TryFromVal<_, _>>::try_from_val(&env, &data).unwrap();
+    assert_eq!(topic0, symbol_short!("RATE"));
+    assert_eq!(topic1, Symbol::new(&env, "contract_clr"));
+    assert_eq!(payload, (contract.clone(), None::<(u32, u32)>));
+
+    client.reset_usage(&user);
+    let (_, topics, data) = env.events().all().last().unwrap();
+    let topic0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    let topic1: Symbol = Symbol::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    let payload: (Address, Option<(u64, u32)>) =
+        <(Address, Option<(u64, u32)>) as TryFromVal<_, _>>::try_from_val(&env, &data).unwrap();
+    assert_eq!(topic0, symbol_short!("RATE"));
+    assert_eq!(topic1, symbol_short!("u_reset"));
+    assert_eq!(payload, (user.clone(), None::<(u64, u32)>));
+
+    client.reset_contract_usage(&contract);
+    let (_, topics, data) = env.events().all().last().unwrap();
+    let topic0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    let topic1: Symbol = Symbol::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    let payload: (Address, Option<(u64, u32)>) =
+        <(Address, Option<(u64, u32)>) as TryFromVal<_, _>>::try_from_val(&env, &data).unwrap();
+    assert_eq!(topic0, symbol_short!("RATE"));
+    assert_eq!(topic1, symbol_short!("c_reset"));
+    assert_eq!(payload, (contract.clone(), None::<(u64, u32)>));
+
+    client.transfer_admin(&new_admin);
+    let (_, topics, data) = env.events().all().last().unwrap();
+    let topic0: Symbol = Symbol::try_from_val(&env, &topics.get(0).unwrap()).unwrap();
+    let topic1: Symbol = Symbol::try_from_val(&env, &topics.get(1).unwrap()).unwrap();
+    let payload: (Address, Address) =
+        <(Address, Address) as TryFromVal<_, _>>::try_from_val(&env, &data).unwrap();
+    assert_eq!(topic0, symbol_short!("RATE"));
+    assert_eq!(topic1, symbol_short!("admin"));
+    assert_eq!(payload, (admin.clone(), new_admin.clone()));
 }
 
 #[test]

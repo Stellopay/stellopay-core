@@ -109,28 +109,36 @@ enum StorageKey {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationProposedEvent {
+    /// Identifier of the newly proposed multisig operation.
     pub operation_id: u128,
+    /// Signer who created the operation.
     pub creator: Address,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationApprovedEvent {
+    /// Identifier of the targeted multisig operation.
     pub operation_id: u128,
+    /// Signer who provided the approval.
     pub signer: Address,
+    /// Total approvals recorded so far for the operation.
     pub approvals: u32,
+    /// Threshold required to trigger execution.
     pub threshold: u32,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationExecutedEvent {
+    /// Identifier of the operation that was executed successfully.
     pub operation_id: u128,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationCancelledEvent {
+    /// Identifier of the operation that was cancelled.
     pub operation_id: u128,
 }
 
@@ -446,8 +454,10 @@ impl MultisigContract {
 
     /// @notice Updates the signer set and default threshold.
     /// @dev Can only be called by the designated owner.
+    /// @param env The contract environment.
     /// @param new_signers The new list of signers.
     /// @param new_threshold The new default threshold.
+    /// @access Requires the contract owner to authenticate.
     pub fn update_signers(env: Env, new_signers: Vec<Address>, new_threshold: u32) {
         require_initialized(&env);
         let owner = env
@@ -499,9 +509,11 @@ impl MultisigContract {
 
     /// @notice Proposes a new multisig-protected operation.
     /// @dev The proposer must be one of the configured signers.
+    /// @param env The contract environment.
     /// @param proposer Signer creating the operation.
     /// @param kind Encoded operation details.
     /// @return operation_id Newly created operation identifier.
+    /// @access Requires the proposer to authenticate and to be a configured signer.
     pub fn propose_operation(env: Env, proposer: Address, kind: OperationKind) -> u128 {
         require_initialized(&env);
         proposer.require_auth();
@@ -543,8 +555,10 @@ impl MultisigContract {
     /// @notice Approves a pending operation as a signer.
     /// @dev Once the approval count reaches the configured threshold, the
     ///      operation is executed automatically.
+    /// @param env The contract environment.
     /// @param signer Signer approving the operation.
     /// @param operation_id Operation identifier.
+    /// @access Requires the signer to authenticate and to be a configured signer.
     pub fn approve_operation(env: Env, signer: Address, operation_id: u128) {
         require_initialized(&env);
         signer.require_auth();
@@ -582,8 +596,10 @@ impl MultisigContract {
 
     /// @notice Cancels a pending operation.
     /// @dev Only the creator or the owner can cancel.
+    /// @param env The contract environment.
     /// @param caller Address requesting cancellation.
     /// @param operation_id Operation identifier.
+    /// @access Requires the caller to authenticate and to be the creator or owner.
     pub fn cancel_operation(env: Env, caller: Address, operation_id: u128) {
         require_initialized(&env);
         caller.require_auth();
@@ -623,8 +639,10 @@ impl MultisigContract {
     ///      configured guardian. This prevents the break-glass mechanism
     ///      from being used to circumvent the normal multi-signer approval
     ///      process for non-urgent operations.
+    /// @param env The contract environment.
     /// @param guardian Configured guardian address.
     /// @param operation_id Operation identifier.
+    /// @access Requires the guardian to authenticate and to be registered as an emergency guardian.
     pub fn emergency_execute(env: Env, guardian: Address, operation_id: u128) {
         require_initialized(&env);
         guardian.require_auth();
@@ -658,26 +676,36 @@ impl MultisigContract {
 
     /// @notice Returns the current signer set.
     /// @dev Requires caller authentication
+    /// @param env The contract environment.
+    /// @return The current signer set.
+    /// @access This is a read-only query and may require caller authentication.
     pub fn get_signers(env: Env) -> Vec<Address> {
         read_signers(&env)
     }
 
     /// @notice Returns the current threshold.
     /// @dev Requires caller authentication
+    /// @param env The contract environment.
+    /// @return The current default threshold.
+    /// @access This is a read-only query and may require caller authentication.
     pub fn get_threshold(env: Env) -> u32 {
         read_threshold(&env)
     }
 
     /// @notice Returns the configured threshold override for an operation type.
+    /// @param env The contract environment.
     /// @param operation_type Operation type to query.
     /// @return The override, or `None` when the default threshold applies.
+    /// @access This is a read-only query and may require caller authentication.
     pub fn get_threshold_override(env: Env, operation_type: OperationType) -> Option<u32> {
         read_threshold_override(&env, &operation_type)
     }
 
     /// @notice Returns the threshold currently active for an operation type.
+    /// @param env The contract environment.
     /// @param operation_type Operation type to query.
     /// @return The configured override or, when absent, the default threshold.
+    /// @access This is a read-only query and may require caller authentication.
     pub fn get_effective_threshold(env: Env, operation_type: OperationType) -> u32 {
         read_effective_threshold(&env, &operation_type)
     }

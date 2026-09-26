@@ -89,6 +89,10 @@ impl MockMilestoneContract {
     /// Create a new agreement owned by `employer`.
     ///
     /// Returns a monotonically increasing agreement ID starting from 1.
+    /// @param env The contract environment.
+    /// @param employer The employer address that will own the agreement.
+    /// @return The newly created agreement ID.
+    /// @access Requires the employer to authenticate.
     pub fn create_agreement(env: Env, employer: Address) -> u128 {
         employer.require_auth();
 
@@ -113,6 +117,11 @@ impl MockMilestoneContract {
     }
 
     /// Add a milestone to an existing agreement (employer-only).
+    /// @param env The contract environment.
+    /// @param agreement_id The agreement being updated.
+    /// @param amount The milestone payout amount.
+    /// @return The newly created milestone ID.
+    /// @access Requires the agreement employer to authenticate.
     pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> u32 {
         let agreement: MockAgreement = env
             .storage()
@@ -154,6 +163,10 @@ impl MockMilestoneContract {
     ///
     /// This mirrors the reference implementation in `stello_pay_contract` and
     /// is the behaviour exercised by the conformance test below.
+    /// @param env The contract environment.
+    /// @param agreement_id The agreement containing the milestone.
+    /// @param milestone_id The milestone to approve.
+    /// @access Requires the agreement employer to authenticate.
     pub fn approve_milestone(env: Env, agreement_id: u128, milestone_id: u32) {
         let agreement: MockAgreement = env
             .storage()

@@ -18,6 +18,33 @@ Welcome to the comprehensive documentation for the StellopayCore smart contract 
 12. [Upgrade & migration strategy](./upgrade-migration-strategy.md) - RBAC-admin-gated upgrades and `migrate_state`
 13. [Building on Windows](./windows-build.md) - Fixing "export ordinal too large" (MinGW) and WASM-only build
 
+## Additional Key Topics
+
+- [Audit Logger Integration](./audit-logger-integration.md)
+- [Automated Compliance](./automated-compliance.md)
+- [Batch Creation](./batch-creation.md)
+- [Batch Payments](./batch-payments.md)
+- [Chaos Testing](./chaos-testing.md)
+- [Compliance Reporting Schema](./compliance-reporting-schema.md)
+- [Conditional Triggers](./conditional-triggers.md)
+- [Emergency Pause Quick Reference](./emergency-pause-quick-reference.md)
+- [Employee Lifecycle Implementation](./employee-lifecycle-implementation.md)
+- [Encrypted Backup Recovery](./encrypted-backup-recovery.md)
+- [Event Indexing](./event-indexing.md)
+- [Gas Optimization Summary](./gas-optimization-summary.md)
+- [Grace Period](./grace-period.md)
+- [Integration Guide](./integration/comprehensive-guide.md)
+- [Invariant Assertions](./invariant-assertions.md)
+- [Invariants](./invariants.md)
+- [Load Testing](./load-testing.md)
+- [Multi-Currency](./multi-currency.md)
+- [Payment Scheduling](./payment-scheduling.md)
+- [Rate Limiting](./rate-limiting.md)
+- [Reporting Compliance Summary](./reporting_compliance_summary.md)
+- [Snapshot Testing](./snapshot-testing.md)
+- [State Machines](./state-machines.md)
+- [Storage Optimization Summary](./storage-optimization-summary.md)
+
 ## Quick Start
 
 ```rust

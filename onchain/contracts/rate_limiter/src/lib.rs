@@ -20,7 +20,9 @@
 //! `elapsed_seconds * refill_rate` using integer arithmetic. Calls made inside
 //! the same ledger second receive no partial or fractional refill credit.
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{
+    contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
+};
 
 #[contracttype]
 #[derive(Clone)]
@@ -106,15 +108,22 @@ impl RateLimiter {
         env.storage()
             .persistent()
             .set(&StorageKey::Initialized, &true);
+
+        env.events().publish(
+            (symbol_short!("RATE"), symbol_short!("init")),
+            (admin, default_burst, default_refill_rate, admin_bypass),
+        );
     }
 
     /// Configures the global rate limit.
     ///
     /// @notice Applies to the entire contract across all users if enabled.
     /// @dev Only callable by admin.
+    /// @param env The contract environment.
     /// @param enabled Whether to enforce the global limit.
     /// @param burst Global maximum burst capacity.
     /// @param refill_rate Global tokens added per second.
+    /// @access Requires the current admin to authenticate.
     pub fn set_global_limit(env: Env, enabled: bool, burst: u32, refill_rate: u32) {
         Self::require_admin_auth(&env);
         env.storage()
@@ -126,6 +135,11 @@ impl RateLimiter {
         env.storage()
             .persistent()
             .set(&StorageKey::GlobalRefillRate, &refill_rate);
+
+        env.events().publish(
+            (symbol_short!("RATE"), symbol_short!("global")),
+            (enabled, burst, refill_rate),
+        );
     }
 
     /// Sets a per-address limit override.
@@ -133,23 +147,38 @@ impl RateLimiter {
     /// @notice Per-address overrides take precedence over the initialized
     ///         default limit for the target address.
     /// @dev Only callable by admin.
+    /// @param env The contract environment.
     /// @param addr Subject address.
     /// @param burst Max burst capacity for this address.
     /// @param refill_rate Tokens added per second for this address.
+    /// @access Requires the current admin to authenticate.
     pub fn set_limit_for(env: Env, addr: Address, burst: u32, refill_rate: u32) {
         Self::require_admin_auth(&env);
         env.storage().persistent().set(
-            &StorageKey::Limit(addr),
+            &StorageKey::Limit(addr.clone()),
             &LimitConfig { burst, refill_rate },
+        );
+
+        env.events().publish(
+            (symbol_short!("RATE"), symbol_short!("addr_set")),
+            (addr, (burst, refill_rate)),
         );
     }
 
     /// Removes a per-address limit override.
     ///
     /// @dev Only callable by admin.
+    /// @param env The contract environment.
+    /// @param addr Subject address whose override is being cleared.
+    /// @access Requires the current admin to authenticate.
     pub fn clear_limit_for(env: Env, addr: Address) {
         Self::require_admin_auth(&env);
-        env.storage().persistent().remove(&StorageKey::Limit(addr));
+        env.storage().persistent().remove(&StorageKey::Limit(addr.clone()));
+
+        env.events().publish(
+            (symbol_short!("RATE"), symbol_short!("addr_clr")),
+            (addr, None::<(u32, u32)>),
+        );
     }
 
     /// Sets a per-contract throughput budget.
@@ -159,14 +188,21 @@ impl RateLimiter {
     ///         [`Self::set_limit_for`]: both budgets are enforced together by
     ///         [`Self::check_and_consume_for_contract`].
     /// @dev Only callable by admin.
+    /// @param env The contract environment.
     /// @param contract Calling / integrating contract address.
     /// @param burst Max burst capacity shared by all subjects via this contract.
     /// @param refill_rate Tokens added per second to the contract bucket.
+    /// @access Requires the current admin to authenticate.
     pub fn set_limit_for_contract(env: Env, contract: Address, burst: u32, refill_rate: u32) {
         Self::require_admin_auth(&env);
         env.storage().persistent().set(
-            &StorageKey::ContractLimit(contract),
+            &StorageKey::ContractLimit(contract.clone()),
             &LimitConfig { burst, refill_rate },
+        );
+
+        env.events().publish(
+            (symbol_short!("RATE"), Symbol::new(&env, "contract_set")),
+            (contract, (burst, refill_rate)),
         );
     }
 
@@ -175,11 +211,19 @@ impl RateLimiter {
     /// @notice Does not reset contract usage; call [`Self::reset_contract_usage`]
     ///         if a fresh bucket is needed.
     /// @dev Only callable by admin. Safe no-op when no budget was configured.
+    /// @param env The contract environment.
+    /// @param contract Integrating contract whose shared quota should be removed.
+    /// @access Requires the current admin to authenticate.
     pub fn clear_limit_for_contract(env: Env, contract: Address) {
         Self::require_admin_auth(&env);
         env.storage()
             .persistent()
-            .remove(&StorageKey::ContractLimit(contract));
+            .remove(&StorageKey::ContractLimit(contract.clone()));
+
+        env.events().publish(
+            (symbol_short!("RATE"), Symbol::new(&env, "contract_clr")),
+            (contract, None::<(u32, u32)>),
+        );
     }
 
     /// Checks and consumes one whole token from the subject's rate limit.
@@ -205,9 +249,11 @@ impl RateLimiter {
     ///         shared per-contract budget. Either bucket being exhausted rejects
     ///         the call, so rotating subject addresses within the same contract
     ///         cannot exceed the contract-scoped cap.
+    /// @param env The contract environment.
     /// @param subject Address whose per-address quota is consumed.
     /// @param contract Integrating contract whose shared quota is consumed when set.
     /// @return tokens_remaining Subject's tokens remaining after consumption.
+    /// @access Requires the configured admin or the subject itself to be authorized by the rate limiter policy.
     pub fn check_and_consume_for_contract(env: Env, subject: Address, contract: Address) -> u32 {
         Self::check_and_consume_inner(&env, subject, Some(contract))
     }
@@ -215,40 +261,78 @@ impl RateLimiter {
     /// Explicitly resets usage for an address.
     ///
     /// @dev Only callable by admin.
+    /// @param env The contract environment.
+    /// @param addr Subject address whose usage bucket should be cleared.
+    /// @access Requires the current admin to authenticate.
     pub fn reset_usage(env: Env, addr: Address) {
         Self::require_admin_auth(&env);
-        env.storage().persistent().remove(&StorageKey::Usage(addr));
+        env.storage().persistent().remove(&StorageKey::Usage(addr.clone()));
+
+        env.events().publish(
+            (symbol_short!("RATE"), symbol_short!("u_reset")),
+            (addr, None::<(u64, u32)>),
+        );
     }
 
     /// Explicitly resets usage for a contract-scoped bucket.
     ///
     /// @dev Only callable by admin.
+    /// @param env The contract environment.
+    /// @param contract Contract address whose shared usage bucket should be cleared.
+    /// @access Requires the current admin to authenticate.
     pub fn reset_contract_usage(env: Env, contract: Address) {
         Self::require_admin_auth(&env);
         env.storage()
             .persistent()
-            .remove(&StorageKey::ContractUsage(contract));
+            .remove(&StorageKey::ContractUsage(contract.clone()));
+
+        env.events().publish(
+            (symbol_short!("RATE"), symbol_short!("c_reset")),
+            (contract, None::<(u64, u32)>),
+        );
     }
 
     /// Transfers admin rights to a new address.
     ///
     /// @dev Only callable by current admin.
+    /// @param env The contract environment.
+    /// @param new_admin The address that will receive admin privileges.
+    /// @access Requires the current admin to authenticate.
     pub fn transfer_admin(env: Env, new_admin: Address) {
         Self::require_admin_auth(&env);
+        let old_admin: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::Admin)
+            .expect("admin not set");
+
         env.storage()
             .persistent()
             .set(&StorageKey::Admin, &new_admin);
+
+        env.events().publish(
+            (symbol_short!("RATE"), symbol_short!("admin")),
+            (old_admin, new_admin),
+        );
     }
 
     /// Gets current config for an address.
+    ///
+    /// @param env The contract environment.
+    /// @param addr Subject address to inspect.
+    /// @return The effective per-address limit configuration.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_limit_for(env: Env, addr: Address) -> LimitConfig {
         Self::get_limit_config(&env, &addr)
     }
 
     /// Gets the configured per-contract budget, if any.
     ///
+    /// @param env The contract environment.
+    /// @param contract Integrating contract to inspect.
     /// @return `None` when no contract-scoped budget has been set (contract
     ///         bucket is not enforced until [`Self::set_limit_for_contract`]).
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_limit_for_contract(env: Env, contract: Address) -> Option<LimitConfig> {
         env.storage()
             .persistent()
@@ -267,6 +351,11 @@ impl RateLimiter {
     ///   to the current ledger time.
     /// - `None` — if no usage has ever been recorded for this address (the bucket is effectively
     ///   full at the configured burst capacity).
+    ///
+    /// @param env The contract environment.
+    /// @param addr Subject address to inspect.
+    /// @return `Some(Usage)` when usage has been recorded, otherwise `None`.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_usage(env: Env, addr: Address) -> Option<Usage> {
         env.storage()
             .persistent()
@@ -280,8 +369,11 @@ impl RateLimiter {
 
     /// Returns the current contract-scoped usage without consuming tokens.
     ///
+    /// @param env The contract environment.
+    /// @param contract Contract address to inspect.
     /// @return `None` if no contract usage has been recorded yet, or if no
     ///         contract budget is configured (nothing to preview against).
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_contract_usage(env: Env, contract: Address) -> Option<Usage> {
         let config: LimitConfig = env
             .storage()
@@ -297,6 +389,10 @@ impl RateLimiter {
     }
 
     /// Gets effective admin address.
+    ///
+    /// @param env The contract environment.
+    /// @return The current admin address, if configured.
+    /// @access This is a read-only query and does not require additional auth.
     pub fn get_admin(env: Env) -> Option<Address> {
         env.storage().persistent().get(&StorageKey::Admin)
     }

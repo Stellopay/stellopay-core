@@ -57,6 +57,13 @@ struct MinimalMilestoneImpl;
 
 #[contractimpl]
 impl MinimalMilestoneImpl {
+    /// Returns the milestone view for a given agreement and milestone.
+    ///
+    /// @param _env The contract environment.
+    /// @param _agreement_id The agreement ID being queried.
+    /// @param _milestone_id The milestone ID being queried.
+    /// @return The milestone view, if present.
+    /// @access This test-only helper does not require additional authorization.
     pub fn get_milestone(
         _env: Env,
         _agreement_id: u128,
@@ -65,12 +72,22 @@ impl MinimalMilestoneImpl {
         None
     }
 
+    /// Returns the milestone count for a given agreement.
+    ///
+    /// @param _env The contract environment.
+    /// @param _agreement_id The agreement ID to inspect.
+    /// @return The milestone count for the agreement.
+    /// @access This test-only helper does not require additional authorization.
     pub fn get_milestone_count(_env: Env, _agreement_id: u128) -> u32 {
         0
     }
 
-    /// No-op `on_milestone_expired` — existing implementors do NOT need to add
-    /// this method; this demonstrates that the default no-op is available.
+    /// No-op callback for milestone expiry; existing implementors do not need to override it.
+    ///
+    /// @param _env The contract environment.
+    /// @param _agreement_id The expired agreement ID.
+    /// @param _milestone_id The expired milestone ID.
+    /// @access This test-only default hook does not require additional auth checks.
     pub fn on_milestone_expired(_env: Env, _agreement_id: u128, _milestone_id: u32) {
         // intentional no-op — mirrors the default body in MilestoneContractInterface
     }
@@ -83,6 +100,13 @@ struct RecordingHook;
 
 #[contractimpl]
 impl RecordingHook {
+    /// Returns the milestone view for the recording hook.
+    ///
+    /// @param _env The contract environment.
+    /// @param _agreement_id The agreement ID being queried.
+    /// @param _milestone_id The milestone ID being queried.
+    /// @return The milestone view, if present.
+    /// @access This test-only helper does not require additional authorization.
     pub fn get_milestone(
         _env: Env,
         _agreement_id: u128,
@@ -91,10 +115,22 @@ impl RecordingHook {
         None
     }
 
+    /// Returns the milestone count for a given agreement.
+    ///
+    /// @param _env The contract environment.
+    /// @param _agreement_id The agreement ID to inspect.
+    /// @return The milestone count for the agreement.
+    /// @access This test-only helper does not require additional authorization.
     pub fn get_milestone_count(_env: Env, _agreement_id: u128) -> u32 {
         0
     }
 
+    /// Persists the expiry callback inputs to verify the hook fired with the expected arguments.
+    ///
+    /// @param env The contract environment.
+    /// @param agreement_id The agreement that expired.
+    /// @param milestone_id The milestone that expired.
+    /// @access This test-only hook does not require extra authorization beyond the calling contract context.
     pub fn on_milestone_expired(env: Env, agreement_id: u128, milestone_id: u32) {
         // Persist call arguments so the test can assert they were received.
         env.storage()

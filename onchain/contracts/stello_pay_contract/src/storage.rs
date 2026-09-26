@@ -396,47 +396,75 @@ pub struct BatchEscrowCreateResult {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum PayrollError {
+    /// A dispute has already been raised for this agreement.
     DisputeAlreadyRaised = 1,
+    /// The agreement is not currently within its grace-period window.
     NotInGracePeriod = 2,
+    /// The caller is not a party to the agreement.
     NotParty = 3,
+    /// The caller is not the configured arbiter for this agreement.
     NotArbiter = 4,
+    /// The requested payout does not satisfy the agreement's validation rules.
     InvalidPayout = 5,
+    /// The agreement already has an active dispute in progress.
     ActiveDispute = 6,
+    /// The requested agreement could not be found.
     AgreementNotFound = 7,
+    /// The agreement does not currently have an active dispute to resolve.
     NoDispute = 8,
+    /// The referenced employee does not exist in the agreement.
     NoEmployee = 9,
+    /// The agreement has not yet been activated.
     NotActivated = 10,
+    /// The caller lacks the required authorization for this operation.
     Unauthorized = 11,
+    /// The employee index provided is outside the stored agreement range.
     InvalidEmployeeIndex = 12,
+    /// The input payload is malformed or violates invariant checks.
     InvalidData = 13,
+    /// A token transfer failed while handling the payroll operation.
     TransferFailed = 14,
+    /// The escrow balance is insufficient to complete the requested action.
     InsufficientEscrowBalance = 15,
+    /// There are no remaining periods available to claim for this agreement.
     NoPeriodsToClaim = 16,
+    /// The agreement is present but not yet in the activated state required for the operation.
     AgreementNotActivated = 17,
+    /// The agreement mode is incompatible with the operation being requested.
     InvalidAgreementMode = 18,
+    /// The agreement is paused and cannot accept the requested action.
     AgreementPaused = 19,
+    /// All eligible periods for the current claim window have already been paid.
     AllPeriodsClaimed = 20,
+    /// A zero-valued amount was supplied for a period-based payout.
     ZeroAmountPerPeriod = 21,
+    /// A zero-valued period duration was supplied for a payroll configuration.
     ZeroPeriodDuration = 22,
+    /// A zero-valued number of periods was supplied for a payout schedule.
     ZeroNumPeriods = 23,
+    /// The contract is currently in an emergency-paused state.
     EmergencyPaused = 24,
+    /// The caller is not a configured emergency guardian for the contract.
     NotGuardian = 25,
+    /// A timelock is still active and prevents the requested action.
     TimelockActive = 26,
+    /// The timelock configuration is invalid for the requested operation.
     InvalidTimelock = 27,
+    /// The multisig operation is still pending approval and cannot proceed.
     MultisigApprovalRequired = 28,
-    /// Missing or unconfigured FX rate for a currency pair
+    /// Missing or unconfigured FX rate for a currency pair.
     ExchangeRateNotFound = 29,
-    /// Arithmetic overflow/underflow during FX conversion
+    /// Arithmetic overflow or underflow during FX conversion.
     ExchangeRateOverflow = 30,
-    /// Invalid FX rate (e.g. non-positive)
+    /// Invalid FX rate supplied (for example, non-positive or malformed).
     ExchangeRateInvalid = 31,
-    /// Grace extension arguments invalid (zero, overflow, wrong status, unauthorized)
+    /// Grace-extension arguments are invalid or violate the configured policy.
     GraceExtensionInvalid = 32,
-    /// Extension would exceed owner-configured cumulative cap
+    /// The grace extension would exceed the cumulative cap configured by the owner.
     GraceExtensionCapExceeded = 33,
-    /// Rate limiter rejected the call (too many requests for the caller).
+    /// The rate limiter rejected the call because the caller is over the configured limit.
     RateLimited = 34,
-    /// Caller supplied more than `MAX_BATCH_SIZE` batch items.
+    /// The caller supplied more than the allowed maximum batch size for this operation.
     BatchTooLarge = 35,
     /// Milestone amount must be strictly positive.
     MilestoneAmountInvalid = 36,

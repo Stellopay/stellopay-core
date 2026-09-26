@@ -27,6 +27,15 @@ pub struct MockAuditLoggerContract;
 
 #[contractimpl]
 impl MockAuditLoggerContract {
+    /// Appends a mock audit log entry for the payroll lifecycle test harness.
+    ///
+    /// @param env The contract environment.
+    /// @param actor The address recorded as the actor for the lifecycle event.
+    /// @param action The audit action symbol emitted by the payroll contract.
+    /// @param subject The optional subject involved in the event.
+    /// @param amount The optional monetary amount associated with the event.
+    /// @return The next append-only audit ID.
+    /// @access Requires an authenticated actor for the mock logger.
     pub fn append_log(
         env: Env,
         actor: Address,
@@ -56,12 +65,23 @@ impl MockAuditLoggerContract {
         id
     }
 
+    /// Returns a mock audit log entry by its ID.
+    ///
+    /// @param env The contract environment.
+    /// @param id The audit entry ID to fetch.
+    /// @return The matching log entry, if present.
+    /// @access This is a read-only helper used by tests.
     pub fn get_log(env: Env, id: u64) -> Option<MockAuditLogEntry> {
         env.storage()
             .persistent()
             .get(&MockAuditStorageKey::Log(id))
     }
 
+    /// Returns the current number of mock audit entries recorded by the logger.
+    ///
+    /// @param env The contract environment.
+    /// @return The current audit entry count.
+    /// @access This is a read-only helper used by tests.
     pub fn get_log_count(env: Env) -> u64 {
         env.storage()
             .persistent()

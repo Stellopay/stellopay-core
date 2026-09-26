@@ -4,10 +4,15 @@ use soroban_sdk::{contracttype, panic_with_error, Address, Env, IntoVal, Symbol,
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AuditEvent {
+    /// A new agreement was created and added to the payroll system.
     AgreementCreated,
+    /// An agreement was activated and became eligible for payroll claims.
     AgreementActivated,
+    /// An agreement was cancelled and moved into its cancellation window.
     AgreementCancelled,
+    /// A dispute was raised against an agreement.
     DisputeRaised,
+    /// A dispute was resolved and the final settlement applied.
     DisputeResolved,
     /// A multisig threshold configuration change (`set_multisig_config`).
     ///

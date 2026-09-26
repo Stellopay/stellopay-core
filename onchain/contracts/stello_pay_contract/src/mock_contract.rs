@@ -33,13 +33,11 @@ impl UpgradeableContract {
         initial_version
     }
 
-    /// Get current contract version
+    /// Returns the current contract version.
     ///
-    /// # Returns
-    /// u32
-    ///
-    /// # Access Control
-    /// Requires caller authentication
+    /// @param env The contract environment.
+    /// @return The current contract version as a u32.
+    /// @access This test-only helper does not require additional authorization.
     pub fn get_contract_version(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -222,13 +220,11 @@ impl UpgradeableContract {
             .get(&(Symbol::new(&env, "setting"), key))
     }
 
-    /// Migration function - can be called multiple times safely
+    /// Performs the mock migration step.
     ///
-    /// # Returns
-    /// bool
-    ///
-    /// # Access Control
-    /// Requires caller authentication
+    /// @param env The contract environment.
+    /// @return True when migration is executed for the first time; false if it has already run.
+    /// @access This test-only migration helper is intentionally callable without additional auth enforcement.
     pub fn migrate(env: Env) -> bool {
         // Check if migration already ran
         let migration_key = Symbol::new(&env, "migration_v1");
@@ -286,9 +282,10 @@ impl MaliciousMilestoneHook {
     /// Stores the payroll contract address and contributor so the hook callback
     /// can record state for test assertions.
     ///
-    /// # Arguments
-    /// * `payroll_contract` — the address of the deployed `stello_pay_contract`.
-    /// * `contributor`      — the contributor address to impersonate if attempting re-entry.
+    /// @param env The contract environment.
+    /// @param payroll_contract The address of the deployed `stello_pay_contract`.
+    /// @param contributor The contributor address used for the simulated reentry path.
+    /// @access This test-only initializer does not enforce extra authorization beyond the environment context.
     pub fn initialize(env: Env, payroll_contract: Address, contributor: Address) {
         env.storage()
             .instance()
@@ -311,6 +308,10 @@ impl MaliciousMilestoneHook {
     /// A value of 0 after `expire_milestone` means the hook was never triggered
     /// (the contract address was not configured or the hook path was not reached).
     /// A value ≥ 1 confirms the hook fired.
+    ///
+    /// @param env The contract environment.
+    /// @return The number of callback invocations recorded by the hook.
+    /// @access This is a read-only helper used by tests and does not require extra authorization.
     pub fn get_hook_call_count(env: Env) -> u32 {
         env.storage()
             .instance()
@@ -319,6 +320,10 @@ impl MaliciousMilestoneHook {
     }
 
     /// Returns whether this hook attempted a reentrant call to `claim_milestone`.
+    ///
+    /// @param env The contract environment.
+    /// @return True if the simulated reentry path was attempted.
+    /// @access This is a read-only helper used by tests and does not require extra authorization.
     pub fn attempted_reentry(env: Env) -> bool {
         env.storage()
             .instance()
@@ -341,6 +346,11 @@ impl MaliciousMilestoneHook {
     /// milestone expired *before* calling this hook means that even if this hook
     /// attempted a re-entry, the claimed/expired state is already committed and
     /// the re-entrant call would be rejected.
+    ///
+    /// @param env The contract environment.
+    /// @param _agreement_id The agreement ID passed to the hook.
+    /// @param _milestone_id The milestone ID passed to the hook.
+    /// @access This test-only hook is allowed to execute as part of the same simulated callback flow.
     pub fn on_milestone_expired(env: Env, _agreement_id: u128, _milestone_id: u32) {
         // Increment the hook-call counter.
         let prev: u32 = env
@@ -361,6 +371,10 @@ impl MaliciousMilestoneHook {
     }
 
     /// Returns the stored payroll contract address (for test inspection).
+    ///
+    /// @param env The contract environment.
+    /// @return The configured payroll contract, if present.
+    /// @access This is a read-only helper used by tests and does not require extra authorization.
     pub fn get_payroll_contract(env: Env) -> Option<Address> {
         env.storage()
             .instance()
