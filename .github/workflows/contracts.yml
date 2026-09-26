@@ -66,7 +66,15 @@ jobs:
 
       - name: Build deployable WASM artifacts
         working-directory: onchain
-        run: cargo build --workspace --release --target wasm32-unknown-unknown --verbose
+        run: |
+          # Always compile the size-gated artifacts from a clean wasm target.
+          # `rust-cache` restores `target/wasm32-unknown-unknown`, and a stale
+          # cached build can be larger than the current source, which makes the
+          # size ceiling below fail for contracts this PR never touched (or
+          # pass on artifacts that no longer match the source). Cleaning first
+          # makes the measurement reflect the checked-out commit.
+          cargo clean --target wasm32-unknown-unknown
+          cargo build --workspace --release --target wasm32-unknown-unknown --verbose
 
       - name: Prepare contract WASM inventory
         run: |
