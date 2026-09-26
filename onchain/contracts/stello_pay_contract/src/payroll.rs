@@ -446,7 +446,7 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), P
 /// Returns the total configured amount across all milestones for an agreement.
 ///
 /// # Arguments
-/// * `env` - Contract environment used to read milestone count and amounts from instance storage.
+/// * `env` - Contract environment used to read milestone count and amounts from persistent storage.
 /// * `agreement_id` - Milestone agreement identifier whose milestone amounts should be summed.
 ///
 /// # Returns
@@ -455,6 +455,10 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), P
 /// # Cost
 /// O(n) in the stored milestone count for `agreement_id`, where `n` is bounded by the
 /// milestones created for that agreement.
+///
+/// Only used by the `#[cfg(debug_assertions)]` post-invariant below, so it is
+/// gated to match and avoid a dead-code warning in release builds.
+#[cfg(debug_assertions)]
 fn sum_all_milestones(env: &Env, agreement_id: u128) -> i128 {
     let count: u32 =
         crate::storage::persistent_get(env, &MilestoneKey::MilestoneCount(agreement_id))
