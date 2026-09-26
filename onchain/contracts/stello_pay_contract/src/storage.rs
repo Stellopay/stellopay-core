@@ -1,3 +1,42 @@
+//! Storage layout and the contract's Soroban state-archival strategy.
+//!
+//! # Archival prevention
+//!
+//! Soroban archives ledger entries whose time-to-live (TTL) lapses. An archived
+//! persistent entry is not readable until it is explicitly restored, and an
+//! archived instance entry takes the whole contract with it. Because escrow
+//! balances and agreement records live in persistent storage, an entry that is
+//! allowed to lapse can make a claim fail against a live, funded agreement.
+//!
+//! To prevent that, every persistent read and write in this crate is routed
+//! through the TTL-bumping accessors in this module:
+//!
+//! * [`persistent_get`] — reads a value and, when present, bumps its TTL.
+//! * [`persistent_set`] — writes a value and bumps its TTL.
+//! * [`persistent_has`] / [`persistent_remove`] — presence checks and deletes
+//!   (neither has a TTL to extend).
+//! * [`extend_instance_ttl`] — bumps the contract instance entry, called from
+//!   every `#[contractimpl]` entrypoint.
+//!
+//! The thresholds [`PERSISTENT_TTL_THRESHOLD`] and [`PERSISTENT_BUMP_AMOUNT`]
+//! are the single source of truth for both persistent and instance entries.
+//! [`extend_persistent_ttl`] remains the low-level primitive and is a no-op for
+//! absent keys.
+//!
+//! # Enforcement
+//!
+//! `tests/test_state_archival_ttl.rs` scans `src/` and fails if any production
+//! module touches `env.storage().persistent()` or `env.storage().instance()`
+//! outside this file, so new code cannot silently bypass the layer.
+//!
+//! # Rent and abuse
+//!
+//! TTL extensions only ever extend keys the contract itself already owns and
+//! writes; a caller cannot make the contract pay to keep an arbitrary
+//! adversarial entry alive, and the caller's transaction fee covers the rent of
+//! every extension. The same is true of the instance bump: it extends only the
+//! contract's own instance entry.
+
 use soroban_sdk::{contracterror, contracttype, Address, Env, Vec};
 
 /// Maximum caller-supplied batch size accepted by batch entrypoints.
@@ -43,6 +82,83 @@ where
     if storage.has(key) {
         storage.extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
     }
+}
+
+/// Bumps the contract instance TTL.
+///
+/// The instance entry encompasses the contract code and all instance-scoped storage.
+/// Archival of the instance takes the whole contract with it, so this must be called
+/// on every entrypoint that mutates meaningful state. The same thresholds as for
+/// persistent entries are reused so there is a single source of truth.
+pub fn extend_instance_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(PERSISTENT_TTL_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+}
+
+// ============================================================================
+// Generic TTL-bumping persistent access layer
+// ============================================================================
+//
+// Approach A: every persistent read and write in the contract is routed
+// through these four helpers so the archival strategy cannot be forgotten at a
+// call site. They are the only place outside this module that is allowed to
+// touch `env.storage().persistent()`; `tests/test_state_archival_ttl.rs`
+// enforces that rule against the whole `src/` tree.
+
+/// Read a persistent entry and bump its TTL when the entry exists.
+///
+/// Mirrors [`soroban_sdk::storage::Persistent::get`] exactly, adding a TTL
+/// extension after a successful read. The extension is skipped when the key is
+/// absent, preserving [`extend_persistent_ttl`]'s documented no-op behaviour.
+pub fn persistent_get<K, V>(env: &Env, key: &K) -> Option<V>
+where
+    K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+    V: soroban_sdk::TryFromVal<Env, soroban_sdk::Val>,
+    V::Error: core::fmt::Debug,
+{
+    let storage = env.storage().persistent();
+    let value = storage.get::<K, V>(key);
+    if value.is_some() {
+        storage.extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+    }
+    value
+}
+
+/// Write a persistent entry and bump its TTL.
+///
+/// The entry exists immediately after `set`, so the TTL extension is
+/// unconditional and does not need a preceding `has` probe.
+pub fn persistent_set<K, V>(env: &Env, key: &K, value: &V)
+where
+    K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+    V: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    let storage = env.storage().persistent();
+    storage.set(key, value);
+    storage.extend_ttl(key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+}
+
+/// Returns whether a persistent entry exists.
+///
+/// No TTL extension is performed here: a key that is absent has no TTL to
+/// extend, and a key that is present is either about to be written (which bumps
+/// it via [`persistent_set`]) or only probed for existence.
+pub fn persistent_has<K>(env: &Env, key: &K) -> bool
+where
+    K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    env.storage().persistent().has(key)
+}
+
+/// Remove a persistent entry.
+///
+/// Deleting an entry makes its TTL irrelevant, so no extension is performed.
+pub fn persistent_remove<K>(env: &Env, key: &K)
+where
+    K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    env.storage().persistent().remove(key);
 }
 
 #[contracttype]
@@ -588,6 +704,7 @@ impl DataKey {
     pub fn set_employee_count(env: &Env, agreement_id: u128, count: u32) {
         let key: DataKey = DataKey::AgreementEmployeeCount(agreement_id);
         env.storage().persistent().set(&key, &count);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get employee address at a specific index in an agreement
@@ -600,6 +717,7 @@ impl DataKey {
     pub fn set_employee(env: &Env, agreement_id: u128, employee_index: u32, employee: &Address) {
         let key: DataKey = DataKey::AgreementEmployee(agreement_id, employee_index);
         env.storage().persistent().set(&key, employee);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get salary per period for an employee at a specific index
@@ -643,6 +761,7 @@ impl DataKey {
     pub fn set_agreement_activation_time(env: &Env, agreement_id: u128, timestamp: u64) {
         let key: DataKey = DataKey::AgreementActivationTime(agreement_id);
         env.storage().persistent().set(&key, &timestamp);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get period duration in seconds for an agreement
@@ -655,6 +774,7 @@ impl DataKey {
     pub fn set_agreement_period_duration(env: &Env, agreement_id: u128, duration: u64) {
         let key: DataKey = DataKey::AgreementPeriodDuration(agreement_id);
         env.storage().persistent().set(&key, &duration);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get token address for an agreement
@@ -667,6 +787,7 @@ impl DataKey {
     pub fn set_agreement_token(env: &Env, agreement_id: u128, token: &Address) {
         let key: DataKey = DataKey::AgreementToken(agreement_id);
         env.storage().persistent().set(&key, token);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get total paid amount for an agreement
@@ -679,6 +800,7 @@ impl DataKey {
     pub fn set_agreement_paid_amount(env: &Env, agreement_id: u128, amount: i128) {
         let key: DataKey = DataKey::AgreementPaidAmount(agreement_id);
         env.storage().persistent().set(&key, &amount);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get escrow balance for an agreement and token.
@@ -728,6 +850,7 @@ impl DataKey {
             updated_at: env.ledger().timestamp(),
         };
         env.storage().persistent().set(&key, &info);
+        extend_persistent_ttl(env, &key);
     }
 
     /// Get optional configured max-age (seconds) for FX rates.
@@ -742,6 +865,7 @@ impl DataKey {
         env.storage()
             .persistent()
             .set(&StorageKey::ExchangeRateMaxAgeSeconds, &seconds);
+        extend_persistent_ttl(env, &StorageKey::ExchangeRateMaxAgeSeconds);
     }
 
     /// Get optional configured max single-update deviation in basis points.
@@ -756,6 +880,7 @@ impl DataKey {
         env.storage()
             .persistent()
             .set(&StorageKey::ExchangeRateMaxDeviationBps, &bps);
+        extend_persistent_ttl(env, &StorageKey::ExchangeRateMaxDeviationBps);
     }
 
     /// Get optional absolute upper-bound sanity limit for FX rates.
@@ -770,12 +895,14 @@ impl DataKey {
         env.storage()
             .persistent()
             .set(&StorageKey::ExchangeRateMaxRateSanityBound, &max_rate);
+        extend_persistent_ttl(env, &StorageKey::ExchangeRateMaxRateSanityBound);
     }
 
     /// Marks an agreement's grace period as finalized.
     pub fn set_agreement_grace_period_finalized(env: &Env, agreement_id: u128) {
         let key = DataKey::AgreementGracePeriodFinalized(agreement_id);
         env.storage().persistent().set(&key, &());
+        extend_persistent_ttl(env, &key);
     }
 
     /// Returns `true` if the agreement's grace period has been finalized.
@@ -786,8 +913,109 @@ impl DataKey {
 }
 
 // ============================================================================
-// PayrollError discriminant stability test
+// MilestoneKey typed accessors (TTL-bumped writes)
 // ============================================================================
+
+impl MilestoneKey {
+    /// Write `AgreementCounter` and bump its TTL.
+    pub fn set_agreement_counter(env: &Env, counter: u128) {
+        env.storage()
+            .persistent()
+            .set(&MilestoneKey::AgreementCounter, &counter);
+        extend_persistent_ttl(env, &MilestoneKey::AgreementCounter);
+    }
+
+    /// Write the employer for a milestone agreement and bump TTL.
+    pub fn set_employer(env: &Env, agreement_id: u128, employer: &Address) {
+        let key = MilestoneKey::Employer(agreement_id);
+        env.storage().persistent().set(&key, employer);
+        extend_persistent_ttl(env, &key);
+    }
+
+    /// Write the contributor for a milestone agreement and bump TTL.
+    pub fn set_contributor(env: &Env, agreement_id: u128, contributor: &Address) {
+        let key = MilestoneKey::Contributor(agreement_id);
+        env.storage().persistent().set(&key, contributor);
+        extend_persistent_ttl(env, &key);
+    }
+
+    /// Write the token address for a milestone agreement and bump TTL.
+    pub fn set_token(env: &Env, agreement_id: u128, token: &Address) {
+        let key = MilestoneKey::Token(agreement_id);
+        env.storage().persistent().set(&key, token);
+        extend_persistent_ttl(env, &key);
+    }
+
+    /// Write the payment type for a milestone agreement and bump TTL.
+    pub fn set_payment_type(env: &Env, agreement_id: u128, payment_type: &PaymentType) {
+        let key = MilestoneKey::PaymentType(agreement_id);
+        env.storage().persistent().set(&key, payment_type);
+        extend_persistent_ttl(env, &key);
+    }
+
+    /// Write the status for a milestone agreement and bump TTL.
+    pub fn set_status(env: &Env, agreement_id: u128, status: &AgreementStatus) {
+        let key = MilestoneKey::Status(agreement_id);
+        env.storage().persistent().set(&key, status);
+        extend_persistent_ttl(env, &key);
+    }
+
+    /// Write the total amount for a milestone agreement and bump TTL.
+    pub fn set_total_amount(env: &Env, agreement_id: u128, total: i128) {
+        let key = MilestoneKey::TotalAmount(agreement_id);
+        env.storage().persistent().set(&key, &total);
+        extend_persistent_ttl(env, &key);
+    }
+
+    /// Write the milestone count for a milestone agreement and bump TTL.
+    pub fn set_milestone_count(env: &Env, agreement_id: u128, count: u32) {
+        let key = MilestoneKey::MilestoneCount(agreement_id);
+        env.storage().persistent().set(&key, &count);
+        extend_persistent_ttl(env, &key);
+    }
+
+    /// Write a milestone amount and bump its TTL.
+    pub fn set_milestone_amount(env: &Env, agreement_id: u128, milestone_id: u32, amount: i128) {
+        let key = MilestoneKey::MilestoneAmount(agreement_id, milestone_id);
+        env.storage().persistent().set(&key, &amount);
+        extend_persistent_ttl(env, &key);
+    }
+
+    /// Write a milestone approved flag and bump its TTL.
+    pub fn set_milestone_approved(env: &Env, agreement_id: u128, milestone_id: u32, value: bool) {
+        let key = MilestoneKey::MilestoneApproved(agreement_id, milestone_id);
+        env.storage().persistent().set(&key, &value);
+        extend_persistent_ttl(env, &key);
+    }
+
+    /// Write a milestone claimed flag and bump its TTL.
+    pub fn set_milestone_claimed(env: &Env, agreement_id: u128, milestone_id: u32, value: bool) {
+        let key = MilestoneKey::MilestoneClaimed(agreement_id, milestone_id);
+        env.storage().persistent().set(&key, &value);
+        extend_persistent_ttl(env, &key);
+    }
+
+    /// Write a milestone rejected flag and bump its TTL.
+    pub fn set_milestone_rejected(env: &Env, agreement_id: u128, milestone_id: u32, value: bool) {
+        let key = MilestoneKey::MilestoneRejected(agreement_id, milestone_id);
+        env.storage().persistent().set(&key, &value);
+        extend_persistent_ttl(env, &key);
+    }
+
+    /// Write a milestone expired flag and bump its TTL.
+    pub fn set_milestone_expired(env: &Env, agreement_id: u128, milestone_id: u32, value: bool) {
+        let key = MilestoneKey::MilestoneExpired(agreement_id, milestone_id);
+        env.storage().persistent().set(&key, &value);
+        extend_persistent_ttl(env, &key);
+    }
+
+    /// Write the escrow balance for a milestone agreement and bump its TTL.
+    pub fn set_milestone_escrow_balance(env: &Env, agreement_id: u128, balance: i128) {
+        let key = MilestoneKey::MilestoneEscrowBalance(agreement_id);
+        env.storage().persistent().set(&key, &balance);
+        extend_persistent_ttl(env, &key);
+    }
+}
 
 #[cfg(test)]
 mod test {

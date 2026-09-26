@@ -102,10 +102,7 @@ pub fn set_multisig_config(
     large_payment_threshold: i128,
     dispute_resolution_threshold: i128,
 ) -> Result<(), PayrollError> {
-    let stored_owner: Address = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::Owner)
+    let stored_owner: Address = crate::storage::persistent_get(env, &StorageKey::Owner)
         .ok_or(PayrollError::Unauthorized)?;
     owner.require_auth();
     if owner != stored_owner {
@@ -114,24 +111,19 @@ pub fn set_multisig_config(
 
     // Capture the previous thresholds before overwriting so the emitted event
     // and audit entry can report old-vs-new values (0 = previously unset).
-    let old_large_payment_threshold: i128 = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::LargePaymentThreshold)
-        .unwrap_or(0);
-    let old_dispute_resolution_threshold: i128 = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::DisputeResolutionThreshold)
-        .unwrap_or(0);
+    let old_large_payment_threshold: i128 =
+        crate::storage::persistent_get(env, &StorageKey::LargePaymentThreshold).unwrap_or(0);
+    let old_dispute_resolution_threshold: i128 =
+        crate::storage::persistent_get(env, &StorageKey::DisputeResolutionThreshold).unwrap_or(0);
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::MultisigContract, &multisig_contract);
-    env.storage()
-        .persistent()
-        .set(&StorageKey::LargePaymentThreshold, &large_payment_threshold);
-    env.storage().persistent().set(
+    crate::storage::persistent_set(env, &StorageKey::MultisigContract, &multisig_contract);
+    crate::storage::persistent_set(
+        env,
+        &StorageKey::LargePaymentThreshold,
+        &large_payment_threshold,
+    );
+    crate::storage::persistent_set(
+        env,
         &StorageKey::DisputeResolutionThreshold,
         &dispute_resolution_threshold,
     );
@@ -167,9 +159,7 @@ pub fn set_multisig_config(
 
 /// Returns the configured multisig contract address, if any.
 pub fn get_multisig_contract(env: &Env) -> Option<Address> {
-    env.storage()
-        .persistent()
-        .get(&StorageKey::MultisigContract)
+    crate::storage::persistent_get(env, &StorageKey::MultisigContract)
 }
 
 /// Checks that a multisig operation with the given id exists, is Executed,
@@ -195,10 +185,8 @@ fn require_multisig_executed(
 }
 
 fn enforce_rate_limit(env: &Env, caller: &Address) -> Result<(), PayrollError> {
-    if let Some(rate_limiter_addr) = env
-        .storage()
-        .persistent()
-        .get::<_, Address>(&StorageKey::RateLimiterContract)
+    if let Some(rate_limiter_addr) =
+        crate::storage::persistent_get::<_, Address>(env, &StorageKey::RateLimiterContract)
     {
         let client = RateLimiterClient::new(env, &rate_limiter_addr);
         if client.try_check_and_consume(caller).is_err() {
@@ -261,35 +249,18 @@ pub fn create_milestone_agreement(
         panic_with_error!(&env, PayrollError::EmptyMilestoneList);
     }
 
-    let mut counter: u128 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::AgreementCounter)
-        .unwrap_or(0);
+    let mut counter: u128 =
+        crate::storage::persistent_get(&env, &MilestoneKey::AgreementCounter).unwrap_or(0);
     counter += 1;
 
     let agreement_id = counter;
 
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::AgreementCounter, &counter);
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::Employer(agreement_id), &employer);
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::Contributor(agreement_id), &contributor);
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::Token(agreement_id), &token);
-    env.storage().persistent().set(
-        &MilestoneKey::PaymentType(agreement_id),
-        &PaymentType::MilestoneBased,
-    );
-    env.storage().persistent().set(
-        &MilestoneKey::Status(agreement_id),
-        &AgreementStatus::Created,
-    );
+    MilestoneKey::set_agreement_counter(&env, counter);
+    MilestoneKey::set_employer(&env, agreement_id, &employer);
+    MilestoneKey::set_contributor(&env, agreement_id, &contributor);
+    MilestoneKey::set_token(&env, agreement_id, &token);
+    MilestoneKey::set_payment_type(&env, agreement_id, &PaymentType::MilestoneBased);
+    MilestoneKey::set_status(&env, agreement_id, &AgreementStatus::Created);
 
     let milestone_count: u32 = milestones.len();
     let mut total: i128 = 0;
@@ -298,18 +269,9 @@ pub fn create_milestone_agreement(
             panic_with_error!(&env, PayrollError::MilestoneAmountInvalid);
         }
         let milestone_id: u32 = (i as u32) + 1;
-        env.storage().persistent().set(
-            &MilestoneKey::MilestoneAmount(agreement_id, milestone_id),
-            &amount,
-        );
-        env.storage().persistent().set(
-            &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
-            &false,
-        );
-        env.storage().persistent().set(
-            &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
-            &false,
-        );
+        MilestoneKey::set_milestone_amount(&env, agreement_id, milestone_id, amount);
+        MilestoneKey::set_milestone_approved(&env, agreement_id, milestone_id, false);
+        MilestoneKey::set_milestone_claimed(&env, agreement_id, milestone_id, false);
         total += amount;
 
         MilestoneAdded {
@@ -320,13 +282,8 @@ pub fn create_milestone_agreement(
         .publish(&env);
     }
 
-    env.storage().persistent().set(
-        &MilestoneKey::MilestoneCount(agreement_id),
-        &milestone_count,
-    );
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::TotalAmount(agreement_id), &total);
+    MilestoneKey::set_milestone_count(&env, agreement_id, milestone_count);
+    MilestoneKey::set_total_amount(&env, agreement_id, total);
 
     add_to_employer_agreements(&env, &employer, agreement_id);
 
@@ -373,11 +330,9 @@ pub fn create_milestone_agreement(
 /// Raw `token.balance()` of the contract is intentionally **not** consulted
 /// so that third-party deposits cannot inflate claimable funds.
 pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, amount: i128) {
-    let employer: Address = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Employer(agreement_id))
-        .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
+    let employer: Address =
+        crate::storage::persistent_get(env, &MilestoneKey::Employer(agreement_id))
+            .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
 
     // Only the agreement's employer may fund it.
     assert!(
@@ -388,11 +343,9 @@ pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, am
 
     assert!(amount > 0, "Amount must be positive");
 
-    let status: AgreementStatus = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Status(agreement_id))
-        .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
+    let status: AgreementStatus =
+        crate::storage::persistent_get(env, &MilestoneKey::Status(agreement_id))
+            .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
     assert!(
         status != AgreementStatus::Cancelled,
         "Cannot fund a Cancelled agreement"
@@ -402,24 +355,17 @@ pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, am
         "Cannot fund a Completed agreement"
     );
 
-    let current_balance: i128 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
-        .unwrap_or(0i128);
+    let current_balance: i128 =
+        crate::storage::persistent_get(env, &MilestoneKey::MilestoneEscrowBalance(agreement_id))
+            .unwrap_or(0i128);
     let new_balance = current_balance
         .checked_add(amount)
         .unwrap_or_else(|| panic_with_error!(env, PayrollError::InvalidData));
-    env.storage().persistent().set(
-        &MilestoneKey::MilestoneEscrowBalance(agreement_id),
-        &new_balance,
-    );
+    MilestoneKey::set_milestone_escrow_balance(env, agreement_id, new_balance);
 
-    let token_address: Address = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Token(agreement_id))
-        .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
+    let token_address: Address =
+        crate::storage::persistent_get(env, &MilestoneKey::Token(agreement_id))
+            .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
     TokenClient::new(env, &token_address).transfer(&from, env.current_contract_address(), &amount);
 
     emit_milestone_funded(
@@ -445,11 +391,9 @@ pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, am
 /// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Created` status.
 /// * `PayrollError::MilestoneAmountInvalid` — `amount` is not strictly positive.
 pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), PayrollError> {
-    let status: AgreementStatus = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Status(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let status: AgreementStatus =
+        crate::storage::persistent_get(&env, &MilestoneKey::Status(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
 
     if status != AgreementStatus::Created {
         return Err(PayrollError::MilestoneAgreementInvalidStatus);
@@ -458,46 +402,26 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), P
         return Err(PayrollError::MilestoneAmountInvalid);
     }
 
-    let employer: Address = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Employer(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let employer: Address =
+        crate::storage::persistent_get(&env, &MilestoneKey::Employer(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
-    let count: u32 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .unwrap_or(0);
+    let count: u32 =
+        crate::storage::persistent_get(&env, &MilestoneKey::MilestoneCount(agreement_id))
+            .unwrap_or(0);
 
     let milestone_id = count + 1;
 
-    env.storage().persistent().set(
-        &MilestoneKey::MilestoneAmount(agreement_id, milestone_id),
-        &amount,
-    );
-    env.storage().persistent().set(
-        &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
-        &false,
-    );
-    env.storage().persistent().set(
-        &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
-        &false,
-    );
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::MilestoneCount(agreement_id), &milestone_id);
+    MilestoneKey::set_milestone_amount(&env, agreement_id, milestone_id, amount);
+    MilestoneKey::set_milestone_approved(&env, agreement_id, milestone_id, false);
+    MilestoneKey::set_milestone_claimed(&env, agreement_id, milestone_id, false);
+    MilestoneKey::set_milestone_count(&env, agreement_id, milestone_id);
 
-    let total: i128 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::TotalAmount(agreement_id))
-        .unwrap_or(0);
+    let total: i128 =
+        crate::storage::persistent_get(&env, &MilestoneKey::TotalAmount(agreement_id)).unwrap_or(0);
     let new_total = total.checked_add(amount).ok_or(PayrollError::InvalidData)?;
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::TotalAmount(agreement_id), &new_total);
+    MilestoneKey::set_total_amount(&env, agreement_id, new_total);
 
     // Post-invariant: total amount should equal sum of milestones
     #[cfg(debug_assertions)]
@@ -532,19 +456,18 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), P
 /// O(n) in the stored milestone count for `agreement_id`, where `n` is bounded by the
 /// milestones created for that agreement.
 fn sum_all_milestones(env: &Env, agreement_id: u128) -> i128 {
-    let count: u32 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .unwrap_or(0);
+    let count: u32 =
+        crate::storage::persistent_get(env, &MilestoneKey::MilestoneCount(agreement_id))
+            .unwrap_or(0);
     let mut sum = 0i128;
     for i in 1..=count {
         sum = sum
             .checked_add(
-                env.storage()
-                    .persistent()
-                    .get::<_, i128>(&MilestoneKey::MilestoneAmount(agreement_id, i))
-                    .unwrap_or(0),
+                crate::storage::persistent_get::<_, i128>(
+                    env,
+                    &MilestoneKey::MilestoneAmount(agreement_id, i),
+                )
+                .unwrap_or(0),
             )
             .unwrap_or_else(|| panic_with_error!(env, PayrollError::InvalidData));
     }
@@ -565,29 +488,23 @@ fn sum_all_milestones(env: &Env, agreement_id: u128) -> i128 {
 /// O(n) in the stored milestone count for `agreement_id`, with one approval lookup,
 /// one claimed lookup, and at most one amount lookup per milestone.
 fn sum_unclaimed_milestones(env: &Env, agreement_id: u128) -> i128 {
-    let count: u32 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .unwrap_or(0);
+    let count: u32 =
+        crate::storage::persistent_get(env, &MilestoneKey::MilestoneCount(agreement_id))
+            .unwrap_or(0);
     let mut sum = 0i128;
     for i in 1..=count {
-        let approved: bool = env
-            .storage()
-            .persistent()
-            .get(&MilestoneKey::MilestoneApproved(agreement_id, i))
-            .unwrap_or(false);
-        let claimed: bool = env
-            .storage()
-            .persistent()
-            .get(&MilestoneKey::MilestoneClaimed(agreement_id, i))
-            .unwrap_or(false);
+        let approved: bool =
+            crate::storage::persistent_get(env, &MilestoneKey::MilestoneApproved(agreement_id, i))
+                .unwrap_or(false);
+        let claimed: bool =
+            crate::storage::persistent_get(env, &MilestoneKey::MilestoneClaimed(agreement_id, i))
+                .unwrap_or(false);
         if approved && !claimed {
-            sum += env
-                .storage()
-                .persistent()
-                .get::<_, i128>(&MilestoneKey::MilestoneAmount(agreement_id, i))
-                .unwrap_or(0);
+            sum += crate::storage::persistent_get::<_, i128>(
+                env,
+                &MilestoneKey::MilestoneAmount(agreement_id, i),
+            )
+            .unwrap_or(0);
         }
     }
     sum
@@ -613,64 +530,53 @@ pub fn approve_milestone(
     agreement_id: u128,
     milestone_id: u32,
 ) -> Result<(), PayrollError> {
-    let employer: Address = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Employer(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let employer: Address =
+        crate::storage::persistent_get(&env, &MilestoneKey::Employer(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
-    let status: AgreementStatus = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Status(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let status: AgreementStatus =
+        crate::storage::persistent_get(&env, &MilestoneKey::Status(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
     if status != AgreementStatus::Created && status != AgreementStatus::Active {
         return Err(PayrollError::MilestoneAgreementInvalidStatus);
     }
 
-    let count: u32 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .ok_or(PayrollError::MilestoneNotFound)?;
+    let count: u32 =
+        crate::storage::persistent_get(&env, &MilestoneKey::MilestoneCount(agreement_id))
+            .ok_or(PayrollError::MilestoneNotFound)?;
     if milestone_id == 0 || milestone_id > count {
         return Err(PayrollError::MilestoneNotFound);
     }
 
-    let already_approved: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
-        .unwrap_or(false);
+    let already_approved: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
     if already_approved {
         return Err(PayrollError::MilestoneAlreadyApproved);
     }
 
     // Guard: cannot approve a milestone that has been rejected.
-    let already_rejected: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneRejected(agreement_id, milestone_id))
-        .unwrap_or(false);
+    let already_rejected: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneRejected(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
     if already_rejected {
         return Err(PayrollError::MilestoneAlreadyRejected);
     }
 
-    env.storage().persistent().set(
-        &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
-        &true,
-    );
+    MilestoneKey::set_milestone_approved(&env, agreement_id, milestone_id, true);
 
     // Invariant: accounted escrow balance must cover all unclaimed milestones
     // (including the one just approved). Uses the accounted balance rather than
     // raw token.balance() so that unrelated deposits cannot satisfy this check.
     let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
-    let escrow_balance: i128 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
-        .unwrap_or(0i128);
+    let escrow_balance: i128 =
+        crate::storage::persistent_get(&env, &MilestoneKey::MilestoneEscrowBalance(agreement_id))
+            .unwrap_or(0i128);
     if escrow_balance < unclaimed_sum {
         return Err(PayrollError::InsufficientEscrowBalance);
     }
@@ -717,19 +623,15 @@ pub fn reject_milestone(
     reason: String,
 ) -> Result<(), PayrollError> {
     // Auth: only the employer may reject a milestone.
-    let employer: Address = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Employer(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let employer: Address =
+        crate::storage::persistent_get(&env, &MilestoneKey::Employer(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
     // Agreement must exist and be in a mutable state.
-    let status: AgreementStatus = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Status(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let status: AgreementStatus =
+        crate::storage::persistent_get(&env, &MilestoneKey::Status(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
     if status != AgreementStatus::Created && status != AgreementStatus::Active {
         return Err(PayrollError::MilestoneAgreementInvalidStatus);
     }
@@ -757,21 +659,19 @@ pub fn reject_milestone(
     }
 
     // Milestone must exist.
-    let count: u32 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .ok_or(PayrollError::MilestoneNotFound)?;
+    let count: u32 =
+        crate::storage::persistent_get(&env, &MilestoneKey::MilestoneCount(agreement_id))
+            .ok_or(PayrollError::MilestoneNotFound)?;
     if milestone_id == 0 || milestone_id > count {
         return Err(PayrollError::MilestoneNotFound);
     }
 
     // Guard: cannot re-reject.
-    let already_rejected: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneRejected(agreement_id, milestone_id))
-        .unwrap_or(false);
+    let already_rejected: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneRejected(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
     if already_rejected {
         return Err(PayrollError::MilestoneAlreadyRejected);
     }
@@ -779,30 +679,27 @@ pub fn reject_milestone(
     // Guard: cannot reject a milestone that has already been claimed.
     // Checked before the approved guard because a claimed milestone is also
     // approved; the more specific error takes priority.
-    let already_claimed: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
-        .unwrap_or(false);
+    let already_claimed: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
     if already_claimed {
         return Err(PayrollError::MilestoneAlreadyClaimedCannotReject);
     }
 
     // Guard: cannot reject a milestone that has already been approved.
-    let already_approved: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
-        .unwrap_or(false);
+    let already_approved: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
     if already_approved {
         return Err(PayrollError::MilestoneAlreadyApprovedCannotReject);
     }
 
     // Mark the milestone as rejected.
-    env.storage().persistent().set(
-        &MilestoneKey::MilestoneRejected(agreement_id, milestone_id),
-        &true,
-    );
+    MilestoneKey::set_milestone_rejected(&env, agreement_id, milestone_id, true);
 
     // Emit the structured rejection event so off-chain indexers can track it.
     emit_milestone_rejected(
@@ -865,49 +762,43 @@ pub fn expire_milestone(
     milestone_id: u32,
 ) -> Result<(), PayrollError> {
     // Auth: only the employer may expire a milestone.
-    let employer: Address = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Employer(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let employer: Address =
+        crate::storage::persistent_get(&env, &MilestoneKey::Employer(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
     // Agreement must exist and be in a mutable state.
-    let status: AgreementStatus = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Status(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let status: AgreementStatus =
+        crate::storage::persistent_get(&env, &MilestoneKey::Status(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
     if status != AgreementStatus::Created && status != AgreementStatus::Active {
         return Err(PayrollError::MilestoneAgreementInvalidStatus);
     }
 
     // Milestone must exist.
-    let count: u32 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .ok_or(PayrollError::MilestoneNotFound)?;
+    let count: u32 =
+        crate::storage::persistent_get(&env, &MilestoneKey::MilestoneCount(agreement_id))
+            .ok_or(PayrollError::MilestoneNotFound)?;
     if milestone_id == 0 || milestone_id > count {
         return Err(PayrollError::MilestoneNotFound);
     }
 
     // Guard: cannot re-expire.
-    let already_expired: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneExpired(agreement_id, milestone_id))
-        .unwrap_or(false);
+    let already_expired: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneExpired(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
     if already_expired {
         return Err(PayrollError::MilestoneAlreadyExpired);
     }
 
     // Guard: cannot expire a milestone that has already been claimed.
-    let already_claimed: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
-        .unwrap_or(false);
+    let already_claimed: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
     if already_claimed {
         // Reuses MilestoneAlreadyClaimed (existing error) — callers can
         // distinguish "cannot expire because claimed" from the claimed state.
@@ -916,36 +807,37 @@ pub fn expire_milestone(
 
     // Guard: cannot expire a milestone that has already been approved
     // (the contributor still has the right to claim it).
-    let already_approved: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
-        .unwrap_or(false);
+    let already_approved: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
     if already_approved {
         // Reuses MilestoneAlreadyApproved (existing error).
         return Err(PayrollError::MilestoneAlreadyApproved);
     }
 
     // Guard: cannot expire a milestone that has already been rejected.
-    let already_rejected: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneRejected(agreement_id, milestone_id))
-        .unwrap_or(false);
+    let already_rejected: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneRejected(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
     if already_rejected {
         // Reuses MilestoneAlreadyRejected (existing error).
         return Err(PayrollError::MilestoneAlreadyRejected);
     }
 
     // Retrieve the locked amount for the event (best-effort; 0 if not set).
-    let locked_amount: i128 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
-        .unwrap_or(0i128);
+    let locked_amount: i128 = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneAmount(agreement_id, milestone_id),
+    )
+    .unwrap_or(0i128);
 
     // Mark the milestone as expired.
-    env.storage().persistent().set(
+    crate::storage::persistent_set(
+        &env,
         &MilestoneKey::MilestoneExpired(agreement_id, milestone_id),
         &true,
     );
@@ -966,10 +858,8 @@ pub fn expire_milestone(
     // implement MilestoneContractInterface and its `on_milestone_expired`
     // override.  The default no-op means contracts without an override are
     // unaffected.  No hook address configured → silently skip.
-    if let Some(hook_addr) = env
-        .storage()
-        .persistent()
-        .get::<_, Address>(&StorageKey::MilestoneHookContract)
+    if let Some(hook_addr) =
+        crate::storage::persistent_get::<_, Address>(&env, &StorageKey::MilestoneHookContract)
     {
         let hook_client = milestone_interface::MilestoneContractClient::new(&env, &hook_addr);
         hook_client.on_milestone_expired(&agreement_id, &milestone_id);
@@ -1002,46 +892,40 @@ pub fn claim_milestone(
         return Err(PayrollError::EmergencyPaused);
     }
 
-    let contributor: Address = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Contributor(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let contributor: Address =
+        crate::storage::persistent_get(&env, &MilestoneKey::Contributor(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
     contributor.require_auth();
 
     // Check if agreement is paused
-    let status: AgreementStatus = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Status(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let status: AgreementStatus =
+        crate::storage::persistent_get(&env, &MilestoneKey::Status(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
     if status == AgreementStatus::Paused {
         return Err(PayrollError::AgreementPaused);
     }
 
-    let count: u32 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .ok_or(PayrollError::MilestoneNotFound)?;
+    let count: u32 =
+        crate::storage::persistent_get(&env, &MilestoneKey::MilestoneCount(agreement_id))
+            .ok_or(PayrollError::MilestoneNotFound)?;
     if milestone_id == 0 || milestone_id > count {
         return Err(PayrollError::MilestoneNotFound);
     }
 
-    let approved: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
-        .unwrap_or(false);
+    let approved: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
     if !approved {
         return Err(PayrollError::MilestoneNotApproved);
     }
 
-    let already_claimed: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
-        .unwrap_or(false);
+    let already_claimed: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
     if already_claimed {
         return Err(PayrollError::MilestoneAlreadyClaimed);
     }
@@ -1050,41 +934,37 @@ pub fn claim_milestone(
     // milestones before we allow the transfer. Using the accounted balance
     // prevents third-party token transfers from inflating claimable funds.
     let unclaimed_sum = sum_unclaimed_milestones(&env, agreement_id);
-    let escrow_balance: i128 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
-        .unwrap_or(0i128);
+    let escrow_balance: i128 =
+        crate::storage::persistent_get(&env, &MilestoneKey::MilestoneEscrowBalance(agreement_id))
+            .unwrap_or(0i128);
     if escrow_balance < unclaimed_sum {
         return Err(PayrollError::InsufficientEscrowBalance);
     }
 
-    let amount: i128 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
-        .ok_or(PayrollError::MilestoneNotFound)?;
+    let amount: i128 = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneAmount(agreement_id, milestone_id),
+    )
+    .ok_or(PayrollError::MilestoneNotFound)?;
 
-    let token_address: Address = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Token(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let token_address: Address =
+        crate::storage::persistent_get(&env, &MilestoneKey::Token(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
 
     // Checks-Effects-Interactions: update all state before the external transfer.
-    env.storage().persistent().set(
+    crate::storage::persistent_set(
+        &env,
         &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
         &true,
     );
 
     // Decrement the accounted escrow balance so subsequent invariant checks
     // reflect the reduced available balance.
-    let escrow_balance: i128 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
-        .unwrap_or(0i128);
-    env.storage().persistent().set(
+    let escrow_balance: i128 =
+        crate::storage::persistent_get(&env, &MilestoneKey::MilestoneEscrowBalance(agreement_id))
+            .unwrap_or(0i128);
+    crate::storage::persistent_set(
+        &env,
         &MilestoneKey::MilestoneEscrowBalance(agreement_id),
         &escrow_balance.saturating_sub(amount),
     );
@@ -1105,7 +985,8 @@ pub fn claim_milestone(
 
     let all_claimed = all_milestones_claimed(&env, agreement_id, count);
     if all_claimed {
-        env.storage().persistent().set(
+        crate::storage::persistent_set(
+            &env,
             &MilestoneKey::Status(agreement_id),
             &AgreementStatus::Completed,
         );
@@ -1149,11 +1030,9 @@ pub fn batch_claim_milestones(
     agreement_id: u128,
     milestone_ids: Vec<u32>,
 ) -> Result<BatchMilestoneResult, PayrollError> {
-    let contributor: Address = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Contributor(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let contributor: Address =
+        crate::storage::persistent_get(env, &MilestoneKey::Contributor(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
     contributor.require_auth();
 
     if milestone_ids.is_empty() {
@@ -1164,26 +1043,19 @@ pub fn batch_claim_milestones(
     }
 
     // Shared pre-flight
-    let status: AgreementStatus = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Status(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let status: AgreementStatus =
+        crate::storage::persistent_get(env, &MilestoneKey::Status(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
     if status == AgreementStatus::Paused {
         return Err(PayrollError::AgreementPaused);
     }
 
-    let count: u32 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .ok_or(PayrollError::MilestoneNotFound)?;
+    let count: u32 =
+        crate::storage::persistent_get(env, &MilestoneKey::MilestoneCount(agreement_id))
+            .ok_or(PayrollError::MilestoneNotFound)?;
 
     // Token client created once and reused
-    let token: Address = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Token(agreement_id))
+    let token: Address = crate::storage::persistent_get(env, &MilestoneKey::Token(agreement_id))
         .ok_or(PayrollError::AgreementNotFound)?;
     let token_client = TokenClient::new(env, &token);
     let contract_address = env.current_contract_address();
@@ -1221,11 +1093,11 @@ pub fn batch_claim_milestones(
         }
 
         // Approved check
-        let approved: bool = env
-            .storage()
-            .persistent()
-            .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
-            .unwrap_or(false);
+        let approved: bool = crate::storage::persistent_get(
+            env,
+            &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
+        )
+        .unwrap_or(false);
         if !approved {
             failed_claims += 1;
             results.push_back(MilestoneClaimResult {
@@ -1238,11 +1110,11 @@ pub fn batch_claim_milestones(
         }
 
         // Already-claimed check
-        let already_claimed: bool = env
-            .storage()
-            .persistent()
-            .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
-            .unwrap_or(false);
+        let already_claimed: bool = crate::storage::persistent_get(
+            env,
+            &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
+        )
+        .unwrap_or(false);
         if already_claimed {
             failed_claims += 1;
             results.push_back(MilestoneClaimResult {
@@ -1254,11 +1126,10 @@ pub fn batch_claim_milestones(
             continue;
         }
 
-        let amount: i128 = match env
-            .storage()
-            .persistent()
-            .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))
-        {
+        let amount: i128 = match crate::storage::persistent_get(
+            env,
+            &MilestoneKey::MilestoneAmount(agreement_id, milestone_id),
+        ) {
             Some(amount) => amount,
             None => {
                 // Record a per-item failure and continue: an early return here
@@ -1276,19 +1147,21 @@ pub fn batch_claim_milestones(
         };
 
         // Checks-Effects-Interactions: update all state before the external transfer.
-        env.storage().persistent().set(
+        crate::storage::persistent_set(
+            env,
             &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
             &true,
         );
 
         // Decrement the accounted escrow balance to keep invariants consistent
         // across subsequent iterations of this batch.
-        let escrow_balance: i128 = env
-            .storage()
-            .persistent()
-            .get(&MilestoneKey::MilestoneEscrowBalance(agreement_id))
-            .unwrap_or(0i128);
-        env.storage().persistent().set(
+        let escrow_balance: i128 = crate::storage::persistent_get(
+            env,
+            &MilestoneKey::MilestoneEscrowBalance(agreement_id),
+        )
+        .unwrap_or(0i128);
+        crate::storage::persistent_set(
+            env,
             &MilestoneKey::MilestoneEscrowBalance(agreement_id),
             &escrow_balance.saturating_sub(amount),
         );
@@ -1317,7 +1190,8 @@ pub fn batch_claim_milestones(
     }
 
     if all_milestones_claimed(env, agreement_id, count) {
-        env.storage().persistent().set(
+        crate::storage::persistent_set(
+            env,
             &MilestoneKey::Status(agreement_id),
             &AgreementStatus::Completed,
         );
@@ -1342,37 +1216,32 @@ pub fn batch_claim_milestones(
 }
 
 pub fn get_milestone_count(env: Env, agreement_id: u128) -> u32 {
-    env.storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .unwrap_or(0)
+    crate::storage::persistent_get(&env, &MilestoneKey::MilestoneCount(agreement_id)).unwrap_or(0)
 }
 
 pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<Milestone> {
-    let count: u32 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .unwrap_or(0);
+    let count: u32 =
+        crate::storage::persistent_get(&env, &MilestoneKey::MilestoneCount(agreement_id))
+            .unwrap_or(0);
 
     if milestone_id == 0 || milestone_id > count {
         return None;
     }
 
-    let amount: i128 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))?;
-    let approved: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
-        .unwrap_or(false);
-    let claimed: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
-        .unwrap_or(false);
+    let amount: i128 = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneAmount(agreement_id, milestone_id),
+    )?;
+    let approved: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
+    let claimed: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
 
     Some(Milestone {
         id: milestone_id,
@@ -1397,11 +1266,9 @@ pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<
 /// bounded by the caller-supplied milestone count.
 fn all_milestones_claimed(env: &Env, agreement_id: u128, count: u32) -> bool {
     for i in 1..=count {
-        let claimed: bool = env
-            .storage()
-            .persistent()
-            .get(&MilestoneKey::MilestoneClaimed(agreement_id, i))
-            .unwrap_or(false);
+        let claimed: bool =
+            crate::storage::persistent_get(env, &MilestoneKey::MilestoneClaimed(agreement_id, i))
+                .unwrap_or(false);
         if !claimed {
             return false;
         }
@@ -1464,14 +1331,14 @@ fn create_payroll_agreement_internal(
         claimed_periods: None,
     };
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Agreement(agreement_id), &agreement);
+    crate::storage::persistent_set(env, &StorageKey::Agreement(agreement_id), &agreement);
 
     let employees: Vec<EmployeeInfo> = Vec::new(env);
-    env.storage()
-        .persistent()
-        .set(&StorageKey::AgreementEmployees(agreement_id), &employees);
+    crate::storage::persistent_set(
+        env,
+        &StorageKey::AgreementEmployees(agreement_id),
+        &employees,
+    );
 
     add_to_employer_agreements(env, &employer, agreement_id);
 
@@ -1660,9 +1527,7 @@ fn create_escrow_agreement_internal(
         claimed_periods: Some(0),
     };
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Agreement(agreement_id), &agreement);
+    crate::storage::persistent_set(env, &StorageKey::Agreement(agreement_id), &agreement);
 
     // Add the contributor as the sole employee
     let mut employees: Vec<EmployeeInfo> = Vec::new(env);
@@ -1671,9 +1536,11 @@ fn create_escrow_agreement_internal(
         salary_per_period: amount_per_period,
         added_at: env.ledger().timestamp(),
     });
-    env.storage()
-        .persistent()
-        .set(&StorageKey::AgreementEmployees(agreement_id), &employees);
+    crate::storage::persistent_set(
+        env,
+        &StorageKey::AgreementEmployees(agreement_id),
+        &employees,
+    );
 
     add_to_employer_agreements(env, &employer, agreement_id);
 
@@ -1831,11 +1698,9 @@ pub fn add_employee_to_agreement(
 
     assert!(salary_per_period > 0, "Salary must be positive");
 
-    let mut employees: Vec<EmployeeInfo> = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::AgreementEmployees(agreement_id))
-        .unwrap_or(Vec::new(env));
+    let mut employees: Vec<EmployeeInfo> =
+        crate::storage::persistent_get(env, &StorageKey::AgreementEmployees(agreement_id))
+            .unwrap_or(Vec::new(env));
 
     // Reject duplicate employee addresses. Each address must map to exactly one
     // salary entry within an agreement; adding the same address twice would
@@ -1855,12 +1720,12 @@ pub fn add_employee_to_agreement(
 
     agreement.total_amount += salary_per_period;
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Agreement(agreement_id), &agreement);
-    env.storage()
-        .persistent()
-        .set(&StorageKey::AgreementEmployees(agreement_id), &employees);
+    crate::storage::persistent_set(env, &StorageKey::Agreement(agreement_id), &agreement);
+    crate::storage::persistent_set(
+        env,
+        &StorageKey::AgreementEmployees(agreement_id),
+        &employees,
+    );
 
     emit_employee_added(
         env,
@@ -1922,11 +1787,9 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
     );
 
     if agreement.mode == AgreementMode::Payroll {
-        let employees: Vec<EmployeeInfo> = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::AgreementEmployees(agreement_id))
-            .unwrap_or(Vec::new(env));
+        let employees: Vec<EmployeeInfo> =
+            crate::storage::persistent_get(env, &StorageKey::AgreementEmployees(agreement_id))
+                .unwrap_or(Vec::new(env));
         assert!(
             !employees.is_empty(),
             "Payroll agreement must have at least one employee to activate"
@@ -1936,9 +1799,7 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
     agreement.status = AgreementStatus::Active;
     agreement.activated_at = Some(env.ledger().timestamp());
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Agreement(agreement_id), &agreement);
+    crate::storage::persistent_set(env, &StorageKey::Agreement(agreement_id), &agreement);
 
     emit_agreement_activated(env, AgreementActivatedEvent { agreement_id });
     record_entry(
@@ -1976,9 +1837,7 @@ pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
     }
 
     let arbiter_for_log = arbiter.clone();
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Arbiter, &arbiter);
+    crate::storage::persistent_set(env, &StorageKey::Arbiter, &arbiter);
     emit_set_arbiter(env, ArbiterSetEvent { arbiter });
 
     // Record a lifecycle audit entry so `set_arbiter` is observable in the
@@ -2004,13 +1863,11 @@ pub fn set_arbiter(env: &Env, caller: Address, arbiter: Address) -> bool {
 /// # Returns
 /// Arbiter address if set, None otherwise
 pub fn get_arbiter(env: &Env) -> Option<Address> {
-    env.storage().persistent().get(&StorageKey::Arbiter)
+    crate::storage::persistent_get(env, &StorageKey::Arbiter)
 }
 
 fn grace_period_extension_seconds(env: &Env, agreement_id: u128) -> u64 {
-    env.storage()
-        .persistent()
-        .get(&StorageKey::GracePeriodExtensionSeconds(agreement_id))
+    crate::storage::persistent_get(env, &StorageKey::GracePeriodExtensionSeconds(agreement_id))
         .unwrap_or(0u64)
 }
 
@@ -2025,13 +1882,12 @@ fn effective_cancelled_grace_duration_seconds(
 /// Returns the owner-configured extension caps (defaults apply until `set_grace_extension_policy`
 /// runs).
 pub fn get_grace_extension_policy(env: &Env) -> GracePeriodExtensionPolicy {
-    env.storage()
-        .persistent()
-        .get(&StorageKey::GracePeriodExtensionPolicy)
-        .unwrap_or(GracePeriodExtensionPolicy {
+    crate::storage::persistent_get(env, &StorageKey::GracePeriodExtensionPolicy).unwrap_or(
+        GracePeriodExtensionPolicy {
             max_cumulative_extension_bps: 10_000,
             max_extension_per_call_seconds: 90 * 24 * 3600,
-        })
+        },
+    )
 }
 
 /// Sets caps for per-agreement grace extensions. Callable only by the contract owner.
@@ -2074,9 +1930,7 @@ pub fn set_grace_extension_policy(
     {
         return Err(PayrollError::GraceExtensionInvalid);
     }
-    env.storage()
-        .persistent()
-        .set(&StorageKey::GracePeriodExtensionPolicy, &policy);
+    crate::storage::persistent_set(env, &StorageKey::GracePeriodExtensionPolicy, &policy);
     Ok(())
 }
 
@@ -2131,7 +1985,8 @@ pub fn extend_grace_period(
         return Err(PayrollError::GraceExtensionCapExceeded);
     }
 
-    env.storage().persistent().set(
+    crate::storage::persistent_set(
+        env,
         &StorageKey::GracePeriodExtensionSeconds(agreement_id),
         &new_total,
     );
@@ -2168,11 +2023,9 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
 
     let mut agreement = get_agreement(env, agreement_id).ok_or(PayrollError::AgreementNotFound)?;
 
-    let employees: Vec<EmployeeInfo> = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::AgreementEmployees(agreement_id))
-        .unwrap_or(Vec::new(env));
+    let employees: Vec<EmployeeInfo> =
+        crate::storage::persistent_get(env, &StorageKey::AgreementEmployees(agreement_id))
+            .unwrap_or(Vec::new(env));
 
     let is_employee = employees.iter().any(|emp| emp.address == caller);
 
@@ -2217,9 +2070,7 @@ pub fn raise_dispute(env: &Env, caller: Address, agreement_id: u128) -> Result<(
     agreement.dispute_raised_at = Some(now);
     agreement.status = AgreementStatus::Disputed;
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Agreement(agreement_id), &agreement);
+    crate::storage::persistent_set(env, &StorageKey::Agreement(agreement_id), &agreement);
 
     emit_dsipute_raised(env, DisputeRaisedEvent { agreement_id });
     record_entry(
@@ -2285,10 +2136,8 @@ fn resolve_dispute_inner(
     // If a DisputeResolution threshold is configured and the total payout meets
     // it, reject and require the caller to use resolve_dispute_multisig instead.
     let total_payout = pay_employee + refund_employer;
-    if let Some(threshold) = env
-        .storage()
-        .persistent()
-        .get::<_, i128>(&StorageKey::DisputeResolutionThreshold)
+    if let Some(threshold) =
+        crate::storage::persistent_get::<_, i128>(&env, &StorageKey::DisputeResolutionThreshold)
     {
         if threshold > 0 && total_payout >= threshold {
             return Err(PayrollError::MultisigApprovalRequired);
@@ -2337,11 +2186,9 @@ fn resolve_dispute_multisig_inner(
     refund_employer: i128,
     multisig_operation_id: u128,
 ) -> Result<(), PayrollError> {
-    let multisig_addr = env
-        .storage()
-        .persistent()
-        .get::<_, Address>(&StorageKey::MultisigContract)
-        .ok_or(PayrollError::MultisigApprovalRequired)?;
+    let multisig_addr =
+        crate::storage::persistent_get::<_, Address>(&env, &StorageKey::MultisigContract)
+            .ok_or(PayrollError::MultisigApprovalRequired)?;
 
     let payroll_contract = env.current_contract_address();
     require_multisig_executed(&env, &multisig_addr, multisig_operation_id, |kind| {
@@ -2367,10 +2214,7 @@ fn resolve_dispute_core(
 ) -> Result<(), PayrollError> {
     caller.require_auth();
 
-    let arbiter = env
-        .storage()
-        .persistent()
-        .get::<_, Address>(&StorageKey::Arbiter)
+    let arbiter = crate::storage::persistent_get::<_, Address>(env, &StorageKey::Arbiter)
         .ok_or(PayrollError::NotArbiter)?;
     if caller != arbiter {
         return Err(PayrollError::NotArbiter);
@@ -2412,11 +2256,9 @@ fn resolve_dispute_core(
 
     let token = TokenClient::new(env, &agreement.token);
 
-    let employees: Vec<EmployeeInfo> = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::AgreementEmployees(agreement_id))
-        .unwrap_or(Vec::new(env));
+    let employees: Vec<EmployeeInfo> =
+        crate::storage::persistent_get(env, &StorageKey::AgreementEmployees(agreement_id))
+            .unwrap_or(Vec::new(env));
 
     // Track what is actually transferred out so the escrow balance can be
     // decremented by the exact distributed total (conservation of funds).
@@ -2469,9 +2311,7 @@ fn resolve_dispute_core(
 
     agreement.dispute_status = DisputeStatus::Resolved;
     agreement.status = AgreementStatus::Completed;
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Agreement(agreement_id), &agreement);
+    crate::storage::persistent_set(env, &StorageKey::Agreement(agreement_id), &agreement);
 
     emit_dsipute_resolved(
         env,
@@ -2510,10 +2350,7 @@ pub fn set_exchange_rate_admin(
     caller: Address,
     admin: Address,
 ) -> Result<(), PayrollError> {
-    let owner: Address = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::Owner)
+    let owner: Address = crate::storage::persistent_get(env, &StorageKey::Owner)
         .ok_or(PayrollError::Unauthorized)?;
 
     caller.require_auth();
@@ -2522,9 +2359,7 @@ pub fn set_exchange_rate_admin(
         return Err(PayrollError::Unauthorized);
     }
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::ExchangeRateAdmin, &admin);
+    crate::storage::persistent_set(env, &StorageKey::ExchangeRateAdmin, &admin);
 
     Ok(())
 }
@@ -2547,11 +2382,9 @@ pub fn set_exchange_rate(
 
     caller.require_auth();
 
-    let owner: Option<Address> = env.storage().persistent().get(&StorageKey::Owner);
-    let fx_admin: Option<Address> = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::ExchangeRateAdmin);
+    let owner: Option<Address> = crate::storage::persistent_get(env, &StorageKey::Owner);
+    let fx_admin: Option<Address> =
+        crate::storage::persistent_get(env, &StorageKey::ExchangeRateAdmin);
 
     let is_authorized = match (owner, fx_admin) {
         (Some(o), _) if caller == o => true,
@@ -2628,19 +2461,14 @@ pub fn convert_currency(
 
 /// Retrieves an agreement by ID
 ///
-/// Bumps the agreement entry's TTL on read (see [`crate::storage::extend_persistent_ttl`])
+/// Bumps the agreement entry's TTL on read (see [`crate::storage::persistent_get`])
 /// so an active agreement that is accessed but not rewritten for a long time is
 /// not archived under Soroban's state-archival model.
 ///
 /// # Returns
 /// Some(Agreement) if found, None otherwise
 pub fn get_agreement(env: &Env, agreement_id: u128) -> Option<Agreement> {
-    let key = StorageKey::Agreement(agreement_id);
-    let agreement = env.storage().persistent().get(&key);
-    if agreement.is_some() {
-        crate::storage::extend_persistent_ttl(env, &key);
-    }
-    agreement
+    crate::storage::persistent_get(env, &StorageKey::Agreement(agreement_id))
 }
 
 /// Retrieves all employees for an agreement
@@ -2648,11 +2476,9 @@ pub fn get_agreement(env: &Env, agreement_id: u128) -> Option<Agreement> {
 /// # Returns
 /// Vector of employee addresses
 pub fn get_agreement_employees(env: &Env, agreement_id: u128) -> Vec<Address> {
-    let employees: Vec<EmployeeInfo> = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::AgreementEmployees(agreement_id))
-        .unwrap_or(Vec::new(env));
+    let employees: Vec<EmployeeInfo> =
+        crate::storage::persistent_get(env, &StorageKey::AgreementEmployees(agreement_id))
+            .unwrap_or(Vec::new(env));
 
     let mut addresses = Vec::new(env);
     for emp in employees.iter() {
@@ -2808,10 +2634,8 @@ fn claim_payroll_inner(
     let mut salary_per_period = DataKey::get_employee_salary(env, agreement_id, employee_index)
         .ok_or(PayrollError::AgreementNotFound)?;
 
-    if let Some(salary_adj_addr) = env
-        .storage()
-        .persistent()
-        .get::<_, Address>(&StorageKey::SalaryAdjustmentContract)
+    if let Some(salary_adj_addr) =
+        crate::storage::persistent_get::<_, Address>(env, &StorageKey::SalaryAdjustmentContract)
     {
         let client = SalaryAdjustmentClient::new(env, &salary_adj_addr);
         if let Some(adjusted_salary) = client.get_employee_salary(&employee) {
@@ -2826,10 +2650,8 @@ fn claim_payroll_inner(
 
     // If a LargePayment threshold is configured and this claim meets it,
     // reject and require the caller to use claim_payroll_multisig instead.
-    if let Some(threshold) = env
-        .storage()
-        .persistent()
-        .get::<_, i128>(&StorageKey::LargePaymentThreshold)
+    if let Some(threshold) =
+        crate::storage::persistent_get::<_, i128>(env, &StorageKey::LargePaymentThreshold)
     {
         if threshold > 0 && amount >= threshold {
             return Err(PayrollError::MultisigApprovalRequired);
@@ -2939,11 +2761,9 @@ pub fn claim_payroll_multisig(
     employee_index: u32,
     multisig_operation_id: u128,
 ) -> Result<(), PayrollError> {
-    let multisig_addr = env
-        .storage()
-        .persistent()
-        .get::<_, Address>(&StorageKey::MultisigContract)
-        .ok_or(PayrollError::MultisigApprovalRequired)?;
+    let multisig_addr =
+        crate::storage::persistent_get::<_, Address>(env, &StorageKey::MultisigContract)
+            .ok_or(PayrollError::MultisigApprovalRequired)?;
 
     // Temporarily clear the threshold so claim_payroll_core can proceed.
     // We verify the multisig op here before delegating.
@@ -2961,18 +2781,12 @@ pub fn claim_payroll_multisig(
     }
 
     // Bypass the threshold guard by temporarily removing it, run claim, then restore.
-    let saved_threshold: Option<i128> = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::LargePaymentThreshold);
-    env.storage()
-        .persistent()
-        .remove(&StorageKey::LargePaymentThreshold);
+    let saved_threshold: Option<i128> =
+        crate::storage::persistent_get(env, &StorageKey::LargePaymentThreshold);
+    crate::storage::persistent_remove(env, &StorageKey::LargePaymentThreshold);
     let result = claim_payroll(env, caller, agreement_id, employee_index);
     if let Some(t) = saved_threshold {
-        env.storage()
-            .persistent()
-            .set(&StorageKey::LargePaymentThreshold, &t);
+        crate::storage::persistent_set(env, &StorageKey::LargePaymentThreshold, &t);
     }
     result
 }
@@ -3393,10 +3207,8 @@ fn batch_claim_payroll_inner(
                 }
             };
 
-        if let Some(salary_adj_addr) = env
-            .storage()
-            .persistent()
-            .get::<_, Address>(&StorageKey::SalaryAdjustmentContract)
+        if let Some(salary_adj_addr) =
+            crate::storage::persistent_get::<_, Address>(env, &StorageKey::SalaryAdjustmentContract)
         {
             let client = SalaryAdjustmentClient::new(env, &salary_adj_addr);
             if let Some(adjusted_salary) = client.get_employee_salary(&employee) {
@@ -3617,11 +3429,9 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollErro
         return Err(PayrollError::NotInGracePeriod);
     }
 
-    let employees: Vec<EmployeeInfo> = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::AgreementEmployees(agreement_id))
-        .unwrap_or(Vec::new(env));
+    let employees: Vec<EmployeeInfo> =
+        crate::storage::persistent_get(env, &StorageKey::AgreementEmployees(agreement_id))
+            .unwrap_or(Vec::new(env));
 
     let contributor = employees
         .get(0)
@@ -3697,9 +3507,7 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollErro
         agreement.status = AgreementStatus::Completed;
     }
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Agreement(agreement_id), &agreement);
+    crate::storage::persistent_set(env, &StorageKey::Agreement(agreement_id), &agreement);
 
     emit_payment_sent(
         env,
@@ -3746,8 +3554,8 @@ pub fn get_claimed_periods(env: &Env, agreement_id: u128) -> u32 {
 
 fn get_next_agreement_id(env: &Env) -> u128 {
     let key = StorageKey::NextAgreementId;
-    let id: u128 = env.storage().persistent().get(&key).unwrap_or(1);
-    env.storage().persistent().set(&key, &(id + 1));
+    let id: u128 = crate::storage::persistent_get(env, &key).unwrap_or(1);
+    crate::storage::persistent_set(env, &key, &(id + 1));
     id
 }
 
@@ -3887,9 +3695,7 @@ pub fn pause_agreement(env: &Env, agreement_id: u128) -> Result<(), PayrollError
 
     agreement.status = AgreementStatus::Paused;
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Agreement(agreement_id), &agreement);
+    crate::storage::persistent_set(env, &StorageKey::Agreement(agreement_id), &agreement);
 
     emit_agreement_paused(env, AgreementPausedEvent { agreement_id });
 
@@ -3944,9 +3750,7 @@ pub fn resume_agreement(env: &Env, agreement_id: u128) {
 
     agreement.status = AgreementStatus::Active;
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Agreement(agreement_id), &agreement);
+    crate::storage::persistent_set(env, &StorageKey::Agreement(agreement_id), &agreement);
 
     emit_agreement_resumed(env, AgreementResumedEvent { agreement_id });
 }
@@ -3981,25 +3785,22 @@ pub fn resume_agreement(env: &Env, agreement_id: u128) {
 /// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Active` or
 ///   `Created` status.
 pub fn pause_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
-    let employer: Address = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Employer(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let employer: Address =
+        crate::storage::persistent_get(&env, &MilestoneKey::Employer(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
-    let status: AgreementStatus = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Status(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let status: AgreementStatus =
+        crate::storage::persistent_get(&env, &MilestoneKey::Status(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
 
     // Allow pausing Active agreements, or Created agreements (which can have claimable milestones)
     if status != AgreementStatus::Active && status != AgreementStatus::Created {
         return Err(PayrollError::MilestoneAgreementInvalidStatus);
     }
 
-    env.storage().persistent().set(
+    crate::storage::persistent_set(
+        &env,
         &MilestoneKey::Status(agreement_id),
         &AgreementStatus::Paused,
     );
@@ -4038,25 +3839,22 @@ pub fn pause_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), Pay
 /// * `PayrollError::AgreementNotFound` — the milestone agreement does not exist.
 /// * `PayrollError::MilestoneAgreementInvalidStatus` — the agreement is not in `Paused` status.
 pub fn resume_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
-    let employer: Address = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Employer(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let employer: Address =
+        crate::storage::persistent_get(&env, &MilestoneKey::Employer(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
     employer.require_auth();
 
-    let status: AgreementStatus = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::Status(agreement_id))
-        .ok_or(PayrollError::AgreementNotFound)?;
+    let status: AgreementStatus =
+        crate::storage::persistent_get(&env, &MilestoneKey::Status(agreement_id))
+            .ok_or(PayrollError::AgreementNotFound)?;
 
     if status != AgreementStatus::Paused {
         return Err(PayrollError::MilestoneAgreementInvalidStatus);
     }
 
     // Resume to Active status (milestone agreements can have claimable milestones in Active state)
-    env.storage().persistent().set(
+    crate::storage::persistent_set(
+        &env,
         &MilestoneKey::Status(agreement_id),
         &AgreementStatus::Active,
     );
@@ -4068,13 +3866,10 @@ pub fn resume_milestone_agreement(env: Env, agreement_id: u128) -> Result<(), Pa
 
 fn add_to_employer_agreements(env: &Env, employer: &Address, agreement_id: u128) {
     let key = StorageKey::EmployerAgreements(employer.clone());
-    let mut agreements: Vec<u128> = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .unwrap_or(Vec::new(env));
+    let mut agreements: Vec<u128> =
+        crate::storage::persistent_get(env, &key).unwrap_or(Vec::new(env));
     agreements.push_back(agreement_id);
-    env.storage().persistent().set(&key, &agreements);
+    crate::storage::persistent_set(env, &key, &agreements);
 }
 
 // -----------------------------------------------------------------------------
@@ -4132,9 +3927,7 @@ pub fn cancel_agreement(env: &Env, agreement_id: u128) {
     agreement.status = AgreementStatus::Cancelled;
     agreement.cancelled_at = Some(env.ledger().timestamp());
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Agreement(agreement_id), &agreement);
+    crate::storage::persistent_set(env, &StorageKey::Agreement(agreement_id), &agreement);
 
     emit_agreement_cancelled(env, AgreementCancelledEvent { agreement_id });
     record_entry(
@@ -4319,11 +4112,7 @@ pub fn pause_employer_agreements(env: &Env, employer: Address) -> Result<u32, Pa
     employer.require_auth();
 
     let key = StorageKey::EmployerAgreements(employer.clone());
-    let agreements: Vec<u128> = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .unwrap_or(Vec::new(env));
+    let agreements: Vec<u128> = crate::storage::persistent_get(env, &key).unwrap_or(Vec::new(env));
 
     let mut paused_count: u32 = 0;
 
@@ -4332,26 +4121,25 @@ pub fn pause_employer_agreements(env: &Env, employer: Address) -> Result<u32, Pa
         if let Some(mut agreement) = get_agreement(env, agreement_id) {
             if agreement.status == AgreementStatus::Active {
                 agreement.status = AgreementStatus::Paused;
-                env.storage()
-                    .persistent()
-                    .set(&StorageKey::Agreement(agreement_id), &agreement);
+                crate::storage::persistent_set(
+                    env,
+                    &StorageKey::Agreement(agreement_id),
+                    &agreement,
+                );
                 emit_agreement_paused(env, AgreementPausedEvent { agreement_id });
                 paused_count += 1;
             }
         } else {
             // Try as milestone agreement
-            let stored_employer: Option<Address> = env
-                .storage()
-                .persistent()
-                .get(&MilestoneKey::Employer(agreement_id));
+            let stored_employer: Option<Address> =
+                crate::storage::persistent_get(env, &MilestoneKey::Employer(agreement_id));
             if stored_employer.is_some_and(|e| e == employer) {
-                let status: Option<AgreementStatus> = env
-                    .storage()
-                    .persistent()
-                    .get(&MilestoneKey::Status(agreement_id));
+                let status: Option<AgreementStatus> =
+                    crate::storage::persistent_get(env, &MilestoneKey::Status(agreement_id));
                 if let Some(s) = status {
                     if s == AgreementStatus::Active || s == AgreementStatus::Created {
-                        env.storage().persistent().set(
+                        crate::storage::persistent_set(
+                            env,
                             &MilestoneKey::Status(agreement_id),
                             &AgreementStatus::Paused,
                         );
@@ -4396,11 +4184,7 @@ pub fn unpause_employer_agreements(env: &Env, employer: Address) -> Result<u32, 
     employer.require_auth();
 
     let key = StorageKey::EmployerAgreements(employer.clone());
-    let agreements: Vec<u128> = env
-        .storage()
-        .persistent()
-        .get(&key)
-        .unwrap_or(Vec::new(env));
+    let agreements: Vec<u128> = crate::storage::persistent_get(env, &key).unwrap_or(Vec::new(env));
 
     let mut unpaused_count: u32 = 0;
 
@@ -4409,25 +4193,24 @@ pub fn unpause_employer_agreements(env: &Env, employer: Address) -> Result<u32, 
         if let Some(mut agreement) = get_agreement(env, agreement_id) {
             if agreement.status == AgreementStatus::Paused {
                 agreement.status = AgreementStatus::Active;
-                env.storage()
-                    .persistent()
-                    .set(&StorageKey::Agreement(agreement_id), &agreement);
+                crate::storage::persistent_set(
+                    env,
+                    &StorageKey::Agreement(agreement_id),
+                    &agreement,
+                );
                 emit_agreement_resumed(env, AgreementResumedEvent { agreement_id });
                 unpaused_count += 1;
             }
         } else {
             // Try as milestone agreement
-            let stored_employer: Option<Address> = env
-                .storage()
-                .persistent()
-                .get(&MilestoneKey::Employer(agreement_id));
+            let stored_employer: Option<Address> =
+                crate::storage::persistent_get(env, &MilestoneKey::Employer(agreement_id));
             if stored_employer.is_some_and(|e| e == employer) {
-                let status: Option<AgreementStatus> = env
-                    .storage()
-                    .persistent()
-                    .get(&MilestoneKey::Status(agreement_id));
+                let status: Option<AgreementStatus> =
+                    crate::storage::persistent_get(env, &MilestoneKey::Status(agreement_id));
                 if status == Some(AgreementStatus::Paused) {
-                    env.storage().persistent().set(
+                    crate::storage::persistent_set(
+                        env,
                         &MilestoneKey::Status(agreement_id),
                         &AgreementStatus::Active,
                     );
@@ -4457,11 +4240,12 @@ pub fn unpause_employer_agreements(env: &Env, employer: Address) -> Result<u32, 
 
 /// Checks if contract is in emergency pause state
 pub fn is_emergency_paused(env: &Env) -> bool {
-    env.storage()
-        .persistent()
-        .get::<StorageKey, crate::storage::EmergencyPause>(&StorageKey::EmergencyPause)
-        .map(|p| p.is_paused)
-        .unwrap_or(false)
+    crate::storage::persistent_get::<StorageKey, crate::storage::EmergencyPause>(
+        env,
+        &StorageKey::EmergencyPause,
+    )
+    .map(|p| p.is_paused)
+    .unwrap_or(false)
 }
 
 /// Adds emergency guardians (multi-sig addresses)
@@ -4478,16 +4262,12 @@ pub fn set_emergency_guardians(env: &Env, guardians: Vec<Address>) {
         Err(error) => panic_with_error!(env, error),
     };
     owner.require_auth();
-    env.storage()
-        .persistent()
-        .set(&StorageKey::EmergencyGuardians, &guardians);
+    crate::storage::persistent_set(env, &StorageKey::EmergencyGuardians, &guardians);
 }
 
 /// Gets emergency guardians
 pub fn get_emergency_guardians(env: &Env) -> Option<Vec<Address>> {
-    env.storage()
-        .persistent()
-        .get(&StorageKey::EmergencyGuardians)
+    crate::storage::persistent_get(env, &StorageKey::EmergencyGuardians)
 }
 
 /// Proposes emergency pause with timelock
@@ -4506,11 +4286,9 @@ pub fn propose_emergency_pause(
 ) -> Result<(), PayrollError> {
     caller.require_auth();
 
-    let guardians: Vec<Address> = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::EmergencyGuardians)
-        .ok_or(PayrollError::NotGuardian)?;
+    let guardians: Vec<Address> =
+        crate::storage::persistent_get(env, &StorageKey::EmergencyGuardians)
+            .ok_or(PayrollError::NotGuardian)?;
 
     if !guardians.iter().any(|g| g == caller) {
         return Err(PayrollError::NotGuardian);
@@ -4529,15 +4307,11 @@ pub fn propose_emergency_pause(
         timelock_end,
     };
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::PendingPause, &pause_state);
+    crate::storage::persistent_set(env, &StorageKey::PendingPause, &pause_state);
 
     let mut approvals: Vec<Address> = Vec::new(env);
     approvals.push_back(caller);
-    env.storage()
-        .persistent()
-        .set(&StorageKey::PauseApprovals, &approvals);
+    crate::storage::persistent_set(env, &StorageKey::PauseApprovals, &approvals);
 
     Ok(())
 }
@@ -4553,30 +4327,23 @@ pub fn propose_emergency_pause(
 pub fn approve_emergency_pause(env: &Env, caller: Address) -> Result<(), PayrollError> {
     caller.require_auth();
 
-    let guardians: Vec<Address> = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::EmergencyGuardians)
-        .ok_or(PayrollError::NotGuardian)?;
+    let guardians: Vec<Address> =
+        crate::storage::persistent_get(env, &StorageKey::EmergencyGuardians)
+            .ok_or(PayrollError::NotGuardian)?;
 
     if !guardians.iter().any(|g| g == caller) {
         return Err(PayrollError::NotGuardian);
     }
 
-    let mut approvals: Vec<Address> = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::PauseApprovals)
-        .unwrap_or(Vec::new(env));
+    let mut approvals: Vec<Address> =
+        crate::storage::persistent_get(env, &StorageKey::PauseApprovals).unwrap_or(Vec::new(env));
 
     if approvals.iter().any(|a| a == caller) {
         return Ok(());
     }
 
     approvals.push_back(caller);
-    env.storage()
-        .persistent()
-        .set(&StorageKey::PauseApprovals, &approvals);
+    crate::storage::persistent_set(env, &StorageKey::PauseApprovals, &approvals);
 
     let threshold = (guardians.len() / 2) + 1;
     if approvals.len() >= threshold {
@@ -4588,11 +4355,9 @@ pub fn approve_emergency_pause(env: &Env, caller: Address) -> Result<(), Payroll
 
 /// Executes emergency pause after approval threshold met
 fn execute_emergency_pause(env: &Env) -> Result<(), PayrollError> {
-    let mut pending: crate::storage::EmergencyPause = env
-        .storage()
-        .persistent()
-        .get(&StorageKey::PendingPause)
-        .ok_or(PayrollError::Unauthorized)?;
+    let mut pending: crate::storage::EmergencyPause =
+        crate::storage::persistent_get(env, &StorageKey::PendingPause)
+            .ok_or(PayrollError::Unauthorized)?;
 
     if let Some(timelock_end) = pending.timelock_end {
         if env.ledger().timestamp() < timelock_end {
@@ -4603,13 +4368,9 @@ fn execute_emergency_pause(env: &Env) -> Result<(), PayrollError> {
     pending.is_paused = true;
     pending.paused_at = Some(env.ledger().timestamp());
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::EmergencyPause, &pending);
-    env.storage().persistent().remove(&StorageKey::PendingPause);
-    env.storage()
-        .persistent()
-        .remove(&StorageKey::PauseApprovals);
+    crate::storage::persistent_set(env, &StorageKey::EmergencyPause, &pending);
+    crate::storage::persistent_remove(env, &StorageKey::PendingPause);
+    crate::storage::persistent_remove(env, &StorageKey::PauseApprovals);
 
     Ok(())
 }
@@ -4632,9 +4393,7 @@ pub fn emergency_pause(env: &Env) -> Result<(), PayrollError> {
         timelock_end: None,
     };
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::EmergencyPause, &pause_state);
+    crate::storage::persistent_set(env, &StorageKey::EmergencyPause, &pause_state);
 
     Ok(())
 }
@@ -4657,14 +4416,12 @@ pub fn emergency_unpause(env: &Env) -> Result<(), PayrollError> {
         timelock_end: None,
     };
 
-    env.storage()
-        .persistent()
-        .set(&StorageKey::EmergencyPause, &pause_state);
+    crate::storage::persistent_set(env, &StorageKey::EmergencyPause, &pause_state);
 
     Ok(())
 }
 
 /// Gets emergency pause state
 pub fn get_emergency_pause_state(env: &Env) -> Option<crate::storage::EmergencyPause> {
-    env.storage().persistent().get(&StorageKey::EmergencyPause)
+    crate::storage::persistent_get(env, &StorageKey::EmergencyPause)
 }

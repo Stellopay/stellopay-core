@@ -51,15 +51,19 @@ const BATCH_CLAIM_MILESTONES: [usize; 3] = [1, 5, MAX_BATCH_SIZE as usize];
 /// Documented ceiling for max-size milestone batches. This is intentionally
 /// higher than the committed baseline tolerance so the test records both the
 /// exact regression baseline and an absolute safe ceiling for `MAX_BATCH_SIZE`.
-/// Updated for MAX_BATCH_SIZE=20: measured baseline is ~8_442_457 instructions
-/// (includes the per-claim reentrancy guard added to the claim paths).
-const MAX_BATCH_CLAIM_MILESTONE_INSTRUCTIONS: u64 = 9_500_000;
+/// Updated for the per-key TTL extensions: measured baseline is now
+/// ~10_400_100 instructions, to which this ceiling adds ~10% headroom. The
+/// increase comes from extending the TTL of every milestone entry read or
+/// written by the batch (archival prevention), and is bounded by the ceiling
+/// still being an order of magnitude below the network per-transaction limit.
+const MAX_BATCH_CLAIM_MILESTONE_INSTRUCTIONS: u64 = 11_500_000;
 
 const BATCH_CREATE_PAYROLL_SIZES: [usize; 4] = [1, 5, 10, MAX_BATCH_SIZE as usize];
 /// Documented ceiling for a max-size batch_create_payroll_agreements call.
-/// Measured baseline at MAX_BATCH_SIZE=20 is ~5_808_763 instructions;
-/// this ceiling provides ~20% headroom for SDK-version fluctuations.
-const MAX_BATCH_CREATE_PAYROLL_INSTRUCTIONS: u64 = 7_000_000;
+/// Measured baseline at MAX_BATCH_SIZE=20 is now ~7_713_188 instructions
+/// (per-agreement TTL extensions on every persistent write); this ceiling
+/// provides ~10% headroom for SDK-version fluctuations.
+const MAX_BATCH_CREATE_PAYROLL_INSTRUCTIONS: u64 = 8_500_000;
 
 // ---------------------------------------------------------------------------
 // Baseline I/O
