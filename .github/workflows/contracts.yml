@@ -58,6 +58,10 @@ jobs:
         working-directory: onchain
         run: cargo build --workspace --verbose
 
+      - name: Verify contract event schema fixtures
+        working-directory: onchain
+        run: cargo test -p stello_pay_contract --test event_schema_fixtures --verbose
+
       - name: Test workspace
         working-directory: onchain
         run: cargo test --workspace --verbose
