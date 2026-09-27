@@ -2635,15 +2635,11 @@ pub fn convert_currency(
     max_output_amount: Option<i128>,
 ) -> Result<i128, PayrollError> {
     if amount == 0 || from_token == to_token {
-        if let Some(min_out) = min_output_amount {
-            if amount < min_out {
-                return Err(PayrollError::ConversionOutputTooLow);
-            }
+        if matches!(min_output_amount, Some(min_out) if amount < min_out) {
+            return Err(PayrollError::ConversionOutputTooLow);
         }
-        if let Some(max_out) = max_output_amount {
-            if amount > max_out {
-                return Err(PayrollError::ConversionOutputTooHigh);
-            }
+        if matches!(max_output_amount, Some(max_out) if amount > max_out) {
+            return Err(PayrollError::ConversionOutputTooHigh);
         }
         return Ok(amount);
     }
@@ -2665,16 +2661,12 @@ pub fn convert_currency(
 
     let converted = convert_amount(env, &from_token, &to_token, amount)?;
 
-    if let Some(min_out) = min_output_amount {
-        if converted < min_out {
-            return Err(PayrollError::ConversionOutputTooLow);
-        }
+    if matches!(min_output_amount, Some(min_out) if converted < min_out) {
+        return Err(PayrollError::ConversionOutputTooLow);
     }
 
-    if let Some(max_out) = max_output_amount {
-        if converted > max_out {
-            return Err(PayrollError::ConversionOutputTooHigh);
-        }
+    if matches!(max_output_amount, Some(max_out) if converted > max_out) {
+        return Err(PayrollError::ConversionOutputTooHigh);
     }
 
     Ok(converted)
