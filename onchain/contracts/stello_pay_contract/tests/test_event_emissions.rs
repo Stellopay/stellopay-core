@@ -148,6 +148,23 @@ fn test_agreement_created_event_payroll() {
     assert_eq!(event_mode, AgreementMode::Payroll);
 }
 
+#[test]
+fn test_emergency_guardians_set_event_includes_count() {
+    let env = create_test_env();
+    let (_contract_id, client) = setup_contract(&env);
+    let guardians = soroban_sdk::vec![
+        &env,
+        create_test_address(&env),
+        create_test_address(&env),
+    ];
+
+    client.set_emergency_guardians(&guardians).unwrap();
+
+    let event = find_event(&env, "emergency_guardians_set_event").unwrap();
+    let count: u32 = get_event_field(&env, &event.2, "count");
+    assert_eq!(count, 2);
+}
+
 /// Test: agreement_created_event is emitted when creating an escrow agreement
 #[test]
 fn test_agreement_created_event_escrow() {

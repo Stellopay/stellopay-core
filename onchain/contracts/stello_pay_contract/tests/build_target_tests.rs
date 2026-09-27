@@ -505,7 +505,7 @@ fn test_emergency_guardians() {
     let (client, _owner) = setup(&env);
     let guardians: Vec<Address> =
         Vec::from_array(&env, [Address::generate(&env), Address::generate(&env)]);
-    client.set_emergency_guardians(&guardians);
+    client.set_emergency_guardians(&guardians).unwrap();
     let stored = client.get_emergency_guardians();
     assert_eq!(stored, Some(guardians));
 }
@@ -534,7 +534,7 @@ fn test_propose_and_approve_emergency_pause() {
             Address::generate(&env),
         ],
     );
-    client.set_emergency_guardians(&guardians);
+    client.set_emergency_guardians(&guardians).unwrap();
     let g1 = guardians.get(0).unwrap();
     let g2 = guardians.get(1).unwrap();
     assert!(client.try_propose_emergency_pause(&g1, &0).is_ok());

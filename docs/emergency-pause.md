@@ -99,11 +99,13 @@ Supported agreement types:
 ```rust
 // Owner sets emergency guardians
 let guardians = vec![guardian1, guardian2, guardian3];
-contract.set_emergency_guardians(guardians);
+contract.set_emergency_guardians(guardians)?;
 ```
 
 **Requirements:**
 - Only contract owner can set guardians
+- The guardian list must contain 1-10 unique addresses; invalid lists are rejected without changing the stored set
+- `EmergencyGuardiansSetEvent` is emitted with the new guardian count after a successful update
 - Recommended: 3-5 guardians for optimal security/responsiveness balance
 - Guardians should be trusted entities or multi-sig wallets
 

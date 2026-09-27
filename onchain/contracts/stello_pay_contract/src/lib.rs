@@ -1375,8 +1375,11 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires owner authentication
-    pub fn set_emergency_guardians(env: Env, guardians: Vec<Address>) {
-        payroll::set_emergency_guardians(&env, guardians);
+    pub fn set_emergency_guardians(
+        env: Env,
+        guardians: Vec<Address>,
+    ) -> Result<(), storage::PayrollError> {
+        payroll::set_emergency_guardians(&env, guardians)
     }
 
     /// Gets current emergency guardians

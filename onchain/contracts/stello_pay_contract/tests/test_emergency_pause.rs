@@ -1,7 +1,10 @@
 #![cfg(test)]
 
 use soroban_sdk::{testutils::Address as _, token, Address, Env, Vec};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{
+    storage::{PayrollError, MAX_EMERGENCY_GUARDIANS},
+    PayrollContract, PayrollContractClient,
+};
 
 fn create_token_contract<'a>(env: &Env, admin: &Address) -> token::StellarAssetClient<'a> {
     let contract_address = env
@@ -74,17 +77,64 @@ fn test_set_emergency_guardians() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let (client, _owner, guardian1, _, _) = setup_contract(&env);
 
     let mut guardians = Vec::new(&env);
     guardians.push_back(guardian1.clone());
-    guardians.push_back(guardian2.clone());
-    guardians.push_back(guardian3.clone());
 
-    client.set_emergency_guardians(&guardians);
+    client.set_emergency_guardians(&guardians).unwrap();
 
     let stored = client.get_emergency_guardians().unwrap();
-    assert_eq!(stored.len(), 3);
+    assert_eq!(stored.len(), 1);
+}
+
+#[test]
+fn test_set_emergency_guardians_rejects_empty_list() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _, _, _) = setup_contract(&env);
+    let guardians = Vec::new(&env);
+
+    assert_eq!(
+        client.try_set_emergency_guardians(&guardians),
+        Err(Ok(PayrollError::EmptyEmergencyGuardians))
+    );
+    assert!(client.get_emergency_guardians().is_none());
+}
+
+#[test]
+fn test_set_emergency_guardians_rejects_duplicate_addresses() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, guardian, _, _) = setup_contract(&env);
+    let guardians = soroban_sdk::vec![&env, guardian.clone(), guardian];
+
+    assert_eq!(
+        client.try_set_emergency_guardians(&guardians),
+        Err(Ok(PayrollError::DuplicateEmergencyGuardian))
+    );
+    assert!(client.get_emergency_guardians().is_none());
+}
+
+#[test]
+fn test_set_emergency_guardians_accepts_maximum_and_rejects_over_maximum() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _, _, _, _) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    for _ in 0..MAX_EMERGENCY_GUARDIANS {
+        guardians.push_back(Address::generate(&env));
+    }
+
+    client.set_emergency_guardians(&guardians).unwrap();
+    assert_eq!(client.get_emergency_guardians().unwrap().len(), MAX_EMERGENCY_GUARDIANS);
+
+    guardians.push_back(Address::generate(&env));
+    assert_eq!(
+        client.try_set_emergency_guardians(&guardians),
+        Err(Ok(PayrollError::TooManyEmergencyGuardians))
+    );
+    assert_eq!(client.get_emergency_guardians().unwrap().len(), MAX_EMERGENCY_GUARDIANS);
 }
 
 #[test]
@@ -99,7 +149,7 @@ fn test_multisig_pause_proposal() {
     guardians.push_back(guardian1.clone());
     guardians.push_back(guardian2.clone());
     guardians.push_back(guardian3.clone());
-    client.set_emergency_guardians(&guardians);
+    client.set_emergency_guardians(&guardians).unwrap();
 
     // Guardian1 proposes pause with no timelock
     client.propose_emergency_pause(&guardian1, &0);
@@ -120,7 +170,7 @@ fn test_multisig_pause_approval_threshold() {
     guardians.push_back(guardian1.clone());
     guardians.push_back(guardian2.clone());
     guardians.push_back(guardian3.clone());
-    client.set_emergency_guardians(&guardians);
+    client.set_emergency_guardians(&guardians).unwrap();
 
     // Guardian1 proposes
     client.propose_emergency_pause(&guardian1, &0);
@@ -145,7 +195,7 @@ fn test_timelock_pause() {
     guardians.push_back(guardian1.clone());
     guardians.push_back(guardian2.clone());
     guardians.push_back(guardian3.clone());
-    client.set_emergency_guardians(&guardians);
+    client.set_emergency_guardians(&guardians).unwrap();
 
     // Propose with 1 hour timelock
     let timelock = 3600u64;
@@ -276,7 +326,7 @@ fn test_guardian_duplicate_approval_ignored() {
     let mut guardians = Vec::new(&env);
     guardians.push_back(guardian1.clone());
     guardians.push_back(guardian2.clone());
-    client.set_emergency_guardians(&guardians);
+    client.set_emergency_guardians(&guardians).unwrap();
 
     // Guardian1 proposes
     client.propose_emergency_pause(&guardian1, &0);
@@ -323,7 +373,7 @@ fn test_emergency_recovery_workflow() {
     guardians.push_back(guardian1.clone());
     guardians.push_back(guardian2.clone());
     guardians.push_back(guardian3.clone());
-    client.set_emergency_guardians(&guardians);
+    client.set_emergency_guardians(&guardians).unwrap();
 
     // Simulate security incident detection
     // Guardian1 proposes immediate pause

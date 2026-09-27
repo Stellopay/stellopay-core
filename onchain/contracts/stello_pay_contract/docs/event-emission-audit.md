@@ -96,7 +96,7 @@ For this audit:
 | 62 | `get_grace_extension_seconds` | read | Silent/read — no event expected. |
 | 63 | `pause_employer_agreements` | bulk agreement mutation | Present — individual pause events plus bulk summary. |
 | 64 | `unpause_employer_agreements` | bulk agreement mutation | Present — individual resume events plus bulk summary. |
-| 65 | `set_emergency_guardians` | emergency configuration mutation | Candidate — discuss guardian-set event. |
+| 65 | `set_emergency_guardians` | emergency configuration mutation | Present — `EmergencyGuardiansSetEvent` includes the new guardian count. |
 | 66 | `get_emergency_guardians` | read | Silent/read — no event expected. |
 | 67 | `propose_emergency_pause` | emergency state mutation | Candidate — discuss proposal event. |
 | 68 | `approve_emergency_pause` | emergency state mutation | Candidate — discuss approval event. |

@@ -103,6 +103,13 @@ pub struct ContractMigratedEvent {
     pub to_version: u32,
 }
 
+/// Event: Emergency guardian set updated.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct EmergencyGuardiansSetEvent {
+    pub count: u32,
+}
+
 pub fn emit_contract_migrated(env: &Env, event: ContractMigratedEvent) {
     event.publish(env);
 }
