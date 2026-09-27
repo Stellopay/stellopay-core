@@ -467,9 +467,9 @@ pub enum PayrollError {
     /// milestone was not transitioned again.
     MilestoneAlreadyRejected = 45,
     /// Cannot reject a milestone that has already been approved.
-    MilestoneAlreadyApprovedCannotReject = 46,
+    MilestoneApprovedCannotReject = 46,
     /// Cannot reject a milestone that has already been claimed.
-    MilestoneAlreadyClaimedCannotReject = 47,
+    MilestoneClaimedCannotReject = 47,
     /// The milestone has already been expired via `expire_milestone`.
     /// Re-expiring is idempotent-safe via an error so callers know the
     /// milestone was not transitioned again.
@@ -854,11 +854,8 @@ mod test {
         assert_eq!(PayrollError::ReentrancyDetected as u32, 43);
         assert_eq!(PayrollError::InvalidArbiter as u32, 44);
         assert_eq!(PayrollError::MilestoneAlreadyRejected as u32, 45);
-        assert_eq!(
-            PayrollError::MilestoneAlreadyApprovedCannotReject as u32,
-            46
-        );
-        assert_eq!(PayrollError::MilestoneAlreadyClaimedCannotReject as u32, 47);
+        assert_eq!(PayrollError::MilestoneApprovedCannotReject as u32, 46);
+        assert_eq!(PayrollError::MilestoneClaimedCannotReject as u32, 47);
         assert_eq!(PayrollError::MilestoneAlreadyExpired as u32, 48);
         assert_eq!(PayrollError::MilestoneRejectionReasonEmpty as u32, 49);
         assert_eq!(PayrollError::EmptyMilestoneList as u32, 50);
