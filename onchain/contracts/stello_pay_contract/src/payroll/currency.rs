@@ -129,15 +129,61 @@ pub fn set_exchange_rate(
     Ok(())
 }
 
+/// Default conservative maximum acceptable age for exchange rates in seconds (1 hour = 3600s)
+/// used when the caller does not specify `max_rate_age_seconds` and no contract-wide max age is set.
+pub const DEFAULT_MAX_RATE_AGE_SECONDS: u64 = 3600;
+
 /// Pure conversion helper exposed as a contract entry point so off-chain
 /// clients can query expected converted amounts without performing a transfer.
+///
+/// Caller can supply a `max_rate_age_seconds` bound and acceptable min/max output amounts.
+/// If `max_rate_age_seconds` is omitted (`None`), it falls back to the contract-wide
+/// max age setting or `DEFAULT_MAX_RATE_AGE_SECONDS`.
 pub fn convert_currency(
     env: &Env,
     from_token: Address,
     to_token: Address,
     amount: i128,
+    max_rate_age_seconds: Option<u64>,
+    min_output_amount: Option<i128>,
+    max_output_amount: Option<i128>,
 ) -> Result<i128, PayrollError> {
-    convert_amount(env, &from_token, &to_token, amount)
+    if amount == 0 || from_token == to_token {
+        if matches!(min_output_amount, Some(min_out) if amount < min_out) {
+            return Err(PayrollError::ExchangeRateInvalid);
+        }
+        if matches!(max_output_amount, Some(max_out) if amount > max_out) {
+            return Err(PayrollError::ExchangeRateInvalid);
+        }
+        return Ok(amount);
+    }
+
+    let info = DataKey::get_exchange_rate(env, &from_token, &to_token)
+        .ok_or(PayrollError::ExchangeRateNotFound)?;
+
+    let max_age = max_rate_age_seconds
+        .or_else(|| DataKey::get_exchange_rate_max_age_seconds(env))
+        .unwrap_or(DEFAULT_MAX_RATE_AGE_SECONDS);
+
+    let now = env.ledger().timestamp();
+    if now < info.updated_at {
+        return Err(PayrollError::ExchangeRateInvalid);
+    }
+    if now - info.updated_at > max_age {
+        return Err(PayrollError::ExchangeRateInvalid);
+    }
+
+    let converted = convert_amount(env, &from_token, &to_token, amount)?;
+
+    if matches!(min_output_amount, Some(min_out) if converted < min_out) {
+        return Err(PayrollError::ExchangeRateInvalid);
+    }
+
+    if matches!(max_output_amount, Some(max_out) if converted > max_out) {
+        return Err(PayrollError::ExchangeRateInvalid);
+    }
+
+    Ok(converted)
 }
 
 /// Internal helper: convert `amount` from `from_token` into `to_token` using

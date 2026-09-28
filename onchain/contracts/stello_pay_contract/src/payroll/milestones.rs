@@ -425,8 +425,8 @@ pub fn approve_milestone(
 /// * `PayrollError::MilestoneRejectionReasonEmpty`    — `reason` is empty or whitespace-only.
 /// * `PayrollError::MilestoneNotFound`                — `milestone_id` is out of range.
 /// * `PayrollError::MilestoneAlreadyRejected`         — milestone was already rejected.
-/// * `PayrollError::MilestoneAlreadyApprovedCannotReject` — milestone is already approved.
-/// * `PayrollError::MilestoneAlreadyClaimedCannotReject`  — milestone is already claimed.
+/// * `PayrollError::MilestoneApprovedCannotReject` — milestone is already approved.
+/// * `PayrollError::MilestoneClaimedCannotReject`  — milestone is already claimed.
 ///
 /// # Events
 /// Emits [`MilestoneRejectedEvent`] on success.
@@ -505,7 +505,7 @@ pub fn reject_milestone(
         .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
         .unwrap_or(false);
     if already_claimed {
-        return Err(PayrollError::MilestoneAlreadyClaimedCannotReject);
+        return Err(PayrollError::MilestoneClaimedCannotReject);
     }
 
     // Guard: cannot reject a milestone that has already been approved.
@@ -515,7 +515,7 @@ pub fn reject_milestone(
         .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
         .unwrap_or(false);
     if already_approved {
-        return Err(PayrollError::MilestoneAlreadyApprovedCannotReject);
+        return Err(PayrollError::MilestoneApprovedCannotReject);
     }
 
     // Mark the milestone as rejected.
