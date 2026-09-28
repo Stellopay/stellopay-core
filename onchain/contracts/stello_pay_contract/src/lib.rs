@@ -991,6 +991,9 @@ impl PayrollContract {
     /// * `from_token` - from_token parameter
     /// * `to_token` - to_token parameter
     /// * `amount` - amount parameter
+    /// * `max_rate_age_seconds` - optional maximum acceptable age of the FX rate in seconds
+    /// * `min_output_amount` - optional minimum acceptable converted output amount
+    /// * `max_output_amount` - optional maximum acceptable converted output amount
     ///
     /// # Returns
     /// Result<i128, PayrollError>
@@ -1005,8 +1008,19 @@ impl PayrollContract {
         from_token: Address,
         to_token: Address,
         amount: i128,
+        max_rate_age_seconds: Option<u64>,
+        min_output_amount: Option<i128>,
+        max_output_amount: Option<i128>,
     ) -> Result<i128, PayrollError> {
-        payroll::convert_currency(&env, from_token, to_token, amount)
+        payroll::convert_currency(
+            &env,
+            from_token,
+            to_token,
+            amount,
+            max_rate_age_seconds,
+            min_output_amount,
+            max_output_amount,
+        )
     }
 
     /// Claims accrued payroll for a single employee in a payroll agreement.
