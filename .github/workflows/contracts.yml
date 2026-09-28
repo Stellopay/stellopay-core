@@ -15,9 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Enforcing: run_ci.py exits non-zero on any documentation failure.
+      # Pre-existing violations are recorded in tools/doc_checker/baseline.json
+      # and only warn; a NEW violation (including growth of an existing one)
+      # fails the job. Baseline entries can only change by explicitly
+      # regenerating that file (--update-baseline), which lands as a
+      # reviewable diff in the PR.
       - name: Check contract documentation
         run: python3 tools/doc_checker/run_ci.py
-        continue-on-error: true
 
       - name: Reject committed Cargo build output
         run: bash scripts/check-no-committed-build-output.sh
@@ -25,6 +30,9 @@ jobs:
       # Installed via the preinstalled rustup rather than dtolnay/rust-toolchain:
       # fetching that action from codeload intermittently returns 429 and fails
       # the job during setup, before any of the checks below even run.
+      # clippy must be requested explicitly: --profile minimal omits it from
+      # the preinstalled component set, and the Clippy step below would fail
+      # with "'cargo-clippy' is not installed for the toolchain".
       - name: Install Rust (nightly)
         run: |
           rustup toolchain install nightly --profile minimal --component rustfmt --component clippy
