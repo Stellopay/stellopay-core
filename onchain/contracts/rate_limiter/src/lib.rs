@@ -254,9 +254,7 @@ impl RateLimiter {
             .expect("no pending admin");
         assert!(caller == pending, "caller is not pending admin");
 
-        env.storage()
-            .persistent()
-            .set(&StorageKey::Admin, &caller);
+        env.storage().persistent().set(&StorageKey::Admin, &caller);
         env.storage().persistent().remove(&StorageKey::PendingAdmin);
     }
 
