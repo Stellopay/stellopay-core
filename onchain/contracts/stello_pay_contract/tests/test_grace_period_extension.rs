@@ -149,8 +149,8 @@ fn test_per_call_cap_enforced() {
         &GracePeriodExtensionPolicy {
             max_cumulative_extension_bps: 100_000,
             max_extension_per_call_seconds: 50,
-        max_cumulative_extension_duration_seconds: 365 * 24 * 3600,
-        max_extension_count: 10,
+            max_cumulative_extension_duration_seconds: 365 * 24 * 3600,
+            max_extension_count: 10,
         },
     );
 
@@ -177,8 +177,8 @@ fn test_cumulative_cap_enforced() {
         &GracePeriodExtensionPolicy {
             max_cumulative_extension_bps: 10_000,
             max_extension_per_call_seconds: 600,
-        max_cumulative_extension_duration_seconds: 365 * 24 * 3600,
-        max_extension_count: 10,
+            max_cumulative_extension_duration_seconds: 365 * 24 * 3600,
+            max_extension_count: 10,
         },
     );
 
@@ -210,8 +210,8 @@ fn test_revive_window_after_base_grace_expired() {
         &GracePeriodExtensionPolicy {
             max_cumulative_extension_bps: 30_000,
             max_extension_per_call_seconds: 500,
-        max_cumulative_extension_duration_seconds: 365 * 24 * 3600,
-        max_extension_count: 10,
+            max_cumulative_extension_duration_seconds: 365 * 24 * 3600,
+            max_extension_count: 10,
         },
     );
     let employer = Address::generate(&env);
@@ -239,8 +239,8 @@ fn test_raise_dispute_respects_extension_after_cancel() {
         &GracePeriodExtensionPolicy {
             max_cumulative_extension_bps: 250_000,
             max_extension_per_call_seconds: 500,
-        max_cumulative_extension_duration_seconds: 365 * 24 * 3600,
-        max_extension_count: 10,
+            max_cumulative_extension_duration_seconds: 365 * 24 * 3600,
+            max_extension_count: 10,
         },
     );
     let employer = Address::generate(&env);
@@ -494,7 +494,10 @@ fn test_grace_period_bounds_duration_and_count() {
 
     // 3. Extension past count bound returns the named error
     // Count is already 3. Even if duration is small, it should fail.
-    let e = client.try_extend_grace_period(&employer, &aid, &10_u64).unwrap_err().unwrap();
+    let e = client
+        .try_extend_grace_period(&employer, &aid, &10_u64)
+        .unwrap_err()
+        .unwrap();
     assert_eq!(e, PayrollError::GraceExtensionCapExceeded);
 }
 
@@ -519,7 +522,10 @@ fn test_grace_period_bounds_duration_exceeded() {
 
     // 4. Extension past cumulative time bound returns the named error
     client.extend_grace_period(&employer, &aid, &900); // success, count=1, duration=900
-    let e = client.try_extend_grace_period(&employer, &aid, &200_u64).unwrap_err().unwrap(); // 1100 > 1000
+    let e = client
+        .try_extend_grace_period(&employer, &aid, &200_u64)
+        .unwrap_err()
+        .unwrap(); // 1100 > 1000
     assert_eq!(e, PayrollError::GraceExtensionCapExceeded);
 }
 
@@ -531,7 +537,9 @@ fn test_finalize_reachable_after_bounds_hit() {
     let (contract_id, client, owner) = setup(&env);
     let employer = Address::generate(&env);
     let token_admin = Address::generate(&env);
-    let token = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+    let token = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
     let token_sac = soroban_sdk::token::StellarAssetClient::new(&env, &token);
     let base = 100_u64;
     let aid = cancel_payroll_agreement(&env, &client, &employer, &token, base);
@@ -552,9 +560,12 @@ fn test_finalize_reachable_after_bounds_hit() {
     // Hit bounds
     client.extend_grace_period(&employer, &aid, &50);
     client.extend_grace_period(&employer, &aid, &50); // count=2, duration=100
-    
+
     // Bounds hit, further attempts fail
-    let e = client.try_extend_grace_period(&employer, &aid, &1_u64).unwrap_err().unwrap();
+    let e = client
+        .try_extend_grace_period(&employer, &aid, &1_u64)
+        .unwrap_err()
+        .unwrap();
     assert_eq!(e, PayrollError::GraceExtensionCapExceeded);
 
     // Fast forward to end of grace period

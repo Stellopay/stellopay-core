@@ -2145,7 +2145,9 @@ pub fn extend_grace_period(
 
     let count_key = StorageKey::GracePeriodExtensionCount(agreement_id);
     let current_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
-    let new_count = current_count.checked_add(1).ok_or(PayrollError::GraceExtensionInvalid)?;
+    let new_count = current_count
+        .checked_add(1)
+        .ok_or(PayrollError::GraceExtensionInvalid)?;
 
     if new_count > policy.max_extension_count {
         return Err(PayrollError::GraceExtensionCapExceeded);
@@ -2164,7 +2166,8 @@ pub fn extend_grace_period(
             additional_seconds,
             total_extension_seconds: new_total,
             extended_by_owner,
-            max_cumulative_extension_duration_seconds: policy.max_cumulative_extension_duration_seconds,
+            max_cumulative_extension_duration_seconds: policy
+                .max_cumulative_extension_duration_seconds,
             max_extension_count: policy.max_extension_count,
             extension_count: new_count,
         },
