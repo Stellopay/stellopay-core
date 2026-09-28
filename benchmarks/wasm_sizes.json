@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "captured_at": "2026-08-27",
+  "captured_at": "2026-09-28",
   "contracts": {
     "multisig": {
       "size_bytes": 41686,
@@ -8,9 +8,9 @@
       "captured_at": "2026-08-27"
     },
     "price_oracle": {
-      "size_bytes": 220399,
-      "sha256": "sha256:9d9c063720975f410772dbcd53a57670e93c8289b3e580757237e05d3c049f5c",
-      "captured_at": "2026-08-27"
+      "size_bytes": 220731,
+      "sha256": "sha256:0e193a38eee3884af84f1bbacaae1e6ed57e18336b0b9adf9664fc00077ea120",
+      "captured_at": "2026-09-28"
     },
     "rbac": {
       "size_bytes": 22456,
@@ -18,9 +18,9 @@
       "captured_at": "2026-08-27"
     },
     "stello_pay_contract": {
-      "size_bytes": 189699,
-      "sha256": "sha256:2ed9fba3b383b019c04c166163db427273703025c4584135846d8b1abc9808ac",
-      "captured_at": "2026-08-27"
+      "size_bytes": 190004,
+      "sha256": "sha256:89e21abc431abda21e6097db21f3dda723c6bf3743e943092cd2daae2655beb1",
+      "captured_at": "2026-09-28"
     }
   }
 }
