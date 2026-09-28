@@ -110,11 +110,8 @@ pub fn convert_currency(
   - Returns the converted value in `to_token` if within `min_output_amount` and `max_output_amount`.
 - **Errors**:
   - `ExchangeRateNotFound` – missing FX rate for `(from, to)`
-  - `ExchangeRateInvalid` – non-positive rate or timestamp inconsistency
+  - `ExchangeRateInvalid` – non-positive rate, timestamp inconsistency, stale rate, or output bounds violation
   - `ExchangeRateOverflow` – multiplication overflow
-  - `ExchangeRateStale` – rate age exceeds maximum acceptable age threshold
-  - `ConversionOutputTooLow` – converted output is less than minimum acceptable amount
-  - `ConversionOutputTooHigh` – converted output exceeds maximum acceptable amount
 
 #### `claim_payroll_in_token`
 

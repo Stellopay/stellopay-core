@@ -2636,10 +2636,10 @@ pub fn convert_currency(
 ) -> Result<i128, PayrollError> {
     if amount == 0 || from_token == to_token {
         if matches!(min_output_amount, Some(min_out) if amount < min_out) {
-            return Err(PayrollError::ConversionOutputTooLow);
+            return Err(PayrollError::ExchangeRateInvalid);
         }
         if matches!(max_output_amount, Some(max_out) if amount > max_out) {
-            return Err(PayrollError::ConversionOutputTooHigh);
+            return Err(PayrollError::ExchangeRateInvalid);
         }
         return Ok(amount);
     }
@@ -2656,17 +2656,17 @@ pub fn convert_currency(
         return Err(PayrollError::ExchangeRateInvalid);
     }
     if now - info.updated_at > max_age {
-        return Err(PayrollError::ExchangeRateStale);
+        return Err(PayrollError::ExchangeRateInvalid);
     }
 
     let converted = convert_amount(env, &from_token, &to_token, amount)?;
 
     if matches!(min_output_amount, Some(min_out) if converted < min_out) {
-        return Err(PayrollError::ConversionOutputTooLow);
+        return Err(PayrollError::ExchangeRateInvalid);
     }
 
     if matches!(max_output_amount, Some(max_out) if converted > max_out) {
-        return Err(PayrollError::ConversionOutputTooHigh);
+        return Err(PayrollError::ExchangeRateInvalid);
     }
 
     Ok(converted)

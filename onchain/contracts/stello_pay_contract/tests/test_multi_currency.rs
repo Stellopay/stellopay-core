@@ -635,7 +635,7 @@ fn test_convert_currency_bounds_and_staleness() {
         &Some(15i128),
         &Some(25i128),
     );
-    assert_eq!(stale_res, Err(Ok(PayrollError::ExchangeRateStale)));
+    assert_eq!(stale_res, Err(Ok(PayrollError::ExchangeRateInvalid)));
 
     // Reset timestamp / update rate
     client.set_exchange_rate(&owner, &base, &quote, &rate);
@@ -649,7 +649,7 @@ fn test_convert_currency_bounds_and_staleness() {
         &Some(25i128),
         &Some(30i128),
     );
-    assert_eq!(low_res, Err(Ok(PayrollError::ConversionOutputTooLow)));
+    assert_eq!(low_res, Err(Ok(PayrollError::ExchangeRateInvalid)));
 
     // 4. Result above max_output_amount (converted=20 > max=15)
     let high_res = client.try_convert_currency(
@@ -660,7 +660,7 @@ fn test_convert_currency_bounds_and_staleness() {
         &Some(5i128),
         &Some(15i128),
     );
-    assert_eq!(high_res, Err(Ok(PayrollError::ConversionOutputTooHigh)));
+    assert_eq!(high_res, Err(Ok(PayrollError::ExchangeRateInvalid)));
 }
 
 #[test]
@@ -677,5 +677,5 @@ fn test_convert_currency_default_staleness_fallback() {
     env.ledger().with_mut(|li| li.timestamp += 3601u64);
 
     let res = client.try_convert_currency(&base, &quote, &10i128, &None, &None, &None);
-    assert_eq!(res, Err(Ok(PayrollError::ExchangeRateStale)));
+    assert_eq!(res, Err(Ok(PayrollError::ExchangeRateInvalid)));
 }
