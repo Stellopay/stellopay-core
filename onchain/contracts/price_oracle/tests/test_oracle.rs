@@ -574,7 +574,7 @@ fn test_push_price_success_and_payroll_integration() {
     assert_eq!(state.last_source, source);
 
     // Payroll contract should reflect the FX rate.
-    let converted = payroll_client.convert_currency(&base, &quote, &10i128);
+    let converted = payroll_client.convert_currency(&base, &quote, &10i128, &None, &None, &None);
     assert_eq!(converted, 20);
 }
 
@@ -773,7 +773,7 @@ fn test_multi_source_latest_wins() {
     assert_eq!(state.rate, 3_000_000);
     assert_eq!(state.last_source, backup);
 
-    let converted = payroll_client.convert_currency(&base, &quote, &10i128);
+    let converted = payroll_client.convert_currency(&base, &quote, &10i128, &None, &None, &None);
     assert_eq!(converted, 30);
 }
 
@@ -1165,7 +1165,7 @@ fn test_multi_source_quorum_success() {
     assert_eq!(state.last_source, source2); // The one that completed the quorum
 
     // Payroll should be updated.
-    let converted = payroll_client.convert_currency(&base, &quote, &10i128);
+    let converted = payroll_client.convert_currency(&base, &quote, &10i128, &None, &None, &None);
     assert_eq!(converted, 20);
 }
 
