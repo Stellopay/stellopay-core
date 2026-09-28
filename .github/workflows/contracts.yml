@@ -33,6 +33,9 @@ jobs:
       # clippy must be requested explicitly: --profile minimal omits it from
       # the preinstalled component set, and the Clippy step below would fail
       # with "'cargo-clippy' is not installed for the toolchain".
+      - name: Install Rust (nightly)
+        run: |
+          rustup toolchain install nightly --profile minimal --component rustfmt --component clippy
           rustup default nightly
 
       - name: Cache cargo registry and build artifacts
