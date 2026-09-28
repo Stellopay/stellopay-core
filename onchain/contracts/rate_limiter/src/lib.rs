@@ -20,9 +20,7 @@
 //! `elapsed_seconds * refill_rate` using integer arithmetic. Calls made inside
 //! the same ledger second receive no partial or fractional refill credit.
 
-use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
-};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Symbol};
 
 #[contracttype]
 #[derive(Clone)]
@@ -173,7 +171,9 @@ impl RateLimiter {
     /// @access Requires the current admin to authenticate.
     pub fn clear_limit_for(env: Env, addr: Address) {
         Self::require_admin_auth(&env);
-        env.storage().persistent().remove(&StorageKey::Limit(addr.clone()));
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::Limit(addr.clone()));
 
         env.events().publish(
             (symbol_short!("RATE"), symbol_short!("addr_clr")),
@@ -266,7 +266,9 @@ impl RateLimiter {
     /// @access Requires the current admin to authenticate.
     pub fn reset_usage(env: Env, addr: Address) {
         Self::require_admin_auth(&env);
-        env.storage().persistent().remove(&StorageKey::Usage(addr.clone()));
+        env.storage()
+            .persistent()
+            .remove(&StorageKey::Usage(addr.clone()));
 
         env.events().publish(
             (symbol_short!("RATE"), symbol_short!("u_reset")),
