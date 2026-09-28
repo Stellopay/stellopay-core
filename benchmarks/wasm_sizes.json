@@ -9,7 +9,6 @@
     },
     "price_oracle": {
       "size_bytes": 220731,
-      "sha256": "sha256:0e193a38eee3884af84f1bbacaae1e6ed57e18336b0b9adf9664fc00077ea120",
       "captured_at": "2026-09-28"
     },
     "rbac": {
@@ -19,7 +18,6 @@
     },
     "stello_pay_contract": {
       "size_bytes": 190004,
-      "sha256": "sha256:89e21abc431abda21e6097db21f3dda723c6bf3743e943092cd2daae2655beb1",
       "captured_at": "2026-09-28"
     }
   }
