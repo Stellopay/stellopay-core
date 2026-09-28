@@ -9,11 +9,11 @@ use crate::events::{
     emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
     AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
     BatchPayrollClaimedEvent, BulkAgreementsPausedEvent, BulkAgreementsUnpausedEvent,
-    DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, ExchangeRateUpdatedEvent,
-    EmergencyGuardiansSetEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent,
-    MilestoneAdded, MilestoneApproved, MilestoneClaimed, MilestoneExpiredEvent,
-    MilestoneFundedEvent, MilestoneRejectedEvent, MultisigConfigChangedEvent,
-    PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
+    DisputeRaisedEvent, DisputeResolvedEvent, EmergencyGuardiansSetEvent, EmployeeAddedEvent,
+    ExchangeRateUpdatedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded,
+    MilestoneApproved, MilestoneClaimed, MilestoneExpiredEvent, MilestoneFundedEvent,
+    MilestoneRejectedEvent, MultisigConfigChangedEvent, PaymentReceivedEvent, PaymentSentEvent,
+    PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
@@ -4521,10 +4521,7 @@ pub fn is_emergency_paused(env: &Env) -> bool {
 ///
 /// # Access Control
 /// Requires owner authentication
-pub fn set_emergency_guardians(
-    env: &Env,
-    guardians: Vec<Address>,
-) -> Result<(), PayrollError> {
+pub fn set_emergency_guardians(env: &Env, guardians: Vec<Address>) -> Result<(), PayrollError> {
     let owner = match crate::contract_owner(env) {
         Ok(owner) => owner,
         Err(error) => panic_with_error!(env, error),

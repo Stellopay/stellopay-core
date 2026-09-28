@@ -127,14 +127,20 @@ fn test_set_emergency_guardians_accepts_maximum_and_rejects_over_maximum() {
     }
 
     client.set_emergency_guardians(&guardians).unwrap();
-    assert_eq!(client.get_emergency_guardians().unwrap().len(), MAX_EMERGENCY_GUARDIANS);
+    assert_eq!(
+        client.get_emergency_guardians().unwrap().len(),
+        MAX_EMERGENCY_GUARDIANS
+    );
 
     guardians.push_back(Address::generate(&env));
     assert_eq!(
         client.try_set_emergency_guardians(&guardians),
         Err(Ok(PayrollError::TooManyEmergencyGuardians))
     );
-    assert_eq!(client.get_emergency_guardians().unwrap().len(), MAX_EMERGENCY_GUARDIANS);
+    assert_eq!(
+        client.get_emergency_guardians().unwrap().len(),
+        MAX_EMERGENCY_GUARDIANS
+    );
 }
 
 #[test]

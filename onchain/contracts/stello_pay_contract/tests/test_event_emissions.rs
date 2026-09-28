@@ -155,11 +155,7 @@ fn test_agreement_created_event_payroll() {
 fn test_emergency_guardians_set_event_includes_count() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
-    let guardians = soroban_sdk::vec![
-        &env,
-        create_test_address(&env),
-        create_test_address(&env),
-    ];
+    let guardians = soroban_sdk::vec![&env, create_test_address(&env), create_test_address(&env),];
 
     client.set_emergency_guardians(&guardians).unwrap();
 
