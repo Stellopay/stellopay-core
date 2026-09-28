@@ -146,6 +146,9 @@ fn test_agreement_created_event_payroll() {
     assert_eq!(event_agreement_id, agreement_id);
     assert_eq!(event_employer, employer);
     assert_eq!(event_mode, AgreementMode::Payroll);
+
+    let schema_version: Symbol = event.1.get(1).unwrap().try_into_val(&env).unwrap();
+    assert_eq!(schema_version, Symbol::new(&env, "event_schema_v1"));
 }
 
 /// Test: agreement_created_event is emitted when creating an escrow agreement
