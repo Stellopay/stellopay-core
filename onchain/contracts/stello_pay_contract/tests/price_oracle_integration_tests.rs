@@ -224,7 +224,7 @@ fn test_oracle_push_propagates_rate_and_claim_converts_correctly() {
     oracle_client.push_price(&source, &base, &quote, &rate, &1_000u64);
 
     // Verify the rate landed in the payroll contract.
-    let converted = payroll_client.convert_currency(&base, &quote, &1_000i128);
+    let converted = payroll_client.convert_currency(&base, &quote, &1_000i128, &None, &None, &None);
     assert_eq!(
         converted, 2_000,
         "1_000 base × 2.0 should equal 2_000 quote"
@@ -385,7 +385,7 @@ fn test_oracle_rejects_stale_price_and_payroll_rate_unchanged() {
 
     // Verify initial rate is in payroll.
     assert_eq!(
-        payroll_client.convert_currency(&base, &quote, &1_000i128),
+        payroll_client.convert_currency(&base, &quote, &1_000i128, &None, &None, &None),
         2_000
     );
 
@@ -400,7 +400,7 @@ fn test_oracle_rejects_stale_price_and_payroll_rate_unchanged() {
 
     // Payroll rate must remain at the initial value.
     assert_eq!(
-        payroll_client.convert_currency(&base, &quote, &1_000i128),
+        payroll_client.convert_currency(&base, &quote, &1_000i128, &None, &None, &None),
         2_000,
         "Payroll rate must not change after stale oracle rejection"
     );
@@ -423,7 +423,8 @@ fn test_oracle_rejects_future_timestamp() {
     assert!(result.is_err(), "Future timestamp must be rejected");
 
     // No rate should have been set.
-    let result2 = payroll_client.try_convert_currency(&base, &quote, &1_000i128);
+    let result2 =
+        payroll_client.try_convert_currency(&base, &quote, &1_000i128, &None, &None, &None);
     assert!(
         result2.is_err(),
         "No rate should exist after future-timestamp rejection"
@@ -451,7 +452,8 @@ fn test_oracle_rejects_rate_below_min_and_payroll_unchanged() {
     let result = oracle_client.try_push_price(&source, &base, &quote, &99_999i128, &1_000u64);
     assert!(result.is_err(), "Rate below min must be rejected");
 
-    let result2 = payroll_client.try_convert_currency(&base, &quote, &1_000i128);
+    let result2 =
+        payroll_client.try_convert_currency(&base, &quote, &1_000i128, &None, &None, &None);
     assert!(
         result2.is_err(),
         "No rate should exist after out-of-bounds rejection"
@@ -474,7 +476,8 @@ fn test_oracle_rejects_rate_above_max_and_payroll_unchanged() {
     let result = oracle_client.try_push_price(&source, &base, &quote, &10_000_001i128, &1_000u64);
     assert!(result.is_err(), "Rate above max must be rejected");
 
-    let result2 = payroll_client.try_convert_currency(&base, &quote, &1_000i128);
+    let result2 =
+        payroll_client.try_convert_currency(&base, &quote, &1_000i128, &None, &None, &None);
     assert!(
         result2.is_err(),
         "No rate should exist after out-of-bounds rejection"
@@ -496,7 +499,8 @@ fn test_oracle_rejects_zero_rate() {
     let result = oracle_client.try_push_price(&source, &base, &quote, &0i128, &1_000u64);
     assert!(result.is_err(), "Zero rate must be rejected");
 
-    let result2 = payroll_client.try_convert_currency(&base, &quote, &1_000i128);
+    let result2 =
+        payroll_client.try_convert_currency(&base, &quote, &1_000i128, &None, &None, &None);
     assert!(
         result2.is_err(),
         "No rate should exist after zero-rate rejection"
@@ -546,7 +550,8 @@ fn test_quorum_n2_requires_two_sources_before_rate_propagates() {
     // First source votes — quorum not yet met.
     oracle_client.push_price(&source1, &base, &quote, &rate, &1_000u64);
 
-    let result = payroll_client.try_convert_currency(&base, &quote, &1_000i128);
+    let result =
+        payroll_client.try_convert_currency(&base, &quote, &1_000i128, &None, &None, &None);
     assert!(
         result.is_err(),
         "Rate must not propagate after only one source vote"
@@ -555,7 +560,7 @@ fn test_quorum_n2_requires_two_sources_before_rate_propagates() {
     // Second source votes — quorum met.
     oracle_client.push_price(&source2, &base, &quote, &rate, &1_000u64);
 
-    let converted = payroll_client.convert_currency(&base, &quote, &1_000i128);
+    let converted = payroll_client.convert_currency(&base, &quote, &1_000i128, &None, &None, &None);
     assert_eq!(
         converted, 3_000,
         "Rate must propagate after quorum is reached"
@@ -599,7 +604,8 @@ fn test_quorum_duplicate_vote_rejected() {
     assert!(result.is_err(), "Duplicate vote must be rejected");
 
     // Rate must still not have propagated.
-    let result2 = payroll_client.try_convert_currency(&base, &quote, &1_000i128);
+    let result2 =
+        payroll_client.try_convert_currency(&base, &quote, &1_000i128, &None, &None, &None);
     assert!(
         result2.is_err(),
         "Rate must not propagate after duplicate vote"
@@ -625,7 +631,7 @@ fn test_disabled_oracle_pair_cannot_update_payroll_rate() {
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &initial_rate, &1_000u64);
     assert_eq!(
-        payroll_client.convert_currency(&base, &quote, &1_000i128),
+        payroll_client.convert_currency(&base, &quote, &1_000i128, &None, &None, &None),
         2_000
     );
 
@@ -639,7 +645,7 @@ fn test_disabled_oracle_pair_cannot_update_payroll_rate() {
 
     // Payroll rate must remain at the initial value.
     assert_eq!(
-        payroll_client.convert_currency(&base, &quote, &1_000i128),
+        payroll_client.convert_currency(&base, &quote, &1_000i128, &None, &None, &None),
         2_000,
         "Payroll rate must not change after disabled-pair rejection"
     );
@@ -664,7 +670,7 @@ fn test_re_enabled_oracle_pair_resumes_rate_updates() {
     oracle_client.push_price(&source, &base, &quote, &(4 * FX_SCALE), &2_000u64);
 
     assert_eq!(
-        payroll_client.convert_currency(&base, &quote, &1_000i128),
+        payroll_client.convert_currency(&base, &quote, &1_000i128, &None, &None, &None),
         4_000,
         "Rate must update after pair is re-enabled"
     );
@@ -993,7 +999,8 @@ fn test_push_price_fails_when_oracle_not_registered_as_fx_admin() {
     );
 
     // No rate should have been set.
-    let result2 = payroll_client.try_convert_currency(&base, &quote, &1_000i128);
+    let result2 =
+        payroll_client.try_convert_currency(&base, &quote, &1_000i128, &None, &None, &None);
     assert!(
         result2.is_err(),
         "No rate should exist when oracle is not FX admin"
@@ -1020,7 +1027,8 @@ fn test_unregistered_source_cannot_push_price_to_payroll() {
 
     assert!(result.is_err(), "Unregistered source must be rejected");
 
-    let result2 = payroll_client.try_convert_currency(&base, &quote, &1_000i128);
+    let result2 =
+        payroll_client.try_convert_currency(&base, &quote, &1_000i128, &None, &None, &None);
     assert!(
         result2.is_err(),
         "No rate should exist after unregistered-source rejection"
@@ -1045,7 +1053,7 @@ fn test_monotonic_oracle_update_does_not_overwrite_newer_rate_in_payroll() {
     env.ledger().with_mut(|li| li.timestamp = 2_000);
     oracle_client.push_price(&source, &base, &quote, &(3 * FX_SCALE), &2_000u64);
     assert_eq!(
-        payroll_client.convert_currency(&base, &quote, &1_000i128),
+        payroll_client.convert_currency(&base, &quote, &1_000i128, &None, &None, &None),
         3_000
     );
 
@@ -1055,7 +1063,7 @@ fn test_monotonic_oracle_update_does_not_overwrite_newer_rate_in_payroll() {
 
     // Payroll rate must remain at 3.0.
     assert_eq!(
-        payroll_client.convert_currency(&base, &quote, &1_000i128),
+        payroll_client.convert_currency(&base, &quote, &1_000i128, &None, &None, &None),
         3_000,
         "Older oracle update must not overwrite newer rate in payroll"
     );
@@ -1087,12 +1095,13 @@ fn test_pair_direction_isolation_in_payroll() {
 
     // (base → quote) works.
     assert_eq!(
-        payroll_client.convert_currency(&base, &quote, &1_000i128),
+        payroll_client.convert_currency(&base, &quote, &1_000i128, &None, &None, &None),
         2_000
     );
 
     // (quote → base) must fail — no rate configured.
-    let result = payroll_client.try_convert_currency(&quote, &base, &1_000i128);
+    let result =
+        payroll_client.try_convert_currency(&quote, &base, &1_000i128, &None, &None, &None);
     assert!(
         result.is_err(),
         "Reversed pair must not inherit the forward rate"
