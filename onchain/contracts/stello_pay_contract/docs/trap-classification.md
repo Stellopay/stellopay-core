@@ -45,4 +45,32 @@ No `PayrollError` variant was added, removed, renumbered, or reordered. All conv
 
 ## Regression guard
 
-`.github/workflows/contracts.yml` runs [`scripts/check-contract-no-traps.sh`](../../../../scripts/check-contract-no-traps.sh). The guard scans all contract source outside test modules and fails on new `.unwrap()`, `.expect()`, or `panic!`. The only exclusion is `src/mock_contract.rs`, which is native-only test scaffolding imported by integration tests and is documented at both survivor sites.
+`.github/workflows/contracts.yml` runs [`scripts/check-contract-no-traps.sh`](../../../../scripts/check-contract-no-traps.sh). The guard scans all contract source outside test modules and fails on new `.unwrap()`, `.expect(`, `panic!`, or `assert!` family (`assert!`, `assert_eq!`, `assert_ne!`) traps. Test surfaces are exempt: everything under `src/tests/`, in-file `#[cfg(test)]` modules (e.g. the discriminant-stability test at the bottom of `storage.rs`), and `src/mock_contract.rs`, which is native-only test scaffolding imported by integration tests and is documented at both survivor sites.
+
+## Untyped `assert!` conversion (#1308)
+
+Issue #1308 extended the trap guard to the `assert!` family and removed the remaining untyped assertions from deployable source. Every converted site now raises an existing typed `PayrollError`; no variant was added, so the discriminant ABI is unchanged.
+
+| # | Location | Original guard | Typed error |
+| ---: | --- | --- | --- |
+| 1 | `src/payroll.rs` `fund_milestone_agreement` | `from == employer` | `Unauthorized` |
+| 2 | `src/payroll.rs` `fund_milestone_agreement` | `amount > 0` | `MilestoneAmountInvalid` |
+| 3 | `src/payroll.rs` `fund_milestone_agreement` | status not `Cancelled` | `MilestoneAgreementInvalidStatus` |
+| 4 | `src/payroll.rs` `fund_milestone_agreement` | status not `Completed` | `MilestoneAgreementInvalidStatus` |
+| 5 | `src/payroll.rs` `add_milestone` | total invariant (`cfg(debug_assertions)`) | `InvalidData` |
+| 6 | `src/payroll.rs` `add_employee_to_agreement` | status is `Created` | `InvalidData` |
+| 7 | `src/payroll.rs` `add_employee_to_agreement` | mode is `Payroll` | `InvalidAgreementMode` |
+| 8 | `src/payroll.rs` `add_employee_to_agreement` | `salary_per_period > 0` | `InvalidData` |
+| 9 | `src/payroll.rs` `activate_agreement` | status is `Created` | `InvalidData` |
+| 10 | `src/payroll.rs` `activate_agreement` | at least one employee | `NoEmployee` |
+| 11 | `src/payroll.rs` `claim_payroll_inner` | claimed-periods invariant | `InvalidData` |
+| 12 | `src/payroll.rs` `batch_claim_payroll_inner` | claimed-periods invariant | `InvalidData` |
+| 13 | `src/payroll.rs` `claim_time_based` | claimed-periods invariant | `InvalidData` |
+| 14 | `src/payroll.rs` `resume_agreement` | status is `Paused` | `InvalidData` |
+| 15 | `src/payroll.rs` `cancel_agreement` | status `Active`/`Created` | `InvalidData` |
+| 16 | `src/payroll.rs` `finalize_grace_period` | status is `Cancelled` | `InvalidData` |
+| 17 | `src/payroll.rs` `finalize_grace_period` | grace period expired | `NotInGracePeriod` |
+| 18 | `src/lib.rs` `require_upgrade_admin` | RBAC `Admin` role held | `Unauthorized` |
+| 19 | `src/lib.rs` `migrate_state` | `from_version == current` | `InvalidData` |
+
+[`scripts/tests/check_contract_no_traps_test.sh`](../../../../scripts/tests/check_contract_no_traps_test.sh) exercises the guard against fixtures covering `assert!`, `assert_eq!`/`assert_ne!`, in-file test modules, and `mock_contract.rs`.
