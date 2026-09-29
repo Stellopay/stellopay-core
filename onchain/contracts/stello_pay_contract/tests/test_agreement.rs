@@ -8,7 +8,7 @@
 
 use soroban_sdk::{testutils::Address as _, Address, Env};
 use stello_pay_contract::{
-    storage::{AgreementMode, AgreementStatus},
+    storage::{AgreementMode, AgreementStatus, PayrollError},
     PayrollContract, PayrollContractClient,
 };
 
@@ -220,9 +220,8 @@ fn test_add_duplicate_does_not_block_other_employees() {
     assert_eq!(agreement.total_amount, 3000);
 }
 
-/// Adding employee with zero salary must fail.
+/// Adding employee with zero salary must fail with `InvalidData`.
 #[test]
-#[should_panic(expected = "Salary must be positive")]
 fn test_add_employee_zero_salary_fails() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -231,12 +230,12 @@ fn test_add_employee_zero_salary_fails() {
     let employee = create_test_address(&env);
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    client.add_employee_to_agreement(&agreement_id, &employee, &0);
+    let result = client.try_add_employee_to_agreement(&agreement_id, &employee, &0);
+    assert_eq!(result, Err(Ok(PayrollError::InvalidData.into())));
 }
 
 /// Adding employee when agreement is not in Created status must fail.
 #[test]
-#[should_panic(expected = "Can only add employees to Created agreements")]
 fn test_add_employee_wrong_status_fails() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -247,7 +246,9 @@ fn test_add_employee_wrong_status_fails() {
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
     client.activate_agreement(&agreement_id);
-    client.add_employee_to_agreement(&agreement_id, &create_test_address(&env), &500);
+    let result =
+        client.try_add_employee_to_agreement(&agreement_id, &create_test_address(&env), &500);
+    assert_eq!(result, Err(Ok(PayrollError::InvalidData.into())));
 }
 
 /// Only employer can add employees.
@@ -305,9 +306,8 @@ fn test_activate_agreement_with_employees() {
     assert!(agreement.activated_at.is_some());
 }
 
-/// Activating payroll agreement with no employees must fail.
+/// Activating payroll agreement with no employees must fail with `NoEmployee`.
 #[test]
-#[should_panic(expected = "Payroll agreement must have at least one employee to activate")]
 fn test_activate_agreement_no_employees_fails() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -315,12 +315,12 @@ fn test_activate_agreement_no_employees_fails() {
     let token = create_test_address(&env);
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    client.activate_agreement(&agreement_id);
+    let result = client.try_activate_agreement(&agreement_id);
+    assert_eq!(result, Err(Ok(PayrollError::NoEmployee.into())));
 }
 
-/// Activating already active agreement must fail.
+/// Activating already active agreement must fail with `InvalidData`.
 #[test]
-#[should_panic(expected = "Agreement must be in Created status")]
 fn test_activate_already_active_fails() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -331,7 +331,8 @@ fn test_activate_already_active_fails() {
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
     client.activate_agreement(&agreement_id);
-    client.activate_agreement(&agreement_id);
+    let result = client.try_activate_agreement(&agreement_id);
+    assert_eq!(result, Err(Ok(PayrollError::InvalidData.into())));
 }
 
 /// Only employer can activate.
