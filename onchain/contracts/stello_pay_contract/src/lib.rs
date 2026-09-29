@@ -789,6 +789,24 @@ impl PayrollContract {
         audit::get_audit_entries_by_employer(&env, employer, start_id, limit)
     }
 
+    /// @notice Sets the maximum number of lifecycle audit entries retained in persistent storage.
+    ///
+    /// A limit of `0` means unlimited retention (the default).  When a new entry would push
+    /// the retained count past this ceiling, the oldest entry is evicted from storage and
+    /// emitted as an `audit_entry_evicted` event so off-chain indexers preserve full history.
+    ///
+    /// # Access Control
+    /// Only the contract owner may call this.
+    pub fn set_audit_retention(env: Env, owner: Address, max_entries: u64) {
+        audit::set_audit_retention(&env, owner, max_entries);
+    }
+
+    /// @notice Returns the configured on-chain audit retention limit.
+    /// `0` means unlimited (default).
+    pub fn get_audit_retention(env: Env) -> u64 {
+        audit::get_audit_retention(&env)
+    }
+
     /// Raise Dispute
     ///
     /// # Arguments
