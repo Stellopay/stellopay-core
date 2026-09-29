@@ -36,7 +36,7 @@ fn setup_oracle(
     let oracle_id = env.register(PriceOracleContract, ());
     let client = PriceOracleContractClient::new(env, &oracle_id);
     let owner = Address::generate(env);
-    client.initialize(&owner, payroll_id);
+    client.initialize_oracle(&owner, payroll_id);
     (oracle_id, client, owner)
 }
 
@@ -131,8 +131,8 @@ fn test_initialize_twice_returns_error() {
     let client = PriceOracleContractClient::new(&env, &oracle_id);
     let owner = Address::generate(&env);
 
-    client.initialize(&owner, &payroll_id);
-    let res = client.try_initialize(&owner, &payroll_id);
+    client.initialize_oracle(&owner, &payroll_id);
+    let res = client.try_initialize_oracle(&owner, &payroll_id);
     assert_eq!(res, Err(Ok(OracleError::AlreadyInitialized)));
 }
 

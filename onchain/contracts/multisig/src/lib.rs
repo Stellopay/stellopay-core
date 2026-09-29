@@ -33,6 +33,12 @@ pub enum MultisigError {
     /// through the same contract instance).  These payloads are rejected at
     /// proposal time.
     SelfReferentialRecipient = 3,
+
+    /// A signer set update was attempted to be executed before its timelock delay elapsed.
+    TimelockNotElapsed = 4,
+
+    /// No pending signer update proposal exists to execute or cancel.
+    NoPendingProposal = 5,
 }
 
 #[contract]
@@ -93,6 +99,15 @@ pub struct Operation {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignerChangeProposal {
+    pub new_signers: Vec<Address>,
+    pub new_threshold: u32,
+    pub proposed_at: u64,
+    pub activation_timestamp: u64,
+}
+
+#[contracttype]
 #[derive(Clone)]
 enum StorageKey {
     Initialized,
@@ -104,6 +119,8 @@ enum StorageKey {
     Operation(u128),
     Approvals(u128),
     ThresholdOverride(OperationType),
+    SignerChangeDelay,
+    SignerChangeProposal,
 }
 
 #[contracttype]
@@ -134,6 +151,37 @@ pub struct OperationCancelledEvent {
     pub operation_id: u128,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignerUpdateProposedEvent {
+    /// List of new signer addresses proposed.
+    pub new_signers: Vec<Address>,
+    /// New default threshold proposed.
+    pub new_threshold: u32,
+    /// Timelock delay in seconds required before activation.
+    pub delay: u64,
+    /// Ledger timestamp at which the proposal becomes executable.
+    pub activation_timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignerUpdateExecutedEvent {
+    /// Activated list of new signers.
+    pub new_signers: Vec<Address>,
+    /// Activated new threshold.
+    pub new_threshold: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignerUpdateCancelledEvent {
+    /// Address of the signer or owner that cancelled the proposal.
+    pub cancelled_by: Address,
+}
+
+pub const DEFAULT_SIGNER_CHANGE_DELAY: u64 = 7 * 24 * 3600;
+
 fn require_initialized(env: &Env) {
     let initialized = env
         .storage()
@@ -141,6 +189,62 @@ fn require_initialized(env: &Env) {
         .get::<_, bool>(&StorageKey::Initialized)
         .unwrap_or(false);
     assert!(initialized, "Contract not initialized");
+}
+
+fn read_owner(env: &Env) -> Address {
+    env.storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::Owner)
+        .expect("Owner not set")
+}
+
+fn read_signer_change_delay(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get::<_, u64>(&StorageKey::SignerChangeDelay)
+        .unwrap_or(DEFAULT_SIGNER_CHANGE_DELAY)
+}
+
+fn write_signer_change_delay(env: &Env, delay: u64) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::SignerChangeDelay, &delay);
+}
+
+fn read_signer_change_proposal(env: &Env) -> Option<SignerChangeProposal> {
+    env.storage()
+        .persistent()
+        .get::<_, SignerChangeProposal>(&StorageKey::SignerChangeProposal)
+}
+
+fn write_signer_change_proposal(env: &Env, proposal: &SignerChangeProposal) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::SignerChangeProposal, proposal);
+}
+
+fn remove_signer_change_proposal(env: &Env) {
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::SignerChangeProposal);
+}
+
+fn validate_signers_and_threshold(new_signers: &Vec<Address>, new_threshold: u32) {
+    let signer_count = new_signers.len();
+    assert!(signer_count > 0, "At least one signer required");
+    assert!(
+        new_threshold > 0 && new_threshold <= signer_count,
+        "New threshold must be between 1 and the number of signers"
+    );
+
+    // Ensure signer list has no duplicates.
+    for i in 0..signer_count {
+        let a = new_signers.get(i).unwrap();
+        for j in (i + 1)..signer_count {
+            let b = new_signers.get(j).unwrap();
+            assert!(a != b, "Duplicate signer");
+        }
+    }
 }
 
 fn read_signers(env: &Env) -> Vec<Address> {
@@ -409,21 +513,7 @@ impl MultisigContract {
             .unwrap_or(false);
         assert!(!initialized, "Contract already initialized");
 
-        let signer_count = signers.len();
-        assert!(signer_count > 0, "At least one signer required");
-        assert!(
-            threshold > 0 && threshold <= signer_count,
-            "Invalid threshold"
-        );
-
-        // Ensure signer list has no duplicates.
-        for i in 0..signer_count {
-            let a = signers.get(i).unwrap();
-            for j in (i + 1)..signer_count {
-                let b = signers.get(j).unwrap();
-                assert!(a != b, "Duplicate signer");
-            }
-        }
+        validate_signers_and_threshold(&signers, threshold);
 
         env.storage().persistent().set(&StorageKey::Owner, &owner);
         env.storage()
@@ -441,44 +531,89 @@ impl MultisigContract {
 
         env.storage()
             .persistent()
+            .set(&StorageKey::SignerChangeDelay, &DEFAULT_SIGNER_CHANGE_DELAY);
+
+        env.storage()
+            .persistent()
             .set(&StorageKey::Initialized, &true);
     }
 
-    /// @notice Updates the signer set and default threshold.
-    /// @dev Can only be called by the designated owner.
+    /// @notice Proposes updating the signer set and default threshold behind a timelock.
+    /// @dev Requires designated owner authorization.
+    /// @param env Contract execution environment.
+    /// @param new_signers The new list of signers.
+    /// @param new_threshold The new default threshold.
+    pub fn propose_update_signers(env: Env, new_signers: Vec<Address>, new_threshold: u32) {
+        require_initialized(&env);
+        let owner = read_owner(&env);
+        owner.require_auth();
+
+        validate_signers_and_threshold(&new_signers, new_threshold);
+
+        let delay = read_signer_change_delay(&env);
+        let now = env.ledger().timestamp();
+        let activation_timestamp = now.checked_add(delay).expect("Timestamp overflow");
+
+        let proposal = SignerChangeProposal {
+            new_signers: new_signers.clone(),
+            new_threshold,
+            proposed_at: now,
+            activation_timestamp,
+        };
+        write_signer_change_proposal(&env, &proposal);
+
+        env.events().publish(
+            ("signer_update_proposed",),
+            SignerUpdateProposedEvent {
+                new_signers,
+                new_threshold,
+                delay,
+                activation_timestamp,
+            },
+        );
+    }
+
+    /// @notice Proposes updating the signer set and default threshold behind a timelock (alias).
+    /// @dev Requires designated owner authorization.
+    /// @param env Contract execution environment.
+    /// @param new_signers The new list of signers.
+    /// @param new_threshold The new default threshold.
+    pub fn propose_signer_update(env: Env, new_signers: Vec<Address>, new_threshold: u32) {
+        Self::propose_update_signers(env, new_signers, new_threshold);
+    }
+
+    /// @notice Proposes updating the signer set and default threshold behind a timelock.
+    /// @dev Maintained for API compatibility; initiates the timelocked proposal flow. Requires owner auth.
+    /// @param env Contract execution environment.
     /// @param new_signers The new list of signers.
     /// @param new_threshold The new default threshold.
     pub fn update_signers(env: Env, new_signers: Vec<Address>, new_threshold: u32) {
+        Self::propose_update_signers(env, new_signers, new_threshold);
+    }
+
+    /// @notice Executes a pending signer set and threshold update after the timelock delay has elapsed.
+    /// @dev Requires contract initialized and timelock delay elapsed.
+    /// @param env Contract execution environment.
+    pub fn execute_update_signers(env: Env) {
         require_initialized(&env);
-        let owner = env
-            .storage()
-            .persistent()
-            .get::<_, Address>(&StorageKey::Owner)
-            .expect("Owner not set");
-        owner.require_auth();
+        let proposal = match read_signer_change_proposal(&env) {
+            Some(p) => p,
+            None => panic_with_error!(&env, MultisigError::NoPendingProposal),
+        };
 
-        let signer_count = new_signers.len();
-        assert!(signer_count > 0, "At least one signer required");
-        assert!(
-            new_threshold > 0 && new_threshold <= signer_count,
-            "New threshold must be between 1 and the number of signers"
-        );
-
-        // Ensure signer list has no duplicates.
-        for i in 0..signer_count {
-            let a = new_signers.get(i).unwrap();
-            for j in (i + 1)..signer_count {
-                let b = new_signers.get(j).unwrap();
-                assert!(a != b, "Duplicate signer");
-            }
+        let now = env.ledger().timestamp();
+        if now < proposal.activation_timestamp {
+            panic_with_error!(&env, MultisigError::TimelockNotElapsed);
         }
 
+        let signer_count = proposal.new_signers.len();
+
         env.storage()
             .persistent()
-            .set(&StorageKey::Signers, &new_signers);
+            .set(&StorageKey::Signers, &proposal.new_signers);
         env.storage()
             .persistent()
-            .set(&StorageKey::Threshold, &new_threshold);
+            .set(&StorageKey::Threshold, &proposal.new_threshold);
 
         // Adjust/cap any active per-operation overrides to ensure they do not exceed the new signer
         // count.
@@ -495,6 +630,103 @@ impl MultisigContract {
                 }
             }
         }
+
+        remove_signer_change_proposal(&env);
+
+        env.events().publish(
+            ("signer_update_executed",),
+            SignerUpdateExecutedEvent {
+                new_signers: proposal.new_signers,
+                new_threshold: proposal.new_threshold,
+            },
+        );
+    }
+
+    /// @notice Executes a pending signer set and threshold update after the timelock delay has elapsed (alias).
+    /// @dev Requires contract initialized and timelock delay elapsed.
+    /// @param env Contract execution environment.
+    pub fn execute_signer_update(env: Env) {
+        Self::execute_update_signers(env);
+    }
+
+    /// @notice Cancels a pending signer update proposal during the timelock delay.
+    /// @dev Can be called by any current signer or by the contract owner. Requires caller auth.
+    /// @param env Contract execution environment.
+    /// @param caller The address requesting cancellation (must be a current signer or owner).
+    pub fn cancel_update_signers(env: Env, caller: Address) {
+        require_initialized(&env);
+        caller.require_auth();
+
+        let owner = read_owner(&env);
+        assert!(
+            is_signer(&env, &caller) || caller == owner,
+            "Only existing signers or owner can cancel"
+        );
+
+        if read_signer_change_proposal(&env).is_none() {
+            panic_with_error!(&env, MultisigError::NoPendingProposal);
+        }
+
+        remove_signer_change_proposal(&env);
+
+        env.events().publish(
+            ("signer_update_cancelled",),
+            SignerUpdateCancelledEvent {
+                cancelled_by: caller,
+            },
+        );
+    }
+
+    /// @notice Cancels a pending signer update proposal during the timelock delay (alias).
+    /// @dev Requires caller auth (must be existing signer or owner).
+    /// @param env Contract execution environment.
+    /// @param caller The address requesting cancellation.
+    pub fn cancel_signer_update(env: Env, caller: Address) {
+        Self::cancel_update_signers(env, caller);
+    }
+
+    /// @notice Returns the pending signer change proposal, if any.
+    /// @dev Does not require authentication; readable by anyone.
+    /// @param env Contract execution environment.
+    /// @return The pending proposal or None.
+    pub fn get_signer_change_proposal(env: Env) -> Option<SignerChangeProposal> {
+        read_signer_change_proposal(&env)
+    }
+
+    /// @notice Returns the pending signer change proposal, if any (alias).
+    /// @dev Does not require authentication; readable by anyone.
+    /// @param env Contract execution environment.
+    /// @return The pending proposal or None.
+    pub fn get_signer_update_proposal(env: Env) -> Option<SignerChangeProposal> {
+        read_signer_change_proposal(&env)
+    }
+
+    /// @notice Returns the configured delay in seconds before a proposed signer change can be executed.
+    /// @dev Does not require authentication; readable by anyone.
+    /// @param env Contract execution environment.
+    /// @return The configured delay in seconds.
+    pub fn get_signer_change_delay(env: Env) -> u64 {
+        read_signer_change_delay(&env)
+    }
+
+    /// @notice Returns the configured delay in seconds before a proposed signer change can be executed (alias).
+    /// @dev Does not require authentication; readable by anyone.
+    /// @param env Contract execution environment.
+    /// @return The configured delay in seconds.
+    pub fn get_signer_delay(env: Env) -> u64 {
+        read_signer_change_delay(&env)
+    }
+
+    /// @notice Sets the delay in seconds before a proposed signer change can be executed.
+    /// @dev Can only be called by the designated owner. Requires owner auth.
+    /// @param env Contract execution environment.
+    /// @param delay The new delay in seconds.
+    pub fn set_signer_change_delay(env: Env, delay: u64) {
+        require_initialized(&env);
+        let owner = read_owner(&env);
+        owner.require_auth();
+        assert!(delay > 0, "Delay must be positive");
+        write_signer_change_delay(&env, delay);
     }
 
     /// @notice Proposes a new multisig-protected operation.
