@@ -24,7 +24,7 @@ const MAX_QUORUM_SUBMISSIONS: u32 = 100;
 pub enum OracleError {
     /// Contract has not been initialized yet.
     NotInitialized = 1,
-    /// `initialize` was called more than once.
+    /// `initialize_oracle` was called more than once.
     AlreadyInitialized = 2,
     /// Caller lacks the required permission (not owner).
     NotAuthorized = 3,
@@ -50,9 +50,11 @@ pub enum OracleError {
     TooManySources = 13,
     /// Price is older than the requested max_age threshold.
     PriceTooOld = 14,
-    /// Pair has been automatically halted after too many consecutive stale-price
-    /// detections. A fresh, valid `push_price` clears the halt and resumes normal
-    /// serving.
+    /// Pair has been stale for longer than
+    /// `max_stale_before_halt × max_staleness_seconds`. Distinct from
+    /// `PriceTooOld`, which means the price is stale but still inside that
+    /// window (or halting is disabled). A successful `push_price` writes a
+    /// fresh timestamp and clears the halt.
     PairHalted = 15,
 }
 
@@ -93,14 +95,17 @@ pub struct PairConfig {
     /// accepted submission timestamp. Combined with `DuplicateVote` enforcement in
     /// quorum mode, each source contributes at most one effective vote per bucket.
     pub min_submit_interval_secs: u64,
-    /// Number of consecutive read-side stale-price detections (i.e. calls to
-    /// `get_pair_state` that return `PriceTooOld`) that automatically halt this pair.
+    /// How many freshness windows a price may remain stale before the pair
+    /// is halted.
     ///
-    /// Once the halt threshold is reached, `get_pair_state` returns
-    /// `OracleError::PairHalted` instead of `PriceTooOld` until a fresh, valid
-    /// `push_price` clears the counter.
+    /// Consecutive reads are not the signal. Soroban discards storage writes
+    /// made by an invocation that returns `Err`, so a counter incremented
+    /// inside `get_pair_state` cannot persist. Halt is derived from the
+    /// accepted timestamp instead: the pair is halted once it has been stale
+    /// for longer than `max_stale_before_halt × max_staleness_seconds`.
     ///
-    /// Set to `0` to disable the automatic halt mechanism for this pair.
+    /// Set to `0` to disable halting. A successful `push_price` clears the
+    /// halt by writing a fresh `last_updated_ts`.
     pub max_stale_before_halt: u32,
 }
 
@@ -157,9 +162,6 @@ enum DataKey {
     /// Last submission timestamp for a `(source, base, quote)` triple.
     /// Used to enforce `min_submit_interval_secs`.
     LastSubmission(Address, Address, Address),
-    /// Running count of consecutive read-side stale detections for a pair
-    /// (temporary storage). Reset to zero on a successful `push_price`.
-    StaleCount(Address, Address),
 }
 
 #[contract]
@@ -241,6 +243,31 @@ fn within_tolerance(reference_rate: i128, candidate_rate: i128, tolerance_bps: u
     lhs <= rhs
 }
 
+/// Classify a price that is already stale (`age > max_staleness`).
+///
+/// Halt is not counted on the read path. Soroban discards storage writes
+/// made by an invocation that returns `Err`, so a counter incremented inside
+/// `get_pair_state` cannot survive the error it is trying to record.
+///
+/// Consecutive reads are therefore not the signal. Halt is derived from data
+/// the write path already persisted: the accepted timestamp, `max_staleness`,
+/// and `max_stale_before_halt`. A pair is `PairHalted` when it has been stale
+/// for longer than `max_stale_before_halt × max_staleness` seconds.
+///
+/// `max_stale_before_halt == 0` disables halting. A product that does not fit
+/// in `u64` cannot be exceeded by any ledger age, so it does not halt either:
+/// the configured limit is unreachable, not wrapped.
+fn stale_status(age: u64, max_staleness: u64, max_stale_before_halt: u32) -> OracleError {
+    if max_stale_before_halt == 0 || max_staleness == 0 {
+        return OracleError::PriceTooOld;
+    }
+    let stale_for = age.saturating_sub(max_staleness);
+    match (max_stale_before_halt as u64).checked_mul(max_staleness) {
+        Some(limit) if stale_for > limit => OracleError::PairHalted,
+        _ => OracleError::PriceTooOld,
+    }
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::*;
@@ -264,6 +291,57 @@ mod unit_tests {
             u32::MAX
         ));
     }
+
+    #[test]
+    fn stale_status_disabled_when_threshold_zero() {
+        assert_eq!(stale_status(10_000, 300, 0), OracleError::PriceTooOld);
+    }
+
+    #[test]
+    fn stale_status_disabled_when_window_zero() {
+        assert_eq!(stale_status(10, 0, 3), OracleError::PriceTooOld);
+    }
+
+    #[test]
+    fn stale_status_exact_limit_is_not_longer_than() {
+        // N = 3, M = 300. stale_for == 900 is not longer than 900.
+        let age = 300 + 3 * 300;
+        assert_eq!(stale_status(age, 300, 3), OracleError::PriceTooOld);
+    }
+
+    #[test]
+    fn stale_status_one_second_past_limit_halts() {
+        let age = 300 + 3 * 300 + 1;
+        assert_eq!(stale_status(age, 300, 3), OracleError::PairHalted);
+    }
+
+    #[test]
+    fn stale_status_threshold_minus_one_window_does_not_halt() {
+        let age = 300 + 2 * 300;
+        assert_eq!(stale_status(age, 300, 3), OracleError::PriceTooOld);
+    }
+
+    #[test]
+    fn stale_status_threshold_plus_one_window_already_halted() {
+        // Does not wait an extra freshness window past the crossing.
+        let age = 300 + 4 * 300;
+        assert_eq!(stale_status(age, 300, 3), OracleError::PairHalted);
+    }
+
+    #[test]
+    fn stale_status_threshold_one_halts_after_one_extra_window() {
+        assert_eq!(stale_status(300 + 300, 300, 1), OracleError::PriceTooOld);
+        assert_eq!(stale_status(300 + 300 + 1, 300, 1), OracleError::PairHalted);
+    }
+
+    #[test]
+    fn stale_status_overflowing_limit_does_not_wrap() {
+        let max_staleness = u64::MAX / 2 + 1;
+        assert_eq!(
+            stale_status(max_staleness + 1, max_staleness, 3),
+            OracleError::PriceTooOld
+        );
+    }
 }
 
 // ============================================================================
@@ -283,7 +361,7 @@ impl PriceOracleContract {
     /// @param payroll_contract Address of the core payroll contract that
     ///                         will consume FX rates.
     /// @return Result<(), OracleError>
-    pub fn initialize(
+    pub fn initialize_oracle(
         env: Env,
         owner: Address,
         payroll_contract: Address,
@@ -360,7 +438,8 @@ impl PriceOracleContract {
     ///      - `min_rate <= max_rate`
     ///      - `max_staleness_seconds > 0`
     ///      Emits event `("oracle", "cfgpair")` with `(base, quote)`.
-    ///      On (re-)configure, the consecutive-stale counter for this pair is reset.
+    ///      On (re-)configure, `max_stale_before_halt` is reset to `0`, which
+    ///      disables halting until `set_stale_halt_threshold` is called again.
     /// @param caller               Owner address.
     /// @param base                 Base token address.
     /// @param quote                Quote token address.
@@ -418,11 +497,6 @@ impl PriceOracleContract {
         env.storage()
             .temporary()
             .remove(&DataKey::PendingBucket(base.clone(), quote.clone()));
-        // Reset the consecutive-stale counter whenever the pair is (re-)configured
-        // so a fresh configuration always starts from a clean slate.
-        env.storage()
-            .temporary()
-            .remove(&DataKey::StaleCount(base.clone(), quote.clone()));
 
         env.events().publish(
             (symbol_short!("oracle"), symbol_short!("cfgpair")),
@@ -432,19 +506,29 @@ impl PriceOracleContract {
         Ok(())
     }
 
-    /// @notice Sets the consecutive-stale-read threshold that auto-halts a pair.
-    /// @dev Once `get_pair_state` returns `PriceTooOld` this many times in a row,
-    ///      the pair reports `OracleError::PairHalted` until a fresh `push_price`
-    ///      clears the counter. `0` disables the mechanism.
-    ///
-    ///      This is a separate setter rather than a `configure_pair` parameter
-    ///      because `configure_pair` already sits at Soroban's 10-parameter
-    ///      ceiling for contract functions. `configure_pair` resets the
+    /// @notice Sets how long a pair may stay stale before reads return `PairHalted`.
+    /// @dev Separate from `configure_pair` because that entrypoint is already
+    ///      at Soroban's 10-parameter ceiling. `configure_pair` resets this
     ///      threshold to `0`, so call this afterwards to enable the halt.
+    ///
+    ///      There is no read-side counter. The threshold is applied by comparing
+    ///      the accepted price's age with `max_staleness_seconds`. A pair is
+    ///      halted when it has been stale for longer than
+    ///      `threshold × max_staleness_seconds`. `0` disables halting entirely.
+    ///
+    ///      The new value takes effect on the next read. Lowering it can halt
+    ///      an already-stale pair immediately; raising it can clear a halt
+    ///      without a new `push_price` if the price has not been stale long
+    ///      enough under the new limit. A successful `push_price` always clears
+    ///      a halt by writing a fresh timestamp.
+    ///
+    /// Access: contract owner. Requires authorisation of `caller`.
     /// @param caller    Owner address.
     /// @param base      Base token address.
     /// @param quote     Quote token address.
-    /// @param threshold Consecutive stale reads before halting; `0` disables.
+    /// @param threshold Stale windows before halt; `0` disables.
+    /// @return `Ok(())` on success. `Err(PairNotConfigured)` if the pair does
+    ///         not exist. `Err(NotAuthorized)` if `caller` is not the owner.
     pub fn set_stale_halt_threshold(
         env: Env,
         caller: Address,
@@ -465,10 +549,6 @@ impl PriceOracleContract {
         env.storage()
             .instance()
             .set(&DataKey::PairConfig(base.clone(), quote.clone()), &cfg);
-        // A changed threshold re-arms the mechanism from a clean slate.
-        env.storage()
-            .temporary()
-            .remove(&DataKey::StaleCount(base.clone(), quote.clone()));
 
         Ok(())
     }
@@ -700,13 +780,9 @@ impl PriceOracleContract {
             source_timestamp
         };
 
-        // Clear any accumulated consecutive-stale counter so the pair resumes
-        // normal serving after a fresh, valid price update.
-        env.storage()
-            .temporary()
-            .remove(&DataKey::StaleCount(base.clone(), quote.clone()));
-
-        // Persist new state.
+        // Persist new state. This write is what clears a halt: `last_updated_ts`
+        // moves inside the freshness window, so the derived condition in
+        // `get_pair_state` no longer holds. Rejected pushes never reach here.
         let new_state = PairState {
             rate,
             last_updated_ts: accepted_timestamp,
@@ -747,10 +823,36 @@ impl PriceOracleContract {
             .get(&DataKey::PairConfig(base, quote))
     }
 
-    /// @notice Returns the last accepted state for a `(base, quote)` pair, if configured and not
-    /// stale. @dev Rejects the state with `PriceTooOld` if `ledger.timestamp() -
-    /// last_updated_ts > max_staleness_seconds`. @param base Base token address.
+    /// @notice Returns the last accepted state for a `(base, quote)` pair.
+    /// @dev Read-only. This function does not write storage.
+    ///
+    ///      Freshness: returns `Ok` when
+    ///      `ledger.timestamp() - last_updated_ts <= max_staleness_seconds`.
+    ///
+    ///      Once the price is stale, the error distinguishes a transient miss
+    ///      from a dead feed:
+    ///      - `PriceTooOld` while the price has been stale for at most
+    ///        `max_stale_before_halt × max_staleness_seconds` seconds, and
+    ///        whenever that threshold is `0` (halting disabled).
+    ///      - `PairHalted` when it has been stale for longer than
+    ///        `max_stale_before_halt × max_staleness_seconds`.
+    ///
+    ///      Consecutive reads are not the signal. Soroban discards storage
+    ///      writes from an invocation that returns `Err`, so a counter
+    ///      incremented here could never survive. Halt is derived from
+    ///      `PairState.last_updated_ts` and the pair config, both written by
+    ///      successful admin or source calls.
+    ///
+    ///      A successful authorised `push_price` clears the halt by advancing
+    ///      `last_updated_ts` back inside the freshness window.
+    ///
+    /// Access: any caller. No authorisation required.
+    /// @param base Base token address.
     /// @param quote Quote token address.
+    /// @return `Ok(PairState)` if the price is fresh. `Err(PriceTooOld)` if it
+    ///         is stale but not yet halted. `Err(PairHalted)` if the feed has
+    ///         been stale longer than the configured threshold.
+    ///         `Err(PairNotConfigured)` if the pair is missing or disabled.
     pub fn get_pair_state(
         env: Env,
         base: Address,
@@ -775,35 +877,11 @@ impl PriceOracleContract {
         let now = env.ledger().timestamp();
         let age = now.saturating_sub(state.last_updated_ts);
         if age > cfg.max_staleness_seconds {
-            // Consecutive-stale halt mechanism:
-            // KNOWN LIMITATION: this counter never advances beyond 1. The
-            // write below happens in the same invocation that returns
-            // `Err(PriceTooOld)`, and Soroban discards storage writes made by
-            // an invocation that fails, so the increment is rolled back every
-            // time. Making the halt work requires either returning the stale
-            // status as an `Ok` value or moving the counter into a separate
-            // mutating entrypoint; both change the public API. See the ignored
-            // tests in tests/test_oracle.rs.
-            //
-            // If the pair has a non-zero threshold, track how many consecutive
-            // read-side stale detections have occurred.  Once the threshold is
-            // reached, switch from PriceTooOld to PairHalted so consumers and
-            // monitors know the pair needs a fresh push, not just a retry.
-            if cfg.max_stale_before_halt > 0 {
-                let count_key = DataKey::StaleCount(base.clone(), quote.clone());
-                let prev: u32 = env
-                    .storage()
-                    .temporary()
-                    .get::<_, u32>(&count_key)
-                    .unwrap_or(0);
-                let count = prev.saturating_add(1);
-                env.storage().temporary().set(&count_key, &count);
-
-                if count >= cfg.max_stale_before_halt {
-                    return Err(OracleError::PairHalted);
-                }
-            }
-            return Err(OracleError::PriceTooOld);
+            return Err(stale_status(
+                age,
+                cfg.max_staleness_seconds,
+                cfg.max_stale_before_halt,
+            ));
         }
 
         Ok(state)

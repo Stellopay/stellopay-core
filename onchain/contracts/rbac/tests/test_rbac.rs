@@ -1,7 +1,7 @@
 #![cfg(test)]
 #![allow(deprecated)]
 
-use rbac::{RbacContract, RbacContractClient, Role};
+use rbac::{Error, RbacContract, RbacContractClient, Role};
 use soroban_sdk::{
     testutils::{Address as _, Events},
     Address, Env, Vec,
@@ -153,7 +153,7 @@ fn test_grant_admin_to_second_user() {
 // ===========================================================================
 
 #[test]
-#[should_panic(expected = "Only admin can grant roles")]
+#[should_panic(expected = "Error(Contract, #1)")]
 fn test_non_admin_cannot_grant_roles() {
     let env = create_env();
     let (_cid, client, _admin) = setup_contract(&env);
@@ -164,7 +164,7 @@ fn test_non_admin_cannot_grant_roles() {
 }
 
 #[test]
-#[should_panic(expected = "Only admin can grant roles")]
+#[should_panic(expected = "Error(Contract, #1)")]
 fn test_employer_cannot_grant_roles() {
     let env = create_env();
     let (_cid, client, admin) = setup_contract(&env);
@@ -176,7 +176,7 @@ fn test_employer_cannot_grant_roles() {
 }
 
 #[test]
-#[should_panic(expected = "Only admin can grant roles")]
+#[should_panic(expected = "Error(Contract, #1)")]
 fn test_employee_cannot_grant_roles() {
     let env = create_env();
     let (_cid, client, admin) = setup_contract(&env);
@@ -188,7 +188,7 @@ fn test_employee_cannot_grant_roles() {
 }
 
 #[test]
-#[should_panic(expected = "Only admin can grant roles")]
+#[should_panic(expected = "Error(Contract, #1)")]
 fn test_arbiter_cannot_grant_roles() {
     let env = create_env();
     let (_cid, client, admin) = setup_contract(&env);
@@ -204,7 +204,7 @@ fn test_arbiter_cannot_grant_roles() {
 // ===========================================================================
 
 #[test]
-#[should_panic(expected = "Only admin can revoke roles")]
+#[should_panic(expected = "Error(Contract, #2)")]
 fn test_non_admin_cannot_revoke_roles() {
     let env = create_env();
     let (_cid, client, admin) = setup_contract(&env);
@@ -216,7 +216,7 @@ fn test_non_admin_cannot_revoke_roles() {
 }
 
 #[test]
-#[should_panic(expected = "Only admin can revoke roles")]
+#[should_panic(expected = "Error(Contract, #2)")]
 fn test_employer_cannot_revoke_roles() {
     let env = create_env();
     let (_cid, client, admin) = setup_contract(&env);
@@ -229,7 +229,7 @@ fn test_employer_cannot_revoke_roles() {
 }
 
 #[test]
-#[should_panic(expected = "Cannot revoke Admin from owner")]
+#[should_panic(expected = "Error(Contract, #3)")]
 fn test_cannot_revoke_admin_from_owner() {
     let env = create_env();
     let (_cid, client, owner) = setup_contract(&env);
@@ -239,7 +239,7 @@ fn test_cannot_revoke_admin_from_owner() {
 }
 
 #[test]
-#[should_panic(expected = "Cannot revoke Admin from owner")]
+#[should_panic(expected = "Error(Contract, #3)")]
 fn test_second_admin_cannot_revoke_owner_admin() {
     let env = create_env();
     let (_cid, client, owner) = setup_contract(&env);
@@ -386,7 +386,7 @@ fn test_require_role_succeeds_with_inherited_role() {
 }
 
 #[test]
-#[should_panic(expected = "Missing required role")]
+#[should_panic(expected = "Error(Contract, #6)")]
 fn test_require_role_panics_when_missing() {
     let env = create_env();
     let (_cid, client, _admin) = setup_contract(&env);
@@ -396,7 +396,7 @@ fn test_require_role_panics_when_missing() {
 }
 
 #[test]
-#[should_panic(expected = "Missing required role")]
+#[should_panic(expected = "Error(Contract, #6)")]
 fn test_require_role_employee_cannot_satisfy_admin() {
     let env = create_env();
     let (_cid, client, admin) = setup_contract(&env);
@@ -407,7 +407,7 @@ fn test_require_role_employee_cannot_satisfy_admin() {
 }
 
 #[test]
-#[should_panic(expected = "Missing required role")]
+#[should_panic(expected = "Error(Contract, #6)")]
 fn test_require_role_arbiter_cannot_satisfy_employer() {
     let env = create_env();
     let (_cid, client, admin) = setup_contract(&env);
@@ -456,7 +456,7 @@ fn test_bulk_grant_skips_duplicates() {
 }
 
 #[test]
-#[should_panic(expected = "Only admin can grant roles")]
+#[should_panic(expected = "Error(Contract, #1)")]
 fn test_bulk_grant_forbidden_for_non_admin() {
     let env = create_env();
     let (_cid, client, admin) = setup_contract(&env);
@@ -531,7 +531,7 @@ fn test_bulk_revoke_skips_already_not_held() {
 }
 
 #[test]
-#[should_panic(expected = "Only admin can revoke roles")]
+#[should_panic(expected = "Error(Contract, #2)")]
 fn test_bulk_revoke_forbidden_for_non_admin() {
     let env = create_env();
     let (_cid, client, admin) = setup_contract(&env);
@@ -600,7 +600,7 @@ fn test_revoke_all_strips_every_role() {
 }
 
 #[test]
-#[should_panic(expected = "Cannot revoke all roles from owner")]
+#[should_panic(expected = "Error(Contract, #4)")]
 fn test_revoke_all_blocked_on_owner() {
     let env = create_env();
     let (_cid, client, owner) = setup_contract(&env);
@@ -609,7 +609,7 @@ fn test_revoke_all_blocked_on_owner() {
 }
 
 #[test]
-#[should_panic(expected = "Only admin can revoke roles")]
+#[should_panic(expected = "Error(Contract, #2)")]
 fn test_revoke_all_forbidden_for_non_admin() {
     let env = create_env();
     let (_cid, client, admin) = setup_contract(&env);
@@ -653,7 +653,7 @@ fn test_renounce_role_after_renounce_require_role_fails() {
 }
 
 #[test]
-#[should_panic(expected = "Caller does not hold the specified role")]
+#[should_panic(expected = "Error(Contract, #5)")]
 fn test_renounce_role_not_held_fails() {
     let env = create_env();
     let (_cid, client, _admin) = setup_contract(&env);
@@ -664,7 +664,7 @@ fn test_renounce_role_not_held_fails() {
 }
 
 #[test]
-#[should_panic(expected = "Caller does not hold the specified role")]
+#[should_panic(expected = "Error(Contract, #5)")]
 fn test_renounce_role_wrong_role_fails() {
     let env = create_env();
     let (_cid, client, admin) = setup_contract(&env);
@@ -790,29 +790,29 @@ fn test_admin_non_owner_cannot_transfer_ownership() {
 }
 
 #[test]
-#[should_panic(expected = "Caller is not pending owner")]
-fn test_wrong_address_cannot_accept_ownership() {
+fn test_wrong_address_returns_not_pending_owner_error() {
     let env = create_env();
     let (_cid, client, owner) = setup_contract(&env);
     let new_owner = Address::generate(&env);
     let attacker = Address::generate(&env);
 
     client.transfer_ownership(&owner, &new_owner);
-    client.accept_ownership(&attacker);
+    let error = client.try_accept_ownership(&attacker).unwrap_err().unwrap();
+    assert_eq!(error, soroban_sdk::Error::from(Error::NotPendingOwner));
 }
 
 #[test]
-#[should_panic(expected = "No pending owner")]
-fn test_accept_without_proposal_fails() {
+fn test_accept_without_proposal_returns_no_pending_owner_error() {
     let env = create_env();
     let (_cid, client, _owner) = setup_contract(&env);
     let random = Address::generate(&env);
 
-    client.accept_ownership(&random);
+    let error = client.try_accept_ownership(&random).unwrap_err().unwrap();
+    assert_eq!(error, soroban_sdk::Error::from(Error::NoPendingOwner));
 }
 
 #[test]
-#[should_panic(expected = "Only admin can grant roles")]
+#[should_panic(expected = "Error(Contract, #1)")]
 fn test_old_owner_loses_admin_after_transfer() {
     let env = create_env();
     let (_cid, client, owner) = setup_contract(&env);
@@ -1046,7 +1046,7 @@ fn test_delegated_admin_can_manage_roles_but_not_ownership() {
 /// Validates that after ownership transfer, the new owner is protected
 /// from having their Admin role revoked.
 #[test]
-#[should_panic(expected = "Cannot revoke Admin from owner")]
+#[should_panic(expected = "Error(Contract, #3)")]
 fn test_new_owner_admin_protected_after_transfer() {
     let env = create_env();
     let (_cid, client, owner) = setup_contract(&env);
@@ -1097,7 +1097,7 @@ fn test_revoke_admin_from_non_owner_delegate() {
 
 /// After revoking Admin from a delegate, they can no longer grant roles.
 #[test]
-#[should_panic(expected = "Only admin can grant roles")]
+#[should_panic(expected = "Error(Contract, #1)")]
 fn test_revoked_admin_cannot_grant() {
     let env = create_env();
     let (_cid, client, owner) = setup_contract(&env);
@@ -1184,7 +1184,7 @@ fn test_override_safety_has_role_matches_require_role() {
 }
 
 #[test]
-#[should_panic(expected = "Missing required role")]
+#[should_panic(expected = "Error(Contract, #6)")]
 fn test_override_safety_require_role_panics_when_has_role_false() {
     // @invariant: require_role panics iff has_role is false.
     let env = create_env();
@@ -1236,7 +1236,7 @@ fn test_override_safety_has_role_inheritance_matrix() {
 // ---------- C. Privilege-escalation invariants ------------------------------
 
 #[test]
-#[should_panic(expected = "Only admin can grant roles")]
+#[should_panic(expected = "Error(Contract, #1)")]
 fn test_override_safety_grant_role_admin_only_enforced_per_call() {
     // @invariant: grant_role requires Admin; non-admin calls revert.
     let env = create_env();
@@ -1262,7 +1262,7 @@ fn test_override_safety_grant_role_idempotent_no_duplicate() {
 }
 
 #[test]
-#[should_panic(expected = "Only admin can grant roles")]
+#[should_panic(expected = "Error(Contract, #1)")]
 fn test_override_safety_bulk_grant_enforces_admin_once_per_call() {
     // @invariant: bulk_grant admin check is per-call, not per-element.
     //             This guards against both partial-application and bypass
@@ -1312,7 +1312,7 @@ fn test_override_safety_bulk_grant_skips_duplicates() {
 // ---------- D. Privilege-revocation invariants -----------------------------
 
 #[test]
-#[should_panic(expected = "Cannot revoke Admin from owner")]
+#[should_panic(expected = "Error(Contract, #3)")]
 fn test_override_safety_revoke_role_protects_owner_admin() {
     // @invariant: owner's Admin cannot be revoked even by owner themselves.
     let env = create_env();
@@ -1336,7 +1336,7 @@ fn test_override_safety_revoke_role_protects_owner_admin_post_check() {
 }
 
 #[test]
-#[should_panic(expected = "Cannot revoke all roles from owner")]
+#[should_panic(expected = "Error(Contract, #4)")]
 fn test_override_safety_revoke_all_blocks_on_owner() {
     // @invariant: revoke_all(target = owner) must revert.
     let env = create_env();
@@ -1359,7 +1359,7 @@ fn test_override_safety_revoke_all_blocks_on_owner_post_check() {
 }
 
 #[test]
-#[should_panic(expected = "Only admin can revoke roles")]
+#[should_panic(expected = "Error(Contract, #2)")]
 fn test_override_safety_revoke_role_admin_only() {
     // @invariant: non-admin revoke_role must revert.
     let env = create_env();
@@ -1421,7 +1421,7 @@ fn test_override_safety_owner_after_transfer_is_new_owner() {
 }
 
 #[test]
-#[should_panic(expected = "Cannot revoke Admin from owner")]
+#[should_panic(expected = "Error(Contract, #3)")]
 fn test_override_safety_owner_protected_via_lockout_check() {
     // @invariant: address returned by owner() is the one whose Admin is
     //             protected from revocation.
@@ -1467,7 +1467,7 @@ fn test_override_safety_transfer_ownership_requires_owner_post_check() {
 }
 
 #[test]
-#[should_panic(expected = "No pending owner")]
+#[should_panic(expected = "Error(Contract, #7)")]
 fn test_override_safety_accept_ownership_requires_pending_proposal() {
     // @invariant: accept_ownership without a prior transfer_ownership must revert.
     let env = create_env();
@@ -1477,7 +1477,7 @@ fn test_override_safety_accept_ownership_requires_pending_proposal() {
 }
 
 #[test]
-#[should_panic(expected = "Caller is not pending owner")]
+#[should_panic(expected = "Error(Contract, #8)")]
 fn test_override_safety_accept_ownership_rejects_non_pending_caller() {
     // @invariant: only the recorded pending owner may call accept_ownership.
     let env = create_env();
@@ -1528,7 +1528,7 @@ fn test_override_safety_accept_ownership_atomic_grant_and_revoke() {
 }
 
 #[test]
-#[should_panic(expected = "No pending owner")]
+#[should_panic(expected = "Error(Contract, #7)")]
 fn test_override_safety_pending_slot_cleared_after_accept() {
     // @invariant: after a successful accept_ownership, the pending slot
     //             is cleared — a second accept_ownership must revert.
@@ -1739,7 +1739,7 @@ fn test_override_safety_has_role_multi_role_holder_inheritance() {
 // the system. Moved from the original section-10 listing for proximity.
 
 #[test]
-#[should_panic(expected = "Cannot revoke Admin from owner")]
+#[should_panic(expected = "Error(Contract, #3)")]
 fn test_composite_owner_lockout_chain_revoke_role() {
     // Composite: a delegated Admin cannot revoke the owner's Admin role.
     let env = create_env();
@@ -1752,7 +1752,7 @@ fn test_composite_owner_lockout_chain_revoke_role() {
 }
 
 #[test]
-#[should_panic(expected = "Cannot revoke all roles from owner")]
+#[should_panic(expected = "Error(Contract, #4)")]
 fn test_composite_owner_lockout_chain_revoke_all() {
     // Composite: a delegated Admin cannot revoke_all on the owner.
     let env = create_env();
@@ -1788,7 +1788,7 @@ fn test_composite_owner_lockout_chain_owner_unaffected() {
 }
 
 #[test]
-#[should_panic(expected = "Missing required role")]
+#[should_panic(expected = "Error(Contract, #6)")]
 fn test_composite_require_role_blocks_impostor() {
     // Composite: an impostor with no roles cannot satisfy require_role.
     let env = create_env();
