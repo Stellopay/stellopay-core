@@ -7,7 +7,7 @@
       "captured_at": "2026-09-29"
     },
     "price_oracle": {
-      "size_bytes": 220718,
+      "size_bytes": 219749,
       "captured_at": "2026-09-29"
     },
     "rbac": {
@@ -15,7 +15,7 @@
       "captured_at": "2026-09-29"
     },
     "stello_pay_contract": {
-      "size_bytes": 190038,
+      "size_bytes": 189053,
       "captured_at": "2026-09-29"
     }
   }
