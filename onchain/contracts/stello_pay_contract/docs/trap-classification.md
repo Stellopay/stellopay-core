@@ -43,6 +43,17 @@ This table is the complete 34-site audit for [issue #1266](https://github.com/St
 
 No `PayrollError` variant was added, removed, renumbered, or reordered. All conversions reuse existing discriminants, especially `Unauthorized`, `AgreementNotFound`, `NotArbiter`, and `InvalidData`. The existing discriminant stability test remains unchanged and continues to lock the public error-code ABI.
 
+## Follow-up: entry points converted from traps to `Result` (#1317)
+
+The five lifecycle entry points that still returned `()` and trapped with
+`panic_with_error!` after this audit — `fund_milestone_agreement`,
+`activate_agreement`, `resume_agreement`, `cancel_agreement`, and
+`finalize_grace_period` — were subsequently converted to return
+`Result<(), PayrollError>` so callers can branch on the typed error instead of
+catching a host trap. The mapping is documented in
+[`entry-point-conventions.md`](./entry-point-conventions.md) and pinned by
+`tests/test_entry_point_conventions.rs`.
+
 ## Regression guard
 
 `.github/workflows/contracts.yml` runs [`scripts/check-contract-no-traps.sh`](../../../../scripts/check-contract-no-traps.sh). The guard scans all contract source outside test modules and fails on new `.unwrap()`, `.expect()`, or `panic!`. The only exclusion is `src/mock_contract.rs`, which is native-only test scaffolding imported by integration tests and is documented at both survivor sites.

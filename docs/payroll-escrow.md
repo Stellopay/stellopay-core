@@ -108,7 +108,12 @@ Prior to this entrypoint, the only way to satisfy the `approve_milestone` / `cla
 ### Signature
 
 ```rust
-fund_milestone_agreement(env: Env, agreement_id: u128, from: Address, amount: i128)
+fund_milestone_agreement(
+    env: Env,
+    agreement_id: u128,
+    from: Address,
+    amount: i128,
+) -> Result<(), PayrollError>
 ```
 
 | Parameter      | Description |
@@ -129,14 +134,16 @@ This design means that any unrelated token deposits into the contract address ar
 
 ### Validation Rules
 
-| Condition | Error message |
+All rejection paths return a typed `PayrollError` (no host trap):
+
+| Condition | Error variant |
 |-----------|---------------|
-| `agreement_id` not a known milestone agreement | "Agreement not found" |
-| `from` ≠ stored employer | "Unauthorized: only the employer can fund a milestone agreement" |
-| `amount <= 0` | "Amount must be positive" |
-| Agreement status is `Cancelled` | "Cannot fund a Cancelled agreement" |
-| Agreement status is `Completed` | "Cannot fund a Completed agreement" |
-| `current_balance + amount` overflows `i128` | "Escrow balance overflow" |
+| `agreement_id` not a known milestone agreement | `AgreementNotFound` |
+| `from` ≠ stored employer | `Unauthorized` |
+| `amount <= 0` | `MilestoneAmountInvalid` |
+| Agreement status is `Cancelled` | `MilestoneAgreementInvalidStatus` |
+| Agreement status is `Completed` | `MilestoneAgreementInvalidStatus` |
+| `current_balance + amount` overflows `i128` | `InvalidData` |
 
 ### Event
 

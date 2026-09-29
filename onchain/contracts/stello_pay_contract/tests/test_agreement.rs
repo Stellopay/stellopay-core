@@ -8,7 +8,7 @@
 
 use soroban_sdk::{testutils::Address as _, Address, Env};
 use stello_pay_contract::{
-    storage::{AgreementMode, AgreementStatus},
+    storage::{AgreementMode, AgreementStatus, PayrollError},
     PayrollContract, PayrollContractClient,
 };
 
@@ -305,9 +305,8 @@ fn test_activate_agreement_with_employees() {
     assert!(agreement.activated_at.is_some());
 }
 
-/// Activating payroll agreement with no employees must fail.
+/// Activating payroll agreement with no employees must fail with `NoEmployee`.
 #[test]
-#[should_panic(expected = "Payroll agreement must have at least one employee to activate")]
 fn test_activate_agreement_no_employees_fails() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -315,12 +314,14 @@ fn test_activate_agreement_no_employees_fails() {
     let token = create_test_address(&env);
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    client.activate_agreement(&agreement_id);
+    assert_eq!(
+        client.try_activate_agreement(&agreement_id),
+        Err(Ok(PayrollError::NoEmployee))
+    );
 }
 
-/// Activating already active agreement must fail.
+/// Activating already active agreement must fail with `InvalidData`.
 #[test]
-#[should_panic(expected = "Agreement must be in Created status")]
 fn test_activate_already_active_fails() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -331,7 +332,10 @@ fn test_activate_already_active_fails() {
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     client.add_employee_to_agreement(&agreement_id, &employee, &1000);
     client.activate_agreement(&agreement_id);
-    client.activate_agreement(&agreement_id);
+    assert_eq!(
+        client.try_activate_agreement(&agreement_id),
+        Err(Ok(PayrollError::InvalidData))
+    );
 }
 
 /// Only employer can activate.
