@@ -74,7 +74,6 @@ fn test_unit_upgrade_success_rbac_admin() {
 }
 
 #[test]
-#[should_panic(expected = "Missing required role")]
 fn test_unit_upgrade_rejects_rbac_non_admin() {
     let env = Env::default();
     env.mock_all_auths();
@@ -89,8 +88,9 @@ fn test_unit_upgrade_rejects_rbac_non_admin() {
 
     let new_wasm_hash: BytesN<32> = env.deployer().upload_contract_wasm(NEW_CONTRACT_WASM);
 
-    // Call upgrade as non-admin - should panic
-    client.upgrade(&new_wasm_hash, &non_admin);
+    // Call upgrade as non-admin - must surface a typed Unauthorized error
+    let result = client.try_upgrade(&new_wasm_hash, &non_admin);
+    assert_eq!(result, Err(Ok(PayrollError::Unauthorized.into())));
 }
 
 // ── Property Tests ──────────────────────────────────────────────────────────
