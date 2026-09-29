@@ -2,10 +2,10 @@
 
 use multisig::{
     MultisigContract, MultisigContractClient, MultisigError, OperationKind, OperationStatus,
-    OperationType,
+    OperationType, SignerChangeProposal, DEFAULT_SIGNER_CHANGE_DELAY,
 };
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{Address as _, Ledger as _},
     token::{Client as TokenClient, StellarAssetClient},
     Address, BytesN, Env, Vec,
 };
@@ -99,6 +99,20 @@ fn setup_3of3(
     let guardian = Address::generate(env);
     client.initialize(&owner, &signers, &3u32, &Some(guardian.clone()));
     (id, client, owner, signers, guardian)
+}
+
+fn apply_signer_update(
+    env: &Env,
+    client: &MultisigContractClient,
+    new_signers: &Vec<Address>,
+    new_threshold: u32,
+) {
+    client.propose_update_signers(new_signers, &new_threshold);
+    let delay = client.get_signer_change_delay();
+    env.ledger().with_mut(|li| {
+        li.timestamp += delay;
+    });
+    client.execute_update_signers();
 }
 
 // ==================== 1-of-N Edge Cases ====================
@@ -1078,7 +1092,7 @@ fn test_signer_removal_prior_confirmation_policy() {
     let mut new_signers = Vec::new(&env);
     new_signers.push_back(signers.get(0).unwrap());
     new_signers.push_back(signers.get(2).unwrap());
-    client.update_signers(&new_signers, &2u32);
+    apply_signer_update(&env, &client, &new_signers, 2u32);
 
     // Policy Check: S2's prior approval should NOT count anymore since S2 is removed.
     // The active approvals count should drop back to 1 (only S1).
@@ -1107,7 +1121,7 @@ fn test_removed_signer_cannot_newly_confirm() {
     let mut new_signers = Vec::new(&env);
     new_signers.push_back(signers.get(0).unwrap());
     new_signers.push_back(signers.get(2).unwrap());
-    client.update_signers(&new_signers, &2u32);
+    apply_signer_update(&env, &client, &new_signers, 2u32);
 
     // S2 attempts to approve, which must fail
     let res = client.try_approve_operation(&signers.get(1).unwrap(), &op_id);
@@ -1184,7 +1198,7 @@ fn test_signer_reduction_with_threshold_adjustment_succeeds() {
     new_signers.push_back(signers.get(0).unwrap());
     new_signers.push_back(signers.get(1).unwrap());
 
-    client.update_signers(&new_signers, &2u32);
+    apply_signer_update(&env, &client, &new_signers, 2u32);
 
     let stored_signers = client.get_signers();
     assert_eq!(stored_signers.len(), 2);
@@ -1241,7 +1255,7 @@ fn test_quorum_override_recalculation_after_signer_removal() {
     let mut new_signers = Vec::new(&env);
     new_signers.push_back(signers.get(0).unwrap());
     new_signers.push_back(signers.get(1).unwrap());
-    client.update_signers(&new_signers, &2u32);
+    apply_signer_update(&env, &client, &new_signers, 2u32);
 
     // The override of 3 should have been capped/recalculated to 2 (since the new signer count is
     // 2).
@@ -1410,4 +1424,250 @@ fn emergency_eligible_op_still_requires_guardian_quorum() {
     // Operation must remain Pending — no state change
     let op = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Pending);
+}
+
+// ==================== Signer Update Timelock (issue #1318) ====================
+
+#[test]
+fn test_signer_update_timelock_proposal_and_query() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    // Initial state: default delay should be readable on chain
+    assert_eq!(
+        client.get_signer_change_delay(),
+        DEFAULT_SIGNER_CHANGE_DELAY
+    );
+    assert_eq!(client.get_signer_delay(), DEFAULT_SIGNER_CHANGE_DELAY);
+    assert_eq!(client.get_signer_change_proposal(), None);
+
+    let now = env.ledger().timestamp();
+
+    // Prepare new signer set: 2 new signers, threshold 2
+    let mut new_signers = Vec::new(&env);
+    let new_s1 = Address::generate(&env);
+    let new_s2 = Address::generate(&env);
+    new_signers.push_back(new_s1.clone());
+    new_signers.push_back(new_s2.clone());
+
+    // Propose update
+    client.propose_update_signers(&new_signers, &2u32);
+
+    // Verify stored proposal
+    let proposal: SignerChangeProposal = client
+        .get_signer_change_proposal()
+        .expect("Proposal not stored");
+    assert_eq!(proposal.new_signers, new_signers);
+    assert_eq!(proposal.new_threshold, 2u32);
+    assert_eq!(proposal.proposed_at, now);
+    assert_eq!(
+        proposal.activation_timestamp,
+        now + DEFAULT_SIGNER_CHANGE_DELAY
+    );
+
+    // Verify alias returns same proposal
+    assert_eq!(client.get_signer_update_proposal(), Some(proposal));
+
+    // Signer set on contract has NOT changed yet
+    assert_eq!(client.get_signers(), signers);
+    assert_eq!(client.get_threshold(), 2u32);
+}
+
+#[test]
+fn test_early_execution_rejection() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let mut new_signers = Vec::new(&env);
+    let new_s1 = Address::generate(&env);
+    new_signers.push_back(new_s1);
+
+    client.propose_update_signers(&new_signers, &1u32);
+
+    // Immediate attempt to execute fails
+    let res = client.try_execute_update_signers();
+    assert!(res.is_err());
+
+    // Advance time to 1 second before activation
+    let delay = client.get_signer_change_delay();
+    env.ledger().with_mut(|li| {
+        li.timestamp += delay - 1;
+    });
+
+    // Still fails 1 second before delay expires
+    let res = client.try_execute_update_signers();
+    assert!(res.is_err());
+
+    // Signers remain unchanged
+    assert_eq!(client.get_signers(), signers);
+}
+
+#[test]
+fn test_execution_after_delay() {
+    let env = create_env();
+    let (multisig_id, client, _owner, _signers, _guardian) = setup_2of3(&env);
+
+    let mut new_signers = Vec::new(&env);
+    let new_s1 = Address::generate(&env);
+    let new_s2 = Address::generate(&env);
+    new_signers.push_back(new_s1.clone());
+    new_signers.push_back(new_s2.clone());
+
+    client.propose_update_signers(&new_signers, &2u32);
+
+    // Advance past delay
+    let delay = client.get_signer_change_delay();
+    env.ledger().with_mut(|li| {
+        li.timestamp += delay;
+    });
+
+    // Execute succeeds
+    client.execute_update_signers();
+
+    // Verify signers and threshold updated
+    assert_eq!(client.get_signers(), new_signers);
+    assert_eq!(client.get_threshold(), 2u32);
+
+    // Proposal is cleared
+    assert_eq!(client.get_signer_change_proposal(), None);
+
+    // Verify operations can now be proposed and executed with the new signer set
+    let token = create_token_contract(&env, &Address::generate(&env));
+    let token_admin = StellarAssetClient::new(&env, &token.address);
+    token_admin.mint(&multisig_id, &1_000i128);
+
+    let recipient = Address::generate(&env);
+    let op_id = client.propose_operation(
+        &new_s1,
+        &OperationKind::LargePayment(token.address.clone(), recipient.clone(), 50i128),
+    );
+    client.approve_operation(&new_s2, &op_id);
+
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Executed);
+    assert_eq!(token.balance(&recipient), 50i128);
+}
+
+#[test]
+fn test_cancellation_during_delay_by_existing_signer() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let mut new_signers = Vec::new(&env);
+    let new_s1 = Address::generate(&env);
+    new_signers.push_back(new_s1);
+
+    client.propose_update_signers(&new_signers, &1u32);
+    assert!(client.get_signer_change_proposal().is_some());
+
+    // Signer 1 cancels the proposal
+    let s1 = signers.get(0).unwrap();
+    client.cancel_update_signers(&s1);
+
+    // Proposal is cleared
+    assert_eq!(client.get_signer_change_proposal(), None);
+
+    // Advancing past delay and attempting execution fails
+    let delay = client.get_signer_change_delay();
+    env.ledger().with_mut(|li| {
+        li.timestamp += delay;
+    });
+
+    let res = client.try_execute_update_signers();
+    assert!(res.is_err());
+
+    // Signers remain unchanged
+    assert_eq!(client.get_signers(), signers);
+}
+
+#[test]
+fn test_cancellation_during_delay_by_owner() {
+    let env = create_env();
+    let (_id, client, owner, signers, _guardian) = setup_2of3(&env);
+
+    let mut new_signers = Vec::new(&env);
+    let new_s1 = Address::generate(&env);
+    new_signers.push_back(new_s1);
+
+    client.propose_update_signers(&new_signers, &1u32);
+
+    // Owner cancels the proposal
+    client.cancel_update_signers(&owner);
+    assert_eq!(client.get_signer_change_proposal(), None);
+
+    // Execution fails
+    let res = client.try_execute_update_signers();
+    assert!(res.is_err());
+    assert_eq!(client.get_signers(), signers);
+}
+
+#[test]
+fn test_unauthorized_cancellation_rejected() {
+    let env = create_env();
+    let (_id, client, _owner, _signers, _guardian) = setup_2of3(&env);
+
+    let mut new_signers = Vec::new(&env);
+    let new_s1 = Address::generate(&env);
+    new_signers.push_back(new_s1);
+
+    client.propose_update_signers(&new_signers, &1u32);
+
+    // Random non-signer non-owner attempts to cancel
+    let stranger = Address::generate(&env);
+    let res = client.try_cancel_update_signers(&stranger);
+    assert!(res.is_err(), "Unauthorized cancellation must be rejected");
+
+    // Proposal remains active
+    assert!(client.get_signer_change_proposal().is_some());
+}
+
+#[test]
+fn test_custom_delay_and_configuration() {
+    let env = create_env();
+    let (_id, client, _owner, _signers, _guardian) = setup_2of3(&env);
+
+    // Change delay to 3600 seconds (1 hour)
+    client.set_signer_change_delay(&3600u64);
+    assert_eq!(client.get_signer_change_delay(), 3600u64);
+
+    let now = env.ledger().timestamp();
+    let mut new_signers = Vec::new(&env);
+    let new_s1 = Address::generate(&env);
+    new_signers.push_back(new_s1.clone());
+
+    client.propose_update_signers(&new_signers, &1u32);
+    let proposal = client.get_signer_change_proposal().unwrap();
+    assert_eq!(proposal.activation_timestamp, now + 3600u64);
+
+    // At 3599s, execution rejected
+    env.ledger().with_mut(|li| {
+        li.timestamp += 3599;
+    });
+    assert!(client.try_execute_update_signers().is_err());
+
+    // At 3600s, execution succeeds
+    env.ledger().with_mut(|li| {
+        li.timestamp += 1;
+    });
+    client.execute_update_signers();
+    assert_eq!(client.get_signers().len(), 1);
+    assert_eq!(client.get_signers().get(0).unwrap(), new_s1);
+}
+
+#[test]
+fn test_execute_without_pending_proposal_fails() {
+    let env = create_env();
+    let (_id, client, _owner, _signers, _guardian) = setup_2of3(&env);
+
+    let res = client.try_execute_update_signers();
+    assert!(res.is_err());
+}
+
+#[test]
+fn test_cancel_without_pending_proposal_fails() {
+    let env = create_env();
+    let (_id, client, owner, _signers, _guardian) = setup_2of3(&env);
+
+    let res = client.try_cancel_update_signers(&owner);
+    assert!(res.is_err());
 }
