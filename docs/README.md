@@ -10,13 +10,14 @@ Welcome to the comprehensive documentation for the StellopayCore smart contract 
 4. [Examples](./examples/README.md) - Common use cases and code examples
 5. [Developer Tools](./dev-tools/README.md) - CLI tools and utilities
 6. [Architecture](./architecture.md) - System design and architecture
-7. [Build Targets](./build-targets.md) - WASM target rationale (`wasm32-unknown-unknown`)
-8. [CI Pipeline](./ci.md) - Contracts CI workflow, coverage, and local environment
-9. [Deployment](./deployment.md) - Deploy contracts to testnet/mainnet
-10. [Benchmarks](./benchmarks.md) - Soroban cost benchmarks and regression guarding
-11. [Migrations](./migrations.md) - Contract upgrade procedures, rollback, and data compatibility
-12. [Upgrade & migration strategy](./upgrade-migration-strategy.md) - RBAC-admin-gated upgrades and `migrate_state`
-13. [Building on Windows](./windows-build.md) - Fixing "export ordinal too large" (MinGW) and WASM-only build
+7. [Contract Event Schema](./contract-event-schema.md) - Event compatibility policy and schema versioning
+8. [Build Targets](./build-targets.md) - WASM target rationale (`wasm32-unknown-unknown`)
+9. [CI Pipeline](./ci.md) - Contracts CI workflow, coverage, and local environment
+10. [Deployment](./deployment.md) - Deploy contracts to testnet/mainnet
+11. [Benchmarks](./benchmarks.md) - Soroban cost benchmarks and regression guarding
+12. [Migrations](./migrations.md) - Contract upgrade procedures, rollback, and data compatibility
+13. [Upgrade & migration strategy](./upgrade-migration-strategy.md) - RBAC-admin-gated upgrades and `migrate_state`
+14. [Building on Windows](./windows-build.md) - Fixing "export ordinal too large" (MinGW) and WASM-only build
 
 ## Quick Start
 

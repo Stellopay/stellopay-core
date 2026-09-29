@@ -15,9 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Enforcing: run_ci.py exits non-zero on any documentation failure.
+      # Pre-existing violations are recorded in tools/doc_checker/baseline.json
+      # and only warn; a NEW violation (including growth of an existing one)
+      # fails the job. Baseline entries can only change by explicitly
+      # regenerating that file (--update-baseline), which lands as a
+      # reviewable diff in the PR.
       - name: Check contract documentation
         run: python3 tools/doc_checker/run_ci.py
-        continue-on-error: true
 
       - name: Reject committed Cargo build output
         run: bash scripts/check-no-committed-build-output.sh
