@@ -5,6 +5,8 @@
     "multisig": {
       "size_bytes": 40846,
       "captured_at": "2026-09-29"
+      "size_bytes": 49486,
+      "captured_at": "2026-09-25"
     },
     "price_oracle": {
       "size_bytes": 219749,

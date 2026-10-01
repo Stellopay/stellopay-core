@@ -212,17 +212,54 @@ fn test_admin_usage_reset() {
 }
 
 #[test]
-fn test_admin_transfer() {
+fn test_admin_transfer_requires_acceptance() {
     let env = create_env();
     let (_id, client) = register_contract(&env);
     let admin1 = Address::generate(&env);
     let admin2 = Address::generate(&env);
+    let user = Address::generate(&env);
 
     client.initialize(&admin1, &1u32, &1u32, &false);
     assert_eq!(client.get_admin(), Some(admin1.clone()));
 
     client.transfer_admin(&admin2);
-    assert_eq!(client.get_admin(), Some(admin2.clone()));
+    assert_eq!(client.get_admin(), Some(admin1.clone()));
+
+    // The current admin retains access while the transfer is pending.
+    assert!(client.try_set_limit_for(&user, &2u32, &1u32).is_ok());
+    client.accept_admin(&admin2);
+    assert_eq!(client.get_admin(), Some(admin2));
+    assert!(client.try_set_limit_for(&user, &2u32, &1u32).is_ok());
+}
+
+#[test]
+fn test_non_pending_admin_cannot_accept_transfer() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let pending = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.initialize(&admin, &1u32, &1u32, &false);
+    client.transfer_admin(&pending);
+
+    assert!(client.try_accept_admin(&attacker).is_err());
+    assert_eq!(client.get_admin(), Some(admin));
+}
+
+#[test]
+fn test_admin_can_cancel_pending_transfer() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let pending = Address::generate(&env);
+
+    client.initialize(&admin, &1u32, &1u32, &false);
+    client.transfer_admin(&pending);
+    client.cancel_admin_transfer();
+
+    assert_eq!(client.get_admin(), Some(admin));
+    assert!(client.try_accept_admin(&pending).is_err());
 }
 
 #[test]

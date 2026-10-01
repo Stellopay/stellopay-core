@@ -24,7 +24,7 @@ const MAX_QUORUM_SUBMISSIONS: u32 = 100;
 pub enum OracleError {
     /// Contract has not been initialized yet.
     NotInitialized = 1,
-    /// `initialize` was called more than once.
+    /// `initialize_oracle` was called more than once.
     AlreadyInitialized = 2,
     /// Caller lacks the required permission (not owner).
     NotAuthorized = 3,
@@ -361,7 +361,7 @@ impl PriceOracleContract {
     /// @param payroll_contract Address of the core payroll contract that
     ///                         will consume FX rates.
     /// @return Result<(), OracleError>
-    pub fn initialize(
+    pub fn initialize_oracle(
         env: Env,
         owner: Address,
         payroll_contract: Address,

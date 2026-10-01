@@ -51,6 +51,7 @@ pub enum RateLimitError {
 #[derive(Clone)]
 enum StorageKey {
     Admin,
+    PendingAdmin,
     Initialized,
     /// Default burst capacity for all addresses
     DefaultBurst,
@@ -297,14 +298,39 @@ impl RateLimiter {
             .remove(&StorageKey::ContractUsage(contract));
     }
 
-    /// Transfers admin rights to a new address.
+    /// Proposes transferring admin rights to a new address.
     ///
-    /// @dev Only callable by current admin.
+    /// @dev Only callable by current admin. The new admin has no privileges
+    ///      until they accept the transfer.
     pub fn transfer_admin(env: Env, new_admin: Address) {
         Self::require_admin_auth(&env);
         env.storage()
             .persistent()
-            .set(&StorageKey::Admin, &new_admin);
+            .set(&StorageKey::PendingAdmin, &new_admin);
+    }
+
+    /// Accepts a pending admin transfer.
+    ///
+    /// @dev Only the pending admin may call this entry point.
+    pub fn accept_admin(env: Env, caller: Address) {
+        caller.require_auth();
+        let pending: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::PendingAdmin)
+            .expect("no pending admin");
+        assert!(caller == pending, "caller is not pending admin");
+
+        env.storage().persistent().set(&StorageKey::Admin, &caller);
+        env.storage().persistent().remove(&StorageKey::PendingAdmin);
+    }
+
+    /// Cancels a pending admin transfer.
+    ///
+    /// @dev Only callable by current admin. Safe no-op when no transfer is pending.
+    pub fn cancel_admin_transfer(env: Env) {
+        Self::require_admin_auth(&env);
+        env.storage().persistent().remove(&StorageKey::PendingAdmin);
     }
 
     /// Gets current config for an address.
