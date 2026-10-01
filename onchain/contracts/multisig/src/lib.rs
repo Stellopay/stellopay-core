@@ -33,6 +33,12 @@ pub enum MultisigError {
     /// through the same contract instance).  These payloads are rejected at
     /// proposal time.
     SelfReferentialRecipient = 3,
+
+    /// A signer set update was attempted to be executed before its timelock delay elapsed.
+    TimelockNotElapsed = 4,
+
+    /// No pending signer update proposal exists to execute or cancel.
+    NoPendingProposal = 5,
 }
 
 #[contract]
@@ -93,17 +99,30 @@ pub struct Operation {
 }
 
 #[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignerChangeProposal {
+    pub new_signers: Vec<Address>,
+    pub new_threshold: u32,
+    pub proposed_at: u64,
+    pub activation_timestamp: u64,
+}
+
+#[contracttype]
 #[derive(Clone)]
 enum StorageKey {
     Initialized,
     Owner,
-    EmergencyGuardian,
+    EmergencyGuardians,
+    EmergencyThreshold,
+    EmergencyApprovals(u128),
     Signers,
     Threshold,
     OperationCounter,
     Operation(u128),
     Approvals(u128),
     ThresholdOverride(OperationType),
+    SignerChangeDelay,
+    SignerChangeProposal,
 }
 
 #[contracttype]
@@ -130,9 +149,56 @@ pub struct OperationExecutedEvent {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyGuardiansUpdatedEvent {
+    pub guardians: Vec<Address>,
+    pub threshold: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyApprovedEvent {
+    pub operation_id: u128,
+    pub guardian: Address,
+    pub approvals: u32,
+    pub threshold: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationCancelledEvent {
     pub operation_id: u128,
 }
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignerUpdateProposedEvent {
+    /// List of new signer addresses proposed.
+    pub new_signers: Vec<Address>,
+    /// New default threshold proposed.
+    pub new_threshold: u32,
+    /// Timelock delay in seconds required before activation.
+    pub delay: u64,
+    /// Ledger timestamp at which the proposal becomes executable.
+    pub activation_timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignerUpdateExecutedEvent {
+    /// Activated list of new signers.
+    pub new_signers: Vec<Address>,
+    /// Activated new threshold.
+    pub new_threshold: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignerUpdateCancelledEvent {
+    /// Address of the signer or owner that cancelled the proposal.
+    pub cancelled_by: Address,
+}
+
+pub const DEFAULT_SIGNER_CHANGE_DELAY: u64 = 7 * 24 * 3600;
 
 fn require_initialized(env: &Env) {
     let initialized = env
@@ -141,6 +207,62 @@ fn require_initialized(env: &Env) {
         .get::<_, bool>(&StorageKey::Initialized)
         .unwrap_or(false);
     assert!(initialized, "Contract not initialized");
+}
+
+fn read_owner(env: &Env) -> Address {
+    env.storage()
+        .persistent()
+        .get::<_, Address>(&StorageKey::Owner)
+        .expect("Owner not set")
+}
+
+fn read_signer_change_delay(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get::<_, u64>(&StorageKey::SignerChangeDelay)
+        .unwrap_or(DEFAULT_SIGNER_CHANGE_DELAY)
+}
+
+fn write_signer_change_delay(env: &Env, delay: u64) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::SignerChangeDelay, &delay);
+}
+
+fn read_signer_change_proposal(env: &Env) -> Option<SignerChangeProposal> {
+    env.storage()
+        .persistent()
+        .get::<_, SignerChangeProposal>(&StorageKey::SignerChangeProposal)
+}
+
+fn write_signer_change_proposal(env: &Env, proposal: &SignerChangeProposal) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::SignerChangeProposal, proposal);
+}
+
+fn remove_signer_change_proposal(env: &Env) {
+    env.storage()
+        .persistent()
+        .remove(&StorageKey::SignerChangeProposal);
+}
+
+fn validate_signers_and_threshold(new_signers: &Vec<Address>, new_threshold: u32) {
+    let signer_count = new_signers.len();
+    assert!(signer_count > 0, "At least one signer required");
+    assert!(
+        new_threshold > 0 && new_threshold <= signer_count,
+        "New threshold must be between 1 and the number of signers"
+    );
+
+    // Ensure signer list has no duplicates.
+    for i in 0..signer_count {
+        let a = new_signers.get(i).unwrap();
+        for j in (i + 1)..signer_count {
+            let b = new_signers.get(j).unwrap();
+            assert!(a != b, "Duplicate signer");
+        }
+    }
 }
 
 fn read_signers(env: &Env) -> Vec<Address> {
@@ -291,14 +413,107 @@ fn approval_count(env: &Env, operation_id: u128) -> u32 {
     count
 }
 
-fn is_emergency_guardian(env: &Env, addr: &Address) -> bool {
-    match env
-        .storage()
+fn read_emergency_guardians(env: &Env) -> Vec<Address> {
+    env.storage()
         .persistent()
-        .get::<_, Address>(&StorageKey::EmergencyGuardian)
-    {
-        Some(g) => &g == addr,
-        None => false,
+        .get::<_, Vec<Address>>(&StorageKey::EmergencyGuardians)
+        .unwrap_or(Vec::new(env))
+}
+
+fn write_emergency_guardians(env: &Env, guardians: &Vec<Address>) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyGuardians, guardians);
+}
+
+fn read_emergency_threshold(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get::<_, u32>(&StorageKey::EmergencyThreshold)
+        .unwrap_or(1)
+}
+
+fn write_emergency_threshold(env: &Env, threshold: u32) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyThreshold, &threshold);
+}
+
+fn is_emergency_guardian(env: &Env, addr: &Address) -> bool {
+    let guardians = read_emergency_guardians(env);
+    for i in 0..guardians.len() {
+        if &guardians.get(i).unwrap() == addr {
+            return true;
+        }
+    }
+    false
+}
+
+fn read_emergency_approvals(env: &Env, operation_id: u128) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get::<_, Vec<Address>>(&StorageKey::EmergencyApprovals(operation_id))
+        .unwrap_or(Vec::new(env))
+}
+
+fn write_emergency_approvals(env: &Env, operation_id: u128, approvals: &Vec<Address>) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyApprovals(operation_id), approvals);
+}
+
+fn has_emergency_approved(env: &Env, operation_id: u128, guardian: &Address) -> bool {
+    let approvals = read_emergency_approvals(env, operation_id);
+    for i in 0..approvals.len() {
+        if &approvals.get(i).unwrap() == guardian {
+            return true;
+        }
+    }
+    false
+}
+
+/// Counts approvals that were cast by addresses still in the guardian set.
+///
+/// Removing a guardian therefore invalidates its prior approvals, mirroring the
+/// way `approval_count` only counts current signers.
+fn guardian_approval_count(env: &Env, operation_id: u128) -> u32 {
+    let approvals = read_emergency_approvals(env, operation_id);
+    let mut count = 0;
+    for i in 0..approvals.len() {
+        let addr = approvals.get(i).unwrap();
+        if is_emergency_guardian(env, &addr) {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn validate_emergency_guardians(guardians: &Vec<Address>, threshold: u32) {
+    let count = guardians.len();
+    assert!(count > 0, "At least one guardian required");
+    assert!(
+        threshold > 0 && threshold <= count,
+        "Guardian threshold must be between 1 and the number of guardians"
+    );
+    for i in 0..count {
+        let a = guardians.get(i).unwrap();
+        for j in (i + 1)..count {
+            let b = guardians.get(j).unwrap();
+            assert!(a != b, "Duplicate guardian");
+        }
+    }
+}
+
+/// Default guardian quorum when none is supplied explicitly.
+///
+/// A single guardian defaults to one (a deliberate, non-zero approval), while
+/// any larger set defaults to two so a multi-guardian deployment is never
+/// silently reducible to a single signature.
+fn default_emergency_threshold(guardian_count: u32) -> u32 {
+    if guardian_count > 1 {
+        2
+    } else {
+        1
     }
 }
 
@@ -409,21 +624,7 @@ impl MultisigContract {
             .unwrap_or(false);
         assert!(!initialized, "Contract already initialized");
 
-        let signer_count = signers.len();
-        assert!(signer_count > 0, "At least one signer required");
-        assert!(
-            threshold > 0 && threshold <= signer_count,
-            "Invalid threshold"
-        );
-
-        // Ensure signer list has no duplicates.
-        for i in 0..signer_count {
-            let a = signers.get(i).unwrap();
-            for j in (i + 1)..signer_count {
-                let b = signers.get(j).unwrap();
-                assert!(a != b, "Duplicate signer");
-            }
-        }
+        validate_signers_and_threshold(&signers, threshold);
 
         env.storage().persistent().set(&StorageKey::Owner, &owner);
         env.storage()
@@ -434,51 +635,100 @@ impl MultisigContract {
             .set(&StorageKey::Threshold, &threshold);
 
         if let Some(g) = emergency_guardian {
-            env.storage()
-                .persistent()
-                .set(&StorageKey::EmergencyGuardian, &g);
+            let mut guardians = Vec::new(&env);
+            guardians.push_back(g);
+            // A single guardian defaults to a quorum of one. That is a
+            // deliberate, non-zero threshold: the guardian must still record an
+            // explicit approval (`approve_emergency`) before executing.
+            write_emergency_guardians(&env, &guardians);
+            write_emergency_threshold(&env, default_emergency_threshold(guardians.len()));
         }
+
+        env.storage()
+            .persistent()
+            .set(&StorageKey::SignerChangeDelay, &DEFAULT_SIGNER_CHANGE_DELAY);
 
         env.storage()
             .persistent()
             .set(&StorageKey::Initialized, &true);
     }
 
-    /// @notice Updates the signer set and default threshold.
-    /// @dev Can only be called by the designated owner.
+    /// @notice Proposes updating the signer set and default threshold behind a timelock.
+    /// @dev Requires designated owner authorization.
+    /// @param env Contract execution environment.
+    /// @param new_signers The new list of signers.
+    /// @param new_threshold The new default threshold.
+    pub fn propose_update_signers(env: Env, new_signers: Vec<Address>, new_threshold: u32) {
+        require_initialized(&env);
+        let owner = read_owner(&env);
+        owner.require_auth();
+
+        validate_signers_and_threshold(&new_signers, new_threshold);
+
+        let delay = read_signer_change_delay(&env);
+        let now = env.ledger().timestamp();
+        let activation_timestamp = now.checked_add(delay).expect("Timestamp overflow");
+
+        let proposal = SignerChangeProposal {
+            new_signers: new_signers.clone(),
+            new_threshold,
+            proposed_at: now,
+            activation_timestamp,
+        };
+        write_signer_change_proposal(&env, &proposal);
+
+        env.events().publish(
+            ("signer_update_proposed",),
+            SignerUpdateProposedEvent {
+                new_signers,
+                new_threshold,
+                delay,
+                activation_timestamp,
+            },
+        );
+    }
+
+    /// @notice Proposes updating the signer set and default threshold behind a timelock (alias).
+    /// @dev Requires designated owner authorization.
+    /// @param env Contract execution environment.
+    /// @param new_signers The new list of signers.
+    /// @param new_threshold The new default threshold.
+    pub fn propose_signer_update(env: Env, new_signers: Vec<Address>, new_threshold: u32) {
+        Self::propose_update_signers(env, new_signers, new_threshold);
+    }
+
+    /// @notice Proposes updating the signer set and default threshold behind a timelock.
+    /// @dev Maintained for API compatibility; initiates the timelocked proposal flow. Requires owner auth.
+    /// @param env Contract execution environment.
     /// @param new_signers The new list of signers.
     /// @param new_threshold The new default threshold.
     pub fn update_signers(env: Env, new_signers: Vec<Address>, new_threshold: u32) {
+        Self::propose_update_signers(env, new_signers, new_threshold);
+    }
+
+    /// @notice Executes a pending signer set and threshold update after the timelock delay has elapsed.
+    /// @dev Requires contract initialized and timelock delay elapsed.
+    /// @param env Contract execution environment.
+    pub fn execute_update_signers(env: Env) {
         require_initialized(&env);
-        let owner = env
-            .storage()
-            .persistent()
-            .get::<_, Address>(&StorageKey::Owner)
-            .expect("Owner not set");
-        owner.require_auth();
+        let proposal = match read_signer_change_proposal(&env) {
+            Some(p) => p,
+            None => panic_with_error!(&env, MultisigError::NoPendingProposal),
+        };
 
-        let signer_count = new_signers.len();
-        assert!(signer_count > 0, "At least one signer required");
-        assert!(
-            new_threshold > 0 && new_threshold <= signer_count,
-            "New threshold must be between 1 and the number of signers"
-        );
-
-        // Ensure signer list has no duplicates.
-        for i in 0..signer_count {
-            let a = new_signers.get(i).unwrap();
-            for j in (i + 1)..signer_count {
-                let b = new_signers.get(j).unwrap();
-                assert!(a != b, "Duplicate signer");
-            }
+        let now = env.ledger().timestamp();
+        if now < proposal.activation_timestamp {
+            panic_with_error!(&env, MultisigError::TimelockNotElapsed);
         }
 
+        let signer_count = proposal.new_signers.len();
+
         env.storage()
             .persistent()
-            .set(&StorageKey::Signers, &new_signers);
+            .set(&StorageKey::Signers, &proposal.new_signers);
         env.storage()
             .persistent()
-            .set(&StorageKey::Threshold, &new_threshold);
+            .set(&StorageKey::Threshold, &proposal.new_threshold);
 
         // Adjust/cap any active per-operation overrides to ensure they do not exceed the new signer
         // count.
@@ -495,6 +745,139 @@ impl MultisigContract {
                 }
             }
         }
+
+        remove_signer_change_proposal(&env);
+
+        env.events().publish(
+            ("signer_update_executed",),
+            SignerUpdateExecutedEvent {
+                new_signers: proposal.new_signers,
+                new_threshold: proposal.new_threshold,
+            },
+        );
+    }
+
+    /// @notice Executes a pending signer set and threshold update after the timelock delay has elapsed (alias).
+    /// @dev Requires contract initialized and timelock delay elapsed.
+    /// @param env Contract execution environment.
+    pub fn execute_signer_update(env: Env) {
+        Self::execute_update_signers(env);
+    }
+
+    /// @notice Cancels a pending signer update proposal during the timelock delay.
+    /// @dev Can be called by any current signer or by the contract owner. Requires caller auth.
+    /// @param env Contract execution environment.
+    /// @param caller The address requesting cancellation (must be a current signer or owner).
+    pub fn cancel_update_signers(env: Env, caller: Address) {
+        require_initialized(&env);
+        caller.require_auth();
+
+        let owner = read_owner(&env);
+        assert!(
+            is_signer(&env, &caller) || caller == owner,
+            "Only existing signers or owner can cancel"
+        );
+
+        if read_signer_change_proposal(&env).is_none() {
+            panic_with_error!(&env, MultisigError::NoPendingProposal);
+        }
+
+        remove_signer_change_proposal(&env);
+
+        env.events().publish(
+            ("signer_update_cancelled",),
+            SignerUpdateCancelledEvent {
+                cancelled_by: caller,
+            },
+        );
+    }
+
+    /// @notice Cancels a pending signer update proposal during the timelock delay (alias).
+    /// @dev Requires caller auth (must be existing signer or owner).
+    /// @param env Contract execution environment.
+    /// @param caller The address requesting cancellation.
+    pub fn cancel_signer_update(env: Env, caller: Address) {
+        Self::cancel_update_signers(env, caller);
+    }
+
+    /// @notice Returns the pending signer change proposal, if any.
+    /// @dev Does not require authentication; readable by anyone.
+    /// @param env Contract execution environment.
+    /// @return The pending proposal or None.
+    pub fn get_signer_change_proposal(env: Env) -> Option<SignerChangeProposal> {
+        read_signer_change_proposal(&env)
+    }
+
+    /// @notice Returns the pending signer change proposal, if any (alias).
+    /// @dev Does not require authentication; readable by anyone.
+    /// @param env Contract execution environment.
+    /// @return The pending proposal or None.
+    pub fn get_signer_update_proposal(env: Env) -> Option<SignerChangeProposal> {
+        read_signer_change_proposal(&env)
+    }
+
+    /// @notice Returns the configured delay in seconds before a proposed signer change can be executed.
+    /// @dev Does not require authentication; readable by anyone.
+    /// @param env Contract execution environment.
+    /// @return The configured delay in seconds.
+    pub fn get_signer_change_delay(env: Env) -> u64 {
+        read_signer_change_delay(&env)
+    }
+
+    /// @notice Returns the configured delay in seconds before a proposed signer change can be executed (alias).
+    /// @dev Does not require authentication; readable by anyone.
+    /// @param env Contract execution environment.
+    /// @return The configured delay in seconds.
+    pub fn get_signer_delay(env: Env) -> u64 {
+        read_signer_change_delay(&env)
+    }
+
+    /// @notice Sets the delay in seconds before a proposed signer change can be executed.
+    /// @dev Can only be called by the designated owner. Requires owner auth.
+    /// @param env Contract execution environment.
+    /// @param delay The new delay in seconds.
+    pub fn set_signer_change_delay(env: Env, delay: u64) {
+        require_initialized(&env);
+        let owner = read_owner(&env);
+        owner.require_auth();
+        assert!(delay > 0, "Delay must be positive");
+        write_signer_change_delay(&env, delay);
+    }
+
+    /// @notice Configures the emergency guardian set and its approval quorum.
+    /// @dev Owner-only. When `threshold` is `None` it defaults to 1 for a single
+    ///      guardian and 2 for any larger set, so a multi-guardian deployment is
+    ///      never silently reduced to a single signature. An explicit threshold
+    ///      must be within `1..=guardians.len()`.
+    /// @param caller Must be the contract owner.
+    /// @param guardians New guardian set (non-empty, no duplicates).
+    /// @param threshold Optional explicit quorum.
+    pub fn set_emergency_guardians(
+        env: Env,
+        caller: Address,
+        guardians: Vec<Address>,
+        threshold: Option<u32>,
+    ) {
+        require_initialized(&env);
+        caller.require_auth();
+        assert!(caller == read_owner(&env), "Only owner can set guardians");
+
+        let effective = match threshold {
+            Some(value) => value,
+            None => default_emergency_threshold(guardians.len()),
+        };
+        validate_emergency_guardians(&guardians, effective);
+
+        write_emergency_guardians(&env, &guardians);
+        write_emergency_threshold(&env, effective);
+
+        env.events().publish(
+            ("emergency_guardians_updated",),
+            EmergencyGuardiansUpdatedEvent {
+                guardians: guardians.clone(),
+                threshold: effective,
+            },
+        );
     }
 
     /// @notice Proposes a new multisig-protected operation.
@@ -614,15 +997,63 @@ impl MultisigContract {
         );
     }
 
-    /// @notice Executes a pending operation via the emergency guardian.
-    /// @dev Guardian can bypass threshold checks **only** for operations
-    ///      explicitly flagged as emergency-eligible (currently only
-    ///      `DisputeResolution`). Routine operations (`LargePayment`),
-    ///      governance changes (`ContractUpgrade`), and threshold overrides
-    ///      (`SetThresholdOverride`) are rejected even when called by the
-    ///      configured guardian. This prevents the break-glass mechanism
-    ///      from being used to circumvent the normal multi-signer approval
-    ///      process for non-urgent operations.
+    /// @notice Records a guardian's approval for a pending, emergency-eligible
+    ///         operation.
+    /// @dev Emergency execution is quorum-gated, so the guardian must approve
+    ///      first. Approvals are idempotent and are stored separately from
+    ///      signer approvals so the executed operation records exactly which
+    ///      guardians approved it.
+    /// @param guardian Configured guardian address.
+    /// @param operation_id Operation identifier.
+    pub fn approve_emergency(env: Env, guardian: Address, operation_id: u128) {
+        require_initialized(&env);
+        guardian.require_auth();
+        assert!(
+            is_emergency_guardian(&env, &guardian),
+            "Only guardian can approve"
+        );
+
+        let op = read_operation(&env, operation_id);
+        assert!(
+            op.status == OperationStatus::Pending,
+            "Operation not pending"
+        );
+        assert!(
+            is_emergency_eligible(&op.kind),
+            "Operation kind not eligible for emergency execution"
+        );
+
+        if has_emergency_approved(&env, operation_id, &guardian) {
+            return;
+        }
+
+        let mut approvals = read_emergency_approvals(&env, operation_id);
+        approvals.push_back(guardian.clone());
+        let count = approvals.len();
+        let threshold = read_emergency_threshold(&env);
+        write_emergency_approvals(&env, operation_id, &approvals);
+
+        env.events().publish(
+            ("emergency_approved", operation_id),
+            EmergencyApprovedEvent {
+                operation_id,
+                guardian,
+                approvals: count,
+                threshold,
+            },
+        );
+    }
+
+    /// @notice Executes a pending, emergency-eligible operation once the
+    ///         guardian quorum has approved it.
+    /// @dev Break-glass execution is gated on a guardian quorum rather than a
+    ///      single signature: the guardian must first record an approval via
+    ///      `approve_emergency`, and execution requires at least
+    ///      `get_emergency_threshold` guardian approvals. A single guardian can
+    ///      therefore no longer execute an eligible operation that has
+    ///      collected zero approvals. Only `DisputeResolution` is eligible;
+    ///      routine operations and governance changes are rejected here and in
+    ///      `perform_execute`.
     /// @param guardian Configured guardian address.
     /// @param operation_id Operation identifier.
     pub fn emergency_execute(env: Env, guardian: Address, operation_id: u128) {
@@ -642,6 +1073,13 @@ impl MultisigContract {
         assert!(
             is_emergency_eligible(&op.kind),
             "Operation kind not eligible for emergency execution"
+        );
+
+        // Require a guardian quorum; zero approvals never executes.
+        let threshold = read_emergency_threshold(&env);
+        assert!(
+            guardian_approval_count(&env, operation_id) >= threshold,
+            "Emergency quorum not met"
         );
 
         perform_execute(&env, operation_id);
@@ -687,6 +1125,21 @@ impl MultisigContract {
     /// @dev Requires caller authentication
     pub fn get_approvals(env: Env, operation_id: u128) -> Vec<Address> {
         read_approvals(&env, operation_id)
+    }
+
+    /// @notice Returns the configured emergency guardian set.
+    pub fn get_emergency_guardians(env: Env) -> Vec<Address> {
+        read_emergency_guardians(&env)
+    }
+
+    /// @notice Returns the guardian approval quorum required for emergency execution.
+    pub fn get_emergency_threshold(env: Env) -> u32 {
+        read_emergency_threshold(&env)
+    }
+
+    /// @notice Returns the guardians that have recorded an emergency approval.
+    pub fn get_emergency_approvals(env: Env, operation_id: u128) -> Vec<Address> {
+        read_emergency_approvals(&env, operation_id)
     }
 
     /// @notice Records the caller's approval for an operation and, once the

@@ -3600,6 +3600,13 @@ pub fn get_employee_claimed_periods(env: &Env, agreement_id: u128, employee_inde
 /// - Cannot claim more than total periods
 /// - Works during grace period
 pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollError> {
+    acquire_reentrancy_guard(env)?;
+    let result = claim_time_based_inner(env, agreement_id);
+    release_reentrancy_guard(env);
+    result
+}
+
+fn claim_time_based_inner(env: &Env, agreement_id: u128) -> Result<(), PayrollError> {
     // Check emergency pause
     if is_emergency_paused(env) {
         return Err(PayrollError::EmergencyPaused);
@@ -3694,10 +3701,28 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollErro
         return Err(PayrollError::InsufficientEscrowBalance);
     }
 
+    // Persist the state change before the external token transfer so a malicious
+    // callback cannot re-enter and claim the same periods again.
+    let new_escrow_balance = escrow_balance - amount;
+    DataKey::set_agreement_escrow_balance(env, agreement_id, &agreement.token, new_escrow_balance);
+
+    claimed_periods += periods_to_pay;
+    agreement.claimed_periods = Some(claimed_periods);
+    agreement.paid_amount += amount;
+    DataKey::set_agreement_paid_amount(env, agreement_id, agreement.paid_amount);
+
+    if claimed_periods >= num_periods {
+        agreement.status = AgreementStatus::Completed;
+    }
+
+    env.storage()
+        .persistent()
+        .set(&StorageKey::Agreement(agreement_id), &agreement);
+
     // Get contract address
     let contract_address = env.current_contract_address();
 
-    // Transfer tokens from escrow to contributor
+    // Transfer tokens from escrow to contributor.
     let token_client = token::Client::new(env, &agreement.token);
     env.authorize_as_current_contract(Vec::from_array(
         env,
@@ -3718,27 +3743,6 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollErro
         })],
     ));
     token_client.transfer(&contract_address, &contributor, &amount);
-
-    // Update escrow balance
-    let new_escrow_balance = escrow_balance - amount;
-    DataKey::set_agreement_escrow_balance(env, agreement_id, &agreement.token, new_escrow_balance);
-
-    // Update claimed periods and paid amount
-    claimed_periods += periods_to_pay;
-    agreement.claimed_periods = Some(claimed_periods);
-    agreement.paid_amount += amount;
-    // Keep the standalone paid-amount key in sync, like claim_payroll,
-    // batch_claim_payroll and resolve_dispute do, so the escrow-conservation
-    // invariant (remaining + paid == total) holds for time-based claims too.
-    DataKey::set_agreement_paid_amount(env, agreement_id, agreement.paid_amount);
-
-    if claimed_periods >= num_periods {
-        agreement.status = AgreementStatus::Completed;
-    }
-
-    env.storage()
-        .persistent()
-        .set(&StorageKey::Agreement(agreement_id), &agreement);
 
     emit_payment_sent(
         env,

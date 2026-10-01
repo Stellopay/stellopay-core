@@ -3,9 +3,8 @@
   "captured_at": "2026-08-27",
   "contracts": {
     "multisig": {
-      "size_bytes": 41686,
-      "sha256": "sha256:773dad8ad75e11eecd4ac7ec2f1e3bd8a80339903b87b4e18ac93ab56228aaa5",
-      "captured_at": "2026-08-27"
+      "size_bytes": 49486,
+      "captured_at": "2026-09-25"
     },
     "price_oracle": {
       "size_bytes": 220399,
