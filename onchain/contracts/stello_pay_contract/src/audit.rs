@@ -88,16 +88,12 @@ pub fn set_audit_logger(env: &Env, owner: Address, audit_logger: Address) {
         panic_with_error!(env, crate::storage::PayrollError::Unauthorized);
     }
 
-    env.storage()
-        .persistent()
-        .set(&AuditStorageKey::AuditLogger, &audit_logger);
+    crate::storage::persistent_set(env, &AuditStorageKey::AuditLogger, &audit_logger);
 }
 
 /// @notice Returns the configured shared audit logger address, if present.
 pub fn get_audit_logger(env: &Env) -> Option<Address> {
-    env.storage()
-        .persistent()
-        .get(&AuditStorageKey::AuditLogger)
+    crate::storage::persistent_get(env, &AuditStorageKey::AuditLogger)
 }
 
 /// @notice Sets the maximum number of lifecycle audit entries to retain in persistent storage.
@@ -130,18 +126,13 @@ pub fn get_audit_retention(env: &Env) -> u64 {
 
 /// @notice Returns the number of local lifecycle audit entries appended (all-time counter).
 pub fn get_audit_entry_count(env: &Env) -> u64 {
-    env.storage()
-        .persistent()
-        .get(&AuditStorageKey::AuditEntryCount)
-        .unwrap_or(0u64)
+    crate::storage::persistent_get(env, &AuditStorageKey::AuditEntryCount).unwrap_or(0u64)
 }
 
 /// @notice Returns one local lifecycle audit entry by its append-only id.
 /// Returns `None` for entries that have been evicted by the retention policy.
 pub fn get_audit_entry(env: &Env, audit_id: u64) -> Option<LifecycleAuditEntry> {
-    env.storage()
-        .persistent()
-        .get(&AuditStorageKey::AuditEntry(audit_id))
+    crate::storage::persistent_get(env, &AuditStorageKey::AuditEntry(audit_id))
 }
 
 /// @notice Returns lifecycle audit entries belonging to a specific employer's agreements.
@@ -212,11 +203,8 @@ pub fn record_entry(
 ) -> u64 {
     let external_log_id = append_external_log(env, &actor, &event, &subject, &amount);
 
-    let id = env
-        .storage()
-        .persistent()
-        .get(&AuditStorageKey::NextAuditEntryId)
-        .unwrap_or(1u64);
+    let id =
+        crate::storage::persistent_get(env, &AuditStorageKey::NextAuditEntryId).unwrap_or(1u64);
 
     let entry = LifecycleAuditEntry {
         id,
@@ -229,6 +217,9 @@ pub fn record_entry(
         external_log_id,
     };
 
+    crate::storage::persistent_set(env, &AuditStorageKey::AuditEntry(id), &entry);
+    crate::storage::persistent_set(env, &AuditStorageKey::NextAuditEntryId, &(id + 1));
+    crate::storage::persistent_set(env, &AuditStorageKey::AuditEntryCount, &id);
     // Emit an event for every entry regardless of the retention policy so
     // off-chain indexers always observe the full history.
     emit_audit_entry(env, &entry);
@@ -267,15 +258,6 @@ pub fn record_entry(
         }
     }
 
-    env.storage()
-        .persistent()
-        .set(&AuditStorageKey::AuditEntry(id), &entry);
-    env.storage()
-        .persistent()
-        .set(&AuditStorageKey::NextAuditEntryId, &(id + 1));
-    env.storage()
-        .persistent()
-        .set(&AuditStorageKey::AuditEntryCount, &id);
 
     id
 }

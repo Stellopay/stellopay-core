@@ -74,19 +74,14 @@ pub struct PayrollContract;
 /// initialization, or after an archived persistent entry is restored. Keeping
 /// this accessor shared prevents each entrypoint from inventing its own trap.
 pub(crate) fn contract_owner(env: &Env) -> Result<Address, PayrollError> {
-    env.storage()
-        .persistent()
-        .get(&StorageKey::Owner)
-        .ok_or(PayrollError::Unauthorized)
+    crate::storage::persistent_get(env, &StorageKey::Owner).ok_or(PayrollError::Unauthorized)
 }
 
 #[contractimpl]
 impl PayrollContract {
     fn require_upgrade_admin(env: &Env, operator: &Address) {
-        if let Some(rbac_addr) = env
-            .storage()
-            .persistent()
-            .get::<_, Address>(&StorageKey::RbacContract)
+        if let Some(rbac_addr) =
+            crate::storage::persistent_get::<_, Address>(env, &StorageKey::RbacContract)
         {
             operator.require_auth();
             let rbac = RbacContractClient::new(env, &rbac_addr);
@@ -119,11 +114,12 @@ impl PayrollContract {
     /// # Security
     /// Sets the initial administrative authority for the contract.
     pub fn initialize(env: Env, owner: Address) {
+        crate::storage::extend_instance_ttl(&env);
         owner.require_auth();
-        if env.storage().persistent().has(&StorageKey::Owner) {
+        if crate::storage::persistent_has(&env, &StorageKey::Owner) {
             panic_with_error!(env, PayrollError::InvalidData);
         }
-        env.storage().persistent().set(&StorageKey::Owner, &owner);
+        crate::storage::persistent_set(&env, &StorageKey::Owner, &owner);
     }
 
     /// Sets the linked RBAC contract address used for admin-gated operations (e.g. upgrades).
@@ -135,6 +131,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires owner authentication
     pub fn set_rbac_contract(env: Env, owner: Address, rbac_contract: Address) {
+        crate::storage::extend_instance_ttl(&env);
         let stored_owner = match contract_owner(&env) {
             Ok(owner) => owner,
             Err(error) => panic_with_error!(&env, error),
@@ -143,9 +140,7 @@ impl PayrollContract {
         if owner != stored_owner {
             panic_with_error!(&env, PayrollError::Unauthorized);
         }
-        env.storage()
-            .persistent()
-            .set(&StorageKey::RbacContract, &rbac_contract);
+        crate::storage::persistent_set(&env, &StorageKey::RbacContract, &rbac_contract);
     }
 
     /// Sets the linked Rate Limiter contract address used to throttle claims.
@@ -157,6 +152,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires owner authentication
     pub fn set_rate_limiter_contract(env: Env, owner: Address, rate_limiter: Address) {
+        crate::storage::extend_instance_ttl(&env);
         let stored_owner = match contract_owner(&env) {
             Ok(owner) => owner,
             Err(error) => panic_with_error!(&env, error),
@@ -165,16 +161,13 @@ impl PayrollContract {
         if owner != stored_owner {
             panic_with_error!(&env, PayrollError::Unauthorized);
         }
-        env.storage()
-            .persistent()
-            .set(&StorageKey::RateLimiterContract, &rate_limiter);
+        crate::storage::persistent_set(&env, &StorageKey::RateLimiterContract, &rate_limiter);
     }
 
     /// Gets the linked Rate Limiter contract address, if any.
     pub fn get_rate_limiter_contract(env: Env) -> Option<Address> {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::RateLimiterContract)
+        crate::storage::extend_instance_ttl(&env);
+        crate::storage::persistent_get(&env, &StorageKey::RateLimiterContract)
     }
 
     /// Sets the linked Salary Adjustment contract address used for dynamic salary overrides.
@@ -186,6 +179,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires owner authentication
     pub fn set_salary_adjustment_contract(env: Env, owner: Address, salary_adjustment: Address) {
+        crate::storage::extend_instance_ttl(&env);
         let stored_owner = match contract_owner(&env) {
             Ok(owner) => owner,
             Err(error) => panic_with_error!(&env, error),
@@ -194,16 +188,17 @@ impl PayrollContract {
         if owner != stored_owner {
             panic_with_error!(&env, PayrollError::Unauthorized);
         }
-        env.storage()
-            .persistent()
-            .set(&StorageKey::SalaryAdjustmentContract, &salary_adjustment);
+        crate::storage::persistent_set(
+            &env,
+            &StorageKey::SalaryAdjustmentContract,
+            &salary_adjustment,
+        );
     }
 
     /// Gets the linked Salary Adjustment contract address, if any.
     pub fn get_salary_adjustment_contract(env: Env) -> Option<Address> {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::SalaryAdjustmentContract)
+        crate::storage::extend_instance_ttl(&env);
+        crate::storage::persistent_get(&env, &StorageKey::SalaryAdjustmentContract)
     }
 
     /// Sets the hook contract address that receives the `on_milestone_expired`
@@ -216,6 +211,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires owner authentication.
     pub fn set_milestone_hook_contract(env: Env, owner: Address, hook_contract: Address) {
+        crate::storage::extend_instance_ttl(&env);
         let stored_owner = match contract_owner(&env) {
             Ok(owner) => owner,
             Err(error) => panic_with_error!(&env, error),
@@ -224,16 +220,13 @@ impl PayrollContract {
         if owner != stored_owner {
             panic_with_error!(&env, PayrollError::Unauthorized);
         }
-        env.storage()
-            .persistent()
-            .set(&StorageKey::MilestoneHookContract, &hook_contract);
+        crate::storage::persistent_set(&env, &StorageKey::MilestoneHookContract, &hook_contract);
     }
 
     /// Gets the configured `on_milestone_expired` hook contract address, if any.
     pub fn get_milestone_hook_contract(env: Env) -> Option<Address> {
-        env.storage()
-            .persistent()
-            .get(&StorageKey::MilestoneHookContract)
+        crate::storage::extend_instance_ttl(&env);
+        crate::storage::persistent_get(&env, &StorageKey::MilestoneHookContract)
     }
 
     /// @notice Upgrades the contract's WASM code to a new version.
@@ -256,6 +249,7 @@ impl PayrollContract {
     /// - The new bytecode must correctly preserve existing storage keys/layouts to prevent state
     ///   corruption.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>, operator: Address) {
+        crate::storage::extend_instance_ttl(&env);
         Self::require_upgrade_admin(&env, &operator);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
@@ -269,35 +263,28 @@ impl PayrollContract {
     /// # Access Control
     /// Requires admin authorization via RBAC when configured (or owner auth when RBAC is unset).
     pub fn migrate_state(env: Env, operator: Address, from_version: u32) {
+        crate::storage::extend_instance_ttl(&env);
         Self::require_upgrade_admin(&env, &operator);
 
-        let current: u32 = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::ContractVersion)
-            .unwrap_or(0u32);
+        let current: u32 =
+            crate::storage::persistent_get(&env, &StorageKey::ContractVersion).unwrap_or(0u32);
         if from_version != current {
             panic_with_error!(env, PayrollError::InvalidData);
         }
 
         // v0 -> v1: first explicit version marker. No schema changes yet.
         if from_version == 0 {
-            let next_id: u128 = env
-                .storage()
-                .persistent()
-                .get(&StorageKey::NextAgreementId)
-                .unwrap_or(0u128);
+            let next_id: u128 =
+                crate::storage::persistent_get(&env, &StorageKey::NextAgreementId).unwrap_or(0u128);
             let cap: u128 = if next_id > 10 { 10 } else { next_id };
             let mut i: u128 = 0;
             while i < cap {
                 let _maybe: Option<Agreement> =
-                    env.storage().persistent().get(&StorageKey::Agreement(i));
+                    crate::storage::persistent_get(&env, &StorageKey::Agreement(i));
                 i += 1;
             }
 
-            env.storage()
-                .persistent()
-                .set(&StorageKey::ContractVersion, &1u32);
+            crate::storage::persistent_set(&env, &StorageKey::ContractVersion, &1u32);
             emit_contract_migrated(
                 &env,
                 ContractMigratedEvent {
@@ -333,6 +320,7 @@ impl PayrollContract {
         token: Address,
         grace_period_seconds: u64,
     ) -> u128 {
+        crate::storage::extend_instance_ttl(&env);
         payroll::create_payroll_agreement(&env, employer, token, grace_period_seconds)
     }
 
@@ -355,6 +343,7 @@ impl PayrollContract {
         employer: Address,
         items: Vec<PayrollCreateParams>,
     ) -> Result<BatchPayrollCreateResult, PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::batch_create_payroll_agreements(&env, employer, items)
     }
 
@@ -386,6 +375,7 @@ impl PayrollContract {
         period_seconds: u64,
         num_periods: u32,
     ) -> Result<u128, storage::PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::create_escrow_agreement(
             &env,
             employer,
@@ -416,6 +406,7 @@ impl PayrollContract {
         employer: Address,
         items: Vec<EscrowCreateParams>,
     ) -> Result<BatchEscrowCreateResult, PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::batch_create_escrow_agreements(&env, employer, items)
     }
 
@@ -448,6 +439,7 @@ impl PayrollContract {
         token: Address,
         milestones: Vec<i128>,
     ) -> u128 {
+        crate::storage::extend_instance_ttl(&env);
         payroll::create_milestone_agreement(env, employer, contributor, token, milestones)
     }
 
@@ -477,6 +469,7 @@ impl PayrollContract {
     /// `MilestoneAgreementInvalidStatus` (`Cancelled` or `Completed` status), or
     /// `InvalidData` (arithmetic overflow).
     pub fn fund_milestone_agreement(env: Env, agreement_id: u128, from: Address, amount: i128) {
+        crate::storage::extend_instance_ttl(&env);
         payroll::fund_milestone_agreement(&env, agreement_id, from, amount);
     }
 
@@ -491,6 +484,7 @@ impl PayrollContract {
     /// - Amount must be positive
     /// - Caller must be the employer
     pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::add_milestone(env, agreement_id, amount)
     }
 
@@ -512,6 +506,7 @@ impl PayrollContract {
         agreement_id: u128,
         milestone_id: u32,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::approve_milestone(env, agreement_id, milestone_id)
     }
 
@@ -539,6 +534,7 @@ impl PayrollContract {
         milestone_id: u32,
         reason: soroban_sdk::String,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::reject_milestone(env, agreement_id, milestone_id, reason)
     }
 
@@ -567,6 +563,7 @@ impl PayrollContract {
         agreement_id: u128,
         milestone_id: u32,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::expire_milestone(env, agreement_id, milestone_id)
     }
 
@@ -589,6 +586,7 @@ impl PayrollContract {
         agreement_id: u128,
         milestone_id: u32,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::claim_milestone(env, agreement_id, milestone_id)
     }
 
@@ -625,6 +623,7 @@ impl PayrollContract {
         agreement_id: u128,
         milestone_ids: Vec<u32>,
     ) -> Result<BatchMilestoneResult, PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::batch_claim_milestones(&env, agreement_id, milestone_ids)
     }
 
@@ -639,6 +638,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn get_milestone_count(env: Env, agreement_id: u128) -> u32 {
+        crate::storage::extend_instance_ttl(&env);
         payroll::get_milestone_count(env, agreement_id)
     }
 
@@ -654,6 +654,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<Milestone> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::get_milestone(env, agreement_id, milestone_id)
     }
 
@@ -677,6 +678,7 @@ impl PayrollContract {
         employee: Address,
         salary_per_period: i128,
     ) {
+        crate::storage::extend_instance_ttl(&env);
         payroll::add_employee_to_agreement(&env, agreement_id, employee, salary_per_period);
     }
 
@@ -692,6 +694,7 @@ impl PayrollContract {
     /// - Agreement must be in Created status
     /// - Caller must be the employer
     pub fn activate_agreement(env: Env, agreement_id: u128) {
+        crate::storage::extend_instance_ttl(&env);
         payroll::activate_agreement(&env, agreement_id);
     }
 
@@ -706,6 +709,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn get_agreement(env: Env, agreement_id: u128) -> Option<Agreement> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::get_agreement(&env, agreement_id)
     }
 
@@ -720,6 +724,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn get_agreement_employees(env: Env, agreement_id: u128) -> Vec<Address> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::get_agreement_employees(&env, agreement_id)
     }
 
@@ -736,6 +741,7 @@ impl PayrollContract {
     /// # Returns
     /// bool
     pub fn set_arbiter(env: Env, caller: Address, arbiter: Address) -> bool {
+        crate::storage::extend_instance_ttl(&env);
         payroll::set_arbiter(&env, caller, arbiter)
     }
 
@@ -747,6 +753,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn get_arbiter(env: Env) -> Option<Address> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::get_arbiter(&env)
     }
 
@@ -755,21 +762,25 @@ impl PayrollContract {
     /// successful lifecycle mutations append to the local audit stream and call the
     /// external audit logger's append-only entrypoint.
     pub fn set_audit_logger(env: Env, owner: Address, audit_logger: Address) {
+        crate::storage::extend_instance_ttl(&env);
         audit::set_audit_logger(&env, owner, audit_logger);
     }
 
     /// @notice Returns the configured shared audit logger address, if one is set.
     pub fn get_audit_logger(env: Env) -> Option<Address> {
+        crate::storage::extend_instance_ttl(&env);
         audit::get_audit_logger(&env)
     }
 
     /// @notice Returns the number of lifecycle audit entries appended locally.
     pub fn get_audit_entry_count(env: Env) -> u64 {
+        crate::storage::extend_instance_ttl(&env);
         audit::get_audit_entry_count(&env)
     }
 
     /// @notice Returns a lifecycle audit entry by append-only id.
     pub fn get_audit_entry(env: Env, audit_id: u64) -> Option<LifecycleAuditEntry> {
+        crate::storage::extend_instance_ttl(&env);
         audit::get_audit_entry(&env, audit_id)
     }
 
@@ -786,6 +797,7 @@ impl PayrollContract {
         start_id: u64,
         limit: u32,
     ) -> audit::EmployerAuditPage {
+        crate::storage::extend_instance_ttl(&env);
         audit::get_audit_entries_by_employer(&env, employer, start_id, limit)
     }
 
@@ -827,6 +839,7 @@ impl PayrollContract {
         caller: Address,
         agreement_id: u128,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::raise_dispute(&env, caller, agreement_id)
     }
 
@@ -854,6 +867,7 @@ impl PayrollContract {
         pay_employee: i128,
         refund_employer: i128,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::resolve_dispute(env, caller, agreement_id, pay_employee, refund_employer)
     }
 
@@ -873,6 +887,7 @@ impl PayrollContract {
         refund_employer: i128,
         multisig_operation_id: u128,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::resolve_dispute_multisig(
             env,
             caller,
@@ -898,6 +913,7 @@ impl PayrollContract {
         large_payment_threshold: i128,
         dispute_resolution_threshold: i128,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::set_multisig_config(
             &env,
             owner,
@@ -909,6 +925,7 @@ impl PayrollContract {
 
     /// Returns the configured multisig contract address, if any.
     pub fn get_multisig_contract(env: Env) -> Option<Address> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::get_multisig_contract(&env)
     }
 
@@ -923,6 +940,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn get_dispute_status(env: Env, agreement_id: u128) -> DisputeStatus {
+        crate::storage::extend_instance_ttl(&env);
         payroll::get_dispute_status(env, agreement_id)
     }
 
@@ -947,6 +965,7 @@ impl PayrollContract {
         caller: Address,
         admin: Address,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::set_exchange_rate_admin(&env, caller, admin)
     }
 
@@ -974,6 +993,7 @@ impl PayrollContract {
         quote: Address,
         rate: i128,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::set_exchange_rate(&env, caller, base, quote, rate)
     }
 
@@ -985,10 +1005,8 @@ impl PayrollContract {
         caller: Address,
         max_rate: i128,
     ) -> Result<(), PayrollError> {
-        let owner: Address = env
-            .storage()
-            .persistent()
-            .get(&StorageKey::Owner)
+        crate::storage::extend_instance_ttl(&env);
+        let owner: Address = crate::storage::persistent_get(&env, &StorageKey::Owner)
             .ok_or(PayrollError::Unauthorized)?;
         caller.require_auth();
         if caller != owner {
@@ -1030,6 +1048,7 @@ impl PayrollContract {
         min_output_amount: Option<i128>,
         max_output_amount: Option<i128>,
     ) -> Result<i128, PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::convert_currency(
             &env,
             from_token,
@@ -1080,6 +1099,7 @@ impl PayrollContract {
         agreement_id: u128,
         employee_index: u32,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::claim_payroll(&env, &caller, agreement_id, employee_index)
     }
 
@@ -1097,6 +1117,7 @@ impl PayrollContract {
         employee_index: u32,
         multisig_operation_id: u128,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::claim_payroll_multisig(
             &env,
             &caller,
@@ -1132,6 +1153,7 @@ impl PayrollContract {
         employee_index: u32,
         payout_token: Address,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::claim_payroll_in_token(&env, &caller, agreement_id, employee_index, payout_token)
     }
 
@@ -1156,6 +1178,7 @@ impl PayrollContract {
         agreement_id: u128,
         employee_indices: Vec<u32>,
     ) -> Result<BatchPayrollResult, PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::batch_claim_payroll(&env, &caller, agreement_id, employee_indices)
     }
 
@@ -1172,6 +1195,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn get_employee_claimed_periods(env: Env, agreement_id: u128, employee_index: u32) -> u32 {
+        crate::storage::extend_instance_ttl(&env);
         payroll::get_employee_claimed_periods(&env, agreement_id, employee_index)
     }
 
@@ -1192,6 +1216,7 @@ impl PayrollContract {
     /// - Agreement state is preserved
     /// - Can be resumed later or cancelled
     pub fn pause_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         // Try new-style agreement first (payroll/escrow)
         if payroll::get_agreement(&env, agreement_id).is_some() {
             payroll::pause_agreement(&env, agreement_id)?;
@@ -1219,6 +1244,7 @@ impl PayrollContract {
     /// - Claims can be processed again
     /// - All agreement data is preserved
     pub fn resume_agreement(env: Env, agreement_id: u128) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         // Try new-style agreement first (payroll/escrow)
         if payroll::get_agreement(&env, agreement_id).is_some() {
             payroll::resume_agreement(&env, agreement_id);
@@ -1245,6 +1271,7 @@ impl PayrollContract {
     /// - Cannot claim more than total periods
     /// - Works during grace period
     pub fn claim_time_based(env: Env, agreement_id: u128) -> Result<(), storage::PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::claim_time_based(&env, agreement_id)
     }
 
@@ -1259,6 +1286,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn get_claimed_periods(env: Env, agreement_id: u128) -> u32 {
+        crate::storage::extend_instance_ttl(&env);
         payroll::get_claimed_periods(&env, agreement_id)
     }
 
@@ -1279,6 +1307,7 @@ impl PayrollContract {
     /// - Claims are allowed during grace period
     /// - Refunds are prevented until grace period expires
     pub fn cancel_agreement(env: Env, agreement_id: u128) {
+        crate::storage::extend_instance_ttl(&env);
         payroll::cancel_agreement(&env, agreement_id);
     }
 
@@ -1296,6 +1325,7 @@ impl PayrollContract {
     /// - Refunds remaining escrow balance to employer
     /// - Marks agreement as ready for finalization
     pub fn finalize_grace_period(env: Env, agreement_id: u128) {
+        crate::storage::extend_instance_ttl(&env);
         payroll::finalize_grace_period(&env, agreement_id);
     }
 
@@ -1310,6 +1340,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn is_grace_period_active(env: Env, agreement_id: u128) -> bool {
+        crate::storage::extend_instance_ttl(&env);
         payroll::is_grace_period_active(&env, agreement_id)
     }
 
@@ -1324,6 +1355,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn get_grace_period_end(env: Env, agreement_id: u128) -> Option<u64> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::get_grace_period_end(&env, agreement_id)
     }
 
@@ -1343,6 +1375,7 @@ impl PayrollContract {
         agreement_id: u128,
         additional_seconds: u64,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::extend_grace_period(&env, caller, agreement_id, additional_seconds)
     }
 
@@ -1352,16 +1385,19 @@ impl PayrollContract {
         caller: Address,
         policy: GracePeriodExtensionPolicy,
     ) -> Result<(), PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::set_grace_extension_policy(&env, caller, policy)
     }
 
     /// Current grace extension policy (defaults until explicitly set).
     pub fn get_grace_extension_policy(env: Env) -> GracePeriodExtensionPolicy {
+        crate::storage::extend_instance_ttl(&env);
         payroll::get_grace_extension_policy(&env)
     }
 
     /// Cumulative extra seconds applied on top of `Agreement.grace_period_seconds`.
     pub fn get_grace_extension_seconds(env: Env, agreement_id: u128) -> u64 {
+        crate::storage::extend_instance_ttl(&env);
         payroll::get_grace_extension_seconds(&env, agreement_id)
     }
 
@@ -1381,6 +1417,7 @@ impl PayrollContract {
     /// Requires employer authentication — an employer can only pause their own
     /// agreements.  Cross-employer pause is rejected.
     pub fn pause_employer_agreements(env: Env, employer: Address) -> Result<u32, PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::pause_employer_agreements(&env, employer)
     }
 
@@ -1396,6 +1433,7 @@ impl PayrollContract {
     /// Requires employer authentication — an employer can only unpause their own
     /// agreements.  Cross-employer unpause is rejected.
     pub fn unpause_employer_agreements(env: Env, employer: Address) -> Result<u32, PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::unpause_employer_agreements(&env, employer)
     }
 
@@ -1411,6 +1449,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires owner authentication
     pub fn set_emergency_guardians(env: Env, guardians: Vec<Address>) {
+        crate::storage::extend_instance_ttl(&env);
         payroll::set_emergency_guardians(&env, guardians);
     }
 
@@ -1422,6 +1461,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn get_emergency_guardians(env: Env) -> Option<Vec<Address>> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::get_emergency_guardians(&env)
     }
 
@@ -1444,6 +1484,7 @@ impl PayrollContract {
         caller: Address,
         timelock_seconds: u64,
     ) -> Result<(), storage::PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::propose_emergency_pause(&env, caller, timelock_seconds)
     }
 
@@ -1461,6 +1502,7 @@ impl PayrollContract {
     /// # Errors
     /// Returns an error if validation fails
     pub fn approve_emergency_pause(env: Env, caller: Address) -> Result<(), storage::PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::approve_emergency_pause(&env, caller)
     }
 
@@ -1478,6 +1520,7 @@ impl PayrollContract {
     /// # Returns
     /// Result<(), storage::PayrollError>
     pub fn emergency_pause(env: Env) -> Result<(), storage::PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::emergency_pause(&env)
     }
 
@@ -1492,6 +1535,7 @@ impl PayrollContract {
     /// # Errors
     /// Returns an error if validation fails
     pub fn emergency_unpause(env: Env) -> Result<(), storage::PayrollError> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::emergency_unpause(&env)
     }
 
@@ -1503,6 +1547,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn is_emergency_paused(env: Env) -> bool {
+        crate::storage::extend_instance_ttl(&env);
         payroll::is_emergency_paused(&env)
     }
 
@@ -1514,6 +1559,7 @@ impl PayrollContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn get_emergency_pause_state(env: Env) -> Option<storage::EmergencyPause> {
+        crate::storage::extend_instance_ttl(&env);
         payroll::get_emergency_pause_state(&env)
     }
 
@@ -1558,6 +1604,7 @@ impl PayrollContract {
         agreement_id: u128,
         amount: i128,
     ) {
+        crate::storage::extend_instance_ttl(&env);
         Self::require_upgrade_admin(&env, &operator);
         if amount < 0 {
             panic_with_error!(env, PayrollError::InvalidData);
@@ -1590,6 +1637,7 @@ impl PayrollContract {
         token: Address,
         amount: i128,
     ) {
+        crate::storage::extend_instance_ttl(&env);
         Self::require_upgrade_admin(&env, &operator);
         if amount < 0 {
             panic_with_error!(env, PayrollError::InvalidData);
@@ -1615,6 +1663,7 @@ impl PayrollContract {
         agreement_id: u128,
         token: Address,
     ) {
+        crate::storage::extend_instance_ttl(&env);
         Self::require_upgrade_admin(&env, &operator);
         storage::DataKey::set_agreement_token(&env, agreement_id, &token);
     }
@@ -1638,6 +1687,7 @@ impl PayrollContract {
         agreement_id: u128,
         timestamp: u64,
     ) {
+        crate::storage::extend_instance_ttl(&env);
         Self::require_upgrade_admin(&env, &operator);
         storage::DataKey::set_agreement_activation_time(&env, agreement_id, timestamp);
     }
@@ -1664,6 +1714,7 @@ impl PayrollContract {
         agreement_id: u128,
         duration: u64,
     ) {
+        crate::storage::extend_instance_ttl(&env);
         Self::require_upgrade_admin(&env, &operator);
         if duration == 0 {
             panic_with_error!(env, PayrollError::InvalidData);
