@@ -355,12 +355,11 @@ fn test_escrow_max_u64_period_seconds() {
 
 // ---------- Payroll Employee Salary Amounts ----------
 
-/// Verifies that adding an employee with zero salary panics.
+/// Verifies that adding an employee with zero salary is rejected.
 ///
-/// The contract asserts `salary_per_period > 0`. A zero salary is
-/// economically meaningless and must be rejected.
+/// A non-positive `salary_per_period` is economically meaningless and must
+/// surface `PayrollError::InvalidData`.
 #[test]
-#[should_panic(expected = "Salary must be positive")]
 fn test_add_employee_zero_salary_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -369,15 +368,15 @@ fn test_add_employee_zero_salary_panics() {
     let employee = create_test_address(&env);
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    client.add_employee_to_agreement(&agreement_id, &employee, &0i128);
+    let result = client.try_add_employee_to_agreement(&agreement_id, &employee, &0i128);
+    assert_eq!(result, Err(Ok(PayrollError::InvalidData.into())));
 }
 
-/// Verifies that adding an employee with negative salary panics.
+/// Verifies that adding an employee with negative salary is rejected.
 ///
-/// Negative salaries could invert payment direction. The `> 0` guard
-/// must reject all non-positive values.
+/// Negative salaries could invert payment direction, so every non-positive
+/// value must surface `PayrollError::InvalidData`.
 #[test]
-#[should_panic(expected = "Salary must be positive")]
 fn test_add_employee_negative_salary_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -386,15 +385,15 @@ fn test_add_employee_negative_salary_panics() {
     let employee = create_test_address(&env);
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    client.add_employee_to_agreement(&agreement_id, &employee, &(-500i128));
+    let result = client.try_add_employee_to_agreement(&agreement_id, &employee, &(-500i128));
+    assert_eq!(result, Err(Ok(PayrollError::InvalidData.into())));
 }
 
-/// Verifies that adding an employee with `i128::MIN` salary panics.
+/// Verifies that adding an employee with `i128::MIN` salary is rejected.
 ///
-/// The most extreme negative value tests for underflow in the salary
-/// validation path.
+/// The most extreme negative value must surface `PayrollError::InvalidData`
+/// without underflowing the salary validation path.
 #[test]
-#[should_panic(expected = "Salary must be positive")]
 fn test_add_employee_i128_min_salary_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -403,7 +402,8 @@ fn test_add_employee_i128_min_salary_panics() {
     let employee = create_test_address(&env);
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    client.add_employee_to_agreement(&agreement_id, &employee, &i128::MIN);
+    let result = client.try_add_employee_to_agreement(&agreement_id, &employee, &i128::MIN);
+    assert_eq!(result, Err(Ok(PayrollError::InvalidData.into())));
 }
 
 /// Verifies that adding an employee with the minimum valid salary (1) succeeds.
@@ -627,10 +627,9 @@ fn test_resolve_dispute_zero_payouts_succeeds() {
 
 /// Verifies that a payroll agreement cannot be activated with zero employees.
 ///
-/// The contract asserts `employees.len() > 0` during activation. An
-/// agreement with no employees is not operational.
+/// An agreement with no employees is not operational and must surface
+/// `PayrollError::NoEmployee`.
 #[test]
-#[should_panic(expected = "Payroll agreement must have at least one employee to activate")]
 fn test_activate_payroll_with_zero_employees_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -638,8 +637,8 @@ fn test_activate_payroll_with_zero_employees_panics() {
     let token = create_test_address(&env);
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    // Activate without adding any employees → panics
-    client.activate_agreement(&agreement_id);
+    let result = client.try_activate_agreement(&agreement_id);
+    assert_eq!(result, Err(Ok(PayrollError::NoEmployee.into())));
 }
 
 /// Verifies that a payroll agreement with exactly one employee can be
