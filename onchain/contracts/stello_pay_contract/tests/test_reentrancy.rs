@@ -217,9 +217,10 @@ fn test_guard_released_allows_subsequent_claim() {
 
 /// Verifies that after claim_time_based, claimed periods are updated so
 /// another claim without time advance does not double-pay.
-/// (Requires full escrow funding setup; see test_grace_period for pattern.)
+/// The escrow balance is seeded using the same fund-transfer path production
+/// callers use: mint tokens to the employer, send them to the contract, and
+/// persist the agreement's escrow balance in the contract state.
 #[test]
-#[ignore = "requires escrow balance storage setup - covered by test_claim_payroll_state_updated_prevents_double_claim"]
 fn test_claim_time_based_state_updated_prevents_double_claim() {
     let env = create_env();
     let (contract_id, client) = setup_contract(&env);
@@ -229,6 +230,7 @@ fn test_claim_time_based_state_updated_prevents_double_claim() {
     let amount_per_period = 1000i128;
     let period_seconds = ONE_DAY;
     let num_periods = 4u32;
+    let total_funds = amount_per_period * (num_periods as i128);
 
     let agreement_id = client.create_escrow_agreement(
         &employer,
@@ -240,9 +242,11 @@ fn test_claim_time_based_state_updated_prevents_double_claim() {
     );
     client.activate_agreement(&agreement_id);
 
-    let token_client = TokenClient::new(&env, &token);
-    mint(&env, &token, &employer, 4000);
-    token_client.transfer(&employer, &contract_id, &4000);
+    mint(&env, &token, &employer, total_funds);
+    TokenClient::new(&env, &token).transfer(&employer, &contract_id, &total_funds);
+    env.as_contract(&contract_id, || {
+        DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, total_funds);
+    });
 
     advance_time(&env, period_seconds + 1);
 
@@ -254,6 +258,51 @@ fn test_claim_time_based_state_updated_prevents_double_claim() {
     let res2 = client.try_claim_time_based(&agreement_id);
     assert!(res2.is_err(), "second claim in same period must fail");
     assert_eq!(client.get_claimed_periods(&agreement_id), 1);
+}
+
+/// Verifies that a time-based escrow claim is rejected while the transient
+/// reentrancy guard is set in temporary storage. This exercises the same guard
+/// semantics as the payroll claim path and fails if the guard is removed.
+#[test]
+fn test_claim_time_based_reentrant_call_rejected() {
+    let env = create_env();
+    let (contract_id, client) = setup_contract(&env);
+    let employer = create_address(&env);
+    let contributor = create_address(&env);
+    let token = create_token(&env);
+    let amount_per_period = 1000i128;
+    let period_seconds = ONE_DAY;
+    let num_periods = 4u32;
+    let total_funds = amount_per_period * (num_periods as i128);
+
+    let agreement_id = client.create_escrow_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &amount_per_period,
+        &period_seconds,
+        &num_periods,
+    );
+    client.activate_agreement(&agreement_id);
+
+    mint(&env, &token, &employer, total_funds);
+    TokenClient::new(&env, &token).transfer(&employer, &contract_id, &total_funds);
+    env.as_contract(&contract_id, || {
+        DataKey::set_agreement_escrow_balance(&env, agreement_id, &token, total_funds);
+        env.storage()
+            .temporary()
+            .set(&StorageKey::ReentrancyGuard, &true);
+    });
+
+    advance_time(&env, period_seconds + 1);
+
+    let res = client.try_claim_time_based(&agreement_id);
+    assert_eq!(
+        res,
+        Err(Ok(PayrollError::ReentrancyDetected)),
+        "reentrant claim must be rejected"
+    );
+    assert_eq!(client.get_claimed_periods(&agreement_id), 0);
 }
 
 // ============================================================================

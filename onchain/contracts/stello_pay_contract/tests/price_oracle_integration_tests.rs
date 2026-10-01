@@ -99,7 +99,7 @@ fn deploy_oracle(
     let id = env.register(PriceOracleContract, ());
     let client = PriceOracleContractClient::new(env, &id);
     let owner = Address::generate(env);
-    client.initialize(&owner, payroll_id);
+    client.initialize_oracle(&owner, payroll_id);
     (id, owner, client)
 }
 
