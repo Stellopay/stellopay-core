@@ -1378,7 +1378,8 @@ fn emergency_execute_succeeds_for_dispute_resolution() {
         &OperationKind::DisputeResolution(payroll_contract, 42u128, 500, 200),
     );
 
-    // Guardian executes the emergency-eligible DisputeResolution → must succeed
+    // Guardian records its approval, then executes the quorum-gated operation.
+    client.approve_emergency(&guardian, &op_id);
     client.emergency_execute(&guardian, &op_id);
 
     let op = client.get_operation(&op_id).unwrap();
@@ -1424,6 +1425,156 @@ fn emergency_eligible_op_still_requires_guardian_quorum() {
     // Operation must remain Pending — no state change
     let op = client.get_operation(&op_id).unwrap();
     assert_eq!(op.status, OperationStatus::Pending);
+}
+
+// ==================== Emergency Guardian Quorum (issue #1309) ====================
+
+fn guardian_recorded(recorded: &Vec<Address>, guardian: &Address) -> bool {
+    for i in 0..recorded.len() {
+        if &recorded.get(i).unwrap() == guardian {
+            return true;
+        }
+    }
+    false
+}
+
+/// Zero guardian approvals must be rejected: a single guardian cannot execute
+/// an eligible operation until it has recorded its approval.
+#[test]
+fn emergency_execute_rejects_zero_approvals() {
+    let env = create_env();
+    let (_id, client, _owner, signers, guardian) = setup_2of3(&env);
+
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 7u128, 100, 50),
+    );
+
+    let result = client.try_emergency_execute(&guardian, &op_id);
+    assert!(result.is_err(), "zero guardian approvals must be rejected");
+
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Pending);
+    assert_eq!(client.get_emergency_approvals(&op_id).len(), 0);
+}
+
+/// A two-guardian deployment defaults to a quorum of two and rejects a single
+/// approval.
+#[test]
+fn emergency_execute_rejects_one_below_quorum() {
+    let env = create_env();
+    let (_id, client, owner, signers, _guardian) = setup_2of3(&env);
+
+    let mut guardians = Vec::new(&env);
+    let g1 = Address::generate(&env);
+    let g2 = Address::generate(&env);
+    guardians.push_back(g1.clone());
+    guardians.push_back(g2.clone());
+    // `None` threshold defaults to 2 for a two-guardian set.
+    client.set_emergency_guardians(&owner, &guardians, &None);
+    assert_eq!(client.get_emergency_threshold(), 2u32);
+
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 8u128, 100, 50),
+    );
+
+    client.approve_emergency(&g1, &op_id);
+    let result = client.try_emergency_execute(&g1, &op_id);
+    assert!(result.is_err(), "one approval is below a quorum of two");
+
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Pending);
+}
+
+/// Meeting the quorum executes the operation and the approving guardians are
+/// recorded on-chain.
+#[test]
+fn emergency_execute_succeeds_when_quorum_met_and_records_guardians() {
+    let env = create_env();
+    let (_id, client, owner, signers, _guardian) = setup_2of3(&env);
+
+    let mut guardians = Vec::new(&env);
+    let g1 = Address::generate(&env);
+    let g2 = Address::generate(&env);
+    guardians.push_back(g1.clone());
+    guardians.push_back(g2.clone());
+    client.set_emergency_guardians(&owner, &guardians, &Some(2u32));
+
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 9u128, 100, 50),
+    );
+
+    client.approve_emergency(&g1, &op_id);
+    client.approve_emergency(&g2, &op_id);
+    client.emergency_execute(&g1, &op_id);
+
+    let op = client.get_operation(&op_id).unwrap();
+    assert_eq!(op.status, OperationStatus::Executed);
+
+    // The executed operation records which guardians approved it.
+    let recorded = client.get_emergency_approvals(&op_id);
+    assert_eq!(recorded.len(), 2);
+    assert!(guardian_recorded(&recorded, &g1));
+    assert!(guardian_recorded(&recorded, &g2));
+}
+
+/// Duplicate guardian approvals are idempotent and do not inflate the count.
+#[test]
+fn emergency_approval_is_idempotent() {
+    let env = create_env();
+    let (_id, client, _owner, signers, guardian) = setup_2of3(&env);
+
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 10u128, 100, 50),
+    );
+
+    client.approve_emergency(&guardian, &op_id);
+    client.approve_emergency(&guardian, &op_id);
+    assert_eq!(client.get_emergency_approvals(&op_id).len(), 1);
+}
+
+/// Non-guardians cannot record emergency approvals.
+#[test]
+fn non_guardian_cannot_approve_emergency() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let op_id = client.propose_operation(
+        &signers.get(0).unwrap(),
+        &OperationKind::DisputeResolution(Address::generate(&env), 11u128, 100, 50),
+    );
+
+    let stranger = Address::generate(&env);
+    let result = client.try_approve_emergency(&stranger, &op_id);
+    assert!(result.is_err(), "non-guardian must not approve");
+}
+
+/// Configuring the guardian set requires owner authorization.
+#[test]
+fn only_owner_can_set_emergency_guardians() {
+    let env = create_env();
+    let (_id, client, _owner, _signers, guardian) = setup_2of3(&env);
+
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian.clone());
+    let non_owner = Address::generate(&env);
+    let result = client.try_set_emergency_guardians(&non_owner, &guardians, &Some(1u32));
+    assert!(result.is_err(), "non-owner must not configure guardians");
+}
+
+/// An explicit guardian threshold above the guardian count is rejected.
+#[test]
+fn set_emergency_guardians_rejects_invalid_threshold() {
+    let env = create_env();
+    let (_id, client, owner, _signers, guardian) = setup_2of3(&env);
+
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian.clone());
+    let result = client.try_set_emergency_guardians(&owner, &guardians, &Some(5u32));
+    assert!(result.is_err(), "threshold above guardian count must be rejected");
 }
 
 // ==================== Signer Update Timelock (issue #1318) ====================
