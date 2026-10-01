@@ -55,6 +55,12 @@ enum AuditStorageKey {
     NextAuditEntryId,
     AuditEntry(u64),
     AuditEntryCount,
+    /// The oldest entry id still retained on-chain (inclusive).
+    /// Advances forward as entries are evicted.
+    AuditOldestEntryId,
+    /// Maximum number of entries to keep in persistent storage.
+    /// `0` means unlimited (default — matches legacy behaviour).
+    AuditRetentionLimit,
 }
 
 impl AuditEvent {
@@ -90,12 +96,41 @@ pub fn get_audit_logger(env: &Env) -> Option<Address> {
     crate::storage::persistent_get(env, &AuditStorageKey::AuditLogger)
 }
 
-/// @notice Returns the number of local lifecycle audit entries appended.
+/// @notice Sets the maximum number of lifecycle audit entries to retain in persistent storage.
+///
+/// A limit of `0` means unlimited retention (the legacy default). When a new entry would
+/// exceed the limit the oldest retained entry is evicted from storage **and** emitted as an
+/// `audit_entry_evicted` event so off-chain indexers can preserve the full history.
+///
+/// Only the contract owner can change this setting.
+pub fn set_audit_retention(env: &Env, owner: Address, max_entries: u64) {
+    owner.require_auth();
+    let configured_owner = crate::contract_owner(env)
+        .unwrap_or_else(|_| panic_with_error!(env, crate::storage::PayrollError::Unauthorized));
+    if owner != configured_owner {
+        panic_with_error!(env, crate::storage::PayrollError::Unauthorized);
+    }
+
+    env.storage()
+        .persistent()
+        .set(&AuditStorageKey::AuditRetentionLimit, &max_entries);
+}
+
+/// @notice Returns the configured audit retention limit. `0` means unlimited (default).
+pub fn get_audit_retention(env: &Env) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&AuditStorageKey::AuditRetentionLimit)
+        .unwrap_or(0u64)
+}
+
+/// @notice Returns the number of local lifecycle audit entries appended (all-time counter).
 pub fn get_audit_entry_count(env: &Env) -> u64 {
     crate::storage::persistent_get(env, &AuditStorageKey::AuditEntryCount).unwrap_or(0u64)
 }
 
 /// @notice Returns one local lifecycle audit entry by its append-only id.
+/// Returns `None` for entries that have been evicted by the retention policy.
 pub fn get_audit_entry(env: &Env, audit_id: u64) -> Option<LifecycleAuditEntry> {
     crate::storage::persistent_get(env, &AuditStorageKey::AuditEntry(audit_id))
 }
@@ -153,6 +188,11 @@ pub fn get_audit_entries_by_employer(
 /// @dev This helper is called only after all state changes and lifecycle events have succeeded.
 /// If the external audit logger rejects the append, the transaction reverts and no partial audit
 /// trail can be committed.
+///
+/// When a retention limit is set, the oldest on-chain entry is evicted before writing the new
+/// one. The evicted entry is emitted as an `audit_entry_evicted` event so off-chain indexers
+/// retain the full history. Every new entry is also emitted as an `audit_entry` event
+/// regardless of whether eviction occurred.
 pub fn record_entry(
     env: &Env,
     actor: Address,
@@ -180,8 +220,62 @@ pub fn record_entry(
     crate::storage::persistent_set(env, &AuditStorageKey::AuditEntry(id), &entry);
     crate::storage::persistent_set(env, &AuditStorageKey::NextAuditEntryId, &(id + 1));
     crate::storage::persistent_set(env, &AuditStorageKey::AuditEntryCount, &id);
+    // Emit an event for every entry regardless of the retention policy so
+    // off-chain indexers always observe the full history.
+    emit_audit_entry(env, &entry);
+
+    // Enforce retention: evict the oldest entry when the window is exceeded.
+    let limit = get_audit_retention(env);
+    if limit > 0 {
+        // `oldest_id` is the smallest id still present on-chain.
+        let oldest_id: u64 = env
+            .storage()
+            .persistent()
+            .get(&AuditStorageKey::AuditOldestEntryId)
+            .unwrap_or(1u64);
+
+        // After writing `id`, retained count = id - oldest_id + 1.
+        // Evict while that would exceed `limit`.
+        let mut current_oldest = oldest_id;
+        while id + 1 > limit && current_oldest < id + 1 - limit {
+            if let Some(evicted) = env
+                .storage()
+                .persistent()
+                .get::<_, LifecycleAuditEntry>(&AuditStorageKey::AuditEntry(current_oldest))
+            {
+                emit_audit_entry_evicted(env, &evicted);
+                env.storage()
+                    .persistent()
+                    .remove(&AuditStorageKey::AuditEntry(current_oldest));
+            }
+            current_oldest += 1;
+        }
+
+        if current_oldest != oldest_id {
+            env.storage()
+                .persistent()
+                .set(&AuditStorageKey::AuditOldestEntryId, &current_oldest);
+        }
+    }
+
 
     id
+}
+
+/// Emits an `audit_entry` event so off-chain indexers observe every lifecycle transition.
+fn emit_audit_entry(env: &Env, entry: &LifecycleAuditEntry) {
+    env.events()
+        .publish((Symbol::new(env, "audit_entry"), entry.id), entry.clone());
+}
+
+/// Emits an `audit_entry_evicted` event for an entry removed from persistent storage
+/// due to the configured retention limit. Off-chain indexers MUST handle this event
+/// to maintain a complete audit trail.
+fn emit_audit_entry_evicted(env: &Env, entry: &LifecycleAuditEntry) {
+    env.events().publish(
+        (Symbol::new(env, "audit_entry_evicted"), entry.id),
+        entry.clone(),
+    );
 }
 
 fn append_external_log(
@@ -196,7 +290,7 @@ fn append_external_log(
         args.push_back(actor.clone().into_val(env));
         args.push_back(event.action(env).into_val(env));
         args.push_back(subject.clone().into_val(env));
-        args.push_back(amount.clone().into_val(env));
+        args.push_back(amount.into_val(env));
 
         env.invoke_contract::<u64>(&audit_logger, &Symbol::new(env, "append_log"), args)
     })

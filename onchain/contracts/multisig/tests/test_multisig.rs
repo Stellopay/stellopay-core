@@ -195,7 +195,7 @@ fn operation_type_override_takes_effect_without_changing_default() {
 }
 
 #[test]
-fn emergency_guardian_can_execute_dispute_resolution_without_threshold() {
+fn emergency_guardian_approves_then_executes_dispute_resolution() {
     let env = create_env();
     let (_id, client, _owner, signers, guardian) = setup_initialized(&env);
 
@@ -205,7 +205,10 @@ fn emergency_guardian_can_execute_dispute_resolution_without_threshold() {
         &OperationKind::DisputeResolution(Address::generate(&env), 1u128, 10, 0),
     );
 
-    // Guardian executes directly (skipping the second approval)
+    // A single guardian defaults to a quorum of one, but the approval must be
+    // recorded explicitly before execution (issue #1309).
+    assert_eq!(client.get_emergency_threshold(), 1u32);
+    client.approve_emergency(&guardian, &op_id);
     client.emergency_execute(&guardian, &op_id);
 
     let op = client.get_operation(&op_id).unwrap();

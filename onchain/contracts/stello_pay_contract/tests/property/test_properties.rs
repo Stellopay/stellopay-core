@@ -142,7 +142,7 @@ proptest! {
         client.set_exchange_rate(&owner, &from, &to, &rate);
 
         // Contract helper should apply the same scaled multiplication.
-        let converted = client.convert_currency(&from, &to, &amount);
+        let converted = client.convert_currency(&from, &to, &amount, &None, &None, &None);
         let expected = (amount * rate) / 1_000_000i128;
 
         prop_assert_eq!(converted, expected);

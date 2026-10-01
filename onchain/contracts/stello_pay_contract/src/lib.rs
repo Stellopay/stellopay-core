@@ -85,10 +85,9 @@ impl PayrollContract {
         {
             operator.require_auth();
             let rbac = RbacContractClient::new(env, &rbac_addr);
-            assert!(
-                rbac.has_role(operator, &Role::Admin),
-                "Missing required role"
-            );
+            if !rbac.has_role(operator, &Role::Admin) {
+                panic_with_error!(env, PayrollError::Unauthorized);
+            }
             return;
         }
 
@@ -269,7 +268,9 @@ impl PayrollContract {
 
         let current: u32 =
             crate::storage::persistent_get(&env, &StorageKey::ContractVersion).unwrap_or(0u32);
-        assert!(from_version == current, "Invalid migration version");
+        if from_version != current {
+            panic_with_error!(env, PayrollError::InvalidData);
+        }
 
         // v0 -> v1: first explicit version marker. No schema changes yet.
         if from_version == 0 {
@@ -463,8 +464,10 @@ impl PayrollContract {
     /// - `from.require_auth()` is enforced.
     ///
     /// # Errors
-    /// Panics with descriptive messages for: unknown agreement, wrong caller,
-    /// non-positive amount, `Cancelled` or `Completed` status, arithmetic overflow.
+    /// Raises a typed `PayrollError`: `AgreementNotFound` (unknown agreement),
+    /// `Unauthorized` (wrong caller), `MilestoneAmountInvalid` (non-positive amount),
+    /// `MilestoneAgreementInvalidStatus` (`Cancelled` or `Completed` status), or
+    /// `InvalidData` (arithmetic overflow).
     pub fn fund_milestone_agreement(env: Env, agreement_id: u128, from: Address, amount: i128) {
         crate::storage::extend_instance_ttl(&env);
         payroll::fund_milestone_agreement(&env, agreement_id, from, amount);
@@ -798,6 +801,24 @@ impl PayrollContract {
         audit::get_audit_entries_by_employer(&env, employer, start_id, limit)
     }
 
+    /// @notice Sets the maximum number of lifecycle audit entries retained in persistent storage.
+    ///
+    /// A limit of `0` means unlimited retention (the default).  When a new entry would push
+    /// the retained count past this ceiling, the oldest entry is evicted from storage and
+    /// emitted as an `audit_entry_evicted` event so off-chain indexers preserve full history.
+    ///
+    /// # Access Control
+    /// Only the contract owner may call this.
+    pub fn set_audit_retention(env: Env, owner: Address, max_entries: u64) {
+        audit::set_audit_retention(&env, owner, max_entries);
+    }
+
+    /// @notice Returns the configured on-chain audit retention limit.
+    /// `0` means unlimited (default).
+    pub fn get_audit_retention(env: Env) -> u64 {
+        audit::get_audit_retention(&env)
+    }
+
     /// Raise Dispute
     ///
     /// # Arguments
@@ -1006,6 +1027,9 @@ impl PayrollContract {
     /// * `from_token` - from_token parameter
     /// * `to_token` - to_token parameter
     /// * `amount` - amount parameter
+    /// * `max_rate_age_seconds` - optional maximum acceptable age of the FX rate in seconds
+    /// * `min_output_amount` - optional minimum acceptable converted output amount
+    /// * `max_output_amount` - optional maximum acceptable converted output amount
     ///
     /// # Returns
     /// Result<i128, PayrollError>
@@ -1020,9 +1044,20 @@ impl PayrollContract {
         from_token: Address,
         to_token: Address,
         amount: i128,
+        max_rate_age_seconds: Option<u64>,
+        min_output_amount: Option<i128>,
+        max_output_amount: Option<i128>,
     ) -> Result<i128, PayrollError> {
         crate::storage::extend_instance_ttl(&env);
-        payroll::convert_currency(&env, from_token, to_token, amount)
+        payroll::convert_currency(
+            &env,
+            from_token,
+            to_token,
+            amount,
+            max_rate_age_seconds,
+            min_output_amount,
+            max_output_amount,
+        )
     }
 
     /// Claims accrued payroll for a single employee in a payroll agreement.
