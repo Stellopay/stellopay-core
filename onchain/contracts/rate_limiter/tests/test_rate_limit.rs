@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use rate_limiter::{RateLimiter, RateLimiterClient};
+use rate_limiter::{ConsumptionOutcome, RateLimitError, RateLimiter, RateLimiterClient};
 use soroban_sdk::{
     testutils::{Address as _, Ledger},
     Address, Env,
@@ -33,8 +33,8 @@ fn test_initialize_and_basic_quota() {
     assert_eq!(config.refill_rate, 1);
 
     // Consume 1 token
-    let remaining = client.check_and_consume(&user);
-    assert_eq!(remaining, 4);
+    let outcome = client.check_and_consume(&user);
+    assert_eq!(outcome.remaining, 4);
 }
 
 #[test]
@@ -51,19 +51,19 @@ fn test_token_bucket_refill_logic() {
     client.initialize(&admin, &2u32, &1u32, &false);
 
     // Use burst
-    assert_eq!(client.check_and_consume(&user), 1);
-    assert_eq!(client.check_and_consume(&user), 0);
+    assert_eq!(client.check_and_consume(&user).remaining, 1);
+    assert_eq!(client.check_and_consume(&user).remaining, 0);
     assert!(client.try_check_and_consume(&user).is_err());
 
     // Advance 1 second -> 1 token refilled
     env.ledger().with_mut(|li| li.timestamp = 101);
-    assert_eq!(client.check_and_consume(&user), 0);
+    assert_eq!(client.check_and_consume(&user).remaining, 0);
     assert!(client.try_check_and_consume(&user).is_err());
 
     // Advance 5 seconds -> tokens = 0 + 5 = 5, but capped at burst = 2
     env.ledger().with_mut(|li| li.timestamp = 106);
-    assert_eq!(client.check_and_consume(&user), 1);
-    assert_eq!(client.check_and_consume(&user), 0);
+    assert_eq!(client.check_and_consume(&user).remaining, 1);
+    assert_eq!(client.check_and_consume(&user).remaining, 0);
     assert!(client.try_check_and_consume(&user).is_err());
 }
 
@@ -98,8 +98,8 @@ fn test_admin_bypass_security() {
     client.initialize(&admin, &0u32, &0u32, &true);
 
     // Admin is exempt
-    assert_eq!(client.check_and_consume(&admin), u32::MAX);
-    assert_eq!(client.check_and_consume(&admin), u32::MAX);
+    assert_eq!(client.check_and_consume(&admin).remaining, u32::MAX);
+    assert_eq!(client.check_and_consume(&admin).remaining, u32::MAX);
 
     // User is blocked
     let user = Address::generate(&env);
@@ -121,7 +121,7 @@ fn test_per_address_overrides() {
     assert_eq!(config.burst, 10);
     assert_eq!(config.refill_rate, 5);
 
-    assert_eq!(client.check_and_consume(&user), 9);
+    assert_eq!(client.check_and_consume(&user).remaining, 9);
 
     // Clear override
     client.clear_limit_for(&user);
@@ -142,8 +142,8 @@ fn test_per_caller_override_stricter_than_default_is_enforced() {
     // Override is stricter and must fully replace the default for this caller.
     client.set_limit_for(&user, &2u32, &0u32);
 
-    assert_eq!(client.check_and_consume(&user), 1);
-    assert_eq!(client.check_and_consume(&user), 0);
+    assert_eq!(client.check_and_consume(&user).remaining, 1);
+    assert_eq!(client.check_and_consume(&user).remaining, 0);
     assert!(
         client.try_check_and_consume(&user).is_err(),
         "per-caller override must stop the third call even though the default burst is 5"
@@ -163,10 +163,10 @@ fn test_per_caller_override_looser_than_default_is_honored() {
     // Override is looser and must be honored instead of the default.
     client.set_limit_for(&user, &4u32, &0u32);
 
-    assert_eq!(client.check_and_consume(&user), 3);
-    assert_eq!(client.check_and_consume(&user), 2);
-    assert_eq!(client.check_and_consume(&user), 1);
-    assert_eq!(client.check_and_consume(&user), 0);
+    assert_eq!(client.check_and_consume(&user).remaining, 3);
+    assert_eq!(client.check_and_consume(&user).remaining, 2);
+    assert_eq!(client.check_and_consume(&user).remaining, 1);
+    assert_eq!(client.check_and_consume(&user).remaining, 0);
     assert!(
         client.try_check_and_consume(&user).is_err(),
         "per-caller override must allow four calls before exhaustion"
@@ -185,9 +185,9 @@ fn test_caller_without_override_uses_default_limit() {
     client.set_limit_for(&override_user, &10u32, &0u32);
 
     // A different address with no override must still use the default values.
-    assert_eq!(client.check_and_consume(&user), 2);
-    assert_eq!(client.check_and_consume(&user), 1);
-    assert_eq!(client.check_and_consume(&user), 0);
+    assert_eq!(client.check_and_consume(&user).remaining, 2);
+    assert_eq!(client.check_and_consume(&user).remaining, 1);
+    assert_eq!(client.check_and_consume(&user).remaining, 0);
     assert!(
         client.try_check_and_consume(&user).is_err(),
         "addresses without overrides must continue to be governed by the default burst"
@@ -208,21 +208,58 @@ fn test_admin_usage_reset() {
 
     // Admin resets user usage
     client.reset_usage(&user);
-    assert_eq!(client.check_and_consume(&user), 0);
+    assert_eq!(client.check_and_consume(&user).remaining, 0);
 }
 
 #[test]
-fn test_admin_transfer() {
+fn test_admin_transfer_requires_acceptance() {
     let env = create_env();
     let (_id, client) = register_contract(&env);
     let admin1 = Address::generate(&env);
     let admin2 = Address::generate(&env);
+    let user = Address::generate(&env);
 
     client.initialize(&admin1, &1u32, &1u32, &false);
     assert_eq!(client.get_admin(), Some(admin1.clone()));
 
     client.transfer_admin(&admin2);
-    assert_eq!(client.get_admin(), Some(admin2.clone()));
+    assert_eq!(client.get_admin(), Some(admin1.clone()));
+
+    // The current admin retains access while the transfer is pending.
+    assert!(client.try_set_limit_for(&user, &2u32, &1u32).is_ok());
+    client.accept_admin(&admin2);
+    assert_eq!(client.get_admin(), Some(admin2));
+    assert!(client.try_set_limit_for(&user, &2u32, &1u32).is_ok());
+}
+
+#[test]
+fn test_non_pending_admin_cannot_accept_transfer() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let pending = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    client.initialize(&admin, &1u32, &1u32, &false);
+    client.transfer_admin(&pending);
+
+    assert!(client.try_accept_admin(&attacker).is_err());
+    assert_eq!(client.get_admin(), Some(admin));
+}
+
+#[test]
+fn test_admin_can_cancel_pending_transfer() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let pending = Address::generate(&env);
+
+    client.initialize(&admin, &1u32, &1u32, &false);
+    client.transfer_admin(&pending);
+    client.cancel_admin_transfer();
+
+    assert_eq!(client.get_admin(), Some(admin));
+    assert!(client.try_accept_admin(&pending).is_err());
 }
 
 #[test]
@@ -286,7 +323,7 @@ fn test_get_usage_shows_refill_without_mutation() {
     assert_eq!(usage2.last_update, 103);
 
     // check_and_consume should also see 3 tokens (not double-refilled)
-    assert_eq!(client.check_and_consume(&user), 2);
+    assert_eq!(client.check_and_consume(&user).remaining, 2);
 }
 
 #[test]
@@ -522,9 +559,12 @@ fn test_clear_limit_falls_back_to_default_and_check_and_consume_works() {
     let r1 = client.check_and_consume(&user);
     let r2 = client.check_and_consume(&user);
     let r3 = client.check_and_consume(&user);
-    assert_eq!(r1, 2, "first call should leave 2 tokens");
-    assert_eq!(r2, 1, "second call should leave 1 token");
-    assert_eq!(r3, 0, "third call should exhaust the default bucket");
+    assert_eq!(r1.remaining, 2, "first call should leave 2 tokens");
+    assert_eq!(r2.remaining, 1, "second call should leave 1 token");
+    assert_eq!(
+        r3.remaining, 0,
+        "third call should exhaust the default bucket"
+    );
 
     // Step 8: one more call must be rejected — default cap is enforced
     let exhausted = client.try_check_and_consume(&user);
@@ -577,8 +617,8 @@ fn test_clear_limit_for_address_with_no_override_is_safe_noop() {
     // Step 4: check_and_consume still works under the default limit
     let r1 = client.check_and_consume(&user);
     let r2 = client.check_and_consume(&user);
-    assert_eq!(r1, 1, "first call should leave 1 token");
-    assert_eq!(r2, 0, "second call should exhaust the bucket");
+    assert_eq!(r1.remaining, 1, "first call should leave 1 token");
+    assert_eq!(r2.remaining, 0, "second call should exhaust the bucket");
 
     // Step 5: next call must be rejected (cap is enforced)
     assert!(
@@ -625,7 +665,7 @@ fn test_long_idle_gap_refill_is_capped_at_burst_capacity() {
     for _ in 0..9 {
         client.check_and_consume(&user);
     }
-    assert_eq!(client.check_and_consume(&user), 0);
+    assert_eq!(client.check_and_consume(&user).remaining, 0);
 
     // Step 3: advance ledger by 100 seconds (20x the 5-second refill window)
     // Without capping, this would give 1 + 100*2 = 201 tokens
@@ -635,17 +675,17 @@ fn test_long_idle_gap_refill_is_capped_at_burst_capacity() {
 
     // Step 4: assert bucket refilled to exactly burst capacity
     // First call after long idle should succeed and leave burst-1 tokens
-    let remaining = client.check_and_consume(&user);
+    let outcome = client.check_and_consume(&user);
     assert_eq!(
-        remaining,
+        outcome.remaining,
         BURST - 1,
         "after long idle, bucket should be at full burst capacity, not over-credited"
     );
 
     // Step 5: consume another token → burst-2 remaining
-    let remaining = client.check_and_consume(&user);
+    let outcome = client.check_and_consume(&user);
     assert_eq!(
-        remaining,
+        outcome.remaining,
         BURST - 2,
         "second consumption should debit from capped balance"
     );
@@ -707,8 +747,18 @@ fn test_contract_limit_blocks_address_rotation() {
     client.initialize(&admin, &10u32, &0u32, &false);
     client.set_limit_for_contract(&contract, &2u32, &0u32);
 
-    assert_eq!(client.check_and_consume_for_contract(&user1, &contract), 9);
-    assert_eq!(client.check_and_consume_for_contract(&user2, &contract), 9);
+    assert_eq!(
+        client
+            .check_and_consume_for_contract(&user1, &contract)
+            .remaining,
+        9
+    );
+    assert_eq!(
+        client
+            .check_and_consume_for_contract(&user2, &contract)
+            .remaining,
+        9
+    );
 
     // Contract bucket exhausted — rotation to user3 must fail.
     assert!(client
@@ -736,14 +786,24 @@ fn test_address_limit_still_enforced_alongside_contract_limit() {
     client.set_limit_for_contract(&contract, &10u32, &0u32);
     client.set_limit_for(&user, &1u32, &0u32);
 
-    assert_eq!(client.check_and_consume_for_contract(&user, &contract), 0);
+    assert_eq!(
+        client
+            .check_and_consume_for_contract(&user, &contract)
+            .remaining,
+        0
+    );
     assert!(client
         .try_check_and_consume_for_contract(&user, &contract)
         .is_err());
 
     // Another subject can still consume against the remaining contract budget.
     let other = Address::generate(&env);
-    assert_eq!(client.check_and_consume_for_contract(&other, &contract), 9);
+    assert_eq!(
+        client
+            .check_and_consume_for_contract(&other, &contract)
+            .remaining,
+        9
+    );
 }
 
 /// # Either limit being hit rejects the call
@@ -765,7 +825,12 @@ fn test_either_contract_or_address_limit_rejects() {
     client.set_limit_for(&user_a, &1u32, &0u32);
 
     // user_a: address burst 1 — first call ok, second fails on address limit
-    assert_eq!(client.check_and_consume_for_contract(&user_a, &contract), 0);
+    assert_eq!(
+        client
+            .check_and_consume_for_contract(&user_a, &contract)
+            .remaining,
+        0
+    );
     assert!(
         client
             .try_check_and_consume_for_contract(&user_a, &contract)
@@ -774,7 +839,12 @@ fn test_either_contract_or_address_limit_rejects() {
     );
 
     // user_b consumes the last contract token
-    assert_eq!(client.check_and_consume_for_contract(&user_b, &contract), 4);
+    assert_eq!(
+        client
+            .check_and_consume_for_contract(&user_b, &contract)
+            .remaining,
+        4
+    );
 
     // Contract empty: a third subject with full address quota is still rejected
     let user_c = Address::generate(&env);
@@ -802,8 +872,8 @@ fn test_check_and_consume_ignores_contract_budget() {
     client.set_limit_for_contract(&contract, &1u32, &0u32);
 
     // Address-only path can consume full default burst despite contract burst=1
-    assert_eq!(client.check_and_consume(&user), 1);
-    assert_eq!(client.check_and_consume(&user), 0);
+    assert_eq!(client.check_and_consume(&user).remaining, 1);
+    assert_eq!(client.check_and_consume(&user).remaining, 0);
     assert!(client.try_check_and_consume(&user).is_err());
 }
 
@@ -819,8 +889,18 @@ fn test_check_and_consume_for_contract_without_budget_is_address_only() {
     client.initialize(&admin, &2u32, &0u32, &false);
 
     assert_eq!(client.get_limit_for_contract(&contract), None);
-    assert_eq!(client.check_and_consume_for_contract(&user, &contract), 1);
-    assert_eq!(client.check_and_consume_for_contract(&user, &contract), 0);
+    assert_eq!(
+        client
+            .check_and_consume_for_contract(&user, &contract)
+            .remaining,
+        1
+    );
+    assert_eq!(
+        client
+            .check_and_consume_for_contract(&user, &contract)
+            .remaining,
+        0
+    );
     assert!(client
         .try_check_and_consume_for_contract(&user, &contract)
         .is_err());
@@ -845,5 +925,282 @@ fn test_reset_contract_usage() {
         .is_err());
 
     client.reset_contract_usage(&contract);
-    assert_eq!(client.check_and_consume_for_contract(&user, &contract), 8);
+    assert_eq!(
+        client
+            .check_and_consume_for_contract(&user, &contract)
+            .remaining,
+        8
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Explicit outcome and exhaustion behaviour
+// ---------------------------------------------------------------------------
+//
+// `check_and_consume` / `check_and_consume_for_contract` return
+// `Result<ConsumptionOutcome, RateLimitError>`. These tests pin the four
+// boundary cases called out by the contract's documented behaviour:
+// consumption below the burst, exactly at the burst, past the burst, and after
+// a refill interval.
+
+/// The outcome names what it carries. A bare integer could be the remaining
+/// allowance, the consumed amount, or the wait time; the named fields cannot.
+#[test]
+fn test_outcome_names_remaining_allowance_and_refill_time() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    const BURST: u32 = 5;
+    const REFILL_RATE: u32 = 3;
+
+    client.initialize(&admin, &BURST, &REFILL_RATE, &false);
+
+    let outcome: ConsumptionOutcome = client.check_and_consume(&user);
+
+    // `remaining` is the post-debit allowance: 5 - 1 = 4.
+    assert_eq!(outcome.remaining, BURST - 1);
+    // It is explicitly *not* the amount consumed (1) nor the refill rate (3).
+    assert_ne!(outcome.remaining, 1, "remaining is not the consumed amount");
+    assert_ne!(
+        outcome.remaining, REFILL_RATE,
+        "remaining is not the wait time"
+    );
+    // A non-empty bucket is usable immediately.
+    assert_eq!(outcome.refill_in_seconds, Some(0));
+}
+
+/// Below the burst: every call is served, `remaining` counts down, and no
+/// rejection is possible.
+#[test]
+fn test_consumption_below_burst_is_served_with_decreasing_allowance() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    const BURST: u32 = 4;
+
+    client.initialize(&admin, &BURST, &1u32, &false);
+
+    for consumed in 1..BURST {
+        let outcome = client.check_and_consume(&user);
+        assert_eq!(
+            outcome.remaining,
+            BURST - consumed,
+            "call {consumed} is below the burst and must be served"
+        );
+        assert_eq!(outcome.refill_in_seconds, Some(0));
+    }
+}
+
+/// Exactly at the burst: the final token is served and `remaining` reaches `0`.
+/// That zero is a *success*, which is precisely why exhaustion cannot be
+/// signalled by an in-band sentinel.
+#[test]
+fn test_consumption_exactly_at_burst_is_served_with_zero_remaining() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    const BURST: u32 = 3;
+
+    client.initialize(&admin, &BURST, &1u32, &false);
+
+    let mut last = None;
+    for _ in 0..BURST {
+        last = Some(client.check_and_consume(&user));
+    }
+
+    let outcome = last.unwrap();
+    assert_eq!(outcome.remaining, 0, "the burst-exhausting call is served");
+    // Empty bucket with a non-zero refill rate: one whole second to the next token.
+    assert_eq!(outcome.refill_in_seconds, Some(1));
+}
+
+/// Past the burst: the next call is rejected with the typed error rather than
+/// a zero sentinel, and the rejection does not debit any bucket.
+#[test]
+fn test_consumption_past_burst_returns_typed_error_without_debiting() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    const BURST: u32 = 2;
+
+    client.initialize(&admin, &BURST, &0u32, &false);
+
+    // Serve exactly the burst, ending with a successful `remaining == 0`.
+    assert_eq!(client.check_and_consume(&user).remaining, 1);
+    assert_eq!(client.check_and_consume(&user).remaining, 0);
+
+    // Past the burst: typed error, never an in-band zero.
+    assert_eq!(
+        client.try_check_and_consume(&user),
+        Err(Ok(RateLimitError::RateLimitExceeded))
+    );
+    // Repeated rejections report the same typed error and leave the bucket as-is.
+    assert_eq!(
+        client.try_check_and_consume(&user),
+        Err(Ok(RateLimitError::RateLimitExceeded))
+    );
+    assert_eq!(client.get_usage(&user).unwrap().tokens, 0);
+}
+
+/// Past the burst on the per-contract path reports the same typed error.
+#[test]
+fn test_contract_consumption_past_burst_returns_typed_error() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let contract = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &10u32, &0u32, &false);
+    client.set_limit_for_contract(&contract, &1u32, &0u32);
+
+    assert_eq!(
+        client
+            .check_and_consume_for_contract(&user, &contract)
+            .remaining,
+        9
+    );
+    assert_eq!(
+        client.try_check_and_consume_for_contract(&user, &contract),
+        Err(Ok(RateLimitError::RateLimitExceeded))
+    );
+}
+
+/// After a refill interval: an emptied bucket is served again, and sub-second
+/// repetition inside the same whole-second window still earns no credit.
+#[test]
+fn test_consumption_after_refill_interval_is_served_again() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    const START: u64 = 1_000;
+    const BURST: u32 = 2;
+    const REFILL_RATE: u32 = 1;
+
+    env.ledger().with_mut(|li| li.timestamp = START);
+    client.initialize(&admin, &BURST, &REFILL_RATE, &false);
+
+    // Drain the burst exactly.
+    assert_eq!(client.check_and_consume(&user).remaining, 1);
+    assert_eq!(client.check_and_consume(&user).remaining, 0);
+    assert_eq!(
+        client.try_check_and_consume(&user),
+        Err(Ok(RateLimitError::RateLimitExceeded))
+    );
+
+    // Same whole ledger second: still empty — no fractional refill credit.
+    assert_eq!(
+        client.try_check_and_consume(&user),
+        Err(Ok(RateLimitError::RateLimitExceeded))
+    );
+
+    // One whole second later: exactly one token is credited.
+    env.ledger().with_mut(|li| li.timestamp = START + 1);
+    let after_refill = client.check_and_consume(&user);
+    assert_eq!(after_refill.remaining, 0);
+    assert_eq!(after_refill.refill_in_seconds, Some(1));
+
+    // Empty again immediately: the refilled token was the only one available.
+    assert_eq!(
+        client.try_check_and_consume(&user),
+        Err(Ok(RateLimitError::RateLimitExceeded))
+    );
+
+    // A long idle gap refills up to the burst cap, never beyond it.
+    env.ledger().with_mut(|li| li.timestamp = START + 100);
+    assert_eq!(client.check_and_consume(&user).remaining, BURST - 1);
+}
+
+/// A zero refill rate never refills on its own, so the outcome says so instead
+/// of reporting a misleading countdown.
+#[test]
+fn test_refill_in_seconds_is_none_when_refill_rate_is_zero() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &1u32, &0u32, &false);
+
+    let outcome = client.check_and_consume(&user);
+    assert_eq!(outcome.remaining, 0);
+    assert_eq!(outcome.refill_in_seconds, None);
+
+    // Time passing does not change that.
+    env.ledger().with_mut(|li| li.timestamp = 10_000);
+    assert_eq!(
+        client.try_check_and_consume(&user),
+        Err(Ok(RateLimitError::RateLimitExceeded))
+    );
+}
+
+/// The admin bypass is reported explicitly as an unlimited allowance instead of
+/// being confused with a real remaining balance.
+#[test]
+fn test_admin_bypass_outcome_reports_unlimited_allowance() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+
+    client.initialize(&admin, &0u32, &0u32, &true);
+
+    let outcome = client.check_and_consume(&admin);
+    assert_eq!(outcome.remaining, u32::MAX);
+    assert_eq!(outcome.refill_in_seconds, Some(0));
+}
+
+/// The non-`try` accessor traps on rejection instead of returning the typed
+/// error, so callers that need to branch on exhaustion must use `try_`.
+#[test]
+#[should_panic]
+fn test_plain_accessor_traps_when_bucket_is_exhausted() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &1u32, &0u32, &false);
+
+    // The only token is served, leaving zero allowance.
+    assert_eq!(client.check_and_consume(&user).remaining, 0);
+
+    // Nothing left to serve: the plain accessor traps.
+    client.check_and_consume(&user);
+}
+
+/// A rejected call is distinguishable from a served call that happens to leave
+/// zero allowance: one is `Err`, the other is `Ok` with `remaining == 0`.
+#[test]
+fn test_zero_remaining_is_distinguishable_from_exhaustion() {
+    let env = create_env();
+    let (_id, client) = register_contract(&env);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+
+    client.initialize(&admin, &1u32, &0u32, &false);
+
+    // The plain accessor panics on rejection, so reaching this line at all
+    // proves the call was served.
+    let served = client.check_and_consume(&user);
+    assert_eq!(
+        served.remaining, 0,
+        "consuming the last token is a served call with zero allowance left"
+    );
+
+    let rejected = client.try_check_and_consume(&user);
+    assert_eq!(
+        rejected,
+        Err(Ok(RateLimitError::RateLimitExceeded)),
+        "exhaustion is a typed error, not a zero balance"
+    );
 }

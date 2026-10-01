@@ -7,7 +7,7 @@ use soroban_sdk::{
     Address, Env,
 };
 use stello_pay_contract::{
-    storage::{Agreement, AgreementStatus, DataKey, DisputeStatus, StorageKey},
+    storage::{Agreement, AgreementStatus, DataKey, DisputeStatus, PayrollError, StorageKey},
     PayrollContract, PayrollContractClient,
 };
 
@@ -294,7 +294,6 @@ fn test_cancel_created_agreement() {
 }
 
 #[test]
-#[should_panic(expected = "Can only cancel Active or Created agreements")]
 fn test_cancel_paused_agreement() {
     let env = create_test_environment();
     let (_contract_id, client) = setup_contract(&env);
@@ -312,12 +311,11 @@ fn test_cancel_paused_agreement() {
         AgreementStatus::Paused,
     );
 
-    // Attempt to cancel paused agreement - should panic
-    client.cancel_agreement(&agreement_id);
+    let result = client.try_cancel_agreement(&agreement_id);
+    assert_eq!(result, Err(Ok(PayrollError::InvalidData.into())));
 }
 
 #[test]
-#[should_panic(expected = "Can only cancel Active or Created agreements")]
 fn test_cancel_already_cancelled_fails() {
     let env = create_test_environment();
     let (_contract_id, client) = setup_contract(&env);
@@ -336,12 +334,12 @@ fn test_cancel_already_cancelled_fails() {
     );
 
     client.cancel_agreement(&agreement_id);
-    // Attempt to cancel again - should panic
-    client.cancel_agreement(&agreement_id);
+    // Attempt to cancel again - must surface a typed error
+    let result = client.try_cancel_agreement(&agreement_id);
+    assert_eq!(result, Err(Ok(PayrollError::InvalidData.into())));
 }
 
 #[test]
-#[should_panic(expected = "Can only cancel Active or Created agreements")]
 fn test_cancel_completed_fails() {
     let env = create_test_environment();
     let (contract_id, client) = setup_contract(&env);
@@ -372,8 +370,8 @@ fn test_cancel_completed_fails() {
             .set(&StorageKey::Agreement(agreement_id), &agreement);
     });
 
-    // Attempt to cancel completed agreement - should panic
-    client.cancel_agreement(&agreement_id);
+    let result = client.try_cancel_agreement(&agreement_id);
+    assert_eq!(result, Err(Ok(PayrollError::InvalidData.into())));
 }
 
 #[test]
@@ -860,7 +858,6 @@ fn test_finalize_grace_period_after_expiration() {
 }
 
 #[test]
-#[should_panic(expected = "Grace period has not expired yet")]
 fn test_finalize_before_expiration_fails() {
     let env = create_test_environment();
     let (contract_id, client) = setup_contract(&env);
@@ -885,12 +882,12 @@ fn test_finalize_before_expiration_fails() {
     // Advance to halfway through grace period
     advance_time(&env, ONE_DAY / 2);
 
-    // Attempt finalize - should fail
-    client.finalize_grace_period(&agreement_id);
+    // Attempt finalize - must surface a typed error
+    let result = client.try_finalize_grace_period(&agreement_id);
+    assert_eq!(result, Err(Ok(PayrollError::NotInGracePeriod.into())));
 }
 
 #[test]
-#[should_panic(expected = "Agreement must be cancelled")]
 fn test_finalize_non_cancelled_fails() {
     let env = create_test_environment();
     let (_contract_id, client) = setup_contract(&env);
@@ -908,12 +905,12 @@ fn test_finalize_non_cancelled_fails() {
         AgreementStatus::Active,
     );
 
-    // Attempt finalize - should fail
-    client.finalize_grace_period(&agreement_id);
+    // Attempt finalize - must surface a typed error
+    let result = client.try_finalize_grace_period(&agreement_id);
+    assert_eq!(result, Err(Ok(PayrollError::InvalidData.into())));
 }
 
 #[test]
-#[should_panic(expected = "Can only cancel Active or Created agreements")]
 fn test_finalize_with_active_dispute_fails() {
     // When a dispute is raised, status becomes Disputed; cancel is not allowed.
     let env = create_test_environment();
@@ -943,7 +940,8 @@ fn test_finalize_with_active_dispute_fails() {
         DisputeStatus::Raised
     );
 
-    client.cancel_agreement(&agreement_id);
+    let result = client.try_cancel_agreement(&agreement_id);
+    assert_eq!(result, Err(Ok(PayrollError::InvalidData.into())));
 }
 
 #[test]

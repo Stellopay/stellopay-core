@@ -19,13 +19,39 @@
 //! `u32` tokens. Refill is therefore calculated as
 //! `elapsed_seconds * refill_rate` using integer arithmetic. Calls made inside
 //! the same ledger second receive no partial or fractional refill credit.
+//!
+//! # Outcome and exhaustion
+//! [`RateLimiter::check_and_consume`] and
+//! [`RateLimiter::check_and_consume_for_contract`] return
+//! `Result<ConsumptionOutcome, RateLimitError>`. A successful call reports the
+//! subject's remaining allowance and the whole seconds until its bucket next
+//! holds a token. An exhausted bucket is reported as
+//! [`RateLimitError::RateLimitExceeded`] rather than as an in-band `0` token
+//! balance, so callers can tell "served" from "rejected" without reading the
+//! implementation.
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Env};
+
+/// Typed errors reported at the rate limiter boundary.
+///
+/// Exhaustion is always reported through this type: a successful call returns
+/// [`ConsumptionOutcome`], so a zero token balance can never be mistaken for a
+/// rejection (and vice versa).
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum RateLimitError {
+    /// At least one enforced bucket (global, per-contract, or per-address) held
+    /// no tokens, so the call was rejected. No bucket is debited when this is
+    /// returned.
+    RateLimitExceeded = 1,
+}
 
 #[contracttype]
 #[derive(Clone)]
 enum StorageKey {
     Admin,
+    PendingAdmin,
     Initialized,
     /// Default burst capacity for all addresses
     DefaultBurst,
@@ -69,6 +95,27 @@ pub struct LimitConfig {
     pub burst: u32,
     /// Whole tokens added to the bucket per whole ledger second.
     pub refill_rate: u32,
+}
+
+/// Result of a successful [`RateLimiter::check_and_consume`] call.
+///
+/// Carries the two facts a caller needs after a served request: how much
+/// allowance is left, and when the bucket will next admit a request.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsumptionOutcome {
+    /// Subject's token balance after this call consumed one token.
+    ///
+    /// `u32::MAX` signals the admin bypass (the subject is exempt and its
+    /// allowance is effectively unlimited).
+    pub remaining: u32,
+    /// Whole seconds until the subject's bucket next holds at least one token.
+    ///
+    /// `Some(0)` means a token is available now, `Some(1)` means the bucket is
+    /// empty and the next whole-second tick refills it, and `None` means the
+    /// bucket is empty and the configured refill rate is zero, so it will never
+    /// refill on its own.
+    pub refill_in_seconds: Option<u64>,
 }
 
 #[contract]
@@ -186,6 +233,8 @@ impl RateLimiter {
     ///
     /// @notice Implements Token Bucket algorithm for burst handling.
     /// @notice Validates security by allowing admins to bypass if configured.
+    ///         A bypassed subject is never debited and receives
+    ///         `remaining == u32::MAX` (unlimited).
     /// @notice Resolves the subject-specific limit as:
     ///         `set_limit_for(subject, ...)` override first, otherwise the
     ///         default values established during `initialize(...)`.
@@ -193,8 +242,16 @@ impl RateLimiter {
     ///      Multiple calls in the same ledger second share the same balance and
     ///      do not accumulate fractional refill credit.
     /// @param subject Address to check and consume quota for (must authenticate).
-    /// @return tokens_remaining User's tokens remaining after consumption.
-    pub fn check_and_consume(env: Env, subject: Address) -> u32 {
+    /// @return `Ok(ConsumptionOutcome)` when the request was served. The outcome
+    ///         reports the subject's remaining allowance and the whole seconds
+    ///         until its bucket next holds a token.
+    /// @return `Err(RateLimitError::RateLimitExceeded)` when the subject's (or an
+    ///         enabled global) bucket is empty. **Exhaustion is never signalled
+    ///         by a zero return value**, and no bucket is debited on rejection.
+    pub fn check_and_consume(
+        env: Env,
+        subject: Address,
+    ) -> Result<ConsumptionOutcome, RateLimitError> {
         Self::check_and_consume_inner(&env, subject, None)
     }
 
@@ -205,10 +262,21 @@ impl RateLimiter {
     ///         shared per-contract budget. Either bucket being exhausted rejects
     ///         the call, so rotating subject addresses within the same contract
     ///         cannot exceed the contract-scoped cap.
+    /// @dev All enforced buckets are checked before any is debited, so a
+    ///      rejection never partially drains an unrelated budget.
     /// @param subject Address whose per-address quota is consumed.
     /// @param contract Integrating contract whose shared quota is consumed when set.
-    /// @return tokens_remaining Subject's tokens remaining after consumption.
-    pub fn check_and_consume_for_contract(env: Env, subject: Address, contract: Address) -> u32 {
+    /// @return `Ok(ConsumptionOutcome)` when the request was served. `remaining`
+    ///         is the **subject's** post-debit balance (not the contract bucket's),
+    ///         alongside the subject's `refill_in_seconds`.
+    /// @return `Err(RateLimitError::RateLimitExceeded)` when the subject, the
+    ///         global, or the configured contract bucket is empty. No bucket is
+    ///         debited on rejection.
+    pub fn check_and_consume_for_contract(
+        env: Env,
+        subject: Address,
+        contract: Address,
+    ) -> Result<ConsumptionOutcome, RateLimitError> {
         Self::check_and_consume_inner(&env, subject, Some(contract))
     }
 
@@ -230,14 +298,39 @@ impl RateLimiter {
             .remove(&StorageKey::ContractUsage(contract));
     }
 
-    /// Transfers admin rights to a new address.
+    /// Proposes transferring admin rights to a new address.
     ///
-    /// @dev Only callable by current admin.
+    /// @dev Only callable by current admin. The new admin has no privileges
+    ///      until they accept the transfer.
     pub fn transfer_admin(env: Env, new_admin: Address) {
         Self::require_admin_auth(&env);
         env.storage()
             .persistent()
-            .set(&StorageKey::Admin, &new_admin);
+            .set(&StorageKey::PendingAdmin, &new_admin);
+    }
+
+    /// Accepts a pending admin transfer.
+    ///
+    /// @dev Only the pending admin may call this entry point.
+    pub fn accept_admin(env: Env, caller: Address) {
+        caller.require_auth();
+        let pending: Address = env
+            .storage()
+            .persistent()
+            .get(&StorageKey::PendingAdmin)
+            .expect("no pending admin");
+        assert!(caller == pending, "caller is not pending admin");
+
+        env.storage().persistent().set(&StorageKey::Admin, &caller);
+        env.storage().persistent().remove(&StorageKey::PendingAdmin);
+    }
+
+    /// Cancels a pending admin transfer.
+    ///
+    /// @dev Only callable by current admin. Safe no-op when no transfer is pending.
+    pub fn cancel_admin_transfer(env: Env) {
+        Self::require_admin_auth(&env);
+        env.storage().persistent().remove(&StorageKey::PendingAdmin);
     }
 
     /// Gets current config for an address.
@@ -303,7 +396,11 @@ impl RateLimiter {
 
     // Internal helpers
 
-    fn check_and_consume_inner(env: &Env, subject: Address, contract: Option<Address>) -> u32 {
+    fn check_and_consume_inner(
+        env: &Env,
+        subject: Address,
+        contract: Option<Address>,
+    ) -> Result<ConsumptionOutcome, RateLimitError> {
         Self::require_initialized(env);
 
         let admin: Address = env.storage().persistent().get(&StorageKey::Admin).unwrap();
@@ -315,11 +412,17 @@ impl RateLimiter {
 
         // Security assumption: Admin bypass prevents permanent lockout of governance controllers.
         if bypass && subject == admin {
-            return u32::MAX;
+            return Ok(ConsumptionOutcome {
+                remaining: u32::MAX,
+                refill_in_seconds: Some(0),
+            });
         }
 
-        // 1. Check Global Limit (if enabled)
-        if env
+        let addr_limit = Self::get_limit_config(env, &subject);
+        let addr_key = StorageKey::Usage(subject);
+
+        // Resolve the global bucket, if enabled.
+        let global_bucket = if env
             .storage()
             .persistent()
             .get(&StorageKey::GlobalLimitEnabled)
@@ -335,38 +438,57 @@ impl RateLimiter {
                 .persistent()
                 .get(&StorageKey::GlobalRefillRate)
                 .unwrap_or(0);
-            Self::consume_bucket(env, StorageKey::GlobalUsage, g_burst, g_refill);
-        }
+            Some((
+                StorageKey::GlobalUsage,
+                Self::bucket_after_refill(env, &StorageKey::GlobalUsage, g_burst, g_refill),
+            ))
+        } else {
+            None
+        };
 
-        // 2–3. Per-contract (when configured) and per-address budgets.
-        // Both are checked before either is debited so a rejection on one
-        // cannot silently drain the other (e.g. address rotation vs contract cap).
-        let addr_limit = Self::get_limit_config(env, &subject);
-        let addr_key = StorageKey::Usage(subject);
-
-        if let Some(contract_addr) = contract {
-            let c_limit: Option<LimitConfig> = env
+        // Resolve the per-contract bucket when the caller opted in and one is set.
+        let contract_bucket = match contract {
+            Some(contract_addr) => env
                 .storage()
                 .persistent()
-                .get(&StorageKey::ContractLimit(contract_addr.clone()));
-            if let Some(c_limit) = c_limit {
-                let c_key = StorageKey::ContractUsage(contract_addr);
-                let c_usage =
-                    Self::bucket_after_refill(env, &c_key, c_limit.burst, c_limit.refill_rate);
-                let a_usage = Self::bucket_after_refill(
-                    env,
-                    &addr_key,
-                    addr_limit.burst,
-                    addr_limit.refill_rate,
-                );
-                assert!(c_usage.tokens >= 1, "rate limit exceeded");
-                assert!(a_usage.tokens >= 1, "rate limit exceeded");
-                Self::debit_bucket(env, &c_key, c_usage);
-                return Self::debit_bucket(env, &addr_key, a_usage);
-            }
+                .get::<_, LimitConfig>(&StorageKey::ContractLimit(contract_addr.clone()))
+                .map(|c_limit| {
+                    let c_key = StorageKey::ContractUsage(contract_addr);
+                    let c_usage =
+                        Self::bucket_after_refill(env, &c_key, c_limit.burst, c_limit.refill_rate);
+                    (c_key, c_usage)
+                }),
+            None => None,
+        };
+
+        let addr_usage =
+            Self::bucket_after_refill(env, &addr_key, addr_limit.burst, addr_limit.refill_rate);
+
+        // Every enforced bucket is checked before any is debited, so a rejection
+        // on one cannot silently drain another (e.g. address rotation vs contract cap).
+        let exhausted = global_bucket
+            .as_ref()
+            .is_some_and(|(_, usage)| usage.tokens < 1)
+            || contract_bucket
+                .as_ref()
+                .is_some_and(|(_, usage)| usage.tokens < 1)
+            || addr_usage.tokens < 1;
+        if exhausted {
+            return Err(RateLimitError::RateLimitExceeded);
         }
 
-        Self::consume_bucket(env, addr_key, addr_limit.burst, addr_limit.refill_rate)
+        if let Some((key, usage)) = global_bucket {
+            Self::debit_bucket(env, &key, usage);
+        }
+        if let Some((key, usage)) = contract_bucket {
+            Self::debit_bucket(env, &key, usage);
+        }
+        let remaining = Self::debit_bucket(env, &addr_key, addr_usage);
+
+        Ok(ConsumptionOutcome {
+            remaining,
+            refill_in_seconds: Self::refill_in_seconds(remaining, addr_limit.refill_rate),
+        })
     }
 
     fn preview_refill(usage: Usage, now: u64, burst: u32, refill_rate: u32) -> Usage {
@@ -392,16 +514,27 @@ impl RateLimiter {
         Self::preview_refill(usage, now, burst, refill_rate)
     }
 
+    /// Debits one token from a bucket already known to hold at least one token
+    /// and returns the balance after the debit.
     fn debit_bucket(env: &Env, key: &StorageKey, mut usage: Usage) -> u32 {
-        assert!(usage.tokens >= 1, "rate limit exceeded");
         usage.tokens -= 1;
         env.storage().persistent().set(key, &usage);
         usage.tokens
     }
 
-    fn consume_bucket(env: &Env, key: StorageKey, burst: u32, refill_rate: u32) -> u32 {
-        let usage = Self::bucket_after_refill(env, &key, burst, refill_rate);
-        Self::debit_bucket(env, &key, usage)
+    /// Whole seconds until a bucket with `remaining` tokens next holds at least
+    /// one token. A non-empty bucket is usable immediately. An empty bucket
+    /// refills on the next whole-second tick when the rate is non-zero, and
+    /// never refills (`None`) when the rate is zero. Because refill is credited
+    /// per whole second, any `refill_rate >= 1` yields a token within one second.
+    fn refill_in_seconds(remaining: u32, refill_rate: u32) -> Option<u64> {
+        if remaining > 0 {
+            Some(0)
+        } else if refill_rate == 0 {
+            None
+        } else {
+            Some(1)
+        }
     }
 
     fn get_limit_config(env: &Env, addr: &Address) -> LimitConfig {
