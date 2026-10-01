@@ -9,6 +9,11 @@ use soroban_sdk::{contracterror, contracttype, Address, Env, Vec};
 /// late Soroban resource exhaustion after partial state changes.
 pub const MAX_BATCH_SIZE: u32 = 20;
 
+/// Maximum number of emergency guardians that can be configured.
+///
+/// A bounded guardian set keeps duplicate checks and quorum processing cheap.
+pub const MAX_EMERGENCY_GUARDIANS: u32 = 10;
+
 /// Number of ledgers below which a long-lived persistent entry is bumped.
 ///
 /// Under Soroban's state-archival model, persistent entries that are not bumped
@@ -483,6 +488,12 @@ pub enum PayrollError {
     /// agreement without milestones leaves storage waste with no possible
     /// payout path, so the operation is rejected at creation time.
     EmptyMilestoneList = 50,
+    /// Emergency guardian configuration must contain at least one address.
+    EmptyEmergencyGuardians = 51,
+    /// Emergency guardian addresses must be unique.
+    DuplicateEmergencyGuardian = 52,
+    /// Emergency guardian configuration exceeds [`MAX_EMERGENCY_GUARDIANS`].
+    TooManyEmergencyGuardians = 53,
 }
 
 /// Caps for how much a cancelled agreement's grace/dispute window may be extended on-chain.
@@ -853,5 +864,8 @@ mod test {
         assert_eq!(PayrollError::MilestoneAlreadyExpired as u32, 48);
         assert_eq!(PayrollError::MilestoneRejectionReasonEmpty as u32, 49);
         assert_eq!(PayrollError::EmptyMilestoneList as u32, 50);
+        assert_eq!(PayrollError::EmptyEmergencyGuardians as u32, 51);
+        assert_eq!(PayrollError::DuplicateEmergencyGuardian as u32, 52);
+        assert_eq!(PayrollError::TooManyEmergencyGuardians as u32, 53);
     }
 }

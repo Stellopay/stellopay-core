@@ -239,7 +239,7 @@ fn snapshot_emergency_pause_state() {
     let g3 = Address::generate(&env);
 
     let guardians = Vec::from_array(&env, [g1.clone(), g2.clone(), g3.clone()]);
-    client.set_emergency_guardians(&guardians);
+    client.set_emergency_guardians(&guardians).unwrap();
 
     let stored_guardians = client.get_emergency_guardians().unwrap();
     let paused_before = client.is_emergency_paused();

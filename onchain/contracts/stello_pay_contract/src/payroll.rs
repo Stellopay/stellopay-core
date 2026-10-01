@@ -9,17 +9,18 @@ use crate::events::{
     emit_set_arbiter, AgreementActivatedEvent, AgreementCancelledEvent, AgreementCreatedEvent,
     AgreementPausedEvent, AgreementResumedEvent, ArbiterSetEvent, BatchMilestoneClaimedEvent,
     BatchPayrollClaimedEvent, BulkAgreementsPausedEvent, BulkAgreementsUnpausedEvent,
-    DisputeRaisedEvent, DisputeResolvedEvent, EmployeeAddedEvent, ExchangeRateUpdatedEvent,
-    GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded, MilestoneApproved,
-    MilestoneClaimed, MilestoneExpiredEvent, MilestoneFundedEvent, MilestoneRejectedEvent,
-    MultisigConfigChangedEvent, PaymentReceivedEvent, PaymentSentEvent, PayrollClaimedEvent,
+    DisputeRaisedEvent, DisputeResolvedEvent, EmergencyGuardiansSetEvent, EmployeeAddedEvent,
+    ExchangeRateUpdatedEvent, GracePeriodExtendedEvent, GracePeriodFinalizedEvent, MilestoneAdded,
+    MilestoneApproved, MilestoneClaimed, MilestoneExpiredEvent, MilestoneFundedEvent,
+    MilestoneRejectedEvent, MultisigConfigChangedEvent, PaymentReceivedEvent, PaymentSentEvent,
+    PayrollClaimedEvent,
 };
 use crate::storage::{
     Agreement, AgreementMode, AgreementStatus, BatchEscrowCreateResult, BatchMilestoneResult,
     BatchPayrollCreateResult, BatchPayrollResult, DataKey, DisputeStatus, EmployeeInfo,
     EscrowCreateParams, EscrowCreateResult, GracePeriodExtensionPolicy, Milestone,
     MilestoneClaimResult, MilestoneKey, PaymentType, PayrollClaimResult, PayrollCreateParams,
-    PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE,
+    PayrollCreateResult, PayrollError, StorageKey, MAX_BATCH_SIZE, MAX_EMERGENCY_GUARDIANS,
 };
 
 use soroban_sdk::{
@@ -4508,17 +4509,40 @@ pub fn is_emergency_paused(env: &Env) -> bool {
 /// * `env` - Contract environment
 /// * `guardians` - Vector of guardian addresses
 ///
+/// The list must contain between 1 and [`MAX_EMERGENCY_GUARDIANS`] unique addresses.
+///
 /// # Access Control
 /// Requires owner authentication
-pub fn set_emergency_guardians(env: &Env, guardians: Vec<Address>) {
+pub fn set_emergency_guardians(env: &Env, guardians: Vec<Address>) -> Result<(), PayrollError> {
     let owner = match crate::contract_owner(env) {
         Ok(owner) => owner,
         Err(error) => panic_with_error!(env, error),
     };
     owner.require_auth();
+
+    if guardians.is_empty() {
+        return Err(PayrollError::EmptyEmergencyGuardians);
+    }
+    if guardians.len() > MAX_EMERGENCY_GUARDIANS {
+        return Err(PayrollError::TooManyEmergencyGuardians);
+    }
+    for index in 0..guardians.len() {
+        let guardian = guardians.get(index).unwrap();
+        for other_index in (index + 1)..guardians.len() {
+            if guardians.get(other_index).unwrap() == guardian {
+                return Err(PayrollError::DuplicateEmergencyGuardian);
+            }
+        }
+    }
+
     env.storage()
         .persistent()
         .set(&StorageKey::EmergencyGuardians, &guardians);
+    EmergencyGuardiansSetEvent {
+        count: guardians.len(),
+    }
+    .publish(env);
+    Ok(())
 }
 
 /// Gets emergency guardians
