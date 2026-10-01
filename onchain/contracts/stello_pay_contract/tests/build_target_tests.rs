@@ -458,6 +458,8 @@ fn test_set_grace_extension_policy() {
     let policy = GracePeriodExtensionPolicy {
         max_cumulative_extension_bps: 5000,
         max_extension_per_call_seconds: 86400,
+        max_cumulative_extension_duration_seconds: 365 * 24 * 3600,
+        max_extension_count: 10,
     };
     let result = client.try_set_grace_extension_policy(&owner, &policy);
     assert!(result.is_ok());
