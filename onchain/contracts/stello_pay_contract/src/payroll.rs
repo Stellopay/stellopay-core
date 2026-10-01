@@ -24,7 +24,7 @@ use crate::storage::{
 
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    contractclient, contracttype, panic_with_error, token,
+    contractclient, contracterror, contracttype, panic_with_error, token,
     token::Client as TokenClient,
     Address, Env, IntoVal, String, Symbol, Val, Vec,
 };
@@ -40,10 +40,14 @@ trait MultisigInterface {
 
 // The macro consumes this trait to generate the client used by integrations;
 // the trait itself has no local Rust call sites.
+//
+// Must mirror `rate_limiter`'s ABI exactly: a served call reports a
+// [`ConsumptionOutcome`] and an exhausted bucket is a typed [`RateLimitError`],
+// never a bare `u32` balance.
 #[allow(dead_code)]
 #[contractclient(name = "RateLimiterClient")]
 trait RateLimiterInterface {
-    fn check_and_consume(env: Env, subject: Address) -> u32;
+    fn check_and_consume(env: Env, subject: Address) -> Result<ConsumptionOutcome, RateLimitError>;
 }
 
 // The macro consumes this trait to generate the client used by integrations;
@@ -82,6 +86,34 @@ enum OperationKind {
     ContractUpgrade(Address, soroban_sdk::BytesN<32>),
     LargePayment(Address, Address, i128),
     DisputeResolution(Address, u128, i128, i128),
+}
+
+/// Mirror of rate_limiter::ConsumptionOutcome — field names, types, and order
+/// must match for XDR decoding.
+///
+/// The rate limiter reports its result as a named outcome rather than a bare
+/// integer, so this mirror has to stay in lockstep with the contract's
+/// `ConsumptionOutcome`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ConsumptionOutcome {
+    /// Subject's token balance after the served call consumed one token.
+    pub remaining: u32,
+    /// Whole seconds until the subject's bucket next holds a token.
+    pub refill_in_seconds: Option<u64>,
+}
+
+/// Mirror of rate_limiter::RateLimitError — the discriminant must match for
+/// XDR decoding.
+///
+/// Exhaustion arrives as this typed error, so `try_check_and_consume` can tell
+/// a rejected call apart from a served call that left a zero balance.
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+enum RateLimitError {
+    /// At least one enforced bucket held no tokens, so the call was rejected.
+    RateLimitExceeded = 1,
 }
 
 /// Configures the multisig integration for this payroll contract.
