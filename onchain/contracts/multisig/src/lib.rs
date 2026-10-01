@@ -112,7 +112,9 @@ pub struct SignerChangeProposal {
 enum StorageKey {
     Initialized,
     Owner,
-    EmergencyGuardian,
+    EmergencyGuardians,
+    EmergencyThreshold,
+    EmergencyApprovals(u128),
     Signers,
     Threshold,
     OperationCounter,
@@ -143,6 +145,22 @@ pub struct OperationApprovedEvent {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationExecutedEvent {
     pub operation_id: u128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyGuardiansUpdatedEvent {
+    pub guardians: Vec<Address>,
+    pub threshold: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EmergencyApprovedEvent {
+    pub operation_id: u128,
+    pub guardian: Address,
+    pub approvals: u32,
+    pub threshold: u32,
 }
 
 #[contracttype]
@@ -395,14 +413,107 @@ fn approval_count(env: &Env, operation_id: u128) -> u32 {
     count
 }
 
-fn is_emergency_guardian(env: &Env, addr: &Address) -> bool {
-    match env
-        .storage()
+fn read_emergency_guardians(env: &Env) -> Vec<Address> {
+    env.storage()
         .persistent()
-        .get::<_, Address>(&StorageKey::EmergencyGuardian)
-    {
-        Some(g) => &g == addr,
-        None => false,
+        .get::<_, Vec<Address>>(&StorageKey::EmergencyGuardians)
+        .unwrap_or(Vec::new(env))
+}
+
+fn write_emergency_guardians(env: &Env, guardians: &Vec<Address>) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyGuardians, guardians);
+}
+
+fn read_emergency_threshold(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get::<_, u32>(&StorageKey::EmergencyThreshold)
+        .unwrap_or(1)
+}
+
+fn write_emergency_threshold(env: &Env, threshold: u32) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyThreshold, &threshold);
+}
+
+fn is_emergency_guardian(env: &Env, addr: &Address) -> bool {
+    let guardians = read_emergency_guardians(env);
+    for i in 0..guardians.len() {
+        if &guardians.get(i).unwrap() == addr {
+            return true;
+        }
+    }
+    false
+}
+
+fn read_emergency_approvals(env: &Env, operation_id: u128) -> Vec<Address> {
+    env.storage()
+        .persistent()
+        .get::<_, Vec<Address>>(&StorageKey::EmergencyApprovals(operation_id))
+        .unwrap_or(Vec::new(env))
+}
+
+fn write_emergency_approvals(env: &Env, operation_id: u128, approvals: &Vec<Address>) {
+    env.storage()
+        .persistent()
+        .set(&StorageKey::EmergencyApprovals(operation_id), approvals);
+}
+
+fn has_emergency_approved(env: &Env, operation_id: u128, guardian: &Address) -> bool {
+    let approvals = read_emergency_approvals(env, operation_id);
+    for i in 0..approvals.len() {
+        if &approvals.get(i).unwrap() == guardian {
+            return true;
+        }
+    }
+    false
+}
+
+/// Counts approvals that were cast by addresses still in the guardian set.
+///
+/// Removing a guardian therefore invalidates its prior approvals, mirroring the
+/// way `approval_count` only counts current signers.
+fn guardian_approval_count(env: &Env, operation_id: u128) -> u32 {
+    let approvals = read_emergency_approvals(env, operation_id);
+    let mut count = 0;
+    for i in 0..approvals.len() {
+        let addr = approvals.get(i).unwrap();
+        if is_emergency_guardian(env, &addr) {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn validate_emergency_guardians(guardians: &Vec<Address>, threshold: u32) {
+    let count = guardians.len();
+    assert!(count > 0, "At least one guardian required");
+    assert!(
+        threshold > 0 && threshold <= count,
+        "Guardian threshold must be between 1 and the number of guardians"
+    );
+    for i in 0..count {
+        let a = guardians.get(i).unwrap();
+        for j in (i + 1)..count {
+            let b = guardians.get(j).unwrap();
+            assert!(a != b, "Duplicate guardian");
+        }
+    }
+}
+
+/// Default guardian quorum when none is supplied explicitly.
+///
+/// A single guardian defaults to one (a deliberate, non-zero approval), while
+/// any larger set defaults to two so a multi-guardian deployment is never
+/// silently reducible to a single signature.
+fn default_emergency_threshold(guardian_count: u32) -> u32 {
+    if guardian_count > 1 {
+        2
+    } else {
+        1
     }
 }
 
@@ -524,9 +635,13 @@ impl MultisigContract {
             .set(&StorageKey::Threshold, &threshold);
 
         if let Some(g) = emergency_guardian {
-            env.storage()
-                .persistent()
-                .set(&StorageKey::EmergencyGuardian, &g);
+            let mut guardians = Vec::new(&env);
+            guardians.push_back(g);
+            // A single guardian defaults to a quorum of one. That is a
+            // deliberate, non-zero threshold: the guardian must still record an
+            // explicit approval (`approve_emergency`) before executing.
+            write_emergency_guardians(&env, &guardians);
+            write_emergency_threshold(&env, default_emergency_threshold(guardians.len()));
         }
 
         env.storage()
@@ -729,6 +844,42 @@ impl MultisigContract {
         write_signer_change_delay(&env, delay);
     }
 
+    /// @notice Configures the emergency guardian set and its approval quorum.
+    /// @dev Owner-only. When `threshold` is `None` it defaults to 1 for a single
+    ///      guardian and 2 for any larger set, so a multi-guardian deployment is
+    ///      never silently reduced to a single signature. An explicit threshold
+    ///      must be within `1..=guardians.len()`.
+    /// @param caller Must be the contract owner.
+    /// @param guardians New guardian set (non-empty, no duplicates).
+    /// @param threshold Optional explicit quorum.
+    pub fn set_emergency_guardians(
+        env: Env,
+        caller: Address,
+        guardians: Vec<Address>,
+        threshold: Option<u32>,
+    ) {
+        require_initialized(&env);
+        caller.require_auth();
+        assert!(caller == read_owner(&env), "Only owner can set guardians");
+
+        let effective = match threshold {
+            Some(value) => value,
+            None => default_emergency_threshold(guardians.len()),
+        };
+        validate_emergency_guardians(&guardians, effective);
+
+        write_emergency_guardians(&env, &guardians);
+        write_emergency_threshold(&env, effective);
+
+        env.events().publish(
+            ("emergency_guardians_updated",),
+            EmergencyGuardiansUpdatedEvent {
+                guardians: guardians.clone(),
+                threshold: effective,
+            },
+        );
+    }
+
     /// @notice Proposes a new multisig-protected operation.
     /// @dev The proposer must be one of the configured signers.
     /// @param proposer Signer creating the operation.
@@ -846,15 +997,63 @@ impl MultisigContract {
         );
     }
 
-    /// @notice Executes a pending operation via the emergency guardian.
-    /// @dev Guardian can bypass threshold checks **only** for operations
-    ///      explicitly flagged as emergency-eligible (currently only
-    ///      `DisputeResolution`). Routine operations (`LargePayment`),
-    ///      governance changes (`ContractUpgrade`), and threshold overrides
-    ///      (`SetThresholdOverride`) are rejected even when called by the
-    ///      configured guardian. This prevents the break-glass mechanism
-    ///      from being used to circumvent the normal multi-signer approval
-    ///      process for non-urgent operations.
+    /// @notice Records a guardian's approval for a pending, emergency-eligible
+    ///         operation.
+    /// @dev Emergency execution is quorum-gated, so the guardian must approve
+    ///      first. Approvals are idempotent and are stored separately from
+    ///      signer approvals so the executed operation records exactly which
+    ///      guardians approved it.
+    /// @param guardian Configured guardian address.
+    /// @param operation_id Operation identifier.
+    pub fn approve_emergency(env: Env, guardian: Address, operation_id: u128) {
+        require_initialized(&env);
+        guardian.require_auth();
+        assert!(
+            is_emergency_guardian(&env, &guardian),
+            "Only guardian can approve"
+        );
+
+        let op = read_operation(&env, operation_id);
+        assert!(
+            op.status == OperationStatus::Pending,
+            "Operation not pending"
+        );
+        assert!(
+            is_emergency_eligible(&op.kind),
+            "Operation kind not eligible for emergency execution"
+        );
+
+        if has_emergency_approved(&env, operation_id, &guardian) {
+            return;
+        }
+
+        let mut approvals = read_emergency_approvals(&env, operation_id);
+        approvals.push_back(guardian.clone());
+        let count = approvals.len();
+        let threshold = read_emergency_threshold(&env);
+        write_emergency_approvals(&env, operation_id, &approvals);
+
+        env.events().publish(
+            ("emergency_approved", operation_id),
+            EmergencyApprovedEvent {
+                operation_id,
+                guardian,
+                approvals: count,
+                threshold,
+            },
+        );
+    }
+
+    /// @notice Executes a pending, emergency-eligible operation once the
+    ///         guardian quorum has approved it.
+    /// @dev Break-glass execution is gated on a guardian quorum rather than a
+    ///      single signature: the guardian must first record an approval via
+    ///      `approve_emergency`, and execution requires at least
+    ///      `get_emergency_threshold` guardian approvals. A single guardian can
+    ///      therefore no longer execute an eligible operation that has
+    ///      collected zero approvals. Only `DisputeResolution` is eligible;
+    ///      routine operations and governance changes are rejected here and in
+    ///      `perform_execute`.
     /// @param guardian Configured guardian address.
     /// @param operation_id Operation identifier.
     pub fn emergency_execute(env: Env, guardian: Address, operation_id: u128) {
@@ -874,6 +1073,13 @@ impl MultisigContract {
         assert!(
             is_emergency_eligible(&op.kind),
             "Operation kind not eligible for emergency execution"
+        );
+
+        // Require a guardian quorum; zero approvals never executes.
+        let threshold = read_emergency_threshold(&env);
+        assert!(
+            guardian_approval_count(&env, operation_id) >= threshold,
+            "Emergency quorum not met"
         );
 
         perform_execute(&env, operation_id);
@@ -919,6 +1125,21 @@ impl MultisigContract {
     /// @dev Requires caller authentication
     pub fn get_approvals(env: Env, operation_id: u128) -> Vec<Address> {
         read_approvals(&env, operation_id)
+    }
+
+    /// @notice Returns the configured emergency guardian set.
+    pub fn get_emergency_guardians(env: Env) -> Vec<Address> {
+        read_emergency_guardians(&env)
+    }
+
+    /// @notice Returns the guardian approval quorum required for emergency execution.
+    pub fn get_emergency_threshold(env: Env) -> u32 {
+        read_emergency_threshold(&env)
+    }
+
+    /// @notice Returns the guardians that have recorded an emergency approval.
+    pub fn get_emergency_approvals(env: Env, operation_id: u128) -> Vec<Address> {
+        read_emergency_approvals(&env, operation_id)
     }
 
     /// @notice Records the caller's approval for an operation and, once the
