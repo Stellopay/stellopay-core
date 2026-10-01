@@ -30,9 +30,9 @@ jobs:
       # Installed via the preinstalled rustup rather than dtolnay/rust-toolchain:
       # fetching that action from codeload intermittently returns 429 and fails
       # the job during setup, before any of the checks below even run.
-      # clippy must be requested explicitly: --profile minimal omits it from
-      # the preinstalled component set, and the Clippy step below would fail
-      # with "'cargo-clippy' is not installed for the toolchain".
+      # `--profile minimal` ships rustc, rust-std and cargo only, so the clippy
+      # component has to be requested explicitly or the Clippy step below fails with
+      # "'cargo-clippy' is not installed for the toolchain".
       - name: Install Rust (nightly)
         run: |
           rustup toolchain install nightly --profile minimal --component rustfmt --component clippy
@@ -68,6 +68,15 @@ jobs:
       - name: Test workspace
         working-directory: onchain
         run: cargo test --workspace --verbose
+
+      # `stello_pay_contract` declares two `[[bench]]` targets with `harness = false`,
+      # so neither `cargo build` nor `cargo test` compiles them and they can stop
+      # building without any signal. Build them explicitly here. The benchmarks only
+      # *run* in the scheduled `benchmarks.yml` workflow, so timing noise never blocks
+      # an unrelated pull request.
+      - name: Build benchmark targets
+        working-directory: onchain
+        run: cargo build --workspace --benches --verbose
 
       # Keep the native build/test signals above independent from the
       # deployable-artifact checks below. A wasm compiler failure must be
