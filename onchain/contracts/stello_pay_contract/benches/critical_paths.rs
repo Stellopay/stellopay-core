@@ -26,7 +26,11 @@ fn main() {
     bench_create_milestone_agreement();
     bench_get_arbiter();
     bench_batch_create_payroll();
+    bench_claim_payroll();
     bench_claim_payroll_in_token();
+    bench_batch_claim_payroll();
+    bench_claim_milestone();
+    bench_batch_claim_milestones();
 }
 
 fn setup_env() -> (Env, PayrollContractClient<'static>, Address) {
@@ -248,6 +252,181 @@ fn bench_claim_payroll_in_token() {
     client.claim_payroll_in_token(&employee, &agreement_id, &0u32, &payout_token);
     println!(
         "claim_payroll_in_token (multi-currency, 1 period): cpu_insns={}",
+        env.cost_estimate().budget().cpu_instruction_cost()
+    );
+}
+
+/// Creates an active payroll agreement with `employee_count` employees that each
+/// have exactly one accrued period, funded and ready to claim.
+///
+/// Returns the agreement id and the employee addresses in index order.
+fn setup_funded_payroll(
+    env: &Env,
+    client: &PayrollContractClient<'static>,
+    employee_count: u32,
+) -> (u128, Vec<Address>) {
+    let employer = Address::generate(env);
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(env))
+        .address();
+
+    let grace_period: u64 = 604_800; // 7 days
+    let period_seconds: u64 = 86_400; // 1 day
+    let salary_per_period: i128 = 1_000;
+
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &grace_period);
+
+    let mut employees: Vec<Address> = Vec::new(env);
+    for _ in 0..employee_count {
+        let employee = Address::generate(env);
+        client.add_employee_to_agreement(&agreement_id, &employee, &salary_per_period);
+        employees.push_back(employee);
+    }
+    client.activate_agreement(&agreement_id);
+
+    // Fund the contract and record the accounted escrow balance. Claims check
+    // the accounted balance, but the token transfer still needs real tokens.
+    let escrow_total = salary_per_period * (employee_count as i128);
+    StellarAssetClient::new(env, &token).mint(&client.address, &escrow_total);
+
+    env.as_contract(&client.address, || {
+        DataKey::set_agreement_activation_time(env, agreement_id, env.ledger().timestamp());
+        DataKey::set_agreement_period_duration(env, agreement_id, period_seconds);
+        DataKey::set_agreement_token(env, agreement_id, &token);
+        DataKey::set_employee_count(env, agreement_id, employee_count);
+        for index in 0..employee_count {
+            let employee = employees.get(index).unwrap();
+            DataKey::set_employee(env, agreement_id, index, &employee);
+            DataKey::set_employee_salary(env, agreement_id, index, salary_per_period);
+            DataKey::set_employee_claimed_periods(env, agreement_id, index, 0);
+        }
+        DataKey::set_agreement_escrow_balance(env, agreement_id, &token, escrow_total);
+    });
+
+    // Advance exactly one period so one salary is claimable per employee.
+    env.ledger().with_mut(|li| {
+        li.timestamp += period_seconds;
+    });
+
+    (agreement_id, employees)
+}
+
+/// Critical path: settle one employee's accrued period in the agreement token.
+fn bench_claim_payroll() {
+    let (env, client, _owner) = setup_env();
+    let (agreement_id, employees) = setup_funded_payroll(&env, &client, 1);
+    let employee = employees.get(0).unwrap();
+
+    env.cost_estimate().budget().reset_default();
+    client.claim_payroll(&employee, &agreement_id, &0u32);
+    println!(
+        "claim_payroll (1 employee, 1 period): cpu_insns={}",
+        env.cost_estimate().budget().cpu_instruction_cost()
+    );
+}
+
+/// Critical path: settle the caller's own accrued period through the batch
+/// entrypoint.
+///
+/// `batch_claim_payroll` enforces `caller == employee` at every index, and
+/// duplicate indices are rejected, so a single caller can only ever settle its
+/// own index in one batch. This measures the batch machinery itself; the
+/// multi-item bulk path is `bench_batch_claim_milestones` below.
+fn bench_batch_claim_payroll() {
+    let (env, client, _owner) = setup_env();
+    let (agreement_id, employees) = setup_funded_payroll(&env, &client, 3);
+    let caller = employees.get(0).unwrap();
+    let indices = soroban_sdk::vec![&env, 0u32];
+
+    env.cost_estimate().budget().reset_default();
+    let result = client.batch_claim_payroll(&caller, &agreement_id, &indices);
+    println!(
+        "batch_claim_payroll (1 authorizable index): cpu_insns={} claimed={} failed={}",
+        env.cost_estimate().budget().cpu_instruction_cost(),
+        result.successful_claims,
+        result.failed_claims
+    );
+}
+
+/// Milestone ids are 1-based, so a batch of `count` milestones is `1..=count`.
+fn milestone_ids(env: &Env, count: u32) -> Vec<u32> {
+    let mut ids: Vec<u32> = Vec::new(env);
+    for id in 1..=count {
+        ids.push_back(id);
+    }
+    ids
+}
+
+/// Critical path: release several approved milestones to the contributor in one
+/// transaction. Unlike the payroll batch, a contributor owns every index here,
+/// so this is the genuine multi-item bulk path.
+fn bench_batch_claim_milestones() {
+    const COUNT: u32 = 3;
+    const AMOUNT: i128 = 1_000;
+
+    let (env, client, _owner) = setup_env();
+    let employer = Address::generate(&env);
+    let contributor = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
+
+    let total = AMOUNT * (COUNT as i128);
+    for _ in 0..COUNT {
+        client.add_milestone(&agreement_id, &AMOUNT);
+    }
+    StellarAssetClient::new(&env, &token).mint(&employer, &total);
+    client.fund_milestone_agreement(&agreement_id, &employer, &total);
+
+    let ids = milestone_ids(&env, COUNT);
+    for id in 1..=COUNT {
+        client.approve_milestone(&agreement_id, &id);
+    }
+
+    env.cost_estimate().budget().reset_default();
+    let result = client.batch_claim_milestones(&agreement_id, &ids);
+    println!(
+        "batch_claim_milestones ({COUNT} approved milestones): cpu_insns={} claimed={} failed={}",
+        env.cost_estimate().budget().cpu_instruction_cost(),
+        result.successful_claims,
+        result.failed_claims
+    );
+}
+
+/// Critical path: release one approved milestone to the contributor.
+fn bench_claim_milestone() {
+    let (env, client, _owner) = setup_env();
+    let employer = Address::generate(&env);
+    let contributor = Address::generate(&env);
+    let token = env
+        .register_stellar_asset_contract_v2(Address::generate(&env))
+        .address();
+
+    let agreement_id = client.create_milestone_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &soroban_sdk::vec![&env, 1i128],
+    );
+    client.add_milestone(&agreement_id, &1_000i128);
+
+    // Fund the accounted escrow so the approval invariant holds, then approve.
+    let amount: i128 = 1_000;
+    StellarAssetClient::new(&env, &token).mint(&employer, &amount);
+    client.fund_milestone_agreement(&agreement_id, &employer, &amount);
+    client.approve_milestone(&agreement_id, &1u32);
+
+    env.cost_estimate().budget().reset_default();
+    client.claim_milestone(&agreement_id, &1u32);
+    println!(
+        "claim_milestone (1 approved milestone): cpu_insns={}",
         env.cost_estimate().budget().cpu_instruction_cost()
     );
 }
