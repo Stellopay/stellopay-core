@@ -219,3 +219,22 @@ fn insufficient_payroll_escrow_rejects_without_state_change() {
     assert_eq!(client.get_employee_claimed_periods(&agreement_id, &0), 0);
     assert_eq!(TokenClient::new(&env, &token).balance(&employee), 0);
 }
+
+/// Validate that claim_milestone rejects a Payroll agreement_id.
+///
+/// Before this guard was added, passing a Payroll agreement_id to
+/// claim_milestone would silently operate on the wrong storage keys.
+/// The kind check must fire at the boundary, before any milestone logic runs.
+#[test]
+#[should_panic]
+fn test_claim_milestone_rejects_payroll_agreement() {
+    let (env, client, employer, _employee, _other, token) = setup();
+    env.mock_all_auths();
+
+    // Create a payroll agreement (mode = Payroll, not Milestone)
+    let payroll_id = client.create_payroll_agreement(&employer, &token, &(86_400u64 * 7));
+
+    // Attempting to claim a milestone against a payroll agreement_id must
+    // be rejected with InvalidAgreementMode (panics in the test harness).
+    let _ = client.claim_milestone(&payroll_id, &1u32);
+}
