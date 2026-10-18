@@ -312,6 +312,10 @@ impl RateLimiter {
     /// Accepts a pending admin transfer.
     ///
     /// @dev Only the pending admin may call this entry point.
+    ///
+    /// @param env  Contract environment.
+    /// @param caller  Pending admin accepting the transfer; must `require_auth`.
+    /// Access control: pending-admin only — the caller must match the recorded pending admin.
     pub fn accept_admin(env: Env, caller: Address) {
         caller.require_auth();
         let pending: Address = env
@@ -328,6 +332,9 @@ impl RateLimiter {
     /// Cancels a pending admin transfer.
     ///
     /// @dev Only callable by current admin. Safe no-op when no transfer is pending.
+    ///
+    /// @param env  Contract environment.
+    /// Access control: admin-only — requires the current admin's authorisation.
     pub fn cancel_admin_transfer(env: Env) {
         Self::require_admin_auth(&env);
         env.storage().persistent().remove(&StorageKey::PendingAdmin);

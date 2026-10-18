@@ -150,16 +150,22 @@ pub struct OperationExecutedEvent {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmergencyGuardiansUpdatedEvent {
+    /// Full guardian set after the update, replacing any previous set.
     pub guardians: Vec<Address>,
+    /// Number of guardian approvals now required for an emergency operation.
     pub threshold: u32,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EmergencyApprovedEvent {
+    /// Identifier of the emergency operation that was approved.
     pub operation_id: u128,
+    /// Guardian address whose approval produced this event.
     pub guardian: Address,
+    /// Approvals recorded for the operation so far, including this one.
     pub approvals: u32,
+    /// Approvals required before the operation may execute.
     pub threshold: u32,
 }
 
@@ -852,6 +858,8 @@ impl MultisigContract {
     /// @param caller Must be the contract owner.
     /// @param guardians New guardian set (non-empty, no duplicates).
     /// @param threshold Optional explicit quorum.
+    ///
+    /// Access control: admin-only — `caller` must be the stored admin and authorise the call.
     pub fn set_emergency_guardians(
         env: Env,
         caller: Address,
@@ -1005,6 +1013,11 @@ impl MultisigContract {
     ///      guardians approved it.
     /// @param guardian Configured guardian address.
     /// @param operation_id Operation identifier.
+    ///
+    /// @param env  Contract environment.
+    /// @param guardian  Guardian recording the approval; must `require_auth`.
+    /// @param operation_id  Emergency operation being approved.
+    /// Access control: guardian-only — the caller must be in the stored guardian set and authorise the call.
     pub fn approve_emergency(env: Env, guardian: Address, operation_id: u128) {
         require_initialized(&env);
         guardian.require_auth();
@@ -1128,16 +1141,28 @@ impl MultisigContract {
     }
 
     /// @notice Returns the configured emergency guardian set.
+    ///
+    /// @param env  Contract environment.
+    /// @return The current emergency guardian set.
+    /// Access control: none — this is a permissionless read.
     pub fn get_emergency_guardians(env: Env) -> Vec<Address> {
         read_emergency_guardians(&env)
     }
 
     /// @notice Returns the guardian approval quorum required for emergency execution.
+    ///
+    /// @param env  Contract environment.
+    /// @return Guardian approvals required for an emergency operation.
     pub fn get_emergency_threshold(env: Env) -> u32 {
         read_emergency_threshold(&env)
     }
 
     /// @notice Returns the guardians that have recorded an emergency approval.
+    ///
+    /// @param env  Contract environment.
+    /// @param operation_id  Emergency operation to inspect.
+    /// @return Guardians that have approved the operation so far.
+    /// Access control: none — this is a permissionless read.
     pub fn get_emergency_approvals(env: Env, operation_id: u128) -> Vec<Address> {
         read_emergency_approvals(&env, operation_id)
     }

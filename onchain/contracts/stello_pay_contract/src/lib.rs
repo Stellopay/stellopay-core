@@ -809,12 +809,20 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Only the contract owner may call this.
+    ///
+    /// @param env  Contract environment.
+    /// @param owner  Contract owner; must `require_auth`.
+    /// @param max_entries  Maximum audit entries retained before the oldest are pruned.
     pub fn set_audit_retention(env: Env, owner: Address, max_entries: u64) {
         audit::set_audit_retention(&env, owner, max_entries);
     }
 
     /// @notice Returns the configured on-chain audit retention limit.
     /// `0` means unlimited (default).
+    ///
+    /// @param env  Contract environment.
+    /// @return The configured audit retention limit.
+    /// Access control: none — this is a permissionless read.
     pub fn get_audit_retention(env: Env) -> u64 {
         audit::get_audit_retention(&env)
     }

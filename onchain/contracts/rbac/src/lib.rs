@@ -11,13 +11,21 @@ use soroban_sdk::{
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 #[repr(u32)]
 pub enum Error {
+    /// Caller is not the admin, and only the admin may grant a role.
     OnlyAdminCanGrant = 1,
+    /// Caller is not the admin, and only the admin may revoke a role.
     OnlyAdminCanRevoke = 2,
+    /// Refused: the owner's admin role may not be revoked, which would leave the contract unadministrable.
     CannotRevokeAdminFromOwner = 3,
+    /// Refused: the owner must retain at least one role.
     CannotRevokeAllRolesFromOwner = 4,
+    /// Caller does not hold the role the operation requires.
     CallerDoesNotHoldRole = 5,
+    /// Target address does not hold the role the operation requires.
     MissingRequiredRole = 6,
+    /// No ownership transfer is pending, so there is nothing to accept or cancel.
     NoPendingOwner = 7,
+    /// Caller is not the pending owner recorded for the in-flight transfer.
     NotPendingOwner = 8,
 }
 

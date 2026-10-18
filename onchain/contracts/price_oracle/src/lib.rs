@@ -361,6 +361,8 @@ impl PriceOracleContract {
     /// @param payroll_contract Address of the core payroll contract that
     ///                         will consume FX rates.
     /// @return Result<(), OracleError>
+    ///
+    /// Access control: callable once, before an owner exists; subsequent calls are rejected.
     pub fn initialize_oracle(
         env: Env,
         owner: Address,
