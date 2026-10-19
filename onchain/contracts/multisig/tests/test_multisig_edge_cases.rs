@@ -1580,6 +1580,45 @@ fn set_emergency_guardians_rejects_invalid_threshold() {
 // ==================== Signer Update Timelock (issue #1318) ====================
 
 #[test]
+fn propose_signer_update_threshold_boundaries() {
+    let env = create_env();
+    let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
+
+    let zero_threshold = client.try_propose_signer_update(&signers, &0u32);
+    assert!(zero_threshold.is_err(), "zero threshold must be rejected");
+    let error = zero_threshold.unwrap_err().unwrap();
+    assert_eq!(
+        error,
+        soroban_sdk::Error::from(MultisigError::InvalidThreshold),
+        "zero threshold must return InvalidThreshold"
+    );
+
+    client.propose_signer_update(&signers, &1u32);
+    assert_eq!(
+        client.get_signer_change_proposal().unwrap().new_threshold,
+        1u32
+    );
+
+    client.propose_signer_update(&signers, &signers.len());
+    assert_eq!(
+        client.get_signer_change_proposal().unwrap().new_threshold,
+        signers.len()
+    );
+
+    let one_past_maximum = client.try_propose_signer_update(&signers, &(signers.len() + 1));
+    assert!(
+        one_past_maximum.is_err(),
+        "a threshold above the signer count must be rejected"
+    );
+    let error = one_past_maximum.unwrap_err().unwrap();
+    assert_eq!(
+        error,
+        soroban_sdk::Error::from(MultisigError::InvalidThreshold),
+        "an excessive threshold must return InvalidThreshold"
+    );
+}
+
+#[test]
 fn test_signer_update_timelock_proposal_and_query() {
     let env = create_env();
     let (_id, client, _owner, signers, _guardian) = setup_2of3(&env);
