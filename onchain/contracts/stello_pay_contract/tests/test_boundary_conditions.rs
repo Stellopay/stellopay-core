@@ -789,6 +789,47 @@ fn test_payroll_max_u64_grace_period_succeeds() {
     assert_eq!(agreement.status, AgreementStatus::Created);
 }
 
+/// Verifies boundary behaviour for `propose_emergency_pause` timelock duration (#1368).
+///
+/// Tests extremes:
+/// - 0 seconds succeeds (immediate pause, timelock_end is None)
+/// - 1 second succeeds (timelock_end is timestamp + 1)
+/// - Maximum accepted value (u64::MAX - current_timestamp) succeeds
+/// - One past maximum ((u64::MAX - current_timestamp) + 1) and u64::MAX with non-zero
+///   timestamp are rejected with typed `PayrollError::InvalidTimelock` without panicking.
+#[test]
+fn test_propose_emergency_pause_boundary_timelock_extremes() {
+    let env = create_test_env();
+    let (_contract_id, client) = setup_contract(&env);
+    let guardian = create_test_address(&env);
+
+    let mut guardians = soroban_sdk::Vec::new(&env);
+    guardians.push_back(guardian.clone());
+    client.set_emergency_guardians(&guardians);
+
+    let current_ts = 1_000u64;
+    env.ledger().with_mut(|li| li.timestamp = current_ts);
+
+    // Extreme 1: zero succeeds
+    assert!(client.try_propose_emergency_pause(&guardian, &0u64).is_ok());
+
+    // Extreme 2: one succeeds
+    assert!(client.try_propose_emergency_pause(&guardian, &1u64).is_ok());
+
+    // Extreme 3: maximum accepted value succeeds
+    let max_accepted = u64::MAX - current_ts;
+    assert!(client.try_propose_emergency_pause(&guardian, &max_accepted).is_ok());
+
+    // Extreme 4: one past maximum is refused with typed error without panicking
+    let one_past_max = max_accepted + 1;
+    let res = client.try_propose_emergency_pause(&guardian, &one_past_max);
+    assert_eq!(res, Err(Ok(PayrollError::InvalidTimelock)));
+
+    // u64::MAX with current_ts > 0 also refused with typed error
+    let res_max = client.try_propose_emergency_pause(&guardian, &u64::MAX);
+    assert_eq!(res_max, Err(Ok(PayrollError::InvalidTimelock)));
+}
+
 // ============================================================================
 // SECTION 5: MILESTONE ID BOUNDARY CONDITIONS
 // ============================================================================

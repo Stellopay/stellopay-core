@@ -456,7 +456,12 @@ pub fn propose_emergency_pause(
     }
 
     let timelock_end = if timelock_seconds > 0 {
-        Some(env.ledger().timestamp() + timelock_seconds)
+        Some(
+            env.ledger()
+                .timestamp()
+                .checked_add(timelock_seconds)
+                .ok_or(PayrollError::InvalidTimelock)?,
+        )
     } else {
         None
     };
