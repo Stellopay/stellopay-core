@@ -258,7 +258,6 @@ pub fn record_entry(
         }
     }
 
-
     id
 }
 

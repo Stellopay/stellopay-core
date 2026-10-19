@@ -2541,7 +2541,8 @@ fn test_get_price_checked_boundary_transition_at_max_age() {
     assert_eq!(state.rate, 2_000_000, "age == max_age must be accepted");
 
     // age == MAX_AGE + 1 → rejected.
-    env.ledger().with_mut(|li| li.timestamp = PUSH_TS + MAX_AGE + 1);
+    env.ledger()
+        .with_mut(|li| li.timestamp = PUSH_TS + MAX_AGE + 1);
     assert_eq!(
         oracle_client.try_get_price_checked(&base, &quote, &MAX_AGE),
         Err(Ok(OracleError::PriceTooOld)),
