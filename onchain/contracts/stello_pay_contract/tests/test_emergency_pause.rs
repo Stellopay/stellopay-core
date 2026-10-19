@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use soroban_sdk::{testutils::Address as _, token, Address, Env, Vec};
-use stello_pay_contract::{PayrollContract, PayrollContractClient};
+use stello_pay_contract::{storage::PayrollError, PayrollContract, PayrollContractClient};
 
 fn create_token_contract<'a>(env: &Env, admin: &Address) -> token::StellarAssetClient<'a> {
     let contract_address = env
@@ -105,6 +105,93 @@ fn test_multisig_pause_proposal() {
     let _ = client.propose_emergency_pause(&guardian1, &0);
 
     // Not paused yet
+    assert!(!client.is_emergency_paused());
+}
+
+#[test]
+fn test_propose_emergency_pause_from_uninitialized_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2);
+    guardians.push_back(guardian3);
+    client.set_emergency_guardians(&guardians);
+
+    let result = client.try_propose_emergency_pause(&guardian1, &0);
+
+    assert_eq!(result, Ok(Ok(())));
+    assert_eq!(client.get_emergency_pause_state(), None);
+    assert!(!client.is_emergency_paused());
+}
+
+#[test]
+fn test_propose_emergency_pause_from_pending_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    guardians.push_back(guardian3);
+    client.set_emergency_guardians(&guardians);
+
+    assert_eq!(
+        client.try_propose_emergency_pause(&guardian1, &3600),
+        Ok(Ok(()))
+    );
+    let result = client.try_propose_emergency_pause(&guardian1, &0);
+
+    assert_eq!(result, Ok(Ok(())));
+    assert!(!client.is_emergency_paused());
+    assert_eq!(client.try_approve_emergency_pause(&guardian2), Ok(Ok(())));
+    assert!(client.is_emergency_paused());
+}
+
+#[test]
+fn test_propose_emergency_pause_from_paused_terminal_state_rejects_non_guardian_without_mutation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2);
+    guardians.push_back(guardian3);
+    client.set_emergency_guardians(&guardians);
+    assert_eq!(client.try_emergency_pause(), Ok(Ok(())));
+
+    let state_before = client.get_emergency_pause_state();
+    let non_guardian = Address::generate(&env);
+    let result = client.try_propose_emergency_pause(&non_guardian, &0);
+
+    assert_eq!(result, Err(Ok(PayrollError::NotGuardian)));
+    assert_eq!(client.get_emergency_pause_state(), state_before);
+    assert!(client.is_emergency_paused());
+}
+
+#[test]
+fn test_propose_emergency_pause_from_unpaused_recovery_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2);
+    guardians.push_back(guardian3);
+    client.set_emergency_guardians(&guardians);
+    assert_eq!(client.try_emergency_pause(), Ok(Ok(())));
+    assert_eq!(client.try_emergency_unpause(), Ok(Ok(())));
+
+    let state_before = client.get_emergency_pause_state();
+    let result = client.try_propose_emergency_pause(&guardian1, &0);
+
+    assert_eq!(result, Ok(Ok(())));
+    assert_eq!(client.get_emergency_pause_state(), state_before);
     assert!(!client.is_emergency_paused());
 }
 
