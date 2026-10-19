@@ -102,6 +102,13 @@ enum OperationKind {
 
 /// Configures the multisig integration for this payroll contract.
 ///
+/// # Idempotency
+/// This function is **idempotent**: calling it twice with the same arguments
+/// is a safe no-op.  The second call overwrites persistent storage with
+/// identical values, emits a second `multisig_config_changed_event` whose
+/// old and new thresholds are equal, and records a second audit entry.
+/// No token balances are affected.
+///
 /// # Arguments
 /// * `owner` - Contract owner (must authenticate)
 /// * `multisig_contract` - Address of the deployed multisig contract
