@@ -726,3 +726,108 @@ fn test_bulk_unpause_milestone_agreements() {
         stello_pay_contract::storage::AgreementStatus::Active
     );
 }
+
+#[test]
+fn test_propose_emergency_pause_boundary_zero_and_one() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    guardians.push_back(guardian3.clone());
+    client.set_emergency_guardians(&guardians);
+
+    let start_ts = 1_000u64;
+    env.ledger().with_mut(|li| li.timestamp = start_ts);
+
+    // Boundary: 0 seconds (immediate pause, timelock_end is None)
+    assert!(client.try_propose_emergency_pause(&guardian1, &0).is_ok());
+    let pending_zero: stello_pay_contract::storage::EmergencyPause =
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get(&stello_pay_contract::storage::StorageKey::PendingPause)
+                .unwrap()
+        });
+    assert_eq!(pending_zero.timelock_end, None);
+    assert!(!pending_zero.is_paused);
+
+    // Boundary: 1 second delay (timelock_end is start_ts + 1)
+    assert!(client.try_propose_emergency_pause(&guardian1, &1).is_ok());
+    let pending_one: stello_pay_contract::storage::EmergencyPause =
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get(&stello_pay_contract::storage::StorageKey::PendingPause)
+                .unwrap()
+        });
+    assert_eq!(pending_one.timelock_end, Some(start_ts + 1));
+    assert!(!pending_one.is_paused);
+}
+
+#[test]
+fn test_propose_emergency_pause_boundary_maximum_accepted_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    guardians.push_back(guardian3.clone());
+    client.set_emergency_guardians(&guardians);
+
+    let start_ts = 500u64;
+    env.ledger().with_mut(|li| li.timestamp = start_ts);
+
+    // Maximum accepted value: timestamp + timelock == u64::MAX
+    let max_accepted = u64::MAX - start_ts;
+    let res = client.try_propose_emergency_pause(&guardian1, &max_accepted);
+    assert!(res.is_ok(), "maximum accepted timelock value must succeed");
+
+    let pending: stello_pay_contract::storage::EmergencyPause =
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get(&stello_pay_contract::storage::StorageKey::PendingPause)
+                .unwrap()
+        });
+    assert_eq!(pending.timelock_end, Some(u64::MAX));
+}
+
+#[test]
+fn test_propose_emergency_pause_boundary_one_past_maximum_refused_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    guardians.push_back(guardian3.clone());
+    client.set_emergency_guardians(&guardians);
+
+    let start_ts = 500u64;
+    env.ledger().with_mut(|li| li.timestamp = start_ts);
+
+    let max_accepted = u64::MAX - start_ts;
+    let one_past_max = max_accepted + 1;
+
+    // One past maximum: arithmetic overflow refused with typed error InvalidTimelock
+    let res = client.try_propose_emergency_pause(&guardian1, &one_past_max);
+    assert_eq!(
+        res,
+        Err(Ok(stello_pay_contract::storage::PayrollError::InvalidTimelock)),
+        "one past the maximum must be refused with typed InvalidTimelock error without panicking"
+    );
+
+    // u64::MAX when timestamp > 0 also overflows and must be refused with typed error
+    let res_max_u64 = client.try_propose_emergency_pause(&guardian1, &u64::MAX);
+    assert_eq!(
+        res_max_u64,
+        Err(Ok(stello_pay_contract::storage::PayrollError::InvalidTimelock)),
+        "u64::MAX with non-zero timestamp must be refused with typed InvalidTimelock error"
+    );
+}
