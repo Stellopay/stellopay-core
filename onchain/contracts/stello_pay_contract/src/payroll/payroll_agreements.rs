@@ -219,7 +219,9 @@ pub fn add_employee_to_agreement(
         "Can only add employees to Payroll agreements"
     );
 
-    assert!(salary_per_period > 0, "Salary must be positive");
+    if salary_per_period <= 0 {
+        panic_with_error!(env, PayrollError::InvalidData);
+    }
 
     let mut employees: Vec<EmployeeInfo> = env
         .storage()
