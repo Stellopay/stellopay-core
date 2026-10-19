@@ -115,6 +115,93 @@ fn test_multisig_pause_proposal() {
 }
 
 #[test]
+fn test_propose_emergency_pause_from_uninitialized_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2);
+    guardians.push_back(guardian3);
+    client.set_emergency_guardians(&guardians);
+
+    let result = client.try_propose_emergency_pause(&guardian1, &0);
+
+    assert_eq!(result, Ok(Ok(())));
+    assert_eq!(client.get_emergency_pause_state(), None);
+    assert!(!client.is_emergency_paused());
+}
+
+#[test]
+fn test_propose_emergency_pause_from_pending_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    guardians.push_back(guardian3);
+    client.set_emergency_guardians(&guardians);
+
+    assert_eq!(
+        client.try_propose_emergency_pause(&guardian1, &3600),
+        Ok(Ok(()))
+    );
+    let result = client.try_propose_emergency_pause(&guardian1, &0);
+
+    assert_eq!(result, Ok(Ok(())));
+    assert!(!client.is_emergency_paused());
+    assert_eq!(client.try_approve_emergency_pause(&guardian2), Ok(Ok(())));
+    assert!(client.is_emergency_paused());
+}
+
+#[test]
+fn test_propose_emergency_pause_from_paused_terminal_state_rejects_non_guardian_without_mutation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2);
+    guardians.push_back(guardian3);
+    client.set_emergency_guardians(&guardians);
+    assert_eq!(client.try_emergency_pause(), Ok(Ok(())));
+
+    let state_before = client.get_emergency_pause_state();
+    let non_guardian = Address::generate(&env);
+    let result = client.try_propose_emergency_pause(&non_guardian, &0);
+
+    assert_eq!(result, Err(Ok(PayrollError::NotGuardian)));
+    assert_eq!(client.get_emergency_pause_state(), state_before);
+    assert!(client.is_emergency_paused());
+}
+
+#[test]
+fn test_propose_emergency_pause_from_unpaused_recovery_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2);
+    guardians.push_back(guardian3);
+    client.set_emergency_guardians(&guardians);
+    assert_eq!(client.try_emergency_pause(), Ok(Ok(())));
+    assert_eq!(client.try_emergency_unpause(), Ok(Ok(())));
+
+    let state_before = client.get_emergency_pause_state();
+    let result = client.try_propose_emergency_pause(&guardian1, &0);
+
+    assert_eq!(result, Ok(Ok(())));
+    assert_eq!(client.get_emergency_pause_state(), state_before);
+    assert!(!client.is_emergency_paused());
+}
+
+#[test]
 fn test_multisig_pause_approval_threshold() {
     let env = Env::default();
     env.mock_all_auths();
@@ -743,5 +830,110 @@ fn test_bulk_unpause_milestone_agreements() {
     assert_eq!(
         status,
         stello_pay_contract::storage::AgreementStatus::Active
+    );
+}
+
+#[test]
+fn test_propose_emergency_pause_boundary_zero_and_one() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    guardians.push_back(guardian3.clone());
+    client.set_emergency_guardians(&guardians);
+
+    let start_ts = 1_000u64;
+    env.ledger().with_mut(|li| li.timestamp = start_ts);
+
+    // Boundary: 0 seconds (immediate pause, timelock_end is None)
+    assert!(client.try_propose_emergency_pause(&guardian1, &0).is_ok());
+    let pending_zero: stello_pay_contract::storage::EmergencyPause =
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get(&stello_pay_contract::storage::StorageKey::PendingPause)
+                .unwrap()
+        });
+    assert_eq!(pending_zero.timelock_end, None);
+    assert!(!pending_zero.is_paused);
+
+    // Boundary: 1 second delay (timelock_end is start_ts + 1)
+    assert!(client.try_propose_emergency_pause(&guardian1, &1).is_ok());
+    let pending_one: stello_pay_contract::storage::EmergencyPause =
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get(&stello_pay_contract::storage::StorageKey::PendingPause)
+                .unwrap()
+        });
+    assert_eq!(pending_one.timelock_end, Some(start_ts + 1));
+    assert!(!pending_one.is_paused);
+}
+
+#[test]
+fn test_propose_emergency_pause_boundary_maximum_accepted_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    guardians.push_back(guardian3.clone());
+    client.set_emergency_guardians(&guardians);
+
+    let start_ts = 500u64;
+    env.ledger().with_mut(|li| li.timestamp = start_ts);
+
+    // Maximum accepted value: timestamp + timelock == u64::MAX
+    let max_accepted = u64::MAX - start_ts;
+    let res = client.try_propose_emergency_pause(&guardian1, &max_accepted);
+    assert!(res.is_ok(), "maximum accepted timelock value must succeed");
+
+    let pending: stello_pay_contract::storage::EmergencyPause =
+        env.as_contract(&client.address, || {
+            env.storage()
+                .persistent()
+                .get(&stello_pay_contract::storage::StorageKey::PendingPause)
+                .unwrap()
+        });
+    assert_eq!(pending.timelock_end, Some(u64::MAX));
+}
+
+#[test]
+fn test_propose_emergency_pause_boundary_one_past_maximum_refused_typed_error() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    guardians.push_back(guardian3.clone());
+    client.set_emergency_guardians(&guardians);
+
+    let start_ts = 500u64;
+    env.ledger().with_mut(|li| li.timestamp = start_ts);
+
+    let max_accepted = u64::MAX - start_ts;
+    let one_past_max = max_accepted + 1;
+
+    // One past maximum: arithmetic overflow refused with typed error InvalidTimelock
+    let res = client.try_propose_emergency_pause(&guardian1, &one_past_max);
+    assert_eq!(
+        res,
+        Err(Ok(stello_pay_contract::storage::PayrollError::InvalidTimelock)),
+        "one past the maximum must be refused with typed InvalidTimelock error without panicking"
+    );
+
+    // u64::MAX when timestamp > 0 also overflows and must be refused with typed error
+    let res_max_u64 = client.try_propose_emergency_pause(&guardian1, &u64::MAX);
+    assert_eq!(
+        res_max_u64,
+        Err(Ok(stello_pay_contract::storage::PayrollError::InvalidTimelock)),
+        "u64::MAX with non-zero timestamp must be refused with typed InvalidTimelock error"
     );
 }

@@ -915,12 +915,15 @@ impl PriceOracleContract {
     /// - `Ok(PairState)` when a non-stale price exists.
     /// - `Err(PairNotConfigured)` if no price has ever been pushed.
     /// - `Err(PriceTooOld)` if `now - last_updated_ts > max_age_seconds`.
+    /// - `Err(NotAuthorized)` if the caller is not the contract owner.
     pub fn get_price_checked(
         env: Env,
         base: Address,
         quote: Address,
         max_age_seconds: u64,
     ) -> Result<PairState, OracleError> {
+        require_admin(&env, &env.current_contract_address())?;
+
         let state: PairState = env
             .storage()
             .instance()
