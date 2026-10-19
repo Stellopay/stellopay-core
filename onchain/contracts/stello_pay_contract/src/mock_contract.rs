@@ -52,6 +52,13 @@ impl UpgradeableContract {
     /// # Arguments
     /// * `caller` - caller parameter
     /// * `new_wasm_hash` - new_wasm_hash parameter
+    ///
+    /// # Access Control
+    /// Requires caller authentication and that `caller` is the stored admin.
+    ///
+    /// # Panics
+    /// Panics with "Unauthorized: Only admin can authorize upgrades" when
+    /// `caller` is authenticated but is not the stored admin.
     pub fn authorize_upgrade(env: Env, caller: Address, new_wasm_hash: soroban_sdk::BytesN<32>) {
         caller.require_auth();
 
