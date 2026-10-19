@@ -39,6 +39,9 @@ pub enum MultisigError {
 
     /// No pending signer update proposal exists to execute or cancel.
     NoPendingProposal = 5,
+
+    /// A signer update threshold is zero or exceeds the number of signers.
+    InvalidThreshold = 6,
 }
 
 #[contract]
@@ -253,13 +256,12 @@ fn remove_signer_change_proposal(env: &Env) {
         .remove(&StorageKey::SignerChangeProposal);
 }
 
-fn validate_signers_and_threshold(new_signers: &Vec<Address>, new_threshold: u32) {
+fn validate_signers_and_threshold(env: &Env, new_signers: &Vec<Address>, new_threshold: u32) {
     let signer_count = new_signers.len();
     assert!(signer_count > 0, "At least one signer required");
-    assert!(
-        new_threshold > 0 && new_threshold <= signer_count,
-        "New threshold must be between 1 and the number of signers"
-    );
+    if new_threshold == 0 || new_threshold > signer_count {
+        panic_with_error!(env, MultisigError::InvalidThreshold);
+    }
 
     // Ensure signer list has no duplicates.
     for i in 0..signer_count {
@@ -630,7 +632,7 @@ impl MultisigContract {
             .unwrap_or(false);
         assert!(!initialized, "Contract already initialized");
 
-        validate_signers_and_threshold(&signers, threshold);
+        validate_signers_and_threshold(&env, &signers, threshold);
 
         env.storage().persistent().set(&StorageKey::Owner, &owner);
         env.storage()
@@ -669,7 +671,7 @@ impl MultisigContract {
         let owner = read_owner(&env);
         owner.require_auth();
 
-        validate_signers_and_threshold(&new_signers, new_threshold);
+        validate_signers_and_threshold(&env, &new_signers, new_threshold);
 
         let delay = read_signer_change_delay(&env);
         let now = env.ledger().timestamp();
