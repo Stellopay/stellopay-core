@@ -13,7 +13,7 @@ use soroban_sdk::{testutils::Address as _, token, Address, BytesN, Env, Vec};
 use stello_pay_contract::{
     storage::{
         DisputeStatus, EscrowCreateParams, GracePeriodExtensionPolicy, PayrollCreateParams,
-        PayrollError,
+        PayrollError, StorageKey,
     },
     PayrollContract, PayrollContractClient,
 };
@@ -384,7 +384,88 @@ fn test_set_and_get_multisig_config() {
     let multisig = Address::generate(&env);
     let result = client.try_set_multisig_config(&owner, &multisig, &1000i128, &2000i128);
     assert!(result.is_ok());
-    assert!(client.get_multisig_contract().is_some());
+    assert_eq!(client.get_multisig_contract(), Some(multisig.clone()));
+
+    env.as_contract(&client.address, || {
+        assert_eq!(
+            env.storage().persistent().get::<_, Address>(&StorageKey::MultisigContract),
+            Some(multisig)
+        );
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get::<_, i128>(&StorageKey::LargePaymentThreshold),
+            Some(1000i128)
+        );
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get::<_, i128>(&StorageKey::DisputeResolutionThreshold),
+            Some(2000i128)
+        );
+    });
+}
+
+#[test]
+fn test_set_multisig_config_rejects_unauthorized_owner_and_keeps_state_unchanged() {
+    let env = Env::default();
+    let (client, owner) = setup(&env);
+    let multisig = Address::generate(&env);
+    let bad_owner = Address::generate(&env);
+
+    client.set_multisig_config(&owner, &multisig, &1000i128, &2000i128);
+    let result = client.try_set_multisig_config(&bad_owner, &multisig, &5000i128, &9000i128);
+    assert_eq!(result, Err(Ok(PayrollError::Unauthorized.into())));
+    assert_eq!(client.get_multisig_contract(), Some(multisig.clone()));
+
+    env.as_contract(&client.address, || {
+        assert_eq!(
+            env.storage().persistent().get::<_, Address>(&StorageKey::MultisigContract),
+            Some(multisig.clone())
+        );
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get::<_, i128>(&StorageKey::LargePaymentThreshold),
+            Some(1000i128)
+        );
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get::<_, i128>(&StorageKey::DisputeResolutionThreshold),
+            Some(2000i128)
+        );
+    });
+}
+
+#[test]
+fn test_set_multisig_config_rejects_missing_owner_and_preserves_default_values() {
+    let env = Env::default();
+    let (client, _owner) = setup(&env);
+    let multisig = Address::generate(&env);
+
+    let result = client.try_set_multisig_config(&Address::generate(&env), &multisig, &1i128, &2i128);
+    assert_eq!(result, Err(Ok(PayrollError::Unauthorized.into())));
+    assert_eq!(client.get_multisig_contract(), None);
+
+    env.as_contract(&client.address, || {
+        assert_eq!(
+            env.storage().persistent().get::<_, Address>(&StorageKey::MultisigContract),
+            None
+        );
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get::<_, i128>(&StorageKey::LargePaymentThreshold),
+            None
+        );
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get::<_, i128>(&StorageKey::DisputeResolutionThreshold),
+            None
+        );
+    });
 }
 
 #[test]
