@@ -16,10 +16,8 @@ use crate::storage::{
 };
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    token, Address, Env, IntoVal, Symbol, Val, Vec,
+    panic_with_error, token, Address, Env, IntoVal, Symbol, Val, Vec,
 };
-
-/// Attempts `claim_payroll` semantics for each entry in `employee_indices`.
 /// A failure for one employee does **not** abort the remaining claims —
 /// partial success is intentional so that one unclaimable index cannot
 /// block all others.
@@ -190,10 +188,9 @@ fn batch_claim_payroll_inner(
 
         // Invariant check: claimed_periods <= num_periods (if defined)
         if let Some(num_periods) = agreement.num_periods {
-            assert!(
-                claimed_periods <= num_periods,
-                "Invariant violation: claimed_periods > num_periods"
-            );
+            if claimed_periods > num_periods {
+                panic_with_error!(env, PayrollError::InvalidData);
+            }
         }
 
         if total_elapsed_periods <= claimed_periods {

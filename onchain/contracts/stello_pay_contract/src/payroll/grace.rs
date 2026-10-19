@@ -204,10 +204,9 @@ pub fn cancel_agreement(env: &Env, agreement_id: u128) {
 
     agreement.employer.require_auth();
 
-    assert!(
-        agreement.status == AgreementStatus::Active || agreement.status == AgreementStatus::Created,
-        "Can only cancel Active or Created agreements"
-    );
+    if agreement.status != AgreementStatus::Active && agreement.status != AgreementStatus::Created {
+        panic_with_error!(env, PayrollError::InvalidData);
+    }
 
     agreement.status = AgreementStatus::Cancelled;
     agreement.cancelled_at = Some(env.ledger().timestamp());
@@ -247,10 +246,9 @@ pub fn finalize_grace_period(env: &Env, agreement_id: u128) {
 
     agreement.employer.require_auth();
 
-    assert!(
-        agreement.status == AgreementStatus::Cancelled,
-        "Agreement must be cancelled"
-    );
+    if agreement.status != AgreementStatus::Cancelled {
+        panic_with_error!(env, PayrollError::InvalidData);
+    }
 
     let cancelled_at = agreement
         .cancelled_at
@@ -266,10 +264,9 @@ pub fn finalize_grace_period(env: &Env, agreement_id: u128) {
         .checked_add(effective_grace)
         .unwrap_or_else(|| panic_with_error!(env, PayrollError::InvalidData));
 
-    assert!(
-        current_time >= grace_end,
-        "Grace period has not expired yet"
-    );
+    if current_time < grace_end {
+        panic_with_error!(env, PayrollError::NotInGracePeriod);
+    }
 
     // Idempotency guard: if already finalized, return early as a no-op
     // rather than re-executing the refund or re-emitting the event.

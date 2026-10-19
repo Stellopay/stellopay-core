@@ -15,10 +15,8 @@ use crate::events::{
 use crate::storage::{AgreementMode, AgreementStatus, DataKey, PayrollError, StorageKey};
 use soroban_sdk::{
     auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    token, Address, Env, IntoVal, Symbol, Val, Vec,
+    panic_with_error, token, Address, Env, IntoVal, Symbol, Val, Vec,
 };
-
-// -----------------------------------------------------------------------------
 // Payroll claiming (feature/payroll-claiming)
 // -----------------------------------------------------------------------------
 
@@ -148,10 +146,9 @@ fn claim_payroll_inner(
 
     // Invariant check: claimed_periods <= num_periods (if defined)
     if let Some(num_periods) = agreement.num_periods {
-        assert!(
-            claimed_periods <= num_periods,
-            "Invariant violation: claimed_periods > num_periods"
-        );
+        if claimed_periods > num_periods {
+            panic_with_error!(env, PayrollError::InvalidData);
+        }
     }
 
     // Calculate periods to pay
