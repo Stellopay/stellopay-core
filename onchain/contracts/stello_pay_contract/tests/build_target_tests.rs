@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use soroban_sdk::{testutils::Address as _, token, Address, BytesN, Env, Vec};
 use stello_pay_contract::{
     storage::{
-        DisputeStatus, EscrowCreateParams, GracePeriodExtensionPolicy, PayrollCreateParams,
-        PayrollError, StorageKey,
+        Agreement, AgreementStatus, DisputeStatus, EscrowCreateParams,
+        GracePeriodExtensionPolicy, PayrollCreateParams, PayrollError, StorageKey,
     },
     PayrollContract, PayrollContractClient,
 };
@@ -104,6 +104,54 @@ fn create_escrow_token_pair(env: &Env) -> (Address, token::StellarAssetClient<'_
         t.address(),
         token::StellarAssetClient::new(env, &t.address()),
     )
+}
+
+fn assert_set_multisig_config_in_agreement_state(env: &Env, status: AgreementStatus) {
+    let (client, owner) = setup(env);
+    let employer = Address::generate(env);
+    let token = Address::generate(env);
+    let agreement_id = client.create_payroll_agreement(&employer, &token, &3600u64);
+
+    env.as_contract(&client.address, || {
+        let key = StorageKey::Agreement(agreement_id);
+        let mut agreement: Agreement = env.storage().persistent().get(&key).unwrap();
+        agreement.status = status.clone();
+        env.storage().persistent().set(&key, &agreement);
+    });
+    let agreement_before = client.get_agreement(&agreement_id).unwrap();
+
+    let multisig = Address::generate(env);
+    let result = client.try_set_multisig_config(&owner, &multisig, &1000i128, &2000i128);
+    assert_eq!(result, Ok(Ok(())));
+
+    let agreement_after = client.get_agreement(&agreement_id).unwrap();
+    assert_eq!(agreement_after.id, agreement_before.id);
+    assert_eq!(agreement_after.employer, agreement_before.employer);
+    assert_eq!(agreement_after.token, agreement_before.token);
+    assert_eq!(agreement_after.status, status);
+    assert_eq!(agreement_after.total_amount, agreement_before.total_amount);
+    assert_eq!(agreement_after.paid_amount, agreement_before.paid_amount);
+    assert_eq!(agreement_after.created_at, agreement_before.created_at);
+    assert_eq!(agreement_after.activated_at, agreement_before.activated_at);
+    assert_eq!(agreement_after.cancelled_at, agreement_before.cancelled_at);
+    assert_eq!(agreement_after.dispute_status, agreement_before.dispute_status);
+    assert_eq!(agreement_after.dispute_raised_at, agreement_before.dispute_raised_at);
+    assert_eq!(client.get_multisig_contract(), Some(multisig));
+
+    env.as_contract(&client.address, || {
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get::<_, i128>(&StorageKey::LargePaymentThreshold),
+            Some(1000i128)
+        );
+        assert_eq!(
+            env.storage()
+                .persistent()
+                .get::<_, i128>(&StorageKey::DisputeResolutionThreshold),
+            Some(2000i128)
+        );
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +452,42 @@ fn test_set_and_get_multisig_config() {
             Some(2000i128)
         );
     });
+}
+
+#[test]
+fn test_set_multisig_config_from_created_agreement() {
+    let env = Env::default();
+    assert_set_multisig_config_in_agreement_state(&env, AgreementStatus::Created);
+}
+
+#[test]
+fn test_set_multisig_config_from_active_agreement() {
+    let env = Env::default();
+    assert_set_multisig_config_in_agreement_state(&env, AgreementStatus::Active);
+}
+
+#[test]
+fn test_set_multisig_config_from_paused_agreement() {
+    let env = Env::default();
+    assert_set_multisig_config_in_agreement_state(&env, AgreementStatus::Paused);
+}
+
+#[test]
+fn test_set_multisig_config_from_cancelled_agreement() {
+    let env = Env::default();
+    assert_set_multisig_config_in_agreement_state(&env, AgreementStatus::Cancelled);
+}
+
+#[test]
+fn test_set_multisig_config_from_completed_agreement() {
+    let env = Env::default();
+    assert_set_multisig_config_in_agreement_state(&env, AgreementStatus::Completed);
+}
+
+#[test]
+fn test_set_multisig_config_from_disputed_agreement() {
+    let env = Env::default();
+    assert_set_multisig_config_in_agreement_state(&env, AgreementStatus::Disputed);
 }
 
 #[test]
