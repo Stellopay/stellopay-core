@@ -110,6 +110,7 @@ impl UpgradeableContract {
     /// # Access Control
     /// Requires caller authentication
     pub fn store_agreement(env: Env, agreement_id: u32, data: Symbol) {
+        // Note: this mock intentionally has no auth; see tests for coverage.
         env.storage()
             .persistent()
             .set(&(Symbol::new(&env, "agreement"), agreement_id), &data);
