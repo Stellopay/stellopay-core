@@ -75,7 +75,9 @@ fn create_escrow_agreement_internal(
     }
 
     let agreement_id = get_next_agreement_id(env);
-    let total_amount = amount_per_period * (num_periods as i128);
+    let total_amount = amount_per_period
+        .checked_mul(num_periods as i128)
+        .ok_or(PayrollError::InvalidData)?;
 
     let agreement = Agreement {
         id: agreement_id,
@@ -88,7 +90,9 @@ fn create_escrow_agreement_internal(
         created_at: env.ledger().timestamp(),
         activated_at: None,
         cancelled_at: None,
-        grace_period_seconds: period_seconds * (num_periods as u64),
+        grace_period_seconds: period_seconds
+            .checked_mul(num_periods as u64)
+            .ok_or(PayrollError::InvalidData)?,
         dispute_status: DisputeStatus::None,
         dispute_raised_at: None,
         amount_per_period: Some(amount_per_period),
@@ -195,6 +199,20 @@ pub fn batch_create_escrow_agreements(
         }
         if params.num_periods == 0 {
             return Err(PayrollError::ZeroNumPeriods);
+        }
+        if params
+            .amount_per_period
+            .checked_mul(params.num_periods as i128)
+            .is_none()
+        {
+            return Err(PayrollError::InvalidData);
+        }
+        if params
+            .period_seconds
+            .checked_mul(params.num_periods as u64)
+            .is_none()
+        {
+            return Err(PayrollError::InvalidData);
         }
     }
 
