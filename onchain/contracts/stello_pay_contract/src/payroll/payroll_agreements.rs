@@ -219,6 +219,7 @@ pub fn add_employee_to_agreement(
 
     if salary_per_period <= 0 {
         panic_with_error!(env, PayrollError::ZeroAmountPerPeriod);
+        panic_with_error!(env, PayrollError::InvalidData);
     }
 
     let mut employees: Vec<EmployeeInfo> = env

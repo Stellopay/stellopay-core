@@ -2431,6 +2431,27 @@ fn test_get_price_checked_pair_not_configured() {
     );
     assert_eq!(
         oracle_client.try_get_price_checked(&unknown_base, &unknown_quote, &u64::MAX),
+// 15. get_price_checked across pair lifecycle states
+// ===========================================================================
+//
+// `get_price_checked` only reads `PairState` and compares its age against the
+// caller-supplied `max_age_seconds`; it does not consult the pair config. The
+// record it touches can be absent, fresh, stale or halted, and the pair can be
+// disabled. Each state is driven explicitly below and its outcome asserted as
+// a value or a typed error.
+
+/// State: unconfigured pair. No record was ever written, so the checked read
+/// refuses with PairNotConfigured.
+#[test]
+fn test_get_price_checked_unconfigured_pair_returns_pair_not_configured() {
+    let env = create_env();
+    let (payroll_id, _, _) = setup_payroll(&env);
+    let (_, oracle_client, _) = setup_oracle(&env, &payroll_id);
+    let base = Address::generate(&env);
+    let quote = Address::generate(&env);
+
+    assert_eq!(
+        oracle_client.try_get_price_checked(&base, &quote, &600u64),
         Err(Ok(OracleError::PairNotConfigured))
     );
 }
@@ -2454,6 +2475,23 @@ fn test_get_price_checked_max_age_zero_age_zero_succeeds() {
 /// `max_age_seconds = 0` with age = 1: `1 > 0` is true → `PriceTooOld`.
 #[test]
 fn test_get_price_checked_max_age_zero_age_one_rejected() {
+/// State: configured but never pushed. The pair has no `PairState` record yet,
+/// so the checked read refuses with PairNotConfigured.
+#[test]
+fn test_get_price_checked_configured_without_record_returns_pair_not_configured() {
+    let env = create_env();
+    let (oracle_client, _, _, _, base, quote) = full_setup(&env);
+
+    assert_eq!(
+        oracle_client.try_get_price_checked(&base, &quote, &600u64),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
+}
+
+/// State: fresh record. The age is inside `max_age_seconds`, so the stored
+/// `PairState` is returned with its fields intact.
+#[test]
+fn test_get_price_checked_fresh_record_returns_value() {
     let env = create_env();
     let (oracle_client, _, _, source, base, quote) = full_setup(&env);
 
@@ -2471,6 +2509,17 @@ fn test_get_price_checked_max_age_zero_age_one_rejected() {
 /// `max_age_seconds = 1` with age exactly 1: `1 > 1` is false → `Ok`.
 #[test]
 fn test_get_price_checked_max_age_one_age_one_succeeds() {
+    env.ledger().with_mut(|li| li.timestamp = 1_060);
+    let state = oracle_client.get_price_checked(&base, &quote, &600u64);
+    assert_eq!(state.rate, 2_000_000);
+    assert_eq!(state.last_updated_ts, 1_000);
+    assert_eq!(state.last_source, source);
+}
+
+/// State: fresh record at the boundary. `age == max_age_seconds` is still
+/// accepted; only a strictly greater age is refused.
+#[test]
+fn test_get_price_checked_at_exact_max_age_succeeds() {
     let env = create_env();
     let (oracle_client, _, _, source, base, quote) = full_setup(&env);
 
@@ -2488,6 +2537,15 @@ fn test_get_price_checked_max_age_one_age_one_succeeds() {
 /// This is one past the maximum accepted value.
 #[test]
 fn test_get_price_checked_max_age_one_age_two_rejected() {
+    env.ledger().with_mut(|li| li.timestamp = 1_600); // age = 600
+    let state = oracle_client.get_price_checked(&base, &quote, &600u64);
+    assert_eq!(state.rate, 2_000_000);
+}
+
+/// State: stale record. The age is one second past `max_age_seconds`, so the
+/// read is refused with PriceTooOld and the record is left untouched.
+#[test]
+fn test_get_price_checked_stale_record_returns_price_too_old() {
     let env = create_env();
     let (oracle_client, _, _, source, base, quote) = full_setup(&env);
 
@@ -2518,6 +2576,15 @@ fn test_get_price_checked_max_age_u64_max_always_succeeds() {
     // Advance far past any normal staleness window (e.g. one million seconds).
     env.ledger().with_mut(|li| li.timestamp = 1_001_000);
     let state = oracle_client.get_price_checked(&base, &quote, &u64::MAX);
+    env.ledger().with_mut(|li| li.timestamp = 1_601); // age = 601
+    assert_eq!(
+        oracle_client.try_get_price_checked(&base, &quote, &600u64),
+        Err(Ok(OracleError::PriceTooOld))
+    );
+
+    // The refused read did not mutate the record: a laxer bound still serves
+    // the same stored value.
+    let state = oracle_client.get_price_checked(&base, &quote, &601u64);
     assert_eq!(state.rate, 2_000_000);
     assert_eq!(state.last_updated_ts, 1_000);
 }
@@ -2586,4 +2653,71 @@ fn test_get_price_checked_never_returns_pair_halted() {
     // With a generous enough budget, it still succeeds regardless of halt.
     let state = oracle_client.get_price_checked(&base, &quote, &u64::MAX);
     assert_eq!(state.rate, 2_000_000);
+/// State: halted record, terminal until a fresh authorised push. The checked
+/// read does not derive the halt — it reports the age as PriceTooOld — and the
+/// refused call must not clear or alter the halt.
+#[test]
+fn test_get_price_checked_halted_record_refused_without_mutating_state() {
+    let env = create_env();
+    let threshold: u32 = 2;
+    let limit = (threshold as u64) * HALT_MAX_STALENESS;
+    let (oracle_client, _, source, base, quote) = setup_halt_pair(&env, threshold);
+
+    let published = 1_000u64;
+    push_at(
+        &oracle_client,
+        &env,
+        &source,
+        &base,
+        &quote,
+        2_000_000,
+        published,
+    );
+    set_ledger(&env, ts_stale_for(published, limit + 1));
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairHalted)),
+        "pair must be halted before driving get_price_checked"
+    );
+
+    assert_eq!(
+        oracle_client.try_get_price_checked(&base, &quote, &HALT_MAX_STALENESS),
+        Err(Ok(OracleError::PriceTooOld)),
+        "checked read reports age staleness, not the derived halt"
+    );
+
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairHalted)),
+        "a refused checked read must not clear the halt"
+    );
+    assert_eq!(
+        oracle_client
+            .get_pair_config(&base, &quote)
+            .unwrap()
+            .max_stale_before_halt,
+        threshold,
+        "a refused checked read must not change the halt configuration"
+    );
+}
+
+/// State: disabled pair, terminal. `disable_pair` removes the record, so the
+/// checked read refuses with PairNotConfigured and the pair stays disabled.
+#[test]
+fn test_get_price_checked_disabled_pair_refused_without_mutating_state() {
+    let env = create_env();
+    let (oracle_client, _, oracle_owner, source, base, quote) = full_setup(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+    oracle_client.disable_pair(&oracle_owner, &base, &quote);
+
+    assert_eq!(
+        oracle_client.try_get_price_checked(&base, &quote, &600u64),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
+    assert!(
+        !oracle_client.get_pair_config(&base, &quote).unwrap().enabled,
+        "a refused checked read must not re-enable the pair"
+    );
 }
