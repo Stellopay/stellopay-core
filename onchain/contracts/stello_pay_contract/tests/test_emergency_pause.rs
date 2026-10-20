@@ -1,6 +1,10 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, token, Address, Env, Vec};
+use soroban_sdk::{
+    symbol_short,
+    testutils::{Address as _, Events, Ledger},
+    token, Address, Env, Vec,
+};
 use stello_pay_contract::{storage::PayrollError, PayrollContract, PayrollContractClient};
 
 fn create_token_contract<'a>(env: &Env, admin: &Address) -> token::StellarAssetClient<'a> {
@@ -819,7 +823,9 @@ fn test_propose_emergency_pause_boundary_one_past_maximum_refused_typed_error() 
     let res = client.try_propose_emergency_pause(&guardian1, &one_past_max);
     assert_eq!(
         res,
-        Err(Ok(stello_pay_contract::storage::PayrollError::InvalidTimelock)),
+        Err(Ok(
+            stello_pay_contract::storage::PayrollError::InvalidTimelock
+        )),
         "one past the maximum must be refused with typed InvalidTimelock error without panicking"
     );
 
@@ -827,7 +833,281 @@ fn test_propose_emergency_pause_boundary_one_past_maximum_refused_typed_error() 
     let res_max_u64 = client.try_propose_emergency_pause(&guardian1, &u64::MAX);
     assert_eq!(
         res_max_u64,
-        Err(Ok(stello_pay_contract::storage::PayrollError::InvalidTimelock)),
+        Err(Ok(
+            stello_pay_contract::storage::PayrollError::InvalidTimelock
+        )),
         "u64::MAX with non-zero timestamp must be refused with typed InvalidTimelock error"
+    );
+}
+
+// ============================================================================
+// RETRY / DUPLICATE SUBMISSION (ISSUE #1370)
+// ============================================================================
+
+/// Reads the pending proposal and the approval list written by
+/// `propose_emergency_pause`.
+fn read_proposal_state(
+    env: &Env,
+    client: &PayrollContractClient<'_>,
+) -> (
+    Option<stello_pay_contract::storage::EmergencyPause>,
+    Vec<Address>,
+) {
+    env.as_contract(&client.address, || {
+        (
+            env.storage()
+                .persistent()
+                .get(&stello_pay_contract::storage::StorageKey::PendingPause),
+            env.storage()
+                .persistent()
+                .get(&stello_pay_contract::storage::StorageKey::PauseApprovals)
+                .unwrap_or_else(|| Vec::new(env)),
+        )
+    })
+}
+
+/// Counts the events published by the payroll contract itself, ignoring
+/// anything published by the SAC token or by other contracts in the test.
+fn payroll_events(env: &Env, client: &PayrollContractClient<'_>) -> usize {
+    env.events()
+        .all()
+        .iter()
+        .filter(|event| event.0 == client.address)
+        .count()
+}
+
+/// A client that retries `propose_emergency_pause` after a timeout resubmits
+/// the identical proposal (#1370).  The second call must leave exactly the
+/// state a single call leaves: the same pending proposal, the proposer
+/// counted once in the approval list, no pause, no token movement and no
+/// events for either call.
+#[test]
+fn test_propose_emergency_pause_called_twice_leaves_the_state_of_one_call() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    guardians.push_back(guardian3.clone());
+    client.set_emergency_guardians(&guardians);
+
+    // Escrowed funds that a duplicated proposal must never touch.
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    let employee = Address::generate(&env);
+    token.mint(&employer, &5_000);
+    token.mint(&client.address, &2_500);
+
+    let token_client = token::TokenClient::new(&env, &token.address);
+    let balances_before = (
+        token_client.balance(&employer),
+        token_client.balance(&client.address),
+        token_client.balance(&employee),
+        token_client.balance(&guardian1),
+    );
+
+    let start_ts = 1_000u64;
+    env.ledger().with_mut(|li| li.timestamp = start_ts);
+    let timelock = 3_600u64;
+
+    let events_before = payroll_events(&env, &client);
+    assert_eq!(
+        events_before, 0,
+        "set-up must not publish any payroll contract event"
+    );
+
+    // First submission.
+    assert_eq!(
+        client.try_propose_emergency_pause(&guardian1, &timelock),
+        Ok(Ok(()))
+    );
+    let events_after_first = payroll_events(&env, &client);
+    let state_after_first = read_proposal_state(&env, &client);
+    assert_eq!(
+        events_after_first, events_before,
+        "the first propose_emergency_pause must publish no events"
+    );
+    assert!(!client.is_emergency_paused());
+    assert_eq!(client.get_emergency_pause_state(), None);
+
+    // Retried submission: same guardian, same arguments, same ledger time.
+    assert_eq!(
+        client.try_propose_emergency_pause(&guardian1, &timelock),
+        Ok(Ok(()))
+    );
+    let events_after_second = payroll_events(&env, &client);
+    let state_after_second = read_proposal_state(&env, &client);
+    assert_eq!(
+        events_after_second, events_after_first,
+        "the retried propose_emergency_pause must publish no events"
+    );
+    assert_eq!(
+        state_after_second, state_after_first,
+        "calling twice must leave exactly the state a single call leaves"
+    );
+    assert!(!client.is_emergency_paused());
+    assert_eq!(client.get_emergency_pause_state(), None);
+
+    let (pending, approvals) = state_after_first;
+    let pending = pending.expect("the first call must leave a pending proposal");
+    assert!(!pending.is_paused);
+    assert_eq!(pending.paused_by, Some(guardian1.clone()));
+    assert_eq!(
+        pending.timelock_end,
+        Some(start_ts + timelock),
+        "the retry must not move the timelock deadline"
+    );
+    assert_eq!(
+        approvals,
+        soroban_sdk::vec![&env, guardian1.clone()],
+        "the proposer must be counted once, never appended twice"
+    );
+
+    // Balances are identical after both calls.
+    assert_eq!(
+        (
+            token_client.balance(&employer),
+            token_client.balance(&client.address),
+            token_client.balance(&employee),
+            token_client.balance(&guardian1),
+        ),
+        balances_before,
+        "a retried proposal must not move tokens"
+    );
+
+    // The retried proposal is still a single proposal: once the timelock has
+    // elapsed, one approval from a second guardian reaches the 2-of-3
+    // threshold and pauses, exactly as it would after a single proposal.
+    env.ledger()
+        .with_mut(|li| li.timestamp = start_ts + timelock);
+    assert_eq!(client.try_approve_emergency_pause(&guardian2), Ok(Ok(())));
+    assert!(client.is_emergency_paused());
+}
+
+/// A retry issued after the ledger has moved on re-bases `timelock_end` onto
+/// the new timestamp and changes nothing else: the approval list is still
+/// reset to the single proposer, the contract is still unpaused, no tokens
+/// move and no events are published by either call.
+#[test]
+fn test_propose_emergency_pause_retry_at_later_ledger_time_rebases_timelock_only() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let mut guardians = Vec::new(&env);
+    guardians.push_back(guardian1.clone());
+    guardians.push_back(guardian2.clone());
+    guardians.push_back(guardian3.clone());
+    client.set_emergency_guardians(&guardians);
+
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    let employer = Address::generate(&env);
+    token.mint(&employer, &4_000);
+    token.mint(&client.address, &1_500);
+
+    let token_client = token::TokenClient::new(&env, &token.address);
+    let balances_before = (
+        token_client.balance(&employer),
+        token_client.balance(&client.address),
+        token_client.balance(&guardian1),
+    );
+
+    let first_ts = 1_000u64;
+    let timelock = 3_600u64;
+    env.ledger().with_mut(|li| li.timestamp = first_ts);
+    let events_before = payroll_events(&env, &client);
+
+    assert_eq!(
+        client.try_propose_emergency_pause(&guardian1, &timelock),
+        Ok(Ok(()))
+    );
+    let events_after_first = payroll_events(&env, &client);
+    assert_eq!(
+        events_after_first, events_before,
+        "the first propose_emergency_pause must publish no events"
+    );
+
+    // The retry lands one ledger period later.
+    let retry_ts = first_ts + 500;
+    env.ledger().with_mut(|li| li.timestamp = retry_ts);
+    assert_eq!(
+        client.try_propose_emergency_pause(&guardian1, &timelock),
+        Ok(Ok(()))
+    );
+
+    let events_after_second = payroll_events(&env, &client);
+    assert_eq!(
+        events_after_second, events_after_first,
+        "the retried propose_emergency_pause must publish no events"
+    );
+
+    let (pending, approvals) = read_proposal_state(&env, &client);
+    let pending = pending.expect("the retry must leave a pending proposal");
+    assert!(!pending.is_paused);
+    assert_eq!(pending.paused_by, Some(guardian1.clone()));
+    assert_eq!(
+        pending.timelock_end,
+        Some(retry_ts + timelock),
+        "a retry re-bases the timelock deadline on the current ledger time"
+    );
+    assert_eq!(
+        approvals,
+        soroban_sdk::vec![&env, guardian1.clone()],
+        "the approval list must hold the proposer exactly once"
+    );
+    assert!(!client.is_emergency_paused());
+    assert_eq!(client.get_emergency_pause_state(), None);
+
+    assert_eq!(
+        (
+            token_client.balance(&employer),
+            token_client.balance(&client.address),
+            token_client.balance(&guardian1),
+        ),
+        balances_before,
+        "a retried proposal must not move tokens"
+    );
+}
+
+/// Control for the event counter the two tests above rely on.  They assert
+/// that neither call publishes anything; those assertions would hold even if
+/// the filter never matched an event, so this test pins the measurement: an
+/// event published by the payroll contract is counted, one published by any
+/// other contract is not.
+#[test]
+fn test_payroll_events_counts_only_events_published_by_the_payroll_contract() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, _guardian1, _guardian2, _guardian3) = setup_contract(&env);
+    let token_admin = Address::generate(&env);
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&Address::generate(&env), &1_000);
+
+    assert_eq!(
+        payroll_events(&env, &client),
+        0,
+        "setup events belong to the token contract and must not be counted"
+    );
+
+    env.as_contract(&client.address, || {
+        env.events().publish((symbol_short!("probe"), 1u32), 1u32);
+    });
+    env.as_contract(&token.address, || {
+        env.events().publish((symbol_short!("probe"), 2u32), 2u32);
+    });
+
+    assert_eq!(
+        payroll_events(&env, &client),
+        1,
+        "only the event published by the payroll contract may be counted"
+    );
+    assert!(
+        env.events().all().len() >= 2,
+        "both events must be present in the log for the filter to be tested"
     );
 }
