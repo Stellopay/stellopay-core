@@ -1730,3 +1730,54 @@ impl PayrollContract {
         storage::DataKey::set_agreement_period_duration(&env, agreement_id, duration);
     }
 }
+
+#[cfg(test)]
+mod set_rate_limiter_contract_auth_tests {
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+    use soroban_sdk::{Address, Env};
+
+    fn setup() -> (Env, PayrollContractClient<'static>, Address) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, PayrollContract);
+        let client = PayrollContractClient::new(&env, &contract_id);
+        let owner = Address::generate(&env);
+        client.initialize(&owner);
+        (env, client, owner)
+    }
+
+    #[test]
+    fn unauthorized_caller_is_refused_with_unauthorized_error() {
+        let (env, client, _owner) = setup();
+        let attacker = Address::generate(&env);
+        let rate_limiter = Address::generate(&env);
+
+        let result = client.try_set_rate_limiter_contract(&attacker, &rate_limiter);
+        assert_eq!(
+            result,
+            Err(Ok(soroban_sdk::Error::from_contract_error(
+                PayrollError::Unauthorized as u32
+            )))
+        );
+    }
+
+    #[test]
+    fn unauthorized_caller_does_not_mutate_state() {
+        let (env, client, _owner) = setup();
+        let attacker = Address::generate(&env);
+        let rate_limiter = Address::generate(&env);
+
+        let _ = client.try_set_rate_limiter_contract(&attacker, &rate_limiter);
+        assert_eq!(client.get_rate_limiter_contract(), None);
+    }
+
+    #[test]
+    fn authorized_owner_still_succeeds() {
+        let (env, client, owner) = setup();
+        let rate_limiter = Address::generate(&env);
+
+        client.set_rate_limiter_contract(&owner, &rate_limiter);
+        assert_eq!(client.get_rate_limiter_contract(), Some(rate_limiter));
+    }
+}
