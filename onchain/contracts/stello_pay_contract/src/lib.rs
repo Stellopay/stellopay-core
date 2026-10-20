@@ -1479,6 +1479,16 @@ impl PayrollContract {
     /// * `caller` - Guardian proposing the pause
     /// * `timelock_seconds` - Delay before pause activates (0 for immediate)
     ///
+    /// # Repeat submissions
+    /// Safe to call twice.  A retried submission — the same guardian sending
+    /// the same arguments again after a timeout — rewrites the pending
+    /// proposal and the approval list in full instead of appending to them,
+    /// so the state left behind is exactly the state a single call leaves:
+    /// the proposer is counted once, the contract is not paused, no tokens
+    /// move and no events are emitted.  A retry issued at a later ledger
+    /// timestamp only re-bases `timelock_end` onto that new timestamp;
+    /// everything else is unchanged.
+    ///
     /// # Access Control
     /// Requires guardian authentication
     ///
