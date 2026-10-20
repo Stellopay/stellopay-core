@@ -2558,7 +2558,10 @@ fn test_get_price_checked_disabled_pair_refused_without_mutating_state() {
         Err(Ok(OracleError::PairNotConfigured))
     );
     assert!(
-        !oracle_client.get_pair_config(&base, &quote).unwrap().enabled,
+        !oracle_client
+            .get_pair_config(&base, &quote)
+            .unwrap()
+            .enabled,
         "a refused checked read must not re-enable the pair"
     );
 }

@@ -1,6 +1,9 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, token, Address, Env, Vec};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    token, Address, Env, Vec,
+};
 use stello_pay_contract::{storage::PayrollError, PayrollContract, PayrollContractClient};
 
 fn create_token_contract<'a>(env: &Env, admin: &Address) -> token::StellarAssetClient<'a> {
@@ -819,7 +822,9 @@ fn test_propose_emergency_pause_boundary_one_past_maximum_refused_typed_error() 
     let res = client.try_propose_emergency_pause(&guardian1, &one_past_max);
     assert_eq!(
         res,
-        Err(Ok(stello_pay_contract::storage::PayrollError::InvalidTimelock)),
+        Err(Ok(
+            stello_pay_contract::storage::PayrollError::InvalidTimelock
+        )),
         "one past the maximum must be refused with typed InvalidTimelock error without panicking"
     );
 
@@ -827,7 +832,9 @@ fn test_propose_emergency_pause_boundary_one_past_maximum_refused_typed_error() 
     let res_max_u64 = client.try_propose_emergency_pause(&guardian1, &u64::MAX);
     assert_eq!(
         res_max_u64,
-        Err(Ok(stello_pay_contract::storage::PayrollError::InvalidTimelock)),
+        Err(Ok(
+            stello_pay_contract::storage::PayrollError::InvalidTimelock
+        )),
         "u64::MAX with non-zero timestamp must be refused with typed InvalidTimelock error"
     );
 }

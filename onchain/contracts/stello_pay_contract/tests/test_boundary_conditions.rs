@@ -8,8 +8,15 @@
 
 #![cfg(test)]
 #![allow(deprecated)]
+// The `PayrollError::X.into()` conversions inside the `assert_eq!` calls below
+// look identity-typed to clippy but are the conversions to the host `Error`
+// the generated `try_*` clients return; removing them breaks type-checking.
+#![allow(clippy::useless_conversion)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Address, Env,
+};
 use stello_pay_contract::{
     storage::{AgreementMode, AgreementStatus, DisputeStatus, PayrollError},
     PayrollContract, PayrollContractClient,
@@ -147,8 +154,14 @@ fn test_escrow_zero_amount_per_period_rejected() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let result =
-        client.try_create_escrow_agreement(&employer, &contributor, &token, &0i128, &86400u64, &4u32);
+    let result = client.try_create_escrow_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &0i128,
+        &86400u64,
+        &4u32,
+    );
     assert_eq!(result, Err(Ok(PayrollError::ZeroAmountPerPeriod.into())));
 }
 
@@ -300,8 +313,14 @@ fn test_escrow_zero_num_periods_rejected() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let result =
-        client.try_create_escrow_agreement(&employer, &contributor, &token, &100i128, &86400u64, &0u32);
+    let result = client.try_create_escrow_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &100i128,
+        &86400u64,
+        &0u32,
+    );
     assert_eq!(result, Err(Ok(PayrollError::ZeroNumPeriods.into())));
 }
 
@@ -406,7 +425,10 @@ fn test_add_employee_negative_salary_panics() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     let result = client.try_add_employee_to_agreement(&agreement_id, &employee, &(-500i128));
-    assert!(result.is_err(), "negative salary must fail with a typed error");
+    assert!(
+        result.is_err(),
+        "negative salary must fail with a typed error"
+    );
 }
 
 /// Verifies that adding an employee with `i128::MIN` salary is rejected.
@@ -423,7 +445,10 @@ fn test_add_employee_i128_min_salary_panics() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     let result = client.try_add_employee_to_agreement(&agreement_id, &employee, &i128::MIN);
-    assert!(result.is_err(), "i128::MIN salary must fail with a typed error");
+    assert!(
+        result.is_err(),
+        "i128::MIN salary must fail with a typed error"
+    );
 }
 
 /// Verifies that adding an employee with the minimum valid salary (1) succeeds.
@@ -658,7 +683,10 @@ fn test_activate_payroll_with_zero_employees_panics() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     let result = client.try_activate_agreement(&agreement_id);
-    assert!(result.is_err(), "empty payroll must fail with a typed host error");
+    assert!(
+        result.is_err(),
+        "empty payroll must fail with a typed host error"
+    );
 }
 
 /// Verifies that a payroll agreement with exactly one employee can be
@@ -838,7 +866,9 @@ fn test_propose_emergency_pause_boundary_timelock_extremes() {
 
     // Extreme 3: maximum accepted value succeeds
     let max_accepted = u64::MAX - current_ts;
-    assert!(client.try_propose_emergency_pause(&guardian, &max_accepted).is_ok());
+    assert!(client
+        .try_propose_emergency_pause(&guardian, &max_accepted)
+        .is_ok());
 
     // Extreme 4: one past maximum is refused with typed error without panicking
     let one_past_max = max_accepted + 1;
