@@ -1,7 +1,13 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, token, Address, Env, Vec};
-use stello_pay_contract::{storage::PayrollError, PayrollContract, PayrollContractClient};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    token, Address, Env, InvokeError, Vec,
+};
+use stello_pay_contract::{
+    storage::{EmergencyPause, PayrollError, StorageKey},
+    PayrollContract, PayrollContractClient,
+};
 
 fn create_token_contract<'a>(env: &Env, admin: &Address) -> token::StellarAssetClient<'a> {
     let contract_address = env
@@ -685,6 +691,106 @@ fn test_bulk_pause_milestone_agreements() {
             stello_pay_contract::storage::AgreementStatus::Paused
         );
     }
+}
+
+// ============================================================================
+// propose_emergency_pause authorization path (#1367)
+// ============================================================================
+
+/// Reads the pending pause proposal written by `propose_emergency_pause`.
+fn read_pending_pause(env: &Env, client: &PayrollContractClient<'_>) -> Option<EmergencyPause> {
+    env.as_contract(&client.address, || {
+        env.storage().persistent().get(&StorageKey::PendingPause)
+    })
+}
+
+/// Reads the approvals written by `propose_emergency_pause`.
+fn read_pause_approvals(env: &Env, client: &PayrollContractClient<'_>) -> Option<Vec<Address>> {
+    env.as_contract(&client.address, || {
+        env.storage().persistent().get(&StorageKey::PauseApprovals)
+    })
+}
+
+/// A guardian who has not authenticated must be refused by `require_auth`, and
+/// the failure must surface as the host auth error rather than a contract error.
+///
+/// This is the regression guard for the `caller.require_auth()` line: if it is
+/// ever dropped, this call would succeed and the assertion below would fail.
+#[test]
+fn test_propose_emergency_pause_unauthenticated_guardian_refused() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let guardians = Vec::from_array(&env, [guardian1.clone(), guardian2, guardian3]);
+    client.set_emergency_guardians(&guardians);
+
+    // Strip all mocked authorizations so the guardian cannot authenticate.
+    env.mock_auths(&[]);
+    let result = client.try_propose_emergency_pause(&guardian1, &0u64);
+
+    // Exact host error for a failed `require_auth`, not `NotGuardian` and not a
+    // generic `is_err()` check.
+    assert_eq!(result, Err(Err(InvokeError::Abort)));
+
+    // The refused call must not leave any proposal state behind.
+    assert!(read_pending_pause(&env, &client).is_none());
+    assert!(read_pause_approvals(&env, &client).is_none());
+    assert!(client.get_emergency_pause_state().is_none());
+    assert!(!client.is_emergency_paused());
+}
+
+/// An authenticated caller who is not in the guardian set is refused with the
+/// specific `NotGuardian` error, and the refusal mutates no state.
+#[test]
+fn test_propose_emergency_pause_non_guardian_refused() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let guardians = Vec::from_array(&env, [guardian1, guardian2, guardian3]);
+    client.set_emergency_guardians(&guardians);
+
+    let outsider = Address::generate(&env);
+    let result = client.try_propose_emergency_pause(&outsider, &0u64);
+
+    assert_eq!(result, Err(Ok(PayrollError::NotGuardian)));
+
+    assert!(read_pending_pause(&env, &client).is_none());
+    assert!(read_pause_approvals(&env, &client).is_none());
+    assert!(client.get_emergency_pause_state().is_none());
+    assert!(!client.is_emergency_paused());
+}
+
+/// An authenticated guardian still succeeds and writes exactly the proposal
+/// state it wrote before: a pending, not-yet-active pause with the caller as
+/// the sole approval and the requested timelock.
+#[test]
+fn test_propose_emergency_pause_authorised_guardian_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().set_timestamp(1_000);
+
+    let (client, _owner, guardian1, guardian2, guardian3) = setup_contract(&env);
+    let guardians = Vec::from_array(&env, [guardian1.clone(), guardian2, guardian3]);
+    client.set_emergency_guardians(&guardians);
+
+    client.propose_emergency_pause(&guardian1, &3_600u64);
+
+    let pending = read_pending_pause(&env, &client).expect("pending pause must be stored");
+    assert!(!pending.is_paused);
+    assert_eq!(pending.paused_at, None);
+    assert_eq!(pending.paused_by, Some(guardian1.clone()));
+    assert_eq!(pending.timelock_end, Some(1_000 + 3_600));
+
+    assert_eq!(
+        read_pause_approvals(&env, &client),
+        Some(Vec::from_array(&env, [guardian1]))
+    );
+
+    // A proposal does not activate the pause.
+    assert!(client.get_emergency_pause_state().is_none());
+    assert!(!client.is_emergency_paused());
 }
 
 #[test]

@@ -1574,7 +1574,10 @@ fn set_emergency_guardians_rejects_invalid_threshold() {
     let mut guardians = Vec::new(&env);
     guardians.push_back(guardian.clone());
     let result = client.try_set_emergency_guardians(&owner, &guardians, &Some(5u32));
-    assert!(result.is_err(), "threshold above guardian count must be rejected");
+    assert!(
+        result.is_err(),
+        "threshold above guardian count must be rejected"
+    );
 }
 
 // ==================== Signer Update Timelock (issue #1318) ====================
