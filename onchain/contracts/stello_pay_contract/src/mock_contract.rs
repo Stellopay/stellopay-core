@@ -116,6 +116,10 @@ impl UpgradeableContract {
     ///
     /// # Access Control
     /// Requires caller authentication
+    ///
+    /// # Idempotency
+    /// Calling twice is safe: the second call overwrites the stored value with
+    /// the same payload, leaving state identical to a single call.
     pub fn store_agreement(env: Env, agreement_id: u32, data: Symbol) {
         // Note: this mock intentionally has no auth; see tests for coverage.
         env.storage()
@@ -568,5 +572,56 @@ mod store_agreement_lifecycle {
     #[allow(dead_code)]
     fn _uses_address(env: &Env) -> Address {
         Address::generate(env)
+    }
+
+    // ------------------------------------------------------------------
+    // Repeat-call coverage: `store_agreement` called twice in a row.
+    // ------------------------------------------------------------------
+    #[test]
+    fn store_agreement_called_twice_matches_single_call() {
+        let (env, client) = setup();
+        let agreement_id = 7u32;
+        let payload = symbol_short!("agree");
+
+        // Single-call baseline.
+        client.store_agreement(&agreement_id, &payload);
+        let after_once = client.get_agreement(&agreement_id);
+
+        // Repeat submission (client retry after timeout).
+        client.store_agreement(&agreement_id, &payload);
+        let after_twice = client.get_agreement(&agreement_id);
+
+        assert_eq!(after_once, Some(payload.clone()));
+        assert_eq!(after_twice, Some(payload));
+        assert_eq!(after_once, after_twice);
+    }
+
+    #[test]
+    fn store_agreement_called_twice_emits_no_events() {
+        let (env, client) = setup();
+        let agreement_id = 8u32;
+        let payload = symbol_short!("agree");
+
+        client.store_agreement(&agreement_id, &payload);
+        client.store_agreement(&agreement_id, &payload);
+
+        // `store_agreement` is a pure setter and emits no events on either
+        // call; assert the event log is empty for both invocations.
+        assert_eq!(env.events().all().len(), 0);
+    }
+
+    #[test]
+    fn store_agreement_called_twice_leaves_balance_unchanged() {
+        let (env, client) = setup();
+        let account = Address::generate(&env);
+        let agreement_id = 9u32;
+        let payload = symbol_short!("agree");
+
+        client.store_balance(&account, &500i128);
+        client.store_agreement(&agreement_id, &payload);
+        client.store_agreement(&agreement_id, &payload);
+
+        assert_eq!(client.get_balance(&account), 500i128);
+        assert_eq!(client.get_agreement(&agreement_id), Some(payload));
     }
 }
