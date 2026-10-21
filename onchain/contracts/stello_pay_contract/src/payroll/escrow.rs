@@ -308,10 +308,9 @@ pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollErro
     }
 
     // Invariant check
-    assert!(
-        claimed_periods <= num_periods,
-        "Invariant violation: claimed_periods > num_periods"
-    );
+    if claimed_periods > num_periods {
+        panic_with_error!(env, PayrollError::InvalidData);
+    }
 
     // Allow claims if:
     // 1. Agreement is Active, OR

@@ -105,10 +105,9 @@ pub fn resume_agreement(env: &Env, agreement_id: u128) {
 
     agreement.employer.require_auth();
 
-    assert!(
-        agreement.status == AgreementStatus::Paused,
-        "Can only resume Paused agreements"
-    );
+    if agreement.status != AgreementStatus::Paused {
+        panic_with_error!(env, PayrollError::InvalidData);
+    }
 
     agreement.status = AgreementStatus::Active;
 

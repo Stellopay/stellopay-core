@@ -220,7 +220,7 @@ fn test_add_duplicate_does_not_block_other_employees() {
     assert_eq!(agreement.total_amount, 3000);
 }
 
-/// Adding employee with zero salary must fail with `InvalidData`.
+/// Adding employee with zero salary must fail with `ZeroAmountPerPeriod`.
 #[test]
 fn test_add_employee_zero_salary_fails() {
     let env = create_test_env();
@@ -231,7 +231,7 @@ fn test_add_employee_zero_salary_fails() {
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
     let result = client.try_add_employee_to_agreement(&agreement_id, &employee, &0);
-    assert_eq!(result, Err(Ok(PayrollError::InvalidData.into())));
+    assert_eq!(result, Err(Ok(PayrollError::ZeroAmountPerPeriod.into())));
 }
 
 /// Adding employee when agreement is not in Created status must fail.

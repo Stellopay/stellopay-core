@@ -142,27 +142,26 @@ pub fn fund_milestone_agreement(env: &Env, agreement_id: u128, from: Address, am
         .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
 
     // Only the agreement's employer may fund it.
-    assert!(
-        from == employer,
-        "Unauthorized: only the employer can fund a milestone agreement"
-    );
+    if from != employer {
+        panic_with_error!(env, PayrollError::Unauthorized);
+    }
     from.require_auth();
 
-    assert!(amount > 0, "Amount must be positive");
+    if amount <= 0 {
+        panic_with_error!(env, PayrollError::MilestoneAmountInvalid);
+    }
 
     let status: AgreementStatus = env
         .storage()
         .persistent()
         .get(&MilestoneKey::Status(agreement_id))
         .unwrap_or_else(|| panic_with_error!(env, PayrollError::AgreementNotFound));
-    assert!(
-        status != AgreementStatus::Cancelled,
-        "Cannot fund a Cancelled agreement"
-    );
-    assert!(
-        status != AgreementStatus::Completed,
-        "Cannot fund a Completed agreement"
-    );
+    if status == AgreementStatus::Cancelled {
+        panic_with_error!(env, PayrollError::MilestoneAgreementInvalidStatus);
+    }
+    if status == AgreementStatus::Completed {
+        panic_with_error!(env, PayrollError::MilestoneAgreementInvalidStatus);
+    }
 
     let current_balance: i128 = env
         .storage()
@@ -265,10 +264,9 @@ pub fn add_milestone(env: Env, agreement_id: u128, amount: i128) -> Result<(), P
     #[cfg(debug_assertions)]
     {
         let total_sum = sum_all_milestones(&env, agreement_id);
-        assert!(
-            total_sum == total + amount,
-            "Total amount mismatch after adding milestone"
-        );
+        if total_sum != total + amount {
+            panic_with_error!(env, PayrollError::InvalidData);
+        }
     }
 
     MilestoneAdded {

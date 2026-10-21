@@ -262,6 +262,7 @@ pub fn record_entry(
 }
 
 /// Emits an `audit_entry` event so off-chain indexers observe every lifecycle transition.
+#[allow(deprecated)] // env.events().publish() — codebase-wide pattern
 fn emit_audit_entry(env: &Env, entry: &LifecycleAuditEntry) {
     env.events()
         .publish((Symbol::new(env, "audit_entry"), entry.id), entry.clone());
@@ -270,6 +271,7 @@ fn emit_audit_entry(env: &Env, entry: &LifecycleAuditEntry) {
 /// Emits an `audit_entry_evicted` event for an entry removed from persistent storage
 /// due to the configured retention limit. Off-chain indexers MUST handle this event
 /// to maintain a complete audit trail.
+#[allow(deprecated)] // env.events().publish() — codebase-wide pattern
 fn emit_audit_entry_evicted(env: &Env, entry: &LifecycleAuditEntry) {
     env.events().publish(
         (Symbol::new(env, "audit_entry_evicted"), entry.id),

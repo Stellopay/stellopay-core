@@ -209,17 +209,16 @@ pub fn add_employee_to_agreement(
 
     agreement.employer.require_auth();
 
-    assert!(
-        agreement.status == AgreementStatus::Created,
-        "Can only add employees to Created agreements"
-    );
+    if agreement.status != AgreementStatus::Created {
+        panic_with_error!(env, PayrollError::InvalidData);
+    }
 
-    assert!(
-        agreement.mode == AgreementMode::Payroll,
-        "Can only add employees to Payroll agreements"
-    );
+    if agreement.mode != AgreementMode::Payroll {
+        panic_with_error!(env, PayrollError::InvalidAgreementMode);
+    }
 
     if salary_per_period <= 0 {
+        panic_with_error!(env, PayrollError::ZeroAmountPerPeriod);
         panic_with_error!(env, PayrollError::InvalidData);
     }
 
@@ -308,10 +307,9 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
 
     agreement.employer.require_auth();
 
-    assert!(
-        agreement.status == AgreementStatus::Created,
-        "Agreement must be in Created status"
-    );
+    if agreement.status != AgreementStatus::Created {
+        panic_with_error!(env, PayrollError::InvalidData);
+    }
 
     if agreement.mode == AgreementMode::Payroll {
         let employees: Vec<EmployeeInfo> = env
@@ -319,10 +317,9 @@ pub fn activate_agreement(env: &Env, agreement_id: u128) {
             .persistent()
             .get(&StorageKey::AgreementEmployees(agreement_id))
             .unwrap_or(Vec::new(env));
-        assert!(
-            !employees.is_empty(),
-            "Payroll agreement must have at least one employee to activate"
-        );
+        if employees.is_empty() {
+            panic_with_error!(env, PayrollError::NoEmployee);
+        }
     }
 
     agreement.status = AgreementStatus::Active;
