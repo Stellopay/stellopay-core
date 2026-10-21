@@ -170,6 +170,33 @@ impl PayrollContract {
         crate::storage::persistent_get(&env, &StorageKey::RateLimiterContract)
     }
 
+    /// Returns the current lifecycle state of the rate limiter contract slot.
+    ///
+    /// The rate limiter contract slot is a single administrative setting that
+    /// moves through the following states:
+    ///
+    /// * `Uninitialized` — no owner has been set yet; `set_rate_limiter_contract`
+    ///   refuses with `PayrollError::Unauthorized`.
+    /// * `Unset` — owner is set but no rate limiter has been configured yet.
+    /// * `Set` — a rate limiter address has been stored.
+    ///
+    /// This accessor exists so callers (and tests) can observe the slot's
+    /// state without inferring it from `get_rate_limiter_contract`, which
+    /// collapses `Uninitialized` and `Unset` into `None`.
+    pub fn get_rate_limiter_contract_state(env: Env) -> storage::RateLimiterContractState {
+        crate::storage::extend_instance_ttl(&env);
+        if !crate::storage::persistent_has(&env, &StorageKey::Owner) {
+            return storage::RateLimiterContractState::Uninitialized;
+        }
+        match crate::storage::persistent_get::<_, Address>(
+            &env,
+            &StorageKey::RateLimiterContract,
+        ) {
+            Some(address) => storage::RateLimiterContractState::Set(address),
+            None => storage::RateLimiterContractState::Unset,
+        }
+    }
+
     /// Sets the linked Salary Adjustment contract address used for dynamic salary overrides.
     ///
     /// # Arguments
