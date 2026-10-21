@@ -587,7 +587,7 @@ The `rate_limiter` and `payment_retry` contracts are designed to operate **indep
 The integration is **orchestration-based** (not direct cross-contract calls):
 
 1. An off-chain keeper or service calls `rate_limiter.check_and_consume()` before attempting a payment
-2. If rate limiting occurs, the call panics with "rate limit exceeded" — this is NOT counted as a payment retry attempt
+2. If rate limiting occurs, `try_check_and_consume` returns `Err(RateLimitError::RateLimitExceeded)` (the non-`try` accessor traps) — this is NOT counted as a payment retry attempt
 3. The keeper then calls `payment_retry.process_retry()` for actual payment processing
 4. `payment_retry` increments `retry_count` only when escrow balance is insufficient (`escrowed < amount`)
 

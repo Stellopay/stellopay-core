@@ -19,6 +19,20 @@ cargo bench --bench critical_paths
 
 The bench prints **CPU instruction** totals after each isolated operation (`initialize`, `create_payroll_agreement`, `create_escrow_agreement`, `get_agreement`, `create_milestone_agreement`, `get_arbiter`). It also runs a marginal-cost scaling benchmark for `batch_create_payroll_agreements` at 1, 5, 10, and 20 (MAX_BATCH_SIZE) agreements, printing per-batch totals and the marginal cost per additional agreement. It uses `env.cost_estimate().budget().reset_default()` before each timed call.
 
+The settlement critical paths are covered too:
+
+| Entrypoint | Scenario |
+|------------|----------|
+| `claim_payroll` | 1 employee, 1 accrued period, paid in the agreement token |
+| `claim_payroll_in_token` | 1 employee, 1 accrued period, with an active FX conversion |
+| `batch_claim_payroll` | the caller's own index through the batch entrypoint |
+| `claim_milestone` | 1 approved milestone released to the contributor |
+| `batch_claim_milestones` | 3 approved milestones released in one transaction |
+
+`batch_claim_payroll` enforces `caller == employee` at every index and rejects duplicate
+indices, so a single caller can only settle its own index in one batch. The genuine
+multi-item bulk path is `batch_claim_milestones`, where the contributor owns every index.
+
 ## Multi-Currency `claim_payroll_in_token` Benchmark
 
 ### `claim_payroll_in_token` (1 period, FX rate = 2.0)
@@ -137,21 +151,54 @@ UPDATE_GAS_BASELINES=1 cargo test -p stello_pay_contract gas_benchmark -- --noca
 
 ## CI
 
-`.github/workflows/contracts.yml` runs the benchmark regression guard explicitly before the rest of the workspace tests:
+Compiling and running the benchmarks are split deliberately, because timings are noisy
+and must not gate unrelated pull requests.
+
+### Every pull request — compile only
+
+`.github/workflows/contracts.yml` builds the standalone bench targets after the
+workspace tests:
+
+```bash
+cd onchain
+cargo build --workspace --benches --verbose
+```
+
+Both `[[bench]]` targets are declared with `harness = false`, so neither `cargo build`
+nor `cargo test` compiles them. This step is what makes a bench that stops compiling
+fail the pull request. To reproduce it locally against a single target:
+
+```bash
+cd onchain/contracts/stello_pay_contract
+cargo bench --bench critical_paths --no-run
+```
+
+### Scheduled / on demand — run and record
+
+`.github/workflows/benchmarks.yml` runs weekly (Mondays 04:00 UTC) and on
+`workflow_dispatch`. It executes both bench targets and uploads the raw output plus the
+criterion HTML reports (`onchain/target/criterion`) as the `benchmark-results` artifact,
+so a performance regression is visible without blocking a PR:
+
+```bash
+cd onchain
+cargo bench -p stello_pay_contract --bench critical_paths
+cargo bench -p stello_pay_contract --bench performance_benchmarks
+```
+
+### Instruction-count regression guard
+
+The gas regression guard is a normal test target, so it runs as part of the workspace
+suite in `contracts.yml`:
 
 ```bash
 cd onchain
 cargo test -p stello_pay_contract gas_benchmark -- --nocapture
 ```
 
-That step is the enforced comparison between current instruction counts and the recorded thresholds in `benchmarks/stello_pay_contract_gas.json`.
-
-To compile the standalone bench target without executing it:
-
-```bash
-cd onchain/contracts/stello_pay_contract
-cargo bench --bench critical_paths --no-run
-```
+That comparison is the enforced check between current instruction counts and the recorded
+thresholds in `benchmarks/stello_pay_contract_gas.json`, and it fails when a measured
+value exceeds its baseline by more than 5%.
 
 ## Related
 

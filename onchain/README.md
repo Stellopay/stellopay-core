@@ -177,11 +177,16 @@ cd contracts/stello_pay_contract
 cargo bench --bench critical_paths
 ```
 
-To compile without running (as CI does):
+CI compiles every bench target on each pull request without running it:
 
 ```bash
-cargo bench --bench critical_paths --no-run --verbose
+cd onchain
+cargo build --workspace --benches --verbose
 ```
+
+The benchmarks themselves run on a schedule or on demand in
+[`.github/workflows/benchmarks.yml`](./.github/workflows/benchmarks.yml), which uploads the
+results as the `benchmark-results` artifact.
 
 See [docs/benchmarks.md](../docs/benchmarks.md) for interpreting results and regression guarding.
 

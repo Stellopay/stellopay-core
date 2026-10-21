@@ -2,7 +2,7 @@ use soroban_sdk::{contractevent, Address, Env};
 
 use crate::storage::AgreementMode;
 
-#[contractevent]
+#[contractevent(topics = ["milestone_added", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct MilestoneAdded {
     pub agreement_id: u128,
@@ -10,14 +10,14 @@ pub struct MilestoneAdded {
     pub amount: i128,
 }
 
-#[contractevent]
+#[contractevent(topics = ["milestone_approved", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct MilestoneApproved {
     pub agreement_id: u128,
     pub milestone_id: u32,
 }
 
-#[contractevent]
+#[contractevent(topics = ["milestone_claimed", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct MilestoneClaimed {
     pub agreement_id: u128,
@@ -27,7 +27,7 @@ pub struct MilestoneClaimed {
 }
 
 /// Event: Agreement created
-#[contractevent]
+#[contractevent(topics = ["agreement_created_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct AgreementCreatedEvent {
     pub agreement_id: u128,
@@ -36,14 +36,14 @@ pub struct AgreementCreatedEvent {
 }
 
 /// Event: Agreement activated
-#[contractevent]
+#[contractevent(topics = ["agreement_activated_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct AgreementActivatedEvent {
     pub agreement_id: u128,
 }
 
 /// Event: Employee added to agreement
-#[contractevent]
+#[contractevent(topics = ["employee_added_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct EmployeeAddedEvent {
     pub agreement_id: u128,
@@ -52,7 +52,7 @@ pub struct EmployeeAddedEvent {
 }
 
 /// Event: Payroll claimed by employee
-#[contractevent]
+#[contractevent(topics = ["payroll_claimed_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct PayrollClaimedEvent {
     pub agreement_id: u128,
@@ -61,21 +61,21 @@ pub struct PayrollClaimedEvent {
 }
 
 /// Event: Agreement paused
-#[contractevent]
+#[contractevent(topics = ["agreement_paused_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct AgreementPausedEvent {
     pub agreement_id: u128,
 }
 
 /// Event: Agreement resumed
-#[contractevent]
+#[contractevent(topics = ["agreement_resumed_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct AgreementResumedEvent {
     pub agreement_id: u128,
 }
 
 /// Event: Payment sent
-#[contractevent]
+#[contractevent(topics = ["payment_sent_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct PaymentSentEvent {
     pub agreement_id: u128,
@@ -86,7 +86,7 @@ pub struct PaymentSentEvent {
 }
 
 /// Event: Payment received
-#[contractevent]
+#[contractevent(topics = ["payment_received_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct PaymentReceivedEvent {
     pub agreement_id: u128,
@@ -96,7 +96,7 @@ pub struct PaymentReceivedEvent {
 }
 
 /// Event: Contract storage migration applied
-#[contractevent]
+#[contractevent(topics = ["contract_migrated_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct ContractMigratedEvent {
     pub from_version: u32,
@@ -120,7 +120,7 @@ pub fn emit_employee_added(env: &Env, event: EmployeeAddedEvent) {
 }
 
 /// Event: ArbiterSet
-#[contractevent]
+#[contractevent(topics = ["arbiter_set_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct ArbiterSetEvent {
     pub arbiter: Address,
@@ -131,7 +131,7 @@ pub fn emit_set_arbiter(env: &Env, event: ArbiterSetEvent) {
 }
 
 /// Event: ArbiteDisputeRaisedrSet
-#[contractevent]
+#[contractevent(topics = ["dispute_raised_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct DisputeRaisedEvent {
     pub agreement_id: u128,
@@ -142,7 +142,7 @@ pub fn emit_dsipute_raised(env: &Env, event: DisputeRaisedEvent) {
 }
 
 /// Event: ArbiteDisputeRaisedrSet
-#[contractevent]
+#[contractevent(topics = ["dispute_resolved_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct DisputeResolvedEvent {
     pub agreement_id: u128,
@@ -174,7 +174,7 @@ pub fn emit_payment_received(env: &Env, event: PaymentReceivedEvent) {
 }
 
 /// Event: Agreement cancelled
-#[contractevent]
+#[contractevent(topics = ["agreement_cancelled_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct AgreementCancelledEvent {
     pub agreement_id: u128,
@@ -185,7 +185,7 @@ pub fn emit_agreement_cancelled(env: &Env, event: AgreementCancelledEvent) {
 }
 
 /// Event: Grace period finalized
-#[contractevent]
+#[contractevent(topics = ["grace_period_finalized_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct GracePeriodFinalizedEvent {
     pub agreement_id: u128,
@@ -196,7 +196,7 @@ pub fn emit_grace_period_finalized(env: &Env, event: GracePeriodFinalizedEvent) 
 }
 
 /// Event: Grace period extended (audit trail for employer or owner).
-#[contractevent]
+#[contractevent(topics = ["grace_period_extended_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct GracePeriodExtendedEvent {
     pub agreement_id: u128,
@@ -213,7 +213,7 @@ pub fn emit_grace_period_extended(env: &Env, event: GracePeriodExtendedEvent) {
 }
 
 /// Event: Batch payroll claimed
-#[contractevent]
+#[contractevent(topics = ["batch_payroll_claimed_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct BatchPayrollClaimedEvent {
     pub agreement_id: u128,
@@ -227,7 +227,7 @@ pub fn emit_batch_payroll_claimed(env: &Env, event: BatchPayrollClaimedEvent) {
 }
 
 /// Event: Batch milestone claimed
-#[contractevent]
+#[contractevent(topics = ["batch_milestone_claimed_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct BatchMilestoneClaimedEvent {
     pub agreement_id: u128,
@@ -245,7 +245,7 @@ pub fn emit_batch_milestone_claimed(env: &Env, event: BatchMilestoneClaimedEvent
 /// Emitted when an employer deposits tokens into the contract for a specific
 /// milestone agreement via `fund_milestone_agreement`. The `total_escrow_balance`
 /// field reflects the new accounted balance after this deposit.
-#[contractevent]
+#[contractevent(topics = ["milestone_funded_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct MilestoneFundedEvent {
     pub agreement_id: u128,
@@ -261,7 +261,7 @@ pub fn emit_milestone_funded(env: &Env, event: MilestoneFundedEvent) {
 /// Event: Exchange rate set via `set_exchange_rate` or `set_exchange_rate_admin`.
 /// Emitted whenever a rate is updated so off-chain indexers can track FX history
 /// and monitor who performed the update.
-#[contractevent]
+#[contractevent(topics = ["exchange_rate_updated_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct ExchangeRateUpdatedEvent {
     pub base: Address,
@@ -283,7 +283,7 @@ pub fn emit_exchange_rate_updated(env: &Env, event: ExchangeRateUpdatedEvent) {
 /// Emitted whenever the linked multisig contract or its approval thresholds
 /// are updated, so off-chain monitors can track approval-requirement changes
 /// mid-lifecycle.
-#[contractevent]
+#[contractevent(topics = ["multisig_config_changed_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct MultisigConfigChangedEvent {
     pub caller: Address,
@@ -306,7 +306,7 @@ pub fn emit_multisig_config_changed(env: &Env, event: MultisigConfigChangedEvent
 /// justification supplied by the caller (must be non-empty). Off-chain
 /// indexers can use this event to update milestone status, notify
 /// contributors, and track rejection history.
-#[contractevent]
+#[contractevent(topics = ["milestone_rejected_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct MilestoneRejectedEvent {
     /// The milestone agreement that contains the rejected milestone.
@@ -332,7 +332,7 @@ pub fn emit_milestone_rejected(env: &Env, event: MilestoneRejectedEvent) {
 /// contract (if configured).  Off-chain indexers can use this event to
 /// update milestone status, notify contributors, and trigger reconciliation
 /// workflows.
-#[contractevent]
+#[contractevent(topics = ["milestone_expired_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct MilestoneExpiredEvent {
     /// The milestone agreement that contains the expired milestone.
@@ -353,7 +353,7 @@ pub fn emit_milestone_expired(env: &Env, event: MilestoneExpiredEvent) {
 }
 
 /// Event: Bulk pause of all agreements for an employer.
-#[contractevent]
+#[contractevent(topics = ["bulk_agreements_paused_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct BulkAgreementsPausedEvent {
     pub employer: Address,
@@ -366,7 +366,7 @@ pub fn emit_bulk_agreements_paused(env: &Env, event: BulkAgreementsPausedEvent) 
 }
 
 /// Event: Bulk unpause of all agreements for an employer.
-#[contractevent]
+#[contractevent(topics = ["bulk_agreements_unpaused_event", "event_schema_v1"])]
 #[derive(Clone, Debug)]
 pub struct BulkAgreementsUnpausedEvent {
     pub employer: Address,

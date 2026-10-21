@@ -140,7 +140,6 @@ fn test_sequential_agreement_ids_are_strictly_increasing() {
 /// Zero-value payments have no economic meaning and must be rejected
 /// at creation time to prevent nonsensical agreements.
 #[test]
-#[should_panic]
 fn test_escrow_zero_amount_per_period_rejected() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -148,9 +147,9 @@ fn test_escrow_zero_amount_per_period_rejected() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    // amount_per_period = 0 triggers ZeroAmountPerPeriod validation
-    let _ =
-        client.create_escrow_agreement(&employer, &contributor, &token, &0i128, &86400u64, &4u32);
+    let result =
+        client.try_create_escrow_agreement(&employer, &contributor, &token, &0i128, &86400u64, &4u32);
+    assert_eq!(result, Err(Ok(PayrollError::ZeroAmountPerPeriod.into())));
 }
 
 /// Verifies that creating an escrow agreement with a negative amount_per_period
@@ -159,7 +158,6 @@ fn test_escrow_zero_amount_per_period_rejected() {
 /// Negative payment amounts could lead to reverse fund flows.
 /// The guard `amount_per_period <= 0` must catch this.
 #[test]
-#[should_panic]
 fn test_escrow_negative_amount_per_period_rejected() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -167,7 +165,7 @@ fn test_escrow_negative_amount_per_period_rejected() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let _ = client.create_escrow_agreement(
+    let result = client.try_create_escrow_agreement(
         &employer,
         &contributor,
         &token,
@@ -175,6 +173,7 @@ fn test_escrow_negative_amount_per_period_rejected() {
         &86400u64,
         &4u32,
     );
+    assert_eq!(result, Err(Ok(PayrollError::ZeroAmountPerPeriod.into())));
 }
 
 /// Verifies that creating an escrow agreement with `i128::MIN` as
@@ -183,7 +182,6 @@ fn test_escrow_negative_amount_per_period_rejected() {
 /// The most extreme negative value must be caught by the same validation
 /// that rejects zero, ensuring no underflow or sign-confusion occurs.
 #[test]
-#[should_panic]
 fn test_escrow_i128_min_amount_per_period_rejected() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -191,7 +189,7 @@ fn test_escrow_i128_min_amount_per_period_rejected() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let _ = client.create_escrow_agreement(
+    let result = client.try_create_escrow_agreement(
         &employer,
         &contributor,
         &token,
@@ -199,6 +197,7 @@ fn test_escrow_i128_min_amount_per_period_rejected() {
         &86400u64,
         &4u32,
     );
+    assert_eq!(result, Err(Ok(PayrollError::ZeroAmountPerPeriod.into())));
 }
 
 /// Verifies that creating an escrow agreement with the minimum valid amount
@@ -294,7 +293,6 @@ fn test_escrow_minimum_valid_period_duration_succeeds() {
 /// An agreement with zero periods has no payment schedule and must be
 /// rejected at creation time.
 #[test]
-#[should_panic]
 fn test_escrow_zero_num_periods_rejected() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -302,8 +300,9 @@ fn test_escrow_zero_num_periods_rejected() {
     let contributor = create_test_address(&env);
     let token = create_test_address(&env);
 
-    let _ =
-        client.create_escrow_agreement(&employer, &contributor, &token, &100i128, &86400u64, &0u32);
+    let result =
+        client.try_create_escrow_agreement(&employer, &contributor, &token, &100i128, &86400u64, &0u32);
+    assert_eq!(result, Err(Ok(PayrollError::ZeroNumPeriods.into())));
 }
 
 /// Verifies that creating an escrow agreement with u32::MAX num_periods
@@ -353,14 +352,34 @@ fn test_escrow_max_u64_period_seconds() {
     assert_eq!(agreement.total_amount, 1);
 }
 
+/// Verifies that a u64::MAX period with more than one period is rejected as a
+/// typed error rather than letting arithmetic overflow escape as a panic.
+#[test]
+fn test_escrow_max_u64_period_seconds_overflow_rejected() {
+    let env = create_test_env();
+    let (_contract_id, client) = setup_contract(&env);
+    let employer = create_test_address(&env);
+    let contributor = create_test_address(&env);
+    let token = create_test_address(&env);
+
+    let result = client.try_create_escrow_agreement(
+        &employer,
+        &contributor,
+        &token,
+        &1i128,
+        &u64::MAX,
+        &2u32,
+    );
+    assert_eq!(result, Err(Ok(PayrollError::InvalidData.into())));
+}
+
 // ---------- Payroll Employee Salary Amounts ----------
 
-/// Verifies that adding an employee with zero salary panics.
+/// Verifies that adding an employee with zero salary is rejected.
 ///
-/// The contract asserts `salary_per_period > 0`. A zero salary is
-/// economically meaningless and must be rejected.
+/// A non-positive `salary_per_period` is economically meaningless and must
+/// surface `PayrollError::InvalidData`.
 #[test]
-#[should_panic(expected = "Salary must be positive")]
 fn test_add_employee_zero_salary_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -369,15 +388,15 @@ fn test_add_employee_zero_salary_panics() {
     let employee = create_test_address(&env);
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    client.add_employee_to_agreement(&agreement_id, &employee, &0i128);
+    let result = client.try_add_employee_to_agreement(&agreement_id, &employee, &0i128);
+    assert!(result.is_err(), "zero salary must fail with a typed error");
 }
 
-/// Verifies that adding an employee with negative salary panics.
+/// Verifies that adding an employee with negative salary is rejected.
 ///
-/// Negative salaries could invert payment direction. The `> 0` guard
-/// must reject all non-positive values.
+/// Negative salaries could invert payment direction, so every non-positive
+/// value must surface `PayrollError::InvalidData`.
 #[test]
-#[should_panic(expected = "Salary must be positive")]
 fn test_add_employee_negative_salary_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -386,15 +405,15 @@ fn test_add_employee_negative_salary_panics() {
     let employee = create_test_address(&env);
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    client.add_employee_to_agreement(&agreement_id, &employee, &(-500i128));
+    let result = client.try_add_employee_to_agreement(&agreement_id, &employee, &(-500i128));
+    assert!(result.is_err(), "negative salary must fail with a typed error");
 }
 
-/// Verifies that adding an employee with `i128::MIN` salary panics.
+/// Verifies that adding an employee with `i128::MIN` salary is rejected.
 ///
-/// The most extreme negative value tests for underflow in the salary
-/// validation path.
+/// The most extreme negative value must surface `PayrollError::InvalidData`
+/// without underflowing the salary validation path.
 #[test]
-#[should_panic(expected = "Salary must be positive")]
 fn test_add_employee_i128_min_salary_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -403,7 +422,8 @@ fn test_add_employee_i128_min_salary_panics() {
     let employee = create_test_address(&env);
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    client.add_employee_to_agreement(&agreement_id, &employee, &i128::MIN);
+    let result = client.try_add_employee_to_agreement(&agreement_id, &employee, &i128::MIN);
+    assert!(result.is_err(), "i128::MIN salary must fail with a typed error");
 }
 
 /// Verifies that adding an employee with the minimum valid salary (1) succeeds.
@@ -627,10 +647,9 @@ fn test_resolve_dispute_zero_payouts_succeeds() {
 
 /// Verifies that a payroll agreement cannot be activated with zero employees.
 ///
-/// The contract asserts `employees.len() > 0` during activation. An
-/// agreement with no employees is not operational.
+/// An agreement with no employees is not operational and must surface
+/// `PayrollError::NoEmployee`.
 #[test]
-#[should_panic(expected = "Payroll agreement must have at least one employee to activate")]
 fn test_activate_payroll_with_zero_employees_panics() {
     let env = create_test_env();
     let (_contract_id, client) = setup_contract(&env);
@@ -638,8 +657,8 @@ fn test_activate_payroll_with_zero_employees_panics() {
     let token = create_test_address(&env);
 
     let agreement_id = client.create_payroll_agreement(&employer, &token, &604800u64);
-    // Activate without adding any employees → panics
-    client.activate_agreement(&agreement_id);
+    let result = client.try_activate_agreement(&agreement_id);
+    assert!(result.is_err(), "empty payroll must fail with a typed host error");
 }
 
 /// Verifies that a payroll agreement with exactly one employee can be
@@ -788,6 +807,47 @@ fn test_payroll_max_u64_grace_period_succeeds() {
     let agreement = client.get_agreement(&agreement_id).unwrap();
     assert_eq!(agreement.grace_period_seconds, u64::MAX);
     assert_eq!(agreement.status, AgreementStatus::Created);
+}
+
+/// Verifies boundary behaviour for `propose_emergency_pause` timelock duration (#1368).
+///
+/// Tests extremes:
+/// - 0 seconds succeeds (immediate pause, timelock_end is None)
+/// - 1 second succeeds (timelock_end is timestamp + 1)
+/// - Maximum accepted value (u64::MAX - current_timestamp) succeeds
+/// - One past maximum ((u64::MAX - current_timestamp) + 1) and u64::MAX with non-zero
+///   timestamp are rejected with typed `PayrollError::InvalidTimelock` without panicking.
+#[test]
+fn test_propose_emergency_pause_boundary_timelock_extremes() {
+    let env = create_test_env();
+    let (_contract_id, client) = setup_contract(&env);
+    let guardian = create_test_address(&env);
+
+    let mut guardians = soroban_sdk::Vec::new(&env);
+    guardians.push_back(guardian.clone());
+    client.set_emergency_guardians(&guardians);
+
+    let current_ts = 1_000u64;
+    env.ledger().with_mut(|li| li.timestamp = current_ts);
+
+    // Extreme 1: zero succeeds
+    assert!(client.try_propose_emergency_pause(&guardian, &0u64).is_ok());
+
+    // Extreme 2: one succeeds
+    assert!(client.try_propose_emergency_pause(&guardian, &1u64).is_ok());
+
+    // Extreme 3: maximum accepted value succeeds
+    let max_accepted = u64::MAX - current_ts;
+    assert!(client.try_propose_emergency_pause(&guardian, &max_accepted).is_ok());
+
+    // Extreme 4: one past maximum is refused with typed error without panicking
+    let one_past_max = max_accepted + 1;
+    let res = client.try_propose_emergency_pause(&guardian, &one_past_max);
+    assert_eq!(res, Err(Ok(PayrollError::InvalidTimelock)));
+
+    // u64::MAX with current_ts > 0 also refused with typed error
+    let res_max = client.try_propose_emergency_pause(&guardian, &u64::MAX);
+    assert_eq!(res_max, Err(Ok(PayrollError::InvalidTimelock)));
 }
 
 // ============================================================================

@@ -278,9 +278,8 @@ fn test_escrow_balance_decrements_after_each_claim() {
 
 // fund_milestone_agreement — rejection cases
 
-/// Funding with a zero amount must fail.
+/// Funding with a zero amount must fail with `MilestoneAmountInvalid`.
 #[test]
-#[should_panic(expected = "Amount must be positive")]
 fn test_fund_zero_amount_fails() {
     let (env, employer, contributor, token, client) = create_test_env();
     let agreement_id = client.create_milestone_agreement(
@@ -289,12 +288,12 @@ fn test_fund_zero_amount_fails() {
         &token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &employer, &0i128);
+    let result = client.try_fund_milestone_agreement(&agreement_id, &employer, &0i128);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAmountInvalid.into())));
 }
 
-/// Funding with a negative amount must fail.
+/// Funding with a negative amount must fail with `MilestoneAmountInvalid`.
 #[test]
-#[should_panic(expected = "Amount must be positive")]
 fn test_fund_negative_amount_fails() {
     let (env, employer, contributor, token, client) = create_test_env();
     let agreement_id = client.create_milestone_agreement(
@@ -303,12 +302,12 @@ fn test_fund_negative_amount_fails() {
         &token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &employer, &-1i128);
+    let result = client.try_fund_milestone_agreement(&agreement_id, &employer, &-1i128);
+    assert_eq!(result, Err(Ok(PayrollError::MilestoneAmountInvalid.into())));
 }
 
 /// A non-employer address cannot fund a milestone agreement.
 #[test]
-#[should_panic(expected = "Unauthorized: only the employer can fund a milestone agreement")]
 fn test_fund_non_employer_fails() {
     let (env, employer, contributor, token, client) = create_test_env();
     let stranger = Address::generate(&env);
@@ -318,12 +317,12 @@ fn test_fund_non_employer_fails() {
         &token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &stranger, &500i128);
+    let result = client.try_fund_milestone_agreement(&agreement_id, &stranger, &500i128);
+    assert_eq!(result, Err(Ok(PayrollError::Unauthorized.into())));
 }
 
 /// The contributor cannot fund the agreement — only the employer can.
 #[test]
-#[should_panic(expected = "Unauthorized: only the employer can fund a milestone agreement")]
 fn test_fund_contributor_cannot_fund_fails() {
     let (env, employer, contributor, token, client) = create_test_env();
     let agreement_id = client.create_milestone_agreement(
@@ -332,7 +331,8 @@ fn test_fund_contributor_cannot_fund_fails() {
         &token,
         &soroban_sdk::vec![&env, 1i128],
     );
-    client.fund_milestone_agreement(&agreement_id, &contributor, &500i128);
+    let result = client.try_fund_milestone_agreement(&agreement_id, &contributor, &500i128);
+    assert_eq!(result, Err(Ok(PayrollError::Unauthorized.into())));
 }
 
 /// Funding a non-existent agreement ID must fail.

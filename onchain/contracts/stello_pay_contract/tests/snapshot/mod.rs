@@ -203,7 +203,7 @@ fn snapshot_dispute_and_fx_helpers() {
         .expect("set rate");
 
     let converted = client
-        .convert_currency(&base, &quote, &1_000i128)
+        .convert_currency(&base, &quote, &1_000i128, &None, &None, &None)
         .expect("convert");
 
     // Resolve dispute by splitting funds.

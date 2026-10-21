@@ -209,13 +209,13 @@ fn test_migrate_state_forward_migration_updates_contract_version() {
     // Verify via the public getter.
     // `get_contract_version` must return 1 after a v0→v1 migration.
     // The function is not exposed on the public client, so we verify
-    // indirectly: a second migrate_state(from_version=1) must panic with
-    // "Unsupported migration version" (not "Invalid migration version"),
-    // confirming the stored version is 1.
+    // indirectly: a second migrate_state(from_version=1) must fail with a typed
+    // `PayrollError::InvalidData` (not the stale string panic), confirming the
+    // stored version is 1.
     let result = client.try_migrate_state(&owner, &1u32);
     // Any error here confirms the version was bumped (if still at 0, the call
-    // would have succeeded, not failed). The exact error variant is "Unsupported
-    // migration version" since no v1→v2 migration logic is defined yet.
+    // would have succeeded, not failed). The exact error variant is `InvalidData`
+    // since no v1→v2 migration logic is defined yet.
     assert!(
         result.is_err(),
         "migrate_state(from_version=1) must fail because no v1->v2 migration is implemented yet, \

@@ -10,8 +10,8 @@
 //!  - Rejected milestone cannot be approved (`MilestoneAlreadyRejected`).
 //!  - Rejected milestone cannot be claimed (`MilestoneNotApproved`).
 //!  - Re-rejection returns `MilestoneAlreadyRejected`.
-//!  - Approved milestone cannot be rejected (`MilestoneAlreadyApprovedCannotReject`).
-//!  - Claimed milestone cannot be rejected (`MilestoneAlreadyClaimedCannotReject`).
+//!  - Approved milestone cannot be rejected (`MilestoneApprovedCannotReject`).
+//!  - Claimed milestone cannot be rejected (`MilestoneClaimedCannotReject`).
 //!  - Non-employer caller panics (auth guard).
 //!  - `milestone_id = 0` returns `MilestoneNotFound`.
 //!  - Out-of-range `milestone_id` returns `MilestoneNotFound`.
@@ -272,7 +272,7 @@ fn test_reject_approved_milestone_returns_error() {
     );
     assert_eq!(
         result,
-        Err(Ok(PayrollError::MilestoneAlreadyApprovedCannotReject)),
+        Err(Ok(PayrollError::MilestoneApprovedCannotReject)),
         "rejecting an already-approved milestone should fail"
     );
 }
@@ -289,7 +289,7 @@ fn test_reject_claimed_milestone_returns_error() {
     // After claiming the only milestone the agreement auto-completes, so the
     // status guard fires first and returns MilestoneAgreementInvalidStatus.
     // If there were unclaimed milestones in the same agreement, the status
-    // would still be Active/Created and the MilestoneAlreadyClaimedCannotReject
+    // would still be Active/Created and the MilestoneClaimedCannotReject
     // guard would fire instead (see test_reject_claimed_milestone_with_pending).
     let result = client.try_reject_milestone(
         &agreement_id,
@@ -304,7 +304,7 @@ fn test_reject_claimed_milestone_returns_error() {
     );
 }
 
-/// Demonstrates that MilestoneAlreadyClaimedCannotReject fires when the
+/// Demonstrates that MilestoneClaimedCannotReject fires when the
 /// agreement is still Active (i.e., some milestones remain unclaimed).
 #[test]
 fn test_reject_claimed_milestone_with_pending() {
@@ -333,9 +333,9 @@ fn test_reject_claimed_milestone_with_pending() {
     );
     assert_eq!(
         result,
-        Err(Ok(PayrollError::MilestoneAlreadyClaimedCannotReject)),
+        Err(Ok(PayrollError::MilestoneClaimedCannotReject)),
         "rejecting an already-claimed milestone in an Active agreement should return \
-         MilestoneAlreadyClaimedCannotReject"
+         MilestoneClaimedCannotReject"
     );
 }
 

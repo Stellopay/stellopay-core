@@ -30,8 +30,24 @@ Location: `onchain/contracts/rate_limiter`
 - clear_limit_for(addr)
 - get_limit_for(addr) → u32
 - get_usage(addr) → Usage
-- check_and_consume(subject) → u32
+- check_and_consume(subject) → Result<ConsumptionOutcome, RateLimitError>
 - reset_usage(addr)
+
+## Outcome and Exhaustion
+
+`check_and_consume` returns a typed result rather than a bare integer:
+
+- `Ok(ConsumptionOutcome { remaining, refill_in_seconds })` — the call was served.
+  `remaining` is the subject's allowance after the call and `refill_in_seconds` is
+  how long until the bucket next holds a token (`Some(0)` now, `Some(1)` on the next
+  whole-second tick, `None` when the refill rate is `0`).
+- `Err(RateLimitError::RateLimitExceeded)` — at least one enforced bucket was empty,
+  so nothing was debited.
+
+Exhaustion is therefore never signalled by a `0` return value: a served call that
+leaves `remaining == 0` is `Ok`, and only an empty bucket is `Err`. Callers that need
+to branch on the failure must use `try_check_and_consume`.
+
 
 ## Security Model
 

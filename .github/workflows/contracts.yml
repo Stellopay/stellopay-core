@@ -15,9 +15,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # Enforcing: run_ci.py exits non-zero on any documentation failure.
+      # Pre-existing violations are recorded in tools/doc_checker/baseline.json
+      # and only warn; a NEW violation (including growth of an existing one)
+      # fails the job. Baseline entries can only change by explicitly
+      # regenerating that file (--update-baseline), which lands as a
+      # reviewable diff in the PR.
       - name: Check contract documentation
         run: python3 tools/doc_checker/run_ci.py
-        continue-on-error: true
 
       - name: Reject committed Cargo build output
         run: bash scripts/check-no-committed-build-output.sh
@@ -25,9 +30,12 @@ jobs:
       # Installed via the preinstalled rustup rather than dtolnay/rust-toolchain:
       # fetching that action from codeload intermittently returns 429 and fails
       # the job during setup, before any of the checks below even run.
+      # `--profile minimal` ships rustc, rust-std and cargo only, so the clippy
+      # component has to be requested explicitly or the Clippy step below fails with
+      # "'cargo-clippy' is not installed for the toolchain".
       - name: Install Rust (nightly)
         run: |
-          rustup toolchain install nightly --profile minimal --component rustfmt
+          rustup toolchain install nightly --profile minimal --component rustfmt --component clippy
           rustup default nightly
 
       - name: Cache cargo registry and build artifacts
@@ -46,13 +54,29 @@ jobs:
       - name: Reject untyped payroll traps
         run: bash scripts/check-contract-no-traps.sh
 
+      - name: Self-test contract trap guard
+        run: bash scripts/tests/check_contract_no_traps_test.sh
+
       - name: Build workspace
         working-directory: onchain
         run: cargo build --workspace --verbose
 
+      - name: Verify contract event schema fixtures
+        working-directory: onchain
+        run: cargo test -p stello_pay_contract --test event_schema_fixtures --verbose
+
       - name: Test workspace
         working-directory: onchain
         run: cargo test --workspace --verbose
+
+      # `stello_pay_contract` declares two `[[bench]]` targets with `harness = false`,
+      # so neither `cargo build` nor `cargo test` compiles them and they can stop
+      # building without any signal. Build them explicitly here. The benchmarks only
+      # *run* in the scheduled `benchmarks.yml` workflow, so timing noise never blocks
+      # an unrelated pull request.
+      - name: Build benchmark targets
+        working-directory: onchain
+        run: cargo build --workspace --benches --verbose
 
       # Keep the native build/test signals above independent from the
       # deployable-artifact checks below. A wasm compiler failure must be
@@ -62,7 +86,15 @@ jobs:
 
       - name: Build deployable WASM artifacts
         working-directory: onchain
-        run: cargo build --workspace --release --target wasm32-unknown-unknown --verbose
+        run: |
+          # Always compile the size-gated artifacts from a clean wasm target.
+          # `rust-cache` restores `target/wasm32-unknown-unknown`, and a stale
+          # cached build can be larger than the current source, which makes the
+          # size ceiling below fail for contracts this PR never touched (or
+          # pass on artifacts that no longer match the source). Cleaning first
+          # makes the measurement reflect the checked-out commit.
+          cargo clean --target wasm32-unknown-unknown
+          cargo build --workspace --release --target wasm32-unknown-unknown --verbose
 
       - name: Prepare contract WASM inventory
         run: |

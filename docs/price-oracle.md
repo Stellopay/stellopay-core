@@ -64,7 +64,7 @@ Where:
   - `tolerance_bps`: maximum spread allowed between quorum-supporting rates, in basis points.
   - `quorum_window_seconds`: time bucket size used to group pending quorum votes.
   - `min_submission_interval_seconds`: minimum seconds a source must wait between consecutive submissions for this pair. `0` disables the check.
-  - `max_consecutive_stale_before_halt`: number of consecutive read-side stale detections (calls to `get_pair_state` that return `PriceTooOld`) that automatically halt the pair, returning `PairHalted` instead. `0` disables the mechanism.
+  - `max_stale_before_halt`: how many freshness windows a price may remain stale before `get_pair_state` returns `PairHalted` instead of `PriceTooOld`. The pair is halted once it has been stale for longer than `max_stale_before_halt × max_staleness_seconds`. `0` disables the mechanism. This is not a read-side counter: Soroban rolls back storage writes made by a failing invocation, so halt is derived from `last_updated_ts` and this config. Set with `set_stale_halt_threshold` (`configure_pair` resets it to `0`).
 
 - `PairState`:
   - `rate`: last accepted rate.
@@ -80,10 +80,7 @@ Where:
   - Each bucket stores at most one vote per authorized source.
   - The bucket is cleared when quorum is reached, when the pair is reconfigured, or when the pair is disabled.
 
-- Consecutive-stale counter (temporary storage per pair):
-  - Key: `StaleCount(base: Address, quote: Address)`
-  - Incremented by `get_pair_state` each time it detects a stale price for a pair with `max_consecutive_stale_before_halt > 0`.
-  - Reset to zero on a successful `push_price` acceptance or when `configure_pair` is called for the pair.
+- Halt state is not stored. `get_pair_state` derives it from `PairState.last_updated_ts`, `max_staleness_seconds`, and `max_stale_before_halt`. A successful `push_price` clears a halt by writing a newer `last_updated_ts`. `configure_pair` disables halting by resetting the threshold to `0`.
 
 ---
 
@@ -107,7 +104,8 @@ Where:
 
 | Function                                                                  | Access | Description                               |
 |---------------------------------------------------------------------------|--------|-------------------------------------------|
-| `configure_pair(caller, base, quote, min_rate, max_rate, max_staleness, quorum_n, tolerance_bps, quorum_window_seconds, min_submission_interval_seconds, max_consecutive_stale_before_halt)` | Owner  | Create or update a pair's configuration; resets the stale counter |
+| `configure_pair(caller, base, quote, min_rate, max_rate, max_staleness, quorum_n, tolerance_bps, quorum_window_seconds, min_submission_interval_seconds)` | Owner  | Create or update a pair's configuration. Resets `max_stale_before_halt` to `0` (the setter is separate because this entrypoint is at Soroban's 10-parameter ceiling) |
+| `set_stale_halt_threshold(caller, base, quote, threshold)` | Owner | Set how long a pair may stay stale before `PairHalted`. `0` disables halting |
 | `disable_pair(caller, base, quote)`                                       | Owner  | Pause updates for a pair                  |
 | `enable_pair(caller, base, quote)`                                        | Owner  | Resume updates for a pair                 |
 | `get_pair_config(base, quote)`                                            | Any    | Read pair configuration                   |
@@ -116,8 +114,8 @@ Where:
 
 | Function                                                     | Access | Description                          |
 |--------------------------------------------------------------|--------|--------------------------------------|
-| `push_price(source, base, quote, rate, source_timestamp)`   | Source | Submit a new rate for a pair; clears stale counter on acceptance |
-| `get_pair_state(base, quote)`                                | Any    | Read last accepted state; rejects with `PairNotConfigured` if pair is disabled, `PriceTooOld` if state is stale, or `PairHalted` if the consecutive-stale threshold has been reached |
+| `push_price(source, base, quote, rate, source_timestamp)`   | Source | Submit a new rate for a pair. A successful acceptance writes a fresh timestamp, which clears a halt |
+| `get_pair_state(base, quote)`                                | Any    | Read last accepted state. `PairNotConfigured` if the pair is missing or disabled, `PriceTooOld` if it is stale but not yet halted, `PairHalted` if it has been stale for longer than `max_stale_before_halt × max_staleness_seconds` |
 
 ### Admin
 
@@ -199,7 +197,7 @@ Integration steps:
 | 12   | SubmissionRateLimited | Source resubmitted before `min_submission_interval_seconds` elapsed |
 | 13   | TooManySources    | Quorum bucket is full                          |
 | 14   | PriceTooOld       | Read rejected because the price is older than `max_staleness_seconds` |
-| 15   | PairHalted        | Pair automatically halted after `max_consecutive_stale_before_halt` consecutive stale detections; submit a fresh `push_price` to resume |
+| 15   | PairHalted        | Price has been stale for longer than `max_stale_before_halt × max_staleness_seconds`. Distinct from `PriceTooOld`. A successful `push_price` resumes serving |
 
 ## Quorum model
 
@@ -236,7 +234,7 @@ This model keeps the implementation small and storage bounded while still reduci
 | Quorum drift via wide tolerance | Admin should keep `tolerance_bps` tight; accepted rate is anchored to the completing vote |
 | Disabled pair bypass            | `push_price` checks `enabled` flag before accepting; `disable_pair` clears stored `PairState` so `get_pair_state` returns `PairNotConfigured` instead of serving stale cached data |
 | Pair direction confusion        | `(A, B)` and `(B, A)` are independent pairs in storage                         |
-| Persistent stale price serving  | `max_consecutive_stale_before_halt` triggers `PairHalted` after N consecutive stale reads, alerting consumers that a fresh push is required rather than letting them silently consume stale data indefinitely |
+| Persistent stale price serving  | `max_stale_before_halt` makes `get_pair_state` return `PairHalted` once the accepted price has been stale for longer than N × `max_staleness_seconds`, so consumers can page on a dead feed instead of retrying `PriceTooOld` forever. `0` disables the escalation |
 
 ## Trade-offs
 

@@ -1,0 +1,62 @@
+name: Contract Benchmarks
+
+# Benchmark timings are noisy, so they are deliberately kept off the per-pull-request
+# path: `contracts.yml` only *builds* the bench targets there, which is enough to catch
+# rot. This workflow actually runs them on a schedule or on demand and retains the
+# results, so a performance regression is visible without blocking unrelated PRs.
+on:
+  schedule:
+    # Mondays at 04:00 UTC.
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  benchmarks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Installed via the preinstalled rustup rather than a toolchain action, for the
+      # same reasons as `contracts.yml`: fetching a toolchain action from codeload
+      # intermittently returns 429 and fails the job during setup.
+      - name: Install Rust (nightly)
+        run: |
+          rustup toolchain install nightly --profile minimal
+          rustup default nightly
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: onchain
+
+      # Host cost sampling: prints cpu instruction counts for the core payroll and
+      # milestone paths (claim, batch claim, milestone claim).
+      - name: Run critical-path cost report
+        working-directory: onchain
+        run: |
+          set -euo pipefail
+          mkdir -p ../artifacts/benchmarks
+          cargo bench -p stello_pay_contract --bench critical_paths \
+            2>&1 | tee ../artifacts/benchmarks/critical_paths.txt
+
+      # Wall-clock criterion benchmarks, including HTML reports.
+      - name: Run criterion benchmarks
+        working-directory: onchain
+        run: |
+          set -euo pipefail
+          mkdir -p ../artifacts/benchmarks
+          cargo bench -p stello_pay_contract --bench performance_benchmarks \
+            2>&1 | tee ../artifacts/benchmarks/performance_benchmarks.txt
+
+      - name: Upload benchmark results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-results
+          path: |
+            artifacts/benchmarks
+            onchain/target/criterion
+          if-no-files-found: warn

@@ -57,11 +57,61 @@ exceed `burst + elapsed_whole_seconds * refill_rate`.
 - `transfer_admin(new_admin)`: Changes the contract administrator.
 
 ### Consumption
-- `check_and_consume(subject) -> u32`: Address (+ optional global) path. Increments
-  usage and returns remaining subject tokens. Throws if the limit is exceeded.
-- `check_and_consume_for_contract(subject, contract) -> u32`: Enforces the subject
-  address budget **and**, when configured, the shared contract budget. Either
-  bucket being empty rejects the call.
+- `check_and_consume(subject) -> Result<ConsumptionOutcome, RateLimitError>`: Address
+  (+ optional global) path. Increments usage and reports the subject's remaining
+  allowance and time until refill. Returns
+  `Err(RateLimitError::RateLimitExceeded)` when the bucket is empty.
+- `check_and_consume_for_contract(subject, contract) -> Result<ConsumptionOutcome, RateLimitError>`:
+  Enforces the subject address budget **and**, when configured, the shared contract
+  budget. Either bucket being empty rejects the call.
+
+Neither entrypoint signals exhaustion with an in-band value: a served call is `Ok`,
+and only a rejected call is `Err`. See [Outcome and Exhaustion](#outcome-and-exhaustion).
+
+### Outcome and Exhaustion
+
+The return type names what it carries, so callers no longer have to read the
+implementation to learn whether a number is the remaining allowance, the consumed
+amount, or a wait time:
+
+```rust
+pub struct ConsumptionOutcome {
+    /// Subject's allowance after this call consumed one token.
+    /// `u32::MAX` means the admin bypass is active (effectively unlimited).
+    pub remaining: u32,
+    /// Whole seconds until the subject's bucket next holds a token.
+    pub refill_in_seconds: Option<u64>,
+}
+
+pub enum RateLimitError {
+    /// A global, per-contract, or per-address bucket held no tokens.
+    RateLimitExceeded = 1,
+}
+```
+
+`refill_in_seconds` values:
+
+| Value | Meaning |
+| --- | --- |
+| `Some(0)` | A token is available now. |
+| `Some(1)` | The bucket was emptied by this call; the next whole-second tick refills it. |
+| `None` | The bucket is empty and the refill rate is `0`, so it never refills on its own. |
+
+Exhaustion behaviour, guaranteed by both the implementation and the contract's
+documentation:
+
+- An empty bucket is reported as `Err(RateLimitError::RateLimitExceeded)`. It is
+  **never** reported as a `0` balance, and a served call that happens to leave `0`
+  tokens is still `Ok` — this is the whole point of the typed outcome.
+- A rejected call debits no bucket. All enforced buckets (global, per-contract,
+  per-address) are checked before any is debited, so a rejection cannot partially
+  drain an unrelated budget.
+- `try_check_and_consume` / `try_check_and_consume_for_contract` return the typed
+  error; the non-`try` accessors trap on rejection.
+
+The four boundary cases are pinned by tests in `test_rate_limit.rs`: consumption
+below the burst, exactly at the burst (which is `Ok` with `remaining == 0`), past the
+burst (typed error), and after a refill interval.
 
 ### Maintenance
 - `reset_usage(addr)`: Allows the admin to manually clear a user's rate limit state (e.g., after an appeal).
@@ -159,8 +209,8 @@ buckets — use it only when contract-scoped capping is not required.
 5. **Override Isolation**: A per-address override changes only that caller's
    effective limit configuration. It does not mutate the initialized default
    values, and callers without overrides remain governed by the default bucket.
-5. **Burst Capacity Capping**: After any idle gap (even extremely long ones), the bucket refills to exactly the configured `burst` capacity. The contract explicitly caps token accumulation at `burst` in the `consume_bucket` function, preventing attackers from "farming" tokens by waiting extended periods between calls. This is verified by the `test_long_idle_gap_refill_is_capped_at_burst_capacity` test.
-6. **Contract Cap vs Address Rotation**: The contract-scoped bucket is shared across subjects. Clever rotation of per-address identities within one integrating contract cannot bypass a configured `set_limit_for_contract` budget when consumption goes through `check_and_consume_for_contract`.
+6. **Burst Capacity Capping**: After any idle gap (even extremely long ones), the bucket refills to exactly the configured `burst` capacity. `preview_refill` caps token accumulation at `burst`, preventing attackers from "farming" tokens by waiting extended periods between calls. This is verified by the `test_long_idle_gap_refill_is_capped_at_burst_capacity` test.
+7. **Contract Cap vs Address Rotation**: The contract-scoped bucket is shared across subjects. Clever rotation of per-address identities within one integrating contract cannot bypass a configured `set_limit_for_contract` budget when consumption goes through `check_and_consume_for_contract`.
 
 ## Integration
 
@@ -173,16 +223,24 @@ For example, the `stello_pay_contract` integrates the Rate Limiter by optionally
 ```rust
 #[contractclient(name = "RateLimiterClient")]
 trait RateLimiterInterface {
-    fn check_and_consume(env: Env, subject: Address) -> u32;
-    fn check_and_consume_for_contract(env: Env, subject: Address, contract: Address) -> u32;
+    fn check_and_consume(
+        env: Env,
+        subject: Address,
+    ) -> Result<ConsumptionOutcome, RateLimitError>;
+    fn check_and_consume_for_contract(
+        env: Env,
+        subject: Address,
+        contract: Address,
+    ) -> Result<ConsumptionOutcome, RateLimitError>;
 }
 
 // Address + contract budgets (recommended for multi-user integrators)
 let client = RateLimiterClient::new(&env, &rate_limiter_id);
-if client
-    .try_check_and_consume_for_contract(&caller, &env.current_contract_address())
-    .is_err()
-{
-    return Err(PayrollError::RateLimited);
+match client.try_check_and_consume_for_contract(&caller, &env.current_contract_address()) {
+    Ok(Ok(outcome)) => {
+        // Served. `outcome.remaining` is the subject's allowance left and
+        // `outcome.refill_in_seconds` says when the next token arrives.
+    }
+    Ok(Err(_rate_limit_error)) | Err(_) => return Err(PayrollError::RateLimited),
 }
 ```

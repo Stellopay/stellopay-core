@@ -2,7 +2,32 @@
 #![allow(deprecated)] // env.events().publish() — codebase-wide pattern
 
 pub use rbac_interface::Role;
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, Address, Env, Vec};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Env, Vec,
+};
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    /// Caller is not the admin, and only the admin may grant a role.
+    OnlyAdminCanGrant = 1,
+    /// Caller is not the admin, and only the admin may revoke a role.
+    OnlyAdminCanRevoke = 2,
+    /// Refused: the owner's admin role may not be revoked, which would leave the contract unadministrable.
+    CannotRevokeAdminFromOwner = 3,
+    /// Refused: the owner must retain at least one role.
+    CannotRevokeAllRolesFromOwner = 4,
+    /// Caller does not hold the role the operation requires.
+    CallerDoesNotHoldRole = 5,
+    /// Target address does not hold the role the operation requires.
+    MissingRequiredRole = 6,
+    /// No ownership transfer is pending, so there is nothing to accept or cancel.
+    NoPendingOwner = 7,
+    /// Caller is not the pending owner recorded for the in-flight transfer.
+    NotPendingOwner = 8,
+}
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -155,10 +180,9 @@ impl RbacContract {
         require_initialized(&env);
         caller.require_auth();
 
-        assert!(
-            has_implied_role(&env, &caller, &Role::Admin),
-            "Only admin can grant roles"
-        );
+        if !has_implied_role(&env, &caller, &Role::Admin) {
+            panic_with_error!(&env, Error::OnlyAdminCanGrant);
+        }
 
         let mut roles = read_roles(&env, &target);
         if !has_exact_role(&roles, &role) {
@@ -184,17 +208,15 @@ impl RbacContract {
         require_initialized(&env);
         caller.require_auth();
 
-        assert!(
-            has_implied_role(&env, &caller, &Role::Admin),
-            "Only admin can revoke roles"
-        );
+        if !has_implied_role(&env, &caller, &Role::Admin) {
+            panic_with_error!(&env, Error::OnlyAdminCanRevoke);
+        }
 
         // Prevent revoking Admin from the contract owner – avoids lockout.
         let owner = read_owner(&env);
-        assert!(
-            !(target == owner && role == Role::Admin),
-            "Cannot revoke Admin from owner"
-        );
+        if target == owner && role == Role::Admin {
+            panic_with_error!(&env, Error::CannotRevokeAdminFromOwner);
+        }
 
         let mut roles = read_roles(&env, &target);
         let mut i = 0u32;
@@ -223,10 +245,9 @@ impl RbacContract {
         require_initialized(&env);
         caller.require_auth();
 
-        assert!(
-            has_implied_role(&env, &caller, &Role::Admin),
-            "Only admin can grant roles"
-        );
+        if !has_implied_role(&env, &caller, &Role::Admin) {
+            panic_with_error!(&env, Error::OnlyAdminCanGrant);
+        }
 
         let mut current = read_roles(&env, &target);
         for i in 0..roles_to_grant.len() {
@@ -249,10 +270,9 @@ impl RbacContract {
         require_initialized(&env);
         caller.require_auth();
 
-        assert!(
-            has_implied_role(&env, &caller, &Role::Admin),
-            "Only admin can revoke roles"
-        );
+        if !has_implied_role(&env, &caller, &Role::Admin) {
+            panic_with_error!(&env, Error::OnlyAdminCanRevoke);
+        }
 
         let owner = read_owner(&env);
 
@@ -287,13 +307,14 @@ impl RbacContract {
         require_initialized(&env);
         caller.require_auth();
 
-        assert!(
-            has_implied_role(&env, &caller, &Role::Admin),
-            "Only admin can revoke roles"
-        );
+        if !has_implied_role(&env, &caller, &Role::Admin) {
+            panic_with_error!(&env, Error::OnlyAdminCanRevoke);
+        }
 
         let owner = read_owner(&env);
-        assert!(target != owner, "Cannot revoke all roles from owner");
+        if target == owner {
+            panic_with_error!(&env, Error::CannotRevokeAllRolesFromOwner);
+        }
 
         write_roles(&env, &target, &Vec::new(&env));
     }
@@ -319,7 +340,9 @@ impl RbacContract {
             }
             i += 1;
         }
-        assert!(found, "Caller does not hold the specified role");
+        if !found {
+            panic_with_error!(&env, Error::CallerDoesNotHoldRole);
+        }
 
         write_roles(&env, &caller, &roles);
 
@@ -360,10 +383,9 @@ impl RbacContract {
     pub fn require_role(env: Env, addr: Address, required: Role) {
         require_initialized(&env);
         addr.require_auth();
-        assert!(
-            has_implied_role(&env, &addr, &required),
-            "Missing required role"
-        );
+        if !has_implied_role(&env, &addr, &required) {
+            panic_with_error!(&env, Error::MissingRequiredRole);
+        }
     }
 
     /// @notice Returns the current contract owner.
@@ -415,8 +437,10 @@ impl RbacContract {
             .storage()
             .persistent()
             .get(&StorageKey::PendingOwner)
-            .expect("No pending owner");
-        assert!(caller == pending, "Caller is not pending owner");
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NoPendingOwner));
+        if caller != pending {
+            panic_with_error!(&env, Error::NotPendingOwner);
+        }
 
         let old_owner = read_owner(&env);
 

@@ -81,9 +81,11 @@ fn bench_create_payroll_agreement(c: &mut Criterion) {
                     token: t2,
                     grace_period_seconds: 7200,
                 });
+                // `batch_create_payroll_agreements` rejects a zero grace period
+                // with `InvalidData`, which would fail the whole batch.
                 items.push_back(stello_pay_contract::storage::PayrollCreateParams {
                     token: t3,
-                    grace_period_seconds: 0,
+                    grace_period_seconds: 86_400,
                 });
                 let _ = client.batch_create_payroll_agreements(&employer, &items);
             },
@@ -182,8 +184,14 @@ fn setup_funded_milestone(
         client.add_milestone(&agreement_id, &amount);
     }
 
+    // `approve_milestone` checks the *accounted* escrow balance, so the funds have
+    // to be moved through `fund_milestone_agreement`; minting tokens straight to
+    // the contract would leave the accounted balance at zero and the approval
+    // invariant would reject with `InsufficientEscrowBalance`.
+    let total = amount * (count as i128);
     let sac = StellarAssetClient::new(env, &token);
-    sac.mint(&client.address, &(amount * (count as i128)));
+    sac.mint(employer, &total);
+    client.fund_milestone_agreement(&agreement_id, employer, &total);
 
     // Approve all milestones.
     for i in 1..=count {

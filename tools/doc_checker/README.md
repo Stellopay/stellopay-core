@@ -96,6 +96,43 @@ cargo run -- --strict
 
 The original section-based function checks and event checks always fail the run.
 
+### Baseline (enforcing CI despite a pre-existing backlog)
+
+CI runs the checker with `--strict` **and** a committed baseline,
+`tools/doc_checker/baseline.json`, which records the violations that existed
+when the check was made enforcing:
+
+* A finding whose identity appears in the baseline only **warns**.
+* A finding with **no** baseline entry **fails** the run. This is what keeps
+  the baseline from growing silently: every new violation has a new identity
+  and turns CI red.
+* Identities are line-number-independent (`file | rule | item`), so fixing an
+  unrelated violation above a baselined one does not re-fail CI.
+* Entries that no longer match any finding are reported as stale warnings —
+  the backlog shrank. They stay in the file until it is regenerated, so the
+  shrink shows up as an explicit, reviewable diff.
+
+The baseline is fail-closed: a finding message the checker cannot classify
+into an identity is never recorded and never matches, so unknown finding
+kinds always fail. A corrupt or unknown-version baseline file is also a hard
+error, never a silent bypass.
+
+Regenerate after fixing violations (or, deliberately, to add new ones):
+
+```bash
+cargo run --manifest-path tools/doc_checker/Cargo.toml -- \
+  --strict --events --update-baseline
+```
+
+The `--baseline <PATH>` flag points at a specific baseline file; CI passes
+`tools/doc_checker/baseline.json` via `run_ci.py`.
+
+Run the checker exactly as CI does:
+
+```bash
+python3 tools/doc_checker/run_ci.py
+```
+
 ## Tests
 
 Internal verification of the `doc_checker` rules is available through standard `cargo` testing capabilities.

@@ -8,9 +8,12 @@ def main():
     # We run it inside tools/doc_checker to keep relative paths intact
     script_dir = os.path.dirname(os.path.abspath(__file__))
     
-    # Run cargo run with --strict and --events
+    # Run cargo run with --strict, --events and the committed baseline.
+    # The baseline records pre-existing violations reviewed when the check
+    # was made enforcing: baselined findings only warn, anything new fails.
+    baseline_path = os.path.join(script_dir, "baseline.json")
     result = subprocess.run(
-        ["cargo", "run", "--", "--strict", "--events"],
+        ["cargo", "run", "--", "--strict", "--events", "--baseline", baseline_path],
         cwd=script_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -26,6 +29,12 @@ def main():
     print(stdout)
     if stderr:
         print(stderr, file=sys.stderr)
+
+    stale_entries = [
+        line.split(": ", 1)[1]
+        for line in stdout.splitlines()
+        if line.startswith("warning: stale baseline entry")
+    ]
 
     # Prepare Markdown summary
     summary = []
@@ -52,6 +61,12 @@ def main():
         if summary_line:
             summary.append(f"**{summary_line}**\n")
         summary.append("Please resolve the following documented gaps before merging this Pull Request.\n")
+
+        if stale_entries:
+            summary.append("> [!NOTE]")
+            summary.append("> Some baseline entries no longer match any finding (the backlog shrank).")
+            summary.append("> Regenerate the baseline via:")
+            summary.append("> `cargo run --manifest-path tools/doc_checker/Cargo.toml -- --strict --events --update-baseline`\n")
         
         if errors:
             summary.append("### Errors")

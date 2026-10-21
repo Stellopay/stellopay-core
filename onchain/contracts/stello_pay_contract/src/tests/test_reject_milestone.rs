@@ -7,8 +7,8 @@
 //  - Rejected milestone cannot be approved.
 //  - Rejected milestone cannot be claimed.
 //  - Already-rejected milestone returns MilestoneAlreadyRejected.
-//  - Already-approved milestone returns MilestoneAlreadyApprovedCannotReject.
-//  - Already-claimed milestone returns MilestoneAlreadyClaimedCannotReject.
+//  - Already-approved milestone returns MilestoneApprovedCannotReject.
+//  - Already-claimed milestone returns MilestoneClaimedCannotReject.
 //  - Non-employer caller is rejected (auth guard).
 //  - Out-of-range milestone_id returns MilestoneNotFound.
 //  - Agreement not found returns AgreementNotFound.
@@ -254,8 +254,8 @@ fn test_reject_already_approved_milestone_returns_error() {
     let result = client.reject_milestone(&agreement_id, &milestone_id, &reason);
     assert_eq!(
         result,
-        Err(PayrollError::MilestoneAlreadyApprovedCannotReject),
-        "rejecting an approved milestone should return MilestoneAlreadyApprovedCannotReject"
+        Err(PayrollError::MilestoneApprovedCannotReject),
+        "rejecting an approved milestone should return MilestoneApprovedCannotReject"
     );
 }
 
@@ -276,8 +276,8 @@ fn test_reject_already_claimed_milestone_returns_error() {
     let result = client.reject_milestone(&agreement_id, &milestone_id, &reason);
     assert_eq!(
         result,
-        Err(PayrollError::MilestoneAlreadyClaimedCannotReject),
-        "rejecting a claimed milestone should return MilestoneAlreadyClaimedCannotReject"
+        Err(PayrollError::MilestoneClaimedCannotReject),
+        "rejecting a claimed milestone should return MilestoneClaimedCannotReject"
     );
 }
 

@@ -7,26 +7,26 @@
   "claim_payroll": {
     "description": "CPU instructions for claim_payroll with N elapsed payroll periods (single transfer, O(1) in backlog size)",
     "cases": [
-      { "periods": 1, "instructions": 584717 },
-      { "periods": 10, "instructions": 584717 },
-      { "periods": 50, "instructions": 584717 },
+      { "periods": 1, "instructions": 601866 },
+      { "periods": 10, "instructions": 601866 },
+      { "periods": 50, "instructions": 601866 },
     ]
   },
   "batch_claim_milestones": {
     "description": "CPU instructions for batch_claim_milestones with N approved milestones",
     "cases": [
-      { "milestones": 1, "instructions": 408917 },
-      { "milestones": 5, "instructions": 1750598 },
-      { "milestones": 20, "instructions": 8965821 },
+      { "milestones": 1, "instructions": 505373 },
+      { "milestones": 5, "instructions": 2113243 },
+      { "milestones": 20, "instructions": 10400100 },
     ]
   },
   "batch_create_payroll": {
     "description": "CPU instructions for batch_create_payroll_agreements with N agreements (linear O(N) in batch size)",
     "cases": [
-      { "agreements": 1, "instructions": 223146 },
-      { "agreements": 5, "instructions": 1117375 },
-      { "agreements": 10, "instructions": 2450605 },
-      { "agreements": 20, "instructions": 5808763 },
+      { "agreements": 1, "instructions": 286159 },
+      { "agreements": 5, "instructions": 1500480 },
+      { "agreements": 10, "instructions": 3278748 },
+      { "agreements": 20, "instructions": 7713188 },
     ]
   }
 }

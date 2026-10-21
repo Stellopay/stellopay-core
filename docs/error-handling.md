@@ -123,14 +123,17 @@ The contracts follow a small number of consistent patterns:
   `Result<_, PayrollError>` and use the enum above.  Clients should branch on
   `error_code` (for batches) or the `Result` error in direct calls.
 
-- **`assert!`-style guards for internal invariants** — many helper functions
-  use `assert!(...)` with a descriptive message.  These represent **programmer
-  errors or violated assumptions** and are not intended as recoverable API
-  contracts.
+- **No untyped `assert!`-style guards in deployable source** — every
+  precondition in deployable contract source raises a typed `PayrollError`
+  (returned from the entrypoint or raised with `panic_with_error!`) so callers
+  never have to parse an opaque host abort.  A CI guard
+  (`scripts/check-contract-no-traps.sh`) rejects `.unwrap()`, `.expect(`,
+  `panic!`, `assert!`, `assert_eq!`, and `assert_ne!` outside test modules,
+  keeping the error-code ABI from regressing.
 
-- **Access control failures** — expressed as either `PayrollError::Unauthorized`
-  or explicit `assert!(caller == expected, "...")`.  Recovery: call from the
-  correct address (employer, employee, arbiter) or adjust integration logic.
+- **Access control failures** — expressed as `PayrollError::Unauthorized`,
+  including the RBAC-gated upgrade/migration admin path.  Recovery: call from
+  the correct address (employer, employee, arbiter) or adjust integration logic.
 
 - **Mode and status checks** — functions that depend on `AgreementMode` or
   `AgreementStatus` validate them first.  Typical responses:
