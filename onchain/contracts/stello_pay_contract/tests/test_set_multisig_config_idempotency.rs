@@ -20,10 +20,7 @@ use soroban_sdk::{
     token::{Client as TokenClient, StellarAssetClient},
     Address, Env, Map, Symbol, TryFromVal, TryIntoVal, Val,
 };
-use stello_pay_contract::{
-    storage::StorageKey,
-    PayrollContract, PayrollContractClient,
-};
+use stello_pay_contract::{storage::StorageKey, PayrollContract, PayrollContractClient};
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -86,10 +83,7 @@ fn has_event(env: &Env, event_name: &str) -> bool {
 }
 
 /// Helper to find an event by first topic name in the current invocation.
-fn find_event(
-    env: &Env,
-    event_name: &str,
-) -> Option<(Address, soroban_sdk::Vec<Val>, Val)> {
+fn find_event(env: &Env, event_name: &str) -> Option<(Address, soroban_sdk::Vec<Val>, Val)> {
     let events = env.events().all();
     let target_sym = Symbol::new(env, event_name);
     events
@@ -107,11 +101,7 @@ fn find_event(
 }
 
 /// Helper to extract a field from map-based event data.
-fn get_event_field<T: TryFromVal<Env, Val>>(
-    env: &Env,
-    event_data: &Val,
-    field_name: &str,
-) -> T {
+fn get_event_field<T: TryFromVal<Env, Val>>(env: &Env, event_data: &Val, field_name: &str) -> T {
     let map: Map<Symbol, Val> = event_data.try_into_val(env).unwrap();
     let key = Symbol::new(env, field_name);
     let val = map.get(key).unwrap();
@@ -220,8 +210,14 @@ fn test_emitted_events_asserted_for_both_calls() {
     assert_eq!(ms1, multisig_addr);
     assert_eq!(old_large_1, 0, "first call previous large threshold is 0");
     assert_eq!(new_large_1, large, "first call new large threshold matches");
-    assert_eq!(old_dispute_1, 0, "first call previous dispute threshold is 0");
-    assert_eq!(new_dispute_1, dispute, "first call new dispute threshold matches");
+    assert_eq!(
+        old_dispute_1, 0,
+        "first call previous dispute threshold is 0"
+    );
+    assert_eq!(
+        new_dispute_1, dispute,
+        "first call new dispute threshold matches"
+    );
 
     // Second call: event emitted reporting old == new (idempotent repeat).
     client.set_multisig_config(&owner, &multisig_addr, &large, &dispute);
@@ -310,7 +306,10 @@ fn test_second_call_with_different_args_applies_latest_and_asserts_events_and_ba
     assert_eq!(new_dispute_2, 888, "call 2 reports updated dispute as new");
 
     // Persistent storage reflects the second call's arguments.
-    assert_eq!(read_multisig_contract(&env, &contract_id), Some(ms2.clone()));
+    assert_eq!(
+        read_multisig_contract(&env, &contract_id),
+        Some(ms2.clone())
+    );
     assert_eq!(read_large_threshold(&env, &contract_id), 999);
     assert_eq!(read_dispute_threshold(&env, &contract_id), 888);
     assert_eq!(client.get_multisig_contract(), Some(ms2));

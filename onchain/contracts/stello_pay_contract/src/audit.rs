@@ -116,8 +116,7 @@ pub fn set_audit_retention(env: &Env, owner: Address, max_entries: u64) {
 
 /// @notice Returns the configured audit retention limit. `0` means unlimited (default).
 pub fn get_audit_retention(env: &Env) -> u64 {
-    crate::storage::persistent_get(env, &AuditStorageKey::AuditRetentionLimit)
-        .unwrap_or(0u64)
+    crate::storage::persistent_get(env, &AuditStorageKey::AuditRetentionLimit).unwrap_or(0u64)
 }
 
 /// @notice Returns the number of local lifecycle audit entries appended (all-time counter).
@@ -224,8 +223,9 @@ pub fn record_entry(
     let limit = get_audit_retention(env);
     if limit > 0 {
         // `oldest_id` is the smallest id still present on-chain.
-        let oldest_id: u64 = crate::storage::persistent_get(env, &AuditStorageKey::AuditOldestEntryId)
-            .unwrap_or(1u64);
+        let oldest_id: u64 =
+            crate::storage::persistent_get(env, &AuditStorageKey::AuditOldestEntryId)
+                .unwrap_or(1u64);
 
         // After writing `id`, retained count = id - oldest_id + 1.
         // Evict while that would exceed `limit`.

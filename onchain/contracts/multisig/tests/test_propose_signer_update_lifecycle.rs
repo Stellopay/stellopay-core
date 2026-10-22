@@ -85,7 +85,8 @@ fn generate_signer_set(env: &Env, count: u32) -> Vec<Address> {
     signers
 }
 
-fn invalid_threshold_error() -> Result<Result<(), soroban_sdk::ConversionError>, Result<Error, soroban_sdk::InvokeError>> {
+fn invalid_threshold_error(
+) -> Result<Result<(), soroban_sdk::ConversionError>, Result<Error, soroban_sdk::InvokeError>> {
     Err(Ok(Error::from(MultisigError::InvalidThreshold)))
 }
 

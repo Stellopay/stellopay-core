@@ -13,7 +13,7 @@ def main():
     # was made enforcing: baselined findings only warn, anything new fails.
     baseline_path = os.path.join(script_dir, "baseline.json")
     result = subprocess.run(
-        ["cargo", "run", "--", "--strict", "--events", "--baseline", baseline_path],
+        ["cargo", "run", "--", "--strict", "--events", "--no-stale-refs", "--baseline", baseline_path],
         cwd=script_dir,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
