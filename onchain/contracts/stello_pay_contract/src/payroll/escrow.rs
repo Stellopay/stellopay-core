@@ -2,8 +2,8 @@
 //! contributor claims.
 
 use super::{
-    add_to_employer_agreements, get_agreement, get_next_agreement_id, is_emergency_paused,
-    is_grace_period_active,
+    acquire_reentrancy_guard, add_to_employer_agreements, get_agreement, get_next_agreement_id,
+    is_emergency_paused, is_grace_period_active, release_reentrancy_guard,
 };
 use crate::events::{
     emit_agreement_created, emit_employee_added, emit_payment_received, emit_payment_sent,
@@ -269,6 +269,13 @@ pub fn batch_create_escrow_agreements(
 /// - Cannot claim more than total periods
 /// - Works during grace period
 pub fn claim_time_based(env: &Env, agreement_id: u128) -> Result<(), PayrollError> {
+    acquire_reentrancy_guard(env)?;
+    let result = claim_time_based_inner(env, agreement_id);
+    release_reentrancy_guard(env);
+    result
+}
+
+fn claim_time_based_inner(env: &Env, agreement_id: u128) -> Result<(), PayrollError> {
     // Check emergency pause
     if is_emergency_paused(env) {
         return Err(PayrollError::EmergencyPaused);

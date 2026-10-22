@@ -32,26 +32,12 @@ pub fn create_milestone_agreement(
 
     let agreement_id = counter;
 
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::AgreementCounter, &counter);
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::Employer(agreement_id), &employer);
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::Contributor(agreement_id), &contributor);
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::Token(agreement_id), &token);
-    env.storage().persistent().set(
-        &MilestoneKey::PaymentType(agreement_id),
-        &PaymentType::MilestoneBased,
-    );
-    env.storage().persistent().set(
-        &MilestoneKey::Status(agreement_id),
-        &AgreementStatus::Created,
-    );
+    MilestoneKey::set_agreement_counter(&env, counter);
+    MilestoneKey::set_employer(&env, agreement_id, &employer);
+    MilestoneKey::set_contributor(&env, agreement_id, &contributor);
+    MilestoneKey::set_token(&env, agreement_id, &token);
+    MilestoneKey::set_payment_type(&env, agreement_id, &PaymentType::MilestoneBased);
+    MilestoneKey::set_status(&env, agreement_id, &AgreementStatus::Created);
 
     let milestone_count: u32 = milestones.len();
     let mut total: i128 = 0;
@@ -60,18 +46,9 @@ pub fn create_milestone_agreement(
             panic_with_error!(&env, PayrollError::MilestoneAmountInvalid);
         }
         let milestone_id: u32 = (i as u32) + 1;
-        env.storage().persistent().set(
-            &MilestoneKey::MilestoneAmount(agreement_id, milestone_id),
-            &amount,
-        );
-        env.storage().persistent().set(
-            &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
-            &false,
-        );
-        env.storage().persistent().set(
-            &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
-            &false,
-        );
+        MilestoneKey::set_milestone_amount(&env, agreement_id, milestone_id, amount);
+        MilestoneKey::set_milestone_approved(&env, agreement_id, milestone_id, false);
+        MilestoneKey::set_milestone_claimed(&env, agreement_id, milestone_id, false);
         total += amount;
 
         MilestoneAdded {
@@ -82,13 +59,8 @@ pub fn create_milestone_agreement(
         .publish(&env);
     }
 
-    env.storage().persistent().set(
-        &MilestoneKey::MilestoneCount(agreement_id),
-        &milestone_count,
-    );
-    env.storage()
-        .persistent()
-        .set(&MilestoneKey::TotalAmount(agreement_id), &total);
+    MilestoneKey::set_milestone_count(&env, agreement_id, milestone_count);
+    MilestoneKey::set_total_amount(&env, agreement_id, total);
 
     add_to_employer_agreements(&env, &employer, agreement_id);
 

@@ -2401,36 +2401,6 @@ fn test_non_owner_cannot_set_stale_halt_threshold() {
 }
 
 // ===========================================================================
-// 15. get_price_checked – boundary behaviour
-// ===========================================================================
-//
-// `get_price_checked` is the caller-supplied-age variant of the freshness
-// check.  It looks up `PairState` and computes:
-//
-//   age = ledger.timestamp().saturating_sub(state.last_updated_ts)
-//   if age > max_age_seconds { Err(PriceTooOld) } else { Ok(state) }
-//
-// Unlike `get_pair_state` it does NOT consult the pair config or the halt
-// threshold — only two outcomes are possible: `Ok(PairState)`,
-// `Err(PairNotConfigured)`, or `Err(PriceTooOld)`.
-
-/// Pair with no state (no price ever pushed) returns `PairNotConfigured`
-/// regardless of the `max_age_seconds` supplied.
-#[test]
-fn test_get_price_checked_pair_not_configured() {
-    let env = create_env();
-    let (oracle_client, _, _, _, _, _) = full_setup(&env);
-    let unknown_base = Address::generate(&env);
-    let unknown_quote = Address::generate(&env);
-
-    // A pair that was never configured at all.
-    env.ledger().with_mut(|li| li.timestamp = 1_000);
-    assert_eq!(
-        oracle_client.try_get_price_checked(&unknown_base, &unknown_quote, &0u64),
-        Err(Ok(OracleError::PairNotConfigured))
-    );
-    assert_eq!(
-        oracle_client.try_get_price_checked(&unknown_base, &unknown_quote, &u64::MAX),
 // 15. get_price_checked across pair lifecycle states
 // ===========================================================================
 //
@@ -2456,25 +2426,6 @@ fn test_get_price_checked_unconfigured_pair_returns_pair_not_configured() {
     );
 }
 
-/// `max_age_seconds = 0` with age = 0 (price pushed at the same ledger
-/// timestamp as the read): `0 > 0` is false → `Ok`.
-#[test]
-fn test_get_price_checked_max_age_zero_age_zero_succeeds() {
-    let env = create_env();
-    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
-
-    // Push and read at the same ledger second → age = 0.
-    env.ledger().with_mut(|li| li.timestamp = 1_000);
-    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
-
-    let state = oracle_client.get_price_checked(&base, &quote, &0u64);
-    assert_eq!(state.rate, 2_000_000);
-    assert_eq!(state.last_updated_ts, 1_000);
-}
-
-/// `max_age_seconds = 0` with age = 1: `1 > 0` is true → `PriceTooOld`.
-#[test]
-fn test_get_price_checked_max_age_zero_age_one_rejected() {
 /// State: configured but never pushed. The pair has no `PairState` record yet,
 /// so the checked read refuses with PairNotConfigured.
 #[test]
@@ -2498,17 +2449,6 @@ fn test_get_price_checked_fresh_record_returns_value() {
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
-    // Advance one second so age = 1.
-    env.ledger().with_mut(|li| li.timestamp = 1_001);
-    assert_eq!(
-        oracle_client.try_get_price_checked(&base, &quote, &0u64),
-        Err(Ok(OracleError::PriceTooOld))
-    );
-}
-
-/// `max_age_seconds = 1` with age exactly 1: `1 > 1` is false → `Ok`.
-#[test]
-fn test_get_price_checked_max_age_one_age_one_succeeds() {
     env.ledger().with_mut(|li| li.timestamp = 1_060);
     let state = oracle_client.get_price_checked(&base, &quote, &600u64);
     assert_eq!(state.rate, 2_000_000);
@@ -2526,17 +2466,6 @@ fn test_get_price_checked_at_exact_max_age_succeeds() {
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
-    // age = 1, max_age = 1 → accepted (boundary is inclusive).
-    env.ledger().with_mut(|li| li.timestamp = 1_001);
-    let state = oracle_client.get_price_checked(&base, &quote, &1u64);
-    assert_eq!(state.rate, 2_000_000);
-    assert_eq!(state.last_updated_ts, 1_000);
-}
-
-/// `max_age_seconds = 1` with age = 2: `2 > 1` is true → `PriceTooOld`.
-/// This is one past the maximum accepted value.
-#[test]
-fn test_get_price_checked_max_age_one_age_two_rejected() {
     env.ledger().with_mut(|li| li.timestamp = 1_600); // age = 600
     let state = oracle_client.get_price_checked(&base, &quote, &600u64);
     assert_eq!(state.rate, 2_000_000);
@@ -2552,30 +2481,6 @@ fn test_get_price_checked_stale_record_returns_price_too_old() {
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
 
-    // age = 2, max_age = 1 → rejected (one past the accepted boundary).
-    env.ledger().with_mut(|li| li.timestamp = 1_002);
-    assert_eq!(
-        oracle_client.try_get_price_checked(&base, &quote, &1u64),
-        Err(Ok(OracleError::PriceTooOld))
-    );
-}
-
-/// `max_age_seconds = u64::MAX` can never be exceeded by a real age
-/// (age uses `saturating_sub`, so age ≤ ledger timestamp ≤ u64::MAX).
-/// A very old price that would be stale under any normal threshold is
-/// still accepted.
-#[test]
-fn test_get_price_checked_max_age_u64_max_always_succeeds() {
-    let env = create_env();
-    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
-
-    // Push at ledger 1_000.
-    env.ledger().with_mut(|li| li.timestamp = 1_000);
-    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
-
-    // Advance far past any normal staleness window (e.g. one million seconds).
-    env.ledger().with_mut(|li| li.timestamp = 1_001_000);
-    let state = oracle_client.get_price_checked(&base, &quote, &u64::MAX);
     env.ledger().with_mut(|li| li.timestamp = 1_601); // age = 601
     assert_eq!(
         oracle_client.try_get_price_checked(&base, &quote, &600u64),
@@ -2589,70 +2494,6 @@ fn test_get_price_checked_max_age_u64_max_always_succeeds() {
     assert_eq!(state.last_updated_ts, 1_000);
 }
 
-/// Transition: one below the maximum accepted `max_age_seconds` succeeds;
-/// one past it fails.  This pins the strict `>` (not `>=`) comparison.
-#[test]
-fn test_get_price_checked_boundary_transition_at_max_age() {
-    let env = create_env();
-    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
-
-    const PUSH_TS: u64 = 1_000;
-    const MAX_AGE: u64 = 300;
-
-    env.ledger().with_mut(|li| li.timestamp = PUSH_TS);
-    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &PUSH_TS);
-
-    // age == MAX_AGE → accepted (not strictly greater).
-    env.ledger().with_mut(|li| li.timestamp = PUSH_TS + MAX_AGE);
-    let state = oracle_client.get_price_checked(&base, &quote, &MAX_AGE);
-    assert_eq!(state.rate, 2_000_000, "age == max_age must be accepted");
-
-    // age == MAX_AGE + 1 → rejected.
-    env.ledger()
-        .with_mut(|li| li.timestamp = PUSH_TS + MAX_AGE + 1);
-    assert_eq!(
-        oracle_client.try_get_price_checked(&base, &quote, &MAX_AGE),
-        Err(Ok(OracleError::PriceTooOld)),
-        "age == max_age + 1 must be rejected"
-    );
-}
-
-/// `get_price_checked` does NOT consult the pair config, so it is unaffected
-/// by `get_pair_state`'s halt logic.  A price that is stale enough to trigger
-/// `PairHalted` via `get_pair_state` is still `PriceTooOld` (not `PairHalted`)
-/// via `get_price_checked`.
-#[test]
-fn test_get_price_checked_never_returns_pair_halted() {
-    let env = create_env();
-    // Use a halt-enabled pair (threshold = 2, max_staleness = 300).
-    let threshold: u32 = 2;
-    let (oracle_client, _, source, base, quote) = setup_halt_pair(&env, threshold);
-
-    let published = 1_000u64;
-    env.ledger().with_mut(|li| li.timestamp = published);
-    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &published);
-
-    // Advance far past the halt threshold.
-    let halted_ts = ts_stale_for(published, (threshold as u64) * HALT_MAX_STALENESS + 1);
-    env.ledger().with_mut(|li| li.timestamp = halted_ts);
-
-    // get_pair_state returns PairHalted.
-    assert_eq!(
-        oracle_client.try_get_pair_state(&base, &quote),
-        Err(Ok(OracleError::PairHalted)),
-        "sanity: get_pair_state must see PairHalted at this time"
-    );
-
-    // get_price_checked with a tight budget also sees PriceTooOld, not PairHalted.
-    assert_eq!(
-        oracle_client.try_get_price_checked(&base, &quote, &1u64),
-        Err(Ok(OracleError::PriceTooOld)),
-        "get_price_checked must not return PairHalted"
-    );
-
-    // With a generous enough budget, it still succeeds regardless of halt.
-    let state = oracle_client.get_price_checked(&base, &quote, &u64::MAX);
-    assert_eq!(state.rate, 2_000_000);
 /// State: halted record, terminal until a fresh authorised push. The checked
 /// read does not derive the halt — it reports the age as PriceTooOld — and the
 /// refused call must not clear or alter the halt.
@@ -2720,4 +2561,163 @@ fn test_get_price_checked_disabled_pair_refused_without_mutating_state() {
         !oracle_client.get_pair_config(&base, &quote).unwrap().enabled,
         "a refused checked read must not re-enable the pair"
     );
+}
+
+// ===========================================================================
+// 16. Pin boundary behaviour of get_price_checked (#1384)
+// ===========================================================================
+
+#[test]
+fn test_get_price_checked_pair_not_configured() {
+    let env = create_env();
+    let (oracle_client, _, _, _, _, _) = full_setup(&env);
+    let unknown_base = Address::generate(&env);
+    let unknown_quote = Address::generate(&env);
+
+    // A pair that was never configured at all.
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    assert_eq!(
+        oracle_client.try_get_price_checked(&unknown_base, &unknown_quote, &0u64),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
+    assert_eq!(
+        oracle_client.try_get_price_checked(&unknown_base, &unknown_quote, &u64::MAX),
+        Err(Ok(OracleError::PairNotConfigured))
+    );
+}
+
+#[test]
+fn test_get_price_checked_max_age_zero_age_zero_succeeds() {
+    let env = create_env();
+    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
+
+    // Push and read at the same ledger second → age = 0.
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    let state = oracle_client.get_price_checked(&base, &quote, &0u64);
+    assert_eq!(state.rate, 2_000_000);
+    assert_eq!(state.last_updated_ts, 1_000);
+}
+
+#[test]
+fn test_get_price_checked_max_age_zero_age_one_rejected() {
+    let env = create_env();
+    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // Advance one second so age = 1.
+    env.ledger().with_mut(|li| li.timestamp = 1_001);
+    assert_eq!(
+        oracle_client.try_get_price_checked(&base, &quote, &0u64),
+        Err(Ok(OracleError::PriceTooOld))
+    );
+}
+
+#[test]
+fn test_get_price_checked_max_age_one_age_one_succeeds() {
+    let env = create_env();
+    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // age = 1, max_age = 1 → accepted (boundary is inclusive).
+    env.ledger().with_mut(|li| li.timestamp = 1_001);
+    let state = oracle_client.get_price_checked(&base, &quote, &1u64);
+    assert_eq!(state.rate, 2_000_000);
+    assert_eq!(state.last_updated_ts, 1_000);
+}
+
+#[test]
+fn test_get_price_checked_max_age_one_age_two_rejected() {
+    let env = create_env();
+    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
+
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // age = 2, max_age = 1 → rejected (one past the accepted boundary).
+    env.ledger().with_mut(|li| li.timestamp = 1_002);
+    assert_eq!(
+        oracle_client.try_get_price_checked(&base, &quote, &1u64),
+        Err(Ok(OracleError::PriceTooOld))
+    );
+}
+
+#[test]
+fn test_get_price_checked_max_age_u64_max_always_succeeds() {
+    let env = create_env();
+    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
+
+    // Push at ledger 1_000.
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &1_000u64);
+
+    // Advance far past any normal staleness window (e.g. one million seconds).
+    env.ledger().with_mut(|li| li.timestamp = 1_001_000);
+    let state = oracle_client.get_price_checked(&base, &quote, &u64::MAX);
+    assert_eq!(state.rate, 2_000_000);
+}
+
+#[test]
+fn test_get_price_checked_boundary_transition_at_max_age() {
+    let env = create_env();
+    let (oracle_client, _, _, source, base, quote) = full_setup(&env);
+
+    const PUSH_TS: u64 = 1_000;
+    const MAX_AGE: u64 = 300;
+
+    env.ledger().with_mut(|li| li.timestamp = PUSH_TS);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &PUSH_TS);
+
+    // age == MAX_AGE → accepted (not strictly greater).
+    env.ledger().with_mut(|li| li.timestamp = PUSH_TS + MAX_AGE);
+    let state = oracle_client.get_price_checked(&base, &quote, &MAX_AGE);
+    assert_eq!(state.rate, 2_000_000, "age == max_age must be accepted");
+
+    // age == MAX_AGE + 1 → rejected.
+    env.ledger()
+        .with_mut(|li| li.timestamp = PUSH_TS + MAX_AGE + 1);
+    assert_eq!(
+        oracle_client.try_get_price_checked(&base, &quote, &MAX_AGE),
+        Err(Ok(OracleError::PriceTooOld)),
+        "age == max_age + 1 must be rejected"
+    );
+}
+
+#[test]
+fn test_get_price_checked_never_returns_pair_halted() {
+    let env = create_env();
+    // Use a halt-enabled pair (threshold = 2, max_staleness = 300).
+    let threshold: u32 = 2;
+    let (oracle_client, _, source, base, quote) = setup_halt_pair(&env, threshold);
+
+    let published = 1_000u64;
+    env.ledger().with_mut(|li| li.timestamp = published);
+    oracle_client.push_price(&source, &base, &quote, &2_000_000i128, &published);
+
+    // Advance far past the halt threshold.
+    let halted_ts = ts_stale_for(published, (threshold as u64) * HALT_MAX_STALENESS + 1);
+    env.ledger().with_mut(|li| li.timestamp = halted_ts);
+
+    // get_pair_state returns PairHalted.
+    assert_eq!(
+        oracle_client.try_get_pair_state(&base, &quote),
+        Err(Ok(OracleError::PairHalted)),
+        "sanity: get_pair_state must see PairHalted at this time"
+    );
+
+    // get_price_checked with a tight budget also sees PriceTooOld, not PairHalted.
+    assert_eq!(
+        oracle_client.try_get_price_checked(&base, &quote, &1u64),
+        Err(Ok(OracleError::PriceTooOld)),
+        "get_price_checked must not return PairHalted"
+    );
+
+    // With a generous enough budget, it still succeeds regardless of halt.
+    let state = oracle_client.get_price_checked(&base, &quote, &u64::MAX);
+    assert_eq!(state.rate, 2_000_000);
 }

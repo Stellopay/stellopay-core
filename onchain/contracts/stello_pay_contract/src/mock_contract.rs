@@ -431,7 +431,11 @@ mod __interface_guard {
 #[cfg(test)]
 mod store_agreement_lifecycle {
     use super::{UpgradeableContract, UpgradeableContractClient};
-    use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Symbol};
+    use soroban_sdk::{
+        symbol_short,
+        testutils::{Address as _, Events as _},
+        Address, Env, Symbol,
+    };
 
     /// The lifecycle state a record is in when `store_agreement` is invoked.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
