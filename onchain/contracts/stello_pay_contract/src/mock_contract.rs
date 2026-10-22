@@ -431,7 +431,11 @@ mod __interface_guard {
 #[cfg(test)]
 mod store_agreement_lifecycle {
     use super::{UpgradeableContract, UpgradeableContractClient};
-    use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, Symbol};
+    use soroban_sdk::{
+        symbol_short,
+        testutils::{Address as _, Events as _},
+        Address, Env, Symbol,
+    };
 
     /// The lifecycle state a record is in when `store_agreement` is invoked.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -465,7 +469,7 @@ mod store_agreement_lifecycle {
     /// Drives `store_agreement` from the given state and returns the typed
     /// outcome plus the value observed afterwards.
     fn drive(
-        env: &Env,
+        _env: &Env,
         client: &UpgradeableContractClient,
         state: AgreementState,
         agreement_id: u32,
@@ -524,7 +528,7 @@ mod store_agreement_lifecycle {
 
     #[test]
     fn store_agreement_terminal_record_unchanged_after_refused_call() {
-        let (env, client) = setup();
+        let (_env, client) = setup();
         let agreement_id = 4u32;
         let terminal = symbol_short!("final");
         client.store_agreement(&agreement_id, &terminal);
@@ -579,7 +583,7 @@ mod store_agreement_lifecycle {
     // ------------------------------------------------------------------
     #[test]
     fn store_agreement_called_twice_matches_single_call() {
-        let (env, client) = setup();
+        let (_env, client) = setup();
         let agreement_id = 7u32;
         let payload = symbol_short!("agree");
 

@@ -76,6 +76,6 @@ fn test_uninitialized_owner_is_refused_with_typed_error() {
 
     assert_eq!(
         client.try_set_multisig_config(&owner, &multisig, &0, &1),
-        Err(Ok(PayrollError::Unauthorized.into()))
+        Err(Ok(PayrollError::Unauthorized))
     );
 }

@@ -177,6 +177,14 @@ pub enum PaymentType {
     MilestoneBased,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RateLimiterContractState {
+    Uninitialized,
+    Unset,
+    Set(Address),
+}
+
 /// Core milestone agreement structure
 #[contracttype]
 #[derive(Clone, Debug)]

@@ -183,15 +183,21 @@ impl PayrollContract {
     /// This accessor exists so callers (and tests) can observe the slot's
     /// state without inferring it from `get_rate_limiter_contract`, which
     /// collapses `Uninitialized` and `Unset` into `None`.
+    ///
+    /// # Arguments
+    /// * `env` - Soroban environment
+    ///
+    /// # Returns
+    /// Current `storage::RateLimiterContractState` of the rate limiter slot
+    ///
+    /// # Access Control
+    /// Public read; no authentication required
     pub fn get_rate_limiter_contract_state(env: Env) -> storage::RateLimiterContractState {
         crate::storage::extend_instance_ttl(&env);
         if !crate::storage::persistent_has(&env, &StorageKey::Owner) {
             return storage::RateLimiterContractState::Uninitialized;
         }
-        match crate::storage::persistent_get::<_, Address>(
-            &env,
-            &StorageKey::RateLimiterContract,
-        ) {
+        match crate::storage::persistent_get::<_, Address>(&env, &StorageKey::RateLimiterContract) {
             Some(address) => storage::RateLimiterContractState::Set(address),
             None => storage::RateLimiterContractState::Unset,
         }
@@ -1774,7 +1780,7 @@ mod set_rate_limiter_contract_auth_tests {
     fn setup() -> (Env, PayrollContractClient<'static>, Address) {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register_contract(None, PayrollContract);
+        let contract_id = env.register(PayrollContract, ());
         let client = PayrollContractClient::new(&env, &contract_id);
         let owner = Address::generate(&env);
         client.initialize(&owner);

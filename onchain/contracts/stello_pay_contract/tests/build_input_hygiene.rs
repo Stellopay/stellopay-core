@@ -64,7 +64,7 @@ fn mock_contract_is_test_only() {
         .expect("contract source must be readable");
     let gate = "#[cfg(test)]\npub mod mock_contract;";
     assert!(
-        source.contains(gate),
+        source.replace("\r\n", "\n").contains(gate),
         "mock_contract must remain behind the cfg(test) production-build gate"
     );
 }

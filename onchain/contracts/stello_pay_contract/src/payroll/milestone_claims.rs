@@ -426,30 +426,28 @@ pub fn get_milestone_count(env: Env, agreement_id: u128) -> u32 {
 }
 
 pub fn get_milestone(env: Env, agreement_id: u128, milestone_id: u32) -> Option<Milestone> {
-    let count: u32 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneCount(agreement_id))
-        .unwrap_or(0);
+    let count: u32 =
+        crate::storage::persistent_get(&env, &MilestoneKey::MilestoneCount(agreement_id))
+            .unwrap_or(0);
 
     if milestone_id == 0 || milestone_id > count {
         return None;
     }
 
-    let amount: i128 = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneAmount(agreement_id, milestone_id))?;
-    let approved: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneApproved(agreement_id, milestone_id))
-        .unwrap_or(false);
-    let claimed: bool = env
-        .storage()
-        .persistent()
-        .get(&MilestoneKey::MilestoneClaimed(agreement_id, milestone_id))
-        .unwrap_or(false);
+    let amount: i128 = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneAmount(agreement_id, milestone_id),
+    )?;
+    let approved: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneApproved(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
+    let claimed: bool = crate::storage::persistent_get(
+        &env,
+        &MilestoneKey::MilestoneClaimed(agreement_id, milestone_id),
+    )
+    .unwrap_or(false);
 
     Some(Milestone {
         id: milestone_id,

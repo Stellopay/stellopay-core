@@ -111,17 +111,12 @@ pub fn set_audit_retention(env: &Env, owner: Address, max_entries: u64) {
         panic_with_error!(env, crate::storage::PayrollError::Unauthorized);
     }
 
-    env.storage()
-        .persistent()
-        .set(&AuditStorageKey::AuditRetentionLimit, &max_entries);
+    crate::storage::persistent_set(env, &AuditStorageKey::AuditRetentionLimit, &max_entries);
 }
 
 /// @notice Returns the configured audit retention limit. `0` means unlimited (default).
 pub fn get_audit_retention(env: &Env) -> u64 {
-    env.storage()
-        .persistent()
-        .get(&AuditStorageKey::AuditRetentionLimit)
-        .unwrap_or(0u64)
+    crate::storage::persistent_get(env, &AuditStorageKey::AuditRetentionLimit).unwrap_or(0u64)
 }
 
 /// @notice Returns the number of local lifecycle audit entries appended (all-time counter).
@@ -228,33 +223,33 @@ pub fn record_entry(
     let limit = get_audit_retention(env);
     if limit > 0 {
         // `oldest_id` is the smallest id still present on-chain.
-        let oldest_id: u64 = env
-            .storage()
-            .persistent()
-            .get(&AuditStorageKey::AuditOldestEntryId)
-            .unwrap_or(1u64);
+        let oldest_id: u64 =
+            crate::storage::persistent_get(env, &AuditStorageKey::AuditOldestEntryId)
+                .unwrap_or(1u64);
 
         // After writing `id`, retained count = id - oldest_id + 1.
         // Evict while that would exceed `limit`.
         let mut current_oldest = oldest_id;
         while id + 1 > limit && current_oldest < id + 1 - limit {
-            if let Some(evicted) = env
-                .storage()
-                .persistent()
-                .get::<_, LifecycleAuditEntry>(&AuditStorageKey::AuditEntry(current_oldest))
-            {
+            if let Some(evicted) = crate::storage::persistent_get::<_, LifecycleAuditEntry>(
+                env,
+                &AuditStorageKey::AuditEntry(current_oldest),
+            ) {
                 emit_audit_entry_evicted(env, &evicted);
-                env.storage()
-                    .persistent()
-                    .remove(&AuditStorageKey::AuditEntry(current_oldest));
+                crate::storage::persistent_remove(
+                    env,
+                    &AuditStorageKey::AuditEntry(current_oldest),
+                );
             }
             current_oldest += 1;
         }
 
         if current_oldest != oldest_id {
-            env.storage()
-                .persistent()
-                .set(&AuditStorageKey::AuditOldestEntryId, &current_oldest);
+            crate::storage::persistent_set(
+                env,
+                &AuditStorageKey::AuditOldestEntryId,
+                &current_oldest,
+            );
         }
     }
 

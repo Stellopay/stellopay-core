@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use soroban_sdk::{testutils::Address as _, token, Address, BytesN, Env, Vec};
 use stello_pay_contract::{
     storage::{
-        Agreement, AgreementStatus, DisputeStatus, EscrowCreateParams,
-        GracePeriodExtensionPolicy, PayrollCreateParams, PayrollError, StorageKey,
+        Agreement, AgreementStatus, DisputeStatus, EscrowCreateParams, GracePeriodExtensionPolicy,
+        PayrollCreateParams, PayrollError, StorageKey,
     },
     PayrollContract, PayrollContractClient,
 };
@@ -134,8 +134,14 @@ fn assert_set_multisig_config_in_agreement_state(env: &Env, status: AgreementSta
     assert_eq!(agreement_after.created_at, agreement_before.created_at);
     assert_eq!(agreement_after.activated_at, agreement_before.activated_at);
     assert_eq!(agreement_after.cancelled_at, agreement_before.cancelled_at);
-    assert_eq!(agreement_after.dispute_status, agreement_before.dispute_status);
-    assert_eq!(agreement_after.dispute_raised_at, agreement_before.dispute_raised_at);
+    assert_eq!(
+        agreement_after.dispute_status,
+        agreement_before.dispute_status
+    );
+    assert_eq!(
+        agreement_after.dispute_raised_at,
+        agreement_before.dispute_raised_at
+    );
     assert_eq!(client.get_multisig_contract(), Some(multisig));
 
     env.as_contract(&client.address, || {
@@ -436,7 +442,9 @@ fn test_set_and_get_multisig_config() {
 
     env.as_contract(&client.address, || {
         assert_eq!(
-            env.storage().persistent().get::<_, Address>(&StorageKey::MultisigContract),
+            env.storage()
+                .persistent()
+                .get::<_, Address>(&StorageKey::MultisigContract),
             Some(multisig)
         );
         assert_eq!(
@@ -499,12 +507,14 @@ fn test_set_multisig_config_rejects_unauthorized_owner_and_keeps_state_unchanged
 
     client.set_multisig_config(&owner, &multisig, &1000i128, &2000i128);
     let result = client.try_set_multisig_config(&bad_owner, &multisig, &5000i128, &9000i128);
-    assert_eq!(result, Err(Ok(PayrollError::Unauthorized.into())));
+    assert_eq!(result, Err(Ok(PayrollError::Unauthorized)));
     assert_eq!(client.get_multisig_contract(), Some(multisig.clone()));
 
     env.as_contract(&client.address, || {
         assert_eq!(
-            env.storage().persistent().get::<_, Address>(&StorageKey::MultisigContract),
+            env.storage()
+                .persistent()
+                .get::<_, Address>(&StorageKey::MultisigContract),
             Some(multisig.clone())
         );
         assert_eq!(
@@ -528,13 +538,16 @@ fn test_set_multisig_config_rejects_missing_owner_and_preserves_default_values()
     let (client, _owner) = setup(&env);
     let multisig = Address::generate(&env);
 
-    let result = client.try_set_multisig_config(&Address::generate(&env), &multisig, &1i128, &2i128);
-    assert_eq!(result, Err(Ok(PayrollError::Unauthorized.into())));
+    let result =
+        client.try_set_multisig_config(&Address::generate(&env), &multisig, &1i128, &2i128);
+    assert_eq!(result, Err(Ok(PayrollError::Unauthorized)));
     assert_eq!(client.get_multisig_contract(), None);
 
     env.as_contract(&client.address, || {
         assert_eq!(
-            env.storage().persistent().get::<_, Address>(&StorageKey::MultisigContract),
+            env.storage()
+                .persistent()
+                .get::<_, Address>(&StorageKey::MultisigContract),
             None
         );
         assert_eq!(
