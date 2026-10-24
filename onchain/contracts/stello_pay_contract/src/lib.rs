@@ -954,6 +954,8 @@ impl PayrollContract {
     /// * `large_payment_threshold` - Min amount requiring multisig for LargePayment (0 = disabled)
     /// * `dispute_resolution_threshold` - Min total payout requiring multisig for DisputeResolution
     ///   (0 = disabled)
+    /// # Access Control
+    /// Requires `owner` authentication; unauthorised callers are rejected with `PayrollError::Unauthorized`.
     pub fn set_multisig_config(
         env: Env,
         owner: Address,
