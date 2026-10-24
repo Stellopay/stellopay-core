@@ -151,6 +151,12 @@ impl PayrollContract {
     ///
     /// # Access Control
     /// Requires owner authentication
+    ///
+    /// # Idempotency
+    /// Calling this function more than once is safe: each call overwrites the
+    /// stored `StorageKey::RateLimiterContract` value with the supplied address,
+    /// so calling it twice with the same argument leaves the same state as
+    /// calling it once. No token balances are touched by this entrypoint.
     pub fn set_rate_limiter_contract(env: Env, owner: Address, rate_limiter: Address) {
         crate::storage::extend_instance_ttl(&env);
         let stored_owner = match contract_owner(&env) {
