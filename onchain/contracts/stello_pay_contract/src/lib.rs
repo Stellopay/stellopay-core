@@ -1521,6 +1521,20 @@ impl PayrollContract {
 
     /// Proposes emergency pause with optional timelock
     ///
+    /// # Idempotency
+    /// This function is **idempotent** for a repeated call with the same
+    /// arguments in the same ledger: it overwrites the pending proposal with
+    /// identical values and resets the approval list to `[caller]`, so a client
+    /// retrying after a timeout leaves exactly the state one call leaves. It
+    /// moves no tokens and emits no events, and the proposer's approval is
+    /// never counted twice.
+    ///
+    /// A repeat call **restarts** the proposal rather than being a no-op once
+    /// it has progressed: approvals collected from other guardians since the
+    /// previous call are discarded, and a non-zero timelock is re-anchored to
+    /// the current ledger timestamp. See
+    /// `tests/test_propose_emergency_pause_idempotency.rs` (#1370).
+    ///
     /// # Arguments
     /// * `caller` - Guardian proposing the pause
     /// * `timelock_seconds` - Delay before pause activates (0 for immediate)
