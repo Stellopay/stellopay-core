@@ -8,6 +8,10 @@
 
 #![cfg(test)]
 #![allow(deprecated)]
+// The `PayrollError::X.into()` conversions inside the `assert_eq!` calls below
+// look identity-typed to clippy but are the conversions to the host `Error`
+// the generated `try_*` clients return; removing them breaks type-checking.
+#![allow(clippy::useless_conversion)]
 
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
